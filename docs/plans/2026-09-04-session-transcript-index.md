@@ -1,7 +1,7 @@
 # Session transcript index — plan
 
-Status: 8/8 — done 2026-09-05; the MCP server started before the merge still serves the previous build until
-it restarts. Decided 2026-09-04: separate
+Status: 8/8 — done 2026-09-05; upstream PR colbymchenry/codegraph#1702 from `pr/session-index` (this commit on
+upstream main, minus this plan file and the alwaysLoad `_meta` that waits on #1697). Decided 2026-09-04: separate
 `sessions.db`; new `codegraph_sessions` tool in the default surface with alwaysLoad; on by default,
 `"sessions": false` opts out; the repo script is deleted once the fork command works.
 
