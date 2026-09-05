@@ -162,6 +162,45 @@ export function storageWriter${i}() {
   });
 });
 
+/**
+ * A key held in more files than the entry-point cap (`searchLimit`, 3 by default and 8 in
+ * explore) must reach every holder: the cap is for text matches, and the literal lookup is
+ * already bounded. Before this, holders competed for the cap by path order and `shared/`
+ * lost to `scripts/`.
+ */
+describe('literal seeds — every holder reaches the subgraph past the entry cap', () => {
+  let dir: string;
+  let cg: CodeGraph;
+  const N = 10;
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-litcap-'));
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    for (let i = 0; i < N; i++) {
+      fs.writeFileSync(
+        path.join(dir, 'src', `holder${i}.ts`),
+        `export function write${i}(rows: unknown[]) {
+  chrome.storage.local.set({ 'bompus_custom_ds_players': rows });
+}
+`,
+      );
+    }
+    cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+  });
+
+  afterAll(() => {
+    cg.destroy();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('all holders are roots with the default searchLimit of 3', async () => {
+    const sub = await cg.findRelevantContext('which modules write "bompus_custom_ds_players" to storage');
+    const rootFiles = new Set(sub.roots.map((id) => sub.nodes.get(id)?.filePath));
+    expect(rootFiles.size).toBe(N);
+  });
+});
+
 describe('literals — v10 migration', () => {
   let dir: string;
   let db: SqliteDatabase | null = null;

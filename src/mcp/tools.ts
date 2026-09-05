@@ -3751,7 +3751,7 @@ export class ToolHandler {
     // does; a holder reached through a constant is a small file with no callers,
     // and on graph mass alone it loses its source slot to a hub that never
     // mentions the literal.
-    for (const id of cg.findLiteralSeedIds(query)) {
+    for (const id of cg.findLiteralSeedIds(matchQuery)) {
       if (subgraph.nodes.has(id)) {
         namedSeedIds.add(id);
         tierSeedIds.add(id);
