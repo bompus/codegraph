@@ -4169,6 +4169,86 @@ export class ToolHandler {
     // tier so it isn't buried under files that merely share surface words (#1064).
     for (const fp of changeSurfaceFiles) namedSeedFiles.add(fp);
 
+    // File-reference pass: a string literal in a named-tier file that names an
+    // indexed file is a reference the edge table cannot hold — a child process
+    // spawned by path, a worker script, a dynamic import by string, a module
+    // named in config. The referenced file is where the flow continues, so it
+    // joins the named tier and renders with source; without it the agent reads
+    // the one rendered file and greps for the hop. Only code files the agent
+    // named (or pinned) are read, and only their symbol-owned literals: a
+    // file-level string is prose (a doc comment naming a sibling), a doc-tier
+    // markdown file references files as prose too, and a symbol holding more
+    // than two file names is a list of paths (an audit table, an allowlist),
+    // data rather than a hop. Resolution is exact unique basename (an
+    // ambiguous name is no reference), test files are skipped unless the query
+    // asks about tests, and at most three files join.
+    const referencedFiles = new Map<string, string>(); // referenced → referrer
+    {
+      const sourceFiles = new Set<string>([...pinnedSet, ...namedSeedFiles]);
+      for (const fp of docTierFiles) sourceFiles.delete(fp);
+      const holderIds: string[] = [];
+      const holderFile = new Map<string, string>();
+      for (const fp of sourceFiles) {
+        for (const n of cg.getNodesInFile(fp)) {
+          if (n.kind === 'file' || n.kind === 'import') continue;
+          holderIds.push(n.id);
+          holderFile.set(n.id, fp);
+        }
+      }
+      const byBasename = new Map<string, string[]>();
+      if (holderIds.length > 0) {
+        for (const f of cg.getFiles()) {
+          const base = f.path.slice(f.path.lastIndexOf('/') + 1);
+          const list = byBasename.get(base);
+          if (list) list.push(f.path);
+          else byBasename.set(base, [f.path]);
+        }
+      }
+      const wantsTests = /\btests?\b|\bspec\b/i.test(matchQuery);
+      const fileLike = /\.(ts|tsx|js|mjs|cjs|py|go|rs|rb|php|java|kt|swift|vue|sh|ps1)$/;
+      const literalsByNode = cg.findLiteralsByNodeIds(holderIds);
+      outer: for (const [nodeId, values] of literalsByNode) {
+        const fileNames = values.filter((v) => fileLike.test(v));
+        if (fileNames.length === 0 || fileNames.length > 2) continue;
+        for (const value of fileNames) {
+          const base = value.slice(value.lastIndexOf('/') + 1);
+          const matches = byBasename.get(base);
+          if (!matches || matches.length !== 1) continue;
+          const target = matches[0]!;
+          if (sourceFiles.has(target) || referencedFiles.has(target)) continue;
+          if (!wantsTests && isTestFile(target)) continue;
+          referencedFiles.set(target, holderFile.get(nodeId) ?? '');
+          if (referencedFiles.size >= 3) break outer;
+        }
+      }
+      for (const [fp, referrer] of referencedFiles) {
+        let group = fileGroups.get(fp);
+        if (!group) { group = { nodes: [], score: 0, peripheral: 0 }; fileGroups.set(fp, group); }
+        const inFile = cg.getNodesInFile(fp).filter((n) => n.kind !== 'file');
+        const exported = inFile.filter((n) => n.isExported);
+        // A script spawned by path usually exports nothing: its top-level
+        // symbols are the flow, so they stand in for the exports.
+        for (const n of (exported.length > 0 ? exported : inFile).slice(0, 20)) {
+          if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n);
+          if (!group.nodes.some((g) => g.id === n.id)) group.nodes.push(n);
+        }
+        // Half the referrer's score: the byte-allocation cliff prunes anything
+        // under 15% of the top file's weight, and the referrer is usually that
+        // top file, so a flat rescue score (45) would render as a pointer only.
+        const referrerScore = fileGroups.get(referrer)?.score ?? 0;
+        group.score = Math.max(group.score, 45, referrerScore * 0.5);
+        if (!relevantFiles.some(([f]) => f === fp)) relevantFiles.push([fp, group]);
+      }
+      // The referenced file ranks by that score, below the named tier: it is
+      // one hop from the answer, not the answer, and a named-tier slot would
+      // push a hop the task never asked about (a gate script the named file
+      // runs) above the files the query matched. The cap grows so the hop
+      // still renders with source.
+      if (referencedFiles.size > 0 && !args.maxFiles) {
+        maxFiles = clamp(maxFiles + referencedFiles.size, 1, 12);
+      }
+    }
+
     // Multi-term corroboration tier: a file that is BOTH (a) an entry/central file
     // (a search root, named seed, or graph-central hub — i.e. structurally part of
     // the answer) AND (b) matched by ≥2 DISTINCT query terms must not be buried by

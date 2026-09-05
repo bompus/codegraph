@@ -2161,6 +2161,20 @@ export class CodeGraph {
   }
 
   /**
+   * Literals held by the given nodes (explore's file-reference pass reads
+   * file names out of them). Same ablation switch and same degradation as
+   * `findLiteralSeedIds`.
+   */
+  findLiteralsByNodeIds(ids: string[]): Map<string, string[]> {
+    if (process.env.CODEGRAPH_LITERAL_SEEDS === '0') return new Map();
+    try {
+      return this.queries.findLiteralsByNodeIds(ids);
+    } catch {
+      return new Map();
+    }
+  }
+
+  /**
    * Build context for a task
    *
    * Creates comprehensive context by:

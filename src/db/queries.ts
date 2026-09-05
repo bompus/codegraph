@@ -486,6 +486,26 @@ export class QueryBuilder {
     return rows.map((r) => r.id);
   }
 
+  /**
+   * Literals held by each of `ids`, for the file-reference pass in explore: a
+   * literal that names an indexed file is the only trace of a spawn-by-path or
+   * a dynamic import, which the edge table cannot hold.
+   */
+  findLiteralsByNodeIds(ids: string[]): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (ids.length === 0) return out;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT node_id, value FROM literals WHERE node_id IN (${placeholders})`)
+      .all(...ids) as Array<{ node_id: string; value: string }>;
+    for (const r of rows) {
+      const list = out.get(r.node_id);
+      if (list) list.push(r.value);
+      else out.set(r.node_id, [r.value]);
+    }
+    return out;
+  }
+
   /** Which node kinds contribute their name to the segment vocabulary — the
    *  single gate shared by insertNode, updateNode, and the rebuild page query
    *  (getDistinctNodeNames), so the write paths can't drift apart. */
