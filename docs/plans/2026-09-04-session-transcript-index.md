@@ -1,6 +1,7 @@
 # Session transcript index — plan
 
-Status: 6/8 — executing step 7 (full suite on Node, merge, rebuild daily). Decided 2026-09-04: separate
+Status: 8/8 — done 2026-09-05; the MCP server started before the merge still serves the previous build until
+it restarts. Decided 2026-09-04: separate
 `sessions.db`; new `codegraph_sessions` tool in the default surface with alwaysLoad; on by default,
 `"sessions": false` opts out; the repo script is deleted once the fork command works.
 
@@ -55,7 +56,11 @@ files); a UI tab; changes to `codegraph.db`'s schema or bulk-load path.
 - [x] 5 `src/mcp/tools.ts` — tool def (alwaysLoad), `DEFAULT_MCP_TOOLS` = explore + sessions, tiny-repo core
       set, `handleSessions`; `server-instructions.ts` names it · mcp-tool-allowlist, -annotations, -unindexed pass
 - [x] 6 README (CLI table, MCP Tools table) + CHANGELOG `[Unreleased]`
-- [ ] 7 Merge into `experimental`, rebuild `codegraph-daily` (`bun install` if owed, tsc + copy-assets), restart
-      the MCP server, run the proof queries from bompus-espn-draft.
-- [ ] 8 bompus-espn-draft: retire or thin `scripts/transcript-search.ts` per the fork decision; point
-      `code-index-research.md` at `codegraph sessions`.
+- [x] 7 Merge into `experimental`, rebuild `codegraph-daily`, run the proof queries — de0dbca fast-forwarded,
+      tsc + copy-assets clean, pushed to `fork` · full suite on Node 32 failed / 3997 passed against a 33 / 3987
+      baseline, same environmental files · CLI `sessions turn readiness dedupe` 3 hits over 237 transcripts
+      (6.5 s first, 141 ms after) · direct-mode MCP lists explore + sessions with alwaysLoad and answers the
+      query · the running server (pid 18176, started before the merge) is left for its owner to restart
+- [x] 8 bompus-espn-draft: `scripts/transcript-search.ts`, its test and the lib additions deleted (repo commit
+      `refactor(transcript-search): drop the repo prototype`); `code-index-research.md` points at
+      `codegraph sessions` / `codegraph_sessions` · vp check 0 errors · 1661 tests pass
