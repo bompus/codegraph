@@ -172,7 +172,15 @@ const DEFAULT_FIND_OPTIONS: Required<FindRelevantContextOptions> = {
   edgeKinds: [],
   nodeKinds: HIGH_VALUE_NODE_KINDS, // Filter out imports/exports by default
   seedNames: [],         // Segment-vocab supplement — filled by the facade
+  seedNodeIds: [],       // Literal-table seeds — filled by the facade
 };
+
+/**
+ * Score for a literal seed. Above the BM25 magnitudes the FTS channel returns
+ * (tens to hundreds) and every additive boost below, so a symbol holding the
+ * quoted literal leads the ranking whatever else the query matched.
+ */
+const LITERAL_SEED_SCORE = 1000;
 
 // Re-export the low-confidence sentinel (defined in a dependency-free leaf so
 // the MCP layer can import it without pulling this module's deps onto the
@@ -483,7 +491,7 @@ export class ContextBuilder {
 
     // Step 2: Look up exact matches for extracted symbols
     let exactMatches: SearchResult[] = [];
-    if (symbolsFromQuery.length > 0 || opts.seedNames.length > 0) {
+    if (symbolsFromQuery.length > 0 || opts.seedNames.length > 0 || opts.seedNodeIds.length > 0) {
       try {
         if (symbolsFromQuery.length > 0) {
           // Get more results so we can apply co-location boosting before trimming
@@ -491,6 +499,20 @@ export class ContextBuilder {
             limit: Math.ceil(opts.searchLimit * 5),
             kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
           });
+        }
+
+        // Literal seeds: the query quoted a string that lives in these
+        // symbols' bodies. No name matches it, so they enter here, first and
+        // at a fixed top score; the co-location pass below still compounds
+        // several hits in one file.
+        if (opts.seedNodeIds.length > 0) {
+          const byId = this.queries.getNodesByIds(opts.seedNodeIds);
+          for (const id of opts.seedNodeIds) {
+            const node = byId.get(id);
+            if (!node || exactMatches.some((r) => r.node.id === id)) continue;
+            exactMatches.push({ node, score: LITERAL_SEED_SCORE });
+          }
+          logDebug('Literal seed matches', { seedNodeIds: opts.seedNodeIds, added: byId.size });
         }
 
         // Step 2a: segment-vocabulary seeds. Word-level query terms cannot

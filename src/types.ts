@@ -190,6 +190,13 @@ export interface Node {
   typeParameters?: string[];
 
   /**
+   * Identifier-like string literals inside this symbol's body (storage keys,
+   * CLI flags, event names — see extraction/literal-capture.ts). Stored in the
+   * `literals` side table, not a nodes column; seeds explore on an exact hit.
+   */
+  literals?: string[];
+
+  /**
    * Normalized return/result type name for a function/method (the bare class
    * name, smart-pointer pointee unwrapped). Captured for C/C++ so resolution
    * can infer a chained receiver's type from what the inner call returns —
@@ -699,4 +706,12 @@ export interface FindRelevantContextOptions {
    * SEGMENTS the query's words name are seeded here instead.
    */
   seedNames?: string[];
+
+  /**
+   * Node ids whose body holds a string literal the query quoted verbatim
+   * (`literals` table, CodeGraph.findRelevantContext). Ranked above every
+   * name-derived candidate: an exact literal is the strongest evidence a
+   * query carries, and the symbol is never named after it.
+   */
+  seedNodeIds?: string[];
 }

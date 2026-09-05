@@ -33,6 +33,7 @@ import { MyBatisExtractor } from './mybatis-extractor';
 import { MarkdownExtractor } from './markdown-extractor';
 import { CfmlExtractor } from './cfml-extractor';
 import { tryKernelExtract, takeDeferredPreParse } from './kernel';
+import { captureLiterals } from './literal-capture';
 import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
@@ -547,6 +548,7 @@ export class TreeSitterExtractor {
       // nodes and import refs are complete and the file node is still pushed.
       this.flushFnRefCandidates();
       this.flushValueRefs();
+      captureLiterals(this.source, this.nodes);
 
       if (packageNodeId) this.nodeStack.pop();
       this.nodeStack.pop();
