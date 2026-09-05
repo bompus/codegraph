@@ -491,6 +491,16 @@ export class ContextBuilder {
 
     // Step 2: Look up exact matches for extracted symbols
     let exactMatches: SearchResult[] = [];
+    // Literal seeds bypass every size trim below: the lookup already bounds
+    // them, and a storage key held in eleven files must reach all eleven, not
+    // the first `searchLimit` by path order.
+    const literalSeedIds = new Set(opts.seedNodeIds);
+    const keepSeedsThenTop = (results: SearchResult[], n: number): SearchResult[] => {
+      if (literalSeedIds.size === 0) return results.slice(0, n);
+      const seeds = results.filter((r) => literalSeedIds.has(r.node.id));
+      const rest = results.filter((r) => !literalSeedIds.has(r.node.id)).slice(0, n);
+      return [...seeds, ...rest];
+    };
     if (symbolsFromQuery.length > 0 || opts.seedNames.length > 0 || opts.seedNodeIds.length > 0) {
       try {
         if (symbolsFromQuery.length > 0) {
@@ -560,7 +570,7 @@ export class ContextBuilder {
         }
 
         // Trim back to reasonable size
-        exactMatches = exactMatches.slice(0, Math.ceil(opts.searchLimit * 2));
+        exactMatches = keepSeedsThenTop(exactMatches, Math.ceil(opts.searchLimit * 2));
         logDebug('Exact symbol matches', { count: exactMatches.length });
       } catch (error) {
         logDebug('Exact symbol lookup failed', { error: String(error) });
@@ -609,7 +619,7 @@ export class ContextBuilder {
         }
       }
       exactMatches.sort((a, b) => b.score - a.score);
-      exactMatches = exactMatches.slice(0, Math.ceil(opts.searchLimit * 3));
+      exactMatches = keepSeedsThenTop(exactMatches, Math.ceil(opts.searchLimit * 3));
     }
 
     // Step 3: Run text search for natural language term matching
@@ -999,7 +1009,7 @@ export class ContextBuilder {
     // compound) have now contributed. Sort by score so multi-term matches from
     // later steps can outrank dampened single-term matches from earlier steps.
     searchResults.sort((a, b) => b.score - a.score);
-    searchResults = searchResults.slice(0, opts.searchLimit * 3);
+    searchResults = keepSeedsThenTop(searchResults, opts.searchLimit * 3);
 
     // Filter by minimum score
     let filteredResults = searchResults.filter((r) => r.score >= opts.minScore);
@@ -1013,7 +1023,7 @@ export class ContextBuilder {
     // With 36 entry points and maxNodes=120, each gets only 3 nodes — useless.
     // Cap to searchLimit so each entry point gets a meaningful traversal budget.
     if (filteredResults.length > opts.searchLimit) {
-      filteredResults = filteredResults.slice(0, opts.searchLimit);
+      filteredResults = keepSeedsThenTop(filteredResults, opts.searchLimit);
     }
 
     // Confidence signal for the honest-handoff footer (consumed in buildContext).
