@@ -199,6 +199,15 @@ describe('literal seeds — every holder reaches the subgraph past the entry cap
     const rootFiles = new Set(sub.roots.map((id) => sub.nodes.get(id)?.filePath));
     expect(rootFiles.size).toBe(N);
   });
+
+  it('explore renders every holder with the default file cap', async () => {
+    const res = await new ToolHandler(cg).execute('codegraph_explore', {
+      query: 'which modules write "bompus_custom_ds_players" to storage',
+    });
+    const text = res.content[0].text as string;
+    const sourced = [...text.matchAll(/^\*\*`(.+?)`\*\* —/gm)].map((m) => m[1]);
+    expect(sourced.length).toBe(N);
+  });
 });
 
 describe('literals — v10 migration', () => {
