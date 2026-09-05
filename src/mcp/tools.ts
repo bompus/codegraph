@@ -776,6 +776,35 @@ function exploreLineNumbersEnabled(): boolean {
 }
 
 /**
+ * The response cap after the caller or the environment lowers it below the
+ * project tier. `maxChars` on the call wins; `CODEGRAPH_EXPLORE_MAX_CHARS` is
+ * the server-wide default (the A/B harness sets it per arm). Clamped to
+ * [2000, 25000]: under 2k no file fits one section, over 25k the host
+ * externalizes the result. Never raises a tier — the tiers are ceilings
+ * calibrated against the inline limit — so an oversize request is a no-op.
+ */
+export function exploreMaxChars(budget: ExploreOutputBudget, requested?: unknown): ExploreOutputBudget {
+  const raw = typeof requested === 'number' && Number.isFinite(requested)
+    ? requested
+    : Number(process.env.CODEGRAPH_EXPLORE_MAX_CHARS);
+  if (!Number.isFinite(raw) || raw <= 0) return budget;
+  const cap = clamp(Math.round(raw), 2000, 25000);
+  return cap < budget.maxOutputChars ? { ...budget, maxOutputChars: cap } : budget;
+}
+
+/**
+ * Symbols-only explore (`CODEGRAPH_EXPLORE_SYMBOLS_ONLY=1`, default off): source
+ * renders only for files that define a symbol the query named; every other
+ * ranked file ships as a pointer (path, symbols, line numbers), the way a
+ * cliffed file does, and the blast-radius list still names the callers. Inert
+ * when the query named nothing — an all-pointer answer costs a round trip for
+ * no source. Built for the A/B behind colbymchenry/codegraph#1701.
+ */
+function exploreSymbolsOnly(): boolean {
+  return process.env.CODEGRAPH_EXPLORE_SYMBOLS_ONLY === '1';
+}
+
+/**
  * Adaptive explore sizing (default ON). `codegraph_explore` skeletonizes OFF-SPINE
  * polymorphic-sibling files — a file whose class is one of ≥3 interchangeable
  * implementations of a shared interface (e.g. OkHttp's `: Interceptor` classes) —
@@ -1361,6 +1390,10 @@ export const tools: ToolDefinition[] = [
           type: 'number',
           description: 'Maximum number of files to include source code from (default: 12)',
           default: 12,
+        },
+        maxChars: {
+          type: 'number',
+          description: 'Lower the response cap below the project default (characters, 2000–25000). Use for a narrow question that needs one symbol, not a survey.',
         },
         projectPath: projectPathProperty,
       },
@@ -3317,6 +3350,7 @@ export class ToolHandler {
     } catch {
       budget = getExploreOutputBudget(Infinity);
     }
+    budget = exploreMaxChars(budget, args.maxChars);
     const maxFiles = clamp((args.maxFiles as number) || budget.defaultMaxFiles, 1, 20);
 
     // File paths named in the query become PINNED files: guaranteed admission,
@@ -4277,6 +4311,14 @@ export class ToolHandler {
     // not-shown files, and force-enabled even on tiers that suppress that list:
     // a file we deliberately withheld source for must still be nameable.
     const cliffedFiles = new Set(allocation.cliffed);
+    // Symbols-only (exploreSymbolsOnly): a file defining none of the named
+    // symbols ships as a pointer, so the answer is the named source plus the
+    // blast-radius callers. Skipped when no ranked file carries a named symbol.
+    if (exploreSymbolsOnly() && sortedFiles.some(([, g]) => g.nodes.some((n) => tierSeedIds.has(n.id)))) {
+      for (const [fp, group] of sortedFiles) {
+        if (!group.nodes.some((n) => tierSeedIds.has(n.id))) cliffedFiles.add(fp);
+      }
+    }
 
     // Polymorphic-sibling detector for adaptive sizing. A class that implements/
     // extends a supertype shared by >= MIN_SIBLINGS classes is one of many
