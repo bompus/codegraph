@@ -3747,6 +3747,16 @@ export class ToolHandler {
         for (const n of tierPicks) tierSeedIds.add(n.id);
       }
     }
+    // A literal quoted in the query names its holder as surely as a symbol name
+    // does; a holder reached through a constant is a small file with no callers,
+    // and on graph mass alone it loses its source slot to a hub that never
+    // mentions the literal.
+    for (const id of cg.findLiteralSeedIds(query)) {
+      if (subgraph.nodes.has(id)) {
+        namedSeedIds.add(id);
+        tierSeedIds.add(id);
+      }
+    }
     // Code symbols the query named, kept apart from the doc seeds added next: with
     // a doc tier, a code file renders only when it defines one of these.
     const codeNamedIds = new Set(tierSeedIds);

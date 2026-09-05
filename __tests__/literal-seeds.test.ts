@@ -6,6 +6,7 @@ import CodeGraph from '../src';
 import { QueryBuilder } from '../src/db/queries';
 import { createDatabase, type SqliteDatabase } from '../src/db/sqlite-adapter';
 import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from '../src/db/migrations';
+import { ToolHandler } from '../src/mcp/tools';
 
 /**
  * The string-anchored explore path: a query that names a storage key or a CLI
@@ -93,6 +94,71 @@ function start() { return 1; }
     fs.rmSync(path.join(dir, 'src', 'writer.ts'));
     await cg.indexAll();
     expect(queries().findNodeIdsByLiteral(['bompus_custom_ds_players'])).toEqual([]);
+  });
+});
+
+/**
+ * A literal held through a constant lives in a small file with no callers. In explore's file
+ * sort that file must take a source slot the way a file defining a named symbol does; on graph
+ * centrality alone it loses the slot to a hub file that never mentions the literal.
+ */
+describe('literal seeds — explore renders the holder file', () => {
+  let dir: string;
+  let cg: CodeGraph;
+  let handler: ToolHandler;
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-litrender-'));
+    fs.mkdirSync(path.join(dir, 'shared'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'callers'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'shared', 'bag.ts'),
+      `const BAG_KEY = 'bompus_custom_ds_players';
+export function persistBag(rows: unknown[]) {
+  chrome.storage.local.set({ [BAG_KEY]: rows });
+}
+`,
+    );
+    // The hub: matches the query word "storage" by name and is called from many files.
+    fs.writeFileSync(
+      path.join(dir, 'shared', 'storage.ts'),
+      `export function storageSet(key: string, value: unknown) {
+  return chrome.storage.local.set({ [key]: value });
+}
+export function storageGet(key: string) {
+  return chrome.storage.local.get(key);
+}
+`,
+    );
+    for (let i = 0; i < 8; i++) {
+      fs.writeFileSync(
+        path.join(dir, 'callers', `writer${i}.ts`),
+        `import { storageSet, storageGet } from '../shared/storage';
+export function storageWriter${i}() {
+  storageGet('k${i}');
+  return storageSet('k${i}', ${i});
+}
+`,
+      );
+    }
+    cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    handler = new ToolHandler(cg);
+  });
+
+  afterAll(() => {
+    cg.destroy();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the file holding the quoted key takes the first source slot', async () => {
+    const res = await handler.execute('codegraph_explore', {
+      query: 'which modules write "bompus_custom_ds_players" to storage',
+      maxFiles: 1,
+    });
+    const text = res.content[0].text as string;
+    const sourced = [...text.matchAll(/^\*\*`(.+?)`\*\* —/gm)].map((m) => m[1]);
+    expect(sourced).toEqual(['shared/bag.ts']);
   });
 });
 

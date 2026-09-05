@@ -2140,20 +2140,24 @@ export class CodeGraph {
         seedNames = [];
       }
     }
-    // Literal seeds: a storage key, flag, or event name quoted in the query
-    // is never a symbol name, so resolve it through the literals table to the
-    // symbols whose bodies hold it. `CODEGRAPH_LITERAL_SEEDS=0` is the
-    // ablation switch; failures (pre-v10 database) degrade to no seeds.
-    let seedNodeIds = options?.seedNodeIds;
-    if (seedNodeIds === undefined) {
-      seedNodeIds = [];
-      if (process.env.CODEGRAPH_LITERAL_SEEDS !== '0') {
-        try {
-          seedNodeIds = this.queries.findNodeIdsByLiteral(seedLiteralsInQuery(query));
-        } catch { /* literals are advisory */ }
-      }
-    }
+    const seedNodeIds = options?.seedNodeIds ?? this.findLiteralSeedIds(query);
     return this.contextBuilder.findRelevantContext(query, { ...options, seedNames, seedNodeIds });
+  }
+
+  /**
+   * Literal seeds: a storage key, flag, or event name quoted in the query is
+   * never a symbol name, so resolve it through the literals table to the
+   * symbols whose bodies hold it. `CODEGRAPH_LITERAL_SEEDS=0` is the ablation
+   * switch; failures (pre-v10 database) degrade to no seeds. Explore's file
+   * sort calls this too, so a holder file ranks as a named file.
+   */
+  findLiteralSeedIds(query: string): string[] {
+    if (process.env.CODEGRAPH_LITERAL_SEEDS === '0') return [];
+    try {
+      return this.queries.findNodeIdsByLiteral(seedLiteralsInQuery(query));
+    } catch {
+      return [];
+    }
   }
 
   /**
