@@ -103,6 +103,13 @@ assumption. Counts are edge rows removed against `main`:
 The single arms sum to 99 but their union is 93, because six rows are caught by more than one
 change. The union matching the fork exactly means nothing is removed that no arm explains.
 
+The bare-import row is superseded upstream. [#1715](https://github.com/colbymchenry/codegraph/pull/1715)
+moves the same guard from the fuzzy matcher into `matchByExactName`, where these references are
+actually resolved, and on the same corpus it removes **2,487** edge rows against `main` rather
+than 4 — every one of them attributable to a bare npm or node-builtin import, with none added.
+This fork still carries the narrower change; the table describes what is in it, not what is best
+available.
+
 The surprise is the first row. The 60 bare-`vite` imports are removed by the **markdown index**,
 not by either resolution guard, and they never reach the fuzzy matcher at all. They resolved by
 `exact-match`: `matchByExactName` returns immediately when exactly one candidate survives its
@@ -134,7 +141,12 @@ across indexes, and counts edge <i>rows</i>. Deduplicating on that key would <i>
 `edges` also carries <code>line</code> and <code>col</code>, and one source line can hold two
 genuine references at different columns — <code>import corsMiddleware from 'cors'</code> emits an
 edge for the specifier and one for the binding it introduces. Keyed on all of source, target,
-kind, line and col, distinct equals rows exactly, so the row counts here are the edge counts.</sub>
+kind, line and col, distinct equals rows exactly, so the row counts here are the edge counts.
+The absolute millisecond figures are host-specific and do not transfer: the corpus sat in a
+directory excluded from Windows Defender and the interpreter in <code>C:\Program Files</code>, and
+on this host an unexcluded directory read by an untrusted binary costs ~12.6 s for a single 1.2 MB
+file. All three arms shared that configuration, so the arm-to-arm comparison is unaffected; a
+stock Windows host would produce different totals.</sub>
 
 ---
 
