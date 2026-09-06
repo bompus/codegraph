@@ -10,6 +10,36 @@ beforeAll(async () => {
   await loadAllGrammars();
 });
 
+describe('Express middleware imports', () => {
+  it('does not resolve package imports into license headings', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-express-doc-import-'));
+    let cg: CodeGraph | undefined;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ dependencies: { express: '*', cors: '*' } }));
+      fs.writeFileSync(path.join(tmpDir, 'LICENSE.md'), '# cors\n\n# host-validation-middleware\n');
+      fs.writeFileSync(path.join(tmpDir, 'local.js'), 'export function localMiddleware() {}\n');
+      fs.writeFileSync(path.join(tmpDir, 'server.js'), [
+        "import corsMiddleware from 'cors'",
+        "import { hostValidationMiddleware as originalHostValidationMiddleware } from 'host-validation-middleware'",
+        "import { localMiddleware } from './local.js'",
+        'localMiddleware()',
+      ].join('\n'));
+      cg = await CodeGraph.init(tmpDir, { index: true });
+      cg.resolveReferences();
+      const headings = cg.getNodesByKind('module').filter((n) => n.language === 'markdown');
+      expect(headings).toHaveLength(2);
+      expect(headings.flatMap((n) => cg!.getIncomingEdges(n.id)).filter((e) => e.kind === 'imports')).toEqual([]);
+      const local = cg.getNodesByKind('function').find((n) => n.name === 'localMiddleware');
+      expect(local).toBeDefined();
+      expect(cg.getIncomingEdges(local!.id).some((e) => e.kind === 'imports')).toBe(true);
+      expect(cg.getIncomingEdges(local!.id).some((e) => e.kind === 'calls')).toBe(true);
+    } finally {
+      cg?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Django end-to-end framework extraction', () => {
   let tmpDir: string | undefined;
   afterEach(() => {

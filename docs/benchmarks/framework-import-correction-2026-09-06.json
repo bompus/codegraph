@@ -1,0 +1,362 @@
+{
+  "date": "2026-09-06T21:51:13.560Z",
+  "runtime": "v24.16.0",
+  "platform": "win32-x64",
+  "corpusCommit": "8492422b8f110625a90c702f42f30784e8cf19dc",
+  "method": "Eight paired rounds, alternating order and reversing the second half. Each arm runs first four times. Fresh index directory and untimed init before each timed full reindex process, same Vite corpus directory and Node 24.16.0 with --liftoff-only and telemetry disabled. Native loading verified; per-file WASM fallback enabled. Tests and builds excluded from timing.",
+  "orders": [
+    [
+      "baseline",
+      "fixed"
+    ],
+    [
+      "fixed",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "fixed"
+    ],
+    [
+      "fixed",
+      "baseline"
+    ],
+    [
+      "fixed",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "fixed"
+    ],
+    [
+      "fixed",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "fixed"
+    ]
+  ],
+  "arms": {
+    "baseline": {
+      "commit": "9b75b691bc8dcc9025bad7b91b364814971fbff3",
+      "nativeLoaded": true,
+      "timesMs": [
+        3801.25,
+        3677.53,
+        3719.39,
+        3862.39,
+        3696.12,
+        3819.63,
+        3847.04,
+        3654.53
+      ],
+      "metrics": {
+        "mdFiles": 84,
+        "mdSections": 1983,
+        "nodes": 12484,
+        "edges": 28534,
+        "heuristicEdges": 3082,
+        "codeHeuristicEdges": 36,
+        "unresolved": 28120,
+        "bareViteTargetImports": 0,
+        "dbBytes": 38055936,
+        "indexedFiles": 1719,
+        "fileNodes": 1692
+      },
+      "medianMs": 3760.3199999999997,
+      "minMs": 3654.53,
+      "maxMs": 3862.39,
+      "msPerIndexedFile": 2.1875043630017452
+    },
+    "fixed": {
+      "nativeLoaded": true,
+      "timesMs": [
+        4088.62,
+        3762,
+        3767.44,
+        4222.38,
+        3977.5,
+        3845.42,
+        3939.05,
+        3706.63
+      ],
+      "metrics": {
+        "mdFiles": 84,
+        "mdSections": 1983,
+        "nodes": 12484,
+        "edges": 28209,
+        "heuristicEdges": 3082,
+        "codeHeuristicEdges": 36,
+        "unresolved": 28445,
+        "bareViteTargetImports": 0,
+        "dbBytes": 37990400,
+        "indexedFiles": 1719,
+        "fileNodes": 1692
+      },
+      "medianMs": 3892.235,
+      "minMs": 3706.63,
+      "maxMs": 4222.38,
+      "msPerIndexedFile": 2.264243746364165,
+      "baseCommit": "4633116e30883c81a140ecb6ee1af3f6a6e640d1",
+      "source": "Working tree based on baseCommit; src/resolution/index.ts framework import language gate, with regression coverage in __tests__/frameworks-integration.test.ts."
+    }
+  },
+  "deltas": {
+    "baseline->fixed": {
+      "lost": {
+        "code": 18,
+        "markdown": 307,
+        "total": 325,
+        "codeSample": [
+          [
+            "packages/vite/src/client/client.ts",
+            "waitForSuccessfulPing",
+            "function",
+            "calls",
+            "packages/create-vite/src/index.ts",
+            "start",
+            "function",
+            413,
+            4
+          ],
+          [
+            "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+            "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+            "file",
+            "calls",
+            "packages/vite/src/node/__tests__/plugins/importGlob/parse.spec.ts",
+            "run",
+            "function",
+            42,
+            10
+          ],
+          [
+            "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+            "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+            "file",
+            "calls",
+            "packages/vite/src/node/__tests__/plugins/importGlob/parse.spec.ts",
+            "run",
+            "function",
+            46,
+            29
+          ],
+          [
+            "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+            "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+            "file",
+            "calls",
+            "packages/vite/src/node/__tests__/plugins/importGlob/parse.spec.ts",
+            "run",
+            "function",
+            61,
+            10
+          ],
+          [
+            "packages/vite/src/node/plugins/importAnalysisBuild.ts",
+            "toRelativePath",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            43,
+            38
+          ],
+          [
+            "packages/vite/src/node/plugins/importAnalysisBuild.ts",
+            "buildImportAnalysisPlugin",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            339,
+            18
+          ],
+          [
+            "packages/vite/src/node/plugins/importAnalysisBuild.ts",
+            "buildImportAnalysisPlugin",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            444,
+            18
+          ],
+          [
+            "packages/vite/src/node/plugins/importMetaGlob.ts",
+            "transformGlobImport",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            429,
+            38
+          ],
+          [
+            "packages/vite/src/node/plugins/importMetaGlob.ts",
+            "toAbsoluteGlob",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            663,
+            32
+          ],
+          [
+            "packages/vite/src/node/plugins/importMetaGlob.ts",
+            "toAbsoluteGlob",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            668,
+            34
+          ],
+          [
+            "packages/vite/src/node/server/bundledDev.ts",
+            "BundledDev::listen",
+            "method",
+            "calls",
+            "packages/vite/src/node/__tests__/plugins/importGlob/parse.spec.ts",
+            "run",
+            "function",
+            257,
+            4
+          ],
+          [
+            "packages/vite/src/node/server/middlewares/indexHtml.ts",
+            "getHtmlDirnameForRelativeUrl",
+            "function",
+            "calls",
+            "packages/vite/src/node/__tests__/build.spec.ts",
+            "dirname",
+            "constant",
+            131,
+            45
+          ]
+        ]
+      },
+      "gained": {
+        "code": 0,
+        "markdown": 0,
+        "total": 0,
+        "codeSample": []
+      }
+    }
+  },
+  "followupEdgeProof": {
+    "date": "2026-09-06T21:50:52.361Z",
+    "baselineCommit": "4633116",
+    "source": "working tree based on 4633116; framework Markdown import gate",
+    "nodes": 12484,
+    "edges": 28209,
+    "unresolved": 28445,
+    "removed": [
+      {
+        "spath": "packages/vite/src/node/preview.ts",
+        "sname": "preview.ts",
+        "sqn": "packages/vite/src/node/preview.ts",
+        "skind": "file",
+        "tpath": "packages/vite/LICENSE.md",
+        "tname": "cors",
+        "tqn": "packages/vite/LICENSE.md#cors",
+        "tkind": "module",
+        "kind": "imports",
+        "line": 6,
+        "col": 0
+      },
+      {
+        "spath": "packages/vite/src/node/preview.ts",
+        "sname": "preview.ts",
+        "sqn": "packages/vite/src/node/preview.ts",
+        "skind": "file",
+        "tpath": "packages/vite/LICENSE.md",
+        "tname": "cors",
+        "tqn": "packages/vite/LICENSE.md#cors",
+        "tkind": "module",
+        "kind": "imports",
+        "line": 6,
+        "col": 7
+      },
+      {
+        "spath": "packages/vite/src/node/server/index.ts",
+        "sname": "index.ts",
+        "sqn": "packages/vite/src/node/server/index.ts",
+        "skind": "file",
+        "tpath": "packages/vite/LICENSE.md",
+        "tname": "cors",
+        "tqn": "packages/vite/LICENSE.md#cors",
+        "tkind": "module",
+        "kind": "imports",
+        "line": 14,
+        "col": 0
+      },
+      {
+        "spath": "packages/vite/src/node/server/index.ts",
+        "sname": "index.ts",
+        "sqn": "packages/vite/src/node/server/index.ts",
+        "skind": "file",
+        "tpath": "packages/vite/LICENSE.md",
+        "tname": "cors",
+        "tqn": "packages/vite/LICENSE.md#cors",
+        "tkind": "module",
+        "kind": "imports",
+        "line": 14,
+        "col": 7
+      },
+      {
+        "spath": "packages/vite/src/node/server/middlewares/hostCheck.ts",
+        "sname": "hostCheck.ts",
+        "sqn": "packages/vite/src/node/server/middlewares/hostCheck.ts",
+        "skind": "file",
+        "tpath": "packages/vite/LICENSE.md",
+        "tname": "host-validation-middleware",
+        "tqn": "packages/vite/LICENSE.md#host-validation-middleware",
+        "tkind": "module",
+        "kind": "imports",
+        "line": 1,
+        "col": 0
+      },
+      {
+        "spath": "packages/vite/src/node/server/ws.ts",
+        "sname": "ws.ts",
+        "sqn": "packages/vite/src/node/server/ws.ts",
+        "skind": "file",
+        "tpath": "packages/vite/LICENSE.md",
+        "tname": "host-validation-middleware",
+        "tqn": "packages/vite/LICENSE.md#host-validation-middleware",
+        "tkind": "module",
+        "kind": "imports",
+        "line": 9,
+        "col": 0
+      }
+    ],
+    "added": [],
+    "codeToMarkdownImports": 0,
+    "method": "Fresh untimed init then full index on the same Vite corpus. Graph validation only; no timing benchmark."
+  },
+  "tests": {
+    "nativeRequired": {
+      "passed": 4284,
+      "failed": 0,
+      "skipped": 44,
+      "total": 4328
+    },
+    "typescript": "passed",
+    "forcedWasmFocused": {
+      "passed": 267,
+      "failed": 0,
+      "skipped": 0,
+      "total": 267
+    }
+  },
+  "duplicateCheck": "Searched open upstream/fork issues and PRs for cors, license heading, markdown framework, and middleware resolution; no exact matching open report or fix found. Adjacent #1662 applies a known-language-family gate, which does not exclude Markdown."
+}

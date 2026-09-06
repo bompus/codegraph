@@ -57,49 +57,51 @@ corrections measured below. #1721 remains separate design work.
 
 Measured **2026-09-06** against [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
 “Integrated” is `9b75b69`, before these corrections; “corrected” is this
-revision's resolver. [Raw correction measurements and edge audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
+revision's resolver. [Current measurements and six-import follow-up audit](docs/benchmarks/framework-import-correction-2026-09-06.json)
 record the exact baseline, working-tree source, all timing samples, and tests.
+The [earlier resolver correction audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
+records the first 319 removals before the framework correction.
 The [original four-arm benchmark](docs/benchmarks/fork-integration-2026-09-06.json)
 preserves the release, upstream, previous-fork, and integrated results.
 
 | Metric | Integrated `9b75b69` | Corrected |
 | --- | ---: | ---: |
-| Tests passing | 4,275 | 4,283 |
+| Tests passing | 4,275 | 4,284 |
 | Test failures (Windows) | 1 | 0 |
 | Tests skipped | 44 | 44 |
 | Files indexed (CLI count) | 1,719 | 1,719 |
 | File nodes | 1,692 | 1,692 |
 | Markdown file nodes / sections | 84 / 1,983 | 84 / 1,983 |
 | Nodes | 12,484 | 12,484 |
-| Edges | 28,534 | 28,215 |
+| Edges | 28,534 | 28,209 |
 | Heuristic edges, total / code only | 3,082 / 36 | 3,082 / 36 |
-| Unresolved references | 28,120 | 28,439 |
-| Code-to-Markdown imports | 304 | 6 |
+| Unresolved references | 28,120 | 28,445 |
+| Code-to-Markdown imports | 304 | 0 |
 | Targeted imports into `cli.md#vite` | 157 | 0 |
 | Targeted wrong call sites | 11 | 0 |
 | Verified restored imports retained | 2 | 2 |
-| Full reindex wall time, median of 8 | 3,721 ms | 3,802 ms |
-| Wall-time range | 3,698–3,772 ms | 3,673–3,959 ms |
-| Wall ms / indexed file | 2.165 | 2.212 |
-| Main database file, decimal MB | 38.06 | 38.00 |
+| Full reindex wall time, median of 8 | 3,760 ms | 3,892 ms |
+| Wall-time range | 3,655–3,862 ms | 3,707–4,222 ms |
+| Wall ms / indexed file | 2.188 | 2.264 |
+| Main database file, decimal MB | 38.06 | 37.99 |
 
-The correction's measured median is **80.28 ms slower (+2.2%)**, with overlapping
+The correction's measured median is **131.92 ms slower (+3.5%)**, with overlapping
 run ranges. No speedup is claimed. Both arms produce stable graph counts across
 all eight runs. The earlier integration-only experiment also showed no
 demonstrated speed change; its separate timings remain in the original data.
 
 The integrated test column preserves its original full-suite run: one temporary
 directory `EPERM` in `mcp-daemon.test.ts`, followed by an isolated **10/10** rerun.
-The corrected revision's fresh full suite passes **4,283 tests**, with **44 skipped**
-and the native kernel required. A forced-WASM run passes **243 focused tests**;
+The corrected revision's fresh full suite passes **4,284 tests**, with **44 skipped**
+and the native kernel required. A forced-WASM run passes **267 focused tests**;
 TypeScript compilation passes. Existing Windows fixes, including #1717, remain
 included. A passing later run does not erase the original cleanup failure.
 
 ### Resolver corrections and remaining limits
 
-The corrected graph removes **319 invalid edges and adds none**:
+The corrected graph removes **325 invalid edges and adds none**:
 
-- **298 imports into Markdown**, including all 157 newly introduced `vite`
+- **304 imports into Markdown**, including all 157 newly introduced `vite`
   package imports into `docs/guide/cli.md#vite`.
 - **21 wrong calls**: 18 into unrelated code symbols and three into documentation.
   All 11 targeted call sites disappear without acquiring replacement targets.
@@ -111,9 +113,12 @@ Module visibility ignores ESM export examples in strings/comments, preserves rea
 exports and CommonJS behavior, and checks a call's chosen target before accepting
 it. Rejecting a private helper cannot promote an unrelated runner-up.
 
-**Six older code-to-Markdown imports remain**, targeting `cors` and
-`host-validation-middleware` headings in `packages/vite/LICENSE.md`.
-They are recorded in the raw audit and remain outside this correction.
+The framework correction removes the final **six older imports** targeting
+`cors` and `host-validation-middleware` headings in `packages/vite/LICENSE.md`.
+The Express middleware resolver's name lookup accepted those headings; the
+framework language gate now rejects code imports into Markdown. A separate
+full reindex verifies exactly six removals and zero additions relative to
+`4633116`, preserving real middleware imports/calls and intentional doc links.
 The CommonJS source check remains conservative; this is not a complete export
 analysis. Unchanged heuristic-edge totals do not establish correctness: these
 incorrect imports and calls have null provenance.
