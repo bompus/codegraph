@@ -3402,7 +3402,10 @@ export class ToolHandler {
     let budget: ExploreOutputBudget;
     let indexedFileCount = -1;
     try {
-      indexedFileCount = codeFileCount(cg.getStats());
+      // Total files, not codeFileCount: excluding markdown demotes a doc-heavy
+      // repo a tier, and the smaller tier drops the answer's lines and turns off
+      // the completeness signal that would say so (measured, 465 vs 589 here).
+      indexedFileCount = cg.getStats().fileCount;
       budget = getExploreOutputBudget(indexedFileCount);
     } catch {
       budget = getExploreOutputBudget(Infinity);
