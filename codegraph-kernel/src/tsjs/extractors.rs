@@ -270,8 +270,31 @@ impl<'t> Walker<'t> {
         let name = self.text(name_node).to_string();
 
         // TS/JS field definitions carry an explicit `type` field; the generic
-        // scan is for other languages (#808).
-        let type_text = node.child_by_field_name("type").map(|t| {
+        // scan is for other languages (#808). A `property_signature` is NOT a
+        // field definition, so it takes the generic scan here exactly as it does
+        // in extractProperty — and that scan stops on the `property_identifier`,
+        // making the signature repeat the name (`counts counts`) instead of
+        // naming the type. Reading the `type` field for it would be the better
+        // signature and is what this used to do, but it broke kernel/wasm parity
+        // the moment #1638 routed interface members through here; the two must
+        // agree, so improving it is an upstream change to both sides at once.
+        let is_ts_js_field = matches!(node.kind(), "public_field_definition" | "field_definition");
+        let type_node = if is_ts_js_field {
+            node.child_by_field_name("type")
+        } else {
+            (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| {
+                !matches!(
+                    c.kind(),
+                    "modifier"
+                        | "modifiers"
+                        | "identifier"
+                        | "accessor_list"
+                        | "accessors"
+                        | "equals_value_clause"
+                )
+            })
+        };
+        let type_text = type_node.map(|t| {
             let raw = self.text(t);
             raw.strip_prefix(':').unwrap_or(raw).trim_start().to_string()
         });
@@ -288,6 +311,7 @@ impl<'t> Walker<'t> {
         )?;
         self.extract_decorators_for(node, row);
         self.extract_type_annotations(node, row);
+        self.extract_md_path_refs_from_subtree(node, row);
         Some((row, name))
     }
 
@@ -385,6 +409,11 @@ impl<'t> Walker<'t> {
             );
             if let Some(row) = var_row {
                 self.extract_variable_type_annotation(child, row);
+                // The declarator's value is not walked from here, so a `.md`
+                // path inside it would never reach the general walk's scan.
+                if let Some(v) = value {
+                    self.extract_md_path_refs_from_subtree(v, row);
+                }
             }
 
             // Exported const object-of-functions / store shapes.

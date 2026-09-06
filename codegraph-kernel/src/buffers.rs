@@ -126,6 +126,11 @@ pub const FUNCTION_REF_CODE: u8 = 200;
 /// Ref-row flag bit 0: the ref carries `filePath` = the extracted file.
 pub const REF_FLAG_FILE_PATH: u8 = 1;
 
+/// Ref-row flag bit 1: the ref carries `language` = the extracted language.
+/// Only `addReference` (tree-sitter.ts) denormalizes it, and its single caller
+/// is the markdown path refs, which set this beside REF_FLAG_FILE_PATH.
+pub const REF_FLAG_LANGUAGE: u8 = 2;
+
 pub fn node_kind_index(kind: &str) -> Option<u8> {
     NODE_KINDS.iter().position(|k| *k == kind).map(|i| i as u8)
 }

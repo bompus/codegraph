@@ -30,6 +30,77 @@ macro_rules! stack_guard {
     };
 }
 
+/// The two markdown-path-ref methods, generated per walker.
+///
+/// They mirror `extractMarkdownPathReferencesFromStringNode` and
+/// `...FromSubtree` (src/extraction/tree-sitter.ts), where ONE extractor serves
+/// every language; here each language has its own walker, so the shared body is
+/// a macro rather than five copies that could drift apart. Every walker it is
+/// invoked in has the same shape: `src`, `file_path`, `arena`, `tables`,
+/// `line_starts`, plus `text`/`line_of`/`col_of`/`top_row` and an
+/// `md_ref_keys: HashSet<String>` field.
+///
+/// `md_ref_keys` mirrors `addReference`'s referenceKeys: a string inside a
+/// declaration's value is reached twice, by the declaration's own subtree scan
+/// and by the general walk.
+macro_rules! impl_md_path_refs {
+    () => {
+        /// `owner` is the anchor a declaration passes for its own value;
+        /// without one the ref hangs off the enclosing scope (or the file node,
+        /// which top_row's 0 fallback already means).
+        fn extract_md_path_refs_from_string_node(
+            &mut self,
+            node: ::tree_sitter::Node<'t>,
+            owner: Option<u32>,
+        ) {
+            if !$crate::mdpath::is_markdown_path_string_node(node.kind()) {
+                return;
+            }
+            let from_row = owner.unwrap_or_else(|| self.top_row());
+            let line = self.line_of(node);
+            let base_col = self.col_of(node);
+            let kind = $crate::buffers::edge_kind_index("references").unwrap();
+            for (candidate, offset) in $crate::mdpath::candidates(self.text(node)) {
+                let Some(name) = $crate::mdpath::normalize(&candidate, self.file_path) else {
+                    continue;
+                };
+                let column = base_col + offset;
+                if !self.md_ref_keys.insert(format!("{from_row}|{name}|{line}|{column}")) {
+                    continue;
+                }
+                let name_ref = self.arena.put(&name);
+                // addReference is the only TS emitter that denormalizes
+                // filePath and language onto the ref, so these rows carry both.
+                self.tables.push_ref_flagged(
+                    &$crate::buffers::RefRow {
+                        from_idx: from_row,
+                        kind,
+                        line,
+                        column,
+                        reference_name: name_ref,
+                        candidates: $crate::buffers::NONE_STR,
+                        from_id_str: $crate::buffers::NONE_STR,
+                    },
+                    $crate::buffers::REF_FLAG_FILE_PATH | $crate::buffers::REF_FLAG_LANGUAGE,
+                );
+            }
+        }
+
+        /// A declaration scans its own value, because the forms that skip their
+        /// children never let the general walk reach the strings inside them.
+        #[allow(dead_code)]
+        fn extract_md_path_refs_from_subtree(&mut self, node: ::tree_sitter::Node<'t>, owner: u32) {
+            stack_guard!();
+            self.extract_md_path_refs_from_string_node(node, Some(owner));
+            for i in 0..node.named_child_count() {
+                if let Some(c) = node.named_child(i) {
+                    self.extract_md_path_refs_from_subtree(c, owner);
+                }
+            }
+        }
+    };
+}
+
 mod buffers;
 mod ccpp;
 mod cfnptr;
@@ -42,6 +113,7 @@ mod java;
 mod kotlin;
 mod langs;
 mod lua;
+mod mdpath;
 mod php;
 mod rlang;
 mod ruby;

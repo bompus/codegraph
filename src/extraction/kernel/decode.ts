@@ -31,6 +31,7 @@ import {
   PROVENANCES,
   REF,
   REF_FLAG_FILE_PATH,
+  REF_FLAG_LANGUAGE,
   REF_ROW_SIZE,
   VISIBILITIES,
 } from './layout';
@@ -152,10 +153,12 @@ export function decodeExtractBuffers(
     // No filePath/language on ordinary refs: the wasm extractors emit them
     // WITHOUT the denormalized fields (the store fills `ref.filePath ??
     // filePath`), and the kernel must match the extractFromSource seam
-    // exactly. The ONE exception is flagged (REF_FLAG_FILE_PATH): the
-    // ruby/php visitNode hooks set `filePath: ctx.filePath` on their
-    // mixin/trait `implements` refs — re-attach the decode call's own
-    // filePath, which is that exact value.
+    // exactly. Two exceptions are flagged, both re-attaching this decode
+    // call's own values, which are the exact ones the wasm side would set:
+    // REF_FLAG_FILE_PATH for the ruby/php visitNode hooks, which put
+    // `filePath: ctx.filePath` on their mixin/trait `implements` refs; and
+    // FILE_PATH|LANGUAGE for the markdown path refs, the sole caller of
+    // `addReference`, which is the only TS emitter that denormalizes both.
     const ref: UnresolvedReference = {
       fromNodeId: fromIdx === NONE ? str(arena, row, REF.fromIdStr)! : idByRow[fromIdx]!,
       referenceName: str(arena, row, REF.referenceName)!,
@@ -166,7 +169,9 @@ export function decodeExtractBuffers(
       line: row.readUInt32LE(REF.line),
       column: row.readUInt32LE(REF.column),
     };
-    if ((row.readUInt8(REF.flags) & REF_FLAG_FILE_PATH) !== 0) ref.filePath = filePath;
+    const refFlags = row.readUInt8(REF.flags);
+    if ((refFlags & REF_FLAG_FILE_PATH) !== 0) ref.filePath = filePath;
+    if ((refFlags & REF_FLAG_LANGUAGE) !== 0) ref.language = language;
     const candidates = strList(arena, row, REF.candidates);
     if (candidates !== undefined) ref.candidates = candidates;
     unresolvedReferences[i] = ref;

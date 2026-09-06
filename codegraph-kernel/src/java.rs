@@ -136,6 +136,8 @@ pub struct Walker<'t> {
     fs_values: HashMap<String, u32>,
     fs_value_counts: HashMap<String, u32>,
     value_scopes: Vec<ValueScope<'t>>,
+    /// Markdown path refs already emitted — see impl_md_path_refs! (lib.rs).
+    md_ref_keys: HashSet<String>,
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -167,6 +169,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         fs_values: HashMap::new(),
         fs_value_counts: HashMap::new(),
         value_scopes: Vec::new(),
+        md_ref_keys: HashSet::new(),
     };
 
     // File node (TreeSitterExtractor.extract).
@@ -262,6 +265,8 @@ impl<'t> Walker<'t> {
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
     }
+
+    impl_md_path_refs!();
     fn inside_class_like(&self) -> bool {
         self.stack
             .last()
@@ -490,6 +495,7 @@ impl<'t> Walker<'t> {
         let mut skip_children = false;
 
         self.maybe_capture_fn_refs(node);
+        self.extract_md_path_refs_from_string_node(node, None);
 
         if kind == "class_declaration" {
             self.extract_class(node);
@@ -543,6 +549,7 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
+        self.extract_md_path_refs_from_string_node(node, None);
 
         if kind == "method_invocation" {
             self.extract_call(node);
