@@ -88,9 +88,17 @@ exports nothing. The rest include calls landing on nested functions the call sit
 and one self-edge.
 
 That class is larger than the fork's share of it: **157** cross-file `imports` rows land on that
-one variable, and the fork removes 60, leaving 97. The fix is not in any of these six changes —
-a non-exported top-level binding should not be a cross-file candidate at all, which is
-[#1719](https://github.com/colbymchenry/codegraph/issues/1719).
+one variable, and the fork removes 60, leaving 97. The fork's 60 are a side effect, not a fix —
+see the last paragraph of the next section. The defect is
+[#1719](https://github.com/colbymchenry/codegraph/issues/1719), and the fix for it is
+[#1720](https://github.com/colbymchenry/codegraph/pull/1720), which is not in this fork: a
+JS/TS file holding an `import` and no export of any form offers nothing to any other file, so
+none of its bindings is a cross-file name-match candidate. `test-stacktrace.js` is such a file,
+and the guard removes all 157 by design. Measured against the same merge base and corpus it
+removes **320** rows in total — verified one by one against the corpus source, all 320 landing on
+a file that exports nothing — while **adding 18**, which is the same dilution mechanism running
+in reverse: dropping a candidate leaves exactly one survivor where the reference was previously
+ambiguous and declined.
 
 ### Which change removes what
 
