@@ -130,8 +130,11 @@ cost rising between `v1.6.0` and `main`, which is upstream's change, not this fo
 <sub>Method: arms interleaved forward (A,B,C) and reversed (C,B,A) over six rounds, since whichever
 arm runs first pays the cold cache. Spreads: A 2,531–2,584 ms, B 2,739–3,004 ms, C 2,885–3,107 ms.
 The edge-set delta keys edges by symbol, file and kind rather than by row id, which is not stable
-across indexes, and counts edge <i>rows</i> — the same key can appear more than once, so a
-distinct-key count reads lower (79) and is not the figure quoted here.</sub>
+across indexes, and counts edge <i>rows</i>. Deduplicating on that key would <i>under</i>-count:
+`edges` also carries <code>line</code> and <code>col</code>, and one source line can hold two
+genuine references at different columns — <code>import corsMiddleware from 'cors'</code> emits an
+edge for the specifier and one for the binding it introduces. Keyed on all of source, target,
+kind, line and col, distinct equals rows exactly, so the row counts here are the edge counts.</sub>
 
 ---
 
