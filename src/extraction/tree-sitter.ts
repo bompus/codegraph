@@ -2049,8 +2049,18 @@ export class TreeSitterExtractor {
     // and the initializer VALUE, which the generic finder below would
     // wrongly pick — so fields use the type field only (#808). Other
     // languages (C# property_declaration) keep the generic scan.
+    //
+    // A `property_signature` (an interface member, #1638) carries a `type`
+    // field and no value, so it reads the type field too. It cannot take the
+    // generic scan: that scan's exclusion list covers `identifier` but not the
+    // `property_identifier` an interface member is named with, so it stops on
+    // the name and `interface Stats { counts: Record<string, number> }` yields
+    // `signature: "counts counts"` instead of the type. Named explicitly
+    // rather than folded into the field test so no other language's
+    // `property_declaration` moves off the generic scan.
     const isTsJsField =
-      node.type === 'public_field_definition' || node.type === 'field_definition';
+      node.type === 'public_field_definition' || node.type === 'field_definition'
+      || node.type === 'property_signature';
     const typeNode = isTsJsField
       ? getChildByField(node, 'type')
       : node.namedChildren.find(
