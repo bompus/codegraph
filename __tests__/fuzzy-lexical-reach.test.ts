@@ -141,4 +141,18 @@ describe('fuzzy reachability rejects a unique guess but never manufactures one',
   it('resolves a lone reachable method as before', () => {
     expect(matchFuzzy(callFrom('vite.config.js', 3), contextWith([method]))?.targetNodeId).toBe('m:resolve');
   });
+
+  it('rejects a sole sealed-module candidate across files but allows its own file', () => {
+    const context = contextWith([method]);
+    context.readFile = () => "import './setup';\nclass PluginContainer { resolve() {} }";
+    expect(matchFuzzy(callFrom('vite.config.js', 3), context)).toBeNull();
+    expect(matchFuzzy(callFrom('pluginContainer.ts', 20), context)?.targetNodeId).toBe('m:resolve');
+  });
+
+  it('keeps a sealed candidate in the ambiguity count alongside a reachable method', () => {
+    const sealed = node({ id: 'f:sealed', kind: 'function', name: 'resolve', filePath: 'sealed.ts' });
+    const context = contextWith([sealed, method]);
+    context.readFile = (file) => file === 'sealed.ts' ? "import './setup';\nfunction resolve() {}" : null;
+    expect(matchFuzzy(callFrom('vite.config.js', 3), context)).toBeNull();
+  });
 });
