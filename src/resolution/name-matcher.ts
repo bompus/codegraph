@@ -4,6 +4,7 @@
  * Handles symbol name matching for reference resolution.
  */
 
+import { builtinModules } from 'module';
 import { Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
 import { resolveWorkspaceImport } from './workspace-packages';
@@ -509,6 +510,9 @@ function isLexicallyReachable(
   );
 }
 
+const NODE_BUILTIN_SPECIFIERS = new Set(builtinModules);
+const ROOT_IMPORT_PATHS = new WeakMap<ResolutionContext, Map<string, boolean>>();
+
 /**
  * Whether the call site's own name is bound by an import of a BARE specifier —
  * a Node builtin or an npm package. Such a binding names a symbol that is not
@@ -530,7 +534,7 @@ function isLexicallyReachable(
  * project's own modules are imported by absolute name too, and the same test
  * would reject the internal case along with the external one.
  */
-function isBoundToBareImport(ref: UnresolvedRef, context: ResolutionContext): boolean {
+export function isBoundToBareImport(ref: UnresolvedRef, context: ResolutionContext): boolean {
   if (
     ref.language !== 'typescript' &&
     ref.language !== 'javascript' &&
@@ -540,9 +544,11 @@ function isBoundToBareImport(ref: UnresolvedRef, context: ResolutionContext): bo
   ) {
     return false;
   }
+  // Optional-called: a minimal context (tests, embedders) may not carry
+  // import mappings, and without them nothing is known to be bare.
   const source = context
-    .getImportMappings(ref.filePath, ref.language)
-    .find((i) => i.localName === ref.referenceName)?.source;
+    .getImportMappings?.(ref.filePath, ref.language)
+    ?.find((i) => i.localName === ref.referenceName)?.source;
   if (source === undefined) return false;
   if (source.startsWith('.') || source.startsWith('/')) return false;
   // `~`, `#` and `$` cannot begin an npm package name, so the prefix alone
@@ -557,7 +563,36 @@ function isBoundToBareImport(ref: UnresolvedRef, context: ResolutionContext): bo
   if (aliases?.patterns.some((p) => source.startsWith(p.prefix))) return false;
   const workspaces = context.getWorkspacePackages?.();
   if (workspaces && resolveWorkspaceImport(source, workspaces)) return false;
+  // A `link:` / `file:` dependency is a directory in the project that no
+  // workspace glob need cover, so the workspace map above cannot see it:
+  // vitest imports `@vitest/bundled-lib` from `test/browser/bundled-lib`,
+  // which its `test/*` globs stop short of. The name is local even though it
+  // is spelled exactly like a scoped registry package.
+  if (workspaces?.localLinkNames?.has(packageNameOf(source))) return false;
+  // A nested tsconfig may define baseUrl while the project-root alias map
+  // knows nothing about it. A root path such as lib/utils is still local.
+  // Builtins keep their meaning even when a same-named directory exists.
+  if (!source.startsWith('node:') && !NODE_BUILTIN_SPECIFIERS.has(source)) {
+    const head = packageNameOf(source);
+    let memo = ROOT_IMPORT_PATHS.get(context);
+    if (!memo) { memo = new Map(); ROOT_IMPORT_PATHS.set(context, memo); }
+    let local = memo.get(head);
+    if (local === undefined) {
+      local = context.fileExists(head);
+      memo.set(head, local);
+    }
+    if (local) return false;
+  }
   return true;
+}
+
+/**
+ * The package a specifier names, without its subpath: `@scope/pkg/sub` →
+ * `@scope/pkg`, `pkg/sub` → `pkg`. Scoped names keep two segments.
+ */
+function packageNameOf(source: string): string {
+  const parts = source.split('/');
+  return source.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]!;
 }
 
 /**
@@ -576,10 +611,21 @@ export function matchByExactName(
   // unresolved import refs each scored K same-named import candidates through
   // findBestMatch — O(K²) per package, the dominant cost of "Resolving refs" on
   // large import-heavy (front-end + back-end) repos (#915).
-  const candidates = applyLanguageGate(context.getNodesByName(ref.referenceName), ref)
+  let candidates = applyLanguageGate(context.getNodesByName(ref.referenceName), ref)
     .filter((n) => n.kind !== 'import')
     // Nested locals are only reachable from inside their container (#1230).
     .filter((n) => isLexicallyReachable(n, ref, context));
+
+  // A name bound to a bare import (`import { test } from 'vitest'`) has its
+  // target outside the graph: no other file's `test` is it, however unique.
+  // A same-file definition stays eligible — a local declaration shadows the
+  // file-level import, and that is what the reference then means.
+  if (
+    candidates.some((n) => n.filePath !== ref.filePath) &&
+    isBoundToBareImport(ref, context)
+  ) {
+    candidates = candidates.filter((n) => n.filePath === ref.filePath);
+  }
 
   if (candidates.length === 0) {
     return null;
@@ -1471,6 +1517,7 @@ function getInferScanStates(context: ResolutionContext): Map<string, InferScanSt
 /** Drop the per-context scan states (see ReferenceResolver.clearCaches). */
 export function clearNameMatcherMemos(context: ResolutionContext): void {
   INFER_SCAN_STATES.delete(context);
+  ROOT_IMPORT_PATHS.delete(context);
 }
 
 function memoPatterns(key: string, build: () => RegExp[]): RegExp[] {
