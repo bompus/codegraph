@@ -47,6 +47,65 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 </div>
 
+---
+
+# Experimental fork — measured against the release
+
+> This section exists only on `fork/consolidated`. It is a progress board for six
+> changes proposed upstream, not a claim about the released product.
+
+Three arms, each with the Rust kernel rebuilt from **its own** source, every arm indexing
+[vitejs/vite](https://github.com/vitejs/vite) at `8492422` (1,608–1,692 files). Every command ran
+under the same interpreter so on-access virus scanning could not confound the timings.
+
+| | A · `v1.6.0` | B · `main` | C · **fork** | A→C |
+| --- | ---: | ---: | ---: | --- |
+| **Test failures (Windows)** | 23 | 23 | **0** | **−23** |
+| Tests passing | 3,174 | 4,171 | 4,228 | +1,054 |
+| Files indexed | 1,608 | 1,608 | 1,692 | +84 |
+| Markdown files indexed | 0 | 0 | **84** | new |
+| Markdown sections indexed | 0 | 0 | **1,983** | new |
+| Nodes | 9,353 | 9,354 | 12,484 | +3,131 |
+| Edges | 27,742 | 27,778 | 31,125 | +3,383 |
+| Heuristic edges **in code** | 36 | 36 | 36 | **0** |
+| Index time, median of 6 | 2,561 ms | 2,784 ms | 2,924 ms | +14% |
+| Index time **per file** | 1.592 ms | 1.731 ms | **1.728 ms** | +8.5% |
+| Database size | 33.83 MB | 33.89 MB | 38.88 MB | +14.9% |
+
+### Edge-set delta, joined back to symbol names
+
+| Hop | LOST | GAINED (code) | GAINED (markdown) |
+| --- | ---: | ---: | ---: |
+| `v1.6.0` → `main` — upstream's work | 2 | 38 | 0 |
+| **`main` → fork — these six changes** | **93** | **0** | **3,440** |
+
+On code, the fork is purely subtractive: it removes 93 wrong edges and adds none. The 93 are
+71 `imports` and 22 `calls`; 60 of them are a single class, `import … from 'vite'` — the npm
+package — resolving onto a project file that happens to be named `vite`. The rest include calls
+landing on nested functions the call site cannot reach, and one self-edge.
+
+### Three numbers that need reading carefully
+
+**Heuristic edges go 36 → 3,082 in total.** That is not a precision regression. Code-side
+heuristic edges are *exactly 36 in all three arms*; the entire increase is markdown `contains`
+edges from the new doc tier.
+
+**Unresolved references rise by 635.** Largely intended. The resolution fixes *decline*
+references they previously guessed at, so a removed guess is counted here as a cost.
+
+**Wall-clock indexing is 14% slower, but per file it is not.** The fork costs 1.728 ms/file
+against main's 1.731 ms — indistinguishable. The extra 363 ms is the 84 additional markdown
+files it indexes. The per-file cost rose between `v1.6.0` and `main`, which is upstream's change,
+not this fork's.
+
+<sub>Method: arms interleaved forward (A,B,C) and reversed (C,B,A) over six rounds, since whichever
+arm runs first pays the cold cache. Spreads: A 2,531–2,584 ms, B 2,739–3,004 ms, C 2,885–3,107 ms.
+The edge-set delta keys edges by symbol, file and kind rather than by row id, which is not stable
+across indexes. The 93 removals span all six changes and are <b>not</b> attributed to any single
+one — separating them needs a per-change arm.</sub>
+
+---
+
 ## Contents
 
 - [Get Started](#get-started)
