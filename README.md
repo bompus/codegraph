@@ -82,9 +82,15 @@ under the same interpreter so on-access virus scanning could not confound the ti
 | **`main` → fork — these six changes** | **93** | **0** | **3,440** |
 
 On code, the fork is purely subtractive: it removes 93 wrong edges and adds none. The 93 are
-71 `imports` and 22 `calls`; 60 of them are a single class, `import … from 'vite'` — the npm
-package — resolving onto a project file that happens to be named `vite`. The rest include calls
-landing on nested functions the call site cannot reach, and one self-edge.
+71 `imports` and 22 `calls`; 60 of them are `import … from 'vite'` resolving onto
+`playground/ssr-html/test-stacktrace.js::vite`, which is a `const` at module scope in a file that
+exports nothing. The rest include calls landing on nested functions the call site cannot reach,
+and one self-edge.
+
+That class is larger than the fork's share of it: **157** cross-file `imports` rows land on that
+one variable, and the fork removes 60, leaving 97. The fix is not in any of these six changes —
+a non-exported top-level binding should not be a cross-file candidate at all, which is
+[#1719](https://github.com/colbymchenry/codegraph/issues/1719).
 
 ### Which change removes what
 
@@ -93,7 +99,7 @@ assumption. Counts are edge rows removed against `main`:
 
 | Change | Removed | What it catches |
 | --- | ---: | --- |
-| markdown index | **71** | incl. all 60 bare-`vite` imports |
+| markdown index | **71** | incl. 60 of the 157 bare-`vite` imports |
 | fuzzy reachability | 12 | calls landing on unreachable nested functions |
 | host-global receiver chains | 12 | `chrome.…`/`document.…` chains matching unrelated names |
 | bare-import binding | 4 | a name bound to an external specifier |
