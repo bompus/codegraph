@@ -56,8 +56,9 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 corrections measured below. #1721 remains separate design work.
 
 Measured **2026-09-06** against [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
-“Integrated” is `9b75b69`, before these corrections; “corrected” is this
-revision's resolver. [Current measurements and six-import follow-up audit](docs/benchmarks/framework-import-correction-2026-09-06.json)
+“Integrated” is `9b75b69`, before these corrections; “corrected” is the resolver
+committed in `1c4432f`. The later `7eb7656` changes tests only; JavaScript and
+Rust production sources are unchanged. [Current measurements and six-import follow-up audit](docs/benchmarks/framework-import-correction-2026-09-06.json)
 record the exact baseline, working-tree source, all timing samples, and tests.
 The [earlier resolver correction audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
 records the first 319 removals before the framework correction.
@@ -92,10 +93,19 @@ demonstrated speed change; its separate timings remain in the original data.
 
 The integrated test column preserves its original full-suite run: one temporary
 directory `EPERM` in `mcp-daemon.test.ts`, followed by an isolated **10/10** rerun.
-The corrected revision's fresh full suite passes **4,284 tests**, with **44 skipped**
+The measured corrected revision's full suite passed **4,284 tests**, with **44 skipped**
 and the native kernel required. A forced-WASM run passes **267 focused tests**;
 TypeScript compilation passes. Existing Windows fixes, including #1717, remain
 included. A passing later run does not erase the original cleanup failure.
+
+The subsequent browser-suppression test improvement in `7eb7656` passes
+**53 focused tests**, with **3 skipped**. It replaces an ineffective one-second
+marker wait for `CODEGRAPH_BROWSER=none` with suppression-message assertions
+and direct no-spawn coverage for Windows, macOS, and Linux platform arguments.
+The meaningful 1.5-second `--no-open` observation remains. An intentional
+suppression regression makes the new assertion fail. The full suite and index
+benchmark were not rerun after this test-only change; the table retains the
+actual measured results rather than an inferred new test total.
 
 ### Resolver corrections and remaining limits
 
@@ -123,14 +133,32 @@ The CommonJS source check remains conservative; this is not a complete export
 analysis. Unchanged heuristic-edge totals do not establish correctness: these
 incorrect imports and calls have null provenance.
 
-A duplicate check across all authors found the wrong-call symptoms already in
+A duplicate check across all authors initially found the wrong-call symptoms in
 [open PR #1720](https://github.com/colbymchenry/codegraph/pull/1720), including an
 [independent reproduction](https://github.com/colbymchenry/codegraph/pull/1720#issuecomment-5559317505).
-No exact existing open fix was found for the combined regression.
+At that time, no exact existing open fix was found for the combined regression.
 [#1662](https://github.com/colbymchenry/codegraph/pull/1662) and
 [#1663](https://github.com/colbymchenry/codegraph/pull/1663) overlap without covering
 the full set; [#1721](https://github.com/colbymchenry/codegraph/issues/1721) concerns
 the broader export-status design. No duplicate report was created.
+
+As of **2026-09-06**, the follow-ups are published to the existing upstream PRs:
+
+- [#1720 at `8ec7374`](https://github.com/colbymchenry/codegraph/pull/1720)
+  contains the resolver corrections with upstream regression coverage.
+  Build and 32 focused tests pass under both native and forced-WASM execution.
+  Its standalone full run recorded 4,181 passed, 24 Windows cleanup failures,
+  and 44 skipped; 23 failures matched the upstream baseline, and the additional
+  daemon cleanup failure passed an isolated 10/10 rerun. That branch does not
+  include the consolidated fork's Windows fixes.
+- [#1717 at `2d15c97`](https://github.com/colbymchenry/codegraph/pull/1717)
+  contains the Windows teardown fixes and the browser-suppression test follow-up
+  also present locally as `7eb7656`. Its updated build and forced-WASM focused
+  suites pass: 53 passed, 3 skipped. No new full-suite run was made for that
+  test-only follow-up.
+
+Both PRs are open, conflict-free, and awaiting approving review as of that check.
+Fork-specific README measurements are kept out of those upstream patches.
 
 ### Measurement method
 
