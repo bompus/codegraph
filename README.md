@@ -51,96 +51,97 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 # Experimental fork — current benchmark
 
-`fork/consolidated` at `9b75b69` includes #1695, #1697, #1699, #1702,
-#1706, #1710, #1713 (through #1715), #1715, #1717, #1718, and #1720.
-These are proposed upstream changes; #1721 remains separate design work.
+`fork/consolidated` includes #1695, #1697, #1699, #1702, #1706, #1710,
+#1713 (through #1715), #1715, #1717, #1718, and #1720, plus the resolver
+corrections measured below. #1721 remains separate design work.
 
 Measured **2026-09-06** against [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
-[Raw timings, counts, test results, and precision findings](docs/benchmarks/fork-integration-2026-09-06.json)
-identify every source revision. “Before” is the previous consolidated fork;
-“integrated” includes the six additional PRs merged into it.
+“Integrated” is `9b75b69`, before these corrections; “corrected” is this
+revision's resolver. [Raw correction measurements and edge audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
+record the exact baseline, working-tree source, all timing samples, and tests.
+The [original four-arm benchmark](docs/benchmarks/fork-integration-2026-09-06.json)
+preserves the release, upstream, previous-fork, and integrated results.
 
-| Metric | Release `v1.6.0` | Upstream `b9ca4b7` | Before `c5468f2` | Integrated `9b75b69` |
-| --- | ---: | ---: | ---: | ---: |
-| Tests passing | 3,174 | 4,173 | 4,230 | 4,275 |
-| Test failures (Windows) | 25 | 23 | 0 | 1 |
-| Tests skipped | 40 | 44 | 44 | 44 |
-| Files indexed (CLI count) | 1,635 | 1,635 | 1,719 | 1,719 |
-| File nodes | 1,608 | 1,608 | 1,692 | 1,692 |
-| Markdown file nodes | 0 | 0 | 84 | 84 |
-| Markdown sections | 0 | 0 | 1,983 | 1,983 |
-| Nodes | 9,353 | 9,354 | 12,484 | 12,484 |
-| Edges | 27,742 | 27,778 | 31,125 | 28,534 |
-| Heuristic edges, total | 36 | 36 | 3,082 | 3,082 |
-| Heuristic edges, code only | 36 | 36 | 36 | 36 |
-| Unresolved references | 24,872 | 24,920 | 25,507 | 28,120 |
-| Full reindex wall time, median of 8 | 3,190 ms | 3,513 ms | 3,760 ms | 3,752 ms |
-| Wall-time range | 3,144–3,345 ms | 3,454–3,784 ms | 3,677–3,956 ms | 3,700–4,023 ms |
-| Wall ms / indexed file | 1.951 | 2.149 | 2.187 | 2.183 |
-| Main database file, decimal MB | 33.83 | 33.89 | 38.88 | 38.06 |
+| Metric | Integrated `9b75b69` | Corrected |
+| --- | ---: | ---: |
+| Tests passing | 4,275 | 4,283 |
+| Test failures (Windows) | 1 | 0 |
+| Tests skipped | 44 | 44 |
+| Files indexed (CLI count) | 1,719 | 1,719 |
+| File nodes | 1,692 | 1,692 |
+| Markdown file nodes / sections | 84 / 1,983 | 84 / 1,983 |
+| Nodes | 12,484 | 12,484 |
+| Edges | 28,534 | 28,215 |
+| Heuristic edges, total / code only | 3,082 / 36 | 3,082 / 36 |
+| Unresolved references | 28,120 | 28,439 |
+| Code-to-Markdown imports | 304 | 6 |
+| Targeted imports into `cli.md#vite` | 157 | 0 |
+| Targeted wrong call sites | 11 | 0 |
+| Verified restored imports retained | 2 | 2 |
+| Full reindex wall time, median of 8 | 3,721 ms | 3,802 ms |
+| Wall-time range | 3,698–3,772 ms | 3,673–3,959 ms |
+| Wall ms / indexed file | 2.165 | 2.212 |
+| Main database file, decimal MB | 38.06 | 38.00 |
 
-**No indexing speed change is demonstrated by the integration.** The median changes
-from 3,759.76 ms to 3,752.41 ms (−0.2%), within overlapping run ranges.
-The direction changes between the forward and reversed halves. Both fork arms
-index the same 1,719 files and produce the same 12,484 nodes. The database file
-shrinks by 0.82 MB; unresolved references increase by 2,613.
+The correction's measured median is **80.28 ms slower (+2.2%)**, with overlapping
+run ranges. No speedup is claimed. Both arms produce stable graph counts across
+all eight runs. The earlier integration-only experiment also showed no
+demonstrated speed change; its separate timings remain in the original data.
 
-The integrated full-suite run had one `EPERM` during temporary-directory deletion
-in `mcp-daemon.test.ts` (“concurrent launchers converge on a single daemon”).
-An isolated rerun of that file passed all **10 tests**. The table retains the
-original full-run failure; a retry does not turn that run into zero failures.
-The existing Windows fixes, including #1717, are present in both fork arms.
+The integrated test column preserves its original full-suite run: one temporary
+directory `EPERM` in `mcp-daemon.test.ts`, followed by an isolated **10/10** rerun.
+The corrected revision's fresh full suite passes **4,283 tests**, with **44 skipped**
+and the native kernel required. A forced-WASM run passes **243 focused tests**;
+TypeScript compilation passes. Existing Windows fixes, including #1717, remain
+included. A passing later run does not erase the original cleanup failure.
 
-### Graph changes and the remaining accuracy problem
+### Resolver corrections and remaining limits
 
-| Comparison | Removed code edges | Removed edges touching Markdown | Added code edges | Added edges touching Markdown |
-| --- | ---: | ---: | ---: | ---: |
-| Release → upstream | 2 | 0 | 38 | 0 |
-| Upstream → integrated | 2,825 | 0 | 13 | 3,568 |
-| Before → integrated | 2,732 | 29 | 13 | 157 |
+The corrected graph removes **319 invalid edges and adds none**:
 
-**The integration introduces incorrect code-to-documentation imports.**
-All 157 added edges touching Markdown are `imports` into the heading
-`docs/guide/cli.md#vite`. For example,
-`packages/create-vite/template-preact-ts/vite.config.ts:2` imports from the
-`vite` package, but its package-level edge now points to that heading.
-Of these sites, 97 previously targeted the unexported
-`playground/ssr-html/test-stacktrace.js::vite` variable and 60 were unresolved.
-The old-variable count reaches zero by retargeting those 97 edges, not by
-resolving their references correctly. Across all targets, code-to-Markdown
-`imports` rise from **169 to 304** (147 retained, 22 removed, 157 added).
+- **298 imports into Markdown**, including all 157 newly introduced `vite`
+  package imports into `docs/guide/cli.md#vite`.
+- **21 wrong calls**: 18 into unrelated code symbols and three into documentation.
+  All 11 targeted call sites disappear without acquiring replacement targets.
+- Both valid restored imports survive: emitted `./hello.js` reaches `hello.ts`,
+  and the local `file:` dependency reaches its exported `msg`.
 
-The 13 added code edges include **two verified restored imports**: the emitted
-`./hello.js` specifier reaching `hello.ts`, and a `file:` dependency reaching
-its exported `msg`. The other **11 calls remain wrong and change targets**:
-five `MessagePort.start()` calls, four `run()` calls, one
-`path.posix.dirname()`, and one browser-frame `.content()`.
+Name matching rejects documentation targets and JSON data used as call targets.
+Module visibility ignores ESM export examples in strings/comments, preserves real
+exports and CommonJS behavior, and checks a call's chosen target before accepting
+it. Rejecting a private helper cannot promote an unrelated runner-up.
 
-These totals count changed edge rows, not proven accuracy improvements.
-The 157 new documentation imports have null provenance, so the unchanged
-heuristic-edge count does not detect this regression. The current tests also
-do not establish correctness for these corpus cases.
+**Six older code-to-Markdown imports remain**, targeting `cors` and
+`host-validation-middleware` headings in `packages/vite/LICENSE.md`.
+They are recorded in the raw audit and remain outside this correction.
+The CommonJS source check remains conservative; this is not a complete export
+analysis. Unchanged heuristic-edge totals do not establish correctness: these
+incorrect imports and calls have null provenance.
+
+A duplicate check across all authors found the wrong-call symptoms already in
+[open PR #1720](https://github.com/colbymchenry/codegraph/pull/1720), including an
+[independent reproduction](https://github.com/colbymchenry/codegraph/pull/1720#issuecomment-5559317505).
+No exact existing open fix was found for the combined regression.
+[#1662](https://github.com/colbymchenry/codegraph/pull/1662) and
+[#1663](https://github.com/colbymchenry/codegraph/pull/1663) overlap without covering
+the full set; [#1721](https://github.com/colbymchenry/codegraph/issues/1721) concerns
+the broader export-status design. No duplicate report was created.
 
 ### Measurement method
 
 - Windows x64, Node **24.16.0**, `--liftoff-only`, telemetry disabled.
-  Each arm has its own checked-out source, lockfile-installed dependencies,
-  compiled JavaScript, and native kernel rebuilt and staged from that source.
-  Native loading was verified for each arm; per-file WASM fallback remains enabled.
-- Eight runs per arm: four rotating forward orders and four reversed orders.
-  Each arm occupies each order position twice. Builds and tests run outside
-  the timed experiment.
+  Both arms use their compiled JavaScript and staged native kernel; native
+  loading is verified, with per-file WASM fallback enabled. The corrections
+  change JavaScript resolution; the Rust source is unchanged.
+- Eight paired rounds, alternating order and reversing the second half.
+  Each arm runs first four times. Builds and tests run outside timing.
 - Each sample starts with a fresh index directory and an **untimed `init`**,
-  which already indexes the corpus. The measured `index` command performs a
-  full reindex with warm filesystem caches. Its wall time includes process
-  startup and shutdown; it is not a cold-index or internal-parser timing.
-- The CLI reports 1,635/1,719 indexed files; file-kind nodes number
-  1,608/1,692. Normalized time uses the CLI count. Graph counts and database
-  file sizes were identical across all eight runs of each arm.
-- Edge identity uses source/target paths, qualified names, node kinds, edge
-  kind, line, and column. Multiplicities are retained, including 185 duplicate
-  comparison keys per arm. An edge “touching Markdown” has a Markdown endpoint;
-  that classification does not imply a valid documentation relationship.
+  which already indexes and warms the corpus. Timed `index` performs a full
+  reindex; wall time includes process startup/shutdown, not just parsing.
+- Normalized time uses the CLI's **1,719 indexed files**, not the 1,692 file nodes.
+  Database size measures the main database file only.
+- Edge identity includes source/target paths, qualified names, node kinds, edge
+  kind, line, and column. Duplicate multiplicities are retained.
 
 ---
 

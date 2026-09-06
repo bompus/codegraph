@@ -5568,6 +5568,107 @@ in
   });
 
   describe('Bindings in a module that exports nothing (#1719)', () => {
+    it('does not treat documentation headings as package imports', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+      fs.mkdirSync(path.join(tempDir, 'packages/vite'), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, 'packages/vite/package.json'), JSON.stringify({ name: 'vite', main: './index.js' }));
+      fs.writeFileSync(path.join(tempDir, 'packages/vite/index.js'), 'export function defineConfig(x) { return x }');
+      fs.writeFileSync(path.join(tempDir, 'guide.md'), '# vite\n');
+      fs.writeFileSync(path.join(tempDir, 'consumer.js'), "import { defineConfig } from 'vite'\nexport const config = defineConfig({})\n");
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const heading = cg.getNodesByKind('module').find((n) => n.language === 'markdown');
+      expect(heading).toBeDefined();
+      expect(cg.getIncomingEdges(heading!.id).filter((e) => e.kind === 'imports')).toEqual([]);
+      const definition = cg.getNodesByKind('function').find((n) => n.name === 'defineConfig');
+      expect(cg.getIncomingEdges(definition!.id).some((e) => e.kind === 'imports')).toBe(true);
+    });
+
+    it('ignores export examples in strings and comments when checking module visibility', async () => {
+      fs.mkdirSync(path.join(tempDir, 'src'));
+      fs.writeFileSync(path.join(tempDir, 'src/private.js'), [
+        "import fs from 'node:fs'",
+        'const example = `',
+        'export const example = 1',
+        '`',
+        '/*',
+        'export { hidden }',
+        '*/',
+        'function hidden() { return fs }',
+        'hidden()',
+      ].join('\n'));
+      fs.writeFileSync(path.join(tempDir, 'src/consumer.js'), 'hidden()');
+      fs.mkdirSync(path.join(tempDir, 'legacy'));
+      fs.writeFileSync(path.join(tempDir, 'legacy/global.js'), 'function hidden() { return 1 }');
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const hidden = cg.getNodesByKind('function').find((n) => n.name === 'hidden' && n.filePath === 'src/private.js');
+      expect(hidden).toBeDefined();
+      const callers = cg.getIncomingEdges(hidden!.id).filter((e) => e.kind === 'calls');
+      expect(callers.some((e) => cg.getNode(e.source)?.filePath === 'src/consumer.js')).toBe(false);
+      expect(callers.some((e) => cg.getNode(e.source)?.filePath === 'src/private.js')).toBe(true);
+      const consumer = cg.getNodesByKind('file').find((n) => n.filePath === 'src/consumer.js');
+      expect(cg.getOutgoingEdges(consumer!.id).filter((e) => e.kind === 'calls')).toEqual([]);
+    });
+
+    it('does not name-match a method call to another file\'s JSON value', async () => {
+      fs.writeFileSync(path.join(tempDir, 'data.json'), '{"content": "hello"}');
+      fs.writeFileSync(path.join(tempDir, 'data.js'), "const content = require('./data.json')\nmodule.exports = { content }\n");
+      fs.writeFileSync(path.join(tempDir, 'consumer.js'), 'export async function read(page) { return page.frame("main").content() }');
+      fs.writeFileSync(path.join(tempDir, 'use-data.js'), "import { content } from './data'\nconsole.log(content)\n");
+      fs.writeFileSync(path.join(tempDir, 'callback.js'), "const callback = require('./handler.js')\nmodule.exports = { callback }\n");
+      fs.writeFileSync(path.join(tempDir, 'call.js'), 'callback()');
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const content = cg.getNodesByKind('constant').find((n) => n.name === 'content');
+      expect(content).toBeDefined();
+      expect(cg.getIncomingEdges(content!.id).filter((e) => e.kind === 'calls')).toEqual([]);
+      expect(cg.getIncomingEdges(content!.id).some((e) => e.kind === 'imports')).toBe(true);
+      const callback = cg.getNodesByKind('constant').find((n) => n.name === 'callback');
+      expect(callback).toBeDefined();
+      expect(cg.getIncomingEdges(callback!.id).some((e) => e.kind === 'calls')).toBe(true);
+    });
+
+    it('keeps a local file dependency import when a closer private name collides', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ dependencies: { 'local-dep': 'file:./dep' } }));
+      fs.mkdirSync(path.join(tempDir, 'dep'));
+      fs.mkdirSync(path.join(tempDir, 'src'));
+      fs.writeFileSync(path.join(tempDir, 'dep/package.json'), JSON.stringify({ name: 'local-dep', main: 'index.js' }));
+      fs.writeFileSync(path.join(tempDir, 'dep/index.js'), "export const msg = 'local'\n");
+      fs.writeFileSync(path.join(tempDir, 'src/private.js'), "import fs from 'node:fs'\nconst msg = 'private'\n");
+      fs.writeFileSync(path.join(tempDir, 'src/consumer.js'), "import { msg } from 'local-dep'\nconsole.log(msg)\n");
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const msg = cg.getNodesByKind('constant').find((n) => n.name === 'msg' && n.filePath === 'dep/index.js');
+      expect(msg).toBeDefined();
+      expect(cg.getIncomingEdges(msg!.id).some((e) => e.kind === 'imports')).toBe(true);
+    });
+
+    it('preserves executable CommonJS exports inside nested template interpolations', async () => {
+      fs.writeFileSync(path.join(tempDir, 'cjs.js'), [
+        "import fs from 'node:fs'",
+        'function helper() { return fs }',
+        'const text = `outer ${`inner ${module.exports = { helper }}`}`',
+      ].join('\n'));
+      fs.writeFileSync(path.join(tempDir, 'consumer.js'), 'helper()');
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const helper = cg.getNodesByKind('function').find((n) => n.name === 'helper');
+      expect(helper).toBeDefined();
+      expect(cg.getIncomingEdges(helper!.id).some((e) =>
+        e.kind === 'calls' && cg.getNode(e.source)?.filePath === 'consumer.js')).toBe(true);
+    });
+
+    it.each(['export function visible() { return fs }', 'function visible() { return fs }\nexport { visible }'])('preserves real exports after a regex containing a backtick: %s', async (declaration) => {
+      fs.writeFileSync(path.join(tempDir, 'exported.js'), "import fs from 'node:fs'\nconst re = /`/\nif (fs) /`/.test('text')\nelse /`/.test('other')\nconst make = () => /`/\n" + declaration + '\n');
+      fs.writeFileSync(path.join(tempDir, 'consumer.js'), 'visible()');
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+      const visible = cg.getNodesByKind('function').find((n) => n.name === 'visible');
+      expect(visible).toBeDefined();
+      expect(cg.getIncomingEdges(visible!.id).some((e) => e.kind === 'calls')).toBe(true);
+    });
+
     // On vitejs/vite, every `import { defineConfig } from 'vite'` across the
     // playground resolved onto `playground/ssr-html/test-stacktrace.js::vite`
     // — `const vite = await createServer(…)` at module scope in a file with
