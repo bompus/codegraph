@@ -1,0 +1,323 @@
+{
+  "date": "2026-09-06T20:53:18.392Z",
+  "runtime": "v24.16.0",
+  "platform": "win32-x64",
+  "corpusCommit": "8492422b8f110625a90c702f42f30784e8cf19dc",
+  "method": "Eight position-balanced rounds: four rotating forward orders and four reversed orders. Each sample deletes only the isolated corpus .codegraph directory, runs untimed init (which indexes and warms caches), then measures full index process wall time, including startup/shutdown. Native loading verified for each separately staged build; individual files may fall back to WASM. Same Node 24.16.0 with --liftoff-only and telemetry disabled, same Vite directory for every arm.",
+  "orders": [
+    [
+      "release",
+      "upstream",
+      "before",
+      "after"
+    ],
+    [
+      "upstream",
+      "before",
+      "after",
+      "release"
+    ],
+    [
+      "before",
+      "after",
+      "release",
+      "upstream"
+    ],
+    [
+      "after",
+      "release",
+      "upstream",
+      "before"
+    ],
+    [
+      "after",
+      "before",
+      "upstream",
+      "release"
+    ],
+    [
+      "release",
+      "after",
+      "before",
+      "upstream"
+    ],
+    [
+      "upstream",
+      "release",
+      "after",
+      "before"
+    ],
+    [
+      "before",
+      "upstream",
+      "release",
+      "after"
+    ]
+  ],
+  "arms": {
+    "release": {
+      "commit": "dfccdf62547fcd76d343344d823a0e1998d3a89f",
+      "nativeLoaded": true,
+      "timesMs": [
+        3344.75,
+        3152.52,
+        3237.45,
+        3163.29,
+        3176.19,
+        3204.63,
+        3240.13,
+        3143.87
+      ],
+      "metrics": {
+        "mdFiles": 0,
+        "mdSections": 0,
+        "nodes": 9353,
+        "edges": 27742,
+        "heuristicEdges": 36,
+        "codeHeuristicEdges": 36,
+        "unresolved": 24872,
+        "bareViteTargetImports": 157,
+        "dbBytes": 33832960,
+        "fileNodes": 1608,
+        "indexedFiles": 1635
+      },
+      "medianMs": 3190.41,
+      "minMs": 3143.87,
+      "maxMs": 3344.75,
+      "wallMsPerFileNode": 1.9840858208955223,
+      "wallMsPerIndexedFile": 1.9513211009174312,
+      "forwardMedianMs": 3200.37,
+      "reverseMedianMs": 3190.41
+    },
+    "upstream": {
+      "commit": "b9ca4b7981116909900368cc1686a1074cd4d4c1",
+      "nativeLoaded": true,
+      "timesMs": [
+        3784.16,
+        3479.52,
+        3526.43,
+        3463.1,
+        3584.36,
+        3548.92,
+        3499.42,
+        3453.91
+      ],
+      "metrics": {
+        "mdFiles": 0,
+        "mdSections": 0,
+        "nodes": 9354,
+        "edges": 27778,
+        "heuristicEdges": 36,
+        "codeHeuristicEdges": 36,
+        "unresolved": 24920,
+        "bareViteTargetImports": 157,
+        "dbBytes": 33890304,
+        "fileNodes": 1608,
+        "indexedFiles": 1635
+      },
+      "medianMs": 3512.925,
+      "minMs": 3453.91,
+      "maxMs": 3784.16,
+      "wallMsPerFileNode": 2.1846548507462686,
+      "wallMsPerIndexedFile": 2.148577981651376,
+      "forwardMedianMs": 3502.975,
+      "reverseMedianMs": 3524.17
+    },
+    "before": {
+      "commit": "c5468f2b8fd02606dc47a95e6edcfafb0a76b117",
+      "nativeLoaded": true,
+      "timesMs": [
+        3895.07,
+        3676.81,
+        3759.4,
+        3679.96,
+        3760.12,
+        3705.76,
+        3947.11,
+        3956.43
+      ],
+      "metrics": {
+        "mdFiles": 84,
+        "mdSections": 1983,
+        "nodes": 12484,
+        "edges": 31125,
+        "heuristicEdges": 3082,
+        "codeHeuristicEdges": 36,
+        "unresolved": 25507,
+        "bareViteTargetImports": 97,
+        "dbBytes": 38875136,
+        "fileNodes": 1692,
+        "indexedFiles": 1719
+      },
+      "medianMs": 3759.76,
+      "minMs": 3676.81,
+      "maxMs": 3956.43,
+      "wallMsPerFileNode": 2.2220803782505913,
+      "wallMsPerIndexedFile": 2.1871785922047704,
+      "forwardMedianMs": 3719.6800000000003,
+      "reverseMedianMs": 3853.615
+    },
+    "after": {
+      "commit": "9b75b691bc8dcc9025bad7b91b364814971fbff3",
+      "nativeLoaded": true,
+      "timesMs": [
+        4023.24,
+        3770.37,
+        3759.01,
+        3714.67,
+        3745.81,
+        3743.99,
+        3964.24,
+        3699.75
+      ],
+      "metrics": {
+        "mdFiles": 84,
+        "mdSections": 1983,
+        "nodes": 12484,
+        "edges": 28534,
+        "heuristicEdges": 3082,
+        "codeHeuristicEdges": 36,
+        "unresolved": 28120,
+        "bareViteTargetImports": 0,
+        "dbBytes": 38055936,
+        "fileNodes": 1692,
+        "indexedFiles": 1719
+      },
+      "medianMs": 3752.41,
+      "minMs": 3699.75,
+      "maxMs": 4023.24,
+      "wallMsPerFileNode": 2.217736406619385,
+      "wallMsPerIndexedFile": 2.1829028504944734,
+      "forwardMedianMs": 3764.69,
+      "reverseMedianMs": 3744.8999999999996
+    }
+  },
+  "deltas": {
+    "release->upstream": {
+      "lost": {
+        "code": 2,
+        "markdown": 0,
+        "total": 2
+      },
+      "gained": {
+        "code": 38,
+        "markdown": 0,
+        "total": 38
+      }
+    },
+    "upstream->after": {
+      "lost": {
+        "code": 2825,
+        "markdown": 0,
+        "total": 2825
+      },
+      "gained": {
+        "code": 13,
+        "markdown": 3568,
+        "total": 3581
+      }
+    },
+    "before->after": {
+      "lost": {
+        "code": 2732,
+        "markdown": 29,
+        "total": 2761
+      },
+      "gained": {
+        "code": 13,
+        "markdown": 157,
+        "total": 170
+      }
+    }
+  },
+  "tests": {
+    "release": {
+      "exitCode": 1,
+      "passed": 3174,
+      "failed": 25,
+      "skipped": 40,
+      "total": 3239,
+      "failureFiles": {
+        "__tests__/arkts-resolution.test.ts": 7,
+        "__tests__/frameworks-integration.test.ts": 3,
+        "__tests__/mcp-daemon.test.ts": 1,
+        "__tests__/mcp-initialize.test.ts": 3,
+        "__tests__/mcp-roots.test.ts": 3,
+        "__tests__/mcp-subproject-adoption.test.ts": 3,
+        "__tests__/resolution.test.ts": 4,
+        "__tests__/watcher.test.ts": 1
+      }
+    },
+    "upstream": {
+      "exitCode": 1,
+      "passed": 4173,
+      "failed": 23,
+      "skipped": 44,
+      "total": 4240,
+      "failureFiles": {
+        "__tests__/arkts-resolution.test.ts": 7,
+        "__tests__/frameworks-integration.test.ts": 3,
+        "__tests__/mcp-initialize.test.ts": 3,
+        "__tests__/mcp-roots.test.ts": 3,
+        "__tests__/mcp-subproject-adoption.test.ts": 3,
+        "__tests__/resolution.test.ts": 4
+      }
+    },
+    "before": {
+      "exitCode": 0,
+      "passed": 4230,
+      "failed": 0,
+      "skipped": 44,
+      "total": 4274,
+      "failureFiles": {}
+    },
+    "after": {
+      "exitCode": 1,
+      "passed": 4275,
+      "failed": 1,
+      "skipped": 44,
+      "total": 4320,
+      "failureFiles": {
+        "__tests__/mcp-daemon.test.ts": 1
+      },
+      "failureDetail": "mcp-daemon: concurrent launchers converge on a single daemon. Test teardown failed with Windows EPERM in rmTempDir; test/cleanup files unchanged from the prior fork.",
+      "isolatedRerun": {
+        "file": "__tests__/mcp-daemon.test.ts",
+        "passed": 10,
+        "failed": 0
+      }
+    }
+  },
+  "edgeIdentity": "Multiset of source/target paths, qualified names (name fallback), node kinds, edge kind, line and column. Multiplicities retained, including 185 duplicate keys per arm.",
+  "precision": {
+    "codeToMarkdownImports": {
+      "before": 169,
+      "after": 304,
+      "retained": 147,
+      "removed": 22,
+      "gained": 157
+    },
+    "newInvalidMarkdownImports": {
+      "count": 157,
+      "target": "docs/guide/cli.md#vite",
+      "retargetedFromSealedVariable": 97,
+      "previouslyUnresolved": 60,
+      "witness": "packages/create-vite/template-preact-ts/vite.config.ts:2:0 imports from 'vite' but targets a documentation heading"
+    },
+    "gainedCodeEdges": {
+      "validRestoredImports": 2,
+      "retargetedWrongCalls": 11,
+      "validExamples": [
+        "./hello.js resolves to playground/resolve/ts-extension/hello.ts",
+        "file:./dep-including-a resolves the exported msg"
+      ],
+      "wrongCallGroups": {
+        "MessagePort.start to create-vite CLI start": 5,
+        "run to an unrelated test run": 4,
+        "path.posix.dirname to a test constant": 1,
+        "browser frame content to a JSON-import constant": 1
+      }
+    },
+    "interpretation": "Fewer edge rows and a zero old-target count do not establish improved precision. The integration retains a verified resolver regression."
+  }
+}

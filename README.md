@@ -49,126 +49,98 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ---
 
-# Experimental fork — consolidated changes
+# Experimental fork — current benchmark
 
-`fork/consolidated` includes #1695, #1697, #1699, #1702, #1706, #1710,
-#1713 (through #1715), #1715, #1717, #1718, and #1720. These are proposed
-upstream changes; #1721 remains separate design work.
+`fork/consolidated` at `9b75b69` includes #1695, #1697, #1699, #1702,
+#1706, #1710, #1713 (through #1715), #1715, #1717, #1718, and #1720.
+These are proposed upstream changes; #1721 remains separate design work.
 
-## Historical measurements — before the integration
+Measured **2026-09-06** against [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
+[Raw timings, counts, test results, and precision findings](docs/benchmarks/fork-integration-2026-09-06.json)
+identify every source revision. “Before” is the previous consolidated fork;
+“integrated” includes the six additional PRs merged into it.
 
-> Everything below, through “Three numbers that need reading carefully,” describes
-> the six-change snapshot at `c5468f2`, before #1695, #1697, #1702, #1706, #1715,
-> and #1720 were merged. The timings, edge counts, test totals, and statements about
-> which fixes were missing apply to that snapshot, not the current branch.
+| Metric | Release `v1.6.0` | Upstream `b9ca4b7` | Before `c5468f2` | Integrated `9b75b69` |
+| --- | ---: | ---: | ---: | ---: |
+| Tests passing | 3,174 | 4,173 | 4,230 | 4,275 |
+| Test failures (Windows) | 25 | 23 | 0 | 1 |
+| Tests skipped | 40 | 44 | 44 | 44 |
+| Files indexed (CLI count) | 1,635 | 1,635 | 1,719 | 1,719 |
+| File nodes | 1,608 | 1,608 | 1,692 | 1,692 |
+| Markdown file nodes | 0 | 0 | 84 | 84 |
+| Markdown sections | 0 | 0 | 1,983 | 1,983 |
+| Nodes | 9,353 | 9,354 | 12,484 | 12,484 |
+| Edges | 27,742 | 27,778 | 31,125 | 28,534 |
+| Heuristic edges, total | 36 | 36 | 3,082 | 3,082 |
+| Heuristic edges, code only | 36 | 36 | 36 | 36 |
+| Unresolved references | 24,872 | 24,920 | 25,507 | 28,120 |
+| Full reindex wall time, median of 8 | 3,190 ms | 3,513 ms | 3,760 ms | 3,752 ms |
+| Wall-time range | 3,144–3,345 ms | 3,454–3,784 ms | 3,677–3,956 ms | 3,700–4,023 ms |
+| Wall ms / indexed file | 1.951 | 2.149 | 2.187 | 2.183 |
+| Main database file, decimal MB | 33.83 | 33.89 | 38.88 | 38.06 |
 
-Three arms, each with the Rust kernel rebuilt from **its own** source, every arm indexing
-[vitejs/vite](https://github.com/vitejs/vite) at `8492422` (1,608–1,692 files). Every command ran
-under the same interpreter so on-access virus scanning could not confound the timings.
+**No indexing speed change is demonstrated by the integration.** The median changes
+from 3,759.76 ms to 3,752.41 ms (−0.2%), within overlapping run ranges.
+The direction changes between the forward and reversed halves. Both fork arms
+index the same 1,719 files and produce the same 12,484 nodes. The database file
+shrinks by 0.82 MB; unresolved references increase by 2,613.
 
-| | A · `v1.6.0` | B · `main` | C · **fork** | A→C |
-| --- | ---: | ---: | ---: | --- |
-| **Test failures (Windows)** | 23 | 23 | **0** | **−23** |
-| Tests passing | 3,174 | 4,171 | 4,228 | +1,054 |
-| Files indexed | 1,608 | 1,608 | 1,692 | +84 |
-| Markdown files indexed | 0 | 0 | **84** | new |
-| Markdown sections indexed | 0 | 0 | **1,983** | new |
-| Nodes | 9,353 | 9,354 | 12,484 | +3,131 |
-| Edges | 27,742 | 27,778 | 31,125 | +3,383 |
-| Heuristic edges, total | 36 | 36 | 3,082 | +3,046 |
-| Heuristic edges, **code only** | 36 | 36 | **36** | **0** |
-| Unresolved references | 24,872 | 24,920 | 25,507 | +635 |
-| Index time, median of 6 | 2,561 ms | 2,784 ms | 2,924 ms | +14% |
-| Index time **per file** | 1.592 ms | 1.731 ms | **1.728 ms** | +8.5% |
-| Database size | 33.83 MB | 33.89 MB | 38.88 MB | +14.9% |
+The integrated full-suite run had one `EPERM` during temporary-directory deletion
+in `mcp-daemon.test.ts` (“concurrent launchers converge on a single daemon”).
+An isolated rerun of that file passed all **10 tests**. The table retains the
+original full-run failure; a retry does not turn that run into zero failures.
+The existing Windows fixes, including #1717, are present in both fork arms.
 
-### Edge-set delta, joined back to symbol names
+### Graph changes and the remaining accuracy problem
 
-| Hop | LOST | GAINED (code) | GAINED (markdown) |
-| --- | ---: | ---: | ---: |
-| `v1.6.0` → `main` — upstream's work | 2 | 38 | 0 |
-| **`main` → fork — these six changes** | **93** | **0** | **3,440** |
+| Comparison | Removed code edges | Removed edges touching Markdown | Added code edges | Added edges touching Markdown |
+| --- | ---: | ---: | ---: | ---: |
+| Release → upstream | 2 | 0 | 38 | 0 |
+| Upstream → integrated | 2,825 | 0 | 13 | 3,568 |
+| Before → integrated | 2,732 | 29 | 13 | 157 |
 
-On code, the fork is purely subtractive: it removes 93 wrong edges and adds none. The 93 are
-71 `imports` and 22 `calls`; 60 of them are `import … from 'vite'` resolving onto
-`playground/ssr-html/test-stacktrace.js::vite`, which is a `const` at module scope in a file that
-exports nothing. The rest include calls landing on nested functions the call site cannot reach,
-and one self-edge.
+**The integration introduces incorrect code-to-documentation imports.**
+All 157 added edges touching Markdown are `imports` into the heading
+`docs/guide/cli.md#vite`. For example,
+`packages/create-vite/template-preact-ts/vite.config.ts:2` imports from the
+`vite` package, but its package-level edge now points to that heading.
+Of these sites, 97 previously targeted the unexported
+`playground/ssr-html/test-stacktrace.js::vite` variable and 60 were unresolved.
+The old-variable count reaches zero by retargeting those 97 edges, not by
+resolving their references correctly. Across all targets, code-to-Markdown
+`imports` rise from **169 to 304** (147 retained, 22 removed, 157 added).
 
-That class is larger than the fork's share of it: **157** cross-file `imports` rows land on that
-one variable, and the fork removes 60, leaving 97. The fork's 60 are a side effect, not a fix —
-see the last paragraph of the next section. The defect is
-[#1719](https://github.com/colbymchenry/codegraph/issues/1719), and the fix for it is
-[#1720](https://github.com/colbymchenry/codegraph/pull/1720), which is not in this fork: a
-JS/TS file holding an `import` and no export of any form offers nothing to any other file, so
-none of its bindings is a cross-file name-match candidate. `test-stacktrace.js` is such a file,
-and the guard removes all 157 by design. Measured against the same merge base and corpus it
-removes **320** rows in total — verified one by one against the corpus source, all 320 landing on
-a file that exports nothing — while **adding 18**, which is the same dilution mechanism running
-in reverse: dropping a candidate leaves exactly one survivor where the reference was previously
-ambiguous and declined.
+The 13 added code edges include **two verified restored imports**: the emitted
+`./hello.js` specifier reaching `hello.ts`, and a `file:` dependency reaching
+its exported `msg`. The other **11 calls remain wrong and change targets**:
+five `MessagePort.start()` calls, four `run()` calls, one
+`path.posix.dirname()`, and one browser-frame `.content()`.
 
-### Which change removes what
+These totals count changed edge rows, not proven accuracy improvements.
+The 157 new documentation imports have null provenance, so the unchanged
+heuristic-edge count does not detect this regression. The current tests also
+do not establish correctness for these corpus cases.
 
-Each change was also indexed **alone** on top of `main`, so no removal is attributed by
-assumption. Counts are edge rows removed against `main`:
+### Measurement method
 
-| Change | Removed | What it catches |
-| --- | ---: | --- |
-| markdown index | **71** | incl. 60 of the 157 bare-`vite` imports |
-| fuzzy reachability | 12 | calls landing on unreachable nested functions |
-| host-global receiver chains | 12 | `chrome.…`/`document.…` chains matching unrelated names |
-| bare-import binding | 4 | a name bound to an external specifier |
-| `~`/`#`/`$` specifier prefixes | 0 | no instance in this corpus |
-| **union** | **93** | exactly the fork's total |
-
-The single arms sum to 99 but their union is 93, because six rows are caught by more than one
-change. The union matching the fork exactly means nothing is removed that no arm explains.
-
-The bare-import row is superseded upstream. [#1715](https://github.com/colbymchenry/codegraph/pull/1715)
-moves the same guard from the fuzzy matcher into `matchByExactName`, where these references are
-actually resolved, and on the same corpus it removes **2,487** edge rows against `main` rather
-than 4 — every one of them attributable to a bare npm or node-builtin import, with none added.
-This fork still carries the narrower change; the table describes what is in it, not what is best
-available.
-
-The surprise is the first row. The 60 bare-`vite` imports are removed by the **markdown index**,
-not by either resolution guard, and they never reach the fuzzy matcher at all. They resolved by
-`exact-match`: `matchByExactName` returns immediately when exactly one candidate survives its
-filters, and at the merge base 159 nodes are named `vite` with exactly one surviving. Indexing
-markdown adds two more `vite` nodes (`README.md`, `docs/guide/cli.md`), the single-survivor branch
-no longer fires, and the ubiquitous-name path declines instead. A precision gain that arrives as a
-side effect of a coverage feature is worth stating plainly rather than filing under whichever
-change sounds like it should own it.
-
-### Three numbers that need reading carefully
-
-**Heuristic edges go 36 → 3,082 in total.** That is not a precision regression. Code-side
-heuristic edges are *exactly 36 in all three arms*; the entire increase is markdown `contains`
-edges from the new doc tier.
-
-**Unresolved references rise by 635** against `v1.6.0`, 587 of them against `main`. Largely
-intended. The resolution fixes *decline* references they previously guessed at, so a removed guess
-is counted here as a cost.
-
-**Wall-clock indexing is 14% slower, but per file it is not.** The fork costs 1.728 ms/file
-against main's 1.731 ms — indistinguishable. Of the 363 ms it adds over `v1.6.0`, only 140 ms is
-the fork's: the 84 additional markdown files at ~1.73 ms each. The other 223 ms is the per-file
-cost rising between `v1.6.0` and `main`, which is upstream's change, not this fork's.
-
-<sub>Method: arms interleaved forward (A,B,C) and reversed (C,B,A) over six rounds, since whichever
-arm runs first pays the cold cache. Spreads: A 2,531–2,584 ms, B 2,739–3,004 ms, C 2,885–3,107 ms.
-The edge-set delta keys edges by symbol, file and kind rather than by row id, which is not stable
-across indexes, and counts edge <i>rows</i>. Deduplicating on that key would <i>under</i>-count:
-`edges` also carries <code>line</code> and <code>col</code>, and one source line can hold two
-genuine references at different columns — <code>import corsMiddleware from 'cors'</code> emits an
-edge for the specifier and one for the binding it introduces. Keyed on all of source, target,
-kind, line and col, distinct equals rows exactly, so the row counts here are the edge counts.
-The absolute millisecond figures are host-specific and do not transfer: the corpus sat in a
-directory excluded from Windows Defender and the interpreter in <code>C:\Program Files</code>, and
-on this host an unexcluded directory read by an untrusted binary costs ~12.6 s for a single 1.2 MB
-file. All three arms shared that configuration, so the arm-to-arm comparison is unaffected; a
-stock Windows host would produce different totals.</sub>
+- Windows x64, Node **24.16.0**, `--liftoff-only`, telemetry disabled.
+  Each arm has its own checked-out source, lockfile-installed dependencies,
+  compiled JavaScript, and native kernel rebuilt and staged from that source.
+  Native loading was verified for each arm; per-file WASM fallback remains enabled.
+- Eight runs per arm: four rotating forward orders and four reversed orders.
+  Each arm occupies each order position twice. Builds and tests run outside
+  the timed experiment.
+- Each sample starts with a fresh index directory and an **untimed `init`**,
+  which already indexes the corpus. The measured `index` command performs a
+  full reindex with warm filesystem caches. Its wall time includes process
+  startup and shutdown; it is not a cold-index or internal-parser timing.
+- The CLI reports 1,635/1,719 indexed files; file-kind nodes number
+  1,608/1,692. Normalized time uses the CLI count. Graph counts and database
+  file sizes were identical across all eight runs of each arm.
+- Edge identity uses source/target paths, qualified names, node kinds, edge
+  kind, line, and column. Multiplicities are retained, including 185 duplicate
+  comparison keys per arm. An edge “touching Markdown” has a Markdown endpoint;
+  that classification does not imply a valid documentation relationship.
 
 ---
 
