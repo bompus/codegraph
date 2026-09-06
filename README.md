@@ -67,7 +67,8 @@ under the same interpreter so on-access virus scanning could not confound the ti
 | Markdown sections indexed | 0 | 0 | **1,983** | new |
 | Nodes | 9,353 | 9,354 | 12,484 | +3,131 |
 | Edges | 27,742 | 27,778 | 31,125 | +3,383 |
-| Heuristic edges **in code** | 36 | 36 | 36 | **0** |
+| Heuristic edges, total | 36 | 36 | 3,082 | +3,046 |
+| Heuristic edges, **code only** | 36 | 36 | **36** | **0** |
 | Index time, median of 6 | 2,561 ms | 2,784 ms | 2,924 ms | +14% |
 | Index time **per file** | 1.592 ms | 1.731 ms | **1.728 ms** | +8.5% |
 | Database size | 33.83 MB | 33.89 MB | 38.88 MB | +14.9% |
@@ -83,6 +84,29 @@ On code, the fork is purely subtractive: it removes 93 wrong edges and adds none
 71 `imports` and 22 `calls`; 60 of them are a single class, `import … from 'vite'` — the npm
 package — resolving onto a project file that happens to be named `vite`. The rest include calls
 landing on nested functions the call site cannot reach, and one self-edge.
+
+### Which change removes what
+
+Each change was also indexed **alone** on top of `main`, so no removal is attributed by
+assumption. Counts are edge rows removed against `main`:
+
+| Change | Removed | What it catches |
+| --- | ---: | --- |
+| markdown index | **71** | incl. all 60 bare-`vite` imports |
+| fuzzy reachability | 12 | calls landing on unreachable nested functions |
+| host-global receiver chains | 12 | `chrome.…`/`document.…` chains matching unrelated names |
+| bare-import binding | 4 | a name bound to an external specifier |
+| `~`/`#`/`$` specifier prefixes | 0 | no instance in this corpus |
+| **union** | **93** | exactly the fork's total |
+
+The single arms sum to 99 but their union is 93, because six rows are caught by more than one
+change. The union matching the fork exactly means nothing is removed that no arm explains.
+
+The surprise is the first row. The 60 bare-`vite` imports are removed by the **markdown index**,
+not by either resolution guard: indexing 84 more files gives the name `vite` more candidates, so
+the fuzzy matcher stops seeing a unique one and declines. A precision gain that arrives as a side
+effect of a coverage feature is worth stating plainly rather than filing under whichever change
+sounds like it should own it.
 
 ### Three numbers that need reading carefully
 
@@ -101,8 +125,8 @@ not this fork's.
 <sub>Method: arms interleaved forward (A,B,C) and reversed (C,B,A) over six rounds, since whichever
 arm runs first pays the cold cache. Spreads: A 2,531–2,584 ms, B 2,739–3,004 ms, C 2,885–3,107 ms.
 The edge-set delta keys edges by symbol, file and kind rather than by row id, which is not stable
-across indexes. The 93 removals span all six changes and are <b>not</b> attributed to any single
-one — separating them needs a per-change arm.</sub>
+across indexes, and counts edge <i>rows</i> — the same key can appear more than once, so a
+distinct-key count reads lower (79) and is not the figure quoted here.</sub>
 
 ---
 
