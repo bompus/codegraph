@@ -49,10 +49,18 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ---
 
-# Experimental fork — measured against the release
+# Experimental fork — consolidated changes
 
-> This section exists only on `fork/consolidated`. It is a progress board for six
-> changes proposed upstream, not a claim about the released product.
+`fork/consolidated` includes #1695, #1697, #1699, #1702, #1706, #1710,
+#1713 (through #1715), #1715, #1717, #1718, and #1720. These are proposed
+upstream changes; #1721 remains separate design work.
+
+## Historical measurements — before the integration
+
+> Everything below, through “Three numbers that need reading carefully,” describes
+> the six-change snapshot at `c5468f2`, before #1695, #1697, #1702, #1706, #1715,
+> and #1720 were merged. The timings, edge counts, test totals, and statements about
+> which fixes were missing apply to that snapshot, not the current branch.
 
 Three arms, each with the Rust kernel rebuilt from **its own** source, every arm indexing
 [vitejs/vite](https://github.com/vitejs/vite) at `8492422` (1,608–1,692 files). Every command ran
