@@ -69,6 +69,7 @@ under the same interpreter so on-access virus scanning could not confound the ti
 | Edges | 27,742 | 27,778 | 31,125 | +3,383 |
 | Heuristic edges, total | 36 | 36 | 3,082 | +3,046 |
 | Heuristic edges, **code only** | 36 | 36 | **36** | **0** |
+| Unresolved references | 24,872 | 24,920 | 25,507 | +635 |
 | Index time, median of 6 | 2,561 ms | 2,784 ms | 2,924 ms | +14% |
 | Index time **per file** | 1.592 ms | 1.731 ms | **1.728 ms** | +8.5% |
 | Database size | 33.83 MB | 33.89 MB | 38.88 MB | +14.9% |
@@ -103,10 +104,13 @@ The single arms sum to 99 but their union is 93, because six rows are caught by 
 change. The union matching the fork exactly means nothing is removed that no arm explains.
 
 The surprise is the first row. The 60 bare-`vite` imports are removed by the **markdown index**,
-not by either resolution guard: indexing 84 more files gives the name `vite` more candidates, so
-the fuzzy matcher stops seeing a unique one and declines. A precision gain that arrives as a side
-effect of a coverage feature is worth stating plainly rather than filing under whichever change
-sounds like it should own it.
+not by either resolution guard, and they never reach the fuzzy matcher at all. They resolved by
+`exact-match`: `matchByExactName` returns immediately when exactly one candidate survives its
+filters, and at the merge base 159 nodes are named `vite` with exactly one surviving. Indexing
+markdown adds two more `vite` nodes (`README.md`, `docs/guide/cli.md`), the single-survivor branch
+no longer fires, and the ubiquitous-name path declines instead. A precision gain that arrives as a
+side effect of a coverage feature is worth stating plainly rather than filing under whichever
+change sounds like it should own it.
 
 ### Three numbers that need reading carefully
 
@@ -114,13 +118,14 @@ sounds like it should own it.
 heuristic edges are *exactly 36 in all three arms*; the entire increase is markdown `contains`
 edges from the new doc tier.
 
-**Unresolved references rise by 635.** Largely intended. The resolution fixes *decline*
-references they previously guessed at, so a removed guess is counted here as a cost.
+**Unresolved references rise by 635** against `v1.6.0`, 587 of them against `main`. Largely
+intended. The resolution fixes *decline* references they previously guessed at, so a removed guess
+is counted here as a cost.
 
 **Wall-clock indexing is 14% slower, but per file it is not.** The fork costs 1.728 ms/file
-against main's 1.731 ms — indistinguishable. The extra 363 ms is the 84 additional markdown
-files it indexes. The per-file cost rose between `v1.6.0` and `main`, which is upstream's change,
-not this fork's.
+against main's 1.731 ms — indistinguishable. Of the 363 ms it adds over `v1.6.0`, only 140 ms is
+the fork's: the 84 additional markdown files at ~1.73 ms each. The other 223 ms is the per-file
+cost rising between `v1.6.0` and `main`, which is upstream's change, not this fork's.
 
 <sub>Method: arms interleaved forward (A,B,C) and reversed (C,B,A) over six rounds, since whichever
 arm runs first pays the cold cache. Spreads: A 2,531–2,584 ms, B 2,739–3,004 ms, C 2,885–3,107 ms.
