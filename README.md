@@ -49,137 +49,122 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ---
 
-# Experimental fork — current benchmark
+## Experimental fork — current benchmark
 
-`fork/consolidated` includes #1695, #1697, #1699, #1702, #1706, #1710,
-#1713 (through #1715), #1715, #1717, #1718, and #1720, plus the resolver
-corrections measured below. #1721 remains separate design work.
+This branch compares experimental changes with upstream CodeGraph. The installers,
+npm package, release badges, and `codegraph upgrade` instructions below refer to
+**upstream releases**, not this fork.
 
-Measured **2026-09-06** against [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
-“Integrated” is `9b75b69`, before these corrections; “corrected” is the resolver
-committed in `1c4432f`. The later `7eb7656` changes tests only; JavaScript and
-Rust production sources are unchanged. [Current measurements and six-import follow-up audit](docs/benchmarks/framework-import-correction-2026-09-06.json)
-record the exact baseline, working-tree source, all timing samples, and tests.
-The [earlier resolver correction audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
-records the first 319 removals before the framework correction.
-The [original four-arm benchmark](docs/benchmarks/fork-integration-2026-09-06.json)
-preserves the release, upstream, previous-fork, and integrated results.
+Checked **2026-09-06**: upstream HEAD is
+[`b9ca4b7`](https://github.com/colbymchenry/codegraph/commit/b9ca4b7981116909900368cc1686a1074cd4d4c1),
+the same revision used in the saved benchmark. Fork HEAD at this check is
+[`5f2db7a`](https://github.com/bompus/codegraph/commit/5f2db7a19a3b909b58717a2948c612e0d422e1d8);
+its production sources match the measured resolver committed in `1c4432f`.
+Later changes affect tests and this README. These are dated measurements, not
+a continuously updated comparison.
 
-| Metric | Integrated `9b75b69` | Corrected |
+The fork adds Markdown indexing and retrieval, project session search, import
+and call-resolution guards, Windows test teardown fixes, and agent integration
+changes. It incorporates upstream PRs
+[#1695](https://github.com/colbymchenry/codegraph/pull/1695),
+[#1697](https://github.com/colbymchenry/codegraph/pull/1697),
+[#1699](https://github.com/colbymchenry/codegraph/pull/1699),
+[#1702](https://github.com/colbymchenry/codegraph/pull/1702),
+[#1706](https://github.com/colbymchenry/codegraph/pull/1706),
+[#1710](https://github.com/colbymchenry/codegraph/pull/1710),
+[#1715](https://github.com/colbymchenry/codegraph/pull/1715) (including #1713),
+[#1717](https://github.com/colbymchenry/codegraph/pull/1717),
+[#1718](https://github.com/colbymchenry/codegraph/pull/1718), and
+[#1720](https://github.com/colbymchenry/codegraph/pull/1720), plus the resolver
+corrections below. [#1721](https://github.com/colbymchenry/codegraph/issues/1721)
+remains separate design work.
+
+### Upstream versus fork
+
+Corpus: [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
+Sources: [upstream measurements](docs/benchmarks/fork-integration-2026-09-06.json)
+and [corrected fork measurements](docs/benchmarks/framework-import-correction-2026-09-06.json).
+
+| Metric | Upstream `b9ca4b7` | Fork resolver `1c4432f` | Fork minus upstream |
+| --- | ---: | ---: | ---: |
+| Files indexed (CLI count) | 1,635 | 1,719 | +84 |
+| File nodes | 1,608 | 1,692 | +84 |
+| Markdown file nodes / sections | 0 / 0 | 84 / 1,983 | +84 / +1,983 |
+| Nodes | 9,354 | 12,484 | +3,130 |
+| Edges | 27,778 | 28,209 | +431 |
+| Heuristic edges, total / code only | 36 / 36 | 3,082 / 36 | +3,046 / 0 |
+| Unresolved references | 24,920 | 28,445 | +3,525 |
+| Main database file, decimal MB | 33.89 | 37.99 | +4.10 |
+| Recorded tests passing | 4,173 | 4,284 | +111 |
+| Recorded test failures (Windows) | 23 | 0 | −23 |
+| Recorded tests skipped | 44 | 44 | 0 |
+
+The fork indexes additional Markdown content and rejects incorrect resolutions.
+Node, edge, and unresolved-reference totals therefore measure different graph
+contents; more edges or fewer unresolved references alone do not establish
+better accuracy. The test suites also differ: +111 passing tests is not a count
+of fixed bugs. The fork's full-suite result predates the test-only `7eb7656`
+change; that follow-up passed 53 focused tests with 3 skipped, but the full
+suite was not rerun.
+
+### Timing and method
+
+| Full reindex, eight samples per revision | Upstream `b9ca4b7` | Fork resolver `1c4432f` |
 | --- | ---: | ---: |
-| Tests passing | 4,275 | 4,284 |
-| Test failures (Windows) | 1 | 0 |
-| Tests skipped | 44 | 44 |
-| Files indexed (CLI count) | 1,719 | 1,719 |
-| File nodes | 1,692 | 1,692 |
-| Markdown file nodes / sections | 84 / 1,983 | 84 / 1,983 |
-| Nodes | 12,484 | 12,484 |
-| Edges | 28,534 | 28,209 |
-| Heuristic edges, total / code only | 3,082 / 36 | 3,082 / 36 |
-| Unresolved references | 28,120 | 28,445 |
-| Code-to-Markdown imports | 304 | 0 |
-| Targeted imports into `cli.md#vite` | 157 | 0 |
-| Targeted wrong call sites | 11 | 0 |
-| Verified restored imports retained | 2 | 2 |
-| Full reindex wall time, median of 8 | 3,760 ms | 3,892 ms |
-| Wall-time range | 3,655–3,862 ms | 3,707–4,222 ms |
-| Wall ms / indexed file | 2.188 | 2.264 |
-| Main database file, decimal MB | 38.06 | 37.99 |
+| Wall-time median | 3,513 ms | 3,892 ms |
+| Wall-time range | 3,454–3,784 ms | 3,707–4,222 ms |
+| Wall ms / indexed file | 2.149 | 2.264 |
 
-The correction's measured median is **131.92 ms slower (+3.5%)**, with overlapping
-run ranges. No speedup is claimed. Both arms produce stable graph counts across
-all eight runs. The earlier integration-only experiment also showed no
-demonstrated speed change; its separate timings remain in the original data.
+**These timings come from separate batches, not a paired upstream-versus-current-fork
+run.** They describe the recorded cost of each revision; no controlled speed
+difference is claimed. The fork also indexes 84 more files.
 
-The integrated test column preserves its original full-suite run: one temporary
-directory `EPERM` in `mcp-daemon.test.ts`, followed by an isolated **10/10** rerun.
-The measured corrected revision's full suite passed **4,284 tests**, with **44 skipped**
-and the native kernel required. A forced-WASM run passes **267 focused tests**;
-TypeScript compilation passes. Existing Windows fixes, including #1717, remain
-included. A passing later run does not erase the original cleanup failure.
+Both batches used Windows x64, Node 24.16.0, `--liftoff-only`, telemetry disabled,
+compiled JavaScript, and verified native kernels with per-file WASM fallback.
+Each sample used a fresh index directory and an untimed `init`, which indexes
+and warms the corpus, before timing the full `index` process including startup
+and shutdown. These are warm full-reindex timings, not cold initial-index timings.
+Builds and tests were outside timing. The upstream batch balanced four revisions
+across eight rotating/reversed rounds; the correction batch balanced two revisions
+across eight alternating/reversed rounds.
 
-The subsequent browser-suppression test improvement in `7eb7656` passes
-**53 focused tests**, with **3 skipped**. It replaces an ineffective one-second
-marker wait for `CODEGRAPH_BROWSER=none` with suppression-message assertions
-and direct no-spawn coverage for Windows, macOS, and Linux platform arguments.
-The meaningful 1.5-second `--no-open` observation remains. An intentional
-suppression regression makes the new assertion fail. The full suite and index
-benchmark were not rerun after this test-only change; the table retains the
-actual measured results rather than an inferred new test total.
+### Resolver validation and limits
 
-### Resolver corrections and remaining limits
+Relative to the earlier integrated fork `9b75b69` — **not upstream** — the
+corrected resolver removes **325 invalid edges and adds none**:
 
-The corrected graph removes **325 invalid edges and adds none**:
+- 304 code imports into Markdown, including 157 `vite` imports into `cli.md#vite`.
+- 21 wrong calls: 18 into unrelated code symbols and three into documentation.
+  All 11 targeted call sites lose their incorrect targets without replacements.
+- Both verified restored imports remain: emitted `./hello.js` resolves to
+  `hello.ts`, and a local `file:` dependency resolves to its exported `msg`.
 
-- **304 imports into Markdown**, including all 157 newly introduced `vite`
-  package imports into `docs/guide/cli.md#vite`.
-- **21 wrong calls**: 18 into unrelated code symbols and three into documentation.
-  All 11 targeted call sites disappear without acquiring replacement targets.
-- Both valid restored imports survive: emitted `./hello.js` reaches `hello.ts`,
-  and the local `file:` dependency reaches its exported `msg`.
+The [first correction audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
+records 319 removals; the [framework follow-up](docs/benchmarks/framework-import-correction-2026-09-06.json)
+records the final six and the combined result. Edge comparisons retain duplicate
+multiplicities and identify endpoints by path, qualified name, and node kind,
+plus edge kind and source location.
 
-Name matching rejects documentation targets and JSON data used as call targets.
-Module visibility ignores ESM export examples in strings/comments, preserves real
-exports and CommonJS behavior, and checks a call's chosen target before accepting
-it. Rejecting a private helper cannot promote an unrelated runner-up.
+In that paired correction benchmark, the median rose from 3,760 to 3,892 ms
+(+3.5%), with overlapping ranges of 3,655–3,862 and 3,707–4,222 ms.
+The corrected revision passed 4,284 full-suite tests with the native kernel
+required, 267 focused forced-WASM tests, and TypeScript compilation. The original
+integration's one Windows cleanup failure and its successful isolated rerun remain
+in the saved data.
 
-The framework correction removes the final **six older imports** targeting
-`cors` and `host-validation-middleware` headings in `packages/vite/LICENSE.md`.
-The Express middleware resolver's name lookup accepted those headings; the
-framework language gate now rejects code imports into Markdown. A separate
-full reindex verifies exactly six removals and zero additions relative to
-`4633116`, preserving real middleware imports/calls and intentional doc links.
-The CommonJS source check remains conservative; this is not a complete export
-analysis. Unchanged heuristic-edge totals do not establish correctness: these
-incorrect imports and calls have null provenance.
-
-A duplicate check across all authors initially found the wrong-call symptoms in
-[open PR #1720](https://github.com/colbymchenry/codegraph/pull/1720), including an
-[independent reproduction](https://github.com/colbymchenry/codegraph/pull/1720#issuecomment-5559317505).
-At that time, no exact existing open fix was found for the combined regression.
-[#1662](https://github.com/colbymchenry/codegraph/pull/1662) and
-[#1663](https://github.com/colbymchenry/codegraph/pull/1663) overlap without covering
-the full set; [#1721](https://github.com/colbymchenry/codegraph/issues/1721) concerns
-the broader export-status design. No duplicate report was created.
-
-As of **2026-09-06**, the follow-ups are published to the existing upstream PRs:
-
-- [#1720 at `8ec7374`](https://github.com/colbymchenry/codegraph/pull/1720)
-  contains the resolver corrections with upstream regression coverage.
-  Build and 32 focused tests pass under both native and forced-WASM execution.
-  Its standalone full run recorded 4,181 passed, 24 Windows cleanup failures,
-  and 44 skipped; 23 failures matched the upstream baseline, and the additional
-  daemon cleanup failure passed an isolated 10/10 rerun. That branch does not
-  include the consolidated fork's Windows fixes.
-- [#1717 at `2d15c97`](https://github.com/colbymchenry/codegraph/pull/1717)
-  contains the Windows teardown fixes and the browser-suppression test follow-up
-  also present locally as `7eb7656`. Its updated build and forced-WASM focused
-  suites pass: 53 passed, 3 skipped. No new full-suite run was made for that
-  test-only follow-up.
-
-Both PRs are open, conflict-free, and awaiting approving review as of that check.
-Fork-specific README measurements are kept out of those upstream patches.
-
-### Measurement method
-
-- Windows x64, Node **24.16.0**, `--liftoff-only`, telemetry disabled.
-  Both arms use their compiled JavaScript and staged native kernel; native
-  loading is verified, with per-file WASM fallback enabled. The corrections
-  change JavaScript resolution; the Rust source is unchanged.
-- Eight paired rounds, alternating order and reversing the second half.
-  Each arm runs first four times. Builds and tests run outside timing.
-- Each sample starts with a fresh index directory and an **untimed `init`**,
-  which already indexes and warms the corpus. Timed `index` performs a full
-  reindex; wall time includes process startup/shutdown, not just parsing.
-- Normalized time uses the CLI's **1,719 indexed files**, not the 1,692 file nodes.
-  Database size measures the main database file only.
-- Edge identity includes source/target paths, qualified names, node kinds, edge
-  kind, line, and column. Duplicate multiplicities are retained.
+These checks cover the named regressions on this corpus, not complete graph
+precision or recall. CommonJS export detection remains conservative. Unchanged
+heuristic-edge counts do not establish correctness: the removed incorrect edges
+had null provenance. Resolver and Windows follow-ups are linked through
+[#1720](https://github.com/colbymchenry/codegraph/pull/1720) and
+[#1717](https://github.com/colbymchenry/codegraph/pull/1717); consult those PRs
+for current review and merge status.
 
 ---
 
 ## Contents
 
+- [Experimental fork — current benchmark](#experimental-fork--current-benchmark)
 - [Get Started](#get-started)
 - [Language Support](#language-support)
 - [Why CodeGraph?](#why-codegraph)
@@ -646,7 +631,7 @@ npm install -g @colbymchenry/codegraph
 }
 ```
 
-`alwaysLoad` keeps `codegraph_explore` loaded from the first prompt. Claude Code otherwise defers every MCP tool behind a tool-search step, so a fresh session sees only the tool's name until the model searches for it.
+`alwaysLoad` loads all tools exposed by this server at session start, avoiding a tool-search step. In this fork that includes `codegraph_explore` and `codegraph_sessions`. See [Claude Code's MCP documentation](https://code.claude.com/docs/en/mcp#exempt-a-server-from-deferral).
 
 **Add to `~/.claude/settings.json` (optional, for auto-allow):**
 ```json
@@ -727,7 +712,7 @@ codegraph ui [path]               # Open the browser viewer for an indexed proje
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
-codegraph sessions <words>        # Search the project's earlier agent sessions (--role, --since, --session, --any, --json; same output as codegraph_sessions)
+codegraph sessions <words...>     # Search the project's Claude Code transcripts (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
 codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
 codegraph callers <symbol>        # Find what calls a function/method (--limit, --json)
@@ -778,7 +763,7 @@ When running as an MCP server, CodeGraph exposes **one tool for code** — `code
 | Tool | Purpose |
 |------|---------|
 | `codegraph_explore` | Answer almost any question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. Name a file or symbol in the query to read its current line-numbered source, the same shape the Read tool gives you. |
-| `codegraph_sessions` | Answer "why is this like this?", "what did the last session decide about X?", "did we already try Y?" — full-text search (stemmed, BM25-ranked) over the prose of the project's earlier agent sessions: prompts, replies and compaction summaries, never tool traffic. Reads Claude Code's transcripts for the project (`~/.claude/projects/<slug>/`) into `.codegraph/sessions.db`, refreshed on each call for files that changed. Each hit names its session, role, time and the matching passage. Set `"sessions": false` in `codegraph.json` to opt a project out; `CODEGRAPH_SESSIONS_DIR` points it at another transcript directory. |
+| `codegraph_sessions` | Search the project's Claude Code transcripts, including active sessions: prompts, replies, and compaction summaries, excluding tool traffic. Uses stemmed, BM25-ranked full-text search over `~/.claude/projects/<slug>/`, stored locally in `.codegraph/sessions.db` and refreshed for changed files on each call. Each hit includes its session, role, time, and matching passage. Set `"sessions": false` in `codegraph.json` to opt out; `CODEGRAPH_SESSIONS_DIR` selects another Claude Code transcript directory. |
 
 The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 
