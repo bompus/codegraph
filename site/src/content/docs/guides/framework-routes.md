@@ -42,6 +42,9 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Solid Router** | Imported `Router`/`Route` JSX and registered literal configuration, nested paths, path arrays and bases; imported/local components and static lazy defaults |
 | **SolidStart** | Default file pages and HTTP-method exports; exact local targets, nested layouts, groups, parameters and GET-to-HEAD fallback |
 | **Qwik City** | Default index pages, named/anonymous `component$` components and method-specific endpoint exports; groups, parameters and catchalls |
+| **Vike** | Default JS/TS `+Page` modules and nearest inherited literal `+route` overrides; exact local named components and `@` parameters |
+
+Vike coverage targets 0.4.266 with default roots and option-free `vike()` configuration. Canonical `vike-react/config` rendering configuration is supported. Dynamic overrides, custom roots/options, configured or inherited-only Page targets, unknown extensions/metadata, anonymous/re-exported/wrapped components and template-language pages remain unsupported; these do not receive fallback paths.
 
 Qwik City coverage targets 1.20.0 with default roots and option-free `qwikCity()` configuration. Page discovery requires the root provider/outlet; API endpoints do not. Parent index pages remain pages, while layouts and generic `onRequest` middleware do not become endpoints. Custom routing options, layout-override index names, optional parameters, Markdown/MDX, re-exports and arbitrary wrappers remain unsupported.
 

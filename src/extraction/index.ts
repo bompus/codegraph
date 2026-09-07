@@ -37,6 +37,7 @@ import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/f
 import { extractAnalogRoutes, isAnalogPage } from '../resolution/frameworks/analog';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import { extractQwikCityRoutes, isQwikCityRoute } from '../resolution/frameworks/qwik-city';
+import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2378,14 +2379,16 @@ export class ExtractionOrchestrator {
     const analog = frameworks.includes('analog') && isAnalogPage(filePath);
     const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
     const qwikCity = frameworks.includes('qwik-city') && isQwikCityRoute(filePath);
-    if (!angular && !analog && !solidStart && !qwikCity) return result;
-    await loadGrammarsForLanguages(solidStart || qwikCity ? ['typescript', 'javascript', 'tsx', 'jsx'] : ['typescript', 'javascript']);
+    const vike = frameworks.includes('vike') && isVikePage(filePath);
+    if (!angular && !analog && !solidStart && !qwikCity && !vike) return result;
+    await loadGrammarsForLanguages(solidStart || qwikCity || vike ? ['typescript', 'javascript', 'tsx', 'jsx'] : ['typescript', 'javascript']);
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
     const context = this.frameworkSourceContext!;
     const extracted = angular ? extractAngularRoutes(filePath, content, context)
       : analog ? extractAnalogRoutes(filePath, content, context)
       : solidStart ? extractSolidStartRoutes(filePath, content, context)
-      : extractQwikCityRoutes(filePath, content, context, result);
+      : qwikCity ? extractQwikCityRoutes(filePath, content, context, result)
+      : extractVikeRoutes(filePath, content, context);
     result.nodes.push(...extracted.nodes);
     result.unresolvedReferences.push(...extracted.references);
     return result;
@@ -2902,6 +2905,7 @@ export class ExtractionOrchestrator {
       const detected = this.ensureDetectedFrameworks(currentFiles);
       for (const [framework, matches] of [
         ['solid-start', isSolidStartRoute], ['analog', isAnalogPage], ['qwik-city', isQwikCityRoute],
+        ['vike', isVikePage],
       ] as const) {
         if (!detected.includes(framework) && !this.queries.getNodesByKind('route').some(n => n.id.startsWith(`route:${framework}:`))) continue;
         const scope = this.scopedSyncMatcher();
