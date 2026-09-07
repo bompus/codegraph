@@ -914,6 +914,10 @@ export class CodeGraph {
           // sees the post-removal state. (runPostExtract above clears caches
           // itself, so the changed-files branch is already covered.)
           this.resolver.clearCaches();
+          // RedwoodSDK classifies a route as a page from its handler's JSX, so
+          // deleting a handler file must re-run that pass.
+          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:redwood:')))
+            this.resolver.runPostExtract();
         }
 
         // Resolve references if files were updated
