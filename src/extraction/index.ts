@@ -1448,6 +1448,7 @@ export class ExtractionOrchestrator {
    * hasn't run yet so single-file re-index paths can detect on the spot.
    */
   private detectedFrameworkNames: string[] | null = null;
+  private conventionInvalidatedFiles = new Set<string>();
   /**
    * Scope matcher for SCOPED syncs, memoized on the mtimes of the two root
    * files it is derived from (`codegraph.json`, `.gitignore`). See
@@ -2394,7 +2395,7 @@ export class ExtractionOrchestrator {
     // successful retry's symbols — a permanent empty file presented as
     // recovered (the #1541 wipe, reintroduced through the marker path).
     const existingFile = this.queries.getFileByPath(filePath);
-    if (existingFile && existingFile.contentHash === contentHash) {
+    if (existingFile && existingFile.contentHash === contentHash && !this.conventionInvalidatedFiles.has(filePath)) {
       const existingIsMarker =
         existingFile.nodeCount === 0 && (existingFile.errors?.length ?? 0) > 0;
       const incomingHasContent = result.nodes.length > 0;
@@ -2863,6 +2864,33 @@ export class ExtractionOrchestrator {
       }
     }
 
+    // File conventions can change without editing any page modules.
+    if (filesToIndex.length > 0 || filesRemoved > 0) {
+      const previous = this.detectedFrameworkNames ?? [];
+      const hadFileRoutes = this.detectedFrameworkNames === null
+        ? this.queries.getNodesByKind('route').some((n) => n.id.startsWith(`route:react-router:${n.filePath}:file:`))
+        : previous.includes('react-router-files');
+      this.detectedFrameworkNames = null;
+      const detected = this.ensureDetectedFrameworks(currentFiles);
+      if (scopedPaths?.length) {
+        this.detectedFrameworkNames = [...new Set([
+          ...previous.filter((name) => name !== 'react-router-files'), ...detected,
+        ])];
+      }
+      if (hadFileRoutes !== detected.includes('react-router-files')) {
+        const scope = this.scopedSyncMatcher();
+        for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
+          if (!/^app\/routes\//.test(filePath) || filesToIndex.includes(filePath) ||
+              scope.ignores(filePath) ||
+              !fs.existsSync(path.join(this.rootDir, filePath))) continue;
+          filesToIndex.push(filePath);
+          this.conventionInvalidatedFiles.add(filePath);
+          changedFilePaths.push(filePath);
+          filesModified++;
+        }
+      }
+    }
+
     // Sampled here — after the add/modify classification, before any file is
     // re-extracted — because `storeExtractionResult` deletes a file's nodes
     // before inserting the new ones, so this is the last point the pre-edit
@@ -2873,11 +2901,6 @@ export class ExtractionOrchestrator {
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
-      const previous = this.detectedFrameworkNames ?? [];
-      this.detectedFrameworkNames = null;
-      const detected = this.ensureDetectedFrameworks(currentFiles);
-      // A watcher scope sees only changed files; retain other packages' frameworks.
-      if (scopedPaths?.length) this.detectedFrameworkNames = [...new Set([...previous, ...detected])];
       const overrides = loadExtensionOverrides(this.rootDir);
       const neededLanguages = [...new Set(filesToIndex.map((f) => detectLanguage(f, undefined, overrides)))];
       // .h files default to 'c' but may be C++ — ensure cpp grammar is loaded
@@ -2898,8 +2921,12 @@ export class ExtractionOrchestrator {
         currentFile: filePath,
       });
 
-      const result = await this.indexFile(filePath);
-      nodesUpdated += result.nodes.length;
+      try {
+        const result = await this.indexFile(filePath);
+        nodesUpdated += result.nodes.length;
+      } finally {
+        this.conventionInvalidatedFiles.delete(filePath);
+      }
     }
 
     // Names whose definition set this sync changed: a `file\0name` pair present

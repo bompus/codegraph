@@ -39,6 +39,8 @@ import type { Language, Node } from '../../types';
 import type { Node as SyntaxNode } from 'web-tree-sitter';
 import { detectLanguage, getParser } from '../../extraction/grammars';
 import { resolveImportPath } from '../import-resolver';
+import { stripCommentsForRegex } from '../strip-comments';
+import { matchBracket } from './object-literal';
 import type { FrameworkResolver, ResolutionContext, ResolvedRef, UnresolvedRef } from '../types';
 import { dependsOn } from './package-deps';
 import {
@@ -58,6 +60,233 @@ import {
 import { destinationsForHref } from './nextjs';
 
 const ROUTE_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'tsx', 'jsx'];
+
+/** Default Remix flat filenames; bracket escapes retain their literal meaning. */
+export function remixFileRoutePath(filePath: string): string | null {
+  const file = filePath.replace(/\\/g, '/');
+  const match = /^app\/routes\/([^/]+)(?:\/(route))?\.[jt]sx?$/.exec(file);
+  if (!match || match[1]!.startsWith('.')) return null;
+  const segments: { raw: string; text: string }[] = [];
+  let raw = '',
+    text = '';
+  const stem = match[1]!;
+  for (let i = 0; i < stem.length; i++) {
+    const char = stem[i]!;
+    if (char === '[') {
+      const end = stem.indexOf(']', i + 1);
+      if (end < 0) return null;
+      raw += stem.slice(i, end + 1);
+      text += stem.slice(i + 1, end);
+      i = end;
+    } else if (char === '.') {
+      segments.push({ raw, text });
+      raw = '';
+      text = '';
+    } else {
+      raw += char;
+      text += char;
+    }
+  }
+  segments.push({ raw, text });
+  const path: string[] = [];
+  for (const [i, segment] of segments.entries()) {
+    let { raw, text } = segment;
+    if (!raw) return null;
+    const optional = raw.startsWith('(') && raw.endsWith(')');
+    if (optional) {
+      raw = raw.slice(1, -1);
+      text = text.slice(1, -1);
+    } else if (/[()]/.test(raw.replace(/\[[^\]]*\]/g, ''))) return null;
+    if (raw === '_index') {
+      if (i !== segments.length - 1) return null;
+      continue;
+    }
+    if (raw.startsWith('_')) {
+      if (i === segments.length - 1) return null;
+      continue;
+    }
+    if (raw.endsWith('_')) text = text.slice(0, -1);
+    if (raw === '$') text = '*';
+    else if (raw.startsWith('$')) text = ':' + text.slice(1);
+    if (optional) text += '?';
+    path.push(text);
+  }
+  return '/' + path.join('/');
+}
+
+/** Only a direct default call or a top-level spread registers default flat routes. */
+export function usesDefaultFlatRoutes(content: string): boolean {
+  // Template-driven configuration is outside this literal registration reader.
+  if (content.includes('`')) return false;
+  const safe = stripCommentsForRegex(content, 'typescript');
+  const masked = safe.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, (m) =>
+    m.replace(/[^\r\n]/g, ' '),
+  );
+  const imports = /^[ \t]*import\s*\{([^}]+)\}\s*from\s*['"]@react-router\/fs-routes['"]/gm;
+  const aliases: string[] = [];
+  for (const match of safe.matchAll(imports)) {
+    if (!/^\s*import\b/.test(masked.slice(match.index!, match.index! + match[0].indexOf('{'))))
+      continue;
+    for (const spec of match[1]!.split(',')) {
+      const binding = /^\s*flatRoutes(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(spec);
+      if (binding) aliases.push(binding[1] ?? 'flatRoutes');
+    }
+  }
+  const exported = /^[ \t]*export\s+default\s+/m.exec(masked);
+  if (!exported) return false;
+  const expression = masked
+    .slice(exported.index + exported[0].length)
+    .split(';', 1)[0]!
+    .trim();
+  for (const alias of aliases) {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`^(?:await\\s+)?${escaped}\\s*\\(\\s*\\)\\s*;?\\s*$`).test(expression))
+      return true;
+    if (!expression.startsWith('[')) continue;
+    const end = matchBracket(expression, 0);
+    if (end < 0) continue;
+    if (!/^\s*(?:satisfies\s+[A-Za-z_$][\w$]*)?\s*;?\s*$/.test(expression.slice(end + 1))) continue;
+    let i = 1;
+    while (i < end) {
+      while (/[\s,]/.test(expression[i] ?? '')) i++;
+      if (
+        new RegExp(
+          `^\\.\\.\\.\\s*\\(?\\s*(?:await\\s+)?${escaped}\\s*\\(\\s*\\)\\s*\\)?\\s*(?:,|\\])`,
+        ).test(expression.slice(i))
+      )
+        return true;
+      while (i < end && expression[i] !== ',') {
+        if ('([{'.includes(expression[i]!)) {
+          const close = matchBracket(expression, i);
+          if (close < 0) return false;
+          i = close + 1;
+        } else i++;
+      }
+      i++;
+    }
+  }
+  return false;
+}
+
+/** Root-level default conventions; custom roots and route overrides are not inferred. */
+export const reactRouterFilesResolver: FrameworkResolver = {
+  name: 'react-router-files',
+  languages: [...ROUTE_LANGUAGES],
+  detect(context) {
+    for (const name of ['remix.config', 'react-router.config', 'vite.config']) {
+      for (const extension of ['js', 'cjs', 'mjs', 'ts']) {
+        const config = context.readFile(`${name}.${extension}`);
+        if (config) {
+          const safe = stripCommentsForRegex(config, 'typescript');
+          if (
+            /\b(?:appDirectory|rootDirectory|ignoredRouteFiles|v3_routeConfig|routes)['"]?\s*:|\.\.\./.test(
+              safe,
+            )
+          )
+            return false;
+          if (
+            !/(?:export\s+default\s+(?:defineConfig\s*\(\s*)?\{|module\.exports\s*=\s*\{)/.test(
+              safe,
+            )
+          )
+            return false;
+          if (
+            [...safe.matchAll(/\b(?:remix|reactRouter)\s*\(([^)]*)\)/g)].some((m) => m[1]!.trim())
+          )
+            return false;
+        }
+      }
+    }
+    const config = context.readFile('app/routes.ts') ?? context.readFile('app/routes.js');
+    if (config !== null) return usesDefaultFlatRoutes(config);
+    try {
+      const pkg = JSON.parse(context.readFile('package.json') ?? '{}');
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      return Boolean(deps['@remix-run/dev'] || deps['@remix-run/react']);
+    } catch {
+      return false;
+    }
+  },
+  resolve: () => null,
+  extract(filePath, content) {
+    const routePath = remixFileRoutePath(filePath);
+    if (routePath === null) return { nodes: [], references: [] };
+    const language = detectLanguage(filePath)!;
+    const parser = getParser(language);
+    if (!parser) throw new Error(`File-route extraction requires the ${language} grammar`);
+    const tree = parser.parse(content);
+    if (!tree) return { nodes: [], references: [] };
+    try {
+      const exported = tree.rootNode.namedChildren.find(
+        (n) => n.type === 'export_statement' && n.children.some((c) => c.type === 'default'),
+      );
+      if (!exported) return { nodes: [], references: [] };
+      let declaration =
+        exported.childForFieldName('declaration') ?? exported.childForFieldName('value');
+      if (declaration?.type === 'identifier') {
+        const name = declaration.text;
+        declaration =
+          tree.rootNode.namedChildren
+            .map((n) =>
+              n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n,
+            )
+            .flatMap((n) => (n.type === 'lexical_declaration' ? n.namedChildren : [n]))
+            .find((n) => n.childForFieldName('name')?.text === name) ?? null;
+      }
+      const component =
+        declaration?.type === 'variable_declarator'
+          ? declaration.childForFieldName('value')
+          : declaration;
+      const body = component?.childForFieldName('body');
+      const returned =
+        body?.type === 'statement_block'
+          ? body.namedChildren
+              .filter((n) => n.type === 'return_statement')
+              .map((n) => n.namedChildren[0])
+          : [body];
+      if (
+        returned.length > 0 &&
+        returned.every((n) => {
+          while (n?.type === 'parenthesized_expression') n = n.namedChildren[0];
+          return (
+            n?.type === 'jsx_self_closing_element' && n.childForFieldName('name')?.text === 'Outlet'
+          );
+        })
+      )
+        return { nodes: [], references: [] };
+      const node: Node = {
+        id: `route:react-router:${filePath}:file:${routePath}`,
+        kind: 'route',
+        name: routePath,
+        qualifiedName: `${filePath}::${routePath}`,
+        filePath,
+        language,
+        startLine: exported.startPosition.row + 1,
+        endLine: exported.endPosition.row + 1,
+        startColumn: exported.startPosition.column,
+        endColumn: exported.endPosition.column,
+        updatedAt: Date.now(),
+      };
+      const module = filePath.replace(/\\/g, '/').split('/').pop()!;
+      return {
+        nodes: [node],
+        references: [
+          {
+            fromNodeId: node.id,
+            referenceName: `react-router-module:${module}`,
+            referenceKind: 'references',
+            filePath,
+            language,
+            line: node.startLine,
+            column: node.startColumn,
+          },
+        ],
+      };
+    } finally {
+      tree.delete();
+    }
+  },
+};
 
 // =============================================================================
 // Route table — the routes `frameworks/react.ts` read out of the markup
@@ -83,9 +312,19 @@ function isReactRouterRoute(node: Node): boolean {
   );
 }
 
-/** `:id?` — a parameter React Router serves the route with or without. */
-function isOptionalParam(seg: string): boolean {
-  return seg.startsWith(':') && seg.endsWith('?');
+/** Expand bounded optional segments, including Remix's optional language prefix. */
+function optionalRoutePaths(path: string): string[] {
+  const segments = path.split('/').slice(1);
+  if (segments.filter((s) => s.endsWith('?')).length > 4) return [];
+  let variants = [''];
+  for (const segment of segments) {
+    variants = segment.endsWith('?')
+      ? variants.flatMap((p) => [p + '/' + segment.slice(0, -1), p])
+      : variants.map((p) => p + '/' + segment);
+  }
+  const unique = new Map<string, string>();
+  for (const variant of variants) unique.set(variant.replace(/:[^/]+/g, ':'), variant || '/');
+  return [...unique.values()];
 }
 
 const tables = new WeakMap<ResolutionContext, ReactRouterTable>();
@@ -109,17 +348,10 @@ export function reactRouterTable(context: ResolutionContext): ReactRouterTable {
     const root = reactRouterRoot(node.filePath);
     const path =
       node.name.length > 1 && node.name.endsWith('/') ? node.name.slice(0, -1) : node.name;
-    addRouteTo(tableAt(root), path, node);
-    // React Router's optional parameter: `/cart/:id?` is the screen for
-    // `/cart/5` AND for a bare `/cart`, which the navbar's cart icon links
-    // to. The matcher pairs a route with an href of the same length, so the
-    // shorter form is its own entry — collected now, registered after every
-    // literal path, so a route someone actually wrote always wins.
-    let segs = path.split('/').slice(1);
-    while (segs.length > 1 && isOptionalParam(segs[segs.length - 1]!)) {
-      segs = segs.slice(0, -1);
-      shortened.push({ root, path: '/' + segs.join('/'), node });
-    }
+    tableAt(root);
+    if (!path.includes('?')) addRouteTo(tableAt(root), path, node);
+    else
+      for (const variant of optionalRoutePaths(path)) shortened.push({ root, path: variant, node });
   }
   for (const s of shortened) {
     const t = byRoot.get(s.root);
@@ -167,6 +399,8 @@ export const reactRouterResolver: FrameworkResolver = {
       'react-router-dom',
       'react-router-native',
       '@react-router/dev',
+      '@remix-run/react',
+      '@remix-run/dev',
     );
   },
 

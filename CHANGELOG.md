@@ -25,6 +25,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Remix default file routes and registered React Router `flatRoutes()` pages now link to their components and navigation, including optional segments and configuration-only sync changes.
+
 - TanStack Start server routes now link to their HTTP handlers while keeping API-only files out of the page map, including routes introduced after initial indexing.
 
 - React Router framework-mode pages now appear with their page components and navigation, including nested routes and pathless layouts.

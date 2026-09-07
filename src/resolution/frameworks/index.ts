@@ -13,7 +13,7 @@ import { httpRoutingResolver } from './http-routing';
 import { nestjsResolver } from './nestjs';
 import { reactResolver } from './react';
 import { nextjsResolver } from './nextjs';
-import { reactRouterResolver } from './react-router';
+import { reactRouterResolver, reactRouterFilesResolver } from './react-router';
 import { tanstackRouterResolver } from './tanstack-router';
 import { vueRouterResolver } from './vue-router';
 import { svelteKitRouterResolver } from './sveltekit-router';
@@ -51,6 +51,7 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   reactResolver,
   // React Router — `<Route path>` routes are `reactResolver`'s; `history.push('/x')` / `navigate('/x')` → navigates edges
   reactRouterResolver,
+  reactRouterFilesResolver,
   // TanStack Router — `createFileRoute('/x')` / `createRoute({ path })` → route nodes; `navigate({ to })` → navigates edges
   tanstackRouterResolver,
   // Next.js — `app/**/page.tsx` + `pages/**` → route nodes; `route.ts` exports → endpoints; `router.push('/x')` / `redirect('/x')` → navigates edges
