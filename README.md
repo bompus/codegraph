@@ -55,8 +55,8 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 [`31eff33`](https://github.com/bompus/codegraph/commit/31eff33b02e0655b0f4e66f2c8b20b590ab37991)
 preserves extraction, literal lookup and retrieval behavior from the former
 integration branch alongside consolidated Markdown and resolution guards.
-Both source histories are included in the merge. Deployment cutover and retirement
-of the former branch are pending.
+Both source histories are included in the merge. Deployment state is verified
+separately by the managed updater.
 
 The installers, npm package, release badges and `codegraph upgrade` instructions
 below refer to **upstream releases**. This fork's managed deployment is separate:
