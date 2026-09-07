@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- React Router framework-mode pages now appear with their page components and navigation, including nested routes and pathless layouts.
+
 - Endpoint discovery now recognizes literal routes in Hono, Elysia, Fastify, Hyper-Express, Koa router, H3, Bun, Effect v4 and option-free Vixeny builders, and correctly reads Nuxt 4 page groups and server route methods after re-indexing.
 
 - `codegraph init` in a new git worktree now starts from a sibling worktree's index and re-reads only the files that differ, so a fresh worktree is ready in about a second instead of a full index; on an 8,000-file project that was under 1 second against 6. The result is the same graph a full index builds. `--no-seed` builds from scratch.

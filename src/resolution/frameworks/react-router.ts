@@ -36,6 +36,9 @@
  */
 
 import type { Language, Node } from '../../types';
+import type { Node as SyntaxNode } from 'web-tree-sitter';
+import { detectLanguage, getParser } from '../../extraction/grammars';
+import { resolveImportPath } from '../import-resolver';
 import type { FrameworkResolver, ResolutionContext, ResolvedRef, UnresolvedRef } from '../types';
 import { dependsOn } from './package-deps';
 import {
@@ -74,8 +77,9 @@ export const reactRouterRoot = appRootFor;
  */
 function isReactRouterRoute(node: Node): boolean {
   return (
-    (node.language === 'tsx' || node.language === 'jsx') &&
-    node.id === `route:${node.filePath}:${node.startLine}:${node.name}`
+    node.id.startsWith(`route:react-router:${node.filePath}:`) ||
+    ((node.language === 'tsx' || node.language === 'jsx') &&
+      node.id === `route:${node.filePath}:${node.startLine}:${node.name}`)
   );
 }
 
@@ -103,7 +107,8 @@ export function reactRouterTable(context: ResolutionContext): ReactRouterTable {
     // not a destination. A splat matches everything, so it answers nothing.
     if (!node.name.startsWith('/') || node.name.endsWith('*')) continue;
     const root = reactRouterRoot(node.filePath);
-    const path = node.name.length > 1 && node.name.endsWith('/') ? node.name.slice(0, -1) : node.name;
+    const path =
+      node.name.length > 1 && node.name.endsWith('/') ? node.name.slice(0, -1) : node.name;
     addRouteTo(tableAt(root), path, node);
     // React Router's optional parameter: `/cart/:id?` is the screen for
     // `/cart/5` AND for a bare `/cart`, which the navbar's cart icon links
@@ -156,21 +161,78 @@ export const reactRouterResolver: FrameworkResolver = {
   languages: [...ROUTE_LANGUAGES],
 
   detect(context: ResolutionContext): boolean {
-    return dependsOn(context, 'react-router', 'react-router-dom', 'react-router-native');
+    return dependsOn(
+      context,
+      'react-router',
+      'react-router-dom',
+      'react-router-native',
+      '@react-router/dev',
+    );
   },
 
   claimsReference(name: string): boolean {
-    return NAV_CALL.test(name);
+    return NAV_CALL.test(name) || name.startsWith('react-router-module:');
   },
 
+  extract: extractReactRouterConfig,
+
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+    if (ref.referenceName.startsWith('react-router-module:')) {
+      if (ref.referenceKind !== 'references' || !ref.fromNodeId.startsWith('route:react-router:'))
+        return null;
+      const module = ref.referenceName.slice('react-router-module:'.length);
+      const targetPath = resolveImportPath('./' + module, ref.filePath, ref.language, context);
+      if (!targetPath) return null;
+      const source = context.readFile(targetPath);
+      const parser = getParser(detectLanguage(targetPath)!);
+      const tree = source === null ? null : parser?.parse(source);
+      if (!tree) return null;
+      let target: Node | undefined;
+      try {
+        const exported = tree.rootNode.namedChildren.find(
+          (n) => n.type === 'export_statement' && n.children.some((c) => c.type === 'default'),
+        );
+        let declaration =
+          exported?.childForFieldName('declaration') ?? exported?.childForFieldName('value');
+        if (declaration?.type === 'identifier') {
+          const name = declaration.text;
+          declaration = tree.rootNode.namedChildren
+            .map((n) =>
+              n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n,
+            )
+            .flatMap((n) => (n.type === 'lexical_declaration' ? n.namedChildren : [n]))
+            .find((n) => n.childForFieldName('name')?.text === name);
+        }
+        const name = declaration?.childForFieldName('name')?.text;
+        if (name && declaration) {
+          const line = declaration.startPosition.row + 1;
+          target = context
+            .getNodesInFile(targetPath)
+            .find(
+              (n) =>
+                n.name === name &&
+                n.startLine <= line &&
+                n.endLine >= line &&
+                ['function', 'class', 'component', 'constant', 'variable'].includes(n.kind),
+            );
+        }
+      } finally {
+        tree.delete();
+      }
+      return target
+        ? { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'framework' }
+        : null;
+    }
     if (ref.referenceKind !== 'calls') return null;
     const verb = reactRouterNavVerb(ref.referenceName);
     if (!verb) return null;
     if (!ROUTE_LANGUAGES.includes(ref.language)) return null;
     const routes = routesForFile(reactRouterTable(context), ref.filePath);
     if (!routes || routes.exact.size === 0) return null;
-    const lines = context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/) ?? null;
+    const lines =
+      context.getFileLines?.(ref.filePath) ??
+      context.readFile(ref.filePath)?.split(/\r?\n/) ??
+      null;
     if (!lines) return null;
 
     const arg = firstArgumentText(lines, ref.line, ref.column, verb);
@@ -178,7 +240,10 @@ export const reactRouterResolver: FrameworkResolver = {
     let href = parseHrefExpression(arg);
     if (!href) {
       const enclosing = context.getNodeById?.(ref.fromNodeId);
-      const start = enclosing && enclosing.filePath === ref.filePath ? enclosing.startLine : Math.max(1, ref.line - 40);
+      const start =
+        enclosing && enclosing.filePath === ref.filePath
+          ? enclosing.startLine
+          : Math.max(1, ref.line - 40);
       href = readHrefViaLocal(lines, ref.line, ref.column, verb, start);
     }
     if (!href) return null;
@@ -191,7 +256,12 @@ export const reactRouterResolver: FrameworkResolver = {
       original: ref,
       targetNodeId: target.node.id,
       ...(targets.length > 1
-        ? { alsoTargets: targets.slice(1).map((t) => ({ targetNodeId: t.node.id, metadata: { href: t.href.display, navMethod: verb } })) }
+        ? {
+            alsoTargets: targets.slice(1).map((t) => ({
+              targetNodeId: t.node.id,
+              metadata: { href: t.href.display, navMethod: verb },
+            })),
+          }
         : {}),
       confidence: 0.95,
       resolvedBy: 'framework',
@@ -200,3 +270,127 @@ export const reactRouterResolver: FrameworkResolver = {
     };
   },
 };
+
+/** Framework-mode helpers are evaluated only inside the exported literal route tree. */
+export function extractReactRouterConfig(filePath: string, content: string) {
+  const nodes: Node[] = [];
+  const references: UnresolvedRef[] = [];
+  if (
+    !/(?:^|\/)app\/routes\.[jt]s$/.test(filePath.replace(/\\/g, '/')) ||
+    !content.includes('@react-router/dev/routes')
+  )
+    return { nodes, references };
+  const language = detectLanguage(filePath)!;
+  const parser = getParser(language);
+  if (!parser) throw new Error(`React Router extraction requires the ${language} grammar`);
+  const tree = parser.parse(content);
+  if (!tree) return { nodes, references };
+  const unwrap = (node: SyntaxNode | null): SyntaxNode | null => {
+    while (
+      node &&
+      ['satisfies_expression', 'as_expression', 'parenthesized_expression'].includes(node.type)
+    )
+      node = node.namedChildren[0] ?? null;
+    return node;
+  };
+  const literal = (node: SyntaxNode | null): string | null => {
+    node = unwrap(node);
+    return node?.type === 'string' && !node.text.includes('\\') ? node.text.slice(1, -1) : null;
+  };
+  try {
+    const helpers = new Map<string, string>();
+    for (const statement of tree.rootNode.namedChildren) {
+      if (
+        statement.type !== 'import_statement' ||
+        literal(statement.childForFieldName('source')) !== '@react-router/dev/routes'
+      )
+        continue;
+      for (const spec of statement.descendantsOfType('import_specifier')) {
+        if (spec.text.startsWith('type ')) continue;
+        const name = spec.childForFieldName('name')?.text;
+        const alias = spec.childForFieldName('alias')?.text ?? name;
+        if (name && alias && ['route', 'index', 'layout', 'prefix'].includes(name))
+          helpers.set(alias, name);
+      }
+    }
+    const visit = (value: SyntaxNode | null, parent: string): void => {
+      value = unwrap(value);
+      if (value?.type !== 'array') return;
+      for (let item of value.namedChildren) {
+        if (item.type === 'comment') continue;
+        const spread = item.type === 'spread_element';
+        item = (spread ? item.namedChildren[0] : item)!;
+        if (item?.type !== 'call_expression') continue;
+        const fn = item.childForFieldName('function');
+        const helper = fn?.type === 'identifier' ? helpers.get(fn.text) : undefined;
+        if (!helper || spread !== (helper === 'prefix')) continue;
+        const args =
+          item.childForFieldName('arguments')?.namedChildren.filter((n) => n.type !== 'comment') ??
+          [];
+        const segment = helper === 'route' || helper === 'prefix' ? literal(args[0] ?? null) : '';
+        if (segment === null) continue;
+        const routePath = (parent + '/' + segment).replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+        if (helper === 'prefix') {
+          visit(args[1] ?? null, routePath);
+          continue;
+        }
+        const module = literal(args[helper === 'route' ? 1 : 0] ?? null);
+        if (module === null) continue;
+        const tail = args.slice(helper === 'route' ? 2 : 1);
+        // Options may carry an id, but spread/computed options are not statically known.
+        if (
+          tail.some(
+            (n) =>
+              n.type !== 'array' &&
+              (n.type !== 'object' ||
+                n.namedChildren.some(
+                  (p) =>
+                    p.type !== 'pair' ||
+                    p.childForFieldName('key')?.type === 'computed_property_name',
+                )),
+          )
+        )
+          continue;
+        const children = tail.find((n) => n.type === 'array');
+        const beforeChildren = nodes.length;
+        if (children && helper !== 'index') visit(children, routePath);
+        if (helper !== 'layout' && !nodes.slice(beforeChildren).some((n) => n.name === routePath)) {
+          const line = item.startPosition.row + 1;
+          const node: Node = {
+            id: `route:react-router:${filePath}:${item.startIndex}:${routePath}`,
+            kind: 'route',
+            name: routePath,
+            qualifiedName: `${filePath}::${routePath}`,
+            filePath,
+            language,
+            startLine: line,
+            endLine: item.endPosition.row + 1,
+            startColumn: item.startPosition.column,
+            endColumn: item.endPosition.column,
+            updatedAt: Date.now(),
+          };
+          nodes.push(node);
+          references.push({
+            fromNodeId: node.id,
+            referenceName: `react-router-module:${module}`,
+            referenceKind: 'references',
+            filePath,
+            language,
+            line,
+            column: item.startPosition.column,
+          });
+        }
+      }
+    };
+    for (const statement of tree.rootNode.namedChildren) {
+      if (
+        statement.type === 'export_statement' &&
+        statement.children.some((n) => n.type === 'default')
+      )
+        visit(statement.childForFieldName('value'), '');
+    }
+    return { nodes, references };
+  } finally {
+    tree.delete();
+  }
+}
