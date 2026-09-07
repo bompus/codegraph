@@ -34,6 +34,7 @@ import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
+import { extractAnalogRoutes, isAnalogPage } from '../resolution/frameworks/analog';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -1449,6 +1450,7 @@ export class ExtractionOrchestrator {
    * hasn't run yet so single-file re-index paths can detect on the spot.
    */
   private detectedFrameworkNames: string[] | null = null;
+  private frameworkSourceContext: ResolutionContext | null = null;
   private conventionInvalidatedFiles = new Set<string>();
   /**
    * Scope matcher for SCOPED syncs, memoized on the mtimes of the two root
@@ -1558,6 +1560,7 @@ export class ExtractionOrchestrator {
     const fileList = files ?? scanDirectory(this.rootDir);
     const context = this.buildDetectionContext(fileList);
     this.detectedFrameworkNames = detectFrameworks(context).map((r) => r.name);
+    this.frameworkSourceContext = this.buildDetectionContext([...new Set([...this.queries.getAllFilePaths(), ...fileList])]);
     return this.detectedFrameworkNames;
   }
 
@@ -1770,7 +1773,7 @@ export class ExtractionOrchestrator {
     const commitYield = createYielder();
 
     const storeResult = async (filePath: string, content: string, stats: fs.Stats, result: ExtractionResult): Promise<void> => {
-      result = await this.enrichAngularRoutes(filePath, content, result);
+      result = await this.enrichFrameworkRoutes(filePath, content, result);
       processed++;
 
       // WAL hard-cap backstop: between files (never mid-transaction), pause
@@ -2367,13 +2370,17 @@ export class ExtractionOrchestrator {
     }
   }
 
-  private async enrichAngularRoutes(filePath: string, content: string, result: ExtractionResult): Promise<ExtractionResult> {
-    if (!this.ensureDetectedFrameworks().includes('angular') || !isAngularRegistrationFile(content)) return result;
+  private async enrichFrameworkRoutes(filePath: string, content: string, result: ExtractionResult): Promise<ExtractionResult> {
+    const frameworks = this.ensureDetectedFrameworks();
+    const angular = frameworks.includes('angular') && isAngularRegistrationFile(content);
+    const analog = frameworks.includes('analog') && isAnalogPage(filePath);
+    if (!angular && !analog) return result;
     await loadGrammarsForLanguages(['typescript', 'javascript']);
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
-    const angular = extractAngularRoutes(filePath, content, this.buildDetectionContext([]));
-    result.nodes.push(...angular.nodes);
-    result.unresolvedReferences.push(...angular.references);
+    const context = this.frameworkSourceContext!;
+    const extracted = angular ? extractAngularRoutes(filePath, content, context) : extractAnalogRoutes(filePath, content, context);
+    result.nodes.push(...extracted.nodes);
+    result.unresolvedReferences.push(...extracted.references);
     return result;
   }
 
@@ -2384,14 +2391,14 @@ export class ExtractionOrchestrator {
     stats: fs.Stats,
     result: ExtractionResult,
     onYield?: MaybeYield,
-    angularEnriched = false
+    frameworkEnriched = false
   ): Promise<void> {
     // A kernel result can arrive as an undecoded buffer transport (empty
     // node/edge arrays, tables riding in kernelBuffers). Decode it before
     // storing — persisting the transport as-is records the file as having no
     // symbols at all (#1541). No-op for already-decoded results.
     result = materializeKernelResult(result, filePath, language);
-    if (!angularEnriched) result = await this.enrichAngularRoutes(filePath, content, result);
+    if (!frameworkEnriched) result = await this.enrichFrameworkRoutes(filePath, content, result);
 
     // Bulk inserts run in bounded sub-transactions with a yield between, so a
     // giant generated file (tens of thousands of symbols) can't block the
@@ -2886,6 +2893,16 @@ export class ExtractionOrchestrator {
         : previous.includes('react-router-files');
       this.detectedFrameworkNames = null;
       const detected = this.ensureDetectedFrameworks(currentFiles);
+      if (detected.includes('analog') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:analog:'))) {
+        const scope = this.scopedSyncMatcher();
+        for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
+          if (!isAnalogPage(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
+          filesToIndex.push(filePath);
+          this.conventionInvalidatedFiles.add(filePath);
+          changedFilePaths.push(filePath);
+          filesModified++;
+        }
+      }
       if (detected.includes('angular') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:angular:'))) {
         const scope = this.scopedSyncMatcher();
         for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
