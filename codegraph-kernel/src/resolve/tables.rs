@@ -330,6 +330,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "react-native-bridge" => false,
         "react-router" => rr_nav_re().is_match(name) || name.starts_with("react-router-module:"),
         "rails" => rails_claim_re().is_match(name),
+        "solid-router" => name.starts_with("solid-component:") || name.starts_with("solid-lazy:"),
         "spring" => name.ends_with(":prefix"),
         "sveltekit-router" => matches!(name, "goto" | "redirect"),
         "swift-objc-bridge" => name.contains(':'),
