@@ -1033,7 +1033,7 @@ export class CodeGraph {
           const configFiles = new Set(
             this.queries
               .getNodesByKind('route')
-              .filter((n) => n.id.startsWith('route:react-router:'))
+              .filter((n) => n.id.startsWith('route:react-router:') && /(?:^|\/)app\/routes\.[jt]s$/.test(n.filePath))
               .map((n) => n.filePath),
           );
           for (const file of configFiles) {
