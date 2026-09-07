@@ -39,11 +39,13 @@ guessed.
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts` | — |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
 | React Router | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts` | proshop; pinned official framework config (7 pages) |
-| TanStack Router | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts` | TanStack examples, fastapi-template frontend |
+| TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges) |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts` | sveltekit-realworld (31 edges) |
 
 React Router framework mode reads default exported literal arrays in `app/routes.ts` or `app/routes.js`, using imported `route`, `index`, `layout`, and spread `prefix` helpers. Module paths bind named default components; nested index pages take precedence over their parent. [Official source fixture](https://github.com/remix-run/react-router/blob/7aea711dd1ae2bc5a076d13ff17291829690fa74/docs/start/framework/routing.md#L28): seven expected pages, verified through indexing and navigation. Tests also cover module/config sync and a fresh compiled process using parse/resolver workers. Custom app directories, computed arrays, `relative`, anonymous defaults, and re-exports remain unsupported.
+
+TanStack Start reads imported `createFileRoute` calls assigned to exported `const Route`: literal `server.handlers` tables, including `ANY`, and the destructured `createHandlers` callback form. Named handlers and direct inline calls bind through the existing HTTP reader. Page/API combinations retain both nodes; server-only routes do not become pages. [Pinned official handler syntax](https://github.com/TanStack/router/blob/a58e01c604e2d189ef8c8c1ad6ac8747e03aa88c/docs/start/framework/react/guide/server-routes.md#L172), [executable middleware fixture](https://github.com/TanStack/router/blob/a58e01c604e2d189ef8c8c1ad6ac8747e03aa88c/e2e/react-start/server-routes/src/routes/api/middleware-context.ts). Computed/spread tables, member handlers, custom factories and server `update` chains remain unresolved. `createServerFn` has no declared public route and gets no fabricated endpoint.
 
 Shared machinery all six use, in `frameworks/expo-router.ts`: `RouteTable` /
 `RootedRouteTable`, `routesForFile`, `addRouteTo`, `matchRoute`, `appRootFor`,

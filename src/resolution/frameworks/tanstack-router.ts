@@ -38,6 +38,9 @@
  */
 
 import type { Language, Node } from '../../types';
+import type { Node as SyntaxNode } from 'web-tree-sitter';
+import { getParser } from '../../extraction/grammars';
+import { httpHandlerReferences } from './http-routing';
 import type {
   FrameworkExtractionResult,
   FrameworkResolver,
@@ -64,6 +67,185 @@ import {
 import { destinationsForHref } from './nextjs';
 
 const ROUTE_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'tsx', 'jsx'];
+
+/** Start's exported file route can contain an HTTP table, a page, or both. */
+export function extractTanstackServerRoutes(filePath: string, content: string) {
+  const nodes: Node[] = [];
+  const references: UnresolvedRef[] = [];
+  const pages: TanstackRouteEntry[] = [];
+  const lines = new Set<number>();
+  const result = { nodes, references, pages, lines };
+  if (!content.includes('server') || !/@tanstack\/(?:react|solid)-router/.test(content))
+    return result;
+  const language = languageForFile(filePath);
+  const parser = getParser(language);
+  if (!parser) throw new Error(`TanStack server extraction requires the ${language} grammar`);
+  const tree = parser.parse(content);
+  if (!tree) return result;
+  const field = (n: SyntaxNode, name: string) => n.childForFieldName(name);
+  const unwrap = (n: SyntaxNode | null): SyntaxNode | null => {
+    while (
+      n &&
+      ['as_expression', 'satisfies_expression', 'parenthesized_expression'].includes(n.type)
+    )
+      n = n.namedChildren[0] ?? null;
+    return n;
+  };
+  const literal = (n: SyntaxNode | null) =>
+    n?.type === 'string' && !n.text.includes('\\') ? n.text.slice(1, -1) : null;
+  const key = (n: SyntaxNode | null) =>
+    n && ['property_identifier', 'identifier', 'shorthand_property_identifier'].includes(n.type)
+      ? n.text
+      : literal(n);
+  const properties = (n: SyntaxNode | null): Map<string, SyntaxNode> | null => {
+    n = unwrap(n);
+    if (n?.type !== 'object') return null;
+    const out = new Map<string, SyntaxNode>();
+    for (const child of n.namedChildren) {
+      if (child.type === 'comment') continue;
+      const name = key(field(child, 'key') ?? field(child, 'name') ?? child);
+      if (!name || child.type === 'spread_element') return null;
+      out.set(name, child.type === 'pair' ? field(child, 'value')! : child);
+    }
+    return out;
+  };
+  const argumentsOf = (n: SyntaxNode) =>
+    field(n, 'arguments')?.namedChildren.filter((c) => c.type !== 'comment') ?? [];
+  try {
+    const factories = new Set<string>();
+    for (const statement of tree.rootNode.namedChildren) {
+      if (
+        statement.type !== 'import_statement' ||
+        /^import\s+type\b/.test(statement.text) ||
+        !['@tanstack/react-router', '@tanstack/solid-router'].includes(
+          literal(field(statement, 'source')) ?? '',
+        )
+      )
+        continue;
+      for (const spec of statement.descendantsOfType('import_specifier')) {
+        if (field(spec, 'name')?.text === 'createFileRoute' && !spec.text.startsWith('type '))
+          factories.add(field(spec, 'alias')?.text ?? 'createFileRoute');
+      }
+    }
+    for (const statement of tree.rootNode.namedChildren) {
+      if (statement.type !== 'export_statement') continue;
+      const declaration = field(statement, 'declaration');
+      if (declaration?.type !== 'lexical_declaration' || !declaration.text.startsWith('const '))
+        continue;
+      for (const variable of declaration.namedChildren) {
+        if (field(variable, 'name')?.text !== 'Route') continue;
+        const call = unwrap(field(variable, 'value'));
+        if (call?.type !== 'call_expression') continue;
+        const factory = field(call, 'function');
+        if (
+          factory?.type !== 'call_expression' ||
+          !factories.has(field(factory, 'function')?.text ?? '')
+        )
+          continue;
+        const rawPath = literal(argumentsOf(factory)[0] ?? null);
+        const optionsNode = unwrap(argumentsOf(call)[0] ?? null);
+        if (!optionsNode?.namedChildren.some((n) => key(field(n, 'key') ?? n) === 'server'))
+          continue;
+        const line = call.startPosition.row + 1;
+        lines.add(line);
+        const options = properties(optionsNode);
+        const routePath = rawPath === null ? null : tanstackPath(rawPath);
+        if (!options || routePath === null || rawPath === null) continue;
+        const component = options.get('component');
+        if (
+          component &&
+          [
+            'identifier',
+            'arrow_function',
+            'function_expression',
+            'call_expression',
+            'member_expression',
+          ].includes(component.type) &&
+          component.text !== 'undefined' &&
+          !isPathlessLayout(rawPath) &&
+          !isLayoutFile(filePath, content)
+        ) {
+          pages.push({
+            path: routePath,
+            component: component.type === 'identifier' ? component.text : null,
+            index: rawPath.length > 1 && rawPath.endsWith('/'),
+            fileBased: true,
+            line,
+          });
+        }
+        let tableNode = unwrap(properties(options.get('server') ?? null)?.get('handlers') ?? null);
+        if (tableNode && ['arrow_function', 'function_expression'].includes(tableNode.type)) {
+          const params = field(tableNode, 'parameters');
+          const pattern = params?.descendantsOfType('object_pattern')[0];
+          let helper: string | undefined;
+          for (const binding of pattern?.namedChildren ?? []) {
+            if (
+              binding.type === 'shorthand_property_identifier_pattern' &&
+              binding.text === 'createHandlers'
+            )
+              helper = binding.text;
+            if (
+              binding.type === 'pair_pattern' &&
+              key(field(binding, 'key')) === 'createHandlers' &&
+              field(binding, 'value')?.type === 'identifier'
+            )
+              helper = field(binding, 'value')!.text;
+          }
+          let body = unwrap(field(tableNode, 'body'));
+          if (body?.type === 'statement_block') {
+            const statements = body.namedChildren.filter((n) => n.type !== 'comment');
+            body =
+              statements.length === 1 && statements[0]!.type === 'return_statement'
+                ? unwrap(statements[0]!.namedChildren[0] ?? null)
+                : null;
+          }
+          tableNode =
+            body?.type === 'call_expression' && helper && field(body, 'function')?.text === helper
+              ? unwrap(argumentsOf(body)[0] ?? null)
+              : null;
+        }
+        const table = properties(tableNode);
+        if (!table) continue;
+        for (const [method, value] of table) {
+          if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'ANY'].includes(method))
+            continue;
+          const handler =
+            value.type === 'object' ? (properties(value)?.get('handler') ?? null) : value;
+          if (
+            !handler ||
+            ![
+              'identifier',
+              'shorthand_property_identifier',
+              'arrow_function',
+              'function_expression',
+              'method_definition',
+            ].includes(handler.type)
+          )
+            continue;
+          const name = `${method} ${routePath}`;
+          const node: Node = {
+            id: `route:${filePath}:${value.startIndex}:${name}:tanstack-server`,
+            kind: 'route',
+            name,
+            qualifiedName: `${filePath}::${name}`,
+            filePath,
+            language,
+            startLine: value.startPosition.row + 1,
+            endLine: value.endPosition.row + 1,
+            startColumn: value.startPosition.column,
+            endColumn: value.endPosition.column,
+            updatedAt: Date.now(),
+          };
+          nodes.push(node);
+          references.push(...httpHandlerReferences(node, handler));
+        }
+      }
+    }
+    return result;
+  } finally {
+    tree.delete();
+  }
+}
 
 // =============================================================================
 // Paths
@@ -181,9 +363,18 @@ export function parseTanstackRoutes(content: string): TanstackRouteEntry[] {
     if (raw === null) continue;
     const path = tanstackPath(raw);
     if (path === null || isPathlessLayout(raw)) continue;
+    const chain = chainAfter(safe, close + 1);
+    const component = componentIn(chain);
+    const brace = chain.indexOf('{');
+    if (
+      !component &&
+      brace >= 0 &&
+      readFields(chain, brace, matchBracket(chain, brace)).has('server')
+    )
+      continue;
     out.push({
       path,
-      component: componentIn(chainAfter(safe, close + 1)),
+      component,
       // `createFileRoute('/dashboard/')` is the index page AT `/dashboard`;
       // `createFileRoute('/dashboard')` is the layout around it.
       index: raw.length > 1 && raw.endsWith('/'),
@@ -193,8 +384,18 @@ export function parseTanstackRoutes(content: string): TanstackRouteEntry[] {
   }
 
   // ---- code-based: a fragment per route, composed through its parent ----
-  const decls = new Map<string, { path: string | null; parent: string | null; component: string | null; root: boolean; index: number }>();
-  const named = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=\s*create(Root)?Route\s*\(\s*\{/g;
+  const decls = new Map<
+    string,
+    {
+      path: string | null;
+      parent: string | null;
+      component: string | null;
+      root: boolean;
+      index: number;
+    }
+  >();
+  const named =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=\s*create(Root)?Route\s*\(\s*\{/g;
   let d: RegExpExecArray | null;
   while ((d = named.exec(safe)) !== null) {
     const brace = safe.indexOf('{', d.index + d[0].length - 1);
@@ -204,7 +405,9 @@ export function parseTanstackRoutes(content: string): TanstackRouteEntry[] {
     const pathField = fields.get('path');
     const path = d[2] ? '/' : pathField ? readStringAt(pathField.text.trimStart(), 0) : null;
     const parentField = fields.get('getParentRoute');
-    const parent = parentField ? (/=>\s*([A-Za-z_$][\w$]*)/.exec(parentField.text)?.[1] ?? null) : null;
+    const parent = parentField
+      ? (/=>\s*([A-Za-z_$][\w$]*)/.exec(parentField.text)?.[1] ?? null)
+      : null;
     const componentField = fields.get('component');
     decls.set(d[1]!, {
       path,
@@ -218,7 +421,7 @@ export function parseTanstackRoutes(content: string): TanstackRouteEntry[] {
   // with `path: '/'` is what renders there. A parent with no index child still
   // is the page at its own address — its outlet is simply empty.
   const wrapsAnIndex = new Set(
-    [...decls.values()].filter((r) => r.path === '/' && r.parent !== null).map((r) => r.parent!)
+    [...decls.values()].filter((r) => r.path === '/' && r.parent !== null).map((r) => r.parent!),
   );
   for (const [name, decl] of decls) {
     if (decl.path === null) continue; // a pathless layout contributes no address
@@ -231,7 +434,13 @@ export function parseTanstackRoutes(content: string): TanstackRouteEntry[] {
     if (full === null) continue;
     const path = tanstackPath(full);
     if (path === null) continue;
-    out.push({ path, component: decl.component, index: decl.path === '/', fileBased: false, line: lineOf(decl.index) });
+    out.push({
+      path,
+      component: decl.component,
+      index: decl.path === '/',
+      fileBased: false,
+      line: lineOf(decl.index),
+    });
   }
   return out;
 }
@@ -239,7 +448,7 @@ export function parseTanstackRoutes(content: string): TanstackRouteEntry[] {
 /** The address a code-based route sits at, following `getParentRoute` up. */
 function composePath(
   name: string,
-  decls: Map<string, { path: string | null; parent: string | null }>
+  decls: Map<string, { path: string | null; parent: string | null }>,
 ): string | null {
   const segs: string[] = [];
   let cur: string | null = name;
@@ -281,7 +490,11 @@ function chainAfter(s: string, at: number): string {
 function componentIn(text: string): string | null {
   const lazy = /\bimport\s*\(\s*['"`]([^'"`]+)['"`]/.exec(text);
   if (lazy) return (lazy[1]!.split('/').pop() ?? '').replace(/\.\w+$/, '') || null;
-  return /(?:^|[^\w$])component\s*:\s*([A-Z][A-Za-z0-9_]*)/.exec(text)?.[1] ?? /^\s*([A-Z][A-Za-z0-9_]*)\s*$/.exec(text)?.[1] ?? null;
+  return (
+    /(?:^|[^\w$])component\s*:\s*([A-Z][A-Za-z0-9_]*)/.exec(text)?.[1] ??
+    /^\s*([A-Z][A-Za-z0-9_]*)\s*$/.exec(text)?.[1] ??
+    null
+  );
 }
 
 /** The id a TanStack route carries — a verbatim reconstruction, so the table can recognise its own. */
@@ -371,7 +584,7 @@ export const tanstackRouterResolver: FrameworkResolver = {
       '@tanstack/solid-router',
       '@tanstack/router',
       '@tanstack/react-start',
-      '@tanstack/start'
+      '@tanstack/start',
     );
   },
 
@@ -385,12 +598,17 @@ export const tanstackRouterResolver: FrameworkResolver = {
     // describes many, and its root component draws the outlet they render into
     // — judging that file by the same rule would drop every route in it.
     const layout = isLayoutFile(filePath, content);
-    const entries = parseTanstackRoutes(content).filter((e) => !(e.fileBased && layout));
-    if (entries.length === 0) return { nodes: [], references: [] };
+    const server = extractTanstackServerRoutes(filePath, content);
+    const entries = [
+      ...parseTanstackRoutes(content).filter(
+        (e) => !(e.fileBased && (layout || server.lines.has(e.line))),
+      ),
+      ...server.pages,
+    ];
     const language = languageForFile(filePath);
     const now = Date.now();
-    const nodes: Node[] = [];
-    const references: UnresolvedRef[] = [];
+    const nodes: Node[] = server.nodes;
+    const references: UnresolvedRef[] = server.references;
     // An index route is the page AT its address; a layout at the same address
     // wraps it. One address, one screen — the index wins it.
     const byPath = new Map<string, TanstackRouteEntry>();
@@ -438,7 +656,10 @@ export const tanstackRouterResolver: FrameworkResolver = {
     if (!ROUTE_LANGUAGES.includes(ref.language)) return null;
     const routes = routesForFile(tanstackTable(context), ref.filePath);
     if (!routes || routes.exact.size === 0) return null;
-    const lines = context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/) ?? null;
+    const lines =
+      context.getFileLines?.(ref.filePath) ??
+      context.readFile(ref.filePath)?.split(/\r?\n/) ??
+      null;
     if (!lines) return null;
 
     const arg = firstArgumentText(lines, ref.line, ref.column, verb);
@@ -446,7 +667,10 @@ export const tanstackRouterResolver: FrameworkResolver = {
     let href = tanstackDestination(arg);
     if (!href) {
       const enclosing = context.getNodeById?.(ref.fromNodeId);
-      const start = enclosing && enclosing.filePath === ref.filePath ? enclosing.startLine : Math.max(1, ref.line - 40);
+      const start =
+        enclosing && enclosing.filePath === ref.filePath
+          ? enclosing.startLine
+          : Math.max(1, ref.line - 40);
       href = readHrefViaLocal(lines, ref.line, ref.column, verb, start);
     }
     if (!href) return null;
@@ -459,7 +683,12 @@ export const tanstackRouterResolver: FrameworkResolver = {
       original: ref,
       targetNodeId: target.node.id,
       ...(targets.length > 1
-        ? { alsoTargets: targets.slice(1).map((t) => ({ targetNodeId: t.node.id, metadata: { href: t.href.display, navMethod: verb } })) }
+        ? {
+            alsoTargets: targets.slice(1).map((t) => ({
+              targetNodeId: t.node.id,
+              metadata: { href: t.href.display, navMethod: verb },
+            })),
+          }
         : {}),
       confidence: 0.95,
       resolvedBy: 'framework',
