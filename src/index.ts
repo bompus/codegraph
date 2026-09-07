@@ -579,7 +579,7 @@ export class CodeGraph {
         if (result.success && result.filesIndexed > 0) {
           const tReinit = Date.now();
           this.resolver.initialize();
-          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:react-router:')))
+          if (this.queries.getNodesByKind('route').some(n => /^route:(react-router|redwood):/.test(n.id)))
             await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
           // Cross-file finalization (e.g. NestJS RouterModule prefixes). Runs
           // before resolution so updated names show up in subsequent reads.
@@ -834,7 +834,7 @@ export class CodeGraph {
         // (regex over *.module.ts only).
         if (result.filesAdded > 0 || result.filesModified > 0) {
           this.resolver.initialize();
-          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:react-router:')))
+          if (this.queries.getNodesByKind('route').some(n => /^route:(react-router|redwood):/.test(n.id)))
             await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
           this.resolver.runPostExtract();
         } else if (result.filesRemoved > 0) {
@@ -846,6 +846,10 @@ export class CodeGraph {
           // sees the post-removal state. (runPostExtract above clears caches
           // itself, so the changed-files branch is already covered.)
           this.resolver.clearCaches();
+          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:redwood:'))) {
+            await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
+            this.resolver.runPostExtract();
+          }
         }
 
         // Resolve references if files were updated
