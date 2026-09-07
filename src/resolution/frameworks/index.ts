@@ -27,6 +27,7 @@ import { solidRouterResolver } from './solid-router';
 import { solidStartResolver } from './solid-start';
 import { qwikCityResolver } from './qwik-city';
 import { vikeResolver } from './vike';
+import { wakuResolver } from './waku';
 import { djangoResolver, flaskResolver, fastapiResolver } from './python';
 import { railsResolver } from './ruby';
 import { springResolver } from './java';
@@ -77,6 +78,7 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   solidStartResolver,
   qwikCityResolver,
   vikeResolver,
+  wakuResolver,
   // Python
   djangoResolver,
   flaskResolver,
