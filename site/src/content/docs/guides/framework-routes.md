@@ -40,6 +40,9 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Angular Router** | `provideRouter` / `RouterModule.forRoot` arrays, nested children, relative component imports and static lazy components/route arrays/NgModules |
 | **Analog** | Registered default `src/app/pages/**/*.page.ts` pages, linked to named default classes; directory layouts, dot paths, index/pathless segments and parameters |
 | **Solid Router** | Imported `Router`/`Route` JSX and registered literal configuration, nested paths, path arrays and bases; imported/local components and static lazy defaults |
+| **SolidStart** | Default file pages and HTTP-method exports; exact local targets, nested layouts, groups, parameters and GET-to-HEAD fallback |
+
+SolidStart coverage targets version 2.0.4: option-free `solidStart()` in Vite and, for pages, `FileRoutes` directly inside the default app's `Router`. A file can supply both a page and endpoints. Named local functions and constant function exports are supported. Custom roots/options, dynamic config, page route overrides, anonymous/re-exported handlers and Markdown remain unsupported. Optional parameters apply to pages only; OPTIONS-only APIs are excluded by this version's runtime.
 
 Solid Router emits leaf routes, preserving nested path composition even when a child begins with `/`. Parent components and the router root remain layouts. Cross-file configuration, other router variants, dynamic/spread declarations, inline/anonymous components and lazy re-exports are unsupported.
 

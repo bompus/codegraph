@@ -35,6 +35,7 @@ import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import { extractAnalogRoutes, isAnalogPage } from '../resolution/frameworks/analog';
+import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2374,11 +2375,14 @@ export class ExtractionOrchestrator {
     const frameworks = this.ensureDetectedFrameworks();
     const angular = frameworks.includes('angular') && isAngularRegistrationFile(content);
     const analog = frameworks.includes('analog') && isAnalogPage(filePath);
-    if (!angular && !analog) return result;
-    await loadGrammarsForLanguages(['typescript', 'javascript']);
+    const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
+    if (!angular && !analog && !solidStart) return result;
+    await loadGrammarsForLanguages(solidStart ? ['typescript', 'javascript', 'tsx', 'jsx'] : ['typescript', 'javascript']);
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
     const context = this.frameworkSourceContext!;
-    const extracted = angular ? extractAngularRoutes(filePath, content, context) : extractAnalogRoutes(filePath, content, context);
+    const extracted = angular ? extractAngularRoutes(filePath, content, context)
+      : analog ? extractAnalogRoutes(filePath, content, context)
+      : extractSolidStartRoutes(filePath, content, context);
     result.nodes.push(...extracted.nodes);
     result.unresolvedReferences.push(...extracted.references);
     return result;
@@ -2893,6 +2897,16 @@ export class ExtractionOrchestrator {
         : previous.includes('react-router-files');
       this.detectedFrameworkNames = null;
       const detected = this.ensureDetectedFrameworks(currentFiles);
+      if (detected.includes('solid-start') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:solid-start:'))) {
+        const scope = this.scopedSyncMatcher();
+        for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
+          if (!isSolidStartRoute(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
+          filesToIndex.push(filePath);
+          this.conventionInvalidatedFiles.add(filePath);
+          changedFilePaths.push(filePath);
+          filesModified++;
+        }
+      }
       if (detected.includes('analog') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:analog:'))) {
         const scope = this.scopedSyncMatcher();
         for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
