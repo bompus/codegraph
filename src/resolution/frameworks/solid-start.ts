@@ -240,7 +240,9 @@ function moduleExports(file: string, content: string): Module {
         bindings.delete(name.text);
     }
     const target = (name: string): Target | null => {
-      const node = bindings.get(name);
+      const binding = bindings.get(name);
+      const node =
+        binding?.type === 'variable_declarator' ? binding.childForFieldName('value') : binding;
       return node
         ? {
             name,

@@ -84,6 +84,24 @@ describe('SolidStart 2 default routes', () => {
         .some((e) => e.kind === 'calls' && cg!.getNode(e.target)?.name === 'load'),
     ).toBe(true);
   });
+  it('links multiline function values to their actual symbol positions', async () => {
+    setup();
+    write(
+      'src/routes/index.tsx',
+      'const Home =\n  () => <p/>;\nexport default Home;\nexport const GET =\n  () => 1;',
+    );
+    cg = await CodeGraph.init(dir, { index: true });
+    const roots = routeRoots(cg, routes());
+    expect(
+      routes()
+        .map((route) => [route.name, roots.get(route.id)?.node.name])
+        .sort(),
+    ).toEqual([
+      ['/', 'Home'],
+      ['GET /', 'GET'],
+      ['HEAD /', 'GET'],
+    ]);
+  });
   it('composes parameters, groups, literal dots and page-only hierarchy', async () => {
     setup();
     for (const [file, name] of [
