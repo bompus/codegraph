@@ -50,6 +50,13 @@ val topDelegated by lazy { WidgetK(1) }
 val (destA, destB) = makePair()
 val withGetter: Int
     get() = 42
+val initLambda: () -> Unit = { caller() }
+val initSam = Runnable { caller() }
+val initObject = object : Runnable {
+    override fun run() {
+        caller()
+    }
+}
 
 class WidgetK(val size: Int, private var name: String = defaultName()) {
     val area: Int = size * size
@@ -279,4 +286,21 @@ val mdTwoInOne = "see a.md and also sub/b.mdx"
 
 fun mdLoad() {
     loadDoc("docs/deep/nested.markdown")
+}
+
+class AccessorK {
+    val sameLineGetter: Int get() = compute()
+    var sameLinePair: Int get() = compute()
+        set(v) { draw(v) }
+}
+
+class SiblingAccessorK {
+    var nextLine: Int = 0
+        get() = compute()
+        set(v) { draw(v) }
+    val (localA, localB) = makePair()
+    init {
+        val fromInit = compute()
+        register(fromInit)
+    }
 }

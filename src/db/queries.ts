@@ -56,6 +56,24 @@ function isLowValueFile(filePath: string, generated?: ReadonlySet<string>): bool
 const SQLITE_PARAM_CHUNK_SIZE = 500;
 
 /**
+ * A SQL predicate: is the node aliased `alias` a member an INTERFACE declares?
+ *
+ * `method_signature` / `property_signature` enter the graph as `method` /
+ * `property` nodes hung off their interface by a `contains` edge (#1638). They
+ * have no body and originate no behaviour, so for a structural judgement about
+ * a FILE they are the interface restated, not an extra thing the file declares.
+ * See {@link QueryBuilder.getAmbientDeclarationPathsAmong}, the one caller, for
+ * why treating them as opaque would break that rule in three places at once.
+ *
+ * Seeks `idx_edges_target_kind`, so it costs a key lookup per row rather than a
+ * join over the whole edge table.
+ */
+const IS_INTERFACE_MEMBER = (alias: string): string => `EXISTS (
+  SELECT 1 FROM edges ce JOIN nodes owner ON owner.id = ce.source
+   WHERE ce.target = ${alias}.id AND ce.kind = 'contains' AND owner.kind = 'interface'
+)`;
+
+/**
  * How much of the exact-name bonus a `deprioritize`d path keeps (#982). Damped
  * rather than zeroed: a query that genuinely targets that tree must still rank
  * it, the same "discount, don't erase" rule the path penalty follows.
@@ -236,6 +254,7 @@ export class QueryBuilder {
     updateNode?: SqliteStatement;
     deleteNode?: SqliteStatement;
     deleteNodesByFile?: SqliteStatement;
+    deleteLiteralsByFile?: SqliteStatement;
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
@@ -446,6 +465,43 @@ export class QueryBuilder {
     // import-only name can never be surfaced (getSegmentMatches requires a
     // real definition), so its rows would only inflate the rarity statistics.
     if (this.isSegmentableKind(node.kind)) this.insertNameSegments(node.name);
+    const literalRows: unknown[][] = [];
+    this.collectLiteralRows(node, literalRows);
+    this.insertLiteralRows(literalRows);
+  }
+
+  /** Rows for the `literals` side table (see schema.sql) — one per captured literal. */
+  private collectLiteralRows(node: Node, rows: unknown[][]): void {
+    for (const value of node.literals ?? []) rows.push([value, node.id, node.filePath]);
+  }
+
+  private insertLiteralRows(rows: unknown[][]): void {
+    this.runBatched(
+      'insertLiterals',
+      'INSERT OR IGNORE INTO literals (value, node_id, file_path) VALUES ',
+      '(?,?,?)',
+      rows
+    );
+  }
+
+  /**
+   * Node ids whose body holds one of `values` verbatim, joined to nodes so a
+   * row left behind by a stale index is never surfaced. Explore seeds on these
+   * ahead of every name-derived candidate.
+   */
+  findNodeIdsByLiteral(values: string[], limit = 24): string[] {
+    if (values.length === 0) return [];
+    const placeholders = values.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT l.node_id AS id FROM literals l
+         JOIN nodes n ON n.id = l.node_id
+         WHERE l.value IN (${placeholders})
+         ORDER BY n.kind = 'file', n.file_path, n.start_line
+         LIMIT ?`
+      )
+      .all(...values, limit) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
   }
 
   /** Which node kinds contribute their name to the segment vocabulary — the
@@ -477,6 +533,7 @@ export class QueryBuilder {
       // per-.run() call overhead dominates the store phase on full indexes.
       const rows: unknown[][] = [];
       const segmentRows: unknown[][] = [];
+      const literalRows: unknown[][] = [];
       for (const node of nodes) {
         if (!node.id || !node.kind || !node.name || !node.filePath || !node.language) {
           console.error('[CodeGraph] Skipping node with missing required fields:', {
@@ -513,6 +570,7 @@ export class QueryBuilder {
           node.updatedAt ?? Date.now(),
         ]);
         if (this.isSegmentableKind(node.kind)) this.collectNameSegmentRows(node.name, segmentRows);
+        this.collectLiteralRows(node, literalRows);
       }
       this.runBatched(
         'insertNodes',
@@ -532,6 +590,7 @@ export class QueryBuilder {
         '(?,?)',
         segmentRows
       );
+      this.insertLiteralRows(literalRows);
     })();
   }
 
@@ -690,7 +749,16 @@ export class QueryBuilder {
         this.nodeCache.delete(id);
       }
     }
+    if (!this.stmts.deleteLiteralsByFile) {
+      this.stmts.deleteLiteralsByFile = this.db.prepare('DELETE FROM literals WHERE file_path = ?');
+    }
+    this.stmts.deleteLiteralsByFile.run(filePath);
     this.stmts.deleteNodesByFile.run(filePath);
+  }
+
+  /** Wipe the literal table; a full index calls this beside clearNameSegmentVocab. */
+  clearLiterals(): void {
+    this.db.exec('DELETE FROM literals');
   }
 
   // ===========================================================================
@@ -2184,6 +2252,12 @@ export class QueryBuilder {
    * build script does its work on the way down the file. `instantiates` counts
    * the same way — `new Server(...)` at module scope is the same act.
    *
+   * A call made while initializing a module-level `variable` / `constant` —
+   * `const service = new Service()`, `app = FastAPI()` — is attributed to the
+   * declared name (#693), not to the file, so the file's own edges alone would
+   * miss most of what a real entry point runs. Those names are the file's
+   * top-level code too, so `tops` counts them alongside the file node.
+   *
    * Ranking multiplies the two things an entry point does: it runs (calls), and
    * it wires the project together (distinct other files its symbols reach). One
    * alone is misleading — a registration table makes hundreds of module-level
@@ -2196,12 +2270,25 @@ export class QueryBuilder {
     if (limit <= 0) return [];
     return this.db
       .prepare(
-        `WITH runs AS (
-             SELECT e.source AS id, COUNT(*) AS calls
-               FROM edges e
-               JOIN nodes n ON n.id = e.source
-              WHERE n.kind = 'file' AND e.kind IN ('calls', 'instantiates')
-           GROUP BY e.source
+        `WITH tops AS (
+             SELECT n.id AS file_id, n.id AS src
+               FROM nodes n
+              WHERE n.kind = 'file'
+             UNION ALL
+             SELECT c.source AS file_id, c.target AS src
+               FROM edges c
+               JOIN nodes f ON f.id = c.source
+               JOIN nodes v ON v.id = c.target
+              WHERE c.kind = 'contains'
+                AND f.kind = 'file'
+                AND v.kind IN ('variable', 'constant')
+         ),
+         runs AS (
+             SELECT t.file_id AS id, COUNT(*) AS calls
+               FROM tops t
+               JOIN edges e ON e.source = t.src
+              WHERE e.kind IN ('calls', 'instantiates')
+           GROUP BY t.file_id
          ),
          cand AS (
              SELECT r.id AS id, n.file_path AS fp, r.calls AS calls
@@ -2736,6 +2823,29 @@ export class QueryBuilder {
    *      restricted to the candidate list: the file that imports it is usually
    *      not itself a candidate.
    *
+   * ### Interface MEMBERS are transparent to all four conditions
+   *
+   * A `method_signature` / `property_signature` inside an interface enters the
+   * graph as a `method` / `property` node (#1638). Read literally that would
+   * break every condition here at once: condition 2 sees non-type kinds and
+   * stops flagging, and — worse, because it is silent — condition 4 starts
+   * seeing inbound `calls` edges the moment a call site through the shim's API
+   * finally has a signature to land on. An ambient `.d.ts` would quietly lose
+   * its damping precisely BECAUSE the platform API it declares is widely used.
+   *
+   * So an interface-owned member is treated the way `parameter` already is: it
+   * neither qualifies, disqualifies, nor counts as inbound dependency. That is
+   * not a new judgement call, it is what keeps the rule measuring what it was
+   * measured on — before #1638 these nodes did not exist, so excluding them
+   * reproduces the 0–4% flag rate the thresholds above were tuned against. It
+   * is also the semantically right answer: a signature with no body is on the
+   * same side of the line as the interface that owns it, and a call edge
+   * landing on one is still not a file that can answer a flow question.
+   *
+   * The interface ITSELF is untouched: the `references` edges an importing
+   * module aims at `UploadStorage` still disqualify the file under (4), which
+   * is what keeps a depended-on `types.ts` out of the flag.
+   *
    * Bounded-lookup like {@link getGeneratedPathsAmong}: callers hold a ranked
    * candidate list, so this is a partial-index probe over a handful of paths.
    */
@@ -2751,14 +2861,15 @@ export class QueryBuilder {
       // things the file declares, so they neither qualify nor disqualify.
       const rows = this.db
         .prepare(`
-          SELECT file_path,
-                 SUM(CASE WHEN kind NOT IN ('file','import','export','parameter')
+          SELECT n.file_path AS file_path,
+                 SUM(CASE WHEN n.kind NOT IN ('file','import','export','parameter')
+                           AND NOT ${IS_INTERFACE_MEMBER('n')}
                           THEN 1 ELSE 0 END) AS declared,
-                 SUM(CASE WHEN kind IN ('interface','type_alias','enum','enum_member','namespace')
+                 SUM(CASE WHEN n.kind IN ('interface','type_alias','enum','enum_member','namespace')
                           THEN 1 ELSE 0 END) AS typeDeclared
-          FROM nodes
-          WHERE file_path IN (${placeholders})
-          GROUP BY file_path
+          FROM nodes n
+          WHERE n.file_path IN (${placeholders})
+          GROUP BY n.file_path
         `)
         .all(...chunk) as Array<{ file_path: string; declared: number; typeDeclared: number }>;
       let candidates = rows
@@ -2775,17 +2886,22 @@ export class QueryBuilder {
         );
         candidates = candidates.filter((p) => !hit.has(p));
       };
-      // (3) originates behaviour
+      // (3) originates behaviour — a signature has no body to originate from,
+      // so an edge attributed to one is not evidence about this file.
       disqualify(`
         SELECT DISTINCT n.file_path AS file_path
         FROM edges e JOIN nodes n ON n.id = e.source
         WHERE e.kind IN ('calls','instantiates') AND n.file_path IN ($IN$)
+          AND NOT ${IS_INTERFACE_MEMBER('n')}
       `);
-      // (4) something outside the file depends on it
+      // (4) something outside the file depends on it — but a call that lands on
+      // an interface's own signature is a use of the API, not a dependency on
+      // this file's structure. The edges aimed at the interface still count.
       disqualify(`
         SELECT DISTINCT t.file_path AS file_path
         FROM edges e JOIN nodes t ON t.id = e.target JOIN nodes s ON s.id = e.source
         WHERE t.file_path IN ($IN$) AND s.file_path <> t.file_path
+          AND NOT ${IS_INTERFACE_MEMBER('t')}
       `);
       for (const path of candidates) found.add(path);
     }
@@ -3592,6 +3708,7 @@ export class QueryBuilder {
     this.db.transaction(() => {
       this.db.exec('DELETE FROM unresolved_refs');
       this.db.exec('DELETE FROM edges');
+      this.db.exec('DELETE FROM literals');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
     })();

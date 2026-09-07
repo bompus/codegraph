@@ -63,6 +63,8 @@ pub struct Walker<'t> {
     fs_values: HashMap<String, u32>,
     fs_value_counts: HashMap<String, u32>,
     value_scopes: Vec<ValueScope<'t>>,
+    /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
+    md_ref_keys: HashSet<String>,
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -93,6 +95,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         fs_values: HashMap::new(),
         fs_value_counts: HashMap::new(),
         value_scopes: Vec::new(),
+        md_ref_keys: HashSet::new(),
     };
 
     let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
@@ -155,6 +158,7 @@ impl<'t> Walker<'t> {
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
     }
+
     fn inside_class_like(&self) -> bool {
         self.stack
             .last()
@@ -481,18 +485,36 @@ impl<'t> Walker<'t> {
         let docstring = preceding_docstring(node, self.src);
         let left = node.child_by_field_name("left").or_else(|| node.named_child(0));
         let right = node.child_by_field_name("right").or_else(|| node.named_child(1));
-        let Some(left) = left else { return };
-        if !matches!(left.kind(), "identifier" | "constant") {
-            return;
+        let mut assigned: Option<(u32, String)> = None;
+        if let Some(left) = left {
+            if matches!(left.kind(), "identifier" | "constant") {
+                let name = self.text(left).to_string();
+                let signature = right.map(|r| util::init_signature(self.text(r)));
+                // No isConst hook ⇒ always `variable` (UPPER_CASE constants included).
+                let row = self.create_node(
+                    "variable",
+                    &name,
+                    node,
+                    Extra { docstring, signature, ..Extra::default() },
+                );
+                if let Some(row) = row {
+                    assigned = Some((row, name));
+                }
+            }
         }
-        let name = self.text(left).to_string();
-        let signature = right.map(|r| util::init_signature(self.text(r)));
-        // No isConst hook ⇒ always `variable` (UPPER_CASE constants included).
-        let row = self.create_node("variable", &name, node, Extra { docstring, signature, ..Extra::default() });
-        // visit_node skips an assignment's children, so the right-hand side's
-        // string literals are reached here, owned by the assigned name.
-        if let (Some(row), Some(r)) = (row, right) {
-            self.markdown_refs_from_subtree(r, row);
+        // Walk the initializer ATTRIBUTED to the assigned name (#693): a
+        // module-level `app = FastAPI()` / `handler = lambda: run()` dropped
+        // every call on the right-hand side. A tuple target mints no symbol, so
+        // its RHS is walked at the enclosing scope rather than lost.
+        if let Some(right) = right {
+            match assigned {
+                Some((row, name)) => {
+                    self.stack.push(Scope { row, kind: "variable", name });
+                    self.visit_function_body(right);
+                    self.stack.pop();
+                }
+                None => self.visit_function_body(right),
+            }
         }
     }
 

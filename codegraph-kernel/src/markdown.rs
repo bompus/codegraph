@@ -151,21 +151,20 @@ fn normalize(reference_name: &str, file_path: &str) -> Option<String> {
 }
 
 /// Every markdown path reference in one string literal's text, as
-/// (normalized name, byte offset of the match within `text`). The offset is
+/// (normalized name, UTF-16 offset of the match within `text`). The offset is
 /// added to the literal's own column, mirroring the wasm arm.
 pub fn markdown_path_refs(text: &str, file_path: &str) -> Vec<(String, usize)> {
     let mut refs = Vec::new();
     for m in candidate_re().find_iter(text) {
         // A `scheme://host/x.md` URL is not a repo path. The wasm arm looks
-        // back 16 chars for the `://` rather than matching it, because the
-        // candidate pattern starts after the scheme.
+        // for the `://` suffix, because the candidate starts after the scheme.
         let start = m.start();
-        let prefix = &text[start.saturating_sub(16)..start];
+        let prefix = &text[..start];
         if prefix.ends_with("://") {
             continue;
         }
         if let Some(name) = normalize(m.as_str(), file_path) {
-            refs.push((name, start));
+            refs.push((name, prefix.encode_utf16().count()));
         }
     }
     refs
@@ -200,5 +199,17 @@ mod tests {
     fn keeps_a_bare_name_and_an_anchor() {
         let refs = markdown_path_refs("'README.md'", "src/x.ts");
         assert_eq!(refs[0].0, "README.md");
+    }
+
+    #[test]
+    fn offsets_count_utf16_units() {
+        let refs = markdown_path_refs("'🦊 docs/guide.md'", "src/x.ts");
+        assert_eq!(refs, vec![("docs/guide.md".to_string(), 4)]);
+    }
+
+    #[test]
+    fn lookbehind_never_slices_inside_a_unicode_character() {
+        let refs = markdown_path_refs("'éééééééé doc.md'", "src/x.ts");
+        assert_eq!(refs, vec![("doc.md".to_string(), 10)]);
     }
 }

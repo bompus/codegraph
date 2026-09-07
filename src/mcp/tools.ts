@@ -369,6 +369,14 @@ export const RELEVANCE_KIND_WEIGHT: Readonly<Record<string, number>> = {
 const DEFAULT_RELEVANCE_KIND_WEIGHT = 0.5;
 
 /**
+ * The "member of a type" tier of the table above, named so the one kind that
+ * cannot be read off `node.kind` can be placed on it: an interface's
+ * `method_signature` (#1638). Same value as `property`/`field`, deliberately —
+ * it is the same tier, not a new one.
+ */
+const TYPE_MEMBER_RELEVANCE_WEIGHT = 0.5;
+
+/**
  * Kinds whose evidentiary value depends on whether anything USES them. An
  * exported `const DEFAULTS` that half the codebase references is a real
  * definition; a `const explore` living inside one function of an eval script is
@@ -1441,6 +1449,7 @@ export const tools: ToolDefinition[] = [
       required: ['query'],
     },
     annotations: READ_ONLY_ANNOTATIONS,
+    _meta: { 'anthropic/alwaysLoad': true },
   },
   {
     name: 'codegraph_status',
@@ -2864,9 +2873,16 @@ export class ToolHandler {
         const synthSeen = new Set<string>();
         for (const n of [...named.values(), ...dynNamed.values()]) {
           if (synthLines.length >= 6) break;
-          for (const { node: other, edge } of [...cg.getCallers(n.id), ...cg.getCallees(n.id)]) {
+          // RAW edges for the same reason as hasHeuristicEdge above — a static
+          // edge over the same pair hides the synthesized one from getCallers.
+          const incident = [...cg.getIncomingEdges(n.id), ...cg.getOutgoingEdges(n.id)];
+          for (const edge of incident) {
             if (synthLines.length >= 6) break;
-            if (edge.provenance !== 'heuristic' || other.id === n.id) continue;
+            if (edge.provenance !== 'heuristic') continue;
+            const otherId = edge.source === n.id ? edge.target : edge.source;
+            if (otherId === n.id) continue;
+            const other = cg.getNode(otherId);
+            if (!other) continue;
             if (skipInChain && skipInChain(edge)) continue;
             const src = edge.source === n.id ? n : other;
             const tgt = edge.source === n.id ? other : n;
@@ -3417,12 +3433,15 @@ export class ToolHandler {
     let budget: ExploreOutputBudget;
     let indexedFileCount = -1;
     try {
-      indexedFileCount = codeFileCount(cg.getStats());
+      // Total files, not codeFileCount: excluding markdown demotes a doc-heavy
+      // repo a tier, and the smaller tier drops the answer's lines and turns off
+      // the completeness signal that would say so (measured, 465 vs 589 here).
+      indexedFileCount = cg.getStats().fileCount;
       budget = getExploreOutputBudget(indexedFileCount);
     } catch {
       budget = getExploreOutputBudget(Infinity);
     }
-    const maxFiles = clamp((args.maxFiles as number) || budget.defaultMaxFiles, 1, 20);
+    let maxFiles = clamp((args.maxFiles as number) || budget.defaultMaxFiles, 1, 20);
 
     // File paths named in the query become PINNED files: guaranteed admission,
     // top of the rank order, funded first — and their span is REMOVED from the
@@ -3450,6 +3469,19 @@ export class ToolHandler {
       } catch { /* path pinning must never fail an explore call */ }
     }
     const pinnedSet = new Set(pinnedFiles);
+    // A literal quoted in the query names every file holding it, so the
+    // default file cap (sized for ranked padding) rises to the holder count;
+    // the character budget still bounds the answer, and an explicit maxFiles
+    // stands.
+    const literalSeedIds = cg.findLiteralSeedIds(matchQuery);
+    if (!args.maxFiles && literalSeedIds.length > 0) {
+      const holderFiles = new Set<string>();
+      for (const id of literalSeedIds) {
+        const n = cg.getNode(id);
+        if (n) holderFiles.add(n.filePath);
+      }
+      maxFiles = clamp(Math.max(maxFiles, holderFiles.size), 1, 12);
+    }
     const pinnedOrder = new Map(pinnedFiles.map((p, i) => [p, i]));
 
     // Per-file allocation diagnostic (CG-4). `null` unless CODEGRAPH_EXPLORE_DEBUG
@@ -3604,6 +3636,35 @@ export class ToolHandler {
     // substantive definition (skip empty stubs + test files, same relevance the
     // trace endpoint picker uses) and inject it as an entry, so every symbol the
     // agent explicitly named is in the subgraph and its file is scored.
+    /**
+     * Is this a member an INTERFACE declares — a signature with no body (#1638)?
+     *
+     * It arrives as an ordinary `method` node, so without asking, every ranking
+     * stage reads a `.d.ts` full of `method_signature`s as a file full of
+     * callables. Two stages below ask, for the same reason: a signature is the
+     * declaration of behaviour, never behaviour, and the rank a file earns must
+     * not grow just because its interfaces spell their members out.
+     *
+     * Cached; reached only for `method` nodes on paths that already probe the
+     * graph per node, so it adds a key lookup, not a pass.
+     */
+    const interfaceMemberCache = new Map<string, boolean>();
+    const isInterfaceOwnedMethod = (node: Node): boolean => {
+      if (node.kind !== 'method') return false;
+      const cached = interfaceMemberCache.get(node.id);
+      if (cached !== undefined) return cached;
+      let owned = false;
+      try {
+        owned = cg.getIncomingEdges(node.id).some(
+          (e) => e.kind === 'contains' && cg.getNode(e.source)?.kind === 'interface',
+        );
+      } catch {
+        owned = false; // a probe failure must not manufacture a penalty
+      }
+      interfaceMemberCache.set(node.id, owned);
+      return owned;
+    };
+
     const namedSeedIds = new Set<string>();
     // The subset of named seeds that earns the named-FIRST sort tier. We still
     // SEED every ≤3-def name (so RWR / flow ranking is unchanged), but only the
@@ -3774,7 +3835,31 @@ export class ToolHandler {
           // so a named symbol FTS already gathered never sorted to the top.)
           namedSeedIds.add(n.id);
         }
-        for (const n of tierPicks) tierSeedIds.add(n.id);
+        // An interface's `method_signature` seeds (so RWR and the flow ranking
+        // still see it, and a query that names it still reaches its file) but
+        // never earns the named-FIRST tier (#1638). That tier means "the agent
+        // asked for the symbol DEFINED here", and this seeding says as much —
+        // it resolves a token to its substantive definition and sorts bodies
+        // first. A declaration is the stub that sort demotes, not the answer.
+        // Without this the tier is reachable by prose: `body`, `stream` and
+        // `metadata` are member names in any platform `.d.ts`, and each one
+        // corroborates the next through `coNamedInFile`, so an ambient shim
+        // walks past the NL-stopword guard and lands above every implementation
+        // file — the exact inversion CG-28 exists to prevent, arriving on a key
+        // that sorts above the CG-28 penalty.
+        for (const n of tierPicks) {
+          if (!isInterfaceOwnedMethod(n)) tierSeedIds.add(n.id);
+        }
+      }
+    }
+    // A literal quoted in the query names its holder as surely as a symbol name
+    // does; a holder reached through a constant is a small file with no callers,
+    // and on graph mass alone it loses its source slot to a hub that never
+    // mentions the literal.
+    for (const id of literalSeedIds) {
+      if (subgraph.nodes.has(id)) {
+        namedSeedIds.add(id);
+        tierSeedIds.add(id);
       }
     }
     // Code symbols the query named, kept apart from the doc seeds added next: with
@@ -3834,9 +3919,21 @@ export class ToolHandler {
       isolationCache.set(node.id, isolated);
       return isolated;
     };
+    /**
+     * A `method_signature` reaches here as a `method`, which the kind table
+     * rates 1.0: "a callable — the unit an architecture question is about". It
+     * is not that. It is the row below on the same scale, "a member of a type",
+     * and rating it as a callable is how a 28-interface `.d.ts` doubled its
+     * score the moment its members became indexable (#1638). Only `method`
+     * needs correcting; `property` already sits in the member tier whoever
+     * declares it.
+     */
     const relevanceWeight = (node: Node, probeIsolation: boolean): number => {
-      const weight = RELEVANCE_KIND_WEIGHT[node.kind] ?? DEFAULT_RELEVANCE_KIND_WEIGHT;
-      if (!probeIsolation || !WEAK_RELEVANCE_KINDS.has(node.kind)) return weight;
+      const signatureOnly = isInterfaceOwnedMethod(node);
+      const weight = signatureOnly
+        ? TYPE_MEMBER_RELEVANCE_WEIGHT
+        : RELEVANCE_KIND_WEIGHT[node.kind] ?? DEFAULT_RELEVANCE_KIND_WEIGHT;
+      if (!probeIsolation || !(signatureOnly || WEAK_RELEVANCE_KINDS.has(node.kind))) return weight;
       return isUsageIsolated(node) ? ISOLATED_WEAK_KIND_WEIGHT : weight;
     };
 
@@ -4064,8 +4161,33 @@ export class ToolHandler {
     // (org-user.storage.ts, call-connected to the matches) accrues mass; a lone
     // text match (LensSwitcher.swift, matched "switch" but calls nothing in the
     // flow) gets only its restart probability → ~0, and is dropped by the gate.
+    //
+    // A file the ambient-declaration penalty has already damped is a candidate,
+    // but not a place a walk STARTS. The restart vector is uniform over seeds,
+    // so every seed divides the restart mass the implementation files compete
+    // for — and since #1638 a platform `.d.ts` contributes one seed per member,
+    // whose names (`body`, `stream`, `metadata`) are exactly what a prose flow
+    // query matches. That is what halves an implementation file's graph mass
+    // while the shim's holds steady: dilution of the restart vector, not
+    // connectivity. `contains` is not a RANK_EDGE, so these members carry almost
+    // no walk mass of their own; seeding is the whole of their effect on rank.
+    //
+    // `isDampedDeclaration` and not a bare ambient test: it already exempts a
+    // file whose declared type the query NAMED, so a query genuinely about the
+    // declared type keeps its seeds and the shim still ranks first. Damped files
+    // stay in the candidate set, stay reachable, and keep their `score`
+    // contribution — this changes only where the walk starts.
+    const rwrSeedIds = new Set<string>();
+    for (const id of entryNodeIds) {
+      const seed = subgraph.nodes.get(id);
+      if (seed && isDampedDeclaration(seed.filePath)) continue;
+      rwrSeedIds.add(id);
+    }
     const nodeRwr = this.computeGraphRelevance(
-      [...subgraph.nodes.keys()], subgraph.edges, entryNodeIds,
+      // Fall back to the unfiltered seeds when EVERY seed is damped: the walk
+      // must not lose its restart vector and return all-uniform.
+      [...subgraph.nodes.keys()], subgraph.edges,
+      rwrSeedIds.size > 0 ? rwrSeedIds : entryNodeIds,
     );
     //
     // Carries `rankPenalty` too, so generated/low-value files are demoted on the

@@ -136,6 +136,8 @@ pub struct Walker<'t> {
     fs_values: HashMap<String, u32>,
     fs_value_counts: HashMap<String, u32>,
     value_scopes: Vec<ValueScope<'t>>,
+    /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
+    md_ref_keys: HashSet<String>,
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -167,6 +169,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         fs_values: HashMap::new(),
         fs_value_counts: HashMap::new(),
         value_scopes: Vec::new(),
+        md_ref_keys: HashSet::new(),
     };
 
     // File node (TreeSitterExtractor.extract).
@@ -264,6 +267,7 @@ impl<'t> Walker<'t> {
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
     }
+
     fn inside_class_like(&self) -> bool {
         self.stack
             .last()
@@ -765,9 +769,16 @@ impl<'t> Walker<'t> {
                 if let Some(row) = row {
                     self.extract_decorators_for(node, row);
                     self.extract_type_annotations(node, row);
-                    // The ladder skips a field's children, so the declarator's
-                    // string literals are reached here, owned by the field.
-                    self.markdown_refs_from_subtree(decl, row);
+                    // Walk the initializer ATTRIBUTED to the declared field
+                    // (#693, the Go fix): the dispatcher only fn-ref-scans this
+                    // subtree, so a lambda / method reference / anonymous class
+                    // in `private final Runnable r = () -> target();` emitted no
+                    // call edge at all.
+                    if let Some(value) = decl.child_by_field_name("value") {
+                        self.stack.push(Scope { row, kind: field_kind, name: name.clone() });
+                        self.visit_function_body(value);
+                        self.stack.pop();
+                    }
                 }
             }
         } else {

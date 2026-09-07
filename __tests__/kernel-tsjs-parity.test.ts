@@ -29,7 +29,7 @@ const KERNEL_PATH = path.join(
   'codegraph-kernel',
   'prebuilds',
   `${process.platform}-${process.arch}`,
-  'codegraph-kernel.node'
+  'codegraph-kernel.node',
 );
 const kernelBuilt = fs.existsSync(KERNEL_PATH);
 
@@ -48,9 +48,7 @@ function canon(result: ExtractionResult): { nodes: string[]; edges: string[]; re
       .map(({ updatedAt: _u, ...n }) => JSON.stringify(n, Object.keys(n).sort()))
       .sort(),
     edges: result.edges.map((e) => JSON.stringify(e, Object.keys(e).sort())).sort(),
-    refs: result.unresolvedReferences
-      .map((r) => JSON.stringify(r, Object.keys(r).sort()))
-      .sort(),
+    refs: result.unresolvedReferences.map((r) => JSON.stringify(r, Object.keys(r).sort())).sort(),
   };
 }
 
@@ -60,7 +58,15 @@ let savedEnv: Record<string, string | undefined>;
 describe.skipIf(!kernelBuilt)('kernel TS/JS extraction parity', () => {
   beforeAll(async () => {
     await initGrammars();
-    await loadGrammarsForLanguages(['typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go']);
+    await loadGrammarsForLanguages([
+      'typescript',
+      'tsx',
+      'javascript',
+      'jsx',
+      'java',
+      'python',
+      'go',
+    ]);
   });
 
   beforeEach(() => {
@@ -94,6 +100,39 @@ describe.skipIf(!kernelBuilt)('kernel TS/JS extraction parity', () => {
     // Meaningful comparison, not empty-vs-empty.
     expect(viaWasm.nodes.length).toBeGreaterThan(3);
   }
+
+  it.each(['😀', 'éééééééé '])(
+    'Markdown references preserve Unicode columns after %s',
+    (prefix) => {
+      const source = `const GUIDE = "${prefix}docs/guide.md";`;
+      delete process.env.CODEGRAPH_KERNEL;
+      const native = tryKernelExtract('micro/unicode.ts', source, 'typescript');
+      expect(native).not.toBeNull();
+      process.env.CODEGRAPH_KERNEL = '0';
+      const wasm = extractFromSource('micro/unicode.ts', source, 'typescript');
+      expect(canon(native!).refs).toEqual(canon(wasm).refs);
+      const refs = native!.unresolvedReferences.filter((r) => r.referenceName === 'docs/guide.md');
+      expect(refs).toHaveLength(1);
+      expect(refs[0]).toMatchObject({ line: 1, column: source.indexOf('docs/guide.md') });
+    },
+  );
+
+  it('emits one property-owned Markdown reference across overlapping initializer scans', () => {
+    const source = 'class Docs { guide = "docs/guide.md"; }';
+    delete process.env.CODEGRAPH_KERNEL;
+    const native = tryKernelExtract('micro/property.ts', source, 'typescript');
+    expect(native).not.toBeNull();
+    process.env.CODEGRAPH_KERNEL = '0';
+    const wasm = extractFromSource('micro/property.ts', source, 'typescript');
+    expect(canon(native!).refs).toEqual(canon(wasm).refs);
+    const property = native!.nodes.find((n) => n.kind === 'property' && n.name === 'guide');
+    expect(property).toBeDefined();
+    expect(
+      native!.unresolvedReferences.filter(
+        (r) => r.fromNodeId === property!.id && r.referenceName === 'docs/guide.md',
+      ),
+    ).toHaveLength(1);
+  });
 
   it('torture fixture (tsx): components, stores, RTK, fn-refs, value-refs, decorators', () => {
     const file = path.join(FIXTURE_DIR, 'torture.tsx');

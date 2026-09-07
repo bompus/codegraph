@@ -25,6 +25,9 @@ import * as os from 'node:os';
 import { CodeGraph } from '../src';
 import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
 import { tryKernelExtractRaw } from '../src/extraction/kernel';
+import { StoreWriter } from '../src/extraction/store-writer';
+import { getDatabasePath } from '../src/db';
+import type { QueryBuilder } from '../src/db/queries';
 import type { ExtractionResult } from '../src/types';
 
 const KERNEL_PATH = path.join(
@@ -33,7 +36,7 @@ const KERNEL_PATH = path.join(
   'codegraph-kernel',
   'prebuilds',
   `${process.platform}-${process.arch}`,
-  'codegraph-kernel.node'
+  'codegraph-kernel.node',
 );
 const kernelBuilt = fs.existsSync(KERNEL_PATH);
 
@@ -53,47 +56,94 @@ describe.skipIf(!kernelBuilt)('kernel buffer-transport storage (#1541)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('storeExtractionResult persists the decoded nodes of a raw kernel result', async () => {
-    const source =
-      'def target_fn(root, mission_path):\n' +
-      '    return (root, mission_path)\n' +
-      '\n' +
-      'class Adapter:\n' +
-      '    def adapt(self):\n' +
-      '        return target_fn(1, 2)\n';
-    const filePath = 'adapter.py';
-    fs.writeFileSync(path.join(dir, filePath), source);
+  it.each(['main-thread', 'store-worker'] as const)(
+    'persists raw kernel nodes and literals through %s',
+    async (store) => {
+      const source =
+        'def target_fn(root, mission_path):\n' +
+        "    return (root, mission_path, 'bompus_custom_ds_players')\n" +
+        '\n' +
+        'class Adapter:\n' +
+        '    def adapt(self):\n' +
+        '        return target_fn(1, 2)\n';
+      const filePath = 'adapter.py';
+      fs.writeFileSync(path.join(dir, filePath), source);
 
-    // A genuine undecoded transport, exactly as parse-worker builds it.
-    const raw = tryKernelExtractRaw(filePath, source, 'python');
-    expect(raw).not.toBeNull();
-    expect(raw!.counts.nodes).toBeGreaterThan(0);
-    const transport: ExtractionResult = {
-      nodes: [],
-      edges: [],
-      unresolvedReferences: [],
-      errors: raw!.errors,
-      durationMs: 0,
-      kernelBuffers: raw!.buffers,
-      kernelCounts: raw!.counts,
-    };
+      // A genuine undecoded transport, exactly as parse-worker builds it.
+      const raw = tryKernelExtractRaw(filePath, source, 'python');
+      expect(raw).not.toBeNull();
+      expect(raw!.counts.nodes).toBeGreaterThan(0);
+      const transport: ExtractionResult = {
+        nodes: [],
+        edges: [],
+        unresolvedReferences: [],
+        errors: raw!.errors,
+        durationMs: 0,
+        kernelBuffers: raw!.buffers,
+        kernelCounts: raw!.counts,
+      };
 
-    const stats = fs.statSync(path.join(dir, filePath));
-    const orchestrator = (cg as unknown as { orchestrator: { storeExtractionResult(f: string, c: string, l: string, s: fs.Stats, r: ExtractionResult): Promise<void> } }).orchestrator;
-    await orchestrator.storeExtractionResult(filePath, source, 'python', stats, transport);
+      const stats = fs.statSync(path.join(dir, filePath));
+      const orchestrator = (
+        cg as unknown as {
+          orchestrator: {
+            storeExtractionResult(
+              f: string,
+              c: string,
+              l: string,
+              s: fs.Stats,
+              r: ExtractionResult,
+            ): Promise<void>;
+          };
+        }
+      ).orchestrator;
+      if (store === 'main-thread') {
+        await orchestrator.storeExtractionResult(filePath, source, 'python', stats, transport);
+      } else {
+        const writer = new StoreWriter(
+          path.join(__dirname, '..', 'dist', 'extraction', 'store-worker.js'),
+          getDatabasePath(dir),
+          false,
+        );
+        try {
+          await writer.ready();
+          writer.send({
+            kernel: true,
+            filePath,
+            language: 'python',
+            buffers: raw!.buffers,
+            file: {
+              path: filePath,
+              contentHash: 'raw-literal-fixture',
+              language: 'python',
+              size: Buffer.byteLength(source),
+              modifiedAt: stats.mtimeMs,
+              indexedAt: Date.now(),
+              nodeCount: raw!.counts.nodes,
+            },
+          });
+          await writer.drain();
+        } finally {
+          await writer.close();
+        }
+      }
 
-    // The files row must carry the real symbol count, not the transport's
-    // empty array — a 0 here is the #1541 "(python, 0 symbols)" wipe.
-    const file = cg.getFile(filePath);
-    expect(file).not.toBeNull();
-    expect(file!.nodeCount).toBe(raw!.counts.nodes);
+      // The files row must carry the real symbol count, not the transport's
+      // empty array — a 0 here is the #1541 "(python, 0 symbols)" wipe.
+      const file = cg.getFile(filePath);
+      expect(file).not.toBeNull();
+      expect(file!.nodeCount).toBe(raw!.counts.nodes);
 
-    // And the nodes themselves must be queryable.
-    const nodes = cg.getNodesInFile(filePath);
-    expect(nodes.length).toBe(raw!.counts.nodes);
-    expect(nodes.map((n) => n.name)).toContain('target_fn');
-    expect(nodes.map((n) => n.name)).toContain('Adapter');
-  });
+      // And the nodes themselves must be queryable.
+      const nodes = cg.getNodesInFile(filePath);
+      expect(nodes.length).toBe(raw!.counts.nodes);
+      expect(nodes.map((n) => n.name)).toContain('target_fn');
+      expect(nodes.map((n) => n.name)).toContain('Adapter');
+      const queries = (cg as unknown as { queries: QueryBuilder }).queries;
+      const holders = queries.findNodeIdsByLiteral(['bompus_custom_ds_players']);
+      expect(holders.map((id) => cg.getNode(id)?.name)).toEqual(['target_fn']);
+    },
+  );
 });
 
 /**
@@ -117,7 +167,7 @@ describe('zero-node row self-heal (#1541)', () => {
         '\n' +
         'class Adapter:\n' +
         '    def adapt(self):\n' +
-        '        return target_fn(1, 2)\n'
+        '        return target_fn(1, 2)\n',
     );
     cg = await CodeGraph.init(dir);
     await cg.indexAll();
@@ -135,7 +185,11 @@ describe('zero-node row self-heal (#1541)', () => {
 
     // Simulate the released-v1.5.0 wipe: nodes gone, row says 0 symbols,
     // content hash still matching the file on disk.
-    const db = (cg as unknown as { db: { getDb(): { prepare(sql: string): { run(...args: unknown[]): unknown } } } }).db.getDb();
+    const db = (
+      cg as unknown as {
+        db: { getDb(): { prepare(sql: string): { run(...args: unknown[]): unknown } } };
+      }
+    ).db.getDb();
     db.prepare('DELETE FROM nodes WHERE file_path = ?').run('adapter.py');
     db.prepare('UPDATE files SET node_count = 0 WHERE path = ?').run('adapter.py');
     expect(cg.getFile('adapter.py')!.nodeCount).toBe(0);

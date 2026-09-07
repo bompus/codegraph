@@ -190,3 +190,10 @@ object MarkdownPaths {
 
   def mdLoad(): Unit = loadDoc("docs/deep/nested.markdown")
 }
+
+class InitWalk {
+  val initLambda: () => Unit = () => helperCall()
+  val initDirect = helperCall()
+  lazy val initLazy = process(1)
+  val initAnon = new Runnable { def run(): Unit = helperCall() }
+}

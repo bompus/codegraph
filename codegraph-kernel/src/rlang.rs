@@ -70,6 +70,7 @@ pub struct Walker<'t> {
     line_starts: Vec<usize>,
     arena: Arena,
     tables: Tables,
+    md_ref_keys: std::collections::HashSet<String>,
     stack: Vec<Scope>,
 }
 
@@ -93,6 +94,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         line_starts: util::line_starts(source),
         arena: Arena::default(),
         tables: Tables::default(),
+        md_ref_keys: std::collections::HashSet::new(),
         stack: Vec::new(),
     };
 

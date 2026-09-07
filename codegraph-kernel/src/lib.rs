@@ -50,6 +50,11 @@ macro_rules! markdown_refs_impl {
             let line = self.line_of(node);
             let column = self.col_of(node);
             for (name, offset) in found {
+                let column = column + offset as u32;
+                // Declaration scans and the general walk can reach the same string.
+                if !self.md_ref_keys.insert(format!("{owner_row}|{name}|{line}|{column}")) {
+                    continue;
+                }
                 let name_ref = self.arena.put(&name);
                 // addReference denormalizes filePath and language onto the ref
                 // where the ordinary ref path does not, so these two flags are
@@ -59,7 +64,7 @@ macro_rules! markdown_refs_impl {
                         from_idx: owner_row,
                         kind: kind_code,
                         line,
-                        column: column + offset as u32,
+                        column,
                         reference_name: name_ref,
                         candidates: $crate::buffers::NONE_STR,
                         from_id_str: $crate::buffers::NONE_STR,

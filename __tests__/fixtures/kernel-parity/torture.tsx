@@ -224,3 +224,13 @@ const REMOTE = 'https://example.com/remote.md';
 const QUERIED = './notes.md?raw=1#top';
 const TWO_IN_ONE = 'see a.md and also sub/b.mdx';
 loadDoc('docs/deep/nested.markdown');
+
+// --- const-bound functions inside a body (#1669) -----------------------------
+export function NestedHandlers({ items, onPick }: { items: string[]; onPick: (a: unknown, b: unknown) => void }) {
+  const handleClear = () => { onPick(null, null); };
+  const describe = function (item: string) { return formatLabel(item); };
+  let later = (x: string) => parseLabel(x);
+  const count = items.length;
+  const [a, b] = [() => 1, () => 2];
+  return items.map((i) => <button onClick={handleClear} onDoubleClick={() => describe(i)}>{later(i)}{count}{a()}{b()}</button>);
+}

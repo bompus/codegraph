@@ -96,6 +96,12 @@ export const FUNCTION_REF_CODE = 200;
  * parameter, which is byte-identical.
  */
 export const REF_FLAG_FILE_PATH = 1;
+
+/**
+ * LANGUAGE: the ref carries `language` = the extracted language. `addReference`
+ * is the only TS emitter that denormalizes it, and its single caller is the
+ * markdown path refs, which set this bit beside FILE_PATH.
+ */
 export const REF_FLAG_LANGUAGE = 2;
 
 /** Node bool-flag bit pairs: bit(2n) = present, bit(2n+1) = value. */

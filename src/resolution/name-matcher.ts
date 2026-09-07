@@ -6,7 +6,7 @@
 
 import { builtinModules } from 'module';
 import { Language, Node } from '../types';
-import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
+import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, isInheritanceRef, isImportableKind } from './types';
 import { resolveWorkspaceImport } from './workspace-packages';
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
 
@@ -718,6 +718,9 @@ export function matchByExactName(
     .filter((n) => n.kind !== 'import')
     // Nested locals are only reachable from inside their container (#1230).
     .filter((n) => isLexicallyReachable(n, ref, context))
+    // Target kinds are eligibility, before ranking among valid definitions.
+    .filter((n) => !isInheritanceRef(ref) || SUPERTYPE_TARGET_KINDS.has(n.kind))
+    .filter((n) => ref.referenceKind !== 'imports' || isImportableKind(n.kind))
     // Preserve import candidate ranking among modules that can export bindings.
     // Calls validate the winner instead, so a private helper cannot promote a
     // different, unrelated callable when it is rejected.

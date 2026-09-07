@@ -156,6 +156,7 @@ pub struct Walker<'t> {
     line_starts: Vec<usize>,
     arena: Arena,
     tables: Tables,
+    md_ref_keys: HashSet<String>,
     stack: Vec<Scope>,
     node_ids: Vec<String>,
     defined_fn_names: HashSet<String>,
@@ -188,6 +189,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         line_starts: util::line_starts(source),
         arena: Arena::default(),
         tables: Tables::default(),
+        md_ref_keys: HashSet::new(),
         stack: Vec::new(),
         node_ids: Vec::new(),
         defined_fn_names: HashSet::new(),
@@ -659,6 +661,18 @@ impl<'t> Walker<'t> {
                 );
                 if let (Some(row), Some(t)) = (created, type_node) {
                     self.emit_scala_type_refs(t, row);
+                }
+                // Walk the initializer ATTRIBUTED to the declared symbol
+                // (#693, the Go fix): the hook consumes this subtree and the
+                // dispatcher only fn-ref-scans it, so `val cb = () => target()`
+                // — and even a plain `val x = compute()` — emitted no call edge
+                // at all.
+                if let Some(row) = created {
+                    if let Some(value) = node.child_by_field_name("value") {
+                        self.stack.push(Scope { row, kind, name: name.clone() });
+                        self.visit_body(value);
+                        self.stack.pop();
+                    }
                 }
                 true
             }

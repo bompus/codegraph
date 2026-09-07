@@ -19,14 +19,46 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
+import { resolveNamedTokens } from '../src/graph/named-symbol-flow';
 
 // Assertions read RAW codegraph_explore output; managed offload would replace it. Disable
 // it for this file so the suite is hermetic regardless of dev-machine config, then restore.
 let _prevOffloadDisable: string | undefined;
-beforeAll(() => { _prevOffloadDisable = process.env.CODEGRAPH_OFFLOAD_DISABLE; process.env.CODEGRAPH_OFFLOAD_DISABLE = '1'; });
+beforeAll(() => {
+  _prevOffloadDisable = process.env.CODEGRAPH_OFFLOAD_DISABLE;
+  process.env.CODEGRAPH_OFFLOAD_DISABLE = '1';
+});
 afterAll(() => {
   if (_prevOffloadDisable === undefined) delete process.env.CODEGRAPH_OFFLOAD_DISABLE;
   else process.env.CODEGRAPH_OFFLOAD_DISABLE = _prevOffloadDisable;
+});
+
+it('retains a heuristic constant endpoint when the same pair has a static edge', () => {
+  const caller = {
+    id: 'outer',
+    name: 'outerThunk',
+    kind: 'function',
+    qualifiedName: 'outerThunk',
+    filePath: 'thunks.ts',
+  };
+  const endpoint = {
+    id: 'inner',
+    name: 'innerThunk',
+    kind: 'constant',
+    qualifiedName: 'innerThunk',
+    filePath: 'thunks.ts',
+  };
+  const staticEdge = { source: caller.id, target: endpoint.id, kind: 'calls', line: 10 };
+  const heuristicEdge = { ...staticEdge, line: 20, provenance: 'heuristic' };
+  const graph = {
+    searchNodes: (name: string) =>
+      [caller, endpoint].filter((n) => n.name === name).map((node) => ({ node, score: 1 })),
+    getIncomingEdges: () => [staticEdge, heuristicEdge],
+    getOutgoingEdges: () => [staticEdge, heuristicEdge],
+    getCallers: () => [{ node: caller, edge: staticEdge }],
+    getCallees: () => [{ node: endpoint, edge: staticEdge }],
+  } as unknown as CodeGraph;
+  expect(resolveNamedTokens(graph, 'outerThunk innerThunk').dynNamed.has(endpoint.id)).toBe(true);
 });
 
 describe('codegraph_explore — synthesized constant→constant edges surface on small repos', () => {
@@ -43,7 +75,7 @@ describe('codegraph_explore — synthesized constant→constant edges surface on
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'explore-thunk-surface-'));
     fs.writeFileSync(
       path.join(dir, 'package.json'),
-      JSON.stringify({ name: 'app', dependencies: { '@reduxjs/toolkit': '^2' } })
+      JSON.stringify({ name: 'app', dependencies: { '@reduxjs/toolkit': '^2' } }),
     );
     fs.writeFileSync(
       path.join(dir, 'thunks.ts'),
@@ -58,7 +90,7 @@ export const innerThunk = createAsyncThunk('app/inner', async (n: number, { disp
 export const outerThunk = createAsyncThunk('app/outer', async (n: number, { dispatch }) => {
   await dispatch(innerThunk(n));
 });
-`
+`,
     );
 
     cg = CodeGraph.initSync(dir, { config: { include: ['**/*.ts'], exclude: [] } });
@@ -68,7 +100,9 @@ export const outerThunk = createAsyncThunk('app/outer', async (n: number, { disp
     // CALLABLE-only flow scan dropped (if extraction ever classed them as functions the
     // test would pass vacuously, so assert the case we actually fixed).
     const db = (cg as any).db.db;
-    const outerKind = db.prepare(`SELECT kind FROM nodes WHERE name = 'outerThunk' LIMIT 1`).get()?.kind;
+    const outerKind = db
+      .prepare(`SELECT kind FROM nodes WHERE name = 'outerThunk' LIMIT 1`)
+      .get()?.kind;
     expect(outerKind).toBe('constant');
 
     handler = new ToolHandler(cg);
