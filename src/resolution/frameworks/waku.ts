@@ -1,8 +1,9 @@
-import type { Node as SyntaxNode } from 'web-tree-sitter';
+import type { Node as SyntaxNode, Tree as SyntaxTree } from 'web-tree-sitter';
 import type { ExtractionResult } from '../../types';
 import type { FrameworkResolver, FrameworkExtractionResult, ResolutionContext } from '../types';
 import { detectLanguage, getParser } from '../../extraction/grammars';
 import { generateNodeId } from '../../extraction/tree-sitter-helpers';
+import { resolveImportPath } from '../import-resolver';
 import { dependsOn } from './package-deps';
 
 const ROOT = 'src/pages/';
@@ -10,6 +11,8 @@ const EXTENSIONS = ['js', 'ts', 'tsx', 'jsx', 'mjs', 'cjs'];
 const FUNCTIONS = new Set(['function_declaration', 'function_expression', 'arrow_function']);
 export const isWakuPage = (file: string): boolean =>
   file.startsWith(ROOT) && /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+const isServer = (file: string): boolean => /^src\/waku\.server\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+export const isWakuRouteFile = (file: string): boolean => isWakuPage(file) || isServer(file);
 const literal = (node: SyntaxNode | null | undefined): string | null =>
   node?.type === 'string' && !node.text.includes('\\') ? node.text.slice(1, -1) : null;
 const unwrap = (node: SyntaxNode | null | undefined): SyntaxNode | null => {
@@ -34,7 +37,7 @@ function fields(node: SyntaxNode | null | undefined): Map<string, SyntaxNode> | 
   }
   return result;
 }
-function mutated(root: SyntaxNode, name: string): boolean {
+function mutated(root: SyntaxNode, name: string, allowedCall?: SyntaxNode): boolean {
   const aliases = new Set([name]);
   const declarations = root.descendantsOfType('variable_declarator');
   let previous = 0;
@@ -61,6 +64,7 @@ function mutated(root: SyntaxNode, name: string): boolean {
       'call_expression',
     ])
     .some((node) => {
+      if (node.id === allowedCall?.id) return false;
       if (node.type === 'call_expression')
         return (
           node
@@ -166,18 +170,14 @@ function returned(node: SyntaxNode): SyntaxNode | null {
     ? unwrap(statements[0].namedChildren[0])
     : null;
 }
-const states = new WeakMap<ResolutionContext, Set<string> | null>();
-function project(context: ResolutionContext): Set<string> | null {
-  if (states.has(context)) return states.get(context)!;
-  let extensions: Set<string> | null = new Set(EXTENSIONS);
+function defaultConfig(context: ResolutionContext): boolean {
   for (const ext of EXTENSIONS) {
     const file = `waku.config.${ext}`;
     const source = context.readFile(file);
     if (source === null) continue;
     const tree = getParser(detectLanguage(file))?.parse(source);
     if (!tree) {
-      extensions = null;
-      break;
+      return false;
     }
     try {
       const root = tree.rootNode;
@@ -190,12 +190,17 @@ function project(context: ResolutionContext): Set<string> | null {
       )
         config = config.childForFieldName('arguments')?.namedChildren[0];
       const options = fields(config);
-      if (!options || ['srcDir', 'basePath', 'vite'].some((key) => options.has(key)))
-        extensions = null;
+      if (!options || ['srcDir', 'basePath', 'vite'].some((key) => options.has(key))) return false;
     } finally {
       tree.delete();
     }
   }
+  return true;
+}
+const states = new WeakMap<ResolutionContext, Set<string> | null>();
+function project(context: ResolutionContext): Set<string> | null {
+  if (states.has(context)) return states.get(context)!;
+  let extensions: Set<string> | null = defaultConfig(context) ? new Set(EXTENSIONS) : null;
   const servers = EXTENSIONS.filter((ext) => context.readFile(`src/waku.server.${ext}`) !== null);
   if (servers.length > 1) extensions = null;
   if (extensions && servers.length === 1) {
@@ -241,11 +246,20 @@ function project(context: ResolutionContext): Set<string> | null {
 
 /** Waku 1.0.0-rc.0 registers static parameter pages only for their declared static paths. */
 function paths(path: string, options: Map<string, SyntaxNode>): string[] {
-  if ([...options.keys()].some((key) => !['render', 'staticPaths'].includes(key))) return [];
+  if (!path.startsWith('/') || /[?#\\]/.test(path)) return [];
+  if ([...options.keys()].some((key) => !['render', 'staticPaths', 'exactPath'].includes(key)))
+    return [];
   const render = options.has('render') ? literal(options.get('render')) : 'static';
   if (render !== 'static' && render !== 'dynamic') return [];
-  const segments = path.split('/').filter((segment) => !segment.startsWith('('));
+  const exact = options.get('exactPath');
+  if (exact && exact.type !== 'true' && exact.type !== 'false') return [];
+  const segments = path
+    .replace(/\/$/, '')
+    .split('/')
+    .filter((segment) => exact?.type === 'true' || !segment.startsWith('('));
   if (segments.at(-1) === 'index.html') segments.pop();
+  const join = (parts: string[]) => parts.join('/').replace(/\/$/, '') || '/';
+  if (exact?.type === 'true') return [join(segments)];
   const params: { index: number; prefix: string; suffix: string; name: string; rest: boolean }[] =
     [];
   for (let index = 0; index < segments.length; index++) {
@@ -255,7 +269,6 @@ function paths(path: string, options: Map<string, SyntaxNode>): string[] {
     if (!match || (match[2] && (index !== segments.length - 1 || match[1] || match[4]))) return [];
     params.push({ index, prefix: match[1]!, suffix: match[4]!, name: match[3]!, rest: !!match[2] });
   }
-  const join = (parts: string[]) => parts.join('/').replace(/\/$/, '') || '/';
   if (!params.length) return [join(segments)];
   if (render === 'dynamic') {
     for (const param of params)
@@ -289,12 +302,257 @@ function paths(path: string, options: Map<string, SyntaxNode>): string[] {
   }
   return [...new Set(result)];
 }
+function localBinding(root: SyntaxNode, name: string): Binding | null {
+  for (const statement of root.namedChildren) {
+    const node =
+      statement.type === 'export_statement'
+        ? statement.childForFieldName('declaration')
+        : statement;
+    if (node?.type === 'function_declaration' && node.childForFieldName('name')?.text === name)
+      return { node, value: node };
+    if (node?.type === 'lexical_declaration' && node.children.some((n) => n.type === 'const'))
+      for (const variable of node.namedChildren) {
+        const value = unwrap(variable.childForFieldName('value'));
+        if (variable.childForFieldName('name')?.text === name && value)
+          return { node: variable, value };
+      }
+  }
+  return null;
+}
+function declares(root: SyntaxNode, name: string): boolean {
+  return root
+    .descendantsOfType([
+      'variable_declarator',
+      'function_declaration',
+      'required_parameter',
+      'optional_parameter',
+    ])
+    .some((node) => {
+      const pattern = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+      return (
+        pattern?.text === name ||
+        !!pattern
+          ?.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern'])
+          .some((n) => n.text === name)
+      );
+    });
+}
+function extractProgrammatic(
+  filePath: string,
+  content: string,
+  context: ResolutionContext,
+): FrameworkExtractionResult {
+  const result: FrameworkExtractionResult = { nodes: [], references: [] };
+  if (
+    !defaultConfig(context) ||
+    EXTENSIONS.filter((ext) => context.readFile(`src/waku.server.${ext}`) !== null).length !== 1
+  )
+    return result;
+  const language = detectLanguage(filePath);
+  const tree = getParser(language)?.parse(content);
+  if (!tree) return result;
+  try {
+    const root = tree.rootNode;
+    const adapters = new Set([
+      ...imports(root, 'waku/adapters/default', 'default'),
+      ...imports(root, 'waku/adapters/cloudflare', 'default'),
+    ]);
+    const creators = imports(root, 'waku', 'createPages');
+    const entry = exportsIn(root).get('default')?.value;
+    if (
+      entry?.type !== 'call_expression' ||
+      !adapters.has(entry.childForFieldName('function')?.text ?? '') ||
+      [...adapters, ...creators].some((name) => mutated(root, name))
+    )
+      return result;
+    let registration = unwrap(entry.childForFieldName('arguments')?.namedChildren[0]);
+    if (registration?.type === 'identifier') {
+      if (mutated(root, registration.text, entry)) return result;
+      registration = localBinding(root, registration.text)?.value ?? null;
+    }
+    if (
+      registration?.type !== 'call_expression' ||
+      !creators.has(registration.childForFieldName('function')?.text ?? '')
+    )
+      return result;
+    const args =
+      registration
+        .childForFieldName('arguments')
+        ?.namedChildren.filter((n) => n.type !== 'comment') ?? [];
+    const callback = args[0];
+    if (!callback || !FUNCTIONS.has(callback.type) || args.length > 2) return result;
+    if (args.length === 2) {
+      const options = fields(args[1]);
+      if (!options || [...options.keys()].some((key) => key !== 'unstable_skipBuild'))
+        return result;
+    }
+    const parameters =
+      callback.childForFieldName('parameters')?.namedChildren.filter((n) => n.type !== 'comment') ??
+      [];
+    const parameter = parameters.length === 1 ? parameters[0] : null;
+    const pattern =
+      parameter?.type === 'object_pattern' ? parameter : parameter?.childForFieldName('pattern');
+    if (pattern?.type !== 'object_pattern') return result;
+    let helper: string | undefined;
+    for (const binding of pattern.namedChildren) {
+      if (binding.type === 'shorthand_property_identifier_pattern' && binding.text === 'createPage')
+        helper = binding.text;
+      if (
+        binding.type === 'pair_pattern' &&
+        binding.childForFieldName('key')?.text === 'createPage' &&
+        binding.childForFieldName('value')?.type === 'identifier'
+      )
+        helper = binding.childForFieldName('value')!.text;
+    }
+    const body = callback.childForFieldName('body');
+    if (!helper || !body || declares(body, helper) || mutated(callback, helper)) return result;
+    const mayStop = (node: SyntaxNode): boolean =>
+      [
+        'return_statement',
+        'throw_statement',
+        'while_statement',
+        'do_statement',
+        'for_statement',
+        'for_in_statement',
+      ].includes(node.type) ||
+      (!FUNCTIONS.has(node.type) && node.namedChildren.some(mayStop));
+    const visit = (node: SyntaxNode) => {
+      if (node.type === 'call_expression') {
+        if (node.childForFieldName('function')?.text !== helper) return;
+        const args =
+          node.childForFieldName('arguments')?.namedChildren.filter((n) => n.type !== 'comment') ??
+          [];
+        const options = args.length === 1 ? fields(args[0]) : null;
+        if (!options || !options.has('render')) return;
+        const routePath = literal(options.get('path'));
+        const component = options.get('component');
+        if (
+          !routePath ||
+          component?.type !== 'identifier' ||
+          declares(callback, component.text) ||
+          mutated(root, component.text)
+        )
+          return;
+        options.delete('path');
+        options.delete('component');
+        for (const route of paths(routePath, options)) {
+          const id = `route:waku:${filePath}:${node.startIndex}:${route}`;
+          result.nodes.push({
+            id,
+            kind: 'route',
+            name: route,
+            qualifiedName: `${filePath}::${route}`,
+            filePath,
+            language,
+            startLine: node.startPosition.row + 1,
+            startColumn: node.startPosition.column,
+            endLine: node.endPosition.row + 1,
+            endColumn: node.endPosition.column,
+            updatedAt: Date.now(),
+          });
+          result.references.push({
+            fromNodeId: id,
+            referenceName: `waku-component:${component.text}`,
+            referenceKind: 'references',
+            filePath,
+            language,
+            line: component.startPosition.row + 1,
+            column: component.startPosition.column,
+          });
+        }
+        return;
+      }
+      if (
+        ![
+          'statement_block',
+          'return_statement',
+          'array',
+          'expression_statement',
+          'await_expression',
+          'parenthesized_expression',
+          'lexical_declaration',
+          'variable_declarator',
+        ].includes(node.type)
+      )
+        return;
+      for (const child of node.namedChildren) {
+        visit(child);
+        if (mayStop(child)) break;
+      }
+    };
+    visit(body);
+    return result;
+  } finally {
+    tree.delete();
+  }
+}
+function programmaticTarget(file: string, name: string, context: ResolutionContext) {
+  const source = context.readFile(file);
+  const tree = source === null ? null : getParser(detectLanguage(file))?.parse(source);
+  if (!tree) return null;
+  try {
+    const root = tree.rootNode;
+    if (mutated(root, name)) return null;
+    let binding = localBinding(root, name);
+    let targetTree: SyntaxTree | null = null;
+    try {
+      for (const statement of root.namedChildren) {
+        if (
+          statement.type !== 'import_statement' ||
+          statement.children.some((n) => n.type === 'type')
+        )
+          continue;
+        let importedName: string | undefined;
+        if (
+          statement.namedChildren
+            .find((n) => n.type === 'import_clause')
+            ?.namedChildren.some((n) => n.type === 'identifier' && n.text === name)
+        )
+          importedName = 'default';
+        for (const spec of statement.descendantsOfType('import_specifier'))
+          if (
+            (spec.childForFieldName('alias')?.text ?? spec.childForFieldName('name')?.text) ===
+              name &&
+            !spec.children.some((n) => n.type === 'type')
+          )
+            importedName = spec.childForFieldName('name')?.text;
+        if (!importedName) continue;
+        const source = literal(statement.childForFieldName('source'));
+        const targetFile = source && resolveImportPath(source, file, detectLanguage(file), context);
+        const content = targetFile ? context.readFile(targetFile) : null;
+        if (!targetFile || content === null) return null;
+        targetTree = getParser(detectLanguage(targetFile))?.parse(content) ?? null;
+        if (!targetTree) return null;
+        file = targetFile;
+        binding = exportsIn(targetTree.rootNode).get(importedName) ?? null;
+        break;
+      }
+      if (!binding || !FUNCTIONS.has(binding.value.type)) return null;
+      const targetName = binding.node.childForFieldName('name')?.text;
+      const candidates = context
+        .getNodesInFile(file)
+        .filter(
+          (node) =>
+            node.name === targetName &&
+            ['function', 'component'].includes(node.kind) &&
+            node.startLine === binding!.value.startPosition.row + 1 &&
+            node.startColumn === binding!.value.startPosition.column,
+        );
+      return candidates.length === 1 ? candidates[0]! : null;
+    } finally {
+      targetTree?.delete();
+    }
+  } finally {
+    tree.delete();
+  }
+}
 export function extractWakuRoutes(
   filePath: string,
   content: string,
   context: ResolutionContext,
   existing: ExtractionResult,
 ): FrameworkExtractionResult {
+  if (isServer(filePath)) return extractProgrammatic(filePath, content, context);
   const result: FrameworkExtractionResult = { nodes: [], references: [] };
   if (!isWakuPage(filePath) || !project(context)?.has(filePath.split('.').at(-1)!)) return result;
   const segments = filePath
@@ -394,12 +652,14 @@ export const wakuResolver: FrameworkResolver = {
   name: 'waku',
   languages: ['typescript', 'javascript', 'tsx', 'jsx'],
   detect: (context) => dependsOn(context, 'waku'),
-  claimsReference: (name) => name.startsWith('waku-target:'),
+  claimsReference: (name) => name.startsWith('waku-target:') || name.startsWith('waku-component:'),
   resolve(ref, context) {
     if (!ref.fromNodeId.startsWith('route:waku:')) return null;
-    const target = context
-      .getNodesInFile(ref.filePath)
-      .find((node) => node.id === ref.referenceName.slice('waku-target:'.length));
+    const target = ref.referenceName.startsWith('waku-component:')
+      ? programmaticTarget(ref.filePath, ref.referenceName.slice('waku-component:'.length), context)
+      : context
+          .getNodesInFile(ref.filePath)
+          .find((node) => node.id === ref.referenceName.slice('waku-target:'.length));
     return target
       ? { original: ref, targetNodeId: target.id, confidence: 1, resolvedBy: 'framework' }
       : null;

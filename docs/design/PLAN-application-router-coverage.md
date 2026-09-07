@@ -1,4 +1,4 @@
-Status: 12/13 — Waku filesystem validated; publishing step 12
+Status: 13/13 — all approved router coverage implemented and validated
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
@@ -12,7 +12,7 @@ Status: 12/13 — Waku filesystem validated; publishing step 12
 - [x] 10 Qwik City — default pages and method exports bind exact roots, including anonymous components and named/anonymous callback calls; config/scoped/reopened sync and fresh workers pass; build passes, 112 WASM focused/control tests pass, full native suite 4,562 pass / 46 skip; independent review clear.
 - [x] 11 Vike — default `+Page` conventions and inherited literal `+route` overrides bind exact components; config/scoped/reopened sync and fresh workers pass; build passes, 126 WASM focused/control tests pass, full native suite 4,592 pass / 46 skip; independent review clear.
 - [x] 12 Waku filesystem routes — pinned default pages bind exact named/anonymous roots with staticPaths and dynamic parameters; config/scoped/reopened sync and fresh workers pass; build passes, 126 WASM focused/control tests pass, full native suite 4,612 pass / 46 skip; independent review clear.
-- [ ] 13 Waku programmatic routes — literal `createPage` declarations within the documented `createPages` registration. Gate: shared proof, async registration syntax without executing it, and computed path negatives.
+- [x] 13 Waku programmatic routes — registered literal `createPage` declarations bind exact named local/imported components; async callbacks, staticPaths, scoped/reopened sync and fresh workers pass; build passes, 146 WASM focused/control tests pass, full native suite 4,632 pass / 46 skip; independent review clear.
 
 All 13 steps approved. Each step gets a separate stacked PR so its diff remains reviewable. Existing [PR #2](https://github.com/bompus/codegraph/pull/2) remains unchanged; the first new PR is based on its branch.
 
