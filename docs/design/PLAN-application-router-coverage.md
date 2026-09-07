@@ -1,10 +1,10 @@
-Status: 4/13 — preparing step 4 PR (Astro route completion); steps 1–3 published as PRs #3–5
+Status: 5/13 — preparing step 5 PR (RedwoodSDK); steps 1–4 published as PRs #3–6
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
 - [x] 3 Remix and React Router file conventions — registered default conventions bind exact page components, optional navigation and explicit config coexistence; layout/resource controls and config-only full/scoped/reopened sync pass; build passes, 102 WASM tests pass, full native suite 4,415 pass / 46 skip; independent review clear.
 - [x] 4 Astro route completion — exact page components, declared method handlers and local source navigation; false-anchor/type/export controls and full/scoped/new-framework sync pass; build passes, 195 WASM tests pass, full native suite 4,435 pass / 46 skip; independent review clear.
-- [ ] 5 RedwoodSDK — imported `rwsdk/router` declarations, method tables, and statically resolvable registration/prefix context. Gate: shared proof, `defineApp`/`render` composition, and interrupters excluded from page roots.
+- [x] 5 RedwoodSDK — registered literal trees, prefixes and method tables bind exact handlers; JSX evidence classifies pages, interrupters/ambiguous declarations excluded; handler edit/delete and new-framework sync pass; build passes, 91 WASM tests pass, full native suite 4,459 pass / 46 skip; independent review clear.
 - [ ] 6 Angular Router — registered literal route tables, nested children, component references, and statically resolvable lazy modules/components. Gate: shared proof, router registration and nesting, plus unregistered objects and custom matcher negatives.
 - [ ] 7 Analog — default file routes and page components using Analog-specific index, dot, parameter, and layout conventions. Gate: shared proof and fixtures that distinguish parent layouts from matching pages.
 - [ ] 8 Solid Router — imported JSX/config declarations, nested path composition, and router base. Gate: shared proof, nested matching semantics, component links, and unrelated JSX negatives.

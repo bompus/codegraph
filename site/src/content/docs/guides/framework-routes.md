@@ -36,8 +36,11 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |
 | **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` `.astro` pages linked to components; `.ts`/`.js` HTTP-method exports linked to handlers; anchors and `Astro.redirect` link to local pages |
+| **RedwoodSDK** | Registered `defineApp` trees with `route`, `index`, `render`, `layout`, `prefix` and standard method tables; exact handlers and JSX page classification |
 
 Route resolution is automatic — there's nothing to configure. If a framework file is recognized, its routes appear in the graph after the next index or sync.
+
+RedwoodSDK handler arrays use the final handler as the route root. A route stays `ANY /path` until its handler is shown to return JSX. Cross-file route arrays, custom methods, mutations, dynamic paths, ambiguous method tables and wrapped/anonymous exported components remain unsupported.
 
 Astro supports default roots, `[param]`/`[...rest]` filenames and exported handlers, including `ALL` as `ANY`. Type-only exports, underscore-prefixed paths and `.mjs` endpoints are excluded. Custom routing configuration, Markdown/MDX, cross-file re-exports, client transition calls and navigation to rest routes remain unsupported.
 

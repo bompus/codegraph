@@ -20,6 +20,7 @@ import { svelteKitRouterResolver } from './sveltekit-router';
 import { svelteResolver } from './svelte';
 import { vueResolver } from './vue';
 import { astroResolver } from './astro';
+import { redwoodResolver } from './redwood';
 import { djangoResolver, flaskResolver, fastapiResolver } from './python';
 import { railsResolver } from './ruby';
 import { springResolver } from './java';
@@ -63,6 +64,7 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   // Vue Router — `createRouter({ routes })` → route nodes; `router.push({ name })` / `router.push('/x')` → navigates edges
   vueRouterResolver,
   astroResolver,
+  redwoodResolver,
   // Python
   djangoResolver,
   flaskResolver,
