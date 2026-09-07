@@ -25,6 +25,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Solid Router registered JSX and configuration trees now link to exact components, including static lazy imports, nested paths and router bases, without duplicate React routes.
+
 - Analog default file pages now link to their component classes, preserving its directory layouts, dotted paths and dynamic segments when the platform plugin and file router are registered.
 
 - Angular Router registered route arrays now link to exact component classes, including nested children and static lazy imports; imported route edits refresh their registrations during sync.
