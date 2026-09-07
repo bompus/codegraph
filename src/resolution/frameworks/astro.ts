@@ -7,6 +7,55 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { getParser, detectLanguage } from '../../extraction/grammars';
+import { generateNodeId } from '../../extraction/tree-sitter-helpers';
+import { httpHandlerReferences } from './http-routing';
+import {
+  addRouteTo,
+  appRootFor,
+  hrefArms,
+  nthArgumentText,
+  parseHrefExpression,
+  routesForFile,
+  type RootedRouteTable,
+  type RouteTable,
+} from './expo-router';
+import { destinationsForHref } from './nextjs';
+
+const tables = new WeakMap<ResolutionContext, RootedRouteTable>();
+function astroTable(context: ResolutionContext): RootedRouteTable {
+  const source = context.getNodesByKind('route');
+  const cached = tables.get(context);
+  if (cached?.source === source) return cached;
+  const byRoot = new Map<string, RouteTable>();
+  for (const node of source) {
+    if (
+      node.language !== 'astro' ||
+      node.id !== `route:${node.filePath}:${node.name}:1` ||
+      node.name.includes('*')
+    )
+      continue;
+    const root = appRootFor(node.filePath);
+    let table = byRoot.get(root);
+    if (!table) byRoot.set(root, (table = { source, exact: new Map(), dynamic: [] }));
+    addRouteTo(table, node.name, node);
+  }
+  const table = { source, byRoot };
+  tables.set(context, table);
+  return table;
+}
+
+function pageComponentId(filePath: string): string {
+  return generateNodeId(
+    filePath,
+    'component',
+    filePath
+      .split(/[/\\]/)
+      .pop()!
+      .replace(/\.astro$/, ''),
+    1,
+  );
+}
 
 /**
  * Astro virtual module prefixes — framework-provided, not user code
@@ -25,6 +74,8 @@ const ASTRO_VIRTUAL_MODULES = [
 
 export const astroResolver: FrameworkResolver = {
   name: 'astro',
+  claimsReference: (name) =>
+    name === 'astro-page-component' || name.startsWith('astro-href:') || name === 'Astro.redirect',
 
   detect(context: ResolutionContext): boolean {
     // Check for astro in package.json
@@ -47,6 +98,49 @@ export const astroResolver: FrameworkResolver = {
   },
 
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+    if (ref.referenceName === 'astro-page-component') {
+      const target = context.getNodeById?.(pageComponentId(ref.filePath));
+      return target
+        ? { original: ref, targetNodeId: target.id, confidence: 1, resolvedBy: 'framework' }
+        : null;
+    }
+    const link = ref.referenceName.startsWith('astro-href:');
+    const redirect =
+      ref.referenceName === 'Astro.redirect' &&
+      ref.referenceKind === 'calls' &&
+      ref.filePath.endsWith('.astro');
+    if (link || redirect) {
+      const routes = routesForFile(astroTable(context), ref.filePath);
+      if (!routes) return null;
+      const lines =
+        context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/);
+      const expression = link
+        ? ref.referenceName.slice('astro-href:'.length)
+        : lines
+          ? nthArgumentText(lines, ref.line, ref.column, ref.referenceName, 0)
+          : null;
+      const href = expression === null ? null : parseHrefExpression(expression);
+      if (!href) return null;
+      const targets = hrefArms(href)
+        .filter((arm) => /^\/(?!\/)/.test(arm.path))
+        .flatMap((arm) => destinationsForHref({ ...arm, alternates: undefined }, routes));
+      if (!targets.length) return null;
+      return {
+        original: ref,
+        targetNodeId: targets[0]!.node.id,
+        confidence: 0.95,
+        resolvedBy: 'framework',
+        edgeKind: 'navigates',
+        metadata: { href: targets[0]!.href.display, navMethod: link ? 'a' : 'Astro.redirect' },
+        ...(targets.length > 1
+          ? {
+              alsoTargets: targets
+                .slice(1)
+                .map((t) => ({ targetNodeId: t.node.id, metadata: { href: t.href.display } })),
+            }
+          : {}),
+      };
+    }
     // Pattern 1: the `Astro` global (Astro.props, Astro.url, Astro.params, …)
     // — runtime-provided in every component's frontmatter. Resolving it as
     // framework-provided keeps it from name-matching a user symbol named Astro.
@@ -92,19 +186,64 @@ export const astroResolver: FrameworkResolver = {
     return null;
   },
 
-  extract(filePath: string, _content: string) {
+  extract(filePath: string, content: string) {
     const nodes: Node[] = [];
+    const references: UnresolvedRef[] = [];
     const now = Date.now();
 
     // Normalize to forward slashes
     const normalized = filePath.replace(/\\/g, '/');
 
-    // Astro file-based routing lives under src/pages/ — .astro files are
-    // pages, .ts/.js files are API endpoints. (.md/.mdx pages exist too but
-    // aren't indexed as source.) Underscore-prefixed segments are excluded
-    // from routing by Astro.
+    if (normalized.endsWith('.astro') && content.includes('href')) {
+      // Keep offsets while omitting non-markup regions and commented examples.
+      const markup = content
+        .replace(/^---\s*\r?\n[\s\S]*?^---\s*$/m, (s) => s.replace(/[^\r\n]/g, ' '))
+        .replace(
+          /<!--[\s\S]*?-->|\{\/\*[\s\S]*?\*\/\}|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+          (s) => s.replace(/[^\r\n]/g, ' '),
+        );
+      const parser = getParser('tsx');
+      if (!parser) throw new Error('Astro anchor extraction requires the tsx grammar');
+      const tree = parser.parse(`<>${markup}</>`);
+      if (tree)
+        try {
+          for (const tag of tree.rootNode.descendantsOfType([
+            'jsx_opening_element',
+            'jsx_self_closing_element',
+          ])) {
+            if (
+              tag.childForFieldName('name')?.text !== 'a' ||
+              tag.namedChildren.some(
+                (n) => n.type === 'jsx_expression' && /^\{\s*\.\.\./.test(n.text),
+              )
+            )
+              continue;
+            const attributes = tag.namedChildren.filter(
+              (n) => n.type === 'jsx_attribute' && n.namedChildren[0]?.text === 'href',
+            );
+            if (attributes.length !== 1) continue;
+            const raw = attributes[0]!.namedChildren[1]?.text;
+            if (!raw) continue;
+            const expression = raw.startsWith('{') ? raw.slice(1, -1).trim() : raw;
+            if (!parseHrefExpression(expression)) continue;
+            references.push({
+              fromNodeId: pageComponentId(filePath),
+              referenceName: `astro-href:${expression}`,
+              referenceKind: 'references',
+              filePath,
+              language: 'astro',
+              line: tag.startPosition.row + 1,
+              column: 0,
+            });
+          }
+        } finally {
+          tree.delete();
+        }
+    }
+
+    // Markdown/MDX and custom roots are outside this default convention.
     const pagesMatch = /(?:^|\/)src\/pages\//.exec(normalized);
-    if (pagesMatch && /\.(astro|ts|js|mjs)$/.test(normalized)) {
+    if (pagesMatch && /\.(astro|ts|js)$/.test(normalized)) {
       const afterPages = normalized.substring(pagesMatch.index + pagesMatch[0].length);
       const base = afterPages.split('/').pop() || '';
 
@@ -116,7 +255,7 @@ export const astroResolver: FrameworkResolver = {
       ) {
         const routePath = filePathToAstroRoute(afterPages);
 
-        nodes.push({
+        const node: Node = {
           id: `route:${filePath}:${routePath}:1`,
           kind: 'route',
           name: routePath,
@@ -126,13 +265,84 @@ export const astroResolver: FrameworkResolver = {
           endLine: 1,
           startColumn: 0,
           endColumn: 0,
-          language: normalized.endsWith('.astro') ? 'astro' : 'typescript',
+          language: normalized.endsWith('.astro') ? 'astro' : detectLanguage(filePath)!,
           updatedAt: now,
-        });
+        };
+        if (node.language === 'astro') {
+          nodes.push(node);
+          references.push({
+            fromNodeId: node.id,
+            referenceName: 'astro-page-component',
+            referenceKind: 'references',
+            filePath,
+            language: 'astro',
+            line: 1,
+            column: 0,
+          });
+        } else if (content.includes('export')) {
+          const parser = getParser(node.language);
+          if (!parser)
+            throw new Error(`Astro endpoint extraction requires the ${node.language} grammar`);
+          const tree = parser.parse(content);
+          if (!tree) return { nodes, references };
+          try {
+            const methods = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL)$/;
+            for (const statement of tree.rootNode.namedChildren) {
+              if (
+                statement.type !== 'export_statement' ||
+                statement.children.some(
+                  (n) => n.type === 'default' || n.type === 'type' || n.type === 'declare',
+                ) ||
+                statement.childForFieldName('source')
+              )
+                continue;
+              const declaration = statement.childForFieldName('declaration');
+              const entries =
+                declaration?.type === 'lexical_declaration'
+                  ? declaration.namedChildren
+                  : declaration
+                    ? [declaration]
+                    : (statement.namedChildren.find((n) => n.type === 'export_clause')
+                        ?.namedChildren ?? []);
+              for (const entry of entries) {
+                if (
+                  !['function_declaration', 'variable_declarator', 'export_specifier'].includes(
+                    entry.type,
+                  ) ||
+                  entry.children.some((n) => n.type === 'type')
+                )
+                  continue;
+                const name = entry.childForFieldName('name');
+                const method = entry.childForFieldName('alias')?.text ?? name?.text;
+                if (!method || !methods.test(method)) continue;
+                const value = entry.childForFieldName('value');
+                if (
+                  value &&
+                  !['identifier', 'arrow_function', 'function_expression'].includes(value.type)
+                )
+                  continue;
+                const endpoint: Node = {
+                  ...node,
+                  id: `route:${filePath}:${method}:${routePath}`,
+                  name: `${method === 'ALL' ? 'ANY' : method} ${routePath}`,
+                  qualifiedName: `${filePath}::${method}:${routePath}`,
+                  startLine: entry.startPosition.row + 1,
+                  endLine: entry.endPosition.row + 1,
+                };
+                nodes.push(endpoint);
+                references.push(
+                  ...httpHandlerReferences(endpoint, value?.type === 'identifier' ? value : name),
+                );
+              }
+            }
+          } finally {
+            tree.delete();
+          }
+        }
       }
     }
 
-    return { nodes, references: [] };
+    return { nodes, references };
   },
 };
 
@@ -149,7 +359,7 @@ function isPascalCase(str: string): boolean {
 function resolveComponent(
   name: string,
   fromFile: string,
-  context: ResolutionContext
+  context: ResolutionContext,
 ): string | null {
   // Look for component nodes by name
   const candidates = context.getNodesByName(name);
@@ -185,9 +395,11 @@ function filePathToAstroRoute(afterPages: string): string {
   const withoutIndex = withoutExt.replace(/(^|\/)index$/, '$1').replace(/\/$/, '');
 
   // Convert Astro param syntax
-  const route = '/' + withoutIndex
-    .replace(/\[\.\.\.([^\]]+)\]/g, '*$1') // [...rest] -> *rest (catch-all)
-    .replace(/\[([^\]]+)\]/g, ':$1'); // [param] -> :param
+  const route =
+    '/' +
+    withoutIndex
+      .replace(/\[\.\.\.([^\]]+)\]/g, '*$1') // [...rest] -> *rest (catch-all)
+      .replace(/\[([^\]]+)\]/g, ':$1'); // [param] -> :param
 
   if (route === '/') return '/';
   // Remove trailing slash
