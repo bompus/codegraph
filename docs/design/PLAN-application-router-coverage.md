@@ -1,4 +1,4 @@
-Status: steps 1–4, 6 and 8–13 landed or in review; 5 and 7 pending
+Status: steps 1–4 and 6–13 landed or in review; 5 pending
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
@@ -6,7 +6,7 @@ Status: steps 1–4, 6 and 8–13 landed or in review; 5 and 7 pending
 - [x] 4 Astro route completion — exact page components, declared method handlers and local source navigation; false-anchor/type/export controls and full/scoped/new-framework sync pass; build passes, 195 WASM tests pass, full native suite 4,435 pass / 46 skip; independent review clear.
 - [ ] 5 RedwoodSDK — imported `rwsdk/router` declarations, method tables, and statically resolvable registration/prefix context. Gate: shared proof, `defineApp`/`render` composition, and interrupters excluded from page roots.
 - [x] 6 Angular Router — registered arrays, nested children and static lazy imports bind exact classes; imported table add/edit/delete after reopening and fresh workers pass; build passes, 117 WASM focused/control tests pass, full native suite 4,484 pass / 46 skip; independent review clear.
-- [ ] 7 Analog — default file routes and page components using Analog-specific index, dot, parameter, and layout conventions. Gate: shared proof and fixtures that distinguish parent layouts from matching pages.
+- [x] 7 Analog — registered default pages bind exact classes with directory-based layouts and dot/parameter conventions; config/file and reopened/scoped sync plus fresh workers pass; build passes, 133 WASM focused/control tests pass, full native suite 4,500 pass / 46 skip; independent review clear.
 - [x] 8 Solid Router — registered JSX/config and static lazy imports bind exact components; nested bases/splats, mutations, scoped introduction and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,523 pass / 46 skip; independent review clear.
 - [x] 9 SolidStart — pinned default pages and HTTP handlers bind exact targets; file hierarchy, page/API coexistence, scoped/reopened sync and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,542 pass / 46 skip; independent review clear.
 - [x] 10 Qwik City — default pages and method exports bind exact roots, including anonymous components and named/anonymous callback calls; config/scoped/reopened sync and fresh workers pass; build passes, 112 WASM focused/control tests pass, full native suite 4,562 pass / 46 skip; independent review clear.
