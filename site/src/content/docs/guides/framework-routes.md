@@ -37,8 +37,11 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` `.astro` pages linked to components; `.ts`/`.js` HTTP-method exports linked to handlers; anchors and `Astro.redirect` link to local pages |
 | **RedwoodSDK** | Registered `defineApp` trees with `route`, `index`, `render`, `layout`, `prefix` and standard method tables; exact handlers and JSX page classification |
+| **Angular Router** | `provideRouter` / `RouterModule.forRoot` arrays, nested children, relative component imports and static lazy components/route arrays/NgModules |
 
 Route resolution is automatic — there's nothing to configure. If a framework file is recognized, its routes appear in the graph after the next index or sync.
+
+Angular follows literal or constant route arrays from runtime router imports. `forChild` contributes routes only through a statically imported lazy NgModule. Route nodes belong to the registration file, and imported table changes refresh that owner. Redirects, named outlets, custom matchers, dynamic factories, conditional registrations, spread objects, path aliases and re-export modules remain unsupported. No navigation is inferred.
 
 RedwoodSDK handler arrays use the final handler as the route root. A route stays `ANY /path` until its handler is shown to return JSX. Cross-file route arrays, custom methods, mutations, dynamic paths, ambiguous method tables and wrapped/anonymous exported components remain unsupported.
 

@@ -33,6 +33,7 @@ import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
+import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -1769,6 +1770,7 @@ export class ExtractionOrchestrator {
     const commitYield = createYielder();
 
     const storeResult = async (filePath: string, content: string, stats: fs.Stats, result: ExtractionResult): Promise<void> => {
+      result = await this.enrichAngularRoutes(filePath, content, result);
       processed++;
 
       // WAL hard-cap backstop: between files (never mid-transaction), pause
@@ -1803,7 +1805,7 @@ export class ExtractionOrchestrator {
         await storeWriter.waitBelow(STORE_WRITER_WINDOW);
       } else {
         const materialized = materializeKernelResult(result, filePath, language);
-        await this.storeExtractionResult(filePath, content, language, stats, materialized, commitYield);
+        await this.storeExtractionResult(filePath, content, language, stats, materialized, commitYield, true);
       }
 
       if (result.errors.length > 0) {
@@ -2365,19 +2367,31 @@ export class ExtractionOrchestrator {
     }
   }
 
+  private async enrichAngularRoutes(filePath: string, content: string, result: ExtractionResult): Promise<ExtractionResult> {
+    if (!this.ensureDetectedFrameworks().includes('angular') || !isAngularRegistrationFile(content)) return result;
+    await loadGrammarsForLanguages(['typescript', 'javascript']);
+    result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
+    const angular = extractAngularRoutes(filePath, content, this.buildDetectionContext([]));
+    result.nodes.push(...angular.nodes);
+    result.unresolvedReferences.push(...angular.references);
+    return result;
+  }
+
   private async storeExtractionResult(
     filePath: string,
     content: string,
     language: Language,
     stats: fs.Stats,
     result: ExtractionResult,
-    onYield?: MaybeYield
+    onYield?: MaybeYield,
+    angularEnriched = false
   ): Promise<void> {
     // A kernel result can arrive as an undecoded buffer transport (empty
     // node/edge arrays, tables riding in kernelBuffers). Decode it before
     // storing — persisting the transport as-is records the file as having no
     // symbols at all (#1541). No-op for already-decoded results.
     result = materializeKernelResult(result, filePath, language);
+    if (!angularEnriched) result = await this.enrichAngularRoutes(filePath, content, result);
 
     // Bulk inserts run in bounded sub-transactions with a yield between, so a
     // giant generated file (tens of thousands of symbols) can't block the
@@ -2872,6 +2886,19 @@ export class ExtractionOrchestrator {
         : previous.includes('react-router-files');
       this.detectedFrameworkNames = null;
       const detected = this.ensureDetectedFrameworks(currentFiles);
+      if (detected.includes('angular') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:angular:'))) {
+        const scope = this.scopedSyncMatcher();
+        for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
+          if (!/\.[cm]?[jt]s$/.test(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath)) continue;
+          const full = validatePathWithinRoot(this.rootDir, filePath);
+          if (!full || !fs.existsSync(full)) continue;
+          if (!isAngularRegistrationFile(fs.readFileSync(full, 'utf-8'))) continue;
+          filesToIndex.push(filePath);
+          this.conventionInvalidatedFiles.add(filePath);
+          changedFilePaths.push(filePath);
+          filesModified++;
+        }
+      }
       if (scopedPaths?.length) {
         this.detectedFrameworkNames = [...new Set([
           ...previous.filter((name) => name !== 'react-router-files'), ...detected,
