@@ -1629,9 +1629,9 @@ describe('astroResolver.extract — src/pages file-based routing', () => {
     expect(routeNames('src/pages/[...path].astro')).toEqual(['/*path']);
   });
 
-  it('maps .ts endpoints under src/pages to routes', () => {
-    expect(routeNames('src/pages/api/posts.ts')).toEqual(['/api/posts']);
-    expect(routeNames('src/pages/rss.xml.js')).toEqual(['/rss.xml']);
+  it('does not invent endpoints without exported methods', () => {
+    expect(routeNames('src/pages/api/posts.ts')).toEqual([]);
+    expect(routeNames('src/pages/rss.xml.js')).toEqual([]);
   });
 
   it('excludes underscore-prefixed segments and config files', () => {

@@ -364,6 +364,8 @@ function expandGrammarLanguages(languages: Language[]): Language[] {
   if (languages.some((l) => l === 'svelte' || l === 'vue' || l === 'astro')) {
     languages = [...languages, 'typescript', 'javascript'];
   }
+  // Astro's static anchor reader parses template markup as JSX.
+  if (languages.includes('astro')) languages = [...languages, 'tsx'];
   if (languages.some((l) => l === 'cfml')) {
     languages = [...languages, 'cfscript', 'cfquery'];
   }

@@ -42,6 +42,7 @@ guessed.
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges) |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts` | sveltekit-realworld (31 edges) |
+| Astro | `frameworks/astro.ts` | — | `astro-routes.test.ts` | pinned endpoint fixture; exact page components and source navigation |
 
 Remix default `app/routes/` conventions and React Router configs registering an imported, option-free `flatRoutes()` call support JS/TS pages and immediate `folder/route` modules. [Pinned filename parser](https://github.com/remix-run/react-router/blob/7aea711dd1ae2bc5a076d13ff17291829690fa74/packages/react-router-fs-routes/flatRoutes.ts#L351): dot nesting, index/pathless segments, parameters, optional segments, splats and bracket escapes. Resource-only and direct `Outlet`-only defaults are excluded. Config-only full/scoped sync and reopening an index refresh existing pages. Custom configuration, folder `index` fallback, Markdown/MDX, anonymous defaults and re-exports remain unsupported.
 
@@ -97,17 +98,11 @@ for the supported declaration shapes and Nuxt configuration limits.
 Ordered by cost-to-value. Each row says what is missing, not merely that
 something is.
 
-### 1. Astro — the last web framework with routes but no navigation
+### 1. Astro — custom configuration and additional page formats
 
-**Has:** `src/pages/` file routes (`.astro` pages + `.ts` endpoints,
-`[param]`/`[...rest]`), in `frameworks/astro.ts`.
-**Missing:** `navigates` edges. Astro is an MPA — navigation is a plain
-`<a href="/about">`, plus `Astro.redirect('/x')` in frontmatter and
-`redirect` entries in `astro.config`.
-**Size:** smallest job on this list. `sveltekit-synthesizer.ts`'s
-`svelteKitLinkEdges` is the same pass over the same tag against a different
-table; the resolver half is one `Astro.redirect` reader.
-**Validate on:** any `withastro/astro` example, or the Astro docs site.
+Default `.astro` pages bind exact same-file components; `.ts`/`.js` exported HTTP methods bind handlers (`ALL` becomes `ANY`). Literal/bound anchor destinations and `Astro.redirect` link to local pages. External URLs, non-href attributes, type-only exports and underscore-prefixed paths are excluded. [Pinned endpoint fixture](https://github.com/withastro/astro/blob/9870f95601690d9d98799b6fa78a0bc76165ee06/packages/astro/test/fixtures/api-routes/src/pages/binary.dat.ts), [extension rules](https://github.com/withastro/astro/blob/9870f95601690d9d98799b6fa78a0bc76165ee06/packages/astro/src/core/routing/create-manifest.ts#L140).
+
+Remaining: custom roots/base/config redirects, Markdown/MDX pages, cross-file re-exports, client transition calls, and navigation to rest routes. These are not inferred from default file conventions.
 
 ### 2. Server-rendered frameworks — a redirect is a transition, not just a response
 
