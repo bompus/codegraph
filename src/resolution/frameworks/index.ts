@@ -21,6 +21,7 @@ import { svelteResolver } from './svelte';
 import { vueResolver } from './vue';
 import { astroResolver } from './astro';
 import { redwoodResolver } from './redwood';
+import { angularResolver } from './angular';
 import { djangoResolver, flaskResolver, fastapiResolver } from './python';
 import { railsResolver } from './ruby';
 import { springResolver } from './java';
@@ -65,6 +66,7 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   vueRouterResolver,
   astroResolver,
   redwoodResolver,
+  angularResolver,
   // Python
   djangoResolver,
   flaskResolver,

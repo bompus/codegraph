@@ -25,6 +25,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Angular Router registered route arrays now link to exact component classes, including nested children and static lazy imports; imported route edits refresh their registrations during sync.
+
 - RedwoodSDK registered routes now link to their page or API handlers, preserving prefixes and method tables while excluding middleware from page roots.
 
 - Astro pages now link to their exact components and source-declared navigation; exported HTTP methods in `.ts`/`.js` endpoints link to their handlers, while type-only declarations and `.mjs` files are excluded.
