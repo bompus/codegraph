@@ -8,6 +8,7 @@
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
 import { dependsOn } from './package-deps';
+import { detectLanguage, getParser } from '../../extraction/grammars';
 
 export const reactResolver: FrameworkResolver = {
   name: 'react',
@@ -103,8 +104,16 @@ export const reactResolver: FrameworkResolver = {
     // and element={...} contains a nested `>`, so scan a window after each
     // <Route rather than trying to match the whole (possibly multi-line) tag.
     const routeTagRegex = /<Route\b/g;
+    const parser = content.includes('@solidjs/router') ? getParser(detectLanguage(filePath)!) : null;
+    const tree = parser?.parse(content);
+    const foreignRoute = tree?.rootNode.namedChildren.some(statement =>
+      statement.type === 'import_statement' &&
+      statement.childForFieldName('source')?.text.slice(1, -1) === '@solidjs/router' &&
+      statement.descendantsOfType('import_specifier').some(spec =>
+        (spec.childForFieldName('alias') ?? spec.childForFieldName('name'))?.text === 'Route'));
+    tree?.delete();
     let routeMatch: RegExpExecArray | null;
-    while ((routeMatch = routeTagRegex.exec(content)) !== null) {
+    while (!foreignRoute && (routeMatch = routeTagRegex.exec(content)) !== null) {
       const window = content.slice(routeMatch.index, routeMatch.index + 400);
       const pathMatch = window.match(/\bpath\s*=\s*["']([^"']+)["']/);
       if (!pathMatch) continue; // index/layout routes without a path
