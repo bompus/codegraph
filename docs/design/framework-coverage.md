@@ -38,10 +38,12 @@ guessed.
 |---|---|---|---|---|
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts` | — |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
-| React Router | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts` | proshop; pinned official framework config (7 pages) |
+| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop; pinned official framework config and flat filenames |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges) |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts` | sveltekit-realworld (31 edges) |
+
+Remix default `app/routes/` conventions and React Router configs registering an imported, option-free `flatRoutes()` call support JS/TS pages and immediate `folder/route` modules. [Pinned filename parser](https://github.com/remix-run/react-router/blob/7aea711dd1ae2bc5a076d13ff17291829690fa74/packages/react-router-fs-routes/flatRoutes.ts#L351): dot nesting, index/pathless segments, parameters, optional segments, splats and bracket escapes. Resource-only and direct `Outlet`-only defaults are excluded. Config-only full/scoped sync and reopening an index refresh existing pages. Custom configuration, folder `index` fallback, Markdown/MDX, anonymous defaults and re-exports remain unsupported.
 
 React Router framework mode reads default exported literal arrays in `app/routes.ts` or `app/routes.js`, using imported `route`, `index`, `layout`, and spread `prefix` helpers. Module paths bind named default components; nested index pages take precedence over their parent. [Official source fixture](https://github.com/remix-run/react-router/blob/7aea711dd1ae2bc5a076d13ff17291829690fa74/docs/start/framework/routing.md#L28): seven expected pages, verified through indexing and navigation. Tests also cover module/config sync and a fresh compiled process using parse/resolver workers. Custom app directories, computed arrays, `relative`, anonymous defaults, and re-exports remain unsupported.
 

@@ -30,7 +30,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods |
 | **Vapor** | `app.get("x", use: handler)` |
-| **React Router** | JSX/data-router pages; literal framework-mode `app/routes.ts` arrays with `route`, `index`, `layout`, and `prefix`, linked to named default components |
+| **React Router / Remix** | JSX/data-router pages; literal framework-mode arrays; default Remix and registered `flatRoutes()` file pages, linked to named default components |
 | **SvelteKit** | Route component nodes |
 | **TanStack Router / Start** | Page routes plus literal `server.handlers` method tables and `createHandlers` callbacks on exported file routes; middleware is excluded from handler links |
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |
@@ -40,6 +40,8 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 Route resolution is automatic — there's nothing to configure. If a framework file is recognized, its routes appear in the graph after the next index or sync.
 
 React Router framework mode assumes the default `app/` directory. Computed arrays, custom app directories, `relative` helpers, anonymous defaults, and re-exports remain unsupported. Layout helpers contribute nesting without creating extra pages; an index page takes precedence over its parent layout.
+
+Remix default `app/routes/` filenames and React Router configs registering an imported, option-free `flatRoutes()` call support JS/TS pages, immediate `folder/route` modules, dot nesting, index/pathless segments, parameters, optional segments, splats, and bracket escapes. Resource-only and direct `Outlet`-only defaults are excluded. Custom configuration, folder `index` fallback, and Markdown/MDX are unsupported.
 
 The JavaScript HTTP readers require a recognized package import (ES modules or CommonJS), except for the global `Bun.serve`. They follow immutable local router bindings and literal declarations, without executing your application. Named handlers produce references; direct calls inside inline handlers produce call edges. Static responses have an endpoint without an invented handler. Member handlers remain unresolved by this reader.
 
