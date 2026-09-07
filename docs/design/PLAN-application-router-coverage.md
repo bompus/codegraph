@@ -1,4 +1,4 @@
-Status: 8/13 — Solid Router verified; publishing step 8 before SolidStart
+Status: 9/13 — SolidStart validated; publishing step 9
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
@@ -8,7 +8,7 @@ Status: 8/13 — Solid Router verified; publishing step 8 before SolidStart
 - [x] 6 Angular Router — registered arrays, nested children and static lazy imports bind exact classes; imported table add/edit/delete after reopening and fresh workers pass; build passes, 117 WASM focused/control tests pass, full native suite 4,484 pass / 46 skip; independent review clear.
 - [x] 7 Analog — registered default pages bind exact classes with directory-based layouts and dot/parameter conventions; config/file and reopened/scoped sync plus fresh workers pass; build passes, 133 WASM focused/control tests pass, full native suite 4,500 pass / 46 skip; independent review clear.
 - [x] 8 Solid Router — registered JSX/config and static lazy imports bind exact components; nested bases/splats, mutations, scoped introduction and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,523 pass / 46 skip; independent review clear.
-- [ ] 9 SolidStart — pinned-version file routes, default page exports, and HTTP-method exports. Gate: shared proof, page/API coexistence, layouts, and dynamic parameters.
+- [x] 9 SolidStart — pinned default pages and HTTP handlers bind exact targets; file hierarchy, page/API coexistence, scoped/reopened sync and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,542 pass / 46 skip; independent review clear.
 - [ ] 10 Qwik City — default file routes, page components, and method-specific endpoint exports. Gate: shared proof, parameters, layouts, and `onRequest`/middleware exclusions.
 - [ ] 11 Vike — default `+Page` conventions and literal `+route` overrides. Gate: shared proof, parameters, exact component links, and no fallback route when an unsupported override changes routing.
 - [ ] 12 Waku filesystem routes — default pages, parameters, and layout exclusions for a pinned version. Gate: shared proof and `_root`/`_layout`/`_slices` controls.
