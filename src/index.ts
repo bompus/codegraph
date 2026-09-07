@@ -6,6 +6,7 @@
  */
 
 import * as path from 'path';
+import { readFile } from 'fs/promises';
 import {
   Node,
   NodeKind,
@@ -60,6 +61,8 @@ import { CodeGraphPackageVersion } from './mcp/version';
 import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
 import { createYielder } from './resolution/cooperative-yield';
 import { minRefsForPool } from './resolution/resolver-pool';
+import { extractReactRouterConfig } from './resolution/frameworks/react-router';
+import { loadGrammarsForLanguages } from './extraction/grammars';
 
 // Re-export types for consumers
 export * from './types';
@@ -576,6 +579,8 @@ export class CodeGraph {
         if (result.success && result.filesIndexed > 0) {
           const tReinit = Date.now();
           this.resolver.initialize();
+          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:react-router:')))
+            await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
           // Cross-file finalization (e.g. NestJS RouterModule prefixes). Runs
           // before resolution so updated names show up in subsequent reads.
           this.resolver.runPostExtract();
@@ -828,6 +833,8 @@ export class CodeGraph {
         // to controllers in unchanged files. The pass is idempotent and cheap
         // (regex over *.module.ts only).
         if (result.filesAdded > 0 || result.filesModified > 0) {
+          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:react-router:')))
+            await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
           this.resolver.runPostExtract();
         } else if (result.filesRemoved > 0) {
           // A pure-removal sync still resolves refs below — the deletion path
@@ -942,6 +949,27 @@ export class CodeGraph {
             console.error(
               `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${result.definitionDelta.length} changed names, ${rebound} edges re-opened)`
             );
+          }
+        }
+
+        // Config module refs name files, not symbols, so symbol-name retries cannot
+        // recover them when a missing/default-less page later gains its export.
+        if (filesChanged) {
+          const configFiles = new Set(
+            this.queries
+              .getNodesByKind('route')
+              .filter((n) => n.id.startsWith('route:react-router:'))
+              .map((n) => n.filePath),
+          );
+          for (const file of configFiles) {
+            const source = await readFile(path.join(this.projectRoot, file), 'utf8').catch(error => {
+              if (error.code === 'ENOENT') return null;
+              throw error;
+            });
+            if (source === null) continue;
+            const refs = extractReactRouterConfig(file, source).references;
+            for (const ref of refs) this.queries.deleteEdgesBySource(ref.fromNodeId);
+            await this.resolver.resolveAndPersistListYielding(refs);
           }
         }
 

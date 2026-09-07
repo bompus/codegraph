@@ -27,6 +27,7 @@ import { ReferenceResolver } from './index';
 import { SYNTH_PASSES } from './callback-synthesizer';
 import { createYielder } from './cooperative-yield';
 import type { UnresolvedReference } from '../types';
+import { initGrammars, loadGrammarsForLanguages } from '../extraction/grammars';
 
 if (!parentPort) {
   throw new Error('resolver-worker must be run as a worker thread');
@@ -46,7 +47,7 @@ type InMessage =
 
 let dbPath: string | null = null;
 
-port.on('message', (msg: InMessage) => {
+port.on('message', async (msg: InMessage) => {
   try {
     switch (msg.type) {
       case 'open': {
@@ -60,6 +61,10 @@ port.on('message', (msg: InMessage) => {
         queries = new QueryBuilder(db);
         resolver = new ReferenceResolver(msg.projectRoot, queries);
         resolver.initialize();
+        if (queries.getNodesByKind('route').some(n => n.id.startsWith('route:react-router:'))) {
+          await initGrammars();
+          await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
+        }
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] worker open: db=${tDb - tOpen}ms init=${Date.now() - tDb}ms`);
         port.postMessage({ type: 'ready' });
         break;
