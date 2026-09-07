@@ -307,8 +307,8 @@ export class ReferenceResolver {
    * Initialize the resolver (detect frameworks, etc.)
    */
   initialize(): void {
-    this.frameworks = detectFrameworks(this.context);
     this.clearCaches();
+    this.frameworks = detectFrameworks(this.context);
   }
 
   /**

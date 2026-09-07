@@ -25,6 +25,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- TanStack Start server routes now link to their HTTP handlers while keeping API-only files out of the page map, including routes introduced after initial indexing.
+
 - React Router framework-mode pages now appear with their page components and navigation, including nested routes and pathless layouts.
 
 - Endpoint discovery now recognizes literal routes in Hono, Elysia, Fastify, Hyper-Express, Koa router, H3, Bun, Effect v4 and option-free Vixeny builders, and correctly reads Nuxt 4 page groups and server route methods after re-indexing.

@@ -2873,6 +2873,11 @@ export class ExtractionOrchestrator {
 
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
+      const previous = this.detectedFrameworkNames ?? [];
+      this.detectedFrameworkNames = null;
+      const detected = this.ensureDetectedFrameworks(currentFiles);
+      // A watcher scope sees only changed files; retain other packages' frameworks.
+      if (scopedPaths?.length) this.detectedFrameworkNames = [...new Set([...previous, ...detected])];
       const overrides = loadExtensionOverrides(this.rootDir);
       const neededLanguages = [...new Set(filesToIndex.map((f) => detectLanguage(f, undefined, overrides)))];
       // .h files default to 'c' but may be C++ — ensure cpp grammar is loaded

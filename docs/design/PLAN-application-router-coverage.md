@@ -1,7 +1,7 @@
-Status: 1/13 — all steps approved; step 1 verified, preparing its PR
+Status: 2/13 — step 2 verified, preparing its PR; step 1 published as PR #3
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
-- [ ] 2 TanStack Start server routes — method-qualified endpoints from literal `server.handlers` tables and documented `createHandlers` callback forms. Keep page and endpoint nodes when both exist; omit phantom pages for server-only files. Gate: shared proof, mixed page/API fixtures, middleware exclusion, and handler call edges.
+- [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
 - [ ] 3 Remix and React Router file conventions — support the pinned default file convention, including index, nested, parameter, pathless, and splat cases; require evidence that the convention is enabled. Gate: shared proof, explicit-config/file-route coexistence, and layout-only controls.
 - [ ] 4 Astro route completion — connect existing page routes to components and API method exports, then navigation where the source declares it. Gate: shared proof, page/API distinction, underscore exclusions, and cross-file handler resolution.
 - [ ] 5 RedwoodSDK — imported `rwsdk/router` declarations, method tables, and statically resolvable registration/prefix context. Gate: shared proof, `defineApp`/`render` composition, and interrupters excluded from page roots.

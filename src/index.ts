@@ -833,6 +833,7 @@ export class CodeGraph {
         // to controllers in unchanged files. The pass is idempotent and cheap
         // (regex over *.module.ts only).
         if (result.filesAdded > 0 || result.filesModified > 0) {
+          this.resolver.initialize();
           if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:react-router:')))
             await loadGrammarsForLanguages(['typescript', 'javascript', 'tsx', 'jsx']);
           this.resolver.runPostExtract();
