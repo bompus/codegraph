@@ -22,6 +22,7 @@ import { vueResolver } from './vue';
 import { astroResolver } from './astro';
 import { angularResolver } from './angular';
 import { solidRouterResolver } from './solid-router';
+import { solidStartResolver } from './solid-start';
 import { djangoResolver, flaskResolver, fastapiResolver } from './python';
 import { railsResolver } from './ruby';
 import { springResolver } from './java';
@@ -67,6 +68,7 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   astroResolver,
   angularResolver,
   solidRouterResolver,
+  solidStartResolver,
   // Python
   djangoResolver,
   flaskResolver,
