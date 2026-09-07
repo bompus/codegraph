@@ -1,4 +1,4 @@
-Status: 11/13 — Vike validated; publishing step 11
+Status: 12/13 — Waku filesystem validated; publishing step 12
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
@@ -11,7 +11,7 @@ Status: 11/13 — Vike validated; publishing step 11
 - [x] 9 SolidStart — pinned default pages and HTTP handlers bind exact targets; file hierarchy, page/API coexistence, scoped/reopened sync and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,542 pass / 46 skip; independent review clear.
 - [x] 10 Qwik City — default pages and method exports bind exact roots, including anonymous components and named/anonymous callback calls; config/scoped/reopened sync and fresh workers pass; build passes, 112 WASM focused/control tests pass, full native suite 4,562 pass / 46 skip; independent review clear.
 - [x] 11 Vike — default `+Page` conventions and inherited literal `+route` overrides bind exact components; config/scoped/reopened sync and fresh workers pass; build passes, 126 WASM focused/control tests pass, full native suite 4,592 pass / 46 skip; independent review clear.
-- [ ] 12 Waku filesystem routes — default pages, parameters, and layout exclusions for a pinned version. Gate: shared proof and `_root`/`_layout`/`_slices` controls.
+- [x] 12 Waku filesystem routes — pinned default pages bind exact named/anonymous roots with staticPaths and dynamic parameters; config/scoped/reopened sync and fresh workers pass; build passes, 126 WASM focused/control tests pass, full native suite 4,612 pass / 46 skip; independent review clear.
 - [ ] 13 Waku programmatic routes — literal `createPage` declarations within the documented `createPages` registration. Gate: shared proof, async registration syntax without executing it, and computed path negatives.
 
 All 13 steps approved. Each step gets a separate stacked PR so its diff remains reviewable. Existing [PR #2](https://github.com/bompus/codegraph/pull/2) remains unchanged; the first new PR is based on its branch.

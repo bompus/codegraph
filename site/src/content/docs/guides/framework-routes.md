@@ -43,6 +43,9 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **SolidStart** | Default file pages and HTTP-method exports; exact local targets, nested layouts, groups, parameters and GET-to-HEAD fallback |
 | **Qwik City** | Default index pages, named/anonymous `component$` components and method-specific endpoint exports; groups, parameters and catchalls |
 | **Vike** | Default JS/TS `+Page` modules and nearest inherited literal `+route` overrides; exact local named components and `@` parameters |
+| **Waku** | Default filesystem pages with exact named/anonymous components, dynamic parameters and literal `staticPaths` expansion |
+
+Waku coverage targets 1.0.0-rc.0. Default `src/pages` and literal default/Cloudflare `fsRouter` adapters are supported. Parameter pages need explicit dynamic rendering or declared static paths. Layouts, roots, slices, interceptors and API modules are excluded. Custom routing configuration, unknown `getConfig`, wrappers and re-exports remain unsupported.
 
 Vike coverage targets 0.4.266 with default roots and option-free `vike()` configuration. Canonical `vike-react/config` rendering configuration is supported. Dynamic overrides, custom roots/options, configured or inherited-only Page targets, unknown extensions/metadata, anonymous/re-exported/wrapped components and template-language pages remain unsupported; these do not receive fallback paths.
 

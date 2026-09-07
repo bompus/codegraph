@@ -25,6 +25,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Waku filesystem pages now produce exact named or anonymous component roots, with dynamic parameters and literal static-path expansion; layouts, slices, APIs and unsupported configuration are excluded.
+
 - Vike default `+Page` modules now link to exact local components, with nearest inherited literal `+route` overrides and guards against guessed paths under unsupported routing configuration.
 
 - Qwik City default index pages and method exports now produce exact route roots, including anonymous `component$` defaults and their body calls, with layouts and generic middleware excluded.
