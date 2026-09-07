@@ -322,16 +322,12 @@ export function extractQwikCityRoutes(
       if (!callback) return;
       const name = binding.node.childForFieldName('name')?.text;
       if (method && !name) return;
+      const anchor = FUNCTIONS.has(binding.value.type) ? binding.value : binding.node;
       let targetId: string | undefined;
       if (!name) {
         // Factory-call defaults have no generic extractor symbol; this is their exported component.
         if (binding.value.type !== 'call_expression') return;
-        targetId = generateNodeId(
-          filePath,
-          'component',
-          'default',
-          binding.node.startPosition.row + 1,
-        );
+        targetId = generateNodeId(filePath, 'component', 'default', anchor.startPosition.row + 1);
         const component: Node = {
           id: targetId,
           kind: 'component',
@@ -339,10 +335,10 @@ export function extractQwikCityRoutes(
           qualifiedName: `${filePath}::default`,
           filePath,
           language,
-          startLine: binding.node.startPosition.row + 1,
-          startColumn: binding.node.startPosition.column,
-          endLine: binding.node.endPosition.row + 1,
-          endColumn: binding.node.endPosition.column,
+          startLine: anchor.startPosition.row + 1,
+          startColumn: anchor.startPosition.column,
+          endLine: anchor.endPosition.row + 1,
+          endColumn: anchor.endPosition.column,
           updatedAt: Date.now(),
         };
         result.nodes.push(component);
@@ -352,7 +348,7 @@ export function extractQwikCityRoutes(
           (node) =>
             node.name === name &&
             node.kind === 'constant' &&
-            node.startLine === binding.node.startPosition.row + 1,
+            node.startLine === anchor.startPosition.row + 1,
         );
         const owner = targetId ?? (named.length === 1 ? named[0]!.id : undefined);
         const body = callback.childForFieldName('body')!;
@@ -379,10 +375,10 @@ export function extractQwikCityRoutes(
         qualifiedName: `${filePath}::${routeName}`,
         filePath,
         language,
-        startLine: binding.node.startPosition.row + 1,
-        startColumn: binding.node.startPosition.column,
-        endLine: binding.node.endPosition.row + 1,
-        endColumn: binding.node.endPosition.column,
+        startLine: anchor.startPosition.row + 1,
+        startColumn: anchor.startPosition.column,
+        endLine: anchor.endPosition.row + 1,
+        endColumn: anchor.endPosition.column,
         updatedAt: Date.now(),
       });
       result.references.push({
@@ -391,8 +387,8 @@ export function extractQwikCityRoutes(
         referenceKind: 'references',
         filePath,
         language,
-        line: binding.node.startPosition.row + 1,
-        column: binding.node.startPosition.column,
+        line: anchor.startPosition.row + 1,
+        column: anchor.startPosition.column,
       });
     };
     if (state.pages) add('', exported.get('default'));

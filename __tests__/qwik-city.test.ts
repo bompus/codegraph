@@ -69,6 +69,23 @@ describe('Qwik City default route conventions', () => {
     ]);
     expect(roots.get(routes().find((n) => n.name.startsWith('GET'))!.id)!.node.name).toBe('onGet');
   });
+  it('links multiline plain function defaults and method exports', async () => {
+    setup();
+    write(
+      'src/routes/index.tsx',
+      'const Page =\n  () => <p/>;\nexport default Page;\nexport const onGet =\n  () => 1;',
+    );
+    cg = await CodeGraph.init(dir, { index: true });
+    const roots = routeRoots(cg, routes());
+    expect(
+      routes()
+        .map((route) => [route.name, roots.get(route.id)?.node.name])
+        .sort(),
+    ).toEqual([
+      ['/', 'Page'],
+      ['GET /', 'onGet'],
+    ]);
+  });
   it.each([false, true])(
     'preserves component body calls without taking neighboring or named nested calls (named=%s)',
     async (named) => {
