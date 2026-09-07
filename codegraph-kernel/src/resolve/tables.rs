@@ -337,6 +337,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "swift-objc-bridge" => name.contains(':'),
         "tanstack-router" => tanstack_nav_re().is_match(name),
         "terraform" => terra_claim_re().is_match(name),
+        "vike" => name.starts_with("vike-page:"),
         "vue-router" => vue_nav_re().is_match(name),
         "aspnet" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "react-router-files" | "rust"

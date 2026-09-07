@@ -35,6 +35,7 @@ import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
+import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2712,12 +2713,15 @@ export class ExtractionOrchestrator {
     const frameworks = this.ensureDetectedFrameworks();
     const angular = frameworks.includes('angular') && isAngularRegistrationFile(content);
     const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
-    if (!angular && !solidStart) return result;
+    const vike = frameworks.includes('vike') && isVikePage(filePath);
+    if (!angular && !solidStart && !vike) return result;
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
     const context = this.frameworkSourceContext!;
     const extracted = angular
       ? extractAngularRoutes(filePath, content, context)
-      : extractSolidStartRoutes(filePath, content, context);
+      : solidStart
+        ? extractSolidStartRoutes(filePath, content, context)
+        : extractVikeRoutes(filePath, content, context);
     result.nodes.push(...extracted.nodes);
     result.unresolvedReferences.push(...extracted.references);
     return result;
@@ -3257,10 +3261,13 @@ export class ExtractionOrchestrator {
         : previous.includes('react-router-files');
       this.detectedFrameworkNames = null;
       const detected = this.ensureDetectedFrameworks(currentFiles);
-      if (detected.includes('solid-start') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:solid-start:'))) {
+      for (const [framework, matches] of [
+        ['solid-start', isSolidStartRoute], ['vike', isVikePage],
+      ] as const) {
+        if (!detected.includes(framework) && !this.queries.getNodesByKind('route').some(n => n.id.startsWith(`route:${framework}:`))) continue;
         const scope = this.scopedSyncMatcher();
         for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
-          if (!isSolidStartRoute(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
+          if (!matches(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
           filesToIndex.push(filePath);
           this.conventionInvalidatedFiles.add(filePath);
           changedFilePaths.push(filePath);
