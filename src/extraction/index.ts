@@ -36,6 +36,7 @@ import { detectFrameworks } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import { extractAnalogRoutes, isAnalogPage } from '../resolution/frameworks/analog';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
+import { extractQwikCityRoutes, isQwikCityRoute } from '../resolution/frameworks/qwik-city';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2376,13 +2377,15 @@ export class ExtractionOrchestrator {
     const angular = frameworks.includes('angular') && isAngularRegistrationFile(content);
     const analog = frameworks.includes('analog') && isAnalogPage(filePath);
     const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
-    if (!angular && !analog && !solidStart) return result;
-    await loadGrammarsForLanguages(solidStart ? ['typescript', 'javascript', 'tsx', 'jsx'] : ['typescript', 'javascript']);
+    const qwikCity = frameworks.includes('qwik-city') && isQwikCityRoute(filePath);
+    if (!angular && !analog && !solidStart && !qwikCity) return result;
+    await loadGrammarsForLanguages(solidStart || qwikCity ? ['typescript', 'javascript', 'tsx', 'jsx'] : ['typescript', 'javascript']);
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
     const context = this.frameworkSourceContext!;
     const extracted = angular ? extractAngularRoutes(filePath, content, context)
       : analog ? extractAnalogRoutes(filePath, content, context)
-      : extractSolidStartRoutes(filePath, content, context);
+      : solidStart ? extractSolidStartRoutes(filePath, content, context)
+      : extractQwikCityRoutes(filePath, content, context, result);
     result.nodes.push(...extracted.nodes);
     result.unresolvedReferences.push(...extracted.references);
     return result;
@@ -2897,20 +2900,13 @@ export class ExtractionOrchestrator {
         : previous.includes('react-router-files');
       this.detectedFrameworkNames = null;
       const detected = this.ensureDetectedFrameworks(currentFiles);
-      if (detected.includes('solid-start') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:solid-start:'))) {
+      for (const [framework, matches] of [
+        ['solid-start', isSolidStartRoute], ['analog', isAnalogPage], ['qwik-city', isQwikCityRoute],
+      ] as const) {
+        if (!detected.includes(framework) && !this.queries.getNodesByKind('route').some(n => n.id.startsWith(`route:${framework}:`))) continue;
         const scope = this.scopedSyncMatcher();
         for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
-          if (!isSolidStartRoute(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
-          filesToIndex.push(filePath);
-          this.conventionInvalidatedFiles.add(filePath);
-          changedFilePaths.push(filePath);
-          filesModified++;
-        }
-      }
-      if (detected.includes('analog') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:analog:'))) {
-        const scope = this.scopedSyncMatcher();
-        for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
-          if (!isAnalogPage(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
+          if (!matches(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
           filesToIndex.push(filePath);
           this.conventionInvalidatedFiles.add(filePath);
           changedFilePaths.push(filePath);
