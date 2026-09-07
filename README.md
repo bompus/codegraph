@@ -49,19 +49,20 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ---
 
-## Experimental fork — current benchmark
+## Consolidated fork — current status
 
-This branch compares experimental changes with upstream CodeGraph. The installers,
-npm package, release badges, and `codegraph upgrade` instructions below refer to
-**upstream releases**, not this fork.
+`fork/consolidated` is the canonical integration branch. The reconciliation at
+[`31eff33`](https://github.com/bompus/codegraph/commit/31eff33b02e0655b0f4e66f2c8b20b590ab37991)
+preserves extraction, literal lookup and retrieval behavior from the former
+integration branch alongside consolidated Markdown and resolution guards.
+Both source histories are included in the merge. Deployment cutover and retirement
+of the former branch are pending.
 
-Checked **2026-09-06**: upstream HEAD is
-[`b9ca4b7`](https://github.com/colbymchenry/codegraph/commit/b9ca4b7981116909900368cc1686a1074cd4d4c1),
-the same revision used in the saved benchmark. Fork HEAD at this check is
-[`5f2db7a`](https://github.com/bompus/codegraph/commit/5f2db7a19a3b909b58717a2948c612e0d422e1d8);
-its production sources match the measured resolver committed in `1c4432f`.
-Later changes affect tests and this README. These are dated measurements, not
-a continuously updated comparison.
+The installers, npm package, release badges and `codegraph upgrade` instructions
+below refer to **upstream releases**. This fork's managed deployment is separate:
+its updater validates the canonical revision before promotion and compares source,
+built and running revisions. Managed builds include their source revision in the
+MCP version handshake; an unstamped build does not establish deployment identity.
 
 The fork adds Markdown indexing and retrieval, project session search, import
 and call-resolution guards, Windows test teardown fixes, and agent integration
@@ -79,25 +80,28 @@ changes. It incorporates upstream PRs
 corrections below. [#1721](https://github.com/colbymchenry/codegraph/issues/1721)
 remains separate design work.
 
-### Upstream versus fork
+### Historical upstream comparison (2026-09-06)
+
+The table and timings below compare upstream `b9ca4b7` with the pre-reconciliation
+fork resolver `1c4432f`. They do not measure reconciliation `31eff33` or the deployed service.
 
 Corpus: [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
 Sources: [upstream measurements](docs/benchmarks/fork-integration-2026-09-06.json)
 and [corrected fork measurements](docs/benchmarks/framework-import-correction-2026-09-06.json).
 
-| Metric | Upstream `b9ca4b7` | Fork resolver `1c4432f` | Fork minus upstream |
-| --- | ---: | ---: | ---: |
-| Files indexed (CLI count) | 1,635 | 1,719 | +84 |
-| File nodes | 1,608 | 1,692 | +84 |
-| Markdown file nodes / sections | 0 / 0 | 84 / 1,983 | +84 / +1,983 |
-| Nodes | 9,354 | 12,484 | +3,130 |
-| Edges | 27,778 | 28,209 | +431 |
-| Heuristic edges, total / code only | 36 / 36 | 3,082 / 36 | +3,046 / 0 |
-| Unresolved references | 24,920 | 28,445 | +3,525 |
-| Main database file, decimal MB | 33.89 | 37.99 | +4.10 |
-| Recorded tests passing | 4,173 | 4,284 | +111 |
-| Recorded test failures (Windows) | 23 | 0 | −23 |
-| Recorded tests skipped | 44 | 44 | 0 |
+| Metric                             | Upstream `b9ca4b7` | Fork resolver `1c4432f` | Fork minus upstream |
+| ---------------------------------- | -----------------: | ----------------------: | ------------------: |
+| Files indexed (CLI count)          |              1,635 |                   1,719 |                 +84 |
+| File nodes                         |              1,608 |                   1,692 |                 +84 |
+| Markdown file nodes / sections     |              0 / 0 |              84 / 1,983 |        +84 / +1,983 |
+| Nodes                              |              9,354 |                  12,484 |              +3,130 |
+| Edges                              |             27,778 |                  28,209 |                +431 |
+| Heuristic edges, total / code only |            36 / 36 |              3,082 / 36 |          +3,046 / 0 |
+| Unresolved references              |             24,920 |                  28,445 |              +3,525 |
+| Main database file, decimal MB     |              33.89 |                   37.99 |               +4.10 |
+| Recorded tests passing             |              4,173 |                   4,284 |                +111 |
+| Recorded test failures (Windows)   |                 23 |                       0 |                 −23 |
+| Recorded tests skipped             |                 44 |                      44 |                   0 |
 
 The fork indexes additional Markdown content and rejects incorrect resolutions.
 Node, edge, and unresolved-reference totals therefore measure different graph
@@ -110,10 +114,10 @@ suite was not rerun.
 ### Timing and method
 
 | Full reindex, eight samples per revision | Upstream `b9ca4b7` | Fork resolver `1c4432f` |
-| --- | ---: | ---: |
-| Wall-time median | 3,513 ms | 3,892 ms |
-| Wall-time range | 3,454–3,784 ms | 3,707–4,222 ms |
-| Wall ms / indexed file | 2.149 | 2.264 |
+| ---------------------------------------- | -----------------: | ----------------------: |
+| Wall-time median                         |           3,513 ms |                3,892 ms |
+| Wall-time range                          |     3,454–3,784 ms |          3,707–4,222 ms |
+| Wall ms / indexed file                   |              2.149 |                   2.264 |
 
 **These timings come from separate batches, not a paired upstream-versus-current-fork
 run.** They describe the recorded cost of each revision; no controlled speed
@@ -147,10 +151,14 @@ plus edge kind and source location.
 
 In that paired correction benchmark, the median rose from 3,760 to 3,892 ms
 (+3.5%), with overlapping ranges of 3,655–3,862 and 3,707–4,222 ms.
-The corrected revision passed 4,284 full-suite tests with the native kernel
+The historical corrected revision passed 4,284 full-suite tests with the native kernel
 required, 267 focused forced-WASM tests, and TypeScript compilation. The original
 integration's one Windows cleanup failure and its successful isolated rerun remain
 in the saved data.
+
+Reconciliation `31eff33` passed production/native builds, 4,334 native tests
+(44 skipped), 1,046 WASM-focused tests (1 skipped), and 27 Rust tests. These suites
+overlap and their counts must not be added together.
 
 These checks cover the named regressions on this corpus, not complete graph
 precision or recall. CommonJS export detection remains conservative. Unchanged
@@ -158,13 +166,14 @@ heuristic-edge counts do not establish correctness: the removed incorrect edges
 had null provenance. Resolver and Windows follow-ups are linked through
 [#1720](https://github.com/colbymchenry/codegraph/pull/1720) and
 [#1717](https://github.com/colbymchenry/codegraph/pull/1717); consult those PRs
-for current review and merge status.
+for their review history. The reconciliation is published; updater promotion and
+deployment cutover remain pending.
 
 ---
 
 ## Contents
 
-- [Experimental fork — current benchmark](#experimental-fork--current-benchmark)
+- [Consolidated fork — current status](#consolidated-fork--current-status)
 - [Get Started](#get-started)
 - [Language Support](#language-support)
 - [Why CodeGraph?](#why-codegraph)
@@ -555,7 +564,6 @@ Real iOS and React Native codebases live across multiple languages — a Swift c
 Each bridge emits edges tagged `provenance:'heuristic'` with `metadata.synthesizedBy:` set to a stable channel name (e.g. `swift-objc-bridge`, `rn-event-channel`, `fabric-native-impl`, `expo-module-extract`), so the agent can tell at a glance how a hop got into the graph.
 
 ---
-
 ## Quick Start
 
 ### 1. Run the Installer
@@ -565,6 +573,7 @@ npx @colbymchenry/codegraph
 ```
 
 The installer will:
+
 - Ask which agent(s) to configure — auto-detects installed ones from: **Claude Code**, **Cursor**, **Codex CLI**, **opencode**, **Hermes Agent**, **Gemini CLI**, **Antigravity IDE**, **Kiro**, **GitHub Copilot** (VS Code, Copilot CLI, JetBrains IDEs)
 - Prompt to install `codegraph` on your PATH (so agents can launch the MCP server)
 - Ask whether configs apply to all your projects or just this one
@@ -604,20 +613,20 @@ Restart your agent (Claude Code / Cursor / Codex CLI / opencode / Hermes Agent /
 cd your-project
 codegraph init
 ```
-
 Builds the per-project knowledge graph index, which then auto-syncs on every file change. A single global `codegraph install` works in every project you open — no need to re-run the installer per project. Add `--yes` to skip every prompt (scripts / CI / container bootstraps).
 
 That's it — your agent will use CodeGraph tools automatically when a `.codegraph/` directory exists.
-
 <details>
 <summary><strong>Manual Setup (Alternative)</strong></summary>
 
 **Install globally:**
+
 ```bash
 npm install -g @colbymchenry/codegraph
 ```
 
 **Add to `~/.claude.json`:**
+
 ```json
 {
   "mcpServers": {

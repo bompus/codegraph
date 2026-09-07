@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { CodeGraphPackageVersion } from '../src/mcp/version';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -160,6 +161,11 @@ describe('MCP staleness banner', () => {
     const text = res.content[0].text;
     expect(text.startsWith('⚠️')).toBe(false);
     expect(text).not.toMatch(/elsewhere in this project are pending index sync/);
+  });
+
+  it('reports the serving process build through the status tool', async () => {
+    const res = await handler.execute('codegraph_status', {});
+    expect(res.content[0].text).toContain(`**Server build:** ${CodeGraphPackageVersion}`);
   });
 
   it('lists pending files under "Pending sync" in codegraph_status', async () => {

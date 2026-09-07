@@ -6,6 +6,7 @@
 
 import type CodeGraph from '../index';
 import type { QueryPool } from './query-pool';
+import { CodeGraphPackageVersion } from './version';
 import { findNearestCodeGraphRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -6790,6 +6791,7 @@ export class ToolHandler {
 
     const lines: string[] = [
       '**CodeGraph Status**',
+      `**Server build:** ${CodeGraphPackageVersion}`,
       '',
     ];
     if (mismatch) {

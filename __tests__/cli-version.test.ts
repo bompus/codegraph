@@ -10,71 +10,110 @@
  * status-json.test.ts) so the spellings survive future CLI refactors.
  */
 
-import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'child_process';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { describe, it, expect } from "vitest";
+import { execFileSync } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
-const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
-const PKG_VERSION = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8'),
-).version as string;
+const BIN = path.resolve(__dirname, "../dist/bin/codegraph.js");
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf-8"))
+  .version as string;
 
 function run(args: string[]): string {
   return execFileSync(process.execPath, [BIN, ...args], {
-    encoding: 'utf-8',
+    encoding: "utf-8",
     // Skip the daemon and the wasm-flag re-exec so the command resolves in a
     // single fast process (no graph work happens for a version print anyway).
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: "1", CODEGRAPH_WASM_RELAUNCHED: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
 
-describe('codegraph version affordances', () => {
-  for (const spelling of ['version', '-v', '-version', '--version', '-V']) {
+describe("codegraph version affordances", () => {
+  it("distinguishes managed builds of the same release and caches the loaded identity", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-build-version-"));
+    try {
+      const moduleDir = path.join(root, "dist", "mcp");
+      fs.mkdirSync(moduleDir, { recursive: true });
+      fs.copyFileSync(
+        path.resolve(__dirname, "../dist/mcp/version.js"),
+        path.join(moduleDir, "version.js"),
+      );
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "1.6.0" }));
+      const modulePath = path.join(moduleDir, "version.js");
+      const stamp = path.join(root, "dist", "build-revision.json");
+      const readVersion = () =>
+        execFileSync(
+          process.execPath,
+          ["-e", "console.log(require(process.argv[1]).CodeGraphPackageVersion)", modulePath],
+          { encoding: "utf8" },
+        ).trim();
+      expect(readVersion()).toBe("1.6.0");
+      fs.writeFileSync(stamp, JSON.stringify({ revision: "a".repeat(40) }));
+      expect(readVersion()).toBe(`1.6.0+${"a".repeat(40)}`);
+      const cached = execFileSync(
+        process.execPath,
+        [
+          "-e",
+          'const m=require(process.argv[1]); require("fs").writeFileSync(process.argv[2], JSON.stringify({revision:"b".repeat(40)})); console.log(m.CodeGraphPackageVersion)',
+          modulePath,
+          stamp,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      expect(cached).toBe(`1.6.0+${"a".repeat(40)}`);
+      expect(readVersion()).toBe(`1.6.0+${"b".repeat(40)}`);
+      fs.writeFileSync(stamp, JSON.stringify({ revision: "not-a-commit" }));
+      expect(readVersion()).toBe("0.0.0-unknown");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const spelling of ["version", "-v", "-version", "--version", "-V"]) {
     it(`\`codegraph ${spelling}\` prints exactly the package version`, () => {
       expect(run([spelling])).toBe(PKG_VERSION);
     });
   }
 
-  it('lists the `version` subcommand in --help', () => {
-    expect(run(['--help'])).toContain('version');
+  it("lists the `version` subcommand in --help", () => {
+    expect(run(["--help"])).toContain("version");
   });
 
-  it('`codegraph help` prints usage and the command list', () => {
-    const out = run(['help']);
-    expect(out).toContain('Usage: codegraph');
-    expect(out).toContain('Commands:');
+  it("`codegraph help` prints usage and the command list", () => {
+    const out = run(["help"]);
+    expect(out).toContain("Usage: codegraph");
+    expect(out).toContain("Commands:");
   });
 
-  it('hides the internal `serve` command from --help', () => {
+  it("hides the internal `serve` command from --help", () => {
     // `serve --mcp` is the stdio entry point an AI agent launches for itself,
     // not a human command — it must not appear in the listing. (It stays fully
     // invocable; the mcp-initialize suite covers that the agent path works.)
-    expect(run(['--help'])).not.toMatch(/^\s+serve\b/m);
+    expect(run(["--help"])).not.toMatch(/^\s+serve\b/m);
   });
 
-  it('a trailing `-v` is still the subcommand\'s --verbose, not the version intercept', () => {
+  it("a trailing `-v` is still the subcommand's --verbose, not the version intercept", () => {
     // A fresh temp dir outside any indexed project: `index -v` parses `-v` as
     // the index command's --verbose, then short-circuits at "not initialized"
     // and exits non-zero. The point is it must NOT print the bare version,
     // which would mean the top-level intercept swallowed a subcommand flag.
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-version-test-'));
-    let combined = '';
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-version-test-"));
+    let combined = "";
     try {
-      combined = execFileSync(process.execPath, [BIN, 'index', '-v', tempDir], {
-        encoding: 'utf-8',
-        env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+      combined = execFileSync(process.execPath, [BIN, "index", "-v", tempDir], {
+        encoding: "utf-8",
+        env: { ...process.env, CODEGRAPH_NO_DAEMON: "1", CODEGRAPH_WASM_RELAUNCHED: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string };
-      combined = `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
     expect(combined.trim()).not.toBe(PKG_VERSION);
-    expect(combined).toContain('not initialized');
+    expect(combined).toContain("not initialized");
   });
 });
