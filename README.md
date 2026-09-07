@@ -120,7 +120,7 @@ Dispatch and framework coverage the fork adds:
 | SolidStart | `src/routes/` file pages and API endpoints, linked to their components and handlers |
 | Vike | `+Page` filesystem routes and `+route` overrides, linked to their page components |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
-| Waku | `src/pages` filesystem pages, linked to their page components |
+| Waku | `src/pages` filesystem pages and `createPage` calls registered through `createPages`, linked to their page components |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 
@@ -493,7 +493,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 | **SolidStart** | SolidStart 1 (`app.config` with `defineConfig`) and 2 (the `solidStart()` Vite plugin): `src/routes/` file routes (`[param]`, `[[optional]]`, `[...rest]`, `(group)` folders, `index`), each page bound to its default component; exported `GET`/`POST`/… functions in API route files become endpoints | — |
 | **Vike** | `+Page` files under `pages/` (filesystem routing, `index`, `(group)` folders, `@param` segments) and `+route` string overrides, each bound to its page component | — |
 | **Qwik City** | `index` files under `src/routes/` (groups, `[param]` and `[...rest]` segments) bound to their `component$` page, plus `onGet`/`onPost`/… endpoint exports; layouts and `onRequest` middleware are not routes | — |
-| **Waku** | `src/pages` files (`(group)` folders, `[param]` and `[...rest]` segments) bound to their default page component; `_layout`, `_root` and `_slices` files are not routes | — |
+| **Waku** | `src/pages` files (`(group)` folders, `[param]` and `[...rest]` segments) bound to their default page component, plus literal `createPage` declarations inside a `createPages` callback registered in the server entry; `_layout`, `_root` and `_slices` files are not routes | — |
 | **SvelteKit** | `src/routes/**/+page.svelte` (`[slug]` → `:slug`, `[[opt]]` → `:opt?`), joined to the `+page.server.js` beside it so a loader's guard belongs to its page | `goto('/x')`, `redirect(status, '/x')` from a load or form action, and the plain `<a href>` that is a link in a SvelteKit app |
 
 In a repository holding several apps, each app's routes are matched only against navigation written inside that app.
