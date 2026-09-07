@@ -38,7 +38,7 @@ import { extractAnalogRoutes, isAnalogPage } from '../resolution/frameworks/anal
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import { extractQwikCityRoutes, isQwikCityRoute } from '../resolution/frameworks/qwik-city';
 import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
-import { extractWakuRoutes, isWakuPage } from '../resolution/frameworks/waku';
+import { extractWakuRoutes, isWakuRouteFile } from '../resolution/frameworks/waku';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2381,7 +2381,7 @@ export class ExtractionOrchestrator {
     const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
     const qwikCity = frameworks.includes('qwik-city') && isQwikCityRoute(filePath);
     const vike = frameworks.includes('vike') && isVikePage(filePath);
-    const waku = frameworks.includes('waku') && isWakuPage(filePath);
+    const waku = frameworks.includes('waku') && isWakuRouteFile(filePath);
     if (!angular && !analog && !solidStart && !qwikCity && !vike && !waku) return result;
     await loadGrammarsForLanguages(solidStart || qwikCity || vike || waku ? ['typescript', 'javascript', 'tsx', 'jsx'] : ['typescript', 'javascript']);
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
@@ -2908,7 +2908,7 @@ export class ExtractionOrchestrator {
       const detected = this.ensureDetectedFrameworks(currentFiles);
       for (const [framework, matches] of [
         ['solid-start', isSolidStartRoute], ['analog', isAnalogPage], ['qwik-city', isQwikCityRoute],
-        ['vike', isVikePage], ['waku', isWakuPage],
+        ['vike', isVikePage], ['waku', isWakuRouteFile],
       ] as const) {
         if (!detected.includes(framework) && !this.queries.getNodesByKind('route').some(n => n.id.startsWith(`route:${framework}:`))) continue;
         const scope = this.scopedSyncMatcher();
