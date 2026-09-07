@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Angular Router registered route arrays now link to exact component classes, including nested children and static lazy imports; imported route edits refresh their registrations during sync.
+
 - Astro pages now link to their exact components and source-declared navigation; exported HTTP methods in `.ts`/`.js` endpoints link to their handlers, while type-only declarations and `.mjs` files are excluded.
 
 - Remix default file routes and registered React Router `flatRoutes()` pages now link to their components and navigation, including optional segments and configuration-only sync changes.

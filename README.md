@@ -115,6 +115,7 @@ Dispatch and framework coverage the fork adds:
 | HTTP routes | Literal routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny; Nuxt `server/routes/`, method suffixes and route groups |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
 | Remix / React Router file routes | The default `app/routes/` file convention (and `flatRoutes()`), linked to each page's default component |
+| Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 
@@ -469,6 +470,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods |
 | **Vapor** | `app.get("x", use: handler)` |
+| **Angular Router** | `provideRouter(routes)` / `RouterModule.forRoot(routes)` literal or constant arrays, nested `children`, and static lazy `loadComponent` / `loadChildren` imports, each linked to its component class |
 | **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page links to its component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
 
 ### Routers — routes *and* the navigation between them
