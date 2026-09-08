@@ -33,6 +33,7 @@ import {
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '../types';
 import { isTestFile, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
+import { groupDefinitions, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
 import { querySessions, formatSessionHits, NoSessionsError } from '../sessions';
 import {
@@ -46,8 +47,6 @@ import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranc
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
 import {
-  lastQualifierPart,
-  matchesSymbol,
   findAllSymbols,
   resolveNamedSymbolFlow,
 } from '../graph/named-symbol-flow';
@@ -219,7 +218,10 @@ export interface ExploreOutputBudget {
   includeAdditionalFiles: boolean;
   /** Include the "Complete source code is included above…" reminder. */
   includeCompletenessSignal: boolean;
-  /** Include the explore-budget reminder at the end. */
+  /**
+   * Include the advisory exploration-guidance note at the end. Purely
+   * advisory — the server NEVER rejects or rate-limits extra explore calls.
+   */
   includeBudgetNote: boolean;
 }
 
@@ -1930,7 +1932,7 @@ export class ToolHandler {
         if (tool.name === 'codegraph_explore') {
           return {
             ...tool,
-            description: `${tool.description} Budget: make at most ${budget} calls for this project (${fileCount.toLocaleString()} files indexed).`,
+            description: `${tool.description} Exploration guidance — advisory only, NOT a quota: ~${budget} focused calls usually cover this project (${fileCount.toLocaleString()} files indexed), and extra calls are never rejected or rate-limited.`,
           };
         }
         return tool;
@@ -2594,27 +2596,7 @@ export class ToolHandler {
     nodes: Node[],
     fileFilter: string | undefined
   ): { groups: Node[][]; filteredOut: boolean } {
-    let pool = nodes;
-    let filteredOut = false;
-    if (fileFilter) {
-      const wanted = fileFilter.replace(/^\.\//, '');
-      const narrowed = pool.filter(
-        (n) => n.filePath === wanted || n.filePath.endsWith(wanted) || n.filePath.endsWith(`/${wanted}`)
-      );
-      if (narrowed.length > 0) {
-        pool = narrowed;
-      } else {
-        filteredOut = true;
-      }
-    }
-    const byDef = new Map<string, Node[]>();
-    for (const n of pool) {
-      const key = `${n.filePath}|${n.qualifiedName}`;
-      const group = byDef.get(key);
-      if (group) group.push(n);
-      else byDef.set(key, [n]);
-    }
-    return { groups: [...byDef.values()], filteredOut };
+    return groupDefinitions(nodes, fileFilter);
   }
 
   /** Section heading for one distinct definition in grouped output. */
@@ -6370,13 +6352,17 @@ export class ToolHandler {
         ? ['', `> Some file sections were trimmed for size. Elided symbols are named inside gap markers as \`name (file:line)\` and preferred in the file header — run another \`codegraph_explore\` (or \`codegraph_node\`) with those exact names for their source.`]
         : [];
 
-    // Explore budget note based on project size.
+    // Advisory exploration-guidance note based on project size. Deliberately
+    // phrased as guidance, NOT a quota: agents read "budget / remaining calls /
+    // Synthesize once" as a hard cap and stop exploring early, falling back to
+    // grep + Read (which costs more tokens). The server never rejects or
+    // rate-limits extra explore calls, and the note says so explicitly.
     let budgetBlock: string[] = [];
     if (budget.includeBudgetNote) {
       try {
         const fileCount = codeFileCount(cg.getStats());
         const callBudget = getExploreBudget(fileCount);
-        budgetBlock = ['', `> **Explore budget: ${callBudget} calls for this project (${fileCount.toLocaleString()} files indexed).** Each call covers ~6 files; if your question spans more, spend your remaining calls on the uncovered area BEFORE falling back to Read — another explore is cheaper and more complete than reading those files. Synthesize once you've used ${callBudget}.`];
+        budgetBlock = ['', `> **Exploration guidance — advisory only, NOT a quota: this project (~${fileCount.toLocaleString()} files indexed) is usually covered in ≈${callBudget} focused explore calls, and extra calls are never rejected or rate-limited.** If the response above does not fully cover your question, run another codegraph_explore on the uncovered symbols — it is cheaper and more complete than Read. Only stop exploring when the response actually covers the flow you asked about.`];
       } catch {
         // Stats unavailable — skip budget note
       }
@@ -7269,7 +7255,7 @@ export class ToolHandler {
    */
   /**
    * Check if a node matches a symbol query — see `matchesSymbol` in
-   * `../graph/named-symbol-flow`, which owns the rules.
+   * `../graph/symbol-lookup`, which owns the rules.
    */
   private matchesSymbol(node: Node, symbol: string): boolean {
     return matchesSymbol(node, symbol);
