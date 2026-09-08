@@ -3,8 +3,18 @@
  *
  * The version should be reachable however a user reaches for it — the bare
  * `version` subcommand, lowercase `-v`, single-dash `-version`, plus
- * commander's stock `--version` / `-V`. All of them print the exact
- * package.json version and nothing else.
+ * commander's stock `--version` / `-V`. All of them print the build's
+ * reported identity and nothing else.
+ *
+ * "Reported identity" is CodeGraphPackageVersion, not package.json's version:
+ * a managed fork build stamps its source revision into
+ * `dist/build-revision.json`, and the CLI must surface it, because the
+ * deployment guards compare the version string against the deployed build and
+ * the running daemon. Two builds of the same npm release are otherwise
+ * indistinguishable. In a plain source checkout (no stamp) the two are equal,
+ * which is why the spelling tests below compare against the helper's answer
+ * rather than package.json — comparing against package.json would pass here
+ * and silently permit the regression in the builds that care.
  *
  * Exercised end-to-end against the built binary (same approach as
  * status-json.test.ts) so the spellings survive future CLI refactors.
@@ -17,8 +27,19 @@ import * as os from "os";
 import * as path from "path";
 
 const BIN = path.resolve(__dirname, "../dist/bin/codegraph.js");
-const PKG_VERSION = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf-8"))
-  .version as string;
+const VERSION_MODULE = path.resolve(__dirname, "../dist/mcp/version.js");
+
+/**
+ * What this build reports itself as — read from the one resolver rather than
+ * recomputed here, so the test cannot drift from the rule it is pinning.
+ * Equals package.json's version in a source checkout; carries a `+<revision>`
+ * suffix in a managed build.
+ */
+const REPORTED_VERSION = execFileSync(
+  process.execPath,
+  ["-e", "console.log(require(process.argv[1]).CodeGraphPackageVersion)", VERSION_MODULE],
+  { encoding: "utf8" },
+).trim();
 
 function run(args: string[]): string {
   return execFileSync(process.execPath, [BIN, ...args], {
@@ -71,9 +92,78 @@ describe("codegraph version affordances", () => {
     }
   });
 
+  it("reports a managed build's stamped revision through the CLI, not the bare package version", () => {
+    // The regression this pins: the CLI used to print packageJson.version
+    // directly, so `codegraph --version` could not say WHICH build of a
+    // release was running — the exact thing the fork's deployment guards
+    // compare. Proving that end-to-end needs a stamped install tree, and
+    // stamping this repo's own dist/ would race every other suite that spawns
+    // the binary (status-json's version assertion among them).
+    //
+    // So build a throwaway install root instead. Only dist/bin and dist/mcp
+    // are real copies — those are the files that derive the install root from
+    // __dirname, and Node resolves __dirname through symlinks to the real
+    // path, which would send them back to this repo. The rest of dist/ is
+    // linked, so the sandbox costs a few MB and well under a second.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-stamped-cli-"));
+    const realDist = path.resolve(__dirname, "../dist");
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    try {
+      fs.mkdirSync(path.join(root, "dist"));
+      for (const dir of ["bin", "mcp"]) {
+        fs.cpSync(path.join(realDist, dir), path.join(root, "dist", dir), { recursive: true });
+      }
+      for (const entry of fs.readdirSync(realDist, { withFileTypes: true })) {
+        if (entry.name === "bin" || entry.name === "mcp") continue;
+        const from = path.join(realDist, entry.name);
+        const to = path.join(root, "dist", entry.name);
+        if (entry.isDirectory()) fs.symlinkSync(from, to, linkType);
+        else fs.copyFileSync(from, to);
+      }
+      // Resolves `commander` and friends by the usual upward walk.
+      fs.symlinkSync(path.resolve(__dirname, "../node_modules"), path.join(root, "node_modules"), linkType);
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "1.6.0" }));
+
+      const sandboxBin = path.join(root, "dist", "bin", "codegraph.js");
+      const stamp = path.join(root, "dist", "build-revision.json");
+      const version = (args: string[]) =>
+        execFileSync(process.execPath, [sandboxBin, ...args], {
+          encoding: "utf-8",
+          env: { ...process.env, CODEGRAPH_NO_DAEMON: "1", CODEGRAPH_WASM_RELAUNCHED: "1" },
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+
+      // Every spelling has to agree — they are three separate call sites in
+      // the CLI (the pre-parse intercept, commander's .version(), and the
+      // `version` subcommand) and each one was printing the bare version.
+      const spellings = ["version", "-v", "-version", "--version", "-V"];
+
+      for (const spelling of spellings) expect(version([spelling])).toBe("1.6.0");
+
+      const revision = "c".repeat(40);
+      fs.writeFileSync(stamp, JSON.stringify({ revision }));
+      for (const spelling of spellings) expect(version([spelling])).toBe(`1.6.0+${revision}`);
+
+      // status --json is the machine-readable surface a deployment guard reads,
+      // so it carries the revision too.
+      expect(JSON.parse(version(["status", "--json", root])).version).toBe(`1.6.0+${revision}`);
+
+      // A corrupt stamp reports the sentinel rather than a plausible-looking
+      // version: the guard's revision matcher then fails loudly instead of
+      // trusting a build that cannot identify itself.
+      fs.writeFileSync(stamp, JSON.stringify({ revision: "not-a-commit" }));
+      expect(version(["--version"])).toBe("0.0.0-unknown");
+
+      // The sandbox must not have leaked into the repo's own build.
+      expect(fs.existsSync(path.join(realDist, "build-revision.json"))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   for (const spelling of ["version", "-v", "-version", "--version", "-V"]) {
-    it(`\`codegraph ${spelling}\` prints exactly the package version`, () => {
-      expect(run([spelling])).toBe(PKG_VERSION);
+    it(`\`codegraph ${spelling}\` prints exactly the reported version`, () => {
+      expect(run([spelling])).toBe(REPORTED_VERSION);
     });
   }
 
@@ -113,7 +203,7 @@ describe("codegraph version affordances", () => {
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-    expect(combined.trim()).not.toBe(PKG_VERSION);
+    expect(combined.trim()).not.toBe(REPORTED_VERSION);
     expect(combined).toContain("not initialized");
   });
 });

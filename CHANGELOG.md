@@ -141,6 +141,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Local JavaScript and TypeScript calls stay connected through linked packages and imports configured by a nested `baseUrl` (#1715).
 
+- **`codegraph --version` now tells you which build you're running, not just which release.** Every spelling — `codegraph version`, `-v`, `-version`, `--version`, `-V` — and the `version` field of `codegraph status --json` printed the published package version alone, so two builds of the same release looked identical and there was no way to confirm the binary in front of you matched the source it was built from. They now report the release plus the build's recorded source revision when there is one; a plain install from npm still prints the plain version, and `codegraph upgrade` still compares against published releases exactly as before.
+
 #### Screens, links and navigation
 
 - **Where the app goes after login is a fork, not two always-es.** A navigation whose destination comes back from a helper — `router.replace(await resolvePostLoginRoute())` over `return (await hasSeenWelcome(…)) ? '/home/' : '/welcome/'` — drew both screens with no condition, reading as if the welcome screen always shows. The two arms share a line, and only a column can tell them apart; each synthesized edge now carries its literal's own position, so the guard reader says which arm it is: `WHEN await hasSeenWelcome(…)` → home, and its negation → welcome. And the scan starts at the helper's body, so a literal-union return type — `Promise<'/welcome/' | '/home/'>`, whose routes are string literals too, written first — no longer stands in for the navigation itself. Re-index after upgrading to pick the positions up.

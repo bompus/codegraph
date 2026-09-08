@@ -5,9 +5,15 @@
  * proxy processes: the daemon advertises its version in the hello line, and
  * the proxy refuses to share IPC across a mismatch (falls back to direct
  * mode). Keeping the resolution in one place avoids drift between the CLI
- * `--version` output (which reads `package.json` directly) and the daemon
- * handshake. Managed fork builds append their recorded source revision so two
- * builds of the same package release cannot share a stale daemon.
+ * `--version` output and the daemon handshake — the CLI reports this value at
+ * every version-reporting site (`--version` / `-v` / `-version` / `-V`, the
+ * `version` subcommand, and `status --json`) rather than reading
+ * `package.json` itself. Managed fork builds append their recorded source
+ * revision so two builds of the same package release cannot share a stale
+ * daemon.
+ *
+ * The one deliberate exception is `codegraph upgrade`, which compares against
+ * npm registry versions and so must use the bare published version.
  *
  * Resolution strategy: read the bundled `package.json` two levels up from
  * this file — same relative position whether we're loaded from `src/mcp/` or
