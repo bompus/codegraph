@@ -54,6 +54,13 @@ import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime
 import { installCommandSupervision } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
+// The one resolver for "which build is this?" — package version, plus the
+// recorded source revision when a managed build stamped one. Imported here so
+// the CLI reports the same identity the daemon advertises in its handshake.
+// Dependency-free (fs + path only), so it costs nothing at the pre-parse
+// intercept below; `../mcp/early-ppid` is already this file's first import, so
+// src/mcp is in the module graph regardless.
+import { CodeGraphPackageVersion } from '../mcp/version';
 // Value import, but dependency-free by design so `--help` text can name the
 // default port without dragging node:http into every other subcommand; the
 // server itself is loaded lazily inside the `ui` action. See ui-server/constants.
@@ -146,7 +153,10 @@ function main() {
 
 const program = new Command();
 
-// Version from package.json
+// The raw published version, used ONLY to compare against npm registry
+// versions in `codegraph upgrade`. Everything that *reports* which build is
+// running uses CodeGraphPackageVersion instead, which appends a managed
+// build's source revision — a suffix the registry would never match.
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')
 );
@@ -159,7 +169,7 @@ const packageJson = JSON.parse(
 // the affordance also shows up in `codegraph --help`.
 const firstArg = process.argv[2];
 if (firstArg === '-v' || firstArg === '-version') {
-  console.log(packageJson.version);
+  console.log(CodeGraphPackageVersion);
   return;
 }
 
@@ -213,7 +223,7 @@ const chalk = {
 program
   .name('codegraph')
   .description('Code intelligence and knowledge graph for any codebase')
-  .version(packageJson.version)
+  .version(CodeGraphPackageVersion)
   // Parsed manually before commander runs (any argv position works); declared
   // here so they show up in --help. NO_COLOR / FORCE_COLOR env vars are also
   // honored, and piped output defaults to no color (#1281).
@@ -1009,7 +1019,7 @@ program
         if (options.json) {
           console.log(JSON.stringify({
             initialized: false,
-            version: packageJson.version,
+            version: CodeGraphPackageVersion,
             projectPath,
             indexPath: getCodeGraphDir(projectPath),
             lastIndexed: null,
@@ -1042,7 +1052,7 @@ program
         const lastIndexedMs = cg.getLastIndexedAt();
         console.log(JSON.stringify({
           initialized: true,
-          version: packageJson.version,
+          version: CodeGraphPackageVersion,
           projectPath,
           indexPath: getCodeGraphDir(projectPath),
           lastIndexed: lastIndexedMs != null ? new Date(lastIndexedMs).toISOString() : null,
@@ -2823,6 +2833,9 @@ program
     const code = await up.runUpgrade(
       { version: pin, check: options.check, force: options.force },
       {
+        // Deliberately the bare published version, NOT CodeGraphPackageVersion:
+        // this is compared against resolveLatestVersion()'s registry answer, and
+        // a `+<revision>` suffix would never match a published release.
         currentVersion: packageJson.version,
         method,
         resolveLatest: () => up.resolveLatestVersion(),
@@ -2854,7 +2867,7 @@ program
   .command('version')
   .description('Print the installed CodeGraph version (also: -v, --version)')
   .action(() => {
-    console.log(packageJson.version);
+    console.log(CodeGraphPackageVersion);
   });
 
 // Parse and run

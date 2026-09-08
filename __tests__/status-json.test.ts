@@ -15,9 +15,20 @@ import * as os from 'os';
 import { CodeGraph } from '../src';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
-const PKG_VERSION = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8'),
-).version as string;
+// The build's reported identity, read from the one resolver. Equals
+// package.json's version in a source checkout; a managed build appends its
+// source revision, and status --json carries that suffix on purpose so a
+// deployment guard can tell two builds of one release apart. See
+// cli-version.test.ts, which pins the stamped case end-to-end.
+const PKG_VERSION = execFileSync(
+  process.execPath,
+  [
+    '-e',
+    'console.log(require(process.argv[1]).CodeGraphPackageVersion)',
+    path.resolve(__dirname, '../dist/mcp/version.js'),
+  ],
+  { encoding: 'utf-8' },
+).trim();
 
 function runStatusJson(cwd: string): Record<string, unknown> {
   const stdout = execFileSync(process.execPath, [BIN, 'status', '--json'], {
