@@ -28,12 +28,15 @@ describe('Resolution Module', () => {
   });
 
   afterEach(() => {
-    // Clean up
+    // destroy() is an alias for close(): it releases the database but leaves
+    // the project directory on disk, so removing tempDir cannot be the
+    // alternative to it. Both must run, on every test. maxRetries covers
+    // Windows releasing the SQLite handles slightly after close() returns.
     if (cg) {
       cg.destroy();
-    } else if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true });
+      cg = undefined as unknown as CodeGraph;
     }
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5 });
   });
 
   describe('Name Matcher', () => {
@@ -3900,6 +3903,10 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
             where e.kind = 'extends'`
         )
         .all() as Array<{ fromName: string; toName: string }>;
+      // Closed before the assertions: an open second connection to the same
+      // database keeps a handle on tempDir, and afterEach's removal then fails
+      // with EPERM on Windows.
+      db.close();
       const has = (from: string, to: string) =>
         edges.some((r) => r.fromName === from && r.toName === to);
 
