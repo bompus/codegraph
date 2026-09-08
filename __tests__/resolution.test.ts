@@ -11,7 +11,7 @@ import * as os from 'os';
 import { CodeGraph } from '../src';
 import { Node, UnresolvedReference } from '../src/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../src/resolution';
-import { matchReference, resolveMethodOnType, matchByQualifiedName, matchByExactName, preferCallSiteFile, matchMethodCall } from '../src/resolution/name-matcher';
+import { matchReference, resolveMethodOnType, matchByQualifiedName, matchByExactName, matchByFilePath, preferCallSiteFile, matchMethodCall } from '../src/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache, isPhpIncludePathRef } from '../src/resolution/import-resolver';
 import type { UnresolvedRef } from '../src/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../src/resolution/frameworks';
@@ -5792,6 +5792,35 @@ in
       expect(matchByExactName({ ...ref, language: 'markdown' as Node['language'] }, context)?.targetNodeId).toBe(heading.id);
       context.getNodesByName = () => [{ ...heading, id: 'fn:vite', kind: 'function', language: 'typescript', filePath: 'vite.ts' }];
       expect(matchByExactName(ref, context)?.targetNodeId).toBe('fn:vite');
+    });
+
+    it('still reaches a heading through a reference that spells out the Markdown file', () => {
+      // The #1719 guard rejects a BARE name that a heading happens to share. A
+      // code string naming the file — `docs/guide.md#install` — is a
+      // documentation link, and the doc tier depends on that edge.
+      const heading: Node = {
+        id: 'heading:install', name: 'Install', qualifiedName: 'docs/guide.md#install',
+        kind: 'module', language: 'markdown' as Node['language'], filePath: 'docs/guide.md',
+        startLine: 3, endLine: 5, startColumn: 0, endColumn: 0, updatedAt: 0,
+      };
+      const file: Node = {
+        id: 'file:guide', name: 'guide.md', qualifiedName: 'docs/guide.md',
+        kind: 'file', language: 'markdown' as Node['language'], filePath: 'docs/guide.md',
+        startLine: 1, endLine: 5, startColumn: 0, endColumn: 0, updatedAt: 0,
+      };
+      const context = {
+        getNodesByName: (name: string) => (name === 'guide.md' ? [file] : [heading]),
+        getNodesInFile: () => [heading],
+        getNodesByQualifiedName: (qn: string) => (qn === heading.qualifiedName ? [heading] : []),
+        getNodesByKind: () => [],
+        fileExists: () => false, readFile: () => null,
+        getProjectRoot: () => tempDir, getAllFiles: () => [],
+      } as ResolutionContext;
+      const ref: UnresolvedRef = {
+        fromNodeId: 'fn:load_docs', referenceName: 'docs/guide.md#install', referenceKind: 'references',
+        filePath: 'scripts/load_docs.py', language: 'python', line: 4, column: 11,
+      };
+      expect(matchByFilePath(ref, context)?.targetNodeId).toBe(heading.id);
     });
 
     it('ignores export examples in strings and comments when checking module visibility', async () => {

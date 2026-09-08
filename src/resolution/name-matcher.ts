@@ -603,6 +603,19 @@ function isSealedModule(filePath: string, context: ResolutionContext): boolean {
 }
 
 /**
+ * A reference that spells out a Markdown file — `docs/guide.md`, with an
+ * optional `#anchor` or `::symbol` suffix — rather than carrying a bare name
+ * that a heading happens to share. The bare name is the collision #1719
+ * guards against (a TS `import { vite }` must not land on `guide.md#vite`);
+ * a spelled-out path is a documentation link and means the file it names.
+ */
+const MARKDOWN_PATH_REF = /\.(?:md|markdown)(?:$|[#?]|::)/i;
+
+function namesMarkdownFile(referenceName: string): boolean {
+  return MARKDOWN_PATH_REF.test(referenceName.replace(/\\/g, '/'));
+}
+
+/**
  * Whether `candidate` can be named by a reference in `ref`'s file at all.
  * Both name-based strategies validate their chosen candidate. Removing an
  * unreachable candidate before ranking can promote an unrelated runner-up;
@@ -613,7 +626,11 @@ function isCrossFileReachable(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): boolean {
-  if ((ref.language as string) !== 'markdown' && (candidate.language as string) === 'markdown') return false;
+  if (
+    (ref.language as string) !== 'markdown' &&
+    (candidate.language as string) === 'markdown' &&
+    !namesMarkdownFile(ref.referenceName)
+  ) return false;
   if (ref.referenceKind === 'calls' && ESM_FAMILY.has(candidate.language) &&
     (candidate.kind === 'constant' || candidate.kind === 'variable') &&
     /^=\s*require\s*\(\s*(['"])[^'"]+\.json\1\s*\)\s*;?\s*$/.test(candidate.signature ?? '')) return false;
