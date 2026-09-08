@@ -12,6 +12,7 @@ import { createInterface } from "readline";
 import { isDeepStrictEqual } from "util";
 import { parseHostPpid, parsePpidPollMs, supervisionLostReason } from "./ppid-watchdog";
 import { HOST_PPID_ENV } from "../extraction/wasm-runtime-flags";
+import { WRITER_LOCK_DEFER_ENV } from "./writer-lock";
 import { armStartupHandshakeTimeout } from "./startup-handshake";
 
 type Id = string | number | null;
@@ -72,6 +73,10 @@ class Backend {
         env: {
           ...process.env,
           [HOST_PPID_ENV]: String(parseHostPpid(process.env[HOST_PPID_ENV]) ?? EARLY_PPID),
+          // This child may start while the one it replaces still serves, and
+          // holds the writer lock. It succeeds that child rather than
+          // competing with it (#1740).
+          [WRITER_LOCK_DEFER_ENV]: "1",
         },
       },
     );

@@ -37,6 +37,14 @@ export function getWriterPidPath(projectRoot: string): string {
 }
 
 /** Structured contents of the writer pidfile. */
+/**
+ * Set by the refresh launcher on every child it owns. Such a child may find
+ * the lock held by the sibling it is replacing, which is not the second
+ * independent writer #1740 refuses — it is the successor, and the holder exits
+ * at the switch. Marked children wait for that release instead of exiting.
+ */
+export const WRITER_LOCK_DEFER_ENV = 'CODEGRAPH_WRITER_LOCK_DEFER';
+
 export interface WriterLockInfo {
   pid: number;
   /** `direct` | `daemon` | `fallback` — for actionable error text only. */

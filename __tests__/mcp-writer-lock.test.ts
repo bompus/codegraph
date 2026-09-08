@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
-import { getWriterPidPath } from '../src/mcp/writer-lock';
+import { getWriterPidPath, WRITER_LOCK_DEFER_ENV } from '../src/mcp/writer-lock';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
@@ -125,4 +125,51 @@ describe('issue #1740 — direct-mode writer lock', () => {
     expect(lock.pid).not.toBe(a.child.pid);
     expect(lock.pid).not.toBe(b.child.pid);
   }, 25000);
+it('a refresh-launcher child waits for the handover instead of exiting', async () => {
+    // The refresh launcher starts the replacement while the outgoing child is
+    // still serving, so the lock is held by the process it succeeds. Exiting
+    // there strands the client on the old build (the daemon=false case of
+    // refresh-launcher.test.ts).
+    const env = {
+      CODEGRAPH_NO_DAEMON: '1',
+      CODEGRAPH_MCP_DEBUG: '1',
+      CODEGRAPH_NO_WATCHDOG: '1',
+      CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: '0',
+      CODEGRAPH_NO_RELAUNCH: '1',
+      CODEGRAPH_WASM_RELAUNCHED: '1',
+    };
+    const first = spawnMcp(realRoot, env);
+    children.push(first.child);
+
+    const lockPath = getWriterPidPath(realRoot);
+    const held = Date.now() + 10000;
+    while (Date.now() < held && !fs.existsSync(lockPath)) {
+      await sleep(50);
+    }
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    const second = spawnMcp(realRoot, { ...env, [WRITER_LOCK_DEFER_ENV]: '1' });
+    children.push(second.child);
+
+    // Serves rather than exiting, and does NOT take the lock while it is held.
+    await sleep(2000);
+    expect(second.child.exitCode).toBeNull();
+    expect(
+      (JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number }).pid
+    ).toBe(first.child.pid);
+
+    // The launcher's switch is the release; the successor picks the lock up.
+    first.child.kill('SIGTERM');
+    const handover = Date.now() + 20000;
+    let owner: number | null = null;
+    while (Date.now() < handover) {
+      try {
+        owner = (JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number }).pid;
+        if (owner === second.child.pid) break;
+      } catch { /* mid-write or momentarily absent */ }
+      await sleep(100);
+    }
+    expect(owner).toBe(second.child.pid);
+    expect(second.child.exitCode).toBeNull();
+  }, 40000);
 });

@@ -48,7 +48,11 @@ import {
   tryAcquireDaemonLock,
 } from './daemon';
 import { connectWithHello, runLocalHandshakeProxy } from './proxy';
-import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
+import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage, WRITER_LOCK_DEFER_ENV } from './writer-lock';
+
+/** How often, and for how long, a replacement child retries the writer lock. */
+const WRITER_HANDOVER_POLL_MS = 250;
+const WRITER_HANDOVER_WAIT_MS = 30_000;
 import { getDaemonSocketCandidates, probeDaemonIdentity } from './daemon-paths';
 import { getTelemetry } from '../telemetry';
 import { checkForUpdateInBackground } from '../upgrade/update-check';
@@ -360,6 +364,32 @@ export class MCPServer {
     process.exit(0);
   }
 
+  /**
+   * Wait for the child this one replaces to release the writer lock, then take
+   * it and start watching. Polling, not a promotion message: the launcher's
+   * switch IS the release, so no protocol of its own is needed and a launcher
+   * that never switches simply leaves this child read-only.
+   */
+  private awaitWriterHandover(writerRoot: string): void {
+    const deadline = Date.now() + WRITER_HANDOVER_WAIT_MS;
+    const poll = (): void => {
+      if (this.writerLockRoot) return;
+      if (tryAcquireWriterLock(writerRoot, 'direct').kind === 'acquired') {
+        this.writerLockRoot = writerRoot;
+        this.engine?.enableWatcherAfterHandover();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        process.stderr.write(
+          '[CodeGraph MCP] Auto-sync stays off: the previous writer still holds the lock. Run `codegraph sync` to refresh the graph.\n'
+        );
+        return;
+      }
+      setTimeout(poll, WRITER_HANDOVER_POLL_MS).unref();
+    };
+    setTimeout(poll, WRITER_HANDOVER_POLL_MS).unref();
+  }
+
   /** Single-process stdio MCP session — the pre-issue-#411 code path. */
   private async startDirect(reason: string): Promise<void> {
     if (reason && process.env.CODEGRAPH_MCP_DEBUG) {
@@ -369,17 +399,27 @@ export class MCPServer {
     // #1740: refuse a second direct writer on an initialized project. Daemon
     // mode multiplexes clients; direct mode is single-writer-per-project.
     const writerRoot = resolveDaemonRoot(this.projectPath);
+    let awaitHandover: string | null = null;
     if (writerRoot) {
       const writer = tryAcquireWriterLock(writerRoot, 'direct');
       if (writer.kind === 'taken') {
-        const msg = writerLockHeldMessage(writer.existing, writer.pidPath);
-        process.stderr.write(`[CodeGraph MCP] ${msg}\n`);
-        process.exit(1);
+        // A refresh launcher's child finds the lock held by the child it is
+        // replacing. Exiting would strand the client on the old build, so it
+        // serves without a watcher and takes the lock when the outgoing child
+        // releases it — still one writer at a time.
+        if (process.env[WRITER_LOCK_DEFER_ENV] !== '1') {
+          const msg = writerLockHeldMessage(writer.existing, writer.pidPath);
+          process.stderr.write(`[CodeGraph MCP] ${msg}\n`);
+          process.exit(1);
+        }
+        awaitHandover = writerRoot;
+      } else {
+        this.writerLockRoot = writerRoot;
       }
-      this.writerLockRoot = writerRoot;
     }
 
     this.engine = new MCPEngine();
+    if (awaitHandover) this.awaitWriterHandover(awaitHandover);
     const transport = new StdioTransport();
     this.session = new MCPSession(transport, this.engine, {
       explicitProjectPath: this.projectPath,

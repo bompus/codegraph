@@ -282,6 +282,17 @@ export class MCPEngine {
    * exactly matches the prior in-tree implementation so log-driven dashboards
    * keep working.
    */
+  /**
+   * Start watching after a refresh handover. startWatching() declined and
+   * latched `watcherStarted` when the outgoing child held the lock; the lock
+   * is this process's now, so the latch is cleared and the watcher started.
+   */
+  enableWatcherAfterHandover(): void {
+    if (!this.cg) return; // not initialized yet — the normal path will watch
+    this.watcherStarted = false;
+    this.startWatching();
+  }
+
   private startWatching(): void {
     if (!this.cg || this.watcherStarted || !this.opts.watch) return;
 
