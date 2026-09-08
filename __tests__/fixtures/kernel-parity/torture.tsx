@@ -225,6 +225,14 @@ const QUERIED = './notes.md?raw=1#top';
 const TWO_IN_ONE = 'see a.md and also sub/b.mdx';
 loadDoc('docs/deep/nested.markdown');
 
+// --- call through a field of the enclosing class (#1496) ---------------------
+export class FieldDelegator {
+  constructor(private readonly mailer: { send(m: string): string }, private items: string[]) {}
+  send(msg: string): string { return this.mailer.send(msg); }
+  push(msg: string): void { this.items.push(msg); this.mailer.send(msg).trim(); }
+  direct(): void { this.send('x'); super.toString(); }
+}
+
 // --- const-bound functions inside a body (#1669) -----------------------------
 export function NestedHandlers({ items, onPick }: { items: string[]; onPick: (a: unknown, b: unknown) => void }) {
   const handleClear = () => { onPick(null, null); };
