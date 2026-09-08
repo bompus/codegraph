@@ -39,7 +39,7 @@ export function classifyTsClassMember(node: SyntaxNode): 'method' | 'property' {
 }
 
 export const typescriptExtractor: LanguageExtractor = {
-  functionTypes: ['function_declaration', 'arrow_function', 'function_expression'],
+  functionTypes: ['function_declaration', 'generator_function_declaration', 'arrow_function', 'function_expression', 'generator_function'],
   classTypes: ['class_declaration', 'abstract_class_declaration'],
   // `method_signature` is the interface/type-literal form of a method; without it
   // an interface's members never enter the graph, so a `.d.ts` platform API has

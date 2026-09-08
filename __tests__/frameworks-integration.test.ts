@@ -3,6 +3,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
+import { DatabaseConnection, getDatabasePath } from '../src/db';
+import { QueryBuilder } from '../src/db/queries';
+import { createResolver } from '../src/resolution';
+import type { Node } from '../src/types';
 import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
 
 beforeAll(async () => {

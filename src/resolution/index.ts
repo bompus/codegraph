@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
+import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { detectFrameworks } from './frameworks';
@@ -1032,7 +1032,13 @@ export class ReferenceResolver {
     // binding it happened to pick. Same-file matches only.
     if (nameResult) {
       const target = this.queries.getNodeById(nameResult.targetNodeId);
-      if (ref.language === 'nix') {
+      // A definition its language makes file-local — a C `static`, a Kotlin
+      // `private fun`, a Go unexported name in another package, a Rust
+      // non-`pub` item outside its module subtree — cannot be what a name in
+      // another file means, whichever strategy chose it (#1730).
+      if (target && !isVisibleAcrossFiles(target, ref, this.context)) {
+        nameResult = null;
+      } else if (ref.language === 'nix') {
         if (!target || target.filePath !== ref.filePath) {
           nameResult = null;
         }
