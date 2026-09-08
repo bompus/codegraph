@@ -143,6 +143,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Local JavaScript and TypeScript calls stay connected through linked packages and imports configured by a nested `baseUrl` (#1715).
 #### MCP / indexing
 
+- `codegraph index <path>` now refuses uninitialized paths and names the nearest initialized parent instead of silently rebuilding it; thanks @danusha2345. (#1524, #1689)
+
 - Sync now recovers the same connections as a clean index after interrupted reference resolution, including inherited calls and callbacks that previously stayed missing. (#1577)
 
 - `codegraph_explore` now re-serves source to fresh subagents and after context compaction, with cross-call dedup available only through an explicit `CODEGRAPH_EXPLORE_DEDUP=1` opt-in; thanks @danusha2345. (#1620, #1624)
@@ -156,6 +158,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Indexing no longer checks whether files outside your project exist. A relative import that points above the project directory (`../../something`) made CodeGraph probe that location on disk while resolving it. Nothing outside the project was ever read, and no such file was ever added to the index or linked to, but the check itself should not have happened — such an import now simply resolves to nothing. Symlinks inside your project that point at code kept elsewhere are unaffected and still index as before. Thanks @ErQrYfkrju. (#1631)
 
 - `codegraph install` now honors `CLAUDE_CONFIG_DIR` and `CODEX_HOME` for global Claude Code and Codex setup so CodeGraph loads in your chosen profile (thanks @seanchann; #1627).
+
+- Files opted in with `includeIgnored` now stay indexed on Git older than 2.36, and embedded repositories remain visible to the watcher (thanks @maxmilian and @newshowardz777; #1549).
 
 #### Screens, links and navigation
 
@@ -225,6 +229,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 #### Symbols, tests and the viewer
 
+- Imports from Node built-ins or npm packages no longer connect to unrelated type members with matching names; re-index after upgrading to clear existing false dependencies. Thanks @ctype-lab. (#1537)
+
+- Inheritance relationships no longer attach external Rust or npm supertypes to unrelated local symbols with the same name, including in Svelte, Vue and Astro components; re-index after upgrading to clear existing false relationships. Thanks @ctype-lab. (#1536)
+
+- PHP static calls through imported class aliases now reach the correct class when services and repositories share method names, so callers and impact analysis show the right dependencies after re-indexing. (#1545)
 - TypeScript/JavaScript: a call through a field of the enclosing class — `this.mailer.send()` — now resolves on the field's declared type, so a delegating wrapper that shares the method's name no longer records itself as its own callee and `callers`, `impact` and trace stop lying on that shape. A field whose type is external or a builtin stays unresolved rather than guessed. Re-index after upgrading. (#1496)
 
 - Objective-C headers now index in a project that has no `.m` file. A `.h` file is read as C from its name alone, and only later — once its contents are read — recognized as Objective-C; the grammar for that was never loaded up front, so the file failed with a parser error and nothing in it reached the index. Adding any `.m` file used to make the same header work, which is what made this look arbitrary. Thanks @Juddd. (#1628)
