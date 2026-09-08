@@ -704,7 +704,31 @@ function isLocallyBoundJsName(name: string, filePath: string, context: Resolutio
   );
   let bound = false;
   for (const m of source.matchAll(declRe)) {
-    if (!/^\s*(?:await\s+)?(?:require|import)\s*\(/.test(m[1] ?? '')) { bound = true; break; }
+    const rhs = m[1] ?? '';
+    // A store binding names the store's own action for the same reason an
+    // import does: the action is a node in the store file, so the bare call
+    // that follows means it rather than shadowing it. Two shapes, both naming
+    // the action explicitly — the accessors matchStoreAccessorChain already
+    // recognises (`const { fetchUser } = useStore.getState()`, `get()` inside
+    // the factory), and a selector that reads the same name off the state
+    // (`const setZipUri = useStore((s) => s.setZipUri)`). A selector returning
+    // a different name is a genuine rebinding and still shadows.
+    //
+    // The selector shape is exact on purpose: one named parameter, and a plain
+    // member READ of the same name. `const now = options.now || (() =>
+    // Date.now())` satisfies neither — no parameter, and `.now()` is a call —
+    // so it stays the local binding this predicate exists to find.
+    const selectorRe = new RegExp(
+      '\\(\\s*[\\w$]+\\s*\\)\\s*=>\\s*[\\w$]+(?:\\?\\.|\\.)' + n + '\\b(?!\\s*\\()'
+    );
+    if (
+      !/^\s*(?:await\s+)?(?:require|import)\s*\(/.test(rhs) &&
+      !/^\s*(?:await\s+)?(?:[\w$]+(?:\.[\w$]+)*\.)?(?:getState|get)\s*\(\s*\)/.test(rhs) &&
+      !selectorRe.test(rhs)
+    ) {
+      bound = true;
+      break;
+    }
   }
   if (!bound) {
     bound =
