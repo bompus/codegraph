@@ -55,9 +55,26 @@ const RTK_HOOK_NAME_RE = /^use[A-Z][A-Za-z0-9]*(?:Query|Mutation)$/;
 const REACT_COMPONENT_HOCS = new Set(['forwardRef', 'memo', 'React.forwardRef', 'React.memo']);
 
 /**
- * In TypeScript grammars a method_signature is bodiless and belongs to its
- * interface/type literal. Dart reuses that node name for implemented methods,
- * so its ordinary function fallback must remain available.
+ * Method node types that spell a SIGNATURE — a declaration with no body (#1638).
+ *
+ * They are a method of whatever type declares them and nothing on their own, so
+ * they must not take `extractMethod`'s "no class-like parent, so treat it as a
+ * free function" fallback. The other `methodTypes` can: a `method_definition`
+ * outside a class really is a function. This one appears outside a class only
+ * inside a type literal (`type Handle = { stop(): void }`), whose members
+ * `extractTypeAlias` already extracts and attaches to the alias (#359) — take
+ * the fallback and the file gains a phantom top-level `function stop` beside
+ * the real `Handle::stop`.
+ */
+const SIGNATURE_METHOD_NODE_TYPES = new Set(['method_signature']);
+
+/**
+ * Languages where that node type is actually bodiless. Dart spells ordinary
+ * implemented methods `method_signature` too (languages/dart.ts `methodTypes`),
+ * and a Dart 3 `extension type` body is not class-like, so gating Dart on the
+ * class-like check mints its members as free functions — `extension type
+ * MetersT(double value) { double get km => … }` yields a top-level `km` and
+ * breaks kernel parity.
  */
 const SIGNATURE_METHOD_LANGUAGES = new Set(['typescript', 'tsx', 'arkts']);
 
@@ -1087,10 +1104,12 @@ export class TreeSitterExtractor {
       skipChildren = true;
     }
     // Check for method declarations (only if not already handled by functionTypes).
-    // Type-literal signatures are already owned by their alias, not free functions.
+    // A bodiless SIGNATURE only counts as one where a type declares it — see
+    // SIGNATURE_METHOD_NODE_TYPES for what falling through would otherwise mint,
+    // and SIGNATURE_METHOD_LANGUAGES for why Dart keeps the fallback.
     else if (
       this.extractor.methodTypes.includes(nodeType)
-      && (nodeType !== 'method_signature'
+      && (!SIGNATURE_METHOD_NODE_TYPES.has(nodeType)
         || !SIGNATURE_METHOD_LANGUAGES.has(this.language)
         || this.isInsideClassLikeNode())
     ) {
