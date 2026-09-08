@@ -41,7 +41,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens } from '../directory';
+import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens, capPromptHookInjection } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
@@ -1164,7 +1164,9 @@ program
 
       const limit = parseInt(options.limit || '10', 10);
       const rawResults = cg.searchNodes(search, {
-        limit,
+        // Fetch one extra row so the CLI can report a cut without changing the
+        // long-standing bare-array contract of `query --json` (#1639).
+        limit: limit + 1,
         kinds: options.kind ? [options.kind as any] : undefined,
       });
 
@@ -1172,14 +1174,18 @@ program
       // hand-written implementation before protobuf/gRPC scaffolding
       // when both share a name. See extraction/generated-detection.ts.
       const isGen = cg.generatedFilePredicate(rawResults.map((r) => r.node.filePath));
-      const results = [...rawResults].sort((a, b) => {
+      const rankedResults = [...rawResults].sort((a, b) => {
         const aGen = isGen(a.node.filePath) ? 1 : 0;
         const bGen = isGen(b.node.filePath) ? 1 : 0;
         return aGen - bGen;
       });
+      const truncated = rankedResults.length > limit;
+      const results = rankedResults.slice(0, limit);
+      const truncationMessage = `Results truncated at ${limit}; pass --limit to widen.`;
 
       if (options.json) {
         console.log(JSON.stringify(results, null, 2));
+        if (truncated) console.error(truncationMessage);
       } else {
         if (results.length === 0) {
           info(`No results found for "${search}"`);
@@ -1205,6 +1211,7 @@ program
             }
             console.log();
           }
+          if (truncated) console.log(chalk.dim(truncationMessage));
         }
       }
 
@@ -1465,10 +1472,9 @@ program
               // Cap the injection so a large-repo explore can't flood the prompt.
               // Claude Code shows hook stdout inline only up to 10,000 characters;
               // above that it persists the output to a file and the model sees a
-              // 2 KB preview (#1694). 9,000 leaves room for the wrapper and the
-              // projectPath nudge lines below.
-              const MAX = 9000;
-              const body = text.length > MAX ? `${text.slice(0, MAX)}\n…(truncated; call codegraph_explore for the rest)` : text;
+              // 2 KB preview (#1694). PROMPT_HOOK_INJECTION_MAX (9,000) leaves
+              // room for the wrapper and the projectPath nudge lines below.
+              const body = capPromptHookInjection(text);
               // For a front-loaded SUB-project, a follow-up explore needs its path.
               const more = plan.viaSubScan
                 ? `call codegraph_explore with projectPath: "${plan.exploreRoot}" for more`
@@ -2235,13 +2241,16 @@ program
       }
 
       const limited = allCallers.slice(0, limit);
+      const total = allCallers.length;
+      const truncated = total > limit;
 
       if (options.json) {
-        console.log(JSON.stringify({ symbol, callers: limited }, null, 2));
+        console.log(JSON.stringify({ symbol, callers: limited, total, limit, truncated }, null, 2));
       } else if (limited.length === 0) {
         info(`No callers found for "${symbol}"`);
       } else {
-        console.log(chalk.bold(`\nCallers of "${symbol}" (${limited.length}):\n`));
+        const count = truncated ? `${limited.length} of ${total}` : String(total);
+        console.log(chalk.bold(`\nCallers of "${symbol}" (${count}):\n`));
         for (const node of limited) {
           const loc = node.startLine ? `:${node.startLine}` : '';
           console.log(
@@ -2251,6 +2260,7 @@ program
           console.log(chalk.dim(`  ${node.filePath}${loc}`));
           console.log();
         }
+        if (truncated) console.log(chalk.dim(`Showing ${limited.length} of ${total}; pass --limit to widen.`));
       }
 
       cg.destroy();
@@ -2313,13 +2323,16 @@ program
       }
 
       const limited = allCallees.slice(0, limit);
+      const total = allCallees.length;
+      const truncated = total > limit;
 
       if (options.json) {
-        console.log(JSON.stringify({ symbol, callees: limited }, null, 2));
+        console.log(JSON.stringify({ symbol, callees: limited, total, limit, truncated }, null, 2));
       } else if (limited.length === 0) {
         info(`No callees found for "${symbol}"`);
       } else {
-        console.log(chalk.bold(`\nCallees of "${symbol}" (${limited.length}):\n`));
+        const count = truncated ? `${limited.length} of ${total}` : String(total);
+        console.log(chalk.bold(`\nCallees of "${symbol}" (${count}):\n`));
         for (const node of limited) {
           const loc = node.startLine ? `:${node.startLine}` : '';
           console.log(
@@ -2329,6 +2342,7 @@ program
           console.log(chalk.dim(`  ${node.filePath}${loc}`));
           console.log();
         }
+        if (truncated) console.log(chalk.dim(`Showing ${limited.length} of ${total}; pass --limit to widen.`));
       }
 
       cg.destroy();
