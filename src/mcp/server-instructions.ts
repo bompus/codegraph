@@ -108,3 +108,37 @@ default project — but the tools are available and work **per project**:
   if it comes up they can run \`codegraph init\` in a project to enable codegraph
   there (a new index is picked up live, no restart).
 `;
+
+/**
+ * Instructions variant for a git worktree with no index whose sibling worktree
+ * has one — {@link detectUnindexedWorktree}'s case.
+ *
+ * The generic no-root-index variant above ends by telling the agent to use
+ * Read/Grep for an unindexed project. That is right for a directory that is not
+ * a repository we know about, and wrong here: this tree is one command from
+ * being indexed, and the agent has no way to learn that from a session which
+ * never mentions it. So this variant names the command and drops the fallback
+ * line rather than adding a caveat underneath it — an instruction to fall back
+ * is followed, and a hint competing with it in the same document is not.
+ *
+ * It does NOT offer the sibling's index. #155 settled that a single mutable
+ * graph cannot represent several branches at once, and answering this tree's
+ * questions from another branch is the failure that issue closed on.
+ */
+export const SERVER_INSTRUCTIONS_UNINDEXED_WORKTREE = (notice: string): string =>
+  `# Codegraph — available (this git worktree is not indexed yet)
+
+Codegraph is a SQLite knowledge graph of a codebase's symbols, edges, and
+files (30+ languages): one \`codegraph_explore\` call returns the verbatim, line-numbered source
+of the relevant symbols PLUS the call paths between them and a blast-radius
+summary — replacing a grep + Read loop with one round-trip.
+
+${notice}
+
+- **Until then, this tree has no default project.** You can still query any
+  project that HAS a \`.codegraph/\` by passing its path as \`projectPath\` — but
+  do not pass a sibling worktree's path to answer questions about *this* one:
+  you would get that branch's code, and anything changed only here is missing.
+- Indexing is the user's decision — mention \`codegraph init\` if it comes up,
+  but don't run it yourself. A new index is picked up live, with no restart.
+`;

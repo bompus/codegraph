@@ -18,10 +18,17 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   detectWorktreeIndexMismatch,
+  detectUnindexedWorktree,
   worktreeMismatchWarning,
+  unindexedWorktreeNotice,
   gitWorktreeRoot,
+  gitWorktreeRoots,
   gitCommonDir,
 } from '../src/sync/worktree';
+import {
+  SERVER_INSTRUCTIONS_NO_ROOT_INDEX,
+  SERVER_INSTRUCTIONS_UNINDEXED_WORKTREE,
+} from '../src/mcp/server-instructions';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
 
@@ -102,6 +109,118 @@ describe('detectWorktreeIndexMismatch (issue #155)', () => {
     expect(msg).toContain(real(worktree));
     expect(msg).toContain(real(mainRepo));
     expect(msg).toContain('codegraph init');
+  });
+});
+
+/**
+ * The inverse case (issue #1236): a worktree placed OUTSIDE the main checkout.
+ *
+ * The suite above covers the nested layout, where the upward walk borrows the
+ * main index and we warn. `git worktree add ../name` — and most agent tooling —
+ * places the tree outside instead, so the walk finds nothing, the mismatch
+ * detector never fires, and the generic no-root-index instructions tell the
+ * agent to use Read/Grep. Nothing says an index is one command away.
+ */
+describe('detectUnindexedWorktree (issue #1236)', () => {
+  let mainRepo: string;   // main checkout — the one that gets an index
+  let sibling: string;    // linked worktree OUTSIDE the main checkout
+  let nonGit: string;
+  let indexed: Set<string>;
+  const isIndexed = (root: string) => indexed.has(real(root));
+
+  beforeEach(() => {
+    mainRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-uw-main-'));
+    nonGit = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-uw-plain-'));
+    indexed = new Set<string>();
+
+    git(mainRepo, 'init', '-q');
+    git(mainRepo, 'config', 'user.email', 'test@example.com');
+    git(mainRepo, 'config', 'user.name', 'Test');
+    git(mainRepo, 'config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(mainRepo, 'README.md'), '# main\n');
+    git(mainRepo, 'add', '.');
+    git(mainRepo, 'commit', '-q', '-m', 'init');
+
+    // Outside the main checkout, which is the whole point of this case: a
+    // sibling directory, not a subpath, so no upward walk can reach the index.
+    sibling = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-uw-side-')), 'wt');
+    git(mainRepo, 'worktree', 'add', '-q', '-b', 'feature', sibling);
+  });
+
+  afterEach(() => {
+    try { git(mainRepo, 'worktree', 'remove', '--force', sibling); } catch { /* best effort */ }
+    fs.rmSync(mainRepo, { recursive: true, force: true });
+    fs.rmSync(nonGit, { recursive: true, force: true });
+    fs.rmSync(path.dirname(sibling), { recursive: true, force: true });
+  });
+
+  it('flags an unindexed worktree whose sibling is indexed', () => {
+    indexed.add(real(mainRepo));
+    const u = detectUnindexedWorktree(sibling, isIndexed);
+    expect(u).not.toBeNull();
+    expect(u!.worktreeRoot).toBe(real(sibling));
+    expect(u!.indexedSiblings).toEqual([real(mainRepo)]);
+  });
+
+  it('the mismatch detector stays silent on this layout, which is why it is needed', () => {
+    // Guards the premise: outside the main checkout there is no borrowed index
+    // to warn about, so #155's detector reports nothing and only #1236's does.
+    indexed.add(real(mainRepo));
+    expect(detectWorktreeIndexMismatch(sibling, sibling)).toBeNull();
+    expect(detectUnindexedWorktree(sibling, isIndexed)).not.toBeNull();
+  });
+
+  it('returns null once this worktree has its own index', () => {
+    indexed.add(real(mainRepo));
+    indexed.add(real(sibling));
+    expect(detectUnindexedWorktree(sibling, isIndexed)).toBeNull();
+  });
+
+  it('returns null when no sibling is indexed', () => {
+    expect(detectUnindexedWorktree(sibling, isIndexed)).toBeNull();
+  });
+
+  it('returns null outside a git repo, and never throws when git cannot answer', () => {
+    indexed.add(real(mainRepo));
+    expect(detectUnindexedWorktree(nonGit, isIndexed)).toBeNull();
+  });
+
+  it('does not count an unrelated repository that happens to be indexed', () => {
+    // A separate clone is a different git common dir, so it is not this
+    // repository's index however indexed it looks.
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-uw-other-'));
+    git(other, 'init', '-q');
+    indexed.add(real(other));
+    expect(detectUnindexedWorktree(sibling, isIndexed)).toBeNull();
+    fs.rmSync(other, { recursive: true, force: true });
+  });
+
+  it('gitWorktreeRoots lists every tree of the repository', () => {
+    const roots = gitWorktreeRoots(sibling);
+    expect(roots).toContain(real(mainRepo));
+    expect(roots).toContain(real(sibling));
+    expect(gitWorktreeRoots(nonGit)).toEqual([]);
+  });
+
+  it('notice names the sibling and the fix, and refuses to borrow it', () => {
+    indexed.add(real(mainRepo));
+    const msg = unindexedWorktreeNotice(detectUnindexedWorktree(sibling, isIndexed)!);
+    expect(msg).toContain(real(mainRepo));
+    expect(msg).toContain('codegraph init');
+    // The instruction that makes this case invisible must not appear.
+    expect(msg).not.toContain('Read/Grep');
+  });
+
+  it('the worktree variant drops the fall-back-to-your-own-tools line', () => {
+    indexed.add(real(mainRepo));
+    const notice = unindexedWorktreeNotice(detectUnindexedWorktree(sibling, isIndexed)!);
+    const text = SERVER_INSTRUCTIONS_UNINDEXED_WORKTREE(notice);
+    expect(text).toContain('codegraph init');
+    expect(text).toContain(real(mainRepo));
+    // The generic variant tells the agent to use its own tools for an unindexed
+    // project; carrying that here is what left nine worktrees silently degraded.
+    expect(SERVER_INSTRUCTIONS_NO_ROOT_INDEX).toContain('use your built-in tools');
+    expect(text).not.toContain('use your built-in tools');
   });
 });
 

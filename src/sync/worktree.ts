@@ -72,6 +72,103 @@ export function gitCommonDir(dir: string): string | null {
   }
 }
 
+/**
+ * Every working-tree root of the repository `dir` belongs to — the main
+ * checkout and each linked worktree — or an empty array outside git.
+ *
+ * `--porcelain` is the stable form: the human output pads paths into columns
+ * and appends `[branch]`, so it cannot be split reliably on a path containing
+ * spaces, which Windows paths routinely do.
+ */
+export function gitWorktreeRoots(dir: string): string[] {
+  try {
+    const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 5000, // same rationale as gitWorktreeRoot
+    });
+    return out
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => realpath(line.slice('worktree '.length).trim()));
+  } catch {
+    return [];
+  }
+}
+
+export interface UnindexedWorktree {
+  /** The git working tree the command was run from; it has no index. */
+  worktreeRoot: string;
+  /** Sibling working trees of the SAME repository that do have one. */
+  indexedSiblings: string[];
+}
+
+/**
+ * Detect the inverse of {@link detectWorktreeIndexMismatch}: `startPath` is a
+ * git working tree with **no** index of its own, while a sibling worktree of
+ * the same repository has one.
+ *
+ * That case is silent today and the silence is costly. A worktree nested inside
+ * the main checkout walks *up* and borrows its index, which
+ * `detectWorktreeIndexMismatch` catches; a worktree placed **outside** it — how
+ * `git worktree add ../name` and most agent tooling lay them out — resolves no
+ * index at all. The server then sends its generic no-root-index instructions,
+ * which tell the agent to use its own Read/Grep tools instead. So the agent is
+ * not working around a gap, it is following our instruction, and nothing in the
+ * session says an index for this tree is one command away (#1236).
+ *
+ * Returns null — meaning "nothing to say" — when `startPath` is outside git,
+ * when it already has its own index, or when no sibling worktree has one.
+ *
+ * **Two git spawns, whatever the repository's size.** This runs on the MCP
+ * handshake path, which answers before any heavy init (#172), so cost here is
+ * latency every session pays. `git worktree list` already enumerates only the
+ * trees of *this* repository, so no per-sibling common-dir check is needed to
+ * exclude a submodule or embedded clone — they are separate repositories and
+ * never appear in it. Filtering each candidate instead would have cost one more
+ * spawn per worktree, which on an eleven-worktree repo is fourteen rather than
+ * two. Measured on that repo: ~70 ms, paid once per session and only when the
+ * tree has no index of its own.
+ */
+export function detectUnindexedWorktree(
+  startPath: string,
+  isIndexed: (root: string) => boolean,
+): UnindexedWorktree | null {
+  const worktreeRoot = gitWorktreeRoot(startPath);
+  if (!worktreeRoot) return null;
+  if (isIndexed(worktreeRoot)) return null;
+
+  const indexedSiblings = gitWorktreeRoots(worktreeRoot)
+    .filter((root) => root !== worktreeRoot)
+    .filter(isIndexed);
+
+  return indexedSiblings.length > 0 ? { worktreeRoot, indexedSiblings } : null;
+}
+
+/**
+ * Instructions shown when this working tree has no index but a sibling does.
+ *
+ * It names `codegraph init` and stops short of telling the agent to fall back
+ * to its own tools, which is the line the generic variant carries and the one
+ * that makes this case invisible. Borrowing the sibling's index is not offered:
+ * a single graph cannot represent two branches at once (#155), and its results
+ * would be that branch's code with anything changed only here missing.
+ */
+export function unindexedWorktreeNotice(u: UnindexedWorktree): string {
+  const sibling = u.indexedSiblings[0];
+  const more =
+    u.indexedSiblings.length > 1 ? ` (and ${u.indexedSiblings.length - 1} more)` : '';
+  return (
+    `This git worktree has no CodeGraph index, but a sibling worktree of the same ` +
+    `repository does: ${sibling}${more}. Run "codegraph init" here to index this tree — ` +
+    `results then reflect this branch and its uncommitted work. Codegraph will not answer ` +
+    `from the sibling's index: that is a different branch, and symbols changed only here ` +
+    `would be missing.`
+  );
+}
+
 export interface WorktreeIndexMismatch {
   /** The git working tree the command was run from. */
   worktreeRoot: string;

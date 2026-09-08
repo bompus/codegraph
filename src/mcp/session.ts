@@ -16,9 +16,14 @@ import * as path from 'path';
 import { JsonRpcRequest, JsonRpcNotification, JsonRpcTransport, ErrorCodes } from './transport';
 import { MCPEngine } from './engine';
 import { tools } from './tools';
-import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX } from './server-instructions';
+import {
+  SERVER_INSTRUCTIONS,
+  SERVER_INSTRUCTIONS_NO_ROOT_INDEX,
+  SERVER_INSTRUCTIONS_UNINDEXED_WORKTREE,
+} from './server-instructions';
 import { CodeGraphPackageVersion } from './version';
-import { resolveServerRoot } from '../directory';
+import { isInitialized, resolveServerRoot } from '../directory';
+import { detectUnindexedWorktree, unindexedWorktreeNotice } from '../sync/worktree';
 import { getTelemetry, ClientInfo } from '../telemetry';
 import { getUpdateNotice } from '../upgrade/update-check';
 import { ExploreSessionState } from './explore-session-state';
@@ -253,7 +258,9 @@ export class MCPSession {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
-      instructions: initializeInstructions(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX),
+      instructions: initializeInstructions(
+        indexed ? SERVER_INSTRUCTIONS : this.noRootIndexInstructions(explicitPath ?? process.cwd()),
+      ),
     });
 
     if (explicitPath) {
@@ -262,6 +269,22 @@ export class MCPSession {
       // ~free no-op — N concurrent clients pay exactly one open.
       this.resolvePromise = this.engine.ensureInitialized(explicitPath);
     }
+  }
+
+  /**
+   * The no-index instructions, specialised when this tree is a git worktree
+   * whose sibling is indexed — the case that is otherwise silent (#1236).
+   *
+   * Best-effort by construction: `detectUnindexedWorktree` shells out to git and
+   * returns null whenever git is unavailable, the path is not a repository, or
+   * no sibling is indexed, so the generic variant stays the default and the
+   * handshake cannot fail on account of this.
+   */
+  private noRootIndexInstructions(startPath: string): string {
+    const unindexed = detectUnindexedWorktree(startPath, isInitialized);
+    return unindexed
+      ? SERVER_INSTRUCTIONS_UNINDEXED_WORKTREE(unindexedWorktreeNotice(unindexed))
+      : SERVER_INSTRUCTIONS_NO_ROOT_INDEX;
   }
 
   private async handleToolsList(request: JsonRpcRequest): Promise<void> {
