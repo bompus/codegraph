@@ -59,7 +59,10 @@ describe('object-literal method extraction', () => {
     // declaration and reads its return type where the action's body was meant.
     const fetchUser = result.nodes.find((n) => n.kind === 'function' && n.name === 'fetchUser')!;
     const fetchUserRefs = result.unresolvedReferences.filter((r) => r.fromNodeId === fetchUser.id);
-    expect(fetchUserRefs.map((r) => r.referenceName)).toContain('reset');
+    // `get().reset()` keeps its call receiver (#1683): the ref is the chain
+    // `get().reset`, which the resolver binds to the store's own `reset`.
+    expect(fetchUserRefs.map((r) => r.referenceName)).toContain('get().reset');
+    expect(fetchUserRefs.map((r) => r.referenceName)).not.toContain('reset');
 
     // The action's body wasn't mis-attributed to the file scope (the reason we
     // skip the generic body-visit for the store-factory call).
