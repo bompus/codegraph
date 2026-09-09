@@ -107,6 +107,10 @@ describe("codegraph version affordances", () => {
     // linked, so the sandbox costs a few MB and well under a second.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "codegraph-stamped-cli-"));
     const realDist = path.resolve(__dirname, "../dist");
+    const originalStampPath = path.join(realDist, "build-revision.json");
+    const readOriginalStamp = () =>
+      fs.existsSync(originalStampPath) ? fs.readFileSync(originalStampPath) : null;
+    const originalStamp = readOriginalStamp();
     const linkType = process.platform === "win32" ? "junction" : "dir";
     try {
       fs.mkdirSync(path.join(root, "dist"));
@@ -114,7 +118,8 @@ describe("codegraph version affordances", () => {
         fs.cpSync(path.join(realDist, dir), path.join(root, "dist", dir), { recursive: true });
       }
       for (const entry of fs.readdirSync(realDist, { withFileTypes: true })) {
-        if (entry.name === "bin" || entry.name === "mcp") continue;
+        // The sandbox starts unstamped even when the updater stamped the parent build.
+        if (["bin", "mcp", "build-revision.json"].includes(entry.name)) continue;
         const from = path.join(realDist, entry.name);
         const to = path.join(root, "dist", entry.name);
         if (entry.isDirectory()) fs.symlinkSync(from, to, linkType);
@@ -154,8 +159,8 @@ describe("codegraph version affordances", () => {
       fs.writeFileSync(stamp, JSON.stringify({ revision: "not-a-commit" }));
       expect(version(["--version"])).toBe("0.0.0-unknown");
 
-      // The sandbox must not have leaked into the repo's own build.
-      expect(fs.existsSync(path.join(realDist, "build-revision.json"))).toBe(false);
+      // Preserve the parent build's stamp byte-for-byte, or its absence.
+      expect(readOriginalStamp()).toEqual(originalStamp);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
