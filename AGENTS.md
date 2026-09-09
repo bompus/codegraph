@@ -4,7 +4,7 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 
 **Instruction budget:** Keep this root file below 32,768 UTF-8 bytes; `npm run check:agent-docs` enforces the limit. Put conditional procedures, evidence, and worked examples in linked documents. Codex user configuration may set `project_doc_max_bytes = 65536` as a safety margin, but the larger limit does not replace the repository guard.
 
-**Publishing boundary:** Do not run `npm publish`, `git push`, or `git tag`. Prepare and verify the files, then leave shared-state publishing to the user unless they explicitly authorize it.
+**Completion boundary:** A worktree or feature branch is intermediate. For authorized repository work, finish by committing the verified change, integrating it through any required checks or PR into the remote default branch, pushing, and confirming that the default-branch head contains the commit. Stop earlier only when the user requests it or integration is blocked; report the exact blocker. Do not run `npm publish` or create a release tag without explicit authorization.
 
 ## Project Overview
 
