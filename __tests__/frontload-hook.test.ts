@@ -357,7 +357,7 @@ describe('prompt-hook injection cap (#1694)', () => {
     expect(PROMPT_HOOK_INJECTION_MAX).toBe(9000);
     expect(CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT).toBe(10_000);
     expect(PROMPT_HOOK_INJECTION_MAX).toBeLessThan(CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT);
-    // Leave headroom for the <codegraph_context> wrapper + projectPath nudge lines.
+    // Leave headroom for the hook wrapper + projectPath nudge lines.
     expect(CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT - PROMPT_HOOK_INJECTION_MAX).toBeGreaterThanOrEqual(500);
   });
 

@@ -151,12 +151,11 @@ question and a real repo (add to `.claude/skills/agent-eval/corpus.json`). Examp
 ### Step 2 — Measure the hole (deterministic, no agent)
 ```bash
 rm -rf <repo>/.codegraph && ( cd <repo> && codegraph init -i )
-node scripts/agent-eval/probe-trace.mjs <repo> <from-symbol> <to-symbol>   # does the flow break? where?
-node scripts/agent-eval/probe-node.mjs  <repo> <break-symbol>              # trail: is the next hop missing?
+node scripts/agent-eval/probe-explore.mjs <repo> "<from-symbol> <to-symbol>" # does the Flow section connect them?
+node scripts/agent-eval/probe-node.mjs    <repo> <break-symbol>              # trail: is the next hop missing?
 ```
-A "No direct call path … breaks at dynamic dispatch" + a sparse trail at the break
-point **locates the hole** (this is exactly how `_iterable_class` and `triggerUpdate`
-were found). Confirm it's dynamic by reading the break symbol's body.
+A missing Flow section (or a dynamic-boundary note) plus a sparse trail at the break
+point **locates the hole**. Confirm it's dynamic by reading the break symbol's body.
 
 ### Step 3 — Classify → choose the mechanism (use the §2 table)
 - `self.<attr>(...)` / descriptor / metaclass → **resolver** (§3a).
@@ -183,20 +182,20 @@ were found). Confirm it's dynamic by reading the break symbol's body.
 - **Synthesizer channel:** extend `src/resolution/callback-synthesizer.ts` — add the
   framework's registrar/dispatcher **name patterns** and **body patterns** (e.g. signals
   use `.connect()`/`.emit()`; Rx uses `.subscribe()`/`.next()`).
-- Reindex (Step 2 command) and re-run `probe-trace` — the flow should now connect.
+- Reindex (Step 2 command) and re-run `probe-explore` — its Flow section should now connect the named endpoints.
 
 ### Step 5 — Validate (the same way every time)
-1. **Deterministic:** `probe-trace(from,to)` finds the path; `probe-node` shows the
-   bridged hop. The previously-broken hop is closed.
+1. **Deterministic:** `probe-explore` finds the path among the named endpoints;
+   `probe-node` shows the bridged hop. The previously-broken hop is closed.
 2. **Precision:** count + spot-check synthesized/resolved edges — no explosion, correct targets:
    ```bash
    sqlite3 <repo>/.codegraph/codegraph.db \
      "select s.name||' → '||t.name||'  '||coalesce(e.metadata,'') from edges e \
       join nodes s on e.source=s.id join nodes t on e.target=t.id where e.provenance='heuristic';"
    ```
-   (Resolver edges aren't `heuristic`; verify via the trace + callees instead.)
+   (Resolver edges aren't `heuristic`; verify via explore's Flow section + callees instead.)
 3. **Regression:** node count stable (`select count(*) from nodes;` before/after — a big
-   jump means an extraction change over-fired); existing traces on a control repo intact.
+   jump means an extraction change over-fired); existing explore flows on a control repo intact.
 4. **End-to-end agent eval:** run the flow question with codegraph and measure
    **reads / answer-completeness / cost** vs a pre-fix baseline:
    ```bash
@@ -209,7 +208,7 @@ were found). Confirm it's dynamic by reading the break symbol's body.
    contains the glue symbols (the ones that previously required a read).
 
 ### Success criteria (per language/framework)
-- `trace` finds the canonical flow end-to-end (no dynamic-dispatch break).
+- `codegraph_explore` finds the canonical flow end-to-end (no dynamic-dispatch break).
 - Agent can answer the flow question with **Read 0** (achievable in ≥ some runs) and the
   glue symbols appear in the answer.
 - **No node explosion** and no regression on a control repo.
@@ -221,10 +220,8 @@ were found). Confirm it's dynamic by reading the break symbol's body.
 
 | Tool | Purpose |
 |---|---|
-| `scripts/agent-eval/probe-trace.mjs <repo> <from> <to>` | call-path between two symbols (the hole detector) |
 | `scripts/agent-eval/probe-node.mjs <repo> <sym> [code]` | symbol + trail (callers/callees); `code` adds the body |
-| `scripts/agent-eval/probe-context.mjs <repo> "<task>"` | context output incl. call-paths |
-| `scripts/agent-eval/probe-explore.mjs <repo> "<query>"` | explore output |
+| `scripts/agent-eval/probe-explore.mjs <repo> "<from> <to>"` | relevant source + flow among named symbols (the hole detector) |
 | `scripts/agent-eval/{audit,run-agent,itrun}.sh` | agent A/B (headless + interactive); also the `/agent-eval` skill |
 | `sqlite3 <repo>/.codegraph/codegraph.db` | direct edge/node inspection (provenance, metadata, counts) |
 

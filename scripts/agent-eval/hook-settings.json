@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/colby/Development/Personal/codegraph/scripts/agent-eval/block-read-hook.sh"
+            "command": "bash \"${CODEGRAPH_REPO_ROOT:?set CODEGRAPH_REPO_ROOT to the CodeGraph checkout}/scripts/agent-eval/block-read-hook.sh\""
           }
         ]
       }

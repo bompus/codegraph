@@ -4,7 +4,9 @@
 # codegraph can FULLY replace Read for code-understanding once the escape hatch
 # is removed. Non-source reads (config, .env, markdown, new files) pass through.
 #
-# Wire via:  claude ... --settings scripts/agent-eval/hook-settings.json
+# Wire via:
+#   export CODEGRAPH_REPO_ROOT=/path/to/codegraph
+#   claude ... --settings "$CODEGRAPH_REPO_ROOT/scripts/agent-eval/hook-settings.json"
 set -uo pipefail
 input="$(cat)"
 fp="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"

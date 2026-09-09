@@ -138,8 +138,9 @@ node scripts/agent-eval/seq-matrix.mjs            # regenerates every table abov
 **Date:** 2026-05-23 · 52 runs, ~$20. Tool surface trimmed **server-side** via the new
 `CODEGRAPH_MCP_TOOLS` allowlist (so an ablated tool is genuinely absent from ListTools, not
 denied-on-call); trace-first steering injected with `--append-system-prompt`. 6 repos (2 S / 2 M /
-2 L) × 2 runs; arm E is a **non-flow** survey question on 2 repos. Driver `arms-matrix.sh`,
-analysis `parse-arms.mjs`.
+2 L) × 2 runs; arm E is a **non-flow** survey question on 2 repos. The historical arm drivers
+were removed when `codegraph_trace` and `codegraph_context` were removed; the surviving logs remain
+analyzable with `parse-arms.mjs`.
 
 | arm | tools | steering | adoption | reads | cgOut | turns | dur |
 |---|---|---|--:|--:|--:|--:|--:|
@@ -195,10 +196,9 @@ deep-survey, not the flow default) for the non-flow class E proved is load-beari
   on wall-clock** (the bar B/C/D all failed).
 - **Metric:** payload, reads (must stay ≈ A's ~1.0, not rise to 2.0), turns, duration.
 
-## Reproduce (ablation)
+## Reanalyze the saved ablation logs
 
 ```bash
-bash scripts/agent-eval/arms-matrix.sh     # 52 runs into /tmp/arms (RUNS=2 default)
 node scripts/agent-eval/parse-arms.mjs     # the arm-comparison tables above
 ```
 
@@ -254,10 +254,9 @@ spring-halo, the connecting repos, are 2/2 trace in both B and F.)
 3. **Next frontier to widen F's reach:** bridge more dynamic dispatch (MediatR/.NET, Vapor routing) —
    every newly-connected flow converts an F≈B repo into an F-win repo.
 
-## Reproduce (arm F)
+## Reanalyze the saved arm-F logs
 
 ```bash
-bash scripts/agent-eval/arms-F.sh          # 12 runs (RUNS=2); needs the body-inlining build
 node scripts/agent-eval/parse-arms.mjs     # F appears alongside A/B/C/D/E
 ```
 
@@ -333,10 +332,9 @@ measure-first paid off three times: it killed three cheap fixes in the ablation,
 change that would have shipped an ~8s/query regression (G), and stopped shipping the body-trace
 itself on a confounded assumption (H showed it needs steering we can't deliver).
 
-## Reproduce (arm G)
+## Reanalyze the saved arm-G logs
 
 ```bash
-ARM=G bash scripts/agent-eval/arms-F.sh    # production-instruction steering, no append-prompt
 node scripts/agent-eval/parse-arms.mjs
 ```
 
@@ -380,10 +378,9 @@ ships and needs no steering.
   Spring interface-DI, and Vapor closures are the next synthesizers, and they help the *unsteered*
   agent (which already traces when trace will connect).
 
-## Reproduce (arm I)
+## Reanalyze the saved arm-I logs
 
 ```bash
-ARM=I bash scripts/agent-eval/arms-F.sh    # body-trace + destination callees, no steering
 node scripts/agent-eval/parse-arms.mjs
 ```
 
