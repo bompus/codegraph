@@ -51,6 +51,7 @@ it('retains a heuristic constant endpoint when the same pair has a static edge',
   const staticEdge = { source: caller.id, target: endpoint.id, kind: 'calls', line: 10 };
   const heuristicEdge = { ...staticEdge, line: 20, provenance: 'heuristic' };
   const graph = {
+    getNodesByName: (name: string) => [caller, endpoint].filter((n) => n.name === name),
     searchNodes: (name: string) =>
       [caller, endpoint].filter((n) => n.name === name).map((node) => ({ node, score: 1 })),
     getIncomingEdges: () => [staticEdge, heuristicEdge],
