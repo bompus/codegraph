@@ -141,9 +141,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixes
 
 - Local JavaScript and TypeScript calls stay connected through linked packages and imports configured by a nested `baseUrl` (#1715).
+- Spring mappings now include every declared path combination and resolve constants declared in the same file, while unresolved paths no longer appear as false root routes. (#1461)
 - `codegraph callers`, `codegraph callees` and `codegraph impact` now resolve qualified names, group results and JSON edges by definition, and accept `--file` to narrow ambiguous names; thanks @ferrine. (#1512, #1656)
+- `codegraph callers`, `codegraph callees` and `codegraph impact` (CLI and MCP) now report missing names with did-you-mean suggestions instead of another symbol's results, and exact matches with no callers stay empty; thanks @uvmplus. (#1473, #1481)
 
 #### MCP / indexing
+
+- The prompt hook no longer injects unrelated projects when run from your home directory or a broader directory containing a stray workspace manifest. (#1454)
+
+- Indexing now succeeds when Node.js's SQLite lacks FTS5, with search falling back to name and fuzzy matching; thanks @aniruddhaadak80. (#1532)
 
 - `codegraph_explore` now makes clear that suggested call counts are advisory, so agents keep exploring when an answer is incomplete; thanks @rongbc. (#1504, #1570)
 
@@ -241,6 +247,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 #### Symbols, tests and the viewer
 
+- Kotlin functions and methods now carry their signature — `(params): ReturnType` — in `codegraph_explore`, `node` and the viewer, instead of no signature at all. Re-index Kotlin projects after upgrading. (#1495)
+- TypeScript/JavaScript value aliases — `export const alias = fn`, `export { fn as alias }`, object-literal `api = { run: fn }`, and same-file `const local = fn` — now forward calls edges to the aliased function, so callers and impact on the implementation include consumers that call through the alias instead of stopping at the binding. Genuine wrappers (`() => fn()`) are unchanged. Re-index after upgrading. Thanks @valkyriweb. (#1482, #1485)
 - `codegraph affected` now finds Go, Python and JVM test files that previously went unreported, while preserving custom `--filter` behavior (thanks @danusha2345; #1507, #1688).
 
 - Calls inside declaration initializers in Kotlin, Java, TypeScript, JavaScript, Scala, Rust and Python now appear under the declaration that owns them, making callers and impact results more accurate after re-indexing with `codegraph index -f` (thanks @danusha2345; #1510, #1511).

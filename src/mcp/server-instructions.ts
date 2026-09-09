@@ -58,6 +58,7 @@ calls; a grep/read exploration is dozens.
 - **"Why is this like this? What did the last session decide / try / get told about X?"** → \`codegraph_sessions\` with a few words. It searches the prose of this project's earlier agent sessions (prompts, replies, compaction summaries — stemmed, ranked) and names the session each hit came from. History and rationale live there, not in the code; do not grep transcript files by hand.
 - **Need more?** Call \`codegraph_explore\` again with more specific names — treat the source it returns as already Read. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
+- Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
 
 ## Anti-patterns
 
