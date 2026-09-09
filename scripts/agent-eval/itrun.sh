@@ -94,20 +94,22 @@ done
 # sit still). Need STABLE_NEEDED polls (~8s) of zero pane change + ❯ present.
 # Content-stability is model-agnostic — it survives future spinner re-wordings.
 STABLE_NEEDED=16
-prev=""; stable=0
+prev=""; stable=0; finished=0
 for _ in $(seq 1 2400); do            # up to ~20 min
   pane="$(cap)"
   sig="$(printf '%s' "$pane" | tr -s '[:space:]' ' ')"
   if printf '%s' "$pane" | grep -qE "$BUSY_RE"; then
     stable=0                          # thinking / tool use / live timer → busy
   elif [ -n "$sig" ] && [ "$sig" = "$prev" ] && printf '%s' "$pane" | grep -q "❯"; then
-    stable=$((stable+1)); [ "$stable" -ge "$STABLE_NEEDED" ] && break
+    stable=$((stable+1))
+    if [ "$stable" -ge "$STABLE_NEEDED" ]; then finished=1; break; fi
   else
     stable=0                          # answer still streaming → pane changing
   fi
   prev="$sig"
   sleep 0.5
 done
+[ "$finished" = 1 ] || { echo "agent did not return to idle before timeout"; cap; tmux kill-session -t "$SESSION" 2>/dev/null; exit 1; }
 sleep 1
 
 tmux capture-pane -p -t "$SESSION" -S - > "$OUT"

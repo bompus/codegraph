@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # One-shot CodeGraph quality audit:
-#   set version -> ensure corpus repo -> wipe+reindex with that version ->
-#   run with/without A/B -> restore the local dev link.
+#   prepare an isolated binary -> ensure corpus repo -> wipe+reindex with that
+#   binary -> run with/without A/B.
 #
 # Usage: audit.sh <version> <repo-name> <repo-url> "<question>" [headless|all]
-#   <version>    "local" (build + npm link this repo) | "latest" | a version (e.g. 0.7.10)
+#   <version>    "local" (build this repo) | "latest" | a version (e.g. 0.7.10)
 #   <repo-name>  dir name under the corpus dir
 #   <repo-url>   git URL (cloned --depth 1 when the repo dir is missing)
 #   [mode]       headless (default) | all (also the interactive tmux arms)
 # Env: CORPUS  corpus dir (default: /tmp/codegraph-corpus)
-set -uo pipefail
+set -euo pipefail
 
 VERSION="${1:?usage: audit.sh <version> <repo-name> <repo-url> \"<question>\" [mode]}"
 NAME="${2:?repo-name required}"
@@ -22,21 +22,26 @@ REPO_ROOT="$(cd "$HARNESS/../.." && pwd)"     # codegraph repo root
 CORPUS="${CORPUS:-/tmp/codegraph-corpus}"
 REPO="$CORPUS/$NAME"
 PKG="@colbymchenry/codegraph"
+PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/codegraph-audit.XXXXXX")"
+trap 'rm -rf "$PREFIX"' EXIT
 
 echo "==================== CodeGraph audit ===================="
 echo "version=$VERSION  repo=$NAME  mode=$MODE  corpus=$CORPUS"
 echo
 
-# 1. Set the codegraph version under test (mutates the global install).
+# 1. Prepare the exact binary under test without touching the global install.
 if [ "$VERSION" = local ]; then
-  echo "→ [1/4] building + linking local dev build (local-install.sh)"
-  ( cd "$REPO_ROOT" && ./scripts/local-install.sh ) || { echo "local-install.sh failed"; exit 1; }
+  echo "→ [1/4] building local dev binary"
+  ( cd "$REPO_ROOT" && npm run build )
+  CG_BIN="$REPO_ROOT/dist/bin/codegraph.js"
 else
-  echo "→ [1/4] installing $PKG@$VERSION globally"
-  npm install -g "$PKG@$VERSION" || { echo "npm install -g $PKG@$VERSION failed"; exit 1; }
+  echo "→ [1/4] installing $PKG@$VERSION under isolated prefix $PREFIX"
+  npm install --prefix "$PREFIX" --no-save "$PKG@$VERSION"
+  CG_BIN="$PREFIX/node_modules/.bin/codegraph"
 fi
-ACTUAL="$(codegraph --version 2>/dev/null || echo '?')"
-echo "  codegraph on PATH: $(command -v codegraph) -> $ACTUAL"
+[ -x "$CG_BIN" ] || { echo "codegraph binary was not created at $CG_BIN"; exit 1; }
+ACTUAL="$("$CG_BIN" --version)"
+echo "  isolated codegraph: $CG_BIN -> $ACTUAL"
 
 # 2. Ensure the corpus repo exists (clone shallow if missing, reuse if present).
 mkdir -p "$CORPUS"
@@ -51,18 +56,9 @@ fi
 #    binary that serves it — different versions extract differently).
 echo "→ [3/4] wiping .codegraph and re-indexing with $ACTUAL"
 rm -rf "$REPO/.codegraph"
-( cd "$REPO" && codegraph init -i ) || { echo "indexing failed"; exit 1; }
+( cd "$REPO" && "$CG_BIN" init -i )
 
 # 4. Run the with/without A/B.
 echo "→ [4/4] running A/B harness (mode=$MODE)"
-bash "$HARNESS/run-all.sh" "$REPO" "$Q" "$MODE"
-
-# Restore the dev link (the normal working state in this repo).
-echo
-echo "→ restoring local dev link (local-install.sh)"
-if ( cd "$REPO_ROOT" && ./scripts/local-install.sh >/dev/null 2>&1 ); then
-  echo "  global codegraph restored to dev build"
-else
-  echo "  WARN: restore failed — run ./scripts/local-install.sh manually"
-fi
+CG_BIN="$CG_BIN" bash "$HARNESS/run-all.sh" "$REPO" "$Q" "$MODE"
 echo "==================== audit complete ===================="

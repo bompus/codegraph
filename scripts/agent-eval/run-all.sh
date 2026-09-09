@@ -27,7 +27,7 @@
 #        AGENT_EVAL_OUT  output dir (default: /tmp/agent-eval)
 #        MODEL / EFFORT  claude model/effort (default: sonnet / high — the
 #                        standing A/B policy; see CLAUDE.md, don't raise)
-set -uo pipefail
+set -euo pipefail
 
 REPO="${1:?usage: run-all.sh <repo-path> \"<question>\" [headless|tmux|all]}"
 Q="${2:?question required}"
@@ -41,10 +41,14 @@ while [ "$rest" != "${rest#*||}" ]; do
   rest="${rest#*||}"
 done
 TURNS+=("$rest")
-CG_BIN="${CG_BIN:-$(command -v codegraph)}"
+CG_BIN="${CG_BIN:-$(command -v codegraph || true)}"
 OUT="${AGENT_EVAL_OUT:-/tmp/agent-eval}"
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$OUT"
+
+[ -n "$CG_BIN" ] || { echo "no codegraph binary on PATH (set CG_BIN)"; exit 1; }
+[ -x "$CG_BIN" ] || { echo "codegraph binary is not executable: $CG_BIN"; exit 1; }
+CG_BIN="$(cd "$(dirname "$CG_BIN")" && pwd)/$(basename "$CG_BIN")"
 
 # Neutralize any ambient CodeGraph prompt-hook (~/.claude) in BOTH arms:
 # the hook injects codegraph context into every prompt, which contaminates
@@ -61,9 +65,10 @@ export CODEGRAPH_NO_PROMPT_HOOK=1
 . "$HARNESS/no-cli-shim.sh"
 cg_no_cli_setup "$OUT" || exit 1
 
-[ -n "$CG_BIN" ] || { echo "no codegraph binary on PATH (set CG_BIN)"; exit 1; }
 [ -d "$REPO/.codegraph" ] || { echo "no .codegraph index at $REPO — index it first"; exit 1; }
 case "$MODE" in headless|tmux|all) ;; *) echo "mode must be headless|tmux|all (got '$MODE')"; exit 1;; esac
+ARMS="${CG_ARMS:-both}"
+case "$ARMS" in both|with|without) ;; *) echo "CG_ARMS must be both|with|without (got '$ARMS')"; exit 1;; esac
 
 # MCP config files (path form avoids inline-JSON quoting through tmux).
 cat > "$OUT/mcp-codegraph.json" <<JSON
@@ -88,12 +93,25 @@ session_id_of() {
     }' "$1" 2>/dev/null
 }
 
+valid_result() {
+  node -e '
+    const fs=require("fs"); let result;
+    for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+      if (!line) continue;
+      let event; try { event=JSON.parse(line) } catch { continue }
+      if (event.type === "result") result=event;
+    }
+    if (!result || result.subtype !== "success" || typeof result.result !== "string" || !result.result.trim()) process.exit(1);
+  ' "$1"
+}
+
 # Headless arm: claude -p with stream-json -> exact tool sequence + tokens/cost
 # + residual context occupancy. One session, one segment file per turn.
 headless() {
   local label="$1" cfg="$2"
   echo "############################## HEADLESS [$label] ##############################"
   local sid="" seg=0 out="" files=()
+  rm -f "$OUT/run-$label.jsonl" "$OUT/run-$label.t"*.jsonl
   : > "$OUT/run-$label.err"
   for q in "${TURNS[@]}"; do
     seg=$((seg + 1))
@@ -101,7 +119,7 @@ headless() {
     [ "$seg" -gt 1 ] && out="$OUT/run-$label.t$seg.jsonl"
     local resume=()
     [ -n "$sid" ] && resume=(--resume "$sid")
-    ( cd "$REPO" && PATH="$ARM_PATH" claude -p "$q" \
+    if ! ( cd "$REPO" && PATH="$ARM_PATH" claude -p "$q" \
         --output-format stream-json --verbose \
         --permission-mode bypassPermissions \
         --model "${MODEL:-sonnet}" --effort "${EFFORT:-high}" \
@@ -109,41 +127,44 @@ headless() {
         --strict-mcp-config --mcp-config "$cfg" \
         --settings "$ARM_SETTINGS" \
         ${resume[@]+"${resume[@]}"} \
-        </dev/null > "$out" 2>>"$OUT/run-$label.err" )
-    echo "exit $? -> $out ($(wc -l < "$out" | tr -d ' ') lines) [turn $seg/${#TURNS[@]}]"
+        </dev/null > "$out" 2>>"$OUT/run-$label.err" ); then
+      echo "claude failed for $label turn $seg" >&2
+      return 1
+    fi
+    [ -s "$out" ] || { echo "empty result artifact: $out" >&2; return 1; }
+    valid_result "$out" || { echo "missing successful result in $out" >&2; return 1; }
+    echo "exit 0 -> $out ($(wc -l < "$out" | tr -d ' ') lines) [turn $seg/${#TURNS[@]}]"
     files+=("$out")
     sid="$(session_id_of "$out")"
     if [ -z "$sid" ] && [ "$seg" -lt "${#TURNS[@]}" ]; then
-      echo "  WARN: no session_id in $out — later turns would start a FRESH context; stopping this arm"
-      break
+      echo "no session_id in $out — cannot run later turns in the same context" >&2
+      return 1
     fi
   done
   tail -2 "$OUT/run-$label.err" 2>/dev/null
-  node "$HARNESS/parse-run.mjs" "${files[@]}" 2>&1 || true
+  node "$HARNESS/parse-run.mjs" "${files[@]}" 2>&1
   echo
 }
 
-# CG_ARMS=with|without|both — re-run one arm without redoing the other.
-ARMS="${CG_ARMS:-both}"
 if [ "$MODE" = headless ] || [ "$MODE" = all ]; then
   case "$ARMS" in both|with)    headless "headless-with"    "$OUT/mcp-codegraph.json";; esac
   case "$ARMS" in both|without) headless "headless-without" "$OUT/mcp-empty.json";; esac
-  # Both arms' three metrics on one screen. The per-arm blocks above say WHY a
-  # number moved (which query fell short, which file was never cited); this says
-  # whether it moved at all. CG_ARMS=with|without leaves one arm's logs from an
-  # earlier invocation in $OUT, and comparing against those is the point of the
-  # split — so this runs whichever arms have logs, not only a fresh pair.
-  node "$HARNESS/compare-arms.mjs" "$OUT" headless-with headless-without 2>&1 || true
+  # A full A/B is valid only when both freshly selected arms can be compared.
+  if [ "$ARMS" = both ]; then
+    node "$HARNESS/compare-arms.mjs" "$OUT" headless-with headless-without 2>&1
+  fi
 fi
 
 if [ "$MODE" = tmux ] || [ "$MODE" = all ]; then
   echo "############################## INTERACTIVE [with] ##############################"
   CLAUDE_EXTRA_ARGS="--model ${MODEL:-sonnet} --effort ${EFFORT:-high} --strict-mcp-config --mcp-config $OUT/mcp-codegraph.json" \
-    bash "$HARNESS/itrun.sh" "$REPO" "int-with" "${TURNS[0]}" 2>&1 || echo "[itrun WITH failed]"
+    bash "$HARNESS/itrun.sh" "$REPO" "int-with" "${TURNS[0]}" 2>&1
+  [ -s "$OUT/itrun-int-with.txt" ] || { echo "missing interactive with-arm artifact" >&2; exit 1; }
   echo
   echo "############################## INTERACTIVE [without] ##############################"
   CLAUDE_EXTRA_ARGS="--model ${MODEL:-sonnet} --effort ${EFFORT:-high} --strict-mcp-config --mcp-config $OUT/mcp-empty.json" \
-    bash "$HARNESS/itrun.sh" "$REPO" "int-without" "${TURNS[0]}" 2>&1 || echo "[itrun WITHOUT failed]"
+    bash "$HARNESS/itrun.sh" "$REPO" "int-without" "${TURNS[0]}" 2>&1
+  [ -s "$OUT/itrun-int-without.txt" ] || { echo "missing interactive without-arm artifact" >&2; exit 1; }
   echo
 fi
 echo "############################## RUN-ALL COMPLETE ##############################"
