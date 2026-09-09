@@ -65,10 +65,9 @@ function setHome(dir: string): { restore: () => void } {
   };
 }
 
-// A marker-delimited CodeGraph block exactly as a previous installer
-// wrote it. Issue #529: the installer no longer writes an instructions
-// file, but install (self-heal on upgrade) and uninstall both still
-// strip a block a prior install left, so we plant this to exercise it.
+// A marker-delimited long CodeGraph block from before #529. Current installs
+// replace it with the short #704 pointer, and uninstall removes either form,
+// so tests plant this legacy body to exercise both transitions.
 const LEGACY_BLOCK = [
   '<!-- CODEGRAPH_START -->',
   '## CodeGraph',

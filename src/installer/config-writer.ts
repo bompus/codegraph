@@ -27,9 +27,9 @@ export type InstallLocation = 'global' | 'local';
  * full multi-file install lives in `claudeTarget.install()` which the
  * new orchestrator uses.
  *
- * There is no `writeClaudeMd` shim anymore: codegraph stopped writing a
- * CLAUDE.md instructions block (issue #529) now that the MCP server's
- * `initialize` instructions are the single source of truth.
+ * There is no `writeClaudeMd` compatibility shim anymore. The orchestrated
+ * install owns the short CLAUDE.md pointer restored in #704; detailed tool
+ * guidance remains in the MCP server's `initialize` instructions.
  */
 export function writeMcpConfig(location: InstallLocation): void {
   writeMcpEntry(location);

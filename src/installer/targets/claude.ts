@@ -231,7 +231,7 @@ class ClaudeCodeTarget implements AgentTarget {
     const promptHookCleanup = removePromptHookEntry(loc);
     if (promptHookCleanup.action === 'removed') files.push(promptHookCleanup);
 
-    // 3. Instructions — strip the legacy CodeGraph block if present.
+    // 3. Instructions — strip the current or legacy CodeGraph block.
     files.push(removeInstructionsEntry(loc));
 
     return { files };
@@ -498,13 +498,10 @@ export function writePromptHookEntry(loc: Location): WriteResult['files'][number
 }
 
 /**
- * Strip the marker-delimited CodeGraph block from CLAUDE.md if a prior
- * install wrote one. Codegraph no longer maintains an instructions file
- * (issue #529) — the MCP server's `initialize` instructions are the
- * single source of truth — so both install (self-heal on upgrade) and
- * uninstall call this. `removeMarkedSection` returns `not-found`/`kept`
- * when there's nothing to strip; the install caller drops those from
- * the report so a fresh install stays quiet.
+ * Strip the current or legacy marker-delimited CodeGraph block from
+ * CLAUDE.md. Uninstall removes the short pointer maintained since #704;
+ * legacy cleanup uses the same markers. `removeMarkedSection` returns
+ * `not-found`/`kept` when there is nothing to strip.
  */
 export function removeInstructionsEntry(loc: Location): WriteResult['files'][number] {
   const file = instructionsPath(loc);
