@@ -2,7 +2,9 @@
 
 Canonical project guidance for coding agents working in this repository (Codex/Astra, Claude Code via `@AGENTS.md`, Cursor, etc.).
 
-**Codex size note:** root `AGENTS.md` is intentionally kept near ~35 KiB (critical build/test/arch/retrieval rules retained). Longer validation methodology + the Excalidraw worked example live in `docs/AGENTS.md`. This environment sets `project_doc_max_bytes = 49152` so root (and root+`docs/` when cwd is under `docs/`) are not silently truncated at the 32 KiB default.
+**Instruction budget:** Keep this root file below 32,768 UTF-8 bytes; `npm run check:agent-docs` enforces the limit. Put conditional procedures, evidence, and worked examples in linked documents. Codex user configuration may set `project_doc_max_bytes = 65536` as a safety margin, but the larger limit does not replace the repository guard.
+
+**Publishing boundary:** Do not run `npm publish`, `git push`, or `git tag`. Prepare and verify the files, then leave shared-state publishing to the user unless they explicitly authorize it.
 
 ## Project Overview
 
@@ -75,20 +77,13 @@ The public API surface is `src/index.ts` — the `CodeGraph` class wires all the
 
 ### Module layout
 
-- `src/index.ts` — `CodeGraph` class: `init`/`open`/`close`, `indexAll`, `sync`, `searchNodes`, `getCallers`/`getCallees`, `getImpactRadius`, `buildContext`, `watch`/`unwatch`.
-- `src/db/` — `DatabaseConnection`, `QueryBuilder` (prepared statements), `schema.sql`, `sqlite-adapter.ts`. Backed by Node's built-in **`node:sqlite`** (`DatabaseSync`) — real SQLite with WAL + FTS5, exposed through a thin better-sqlite3-shaped adapter. The bundled runtime always ships Node ≥22.5, so `node:sqlite` is always available: **no native build step and no wasm fallback**. (Running from source needs Node ≥22.5.) `codegraph status` reports the live backend (`node-sqlite`, the sole backend).
-- `src/extraction/` — `ExtractionOrchestrator`, tree-sitter wrappers, per-language extractors under `languages/` (one file per language), plus standalone extractors for non-tree-sitter formats (`svelte-extractor.ts`, `vue-extractor.ts`, `liquid-extractor.ts`, `dfm-extractor.ts` for Delphi). `parse-worker.ts` runs heavy parsing off the main thread.
-- `src/resolution/` — `ReferenceResolver` orchestrates `import-resolver.ts` (with `path-aliases.ts` for tsconfig path aliases + cargo workspace member globs), `name-matcher.ts`, and `frameworks/` (Express, Laravel, Rails, FastAPI, Django, Flask, Spring, Gin, Axum, ASP.NET, Vapor, React Router, Next.js — `nextjs.ts`: pages and `route.ts` handlers from files, `router.push` / `redirect` / `NextResponse.redirect` as `navigates` edges, with `next-router-synthesizer.ts` for `<Link href>` — Expo Router, SvelteKit, Vue/Nuxt, Cargo workspaces). Frameworks emit `route` nodes and `references` edges. `callback-synthesizer.ts` holds the whole-graph synthesis passes (`SYNTH_PASSES`, merged in registry order — first-seen wins a duplicate pair) with the language gates; `tier-synthesizer.ts` is the cross-tier pass (a client's literal `fetch`/`axios` path onto its own route, a queue job onto its consumer, a bus / socket event onto its handler — `channel`, `tier`, `registeredAt` on every edge; registered before the in-process emitter pass so its more specific edge wins); `synth-utils.ts` has the helpers they share (`enclosingFn`, `enclosingValue`, `makeLineAt`). Express's `postExtract` composes `app.use('/prefix', router)` mounts onto a mounted file's route names, idempotently (the original path stays in `qualifiedName`).
-- `src/graph/` — `GraphTraverser` (BFS/DFS, impact radius, path finding) and `GraphQueryManager` (high-level queries), plus the shared query-time derivations more than one surface renders: `named-symbol-flow.ts` (the one path finder, behind `codegraph_explore`'s Flow section and the viewer's Flow strip), `dynamic-boundary-report.ts` (where the graph stops), `type-hierarchy.ts` (ancestors/subtypes and the implementation count explore prints and the viewer draws),
-  `dead-code.ts` (unreferenced symbols, and every reason a candidate is NOT claimed). A derivation that two callers render must live here, not in `ToolHandler` — two derivations eventually disagree.
-- `src/context/` — `ContextBuilder` + formatter for markdown/JSON output.
-- `src/search/` — full-text query parser and helpers for FTS5.
-- `src/sync/` — `FileWatcher` (native FSEvents/inotify/RDCW) with debounce + filter, and git-hook helpers.
-- `src/mcp/` — MCP server (`MCPServer`, `tools.ts`, `transport.ts`). `server-instructions.ts` is what the server returns in the MCP `initialize` response — keep it in sync with the user-facing tool guidance.
-- `src/installer/` — see below.
-- `src/bin/codegraph.ts` — CLI (commander). Subcommands: `install`, `init`, `uninit`, `index`, `sync`, `status`, `query`, `files`, `context`, `affected`, `serve --mcp`.
-- `src/ui/` — terminal UI (shimmer progress, worker).
-- `src/ui-server/` -- read-only JSON API for the `codegraph ui` browser viewer (`api/`: `node`, `flow`, `map`, `screens`, `steps`, `deadcode`, `trails`, `program`, ...) plus static server; Svelte viewer lives in `ui/` (see `docs/design/codegraph-ui-design-spec.md`). `screens`/`steps`/`program` share one fold (`via`/`when` via `graph/branch-guards.ts`); `api/effects.ts` curates calls that leave the index; `api/route-roots.ts` names where a route's code starts. Derivations rendered by more than one surface belong in `src/graph/`, not `ToolHandler`.
+- `src/index.ts` is the public library API and wires the system together.
+- `src/db/` owns the `node:sqlite` database, schema, and prepared queries. Source development requires Node 22.5 or newer; published bundles carry their own supported runtime.
+- `src/extraction/` parses supported languages; `src/resolution/` connects imports, names, frameworks, callbacks, and cross-tier flows.
+- `src/graph/` owns shared graph derivations. If more than one surface renders a derivation, put it here rather than in an individual handler.
+- `src/context/` and `src/search/` format and retrieve context; `src/sync/` owns watching and git-hook helpers.
+- `src/mcp/` defines the MCP server and its agent-facing instructions; `src/installer/` defines host integrations.
+- `src/bin/codegraph.ts` is the CLI. `src/ui/` is the terminal UI; `src/ui-server/` and `ui/` implement the browser viewer and component package.
 
 ### NodeKind / EdgeKind
 
@@ -233,41 +228,7 @@ Multi-word headings like `### New Features` are safe on the normal release path:
 
 ### Release flow (the user runs these)
 
-Releases are built and published by the **GitHub Actions "Release" workflow**
-(`.github/workflows/release.yml`). It runs `scripts/prepare-release.mjs` to
-promote `[Unreleased]` into `[<version>]` (and auto-commit + push that
-CHANGELOG change back to `main` so on-disk truth matches the published
-notes), then bundles a Node runtime per platform (`scripts/build-bundle.sh`)
-and publishes both the GitHub Release and the npm thin-installer
-(`scripts/pack-npm.sh`: a shim package + per-platform packages).
-Publishing manually is **wrong** now — a plain `npm publish` ships the root
-package (non-bundled), which breaks anyone on Node < 22.5.
-
-**Claude does NOT bump the version unless explicitly asked.** The maintainer
-typically does it themselves — often by editing `package.json` directly via
-the GitHub web UI. Don't proactively commit a version bump as part of
-unrelated work, and don't propose one when summarizing a PR.
-
-When the maintainer DOES bump the version, the only edit strictly required is
-to `package.json` — the workflow's "Sync package-lock.json" step detects a
-mismatch between `package.json` and `package-lock.json`, runs
-`npm install --package-lock-only --ignore-scripts` to rewrite the lock file's
-version fields (top-level + `packages.""`), and auto-commits + pushes the
-result back to `main` with `[skip ci]`. So a GitHub-web-UI single-file edit to
-`package.json` is enough to kick off a clean release. (If they edit both files
-locally, that's fine too — the sync step no-ops.)
-
-Once `package.json` is at the target version on `main`, trigger
-**Actions → Release → Run workflow** (on `main`). The workflow:
-
-1. Syncs `package-lock.json` to `package.json`'s version if they've drifted; commits + pushes that change.
-2. Runs `prepare-release.mjs <X.Y.Z>` → promotes `[Unreleased]` → `[X.Y.Z] - <today>` in `CHANGELOG.md`, appends the link reference, commits + pushes the move with `[skip ci]`.
-3. Builds every platform bundle on one runner, generates `SHA256SUMS`.
-4. Creates the GitHub Release with notes from the freshly-promoted `[X.Y.Z]` block.
-5. Publishes the npm shim + per-platform packages. Requires the `NPM_TOKEN` repo secret.
-
-**Do not run `npm publish`, `git push`, or `git tag` yourself** — these are
-publish actions on shared state. Write the files, hand the user the commands.
+The user runs releases through `.github/workflows/release.yml`; do not publish the root package manually. Agents do not bump versions unless explicitly asked. A requested release normally needs only the target version in `package.json`; the workflow synchronizes the lock file, promotes `[Unreleased]`, builds the platform bundles, creates the GitHub Release, and publishes through npm trusted publishing. Read the workflow before changing or describing this process.
 
 ## House rules
 

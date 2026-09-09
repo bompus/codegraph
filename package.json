@@ -20,6 +20,8 @@
     "ui"
   ],
   "scripts": {
+    "check:agent-docs": "node scripts/check-agent-docs.mjs",
+    "prebuild": "npm run check:agent-docs",
     "build": "tsc && npm run copy-assets && npm run build:ui && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\"",
     "build:ui": "cd ui && npm run build && cd .. && node scripts/check-ui-build.mjs",
     "build:lib": "cd ui && npm run build:lib",
@@ -28,6 +30,7 @@
     "dev": "tsc --watch",
     "build:kernel": "bash scripts/build-kernel.sh",
     "cli": "npm run build && node dist/bin/codegraph.js",
+    "pretest": "npm run check:agent-docs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:eval": "vitest run __tests__/evaluation/",
