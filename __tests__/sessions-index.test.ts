@@ -19,6 +19,9 @@ import {
   transcriptDocs,
   transcriptTitle,
 } from '../src/sessions/claude-code';
+import { parseCodexTranscript, codexFilesForProject } from '../src/sessions/codex';
+import { parseCursorTranscript, cursorFilesForProject, cursorProjectSlug } from '../src/sessions/cursor';
+import { cwdBelongsToProject } from '../src/sessions/project-roots';
 import {
   SessionsIndex,
   enterWalMode,
@@ -58,7 +61,7 @@ afterEach(() => {
   // dir holding sessions.db is EBUSY without this. A no-op on Node.
   (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-  for (const k of ['CODEGRAPH_SESSIONS_DIR', 'CLAUDE_CONFIG_DIR']) {
+  for (const k of ['CODEGRAPH_SESSIONS_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR']) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
@@ -270,7 +273,7 @@ describe('querySessions (project entry point)', () => {
 
     const result = querySessions(project, 'deciding dedupe');
     expect(result.index).toEqual({ files: 1, refreshed: 1, docs: 1 });
-    expect(result.hits.map((h) => h.session)).toEqual(['s1']);
+    expect(result.hits.map((h) => h.session)).toEqual(['claude:s1']);
     // Same reader version: the file is not re-read. An index written by an
     // older reader (user_version behind) is re-read once in full.
     expect(querySessions(project, 'deciding dedupe').index.refreshed).toBe(0);
@@ -286,5 +289,117 @@ describe('querySessions (project entry point)', () => {
     clearProjectConfigCache();
     expect(sessionsSourceDir(project)).toBeNull();
     expect(() => querySessions(project, 'dedupe')).toThrow(NoSessionsError);
+  });
+
+  it('indexes Codex and Cursor prose for this project and skips other-repo or tool traffic', () => {
+    const project = fixtureDir();
+    const other = fixtureDir();
+    fs.mkdirSync(path.join(project, '.codegraph'));
+    const codexHome = fixtureDir();
+    const cursorHome = fixtureDir();
+    process.env.CODEX_HOME = codexHome;
+    process.env.CURSOR_CONFIG_DIR = cursorHome;
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+
+    const match = path.join(codexHome, 'sessions', '2026', '09', '11', 'rollout-match.jsonl');
+    writeJsonl(
+      match,
+      [
+        {
+          timestamp: at,
+          type: 'session_meta',
+          payload: { session_id: 'codex-match', cwd: project },
+        },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'please keep the write-time dedupe path' },
+              { type: 'input_text', text: '<recommended_plugins>\nHere is a list of plugins that are available' },
+            ],
+          },
+        },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: { type: 'custom_tool_call', name: 'exec', input: 'a long tool payload that must not index' },
+        },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Kept the write-time dedupe and dropped the read-time one.' }],
+          },
+        },
+      ],
+      1_700_000_000,
+    );
+    const elsewhere = path.join(codexHome, 'sessions', 'rollout-other.jsonl');
+    writeJsonl(
+      elsewhere,
+      [
+        { timestamp: at, type: 'session_meta', payload: { session_id: 'codex-other', cwd: other } },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'this other repo should not appear in the search' }],
+          },
+        },
+      ],
+      1_700_000_000,
+    );
+
+    const sid = '11111111-1111-4111-8111-111111111111';
+    const cursorFile = path.join(
+      cursorHome,
+      'projects',
+      cursorProjectSlug(project),
+      'agent-transcripts',
+      sid,
+      `${sid}.jsonl`,
+    );
+    writeJsonl(
+      cursorFile,
+      [
+        {
+          role: 'user',
+          message: {
+            content: [
+              { type: 'text', text: 'what did we decide about the write-time dedupe?' },
+              { type: 'tool_use', name: 'Read', input: { path: 'secret' } },
+            ],
+          },
+        },
+        {
+          role: 'assistant',
+          message: { content: [{ type: 'text', text: 'We kept write-time dedupe in the last Cursor session.' }] },
+        },
+      ],
+      1_700_000_000,
+    );
+
+    expect(cwdBelongsToProject(project, project)).toBe(true);
+    expect(cwdBelongsToProject(other, project)).toBe(false);
+    expect(codexFilesForProject(project)).toEqual([match]);
+    expect(parseCodexTranscript(match).docs.map((d) => d.role)).toEqual(['user', 'assistant']);
+    expect(parseCodexTranscript(match).docs[0]!.text).not.toMatch(/recommended_plugins/);
+    expect(cursorFilesForProject(project)).toEqual([cursorFile]);
+    expect(parseCursorTranscript(cursorFile).docs).toHaveLength(2);
+    expect(parseCursorTranscript(cursorFile).docs[0]!.text).not.toMatch(/secret/);
+
+    const result = querySessions(project, 'write-time dedupe');
+    expect([...new Set(result.hits.map((h) => h.session))].sort()).toEqual(
+      [`cursor:${sid}`, 'codex:codex-match'].sort(),
+    );
+    expect(result.hits.some((h) => h.session === 'codex:codex-other')).toBe(false);
+    expect(formatSessionHits('write-time dedupe', result)).toMatch(/claude:|codex:|cursor:/);
   });
 });

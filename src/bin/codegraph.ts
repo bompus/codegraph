@@ -1338,8 +1338,8 @@ program
  * codegraph sessions <words...>
  *
  * The CLI face of the codegraph_sessions MCP tool: full-text search over the
- * agent-session transcripts that belong to the project (Claude Code's
- * ~/.claude/projects/<slug>/), refreshed on every call. Same text as the tool
+ * agent-session transcripts that belong to the project (Claude Code, Codex,
+ * and Cursor/T3), refreshed on every call. Same text as the tool
  * so a subagent without MCP gets the same answer through the shell.
  */
 program

@@ -12,7 +12,7 @@
  * session costs tens of milliseconds; the first index of a few hundred
  * transcripts takes about a second.
  *
- * Readers live beside this file, one per agent host (`claude-code.ts` today).
+ * Readers live beside this file, one per agent host (Claude Code, Codex, Cursor).
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -27,6 +27,9 @@ import {
   transcriptTitle,
   walkJsonl,
 } from './claude-code';
+import { parseCodexTranscript, codexFilesForProject } from './codex';
+import { parseCursorTranscript, cursorFilesForProject } from './cursor';
+import { projectWorktreeRoots } from './project-roots';
 
 export const SESSIONS_DB_FILENAME = 'sessions.db';
 
@@ -34,7 +37,7 @@ export const SESSIONS_DB_FILENAME = 'sessions.db';
 export const BUSY_TIMEOUT_MS = 5000;
 
 /** Bump when the readers' notion of prose changes, so existing indexes rebuild. */
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 
 /**
  * `busy_timeout` does cover an ordinary lock wait on this pragma: a connection
@@ -160,13 +163,23 @@ export class SessionsIndex {
     return new SessionsIndex(db);
   }
 
+  private loadClaudeFile(file: string): {
+    session: string;
+    title: string | null;
+    docs: ReturnType<typeof transcriptDocs>;
+  } {
+    const entries = parseEntries(file);
+    return { session: sessionIdOf(file), title: transcriptTitle(entries), docs: transcriptDocs(entries) };
+  }
+
   /**
-   * Bring the index up to date with the transcripts under `dir`. Each changed
-   * file is one transaction, so a crash mid-refresh leaves every other file
-   * whole. Files that vanished from disk are forgotten.
+   * Index a list of transcript files with a host-specific loader. `refresh(dir)`
+   * stays Claude-shaped for tests; `querySessions` passes prefixed ids.
    */
-  refresh(dir: string): SessionsIndexStats {
-    const files = walkJsonl(dir);
+  refreshListed(
+    files: string[],
+    load: (file: string) => ReturnType<SessionsIndex['loadClaudeFile']>,
+  ): SessionsIndexStats {
     const known = new Map(
       (this.db.prepare('SELECT path, mtime, size FROM files').all() as FileRow[]).map((r) => [r.path, r]),
     );
@@ -177,7 +190,7 @@ export class SessionsIndex {
     for (const file of files) {
       const st = fs.statSync(file);
       if (unchanged(known.get(file), st)) continue;
-      const docs = this.replaceFile(file, st, unchanged);
+      const docs = this.replaceFile(file, st, unchanged, load);
       if (docs === null) continue;
       stats.docs += docs;
       stats.refreshed += 1;
@@ -195,6 +208,15 @@ export class SessionsIndex {
   }
 
   /**
+   * Bring the index up to date with the transcripts under `dir`. Each changed
+   * file is one transaction, so a crash mid-refresh leaves every other file
+   * whole. Files that vanished from disk are forgotten.
+   */
+  refresh(dir: string): SessionsIndexStats {
+    return this.refreshListed(walkJsonl(dir), (file) => this.loadClaudeFile(file));
+  }
+
+  /**
    * Re-index one file, or return null when another connection already did.
    * `BEGIN IMMEDIATE` takes the write lock first (waiting out `busy_timeout`),
    * then the file row is read again under it: a deferred transaction that read
@@ -205,6 +227,7 @@ export class SessionsIndex {
     file: string,
     st: fs.Stats,
     unchanged: (row: Omit<FileRow, 'path'> | undefined, st: fs.Stats) => boolean,
+    load: (file: string) => ReturnType<SessionsIndex['loadClaudeFile']> = (f) => this.loadClaudeFile(f),
   ): number | null {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -212,13 +235,12 @@ export class SessionsIndex {
         this.db.exec('COMMIT');
         return null;
       }
-      const entries = parseEntries(file);
-      const docs = transcriptDocs(entries);
+      const loaded = load(file);
       this.dropDocs.run(file);
-      for (const d of docs) this.addDoc.run(d.text, file, d.role, d.ts);
-      this.putFile.run(file, sessionIdOf(file), transcriptTitle(entries), st.mtimeMs, st.size);
+      for (const d of loaded.docs) this.addDoc.run(d.text, file, d.role, d.ts || new Date(st.mtimeMs).toISOString());
+      this.putFile.run(file, loaded.session, loaded.title, st.mtimeMs, st.size);
       this.db.exec('COMMIT');
-      return docs.length;
+      return loaded.docs.length;
     } catch (err) {
       this.db.exec('ROLLBACK');
       throw err;
@@ -267,13 +289,48 @@ export function sessionsDbPath(projectRoot: string): string {
  * The transcript directory to index for a project: `CODEGRAPH_SESSIONS_DIR`
  * when set (tests, unusual layouts), else Claude Code's store for that
  * project. Null when there is nothing to index, or `codegraph.json` says
- * `"sessions": false`.
+ * `"sessions": false`. Codex and Cursor files are gathered separately in
+ * `querySessions` when this override is unset.
  */
 export function sessionsSourceDir(projectRoot: string): string | null {
   if (!loadSessionsEnabled(projectRoot)) return null;
   const override = process.env.CODEGRAPH_SESSIONS_DIR;
   if (override) return fs.existsSync(override) ? override : null;
   return claudeSessionsDir(projectRoot);
+}
+
+export function claudeFilesForProject(projectRoot: string): string[] {
+  const files: string[] = [];
+  for (const root of projectWorktreeRoots(projectRoot)) {
+    const dir = claudeSessionsDir(root);
+    if (dir) files.push(...walkJsonl(dir));
+  }
+  return files;
+}
+
+type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' };
+
+function hostedTranscripts(projectRoot: string): HostedTranscript[] {
+  const out: HostedTranscript[] = [];
+  for (const file of claudeFilesForProject(projectRoot)) out.push({ file, host: 'claude' });
+  for (const file of codexFilesForProject(projectRoot)) out.push({ file, host: 'codex' });
+  for (const file of cursorFilesForProject(projectRoot)) out.push({ file, host: 'cursor' });
+  return out;
+}
+
+function loadHosted(file: string, host: HostedTranscript['host']): {
+  session: string;
+  title: string | null;
+  docs: ReturnType<typeof transcriptDocs>;
+} {
+  if (host === 'codex') return parseCodexTranscript(file);
+  if (host === 'cursor') return parseCursorTranscript(file);
+  const entries = parseEntries(file);
+  return {
+    session: `claude:${sessionIdOf(file)}`,
+    title: transcriptTitle(entries),
+    docs: transcriptDocs(entries),
+  };
 }
 
 export interface SessionsQueryResult {
@@ -291,11 +348,22 @@ export function querySessions(
   query: string,
   opts: SessionSearchOptions = {},
 ): SessionsQueryResult {
-  const dir = sessionsSourceDir(projectRoot);
-  if (!dir) throw new NoSessionsError(projectRoot);
+  if (!loadSessionsEnabled(projectRoot)) throw new NoSessionsError(projectRoot);
+  const override = process.env.CODEGRAPH_SESSIONS_DIR;
   const index = SessionsIndex.open(sessionsDbPath(projectRoot));
   try {
-    const stats = index.refresh(dir);
+    if (override) {
+      if (!fs.existsSync(override)) throw new NoSessionsError(projectRoot);
+      const stats = index.refreshListed(walkJsonl(override), (file) => loadHosted(file, 'claude'));
+      return { index: stats, hits: index.search(query, opts) };
+    }
+    const hosted = hostedTranscripts(projectRoot);
+    if (hosted.length === 0) throw new NoSessionsError(projectRoot);
+    const byFile = new Map(hosted.map((h) => [h.file, h.host]));
+    const stats = index.refreshListed(
+      hosted.map((h) => h.file),
+      (file) => loadHosted(file, byFile.get(file)!),
+    );
     return { index: stats, hits: index.search(query, opts) };
   } finally {
     index.close();
@@ -305,8 +373,8 @@ export function querySessions(
 export class NoSessionsError extends Error {
   constructor(projectRoot: string) {
     super(
-      `No agent-session transcripts to index for ${projectRoot}: Claude Code has not run in this ` +
-        'project (no ~/.claude/projects/<slug>/ directory), CODEGRAPH_SESSIONS_DIR points nowhere, ' +
+      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, or Cursor ` +
+        'transcripts belong to this project, CODEGRAPH_SESSIONS_DIR points nowhere, ' +
         'or codegraph.json sets "sessions": false.',
     );
     this.name = 'NoSessionsError';
@@ -328,6 +396,6 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
     lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     lines.push('');
   }
-  lines.push('A hit names its session id; the transcript itself is the next step when the snippet is not enough.');
+  lines.push('A hit names its session id (`claude:`, `codex:`, or `cursor:`); the transcript itself is the next step when the snippet is not enough.');
   return lines.join('\n');
 }
