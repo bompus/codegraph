@@ -33,6 +33,7 @@ import { logDebug } from '../errors';
 import { lexicalPathWithinRoot } from '../utils';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
+import { JS_BUILT_INS, isTsJsNestedCall } from './js-builtins';
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -79,14 +80,6 @@ function resolveCacheLimit(): number {
 export * from './types';
 
 // Pre-built Sets for O(1) built-in lookups (allocated once, shared across all instances)
-const JS_BUILT_INS = new Set([
-  'console', 'window', 'document', 'global', 'process',
-  'Promise', 'Array', 'Object', 'String', 'Number', 'Boolean',
-  'Date', 'Math', 'JSON', 'RegExp', 'Error', 'Map', 'Set',
-  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-  'fetch', 'require', 'module', 'exports', '__dirname', '__filename',
-]);
-
 const REACT_HOOKS = new Set([
   'useState', 'useEffect', 'useContext', 'useReducer', 'useCallback',
   'useMemo', 'useRef', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
@@ -1030,6 +1023,14 @@ export class ReferenceResolver {
     }
     if (this.profileStages) this.stageAdd('frameworks', ref, fwEarly !== null, tFw);
     if (fwEarly) return fwEarly;
+
+    // An imported root is not the called nested member. Keep framework
+    // evidence, but never bind holder.values.get to holder or an unrelated get.
+    if (isTsJsNestedCall(ref)) {
+      return candidates.length > 0
+        ? candidates.reduce((best, curr) => curr.confidence > best.confidence ? curr : best)
+        : null;
+    }
 
     // Strategy 2: Try import-based resolution
     // A TS/JS/Python call-receiver chain (`useStore.getState().reset`, #1683)

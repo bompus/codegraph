@@ -82,7 +82,7 @@ describe.skipIf(!kernelBuilt)('kernel TS/JS extraction parity', () => {
     resetKernelForTests();
   });
 
-  function assertParity(filePath: string, source: string, language: Language): void {
+  function assertParity(filePath: string, source: string, language: Language): ExtractionResult {
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
     const viaKernel = tryKernelExtract(filePath, source, language);
@@ -99,6 +99,7 @@ describe.skipIf(!kernelBuilt)('kernel TS/JS extraction parity', () => {
     expect(k.refs, `${filePath}: refs`).toEqual(w.refs);
     // Meaningful comparison, not empty-vs-empty.
     expect(viaWasm.nodes.length).toBeGreaterThan(3);
+    return viaWasm;
   }
 
   it.each(['😀', 'éééééééé '])(
@@ -132,6 +133,44 @@ describe.skipIf(!kernelBuilt)('kernel TS/JS extraction parity', () => {
         (r) => r.fromNodeId === property!.id && r.referenceName === 'docs/guide.md',
       ),
     ).toHaveLength(1);
+  });
+
+  it.each([
+    ['ts', 'typescript'], ['tsx', 'tsx'], ['js', 'javascript'], ['jsx', 'jsx'],
+  ] as const)('preserves nested receivers and argument calls: %s (#1794)', (ext, language) => {
+    const source = `
+function readKey() { return 'answer'; }
+function local() {
+  const values = new Map();
+  return values.get(readKey());
+}
+function nested(holder, höldér) {
+  holder.values.get(readKey());
+  holder.values?.get(readKey());
+  holder['values'].get(readKey());
+  holder.deep.values.get(readKey());
+  holder?.values.get(readKey());
+  holder[readKey()].get(readKey());
+  holder[0].get(readKey());
+  holder["odd.key"].get(readKey());
+  holder /* receiver */.values.get(readKey());
+  höldér.values.get(readKey());
+}
+`;
+    const result = assertParity(`fixture.${ext}`, source, language);
+    assertParity(`fixture-crlf.${ext}`, source.replace(/\n/g, '\r\n'), language);
+    const nested = result.nodes.find((n) => n.name === 'nested' && n.kind === 'function');
+    expect(nested).toBeDefined();
+    expect(result.unresolvedReferences.filter((r) => r.referenceKind === 'calls' && r.fromNodeId === nested!.id)
+      .map((r) => r.referenceName)).toEqual([
+        'holder.values.get', 'readKey', 'holder.values.get', 'readKey',
+        "holder['values'].get", 'readKey', 'holder.deep.values.get', 'readKey',
+        'holder?.values.get', 'readKey', 'holder[readKey()].get', 'readKey', 'readKey',
+        'holder[0].get', 'readKey', 'holder["odd.key"].get', 'readKey',
+        'holder /* receiver */.values.get', 'readKey',
+        'höldér.values.get', 'readKey',
+      ]);
+    expect(result.unresolvedReferences.some((r) => r.referenceName === 'values.get')).toBe(true);
   });
 
   it('torture fixture (tsx): components, stores, RTK, fn-refs, value-refs, decorators', () => {

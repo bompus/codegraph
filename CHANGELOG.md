@@ -150,6 +150,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Nested JavaScript and TypeScript calls now remain available to Steps and framework resolution without linking built-in collection calls to unrelated project methods; rebuild existing indexes to refresh these results. (#1794, #1566)
+
 - Broad code questions now retain matching readers and writers, complete test assertions, and more of the requested Vue column and cell source.
 
 - Failed database operations no longer leave later transactions partially saved when SQLite has already rolled back the original operation.

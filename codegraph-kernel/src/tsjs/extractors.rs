@@ -1137,15 +1137,9 @@ impl<'t> Walker<'t> {
 
     // --- extractCall (TS/JS generic tail) -------------------------------------------------
 
-    /// Whether a member-call receiver is a chain rooted at a host object a
-    /// TS/JS project never declares. `window` is absent on purpose:
-    /// `window.MyNs.doThing()` reaches a project symbol (#1707).
-    fn is_host_global_chain(&self, receiver: Node<'t>) -> bool {
-        const HOST_GLOBAL_ROOTS: [&str; 19] = [
-            "chrome", "browser", "document", "navigator", "performance", "console",
-            "localStorage", "sessionStorage", "indexedDB", "crypto", "globalThis",
-            "process", "Math", "JSON", "Object", "Array", "Reflect", "Promise", "Intl",
-        ];
+    /// Identifier-rooted nested receivers retain their full call-site text.
+    /// Preserve the existing window namespace escape (#1794, #1566).
+    fn is_identifier_chain(&self, receiver: Node<'t>) -> bool {
         let mut cur = receiver;
         if !matches!(cur.kind(), "member_expression" | "subscript_expression") {
             return false;
@@ -1156,7 +1150,7 @@ impl<'t> Walker<'t> {
                 None => return false,
             }
         }
-        cur.kind() == "identifier" && HOST_GLOBAL_ROOTS.contains(&self.text(cur))
+        cur.kind() == "identifier" && self.text(cur) != "window"
     }
 
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
@@ -1186,16 +1180,6 @@ impl<'t> Walker<'t> {
                         if is_literal_receiver(r.kind()) {
                             return;
                         }
-                        // A chain rooted at a host namespace — `chrome.storage
-                        // .local.get(k)`, `document.body.querySelector(s)` —
-                        // ends in a platform API, so the bare method name emitted
-                        // here could only exact-match an unrelated project symbol
-                        // sharing it (#1707). Emit nothing. A chain rooted at a
-                        // project value keeps the bare name. Mirrors the TS
-                        // extractor's extractCall (extraction/tree-sitter.ts).
-                        if self.is_host_global_chain(r) {
-                            return;
-                        }
                     }
                     let recv_ident = receiver.filter(|r| {
                         matches!(r.kind(), "identifier" | "simple_identifier" | "field_identifier")
@@ -1219,6 +1203,10 @@ impl<'t> Walker<'t> {
                         // TreeSitterExtractor.extractCall.
                         let Some(inner) = self.plain_inner_callee(r) else { return };
                         callee_name = format!("{inner}().{method_name}");
+                    } else if let Some(r) = receiver.filter(|r| self.is_identifier_chain(*r)) {
+                        // Frameworks and Steps need the call site even when
+                        // generic resolution cannot prove a target (#1794).
+                        callee_name = format!("{}.{method_name}", self.text(r));
                     } else {
                         callee_name = method_name.to_string();
                     }
