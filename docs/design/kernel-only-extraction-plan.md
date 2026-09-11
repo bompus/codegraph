@@ -78,13 +78,15 @@ Release matrix today: macOS x64 and arm64, Linux glibc x64 and arm64, Windows x6
 
 Each phase lands on `fork/consolidated` behind the golden-dump gate and leaves the tree shippable. Phases 1 through 3 can proceed in parallel; 4 and 5 depend on all of them.
 
-### Phase 0: golden-dump gate
+### Phase 0: golden-dump gate — DONE 2026-09-11
 
-- Pick fixtures: one small repo per language family plus the espn-draft-shaped Vue fixture and a Markdown-heavy fixture.
-- Check in dumps generated on the current kernel-routed path.
-- Add the test. Wire it into CI on the linux-x64 prebuild job.
+- `__tests__/kernel-golden-dumps.test.ts` indexes each corpus fixture into a temp directory, dumps it with `scripts/dump-graph.mjs`, and compares against `__tests__/fixtures/golden/<name>.dump`. `UPDATE_GOLDEN=1` re-baselines; the resulting `.dump` diff is the review artifact.
+- Corpus: `torture-multilang` (the 38-file kernel-parity torture set, all 20 routed languages), `payroll-go`, `php-import-alias-static`, and two fixtures that exist only for this gate: `golden/vue-sfc` (script-setup TS, options API, styles, vue-router, pinia, `@/` path alias) and `golden/markdown-docs` (sections, doc→code and code→doc references).
+- Goldens were generated on the kernel-routed path and verified identical on the WASM-only path (`CODEGRAPH_KERNEL=0`) and under single-worker indexing, and path-independent across temp locations. A tampered golden fails with a line-level added/removed diff.
+- The file name matches the `kernel-*.test.ts` glob in `release.yml`, so the gate runs against the freshly built linux-x64 kernel on every release without extra wiring. It also runs in plain `npm test`.
+- `tail-render-ts` was considered and dropped: 2.2 MB of dump for six files, and TypeScript is already covered three times over. Total golden size is 1.7 MB.
 
-Exit: the gate is green on `fork/consolidated` with no extraction change.
+Exit met: the gate is green on `fork/consolidated` with no extraction change.
 
 ### Phase 1: error recovery flip
 

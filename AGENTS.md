@@ -164,6 +164,7 @@ Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond
 - `evaluation/` — `runner.ts` + `test-cases.ts` exercise codegraph against synthetic projects and score the results; run via `npm run eval` (builds first). Not part of `npm test`.
 - `sqlite-backend.test.ts` / `node-sqlite-backend.test.ts` — pin that `node:sqlite` is the sole backend: `getBackend()` reports `node-sqlite` and the DB comes up in WAL.
 - `pr19-improvements.test.ts`, `frameworks-integration.test.ts` — regression coverage for specific past PRs/incidents; don't rename these, the names anchor to git history.
+- `kernel-golden-dumps.test.ts` — whole-graph golden dumps for a fixed fixture corpus (`__tests__/fixtures/golden/`); any extraction, resolution or synthesis change re-baselines with `UPDATE_GOLDEN=1` and the `.dump` diff is the review artifact. See `docs/design/kernel-only-extraction-plan.md` Phase 0.
 
 Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They write real files and exercise real SQLite — there is no DB mocking.
 
