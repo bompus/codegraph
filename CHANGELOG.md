@@ -150,6 +150,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph sync` now refuses outdated extraction indexes instead of reporting them as up to date, and directs users to a full rebuild. (#1798)
+
 - Questions about selectors and cache invalidation now retain matching declarations alongside named source bodies within the existing response limit.
 
 - Questions naming source files, types or tests now preserve more of the requested definitions and assertions, and Vue layout questions include matching template and style code.
