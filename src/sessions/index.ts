@@ -29,6 +29,8 @@ import {
 } from './claude-code';
 import { parseCodexTranscript, codexFilesForProject } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
+import { parseAgyTranscript, agyFilesForProject } from './agy';
+import { opencodeSessionsForProject } from './opencode';
 import { projectWorktreeRoots } from './project-roots';
 
 export const SESSIONS_DB_FILENAME = 'sessions.db';
@@ -37,7 +39,7 @@ export const SESSIONS_DB_FILENAME = 'sessions.db';
 export const BUSY_TIMEOUT_MS = 5000;
 
 /** Bump when the readers' notion of prose changes, so existing indexes rebuild. */
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 
 /**
  * `busy_timeout` does cover an ordinary lock wait on this pragma: a connection
@@ -121,6 +123,19 @@ interface FileRow {
   size: number;
 }
 
+type LoadedTranscript = {
+  session: string;
+  title: string | null;
+  docs: ReturnType<typeof transcriptDocs>;
+};
+
+type TranscriptRecord = {
+  path: string;
+  mtime: number;
+  size: number;
+  load: () => LoadedTranscript;
+};
+
 export class SessionsIndex {
   private readonly fileRow: SqliteStatement;
   private readonly putFile: SqliteStatement;
@@ -178,19 +193,27 @@ export class SessionsIndex {
    */
   refreshListed(
     files: string[],
-    load: (file: string) => ReturnType<SessionsIndex['loadClaudeFile']>,
+    load: (file: string) => LoadedTranscript,
   ): SessionsIndexStats {
+    return this.refreshRecords(
+      files.map((file) => {
+        const st = fs.statSync(file);
+        return { path: file, mtime: st.mtimeMs, size: st.size, load: () => load(file) };
+      }),
+    );
+  }
+
+  refreshRecords(records: TranscriptRecord[]): SessionsIndexStats {
     const known = new Map(
       (this.db.prepare('SELECT path, mtime, size FROM files').all() as FileRow[]).map((r) => [r.path, r]),
     );
-    const stats: SessionsIndexStats = { files: files.length, refreshed: 0, docs: 0 };
-    const present = new Set(files);
-    const unchanged = (row: Omit<FileRow, 'path'> | undefined, st: fs.Stats): boolean =>
-      row !== undefined && row.mtime === st.mtimeMs && row.size === st.size;
-    for (const file of files) {
-      const st = fs.statSync(file);
-      if (unchanged(known.get(file), st)) continue;
-      const docs = this.replaceFile(file, st, unchanged, load);
+    const stats: SessionsIndexStats = { files: records.length, refreshed: 0, docs: 0 };
+    const present = new Set(records.map((r) => r.path));
+    const unchanged = (row: Omit<FileRow, 'path'> | undefined, mtime: number, size: number): boolean =>
+      row !== undefined && row.mtime === mtime && row.size === size;
+    for (const rec of records) {
+      if (unchanged(known.get(rec.path), rec.mtime, rec.size)) continue;
+      const docs = this.replaceRecord(rec, unchanged);
       if (docs === null) continue;
       stats.docs += docs;
       stats.refreshed += 1;
@@ -223,22 +246,22 @@ export class SessionsIndex {
    * first and wrote second would fail with SQLITE_BUSY_SNAPSHOT the moment the
    * other connection committed, and the busy handler never retries that.
    */
-  private replaceFile(
-    file: string,
-    st: fs.Stats,
-    unchanged: (row: Omit<FileRow, 'path'> | undefined, st: fs.Stats) => boolean,
-    load: (file: string) => ReturnType<SessionsIndex['loadClaudeFile']> = (f) => this.loadClaudeFile(f),
+  private replaceRecord(
+    rec: TranscriptRecord,
+    unchanged: (row: Omit<FileRow, 'path'> | undefined, mtime: number, size: number) => boolean,
   ): number | null {
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      if (unchanged(this.fileRow.get(file) as Omit<FileRow, 'path'> | undefined, st)) {
+      if (unchanged(this.fileRow.get(rec.path) as Omit<FileRow, 'path'> | undefined, rec.mtime, rec.size)) {
         this.db.exec('COMMIT');
         return null;
       }
-      const loaded = load(file);
-      this.dropDocs.run(file);
-      for (const d of loaded.docs) this.addDoc.run(d.text, file, d.role, d.ts || new Date(st.mtimeMs).toISOString());
-      this.putFile.run(file, loaded.session, loaded.title, st.mtimeMs, st.size);
+      const loaded = rec.load();
+      this.dropDocs.run(rec.path);
+      for (const d of loaded.docs) {
+        this.addDoc.run(d.text, rec.path, d.role, d.ts || new Date(rec.mtime).toISOString());
+      }
+      this.putFile.run(rec.path, loaded.session, loaded.title, rec.mtime, rec.size);
       this.db.exec('COMMIT');
       return loaded.docs.length;
     } catch (err) {
@@ -308,29 +331,43 @@ export function claudeFilesForProject(projectRoot: string): string[] {
   return files;
 }
 
-type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' };
+type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' | 'agy' };
 
 function hostedTranscripts(projectRoot: string): HostedTranscript[] {
   const out: HostedTranscript[] = [];
   for (const file of claudeFilesForProject(projectRoot)) out.push({ file, host: 'claude' });
   for (const file of codexFilesForProject(projectRoot)) out.push({ file, host: 'codex' });
   for (const file of cursorFilesForProject(projectRoot)) out.push({ file, host: 'cursor' });
+  for (const file of agyFilesForProject(projectRoot)) out.push({ file, host: 'agy' });
   return out;
 }
 
-function loadHosted(file: string, host: HostedTranscript['host']): {
-  session: string;
-  title: string | null;
-  docs: ReturnType<typeof transcriptDocs>;
-} {
+function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscript {
   if (host === 'codex') return parseCodexTranscript(file);
   if (host === 'cursor') return parseCursorTranscript(file);
+  if (host === 'agy') return parseAgyTranscript(file);
   const entries = parseEntries(file);
   return {
     session: `claude:${sessionIdOf(file)}`,
     title: transcriptTitle(entries),
     docs: transcriptDocs(entries),
   };
+}
+
+function collectRecords(projectRoot: string): TranscriptRecord[] {
+  const records: TranscriptRecord[] = hostedTranscripts(projectRoot).map((h) => {
+    const st = fs.statSync(h.file);
+    return { path: h.file, mtime: st.mtimeMs, size: st.size, load: () => loadHosted(h.file, h.host) };
+  });
+  for (const session of opencodeSessionsForProject(projectRoot)) {
+    records.push({
+      path: session.path,
+      mtime: session.mtime,
+      size: session.size,
+      load: () => ({ session: session.session, title: session.title, docs: session.docs }),
+    });
+  }
+  return records;
 }
 
 export interface SessionsQueryResult {
@@ -357,13 +394,9 @@ export function querySessions(
       const stats = index.refreshListed(walkJsonl(override), (file) => loadHosted(file, 'claude'));
       return { index: stats, hits: index.search(query, opts) };
     }
-    const hosted = hostedTranscripts(projectRoot);
-    if (hosted.length === 0) throw new NoSessionsError(projectRoot);
-    const byFile = new Map(hosted.map((h) => [h.file, h.host]));
-    const stats = index.refreshListed(
-      hosted.map((h) => h.file),
-      (file) => loadHosted(file, byFile.get(file)!),
-    );
+    const records = collectRecords(projectRoot);
+    if (records.length === 0) throw new NoSessionsError(projectRoot);
+    const stats = index.refreshRecords(records);
     return { index: stats, hits: index.search(query, opts) };
   } finally {
     index.close();
@@ -373,7 +406,7 @@ export function querySessions(
 export class NoSessionsError extends Error {
   constructor(projectRoot: string) {
     super(
-      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, or Cursor ` +
+      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, Cursor, OpenCode, or AGY ` +
         'transcripts belong to this project, CODEGRAPH_SESSIONS_DIR points nowhere, ' +
         'or codegraph.json sets "sessions": false.',
     );
@@ -396,6 +429,6 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
     lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     lines.push('');
   }
-  lines.push('A hit names its session id (`claude:`, `codex:`, or `cursor:`); the transcript itself is the next step when the snippet is not enough.');
+  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, or `agy:`); the transcript itself is the next step when the snippet is not enough.');
   return lines.join('\n');
 }

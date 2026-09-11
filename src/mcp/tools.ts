@@ -1561,7 +1561,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_sessions',
-    description: 'Search this project\'s earlier agent sessions — what a previous session asked, decided, tried or was told — when the question is about rationale or history rather than code ("why is X like this", "what did the last session do about Y", "did we already try Z"). Full-text search (stemmed, ranked) over the prose of Claude Code, Codex, and Cursor/T3 transcripts for this project: prompts, replies, compaction summaries; tool traffic stays out. Each hit names its session id (`claude:`, `codex:`, `cursor:`), role, time and the matching passage. Words are ANDed; fewer words return more. Not for code questions — codegraph_explore answers those.',
+    description: 'Search this project\'s earlier agent sessions — what a previous session asked, decided, tried or was told — when the question is about rationale or history rather than code ("why is X like this", "what did the last session do about Y", "did we already try Z"). Full-text search (stemmed, ranked) over the prose of Claude Code, Codex, Cursor/T3, OpenCode, and AGY transcripts for this project: prompts, replies, compaction summaries; tool traffic stays out. Each hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`), role, time and the matching passage. Words are ANDed; fewer words return more. Not for code questions — codegraph_explore answers those.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -20,6 +20,8 @@ import {
   transcriptTitle,
 } from '../src/sessions/claude-code';
 import { parseCodexTranscript, codexFilesForProject } from '../src/sessions/codex';
+import { parseAgyTranscript, agyFilesForProject } from '../src/sessions/agy';
+import { opencodeSessionsForProject } from '../src/sessions/opencode';
 import { parseCursorTranscript, cursorFilesForProject, cursorProjectSlug } from '../src/sessions/cursor';
 import { cwdBelongsToProject } from '../src/sessions/project-roots';
 import {
@@ -61,7 +63,14 @@ afterEach(() => {
   // dir holding sessions.db is EBUSY without this. A no-op on Node.
   (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-  for (const k of ['CODEGRAPH_SESSIONS_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR']) {
+  for (const k of [
+    'CODEGRAPH_SESSIONS_DIR',
+    'CLAUDE_CONFIG_DIR',
+    'CODEX_HOME',
+    'CURSOR_CONFIG_DIR',
+    'CODEGRAPH_OPENCODE_DB',
+    'CODEGRAPH_ANTIGRAVITY_DIR',
+  ]) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
@@ -300,6 +309,8 @@ describe('querySessions (project entry point)', () => {
     process.env.CODEX_HOME = codexHome;
     process.env.CURSOR_CONFIG_DIR = cursorHome;
     process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = fixtureDir();
 
     const match = path.join(codexHome, 'sessions', '2026', '09', '11', 'rollout-match.jsonl');
     writeJsonl(
@@ -401,5 +412,108 @@ describe('querySessions (project entry point)', () => {
     );
     expect(result.hits.some((h) => h.session === 'codex:codex-other')).toBe(false);
     expect(formatSessionHits('write-time dedupe', result)).toMatch(/claude:|codex:|cursor:/);
+  });
+
+  it('indexes OpenCode sqlite sessions and AGY transcripts with a workspace URI, skipping the rest', () => {
+    const project = fixtureDir();
+    const other = fixtureDir();
+    fs.mkdirSync(path.join(project, '.codegraph'));
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CODEX_HOME = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+
+    const ocDb = path.join(fixtureDir(), 'opencode.db');
+    process.env.CODEGRAPH_OPENCODE_DB = ocDb;
+    const { db } = createDatabase(ocDb);
+    db.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_updated INTEGER);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT);
+    `);
+    db.prepare('INSERT INTO session (id, directory, title, time_updated) VALUES (?, ?, ?, ?)').run(
+      'ses_match',
+      project,
+      'opencode match',
+      1_700_000_000_000,
+    );
+    db.prepare('INSERT INTO session (id, directory, title, time_updated) VALUES (?, ?, ?, ?)').run(
+      'ses_other',
+      other,
+      'other repo',
+      1_700_000_000_000,
+    );
+    db.prepare('INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)').run(
+      'msg1',
+      'ses_match',
+      1_700_000_000_000,
+      JSON.stringify({ role: 'user' }),
+    );
+    db.prepare('INSERT INTO part (id, message_id, session_id, data) VALUES (?, ?, ?, ?)').run(
+      'prt1',
+      'msg1',
+      'ses_match',
+      JSON.stringify({ type: 'text', text: 'please keep the write-time dedupe in OpenCode' }),
+    );
+    db.prepare('INSERT INTO part (id, message_id, session_id, data) VALUES (?, ?, ?, ?)').run(
+      'prt2',
+      'msg1',
+      'ses_match',
+      JSON.stringify({ type: 'tool', tool: 'bash', callID: 'c1' }),
+    );
+    db.prepare('INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)').run(
+      'msg2',
+      'ses_other',
+      1_700_000_000_000,
+      JSON.stringify({ role: 'user' }),
+    );
+    db.prepare('INSERT INTO part (id, message_id, session_id, data) VALUES (?, ?, ?, ?)').run(
+      'prt3',
+      'msg2',
+      'ses_other',
+      JSON.stringify({ type: 'text', text: 'this other OpenCode repo should not appear' }),
+    );
+    db.close();
+
+    const agy = fixtureDir();
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = agy;
+    const cid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    fs.mkdirSync(path.join(agy, 'cache'), { recursive: true });
+    fs.writeFileSync(
+      path.join(agy, 'cache', 'conversation_metadata.json'),
+      JSON.stringify({
+        conversations: {
+          [cid]: { summary: { WorkspaceURIs: [`file://${project}`] } },
+          skipped: { summary: { WorkspaceURIs: [`file://${other}`], ProjectID: 'default-cli-project' } },
+        },
+      }),
+    );
+    const agyFile = path.join(agy, 'brain', cid, '.system_generated', 'logs', 'transcript_full.jsonl');
+    writeJsonl(
+      agyFile,
+      [
+        {
+          type: 'USER_INPUT',
+          created_at: at,
+          content: '<USER_REQUEST>\nwhat did we decide about write-time dedupe in AGY?\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nskip\n</ADDITIONAL_METADATA>',
+        },
+        {
+          type: 'PLANNER_RESPONSE',
+          created_at: at,
+          thinking: 'private reasoning that must not be indexed at all here',
+          tool_calls: [{ name: 'Read' }],
+          content: 'We kept write-time dedupe in the AGY planner reply.',
+        },
+      ],
+      1_700_000_000,
+    );
+
+    expect(opencodeSessionsForProject(project).map((s) => s.session)).toEqual(['opencode:ses_match']);
+    expect(agyFilesForProject(project)).toEqual([agyFile]);
+    expect(parseAgyTranscript(agyFile).docs.map((d) => d.role)).toEqual(['user', 'assistant']);
+    expect(parseAgyTranscript(agyFile).docs[0]!.text).not.toMatch(/ADDITIONAL_METADATA/);
+    expect(parseAgyTranscript(agyFile).docs[1]!.text).not.toMatch(/private reasoning/);
+
+    const result = querySessions(project, 'write-time dedupe');
+    expect([...new Set(result.hits.map((h) => h.session))].sort()).toEqual([`agy:${cid}`, 'opencode:ses_match'].sort());
   });
 });

@@ -721,7 +721,7 @@ codegraph ui [path]               # Open the browser viewer for an indexed proje
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
-codegraph sessions <words...>     # Search Claude Code, Codex, and Cursor/T3 transcripts for this project (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
+codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, and AGY transcripts for this project (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
 codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
 codegraph callers <symbol>        # Find what calls a function/method (--limit, --json)
@@ -772,7 +772,7 @@ When running as an MCP server, CodeGraph exposes **one tool for code** — `code
 | Tool | Purpose |
 |------|---------|
 | `codegraph_explore` | Answer almost any question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. Name a file or symbol in the query to read its current line-numbered source, the same shape the Read tool gives you. |
-| `codegraph_sessions` | Search this project's Claude Code, Codex, and Cursor/T3 transcripts, including active sessions: prompts, replies, and compaction summaries, excluding tool traffic. Uses stemmed, BM25-ranked full-text search, stored locally in `.codegraph/sessions.db` and refreshed for changed files on each call. Each hit includes its session (`claude:`, `codex:`, or `cursor:`), role, time, and matching passage. Set `"sessions": false` in `codegraph.json` to opt out; `CODEGRAPH_SESSIONS_DIR` selects another Claude-format transcript directory exclusively. |
+| `codegraph_sessions` | Search this project's Claude Code, Codex, Cursor/T3, OpenCode, and AGY transcripts, including active sessions: prompts, replies, and compaction summaries, excluding tool traffic. Uses stemmed, BM25-ranked full-text search, stored locally in `.codegraph/sessions.db` and refreshed for changed files on each call. Each hit includes its session (`claude:`, `codex:`, `cursor:`, `opencode:`, or `agy:`), role, time, and matching passage. Set `"sessions": false` in `codegraph.json` to opt out; `CODEGRAPH_SESSIONS_DIR` selects another Claude-format transcript directory exclusively. |
 
 The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 
