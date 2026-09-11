@@ -12,6 +12,12 @@ The literal-seeding foundation `248493bf` is based on upstream `3ed73bc1`. The r
 
 ## Fixed-index comparison
 
+### Review follow-up
+
+Foundation revision `3b95088b` fixes three subsequently reproduced gaps: compiled native store-worker decoding omitted literal capture, unchanged-file re-indexing erased literal entries, and same-line functions received incorrect ownership. Its TypeScript compilation, 101 focused native tests, 43 WASM tests, and three compiled-index regressions passed. The compiled regressions cover fresh/repeated indexing, migration backfill, deleted files, and UTF-16 ownership after non-ASCII text across native-worker, native-main-thread, and WASM-worker modes.
+
+The dependent branch incorporates that foundation update. All 346 retrieval tests passed on each backend, and the three compiled-index regressions passed. The fixed-index measurements below remain measurements of the original revisions; they were not repeated after the extraction/lifecycle fixes and do not establish fresh-index behavior of the updated branch.
+
 The [16-query fixture](https://github.com/bompus/chrome-ext-bompus-espn-draft/blob/74fcd4e147020d834a3110ac161cb1f6d10cf4b2/docs/agents/codegraph-retrieval-repro.json) pins source from ESPN commit `c570e32b`. Each referenced source file was verified against its recorded SHA-256 before its query. Both engines used the same existing checkout-local index, a fresh process and ToolHandler per query, and an explicit projectPath, with no maxFiles override. This isolates retrieval against fixed extracted data; it does not compare separately rebuilt real-project indexes. Foundation extraction and persistence were tested independently above.
 
 Cells count returned / expected nonblank source lines in the fixture's expected ranges. A plus separates ranges, not calls. Each row required one call per engine.
