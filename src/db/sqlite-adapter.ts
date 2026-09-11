@@ -127,12 +127,16 @@ class NodeSqliteAdapter implements SqliteDatabase {
       try {
         const result = fn(...args);
         this._db.exec('COMMIT');
-        this._txDepth = 0;
         return result;
       } catch (error) {
-        this._db.exec('ROLLBACK');
-        this._txDepth = 0;
+        try {
+          this._db.exec('ROLLBACK');
+        } catch {
+          // SQLite may already have rolled back; preserve the original failure.
+        }
         throw error;
+      } finally {
+        this._txDepth = 0;
       }
     };
   }
