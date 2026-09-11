@@ -62,7 +62,7 @@ describe('codegraph sessions — CLI command', () => {
     // "trailing" and "newline" appear only in the reply; porter would also let
     // "trim" reach both docs, so the words are chosen to keep the prompt out.
     const out = sessions(tempDir, transcripts, ['trailing', 'newlines']);
-    expect(out).toContain('## abcd-0001 · token parsing');
+    expect(out).toContain('## claude:abcd-0001 · token parsing');
     expect(out).toContain('assistant · ' + at);
     expect(out).toMatch(/\[trailing\] \[newline\]/);
     expect(out).not.toContain('user · ');
