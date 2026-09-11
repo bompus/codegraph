@@ -528,7 +528,7 @@ export class CodeGraph {
         // path as every file (re-)indexes below — so a full index is also the
         // orphan-cleanup pass for names deleted since the last one.
         try { this.queries.clearNameSegmentVocab(); } catch { /* vocab is advisory — never fail an index over it */ }
-        try { this.queries.clearLiterals(); } catch { /* same: literals are advisory */ }
+        try { this.queries.clearLiterals(); } catch { /* literals are repopulated even for unchanged files */ }
         // Bulk FTS mode for the mass-insert phase: drop the per-row FTS sync
         // triggers, rebuild nodes_fts once from the nodes table afterwards.
         // Crash inside the window is healed on the next DatabaseConnection.open.
