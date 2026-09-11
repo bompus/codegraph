@@ -150,6 +150,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph status` now reports unindexed additions, edits, and deletions even after they have been committed to Git. (#1829)
+
 - Storage-key and flag searches now survive native worker indexing and repeated indexing, and distinguish functions sharing a source line; rebuild existing indexes to refresh these matches.
 
 - `codegraph sync` now refuses outdated extraction indexes instead of reporting them as up to date, and directs users to a full rebuild. (#1798)

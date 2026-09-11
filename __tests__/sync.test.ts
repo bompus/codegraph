@@ -219,6 +219,26 @@ describe('Sync Module', () => {
       }
     });
 
+    it.each(['added', 'modified', 'removed'] as const)(
+      'reports %s files after committing without indexing (#1829)',
+      async (kind) => {
+        const relativePath = kind === 'added' ? 'src/new.ts' : 'src/index.ts';
+        const filePath = path.join(testDir, relativePath);
+        if (kind === 'removed') fs.unlinkSync(filePath);
+        else fs.writeFileSync(filePath, 'export function changed() { return 99; }');
+
+        const expected = { added: [], modified: [], removed: [], [kind]: [relativePath] };
+        // In particular, unstaged deletions remain in git ls-files.
+        expect(cg.getChangedFiles()).toEqual(expected);
+        git('add', '--', 'src');
+        git('commit', '-m', 'changed without indexing');
+        expect(cg.getChangedFiles()).toEqual(expected);
+
+        await cg.sync();
+        expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
+      }
+    );
+
     it('should detect modified files via git', async () => {
       fs.writeFileSync(
         path.join(testDir, 'src', 'index.ts'),
