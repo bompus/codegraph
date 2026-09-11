@@ -31,7 +31,7 @@ import {
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
-import { isTestFile, normalizeNameToken } from '../search/query-utils';
+import { isDistinctiveIdentifier, isTestFile, normalizeNameToken } from '../search/query-utils';
 import { groupDefinitions, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
 import {
@@ -51,6 +51,7 @@ import {
 import { getUpdateNotice } from '../upgrade/update-check';
 import { ExploreDiagnostics } from './explore-diagnostics';
 import { requestedSourceRanges } from './explore-source-ranges';
+import { extractSegmentSearchWords, splitIdentifierSegments } from '../search/identifier-segments';
 import {
   EXPLORE_EMISSION_KEY,
   EXPLORE_SESSION_VIEW_ARG,
@@ -4144,6 +4145,19 @@ export class ToolHandler {
     // tier so it isn't buried under files that merely share surface words (#1064).
     for (const fp of changeSurfaceFiles) namedSeedFiles.add(fp);
 
+    // For one exact callable, direct users are stronger supporting evidence
+    // than unrelated search roots. Keep the named definition ahead of both.
+    const directCallerFiles = new Set<string>();
+    if (/^[A-Za-z_$][\w$]*$/.test(matchQuery.trim()) && namedSeedIds.size === 1) {
+      const id = [...namedSeedIds][0]!;
+      const node = subgraph.nodes.get(id);
+      if (node && ['function', 'method'].includes(node.kind)) {
+        for (const caller of cg.getCallers(id)) {
+          if (!isTestFile(caller.node.filePath)) directCallerFiles.add(caller.node.filePath);
+        }
+      }
+    }
+
     // Multi-term corroboration tier: a file that is BOTH (a) an entry/central file
     // (a search root, named seed, or graph-central hub — i.e. structurally part of
     // the answer) AND (b) matched by ≥2 DISTINCT query terms must not be buried by
@@ -4181,6 +4195,8 @@ export class ToolHandler {
       const aNamed = namedSeedFiles.has(a[0]) ? 1 : 0;
       const bNamed = namedSeedFiles.has(b[0]) ? 1 : 0;
       if (aNamed !== bNamed) return bNamed - aNamed;
+      const callerOrder = Number(directCallerFiles.has(b[0])) - Number(directCallerFiles.has(a[0]));
+      if (callerOrder) return callerOrder;
 
       // Corroborated (entry/central + ≥2 terms) tier, above the graph signal.
       const aCorr = isCorroborated(a[0]) ? 1 : 0;
@@ -4335,25 +4351,52 @@ export class ToolHandler {
     // spends a reservation instead of racing for whatever the files above it left.
     const sourceMinimums = new Map<string, number>();
     const exactQueryNames = new Set((matchQuery.match(/[A-Za-z_$][\w$]*/g) ?? []).map(name => name.toLowerCase()));
+    const querySegments = new Set(extractSegmentSearchWords(matchQuery));
+    const conceptOnly = /[a-z][A-Z]|_/.test(matchQuery) && ![...namedSeedIds].some(id => {
+      const n = subgraph.nodes.get(id);
+      return n && ['function', 'method', 'component', 'class'].includes(n.kind)
+        && exactQueryNames.has(n.name.toLowerCase()) && isDistinctiveIdentifier(n.name);
+    });
+    const callerSourceIds = new Set<string>();
     for (const [fp, group] of sortedFiles.slice(0, maxFiles)) {
       const stem = fp.split('/').pop()!.replace(/\.[^.]+$/, '');
-      if (!pinnedSet.has(fp) && !matchQuery.split(/[^\w$]+/).includes(stem)) continue;
+      const fileNamed = pinnedSet.has(fp) || matchQuery.split(/[^\w$]+/).includes(stem);
+      // A compound concept can identify a reader/writer without spelling its
+      // full name. Keep its already-gathered local callers with the body.
+      const conceptRoots = group.nodes.filter(n => conceptOnly && subgraph.roots.includes(n.id)
+        && ['function', 'method'].includes(n.kind) && !exactQueryNames.has(n.name.toLowerCase())
+        && splitIdentifierSegments(n.name).filter(s => querySegments.has(s)).length >= 2).slice(0, 8);
+      const localCallers = new Set(conceptRoots.map(n => n.id));
+      let frontier = conceptRoots;
+      for (let depth = 0; depth < 2; depth++) {
+        const next = frontier.flatMap(n => cg.getCallers(n.id).map(c => c.node))
+          .filter(n => n.filePath === fp && group.nodes.some(g => g.id === n.id) && !localCallers.has(n.id));
+        frontier = next.slice(0, Math.max(0, 8 - localCallers.size));
+        for (const n of frontier) localCallers.add(n.id);
+      }
+      if (!fileNamed && localCallers.size === 0) continue;
       try {
         const absolute = validatePathWithinRoot(projectRoot, fp);
         if (!absolute) continue;
         const source = readFileSync(absolute, 'utf8');
         const sourceLines = source.split('\n');
         const nodes = cg.getNodesInFile(fp);
-        const requested = await requestedSourceRanges(fp, source, group.nodes[0]?.language || 'unknown', matchQuery, nodes);
+        const requested = fileNamed ? await requestedSourceRanges(fp, source, group.nodes[0]?.language || 'unknown', matchQuery, nodes) : [];
         const supporting = requested.find(r => r.nodeId && !namedSeedIds.has(r.nodeId));
-        if (!supporting) continue;
         const region = requested.find(r => !r.nodeId);
+        if (!supporting && !region && localCallers.size === 0) continue;
         const needed = nodes.filter(n => namedSeedIds.has(n.id) && exactQueryNames.has(n.name.toLowerCase())
           && !['file', 'component', 'module'].includes(n.kind)
           && n.endLine - n.startLine + 1 <= sourceLines.length / 2)
           .map(n => ({ start: n.startLine, end: n.endLine }));
-        needed.push(...requested.filter(r => r.nodeId && r.score === supporting.score));
-        if (region) needed.push(region);
+        if (supporting) needed.push(...requested.filter(r => r.nodeId && r.score === supporting.score));
+        if (region) needed.push(...(fp.endsWith('.vue') && !supporting ? requested.filter(r => !r.nodeId) : [region]));
+        for (const n of group.nodes) {
+          if (localCallers.has(n.id) && n.endLine - n.startLine < 200) {
+            needed.push({ start: n.startLine, end: n.endLine });
+            callerSourceIds.add(n.id);
+          }
+        }
         const chars = mergeRanges(needed).reduce((sum, r) => sum
           + sourceLines.slice(Math.max(0, r.start - 4), r.end + 3)
             .reduce((bytes, line, i) => bytes + line.length + String(Math.max(1, r.start - 3) + i).length + 2, 0)
@@ -5197,6 +5240,7 @@ export class ToolHandler {
         .map(n => {
           let importance = 1;
           if (namedSeedIds.has(n.id)) importance = 12;
+          else if (callerSourceIds.has(n.id)) importance = 11;
           else if (entryNodeIds.has(n.id)) importance = 10;
           else if (flow.namedNodeIds.has(n.id)) importance = 9; // agent named it → keep its cluster
           else if (glueNodeIds.has(n.id)) importance = 6; // bridging caller/callee of an entry

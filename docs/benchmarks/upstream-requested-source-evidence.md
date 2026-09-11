@@ -2,7 +2,7 @@
 
 Measured 2026-09-11 UTC. These measurements validate the upstream-based contribution, not the consolidated fork.
 
-The literal-seeding foundation `248493bf` is based on upstream `3ed73bc1`. The requested-source implementation `0bf5b98d` adds bounded source selection and allocation on top of that foundation. Neither includes the fork's Markdown/session features or deployment configuration.
+The literal-seeding foundation `248493bf` is based on upstream `3ed73bc1`. The requested-source implementation `0bf5b98d` adds bounded source selection and allocation on top of that foundation. A later follow-up on this branch ports the consolidated broad-receiver/source reservations (`245d00d4`) without fork-only Markdown/session or deployment configuration.
 
 ## Validation
 
@@ -43,6 +43,6 @@ Cells count returned / expected nonblank source lines in the fixture's expected 
 
 The combined contribution restores the full snapshot assertion, Vue selectors, cache-key body, named interface, and specific shared-key sender/receiver evidence. No measured range loses coverage relative to the foundation. Maximum response length was 24,989 JavaScript characters.
 
-Known omissions remain in broad receiver queries (9–10), Vue column/ADP/FP markup (12), the broad identity assertion query (13), and the optional mapper test (8). Case 5 is still one line short. Returning sender and receiver source in case 16 does not create a publisher/listener graph edge.
+A later follow-up on this branch retains compound-concept readers/writers, whole matching tests, and additional Vue regions. Synthetic regressions cover those paths. The optional mapper test (8) remains a documented non-goal. Returning sender and receiver source in case 16 does not create a publisher/listener graph edge.
 
 These are deterministic source-completeness checks, not agent A/B runs, productivity measurements, or evidence of a latency improvement.

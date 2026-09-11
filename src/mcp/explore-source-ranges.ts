@@ -85,10 +85,10 @@ export async function requestedSourceRanges(
           const args = node.childForFieldName('arguments')?.namedChildren ?? [];
           if (/^(?:it|test)(?:\.(?:only|skip|concurrent|serial|failing))*$/.test(callee)
               && args.some(a => ['arrow_function', 'function_expression'].includes(a.type))) {
-            const hit = score(node.text);
+            const hit = score(node.text) + score(args[0]?.text ?? '');
             if (hit > 0) {
               ranges.push({
-                start: node.startPosition.row + 1, end: node.endPosition.row + 1, name: 'test', score: hit,
+                start: node.startPosition.row + 1, end: node.endPosition.row + 1, name: 'test', score: hit + 1,
               });
               // A long test may not fit whole. Its matching setup/assertion
               // statements remain complete units, including multiline arrays.
