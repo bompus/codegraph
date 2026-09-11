@@ -52,6 +52,7 @@ import {
 } from '../graph/named-symbol-flow';
 import { getUpdateNotice } from '../upgrade/update-check';
 import { ExploreDiagnostics } from './explore-diagnostics';
+import { requestedSourceRanges } from './explore-source-ranges';
 import {
   EXPLORE_EMISSION_KEY,
   EXPLORE_SESSION_VIEW_ARG,
@@ -3689,8 +3690,14 @@ export class ToolHandler {
     for (const fp of pinnedFiles) {
       let fileNodes: Node[] = [];
       try { fileNodes = cg.getNodesInFile(fp); } catch { continue; }
-      fileNodes
-        .filter((n) => n.kind !== 'file' && n.kind !== 'import' && n.kind !== 'export')
+      const seeds = fileNodes.filter((n) => n.kind !== 'file' && n.kind !== 'import' && n.kind !== 'export');
+      // A callback-only test file may have no named definitions. Its indexed
+      // file node still admits the requested source, subject to config guards.
+      if (seeds.length === 0) {
+        const file = fileNodes.find(n => n.kind === 'file' && !CONFIG_LEAF_LANGUAGES.has(n.language));
+        if (file) seeds.push(file);
+      }
+      seeds
         .sort((a, b) => a.startLine - b.startLine)
         .slice(0, PINNED_FILE_NODE_CAP)
         .forEach((n) => { if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n); });
@@ -3825,7 +3832,7 @@ export class ToolHandler {
       const callerCount = (n: Node) => { try { return cg.getCallers(n.id).length; } catch { return 0; } };
       const tokens = [...new Set(
         matchQuery.split(/[\s,()[\]]+/)
-          .map((t) => t.replace(FILE_EXT, '').trim())
+          .map((t) => t.replace(/(?<!:):$|[.!?;]+$/g, '').replace(FILE_EXT, '').trim())
           .filter((t) => t.length >= 3 && /^[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*$/.test(t))
       )].slice(0, 16);
       // PascalCase tokens in the query are type/file disambiguators — when the
@@ -3888,13 +3895,16 @@ export class ToolHandler {
         // files those declarations live in and exempt them from the
         // declaration-only penalty below (CG-28). Only PRECISE tokens count, by
         // the same NL-stopword reasoning as the seeding above: "…the file body…"
-        // must not exempt a `Body` interface it never meant to name. Kept
-        // separate from `namedSeedIds`, which is callable-only by construction —
-        // a type never becomes a named seed, so it cannot be the guard here.
+        // must not exempt a `Body` interface it never meant to name.
+        // Types also need their bodies prioritized, not just their files
+        // exempted from the declaration penalty.
         if (isPreciseToken(t)) {
           for (const n of raw) {
             if (DECLARATION_KINDS.has(n.kind) && n.name.toLowerCase() === t.toLowerCase()) {
               namedTypeFiles.add(n.filePath);
+              subgraph.nodes.set(n.id, n);
+              namedSeedIds.add(n.id);
+              tierSeedIds.add(n.id);
             }
           }
         }
@@ -3911,7 +3921,8 @@ export class ToolHandler {
         // token at a hump boundary or as a prefix.
         // Exact-empty + camel-shaped only (bare words keep the NL-stopword
         // guard below), shortest-first, capped so a hot infix can't flood.
-        if (cands.length === 0 && !isQual && /[a-z][A-Z]/.test(t)) {
+        const namesDeclaration = raw.some(n => DECLARATION_KINDS.has(n.kind) && n.name.toLowerCase() === t.toLowerCase());
+        if (cands.length === 0 && !namesDeclaration && !isQual && /[a-z][A-Z]/.test(t)) {
           const lcToken = t.toLowerCase();
           cands = cg
             .getNodesByNameSubstring(t, {
@@ -4514,6 +4525,20 @@ export class ToolHandler {
       return b[1].nodes.length - a[1].nodes.length;
     });
 
+    const formatSummary = (symbols: number, files: number, pins: number): string => {
+      let text = `Found ${symbols} symbol${symbols === 1 ? '' : 's'} across ${files} file${files === 1 ? '' : 's'}.`;
+      if (pins > 0) text += ` ${pins} file${pins === 1 ? '' : 's'} pinned from the query.`;
+      if (unresolvedPathSpans.length > 0) {
+        text += ` No indexed file uniquely matches ${unresolvedPathSpans.map(s => `\`${s}\``).join(', ')}.`;
+      }
+      return text;
+    };
+    // Reserve the summary's maximum actual size before spending the source
+    // envelope. Replacing a short sentinel after fitting could exceed the cap.
+    const summaryPlaceholder = SUMMARY_SENTINEL.padEnd(
+      formatSummary(subgraph.nodes.size, fileGroups.size, pinnedFiles.length).length,
+    );
+
     // Step 3: Build relationship map
     const lines: string[] = [
       `**Exploration: ${query}**`,
@@ -4524,10 +4549,9 @@ export class ToolHandler {
       // (260 symbols / 124 files on a 636-file repo) even though only a handful
       // render. Reporting the pool read as "260 results to wade through" when the
       // real, correctly-ranked answer is the few files below (#1046).
-      '',
+      summaryPlaceholder,
       '',
     ];
-    const summaryLineIdx = 2;
 
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent
@@ -5516,7 +5540,8 @@ export class ToolHandler {
         .filter(n => !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
         .map(n => {
           let importance = 1;
-          if (entryNodeIds.has(n.id)) importance = 10;
+          if (namedSeedIds.has(n.id)) importance = 12;
+          else if (entryNodeIds.has(n.id)) importance = 10;
           else if (flow.namedNodeIds.has(n.id)) importance = 9; // agent named it → keep its cluster
           else if (glueNodeIds.has(n.id)) importance = 6; // bridging caller/callee of an entry
           else if (connectedToEntry.has(n.id)) importance = 3;
@@ -5527,6 +5552,17 @@ export class ToolHandler {
           // the agent Read it back — the very thing explore exists to prevent).
           return { start: n.startLine, end: n.endLine, name: n.name, kind: n.kind, importance, spine: flow.pathNodeIds.has(n.id), spineCallLine: flow.spineCallSites.get(n.id) };
         });
+
+      // A path or named component can ask for evidence that has no standalone
+      // symbol: a test callback's assertions, a template cell or a CSS rule.
+      // Supplement only requested files, after the drift guard, and spend the
+      // same cluster budget as indexed source. This never synthesizes an edge.
+      if (pinnedSet.has(filePath) || group.nodes.some(n => namedSeedIds.has(n.id))) {
+        try {
+          const requested = await requestedSourceRanges(filePath, fileContent, lang || 'unknown', matchQuery);
+          for (const r of requested) ranges.push({ ...r, kind: 'source', importance: 13 + r.score, spine: false });
+        } catch { /* an unavailable parser must not fail source retrieval */ }
+      }
 
       // Add edge source locations in this file — captures template references
       // (component usages, event handlers) that aren't nodes themselves.
@@ -5802,7 +5838,47 @@ export class ToolHandler {
         parts: ReadonlyArray<SectionPart>,
         ceiling: number,
         focusLines: ReadonlyArray<number> = [],
+        requested: ReadonlyArray<ExploreLineRange> = [],
       ): SectionPart[] => {
+        // Fund complete requested bodies before source-order filler. A method's
+        // opening line being visible does not mean its return or assertion is.
+        const protectedRanges: ExploreLineRange[] = [];
+        let protectedChars = 0;
+        for (const r of requested) {
+          if (!parts.some(p => p.range.start <= r.start && p.range.end >= r.end)) continue;
+          if (protectedRanges.some(p => p.start <= r.start && p.end >= r.end)) continue;
+          const cost = renderSpan(r).length + (protectedRanges.length ? GAP_MARKER.length : 0);
+          if (protectedChars + cost > ceiling) continue;
+          protectedRanges.push(r);
+          protectedChars += cost;
+        }
+        if (protectedRanges.length > 0) {
+          const remaining: SectionPart[] = [];
+          for (const p of parts) {
+            let start = p.range.start;
+            for (const kept of mergeRanges(protectedRanges)) {
+              if (kept.end < start || kept.start > p.range.end) continue;
+              if (kept.start > start) {
+                const range = { start, end: kept.start - 1 };
+                remaining.push({ range, text: renderSpan(range) });
+              }
+              start = Math.max(start, kept.end + 1);
+            }
+            if (start <= p.range.end) {
+              const range = { start, end: p.range.end };
+              remaining.push({ range, text: renderSpan(range) });
+            }
+          }
+          const kept = [...protectedRanges];
+          let room = ceiling - protectedChars;
+          for (const p of remaining) {
+            const win = headWindowOf(p.range, room - GAP_MARKER.length);
+            if (!win || win.end - win.start + 1 < MIN_WINDOW_LINES) continue;
+            kept.push(win);
+            room -= GAP_MARKER.length + renderSpan(win).length;
+          }
+          return mergeRanges(kept).map(range => ({ range, text: renderSpan(range) }));
+        }
         const inParts = (line: number) =>
           parts.some((p) => line >= p.range.start && line <= p.range.end);
         const focus = [...new Set(focusLines)]
@@ -5918,7 +5994,10 @@ export class ToolHandler {
           if (!Number.isFinite(ceiling) || sectionText(r.parts).length <= ceiling) return r;
           // Windows are subsets of spans dedupeSpans already cleared, so the record
           // still only ever claims source that was actually sent.
-          const parts = windowToCeiling(r.parts, ceiling, focusLinesOf(c));
+          const requested = c.hasSpine ? [] : c.members
+            .filter(m => m.importance >= 12)
+            .sort((a, b) => b.importance - a.importance || a.start - b.start);
+          const parts = windowToCeiling(r.parts, ceiling, focusLinesOf(c), requested);
           return { parts, covered: r.covered, shrunk: true };
         };
         if (sectionText(base.parts).length <= cap) {
@@ -6300,12 +6379,6 @@ export class ToolHandler {
     // index stays valid.
     const epilogueStart = lines.length;
 
-    // The curated header count is computed from the files that SURVIVE the final
-    // truncation (see end of method) — `filesIncluded` can over-count when the
-    // hard ceiling drops trailing sections — so leave a sentinel here and fill it
-    // in once the output is final.
-    lines[summaryLineIdx] = SUMMARY_SENTINEL;
-
     // Add remaining files as references (from both relevant and peripheral files).
     // Small projects (per budget) skip this — the relevant story already fits
     // in the source section, and a trailing pointer list is pure overhead. But a
@@ -6473,20 +6546,16 @@ export class ToolHandler {
         g.nodes.filter((n) => n.kind !== 'import' && n.kind !== 'export').map((n) => n.id),
       ).size;
     }, 0);
-    let summaryLine = survivors.length > 0
-      ? `Found ${shownSymbols} symbol${shownSymbols === 1 ? '' : 's'} across ${survivors.length} file${survivors.length === 1 ? '' : 's'}.`
-      : `Found ${subgraph.nodes.size} symbol${subgraph.nodes.size === 1 ? '' : 's'} across ${fileGroups.size} file${fileGroups.size === 1 ? '' : 's'}.`;
     // Path pinning is visible, not silent: say which query-named files were
     // honored, and which path spans matched nothing so the agent can correct
     // them instead of trusting a response that quietly ignored the path.
     const pinnedShown = pinnedFiles.filter((fp) => survivors.includes(fp)).length;
-    if (pinnedShown > 0) {
-      summaryLine += ` ${pinnedShown} file${pinnedShown === 1 ? '' : 's'} pinned from the query.`;
-    }
-    if (unresolvedPathSpans.length > 0) {
-      summaryLine += ` No indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')}.`;
-    }
-    finalText = finalText.replace(SUMMARY_SENTINEL, summaryLine);
+    const summaryLine = formatSummary(
+      survivors.length > 0 ? shownSymbols : subgraph.nodes.size,
+      survivors.length > 0 ? survivors.length : fileGroups.size,
+      pinnedShown,
+    );
+    finalText = finalText.replace(summaryPlaceholder, summaryLine);
 
     // Emit the allocation diagnostic from the FINAL text, so per-file bytes and
     // shares account for the hard-ceiling truncation above (CG-4).
