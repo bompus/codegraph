@@ -1,0 +1,1 @@
+{ "name": "golden-vue-sfc", "private": true, "dependencies": { "vue": "3", "vue-router": "4", "pinia": "2" } }
