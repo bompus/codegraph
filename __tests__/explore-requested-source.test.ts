@@ -26,7 +26,7 @@ beforeAll(async () => {
       ...Array.from({ length: 8 }, () => '  expect(rows).toEqual([]);'),
       '});',
     ].join('\n')),
-    'it("preserves recentPicks identity", () => {',
+    'it("recommendedPickSnapshot preserves recentPicks identity", () => {',
     '  const recentPicks = recommendedPickSnapshot([{ id: "4430871" }]);',
     '  expect(recentPicks).toMatchObject([',
     '    {',
@@ -79,6 +79,35 @@ beforeAll(async () => {
     '  evaluateConsensus() { return this.consensusCalcKey(); },',
     '};',
   ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'receiver.ts'), [
+    ...Array.from({ length: 100 }, (_, i) => `function filler${i}() { return "${'unrelated padding '.repeat(10)}"; }`),
+    'function persistQueuePriority(value: number) {',
+    ...Array.from({ length: 12 }, (_, i) => `  const check${i} = "${'validate the input '.repeat(4)}";`),
+    '  return value;',
+    '}',
+    'function receiveQueueSnapshot(value: number) {',
+    ...Array.from({ length: 12 }, (_, i) => `  const context${i} = "${'validate the context '.repeat(4)}";`),
+    '  return persistQueuePriority(value);',
+    '}',
+    'export function listenForQueueMessage(value: number) {',
+    ...Array.from({ length: 12 }, (_, i) => `  const channel${i} = "${'validate the sender '.repeat(4)}";`),
+    '  return receiveQueueSnapshot(value);',
+    '}',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'identity.ts'), [
+    'import { unrelatedHub } from "./hub";',
+    'export function playerIdentity(id: number) { unrelatedHub(); return id; }',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'hub.ts'), [
+    ...Array.from({ length: 30 }, (_, i) => `function hubStep${i}() { return ${i}; }`),
+    `export function unrelatedHub() { ${Array.from({ length: 30 }, (_, i) => `hubStep${i}();`).join(' ')} }`,
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'receipt.ts'), [
+    'import { playerIdentity } from "./identity";',
+    'export function receipt0() { return playerIdentity(0); }',
+    'export function receipt1() { return playerIdentity(1); }',
+    'export function receipt2() { return playerIdentity(2); }',
+  ].join('\n'));
   cg = CodeGraph.initSync(dir);
   await cg.indexAll();
 }, 60_000);
@@ -103,6 +132,35 @@ function sourceIn(text: string, file: string): string {
 }
 
 describe('requested evidence in large selected files', () => {
+  it('prioritizes direct callers over a dense callee for a single named function', async () => {
+    const result = await new ToolHandler(cg).execute('codegraph_explore', { query: 'playerIdentity', maxFiles: 2 });
+    const out = result.content?.[0]?.text ?? '';
+    expect(sourceIn(out, 'identity.ts')).toContain('function playerIdentity');
+    expect(sourceIn(out, 'receipt.ts')).toContain('return playerIdentity(0)');
+  });
+  it('keeps a compound-concept writer and its local receiver chain complete', async () => {
+    const out = await explore('How does queue_priority reach storage?');
+    const source = sourceIn(out, 'receiver.ts');
+    expect(source).toContain('return value;');
+    expect(source).toContain('return persistQueuePriority(value);');
+    expect(source).toContain('return receiveQueueSnapshot(value);');
+    expect(source).toContain('const context11 =');
+    expect(source).toContain('const channel11 =');
+    expect(out.length).toBeLessThanOrEqual(25_000);
+  });
+  it('returns the full named test when the query does not name its assertion', async () => {
+    const out = await explore('test/snapshot.test.ts recommendedPickSnapshot');
+    expect(sourceIn(out, 'test/snapshot.test.ts')).toContain('expect(recentPicks[0].player.id).toBe("4430871")');
+  });
+
+  it('retains bounded vocabulary seeds when other names rank above them', async () => {
+    const graph = await cg.findRelevantContext('snapshot_helper storage', {
+      searchLimit: 1, traversalDepth: 0, seedNames: ['helper149', 'recommendedPickSnapshot'],
+    });
+    expect(graph.roots.map(id => graph.nodes.get(id)?.name)).toEqual(
+      expect.arrayContaining(['helper149', 'recommendedPickSnapshot']),
+    );
+  });
   it('keeps the declaration using the requested invalidation inputs', async () => {
     const out = await explore('evaluateConsensus in pipeline.ts: how do isMockActive and draftedPlayerNames invalidate cached players?');
     expect(sourceIn(out, 'pipeline.ts')).toContain('return [state.isMockActive, state.draftedPlayerNames.length].join("|")');

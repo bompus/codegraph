@@ -150,6 +150,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Broad code questions now retain matching readers and writers, complete test assertions, and more of the requested Vue column and cell source.
+
 - Failed database operations no longer leave later transactions partially saved when SQLite has already rolled back the original operation.
 
 - `codegraph status` now reports unindexed additions, edits, and deletions even after they have been committed to Git. (#1829)

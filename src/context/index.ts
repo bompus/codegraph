@@ -491,14 +491,13 @@ export class ContextBuilder {
 
     // Step 2: Look up exact matches for extracted symbols
     let exactMatches: SearchResult[] = [];
-    // Literal seeds bypass every size trim below: the lookup already bounds
-    // them, and a storage key held in eleven files must reach all eleven, not
-    // the first `searchLimit` by path order.
-    const literalSeedIds = new Set(opts.seedNodeIds);
+    // Explicit seed lookups already bound their results. Retain those results
+    // through ranking: a later reader/writer must not disappear at a size trim.
+    const retainedSeedIds = new Set(opts.seedNodeIds);
     const keepSeedsThenTop = (results: SearchResult[], n: number): SearchResult[] => {
-      if (literalSeedIds.size === 0) return results.slice(0, n);
-      const seeds = results.filter((r) => literalSeedIds.has(r.node.id));
-      const rest = results.filter((r) => !literalSeedIds.has(r.node.id)).slice(0, n);
+      if (retainedSeedIds.size === 0) return results.slice(0, n);
+      const seeds = results.filter((r) => retainedSeedIds.has(r.node.id));
+      const rest = results.filter((r) => !retainedSeedIds.has(r.node.id)).slice(0, n);
       return [...seeds, ...rest];
     };
     if (symbolsFromQuery.length > 0 || opts.seedNames.length > 0 || opts.seedNodeIds.length > 0) {
@@ -534,12 +533,18 @@ export class ContextBuilder {
         // in one file (pinFeedIfNearBottom + feedAtBottom + handleFeedScroll)
         // is exactly the evidence that file is the answer.
         if (opts.seedNames.length > 0) {
+          const compoundQuery = symbolsFromQuery.some(s => /[a-z][A-Z]|_/.test(s));
+          const namedCallable = exactMatches.some(r => ['function', 'method', 'component', 'class'].includes(r.node.kind)
+            && symbolsFromQuery.some(s => isDistinctiveIdentifier(s) && s.toLowerCase() === r.node.name.toLowerCase()));
           const seedResults = this.queries.findNodesByExactName(opts.seedNames, {
             limit: Math.ceil(opts.searchLimit * 3),
             kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
           });
           const known = new Set(exactMatches.map((r) => r.node.id));
           for (const r of seedResults) {
+            // A concept-only query needs these bounded matches to survive;
+            // explicit callable queries retain their existing focused ranking.
+            if (compoundQuery && !namedCallable) retainedSeedIds.add(r.node.id);
             if (known.has(r.node.id)) continue;
             known.add(r.node.id);
             exactMatches.push({ ...r, score: r.score * 0.6 });
