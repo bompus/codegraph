@@ -158,7 +158,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Failed database operations no longer leave later transactions partially saved when SQLite has already rolled back the original operation.
 
-- `codegraph status` now reports unindexed additions, edits, and deletions even after they have been committed to Git. (#1829)
+- `codegraph status` now reports additions, edits, and deletions you have already committed but not yet indexed, and does so without slowing the check on large repositories: the index remembers the commit it was built from and asks Git what changed since. (#1829, #1848)
 
 - Storage-key and flag searches now survive native worker indexing and repeated indexing, and distinguish functions sharing a source line; rebuild existing indexes to refresh these matches.
 

@@ -41,6 +41,8 @@ import {
   IndexResult,
   SyncResult,
   extractFromSource,
+  getGitHeadSha,
+  INDEXED_AT_COMMIT_KEY,
   initGrammars,
 } from './extraction';
 import {
@@ -695,6 +697,11 @@ export class CodeGraph {
           try {
             this.queries.setMetadata('indexed_with_version', CodeGraphPackageVersion);
             this.queries.setMetadata('indexed_with_extraction_version', String(EXTRACTION_VERSION));
+            // ...and the commit whose tree it was built from, so change
+            // detection can ask git what has been COMMITTED since — the half
+            // `git status` structurally cannot answer. (#1829)
+            const head = getGitHeadSha(this.projectRoot);
+            if (head) this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, head);
           } catch { /* metadata is advisory — never fail an index over it */ }
         }
 
@@ -825,6 +832,12 @@ export class CodeGraph {
         // timer-driven PASSIVE checkpoints ran, and a query-pool reader could
         // pin frames while the WAL grew without a bound.
         const backpressure = walValve ? () => walValve!.backpressure() : undefined;
+        // Captured BEFORE change detection runs, not after: if a commit lands
+        // while this sync is working, stamping the NEW head would claim we
+        // absorbed a diff we never looked at. Stamping the older commit only
+        // costs the next run a re-check of what it already has. (#1829)
+        const headBeforeSync = getGitHeadSha(this.projectRoot);
+
         const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure);
 
         // Fold the store phase's WAL BEFORE the post-store reads below
@@ -1029,6 +1042,17 @@ export class CodeGraph {
         const fullReconcile = !options.paths || options.paths.length === 0;
         if (fullReconcile && this.getIndexState() === 'indexing') {
           try { this.queries.setMetadata('index_state', 'complete'); } catch { /* advisory */ }
+        }
+
+        // Stamp the commit this sync brought the tree up to date at, so the
+        // NEXT change detection can see what was committed since. Only on a
+        // whole-tree sync: a `--paths` subset absorbed part of the diff, and
+        // stamping HEAD would tell the next run the rest was already indexed.
+        // Unlike the extraction stamp above, a sync DOES advance this one —
+        // it is about which tree the files came from, not which extractor
+        // produced their symbols. (#1829)
+        if (fullReconcile && headBeforeSync) {
+          try { this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, headBeforeSync); } catch { /* advisory */ }
         }
 
         return result;
