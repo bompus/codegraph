@@ -2917,6 +2917,14 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'window-message') {
+      const ev = m.event ? `\`${String(m.event)}\`` : 'a message';
+      return {
+        label: `window message ${ev} — postMessage → listener (dynamic dispatch)`,
+        compact: `dynamic: window message ${ev}${at}`,
+        registeredAt,
+      };
+    }
     if (m?.synthesizedBy === 'react-render') {
       return {
         label: `React re-render — \`setState\` re-runs render() (dynamic dispatch)`,

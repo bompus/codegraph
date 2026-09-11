@@ -38,6 +38,7 @@ import { createYielder, type MaybeYield } from './cooperative-yield';
 import { crossTierEdges } from './tier-synthesizer';
 import { enclosingFn, makeLineAt } from './synth-utils';
 import { resolveImportPath } from './import-resolver';
+import { isDistinctiveIdentifier } from '../search/query-utils';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
 const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
@@ -349,6 +350,116 @@ async function eventEmitterEdges(ctx: ResolutionContext, onYield: MaybeYield): P
       if (seen.has(key)) continue;
       seen.add(key);
       edges.push({ source: d, target: h, kind: 'calls', provenance: 'heuristic', metadata: { synthesizedBy: 'event-emitter', event, registeredAt } });
+    }
+  }
+  return edges;
+}
+
+/**
+ * Window `postMessage` ↔ `addEventListener('message')` keyed on a payload
+ * discriminator (`source: CONST` / `data.source === CONST`). The DOM event
+ * name is always `message`, so pairing on that string would fan out. Skip
+ * generic names and cap fan-out like the EventEmitter pass.
+ */
+const WINDOW_MSG_GENERIC = new Set(['message', 'data', 'event', 'source', 'type', 'error', 'ping', 'pong']);
+const POSTMESSAGE_RE = /\.postMessage\s*\(/g;
+const MESSAGE_LISTEN_RE = /\.addEventListener\s*\(\s*['"]message['"]\s*,\s*/g;
+const SOURCE_FIELD_RE = /\bsource\s*:\s*(?:(['"])([^'"\n]+)\1|((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*))/g;
+const SOURCE_CMP_RE = /\.source\s*(?:!==|===|!=|==)\s*(?:(['"])([^'"\n]+)\1|((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*))/g;
+const SOURCE_CMP_REV_RE = /(?:(['"])([^'"\n]+)\1|((?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*))\s*(?:!==|===|!=|==)\s*[\w.$]*\.source/g;
+const NAMED_LISTEN_HANDLER_RE = /^(?:async\s+)?([A-Za-z_$][\w$]*)\s*[,)]/;
+
+function windowMessageKey(lit: string | undefined, mem: string | undefined): string | null {
+  if (lit) {
+    if (lit.length < 4 || WINDOW_MSG_GENERIC.has(lit.toLowerCase())) return null;
+    return `lit:${lit}`;
+  }
+  const name = mem?.split('.').pop();
+  if (!name || WINDOW_MSG_GENERIC.has(name.toLowerCase()) || !isDistinctiveIdentifier(name)) return null;
+  return `mem:${name}`;
+}
+
+function windowMessageKeys(chunk: string, field: boolean): string[] {
+  const keys = new Set<string>();
+  const add = (lit?: string, mem?: string) => {
+    const key = windowMessageKey(lit, mem);
+    if (key) keys.add(key);
+  };
+  if (field) {
+    SOURCE_FIELD_RE.lastIndex = 0;
+    for (let m; (m = SOURCE_FIELD_RE.exec(chunk)); ) add(m[2], m[3]);
+  } else {
+    SOURCE_CMP_RE.lastIndex = 0;
+    for (let m; (m = SOURCE_CMP_RE.exec(chunk)); ) add(m[2], m[3]);
+    SOURCE_CMP_REV_RE.lastIndex = 0;
+    for (let m; (m = SOURCE_CMP_REV_RE.exec(chunk)); ) add(m[2], m[3]);
+  }
+  return [...keys];
+}
+
+function nodeSource(ctx: ResolutionContext, node: Node): string {
+  const content = ctx.readFile(node.filePath);
+  if (!content) return '';
+  return content.split('\n').slice(node.startLine - 1, node.endLine).join('\n');
+}
+
+async function windowMessageEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  const posts = new Map<string, Set<string>>();
+  const listeners = new Map<string, Map<string, string>>();
+  let scannedFiles = 0;
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    const content = ctx.readFile(file);
+    if (!content || (!content.includes('postMessage') && !content.includes('addEventListener'))) continue;
+    const nodesInFile = ctx.getNodesInFile(file);
+    if (!nodesInFile.some((n) => n.language && JS_FAMILY.includes(n.language))) continue;
+    const lineOf = makeLineAt(content, 1);
+
+    POSTMESSAGE_RE.lastIndex = 0;
+    for (let m; (m = POSTMESSAGE_RE.exec(content)); ) {
+      const disp = enclosingFn(nodesInFile, lineOf(m.index));
+      if (!disp) continue;
+      for (const key of windowMessageKeys(content.slice(m.index, m.index + 500), true)) {
+        const set = posts.get(key) ?? new Set<string>();
+        set.add(disp.id);
+        posts.set(key, set);
+      }
+    }
+
+    MESSAGE_LISTEN_RE.lastIndex = 0;
+    for (let m; (m = MESSAGE_LISTEN_RE.exec(content)); ) {
+      const rest = content.slice(m.index + m[0].length);
+      const named = rest.match(NAMED_LISTEN_HANDLER_RE)?.[1];
+      const line = lineOf(m.index);
+      let handler = named
+        ? ctx.getNodesByName(named).find((n) => n.kind === 'function' || n.kind === 'method')
+        : null;
+      if (!handler) handler = enclosingFn(nodesInFile, line);
+      if (!handler) continue;
+      for (const key of windowMessageKeys(nodeSource(ctx, handler), false)) {
+        const map = listeners.get(key) ?? new Map<string, string>();
+        map.set(handler.id, `${file}:${line}`);
+        listeners.set(key, map);
+      }
+    }
+  }
+
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const [key, dispatchers] of posts) {
+    const handlers = listeners.get(key);
+    if (!handlers) continue;
+    if (dispatchers.size > EVENT_FANOUT_CAP || handlers.size > EVENT_FANOUT_CAP) continue;
+    const event = key.slice(key.indexOf(':') + 1);
+    for (const d of dispatchers) for (const [h, registeredAt] of handlers) {
+      if (d === h) continue;
+      const pair = `${d}>${h}`;
+      if (seen.has(pair)) continue;
+      seen.add(pair);
+      edges.push({
+        source: d, target: h, kind: 'calls', provenance: 'heuristic',
+        metadata: { synthesizedBy: 'window-message', event, registeredAt },
+      });
     }
   }
   return edges;
@@ -3615,6 +3726,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   // keeps the more specific edge — the one that says which tier it crosses.
   { name: 'tierEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => crossTierEdges(c, y) },
   { name: 'emitterEdges', gate: ALWAYS, run: (_q, c, y) => eventEmitterEdges(c, y) },
+  { name: 'windowMessageEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => windowMessageEdges(c, y) },
   { name: 'renderEdges', gate: ALWAYS, run: (q, c, y) => reactRenderEdges(q, c, y) },
   { name: 'jsxEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => reactJsxChildEdges(c, y) },
   { name: 'vueEdges', gate: (has) => has('vue'), run: (_q, c, y) => vueTemplateEdges(c, y) },

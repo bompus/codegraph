@@ -77,6 +77,8 @@ direction is known, the `event` / `queue` / `method` / `href` it paired on, `lin
   file without a socket server → `@SubscribeMessage('x')` and server-side `socket.on('x')` (`client→server`); from a file
   with one (`@WebSocketGateway`, `io.on('connection')`, `new Server`) → client-side `socket.on('x', …)`, named or inline
   (→ the enclosing component) (`server→client`). Plain `.on` ↔ `.emit` stays the emitter pass's. Fan-out cap 6.
+- **`window-message`** — `postMessage({ source: CONST })` → `addEventListener('message')` whose handler compares
+  `data.source` to the same CONST or quoted string. Does not pair on the DOM event name `message`. Fan-out cap 6.
 
 The Steps view (`ui-server/api/steps.ts`) reads `tier` / `channel` before the languages in `crossing()`, so a hop between
 two TS files draws as a bridge (`⇢ POST /api/users`, a boundary like another screen) or an event (`⇠ welcome`); explore's
