@@ -5,7 +5,7 @@ import { captureLiterals, isSeedLiteral, seedLiteralsInQuery } from '../src/extr
 function node(id: string, kind: Node['kind'], startLine: number, endLine: number): Node {
   return {
     id, kind, name: id, qualifiedName: id, filePath: 'src/a.ts', language: 'typescript',
-    startLine, endLine, startColumn: 0, endColumn: 0, updatedAt: 0,
+    startLine, endLine, startColumn: 0, endColumn: Number.MAX_SAFE_INTEGER, updatedAt: 0,
   };
 }
 
@@ -63,5 +63,16 @@ describe('captureLiterals', () => {
     captureLiterals(many, [node('file:src/a.ts', 'file', 1, 40), fn]);
     expect(fn.literals).toHaveLength(32);
     expect(new Set(fn.literals).size).toBe(32);
+  });
+
+  it('uses UTF-16 columns to distinguish same-line siblings after non-ASCII source', () => {
+    const prefix = '/* café 😀 */ ';
+    const first = "function writer(){return 'cache.write';}";
+    const second = "function reader(){return 'cache.read';}";
+    const writer = { ...node('writer', 'function', 1, 1), startColumn: prefix.length, endColumn: (prefix + first).length };
+    const reader = { ...node('reader', 'function', 1, 1), startColumn: (prefix + first).length, endColumn: (prefix + first + second).length };
+    captureLiterals(prefix + first + second, [writer, reader]);
+    expect(writer.literals).toEqual(['cache.write']);
+    expect(reader.literals).toEqual(['cache.read']);
   });
 });

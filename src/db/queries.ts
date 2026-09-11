@@ -768,7 +768,17 @@ export class QueryBuilder {
     this.stmts.deleteNodesByFile.run(filePath);
   }
 
-  /** Wipe the literal table; a full index calls this beside clearNameSegmentVocab. */
+  /** Refresh extracted literals even when unchanged source keeps its existing nodes. */
+  replaceLiteralsForFile(filePath: string, nodes: Node[]): void {
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM literals WHERE file_path = ?').run(filePath);
+      const rows: unknown[][] = [];
+      for (const node of nodes) this.collectLiteralRows(node, rows);
+      this.insertLiteralRows(rows);
+    })();
+  }
+
+  /** Full indexing repopulates present files and removes literals from deleted files. */
   clearLiterals(): void {
     this.db.exec('DELETE FROM literals');
   }

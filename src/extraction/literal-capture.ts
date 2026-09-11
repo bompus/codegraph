@@ -49,9 +49,9 @@ const STRING_RE = /(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
 
 /**
  * Attach qualifying literals in `source` to `nodes` (mutated): each literal
- * goes to the innermost non-file node whose line range contains it, else the
- * file node. Nodes are the file's own extraction output, so the containment
- * test is a line-range scan over a per-file list.
+ * goes to the innermost non-file node whose source range contains it, else
+ * the file node. Both extraction paths expose UTF-16 columns (the native
+ * kernel converts its tree-sitter byte columns before emitting nodes).
  */
 export function captureLiterals(source: string, nodes: Node[]): void {
   if (nodes.length === 0 || source.length === 0) return;
@@ -75,12 +75,18 @@ export function captureLiterals(source: string, nodes: Node[]): void {
     if (m[1] === '`' && value.includes('${')) continue;
     if (!isSeedLiteral(value)) continue;
     const line = lineOf(m.index ?? 0);
+    const startColumn = (m.index ?? 0) - (lineStarts[line - 1] ?? 0);
+    const endColumn = startColumn + m[0].length;
     let owner: Node | undefined;
     for (const n of symbols) {
       if (n.startLine > line || n.endLine < line) continue;
-      // `<=`: on an equal span the later node wins — the walker lists a parent
-      // before the members nested in it, so later is deeper.
-      if (!owner || n.endLine - n.startLine <= owner.endLine - owner.startLine) owner = n;
+      if (n.startLine === line && n.startColumn > startColumn) continue;
+      if (n.endLine === line && n.endColumn < endColumn) continue;
+      // A contained range is deeper; on identical ranges the later walker node wins.
+      if (!owner || (n.startLine > owner.startLine ||
+          (n.startLine === owner.startLine && n.startColumn >= owner.startColumn)) &&
+          (n.endLine < owner.endLine ||
+          (n.endLine === owner.endLine && n.endColumn <= owner.endColumn))) owner = n;
     }
     owner ??= fileNode;
     if (!owner) continue;
