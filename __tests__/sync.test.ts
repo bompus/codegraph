@@ -239,6 +239,31 @@ describe('Sync Module', () => {
       }
     );
 
+    it('detects a committed rename and preserves the graph across repeated no-op syncs', async () => {
+      git('mv', 'src/index.ts', 'src/renamed.ts');
+      git('commit', '-m', 'rename without indexing');
+
+      expect(cg.getChangedFiles()).toEqual({
+        added: ['src/renamed.ts'], modified: [], removed: ['src/index.ts'],
+      });
+      // Status must not discard the last usable graph before sync succeeds.
+      expect(cg.searchNodes('hello').some(r => r.node.filePath === 'src/index.ts')).toBe(true);
+
+      const renamed = await cg.sync();
+      expect(renamed.filesAdded).toBe(1);
+      expect(renamed.filesRemoved).toBe(1);
+      const nodes = cg.searchNodes('hello').map(r => r.node);
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0].filePath).toBe('src/renamed.ts');
+
+      for (let i = 0; i < 2; i++) {
+        expect(cg.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
+        const unchanged = await cg.sync();
+        expect([unchanged.filesAdded, unchanged.filesModified, unchanged.filesRemoved]).toEqual([0, 0, 0]);
+        expect(cg.searchNodes('hello').map(r => r.node.id)).toEqual(nodes.map(node => node.id));
+      }
+    });
+
     it('should detect modified files via git', async () => {
       fs.writeFileSync(
         path.join(testDir, 'src', 'index.ts'),
