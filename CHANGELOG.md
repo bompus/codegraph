@@ -150,6 +150,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Questions about selectors and cache invalidation now retain matching declarations alongside named source bodies within the existing response limit.
+
 - Questions naming source files, types or tests now preserve more of the requested definitions and assertions, and Vue layout questions include matching template and style code.
 
 - Agent setup documentation now accurately distinguishes the detailed MCP guidance from the short instructions-file pointer installed for subagents and command-line use.

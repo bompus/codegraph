@@ -69,6 +69,16 @@ beforeAll(async () => {
     '}',
     ...Array.from({ length: 250 }, (_, i) => `export function observe${i}() { return ${i}; }`),
   ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'pipeline.ts'), [
+    'const state = { isMockActive: false, draftedPlayerNames: [] as string[] };',
+    'export const pipeline = {',
+    ...Array.from({ length: 160 }, (_, i) => `  helper${i}() { return "${'padding '.repeat(20)}"; },`),
+    '  consensusCalcKey() {',
+    '    return [state.isMockActive, state.draftedPlayerNames.length].join("|");',
+    '  },',
+    '  evaluateConsensus() { return this.consensusCalcKey(); },',
+    '};',
+  ].join('\n'));
   cg = CodeGraph.initSync(dir);
   await cg.indexAll();
 }, 60_000);
@@ -93,6 +103,10 @@ function sourceIn(text: string, file: string): string {
 }
 
 describe('requested evidence in large selected files', () => {
+  it('keeps the declaration using the requested invalidation inputs', async () => {
+    const out = await explore('evaluateConsensus in pipeline.ts: how do isMockActive and draftedPlayerNames invalidate cached players?');
+    expect(sourceIn(out, 'pipeline.ts')).toContain('return [state.isMockActive, state.draftedPlayerNames.length].join("|")');
+  });
   it('returns the complete identity assertion alongside the named implementation', async () => {
     const out = await explore('recommendedPickSnapshot in snapshot.ts: locate recentPicks identity assertions in test/snapshot.test.ts:');
     const test = sourceIn(out, 'test/snapshot.test.ts');

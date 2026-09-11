@@ -1,5 +1,5 @@
 import type { Node as SyntaxNode } from 'web-tree-sitter';
-import type { Language } from '../types';
+import type { Language, Node } from '../types';
 import { getParser, loadGrammarsForLanguages } from '../extraction/grammars';
 import { seedLiteralsInQuery } from '../extraction/literal-capture';
 import { extractSearchTerms, isTestPath } from '../search/query-utils';
@@ -9,15 +9,15 @@ export interface RequestedSourceRange {
   end: number;
   name: string;
   score: number;
+  nodeId?: string;
 }
 
 /** Source evidence inside an already selected file; never adds graph nodes or edges. */
 export async function requestedSourceRanges(
-  filePath: string, source: string, language: Language, query: string,
+  filePath: string, source: string, language: Language, query: string, nodes: readonly Node[] = [],
 ): Promise<RequestedSourceRange[]> {
   const test = isTestPath(filePath) && ['javascript', 'typescript', 'jsx', 'tsx'].includes(language);
   const vue = language === 'vue';
-  if (!test && !vue) return [];
 
   // A component's name identifies its file, not every line containing "table"
   // or "board". Match the remaining question against its template and styles.
@@ -37,6 +37,19 @@ export async function requestedSourceRanges(
       + literals.filter(l => text.includes(l)).length * (terms.length + 1);
   };
   const ranges: RequestedSourceRange[] = [];
+  const declarations: RequestedSourceRange[] = [];
+  const sourceLines = source.split('\n');
+  if (!test) {
+    for (const node of nodes) {
+      if (!['function', 'method', 'constant', 'variable', 'property'].includes(node.kind)
+          || node.startLine < 1 || node.endLine < node.startLine
+          || node.endLine - node.startLine + 1 > sourceLines.length / 2) continue;
+      const hit = score(sourceLines.slice(node.startLine - 1, node.endLine).join('\n'));
+      if (hit > 0) declarations.push({
+        start: node.startLine, end: node.endLine, name: node.name, score: hit, nodeId: node.id,
+      });
+    }
+  }
   if (vue) {
     // Script definitions already have indexed ranges. Only supplement the
     // unmodelled template/style text, with bounded windows around actual hits.
@@ -61,7 +74,7 @@ export async function requestedSourceRanges(
       const hit = score(match[0]);
       if (hit > 0 && end - start < 200) ranges.push({ start, end, name: 'style', score: hit });
     }
-  } else {
+  } else if (test) {
     await loadGrammarsForLanguages([language]);
     const tree = getParser(language)?.parse(source);
     if (!tree) return [];
@@ -107,6 +120,10 @@ export async function requestedSourceRanges(
   // Adjacent template hits describe one region; they must not consume every
   // candidate slot and exclude a later cell or style block for the same query.
   if (vue) {
+    // An exact identifier/literal on a template line must not lose to a
+    // larger declaration accumulating incidental prose matches across its body.
+    const declarationScore = Math.max(0, ...declarations.map(r => r.score));
+    for (const r of ranges) if (r.score > terms.length) r.score += declarationScore;
     const merged: RequestedSourceRange[] = [];
     for (const r of ranges.sort((a, b) => a.start - b.start)) {
       const last = merged[merged.length - 1];
@@ -115,7 +132,7 @@ export async function requestedSourceRanges(
         last.score = Math.max(last.score, r.score);
       } else merged.push({ ...r });
     }
-    return merged.sort((a, b) => b.score - a.score || a.start - b.start).slice(0, 12);
+    return [...declarations, ...merged].sort((a, b) => b.score - a.score || a.start - b.start).slice(0, 12);
   }
-  return ranges.sort((a, b) => b.score - a.score || a.start - b.start).slice(0, 12);
+  return [...declarations, ...ranges].sort((a, b) => b.score - a.score || a.start - b.start).slice(0, 12);
 }

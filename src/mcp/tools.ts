@@ -661,6 +661,8 @@ export interface ExploreAllocationCandidate {
    * graph scores (which a pure-path query doesn't produce) defeats the ask.
    */
   pinned?: boolean;
+  /** Source needed for named bodies plus the strongest supporting declaration/region. */
+  minChars?: number;
 }
 
 export interface ExploreAllocation {
@@ -758,7 +760,13 @@ export function allocateExploreBudget(
   // remainder is what concentrates a precise one — the top file's slice grows
   // with its weight share, uncapped by any flat per-file limit.
   const ceiling = Math.round(budget.maxOutputChars * A.MAX_SHARE);
-  const floors = Math.min(pool, A.MIN_CHARS * admitted.length);
+  const baseFloor = Math.min(A.MIN_CHARS, Math.floor(pool / admitted.length));
+  const requestedFloors = admitted.map(c => Math.max(baseFloor,
+    Math.min(ceiling, Number.isFinite(c.minChars) ? c.minChars! : baseFloor)));
+  const extraFloor = requestedFloors.reduce((s, n) => s + n - baseFloor, 0);
+  const floorScale = extraFloor > 0 ? Math.min(1, Math.max(0, pool - baseFloor * admitted.length) / extraFloor) : 0;
+  const floorByPath = new Map(admitted.map((c, i) => [c.path, baseFloor + Math.floor((requestedFloors[i]! - baseFloor) * floorScale)]));
+  const floors = [...floorByPath.values()].reduce((s, n) => s + n, 0);
   const remainder = Math.max(0, pool - floors);
   // Both parts FLOOR: a sum of rounded shares can exceed the remainder that fed
   // it (by up to half a char per file), and the reservations must fit the pool
@@ -766,7 +774,7 @@ export function allocateExploreBudget(
   // response the hard ceiling then has to truncate. Flooring costs at most one
   // char per file.
   for (const c of admitted) {
-    const share = Math.floor(floors / admitted.length)
+    const share = floorByPath.get(c.path)!
       + Math.floor((remainder * (weights.get(c.path) ?? 0)) / total);
     allowances.set(c.path, Math.min(share, ceiling));
   }
@@ -4643,6 +4651,34 @@ export class ToolHandler {
     // Score-proportional byte allocation (CG-12). Every file's share of the
     // envelope is reserved HERE, before a single byte renders, so the render loop
     // spends a reservation instead of racing for whatever the files above it left.
+    const sourceMinimums = new Map<string, number>();
+    const exactQueryNames = new Set((matchQuery.match(/[A-Za-z_$][\w$]*/g) ?? []).map(name => name.toLowerCase()));
+    for (const [fp, group] of sortedFiles.slice(0, maxFiles)) {
+      const stem = fp.split('/').pop()!.replace(/\.[^.]+$/, '');
+      if (!pinnedSet.has(fp) && !matchQuery.split(/[^\w$]+/).includes(stem)) continue;
+      try {
+        const absolute = validatePathWithinRoot(projectRoot, fp);
+        if (!absolute) continue;
+        const source = readFileSync(absolute, 'utf8');
+        const sourceLines = source.split('\n');
+        const nodes = cg.getNodesInFile(fp);
+        const requested = await requestedSourceRanges(fp, source, group.nodes[0]?.language || 'unknown', matchQuery, nodes);
+        const supporting = requested.find(r => r.nodeId && !namedSeedIds.has(r.nodeId));
+        if (!supporting) continue;
+        const region = requested.find(r => !r.nodeId);
+        const needed = nodes.filter(n => namedSeedIds.has(n.id) && exactQueryNames.has(n.name.toLowerCase())
+          && !['file', 'component', 'module'].includes(n.kind)
+          && n.endLine - n.startLine + 1 <= sourceLines.length / 2)
+          .map(n => ({ start: n.startLine, end: n.endLine }));
+        needed.push(...requested.filter(r => r.nodeId && r.score === supporting.score));
+        if (region) needed.push(region);
+        const chars = mergeRanges(needed).reduce((sum, r) => sum
+          + sourceLines.slice(Math.max(0, r.start - 4), r.end + 3)
+            .reduce((bytes, line, i) => bytes + line.length + String(Math.max(1, r.start - 3) + i).length + 2, 0)
+          + 100, 0);
+        sourceMinimums.set(fp, chars);
+      } catch { /* unreadable source must not fail allocation */ }
+    }
     const allocation = allocateExploreBudget(
       sortedFiles.map(([fp, group]) => ({
         path: fp,
@@ -4652,6 +4688,7 @@ export class ToolHandler {
         worth: pinnedSet.has(fp) ? 1 : rankPenalty(fp),
         spine: group.nodes.some((n) => flow.pathNodeIds.has(n.id)),
         pinned: pinnedSet.has(fp),
+        minChars: sourceMinimums.get(fp),
       })),
       budget,
       maxFiles,
@@ -5557,10 +5594,23 @@ export class ToolHandler {
       // symbol: a test callback's assertions, a template cell or a CSS rule.
       // Supplement only requested files, after the drift guard, and spend the
       // same cluster budget as indexed source. This never synthesizes an edge.
-      if (pinnedSet.has(filePath) || group.nodes.some(n => namedSeedIds.has(n.id))) {
+      const stem = filePath.split('/').pop()!.replace(/\.[^.]+$/, '');
+      const fileNamed = pinnedSet.has(filePath) || matchQuery.split(/[^\w$]+/).includes(stem);
+      if (fileNamed || group.nodes.some(n => namedSeedIds.has(n.id))) {
         try {
-          const requested = await requestedSourceRanges(filePath, fileContent, lang || 'unknown', matchQuery);
-          for (const r of requested) ranges.push({ ...r, kind: 'source', importance: 13 + r.score, spine: false });
+          const requested = await requestedSourceRanges(filePath, fileContent, lang || 'unknown', matchQuery, fileNamed ? fileIndexNodes : []);
+          const declarationScore = Math.max(0, ...requested.filter(r => r.nodeId).map(r => r.score));
+          if (declarationScore > 0) {
+            for (const r of ranges) {
+              if (r.importance === 12 && exactQueryNames.has(r.name.toLowerCase())) r.importance = 14 + declarationScore;
+            }
+          }
+          for (const r of requested) {
+            const importance = 13 + r.score;
+            const existing = r.nodeId && ranges.find(n => n.start === r.start && n.end === r.end);
+            if (existing) existing.importance = Math.max(existing.importance, importance);
+            else ranges.push({ ...r, kind: 'source', spine: false, importance });
+          }
         } catch { /* an unavailable parser must not fail source retrieval */ }
       }
 
@@ -6085,7 +6135,14 @@ export class ToolHandler {
         // this holds it to it rather than letting the member rule walk past it.
         const ceiling = Math.max(cap, SPINE_CEILING);
         if (first) {
-          const section = renderCluster(rc.c, cap, ceiling);
+          // Keep equally relevant later bodies funded before this cluster
+          // fills its allowance with lower-priority neighbouring source.
+          const later = !rc.c.hasSpine && rc.c.maxImportance >= 13
+            ? rankedClusters.slice(1).flatMap(other => other.c.members
+              .filter(m => m.importance >= rc.c.maxImportance)) : [];
+          const held = Math.min(Math.max(0, cap - EXPLORE_ALLOCATION.MIN_CHARS),
+            mergeRanges(later).reduce((sum, r) => sum + renderSpan(r).length + 100, 0));
+          const section = renderCluster(rc.c, cap - held, ceiling - held);
           renderedClusters.set(rc.idx, section);
           anyClusterShrunk = anyClusterShrunk || section.shrunk;
           chosenIndices.add(rc.idx);
