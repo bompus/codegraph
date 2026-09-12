@@ -3755,6 +3755,9 @@ export class ToolHandler {
       });
     }
 
+    const glueRootIds = new Set(subgraph.roots);
+    const subgraphFiles = new Set([...subgraph.nodes.values()].map(n => n.filePath));
+
     // Named-symbol seeding: findRelevantContext is an FTS/text rank, so a query
     // that's a BAG of symbol names skewed toward one phase (Alamofire: 5 build
     // terms, each a high-frequency name, vs 3 validate terms) lets the
@@ -3882,6 +3885,7 @@ export class ToolHandler {
         if (raw.length === 0 && /^[a-z]+$/.test(t) && typeTokens.length > 0) {
           raw = cg.getNodesByName(t[0]!.toUpperCase() + t.slice(1))
             .filter(n => n.kind === 'method' && inNamedOwner(n));
+          for (const n of raw) glueRootIds.add(n.id);
         }
         // A query that NAMES a declared type is a question ABOUT that type, and
         // must still reach its declaration file at full weight — so record the
@@ -4011,15 +4015,13 @@ export class ToolHandler {
     // search, so a method that BRIDGES named symbols — e.g. App.tsx's
     // triggerRender, which calls the named triggerUpdate — is never a search hit
     // and gets missed, forcing the agent to Read the file to trace it. Pull in
-    // the callers/callees of named seeds and entry (root) nodes, but ONLY those that live in
+    // the callers/callees of entry nodes and recovered receiver methods, but ONLY those that live in
     // files the subgraph already surfaces (where the agent reads to fill gaps),
     // so we add wiring without dragging in unrelated files. These get an
     // importance boost below so they survive the per-file cluster budget.
     const glueNodeIds = new Set<string>();
-    const subgraphFiles = new Set<string>();
-    for (const n of subgraph.nodes.values()) subgraphFiles.add(n.filePath);
     const GLUE_NODE_CAP = 60;
-    for (const rootId of new Set([...namedSeedIds, ...subgraph.roots])) {
+    for (const rootId of glueRootIds) {
       if (glueNodeIds.size >= GLUE_NODE_CAP) break;
       let neighbors: Node[] = [];
       try {
