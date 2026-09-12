@@ -4,7 +4,7 @@
  * Types for the reference resolution system.
  */
 
-import { EdgeKind, Language, Node, ReferenceKind } from '../types';
+import { Binding, EdgeKind, Language, Node, ReferenceKind } from '../types';
 
 /**
  * An unresolved reference from extraction
@@ -184,6 +184,15 @@ export interface ResolutionContext {
    * re-export chains when this is provided.
    */
   getReExports?(filePath: string, language: Language): ReExport[];
+  /**
+   * The file's `bindings` rows (docs/design/resolution-binding-model-plan.md
+   * §2.2): what each name in the file is bound to, with its scope and export
+   * form, as extraction recorded it. Empty for a file whose extractor emits
+   * no rows (today: everything but the TS/JS walker), in which case the
+   * source-reading predicates keep their regex path. Optional so external and
+   * test contexts compile without it.
+   */
+  getBindings?(filePath: string): Binding[];
   /**
    * List immediate subdirectories of `relativePath` (relative to the
    * project root). Returns an empty array when the path doesn't exist

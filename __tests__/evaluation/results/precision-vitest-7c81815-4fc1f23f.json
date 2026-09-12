@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-09-12T04:20:14.761Z",
+  "corpus": "vitest",
+  "repo": "https://github.com/vitest-dev/vitest.git",
+  "commit": "7c81815",
+  "codegraphSha": "4fc1f23f",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "import": 33190,
+    "(none)": 23342,
+    "exact-match": 12398,
+    "instance-method": 2862,
+    "qualified-name": 2230,
+    "file-path": 463,
+    "function-ref": 410,
+    "framework": 64,
+    "fuzzy": 28
+  },
+  "edges": 74987,
+  "results": [
+    {
+      "caseId": "vitest-bare-import-evaluatedModules",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}

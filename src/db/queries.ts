@@ -259,6 +259,7 @@ export class QueryBuilder {
     deleteNodesByFile?: SqliteStatement;
     deleteLiteralsByFile?: SqliteStatement;
     deleteBindingsByFile?: SqliteStatement;
+    getBindingsByFile?: SqliteStatement;
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
@@ -486,6 +487,30 @@ export class QueryBuilder {
   /** Rows for the `literals` side table (see schema.sql) — one per captured literal. */
   private collectLiteralRows(node: Node, rows: unknown[][]): void {
     for (const value of node.literals ?? []) rows.push([value, node.id, node.filePath]);
+  }
+
+  /** The file's `bindings` rows (see schema.sql), in emission order. */
+  getBindingsByFile(filePath: string): Binding[] {
+    if (!this.stmts.getBindingsByFile) {
+      this.stmts.getBindingsByFile = this.db.prepare(
+        'SELECT file_path, name, kind, node_id, target_spec, target_name, exported_as, export_form, scope_start, scope_end, storage, line FROM bindings WHERE file_path = ? ORDER BY rowid'
+      );
+    }
+    const rows = this.stmts.getBindingsByFile.all(filePath) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      filePath: r.file_path as string,
+      name: r.name as string,
+      kind: r.kind as Binding['kind'],
+      ...(r.node_id != null ? { nodeId: r.node_id as string } : {}),
+      ...(r.target_spec != null ? { targetSpec: r.target_spec as string } : {}),
+      ...(r.target_name != null ? { targetName: r.target_name as string } : {}),
+      ...(r.exported_as != null ? { exportedAs: r.exported_as as string } : {}),
+      ...(r.export_form != null ? { exportForm: r.export_form as Binding['exportForm'] } : {}),
+      scopeStart: r.scope_start as number,
+      scopeEnd: r.scope_end as number,
+      ...(r.storage != null ? { storage: r.storage as string } : {}),
+      line: r.line as number,
+    }));
   }
 
   /** Rows for the `bindings` side table (see schema.sql). The file's old rows are removed by deleteNodesByFile. */

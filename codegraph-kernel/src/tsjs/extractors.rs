@@ -1100,12 +1100,24 @@ impl<'t> Walker<'t> {
         let clause = (0..node.named_child_count())
             .filter_map(|i| node.named_child(i))
             .find(|c| c.kind() == "export_clause");
-        let Some(clause) = clause else { return }; // `export * from './y'`
-        let imports_kind = edge_kind_index("imports").unwrap();
         let spec_text: String = node
             .child_by_field_name("source")
             .map(|s| self.text(s).chars().filter(|c| *c != '\'' && *c != '"').collect())
             .unwrap_or_default();
+        let Some(clause) = clause else {
+            // `export * from './y'` / `export * as ns from './y'`: a wildcard
+            // `reexport` row, exported as `*` or as the namespace name.
+            if !spec_text.is_empty() {
+                let ns = (0..node.named_child_count())
+                    .filter_map(|i| node.named_child(i))
+                    .find(|c| c.kind() == "namespace_export")
+                    .and_then(|ne| (0..ne.named_child_count()).filter_map(|k| ne.named_child(k)).find(|c| c.kind() == "identifier"))
+                    .map(|id| self.text(id).to_string());
+                self.emit_reexport_binding("*", ns.as_deref().unwrap_or("*"), &spec_text, node);
+            }
+            return;
+        };
+        let imports_kind = edge_kind_index("imports").unwrap();
         for i in 0..clause.named_child_count() {
             let Some(spec) = clause.named_child(i) else { continue };
             if spec.kind() != "export_specifier" {
@@ -1114,10 +1126,15 @@ impl<'t> Walker<'t> {
             let name_node = spec.child_by_field_name("name").or_else(|| spec.named_child(0));
             let Some(n) = name_node else { continue };
             let name = self.text(n).to_string();
-            if name.is_empty() || name == "default" {
+            if name.is_empty() {
                 continue;
             }
-            self.push_ref(from_row, &name, imports_kind, n);
+            // `export { default as a } from './a'` forwards a default export:
+            // no `imports` ref (nothing is named `default`), but a row so the
+            // barrel chase can follow it.
+            if name != "default" {
+                self.push_ref(from_row, &name, imports_kind, n);
+            }
             let exported_as = spec.child_by_field_name("alias").map(|a| self.text(a).to_string()).unwrap_or_else(|| name.clone());
             self.emit_reexport_binding(&name, &exported_as, &spec_text, n);
         }

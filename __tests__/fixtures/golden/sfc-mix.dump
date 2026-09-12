@@ -100,10 +100,12 @@
 {"from_node_id":"function:0026a1cae8e888523240c893a10aa70d","reference_name":"count.update","reference_kind":"calls","line":3,"col":36,"candidates":null,"file_path":"src/lib/store.ts","language":"typescript","status":"failed","name_tail":"update"}
 {"from_node_id":"function:9777ee45a9be2e3fad362e78e1d7b6f9","reference_name":"s.toUpperCase","reference_kind":"calls","line":5,"col":43,"candidates":null,"file_path":"src/pages/index.astro","language":"astro","status":"failed","name_tail":"toUpperCase"}
 {"from_node_id":"function:d2e12acb9fe4991a6ddced760347b343","reference_name":"console.log","reference_kind":"calls","line":14,"col":33,"candidates":null,"file_path":"src/pages/index.astro","language":"astro","status":"failed","name_tail":"log"}
-== bindings (4)
+== bindings (6)
 {"file_path":"src/lib/store.ts","name":"count","kind":"decl","node_id":"constant:3fe6a7023d4d5ff3237fe178e2f0759f","target_spec":null,"target_name":null,"exported_as":"count","export_form":"esm","scope_start":1,"scope_end":5,"storage":null,"line":2}
 {"file_path":"src/lib/store.ts","name":"formatCount","kind":"decl","node_id":"function:e532a19cd6548d38325d9c3c5fab5190","target_spec":null,"target_name":null,"exported_as":"formatCount","export_form":"esm","scope_start":1,"scope_end":5,"storage":null,"line":4}
 {"file_path":"src/lib/store.ts","name":"increment","kind":"decl","node_id":"function:0026a1cae8e888523240c893a10aa70d","target_spec":null,"target_name":null,"exported_as":"increment","export_form":"esm","scope_start":1,"scope_end":5,"storage":null,"line":3}
+{"file_path":"src/lib/store.ts","name":"n","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":3,"scope_end":3,"storage":null,"line":3}
+{"file_path":"src/lib/store.ts","name":"n","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":4,"scope_end":4,"storage":null,"line":4}
 {"file_path":"src/lib/store.ts","name":"writable","kind":"import","node_id":null,"target_spec":"svelte/store","target_name":"writable","exported_as":null,"export_form":null,"scope_start":1,"scope_end":5,"storage":null,"line":1}
 == files (6)
 {"path":"Components/Greeter.razor","language":"razor","node_count":1}

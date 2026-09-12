@@ -32,7 +32,7 @@ export function attachBindings(bindings: Binding[] | undefined, validNodes: Node
   const insertedIds = new Set(validNodes.map((n) => n.id));
   const kept = bindings.filter((b) => b.nodeId === undefined || insertedIds.has(b.nodeId));
   const exportedNodeIds = new Set(
-    kept.filter((b) => b.kind === 'decl' && b.exportedAs !== undefined && b.nodeId).map((b) => b.nodeId!)
+    kept.filter((b) => b.exportedAs !== undefined && b.nodeId).map((b) => b.nodeId!)
   );
   if (exportedNodeIds.size > 0) {
     for (const n of validNodes) if (exportedNodeIds.has(n.id)) n.isExported = true;
