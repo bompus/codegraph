@@ -307,6 +307,7 @@ pub fn cfnptr_strip_c(text: String) -> String {
 pub fn bindings_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
     let out = match language.as_str() {
         "python" => python::bindings_only(&file_path, &content),
+        "go" => go::bindings_only(&file_path, &content),
         _ => tsjs::bindings_only(&file_path, &content, &language),
     }
     .map_err(Error::from_reason)?;

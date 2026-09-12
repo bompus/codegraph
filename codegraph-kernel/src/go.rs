@@ -13,8 +13,9 @@
 //! only for bare-identifier factories. Files with parse errors defer to wasm.
 
 use crate::buffers::{
-    build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
+    build_meta, edge_kind_index, node_kind_index, Arena, BindingRow, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    RefRow, StrRef, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE,
+    EXPORT_PUBLIC, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -100,6 +101,22 @@ pub struct Walker<'t> {
     value_scopes: Vec<ValueScope<'t>>,
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
+    line_count: u32,
+}
+
+/// Binding rows for a Go file from the AST alone, for the generic extractor's
+/// path (resolution-binding-model-plan.md §2.4).
+pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
+    let grammar = crate::langs::grammar_for("go").ok_or("no go grammar")?;
+    let t0 = std::time::Instant::now();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).map_err(|e| format!("set_language(go) failed: {e}"))?;
+    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
+    let mut w = Walker::new(source, file_path);
+    w.collect_ast_rows(tree.root_node());
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -113,25 +130,9 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
 
-    let mut w = Walker {
-        src: source,
-        file_path,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        stack: Vec::new(),
-        nodes_meta: Vec::new(),
-        node_ids: Vec::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        md_ref_keys: HashSet::new(),
-    };
+    let mut w = Walker::new(source, file_path);
 
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+    let line_count = w.line_count;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(FLAG_IS_EXPORTED, false);
@@ -184,6 +185,27 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 }
 
 impl<'t> Walker<'t> {
+    fn new(source: &'t str, file_path: &'t str) -> Walker<'t> {
+        Walker {
+            src: source,
+            file_path,
+            line_starts: util::line_starts(source),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            stack: Vec::new(),
+            nodes_meta: Vec::new(),
+            node_ids: Vec::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            md_ref_keys: HashSet::new(),
+            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+        }
+    }
+
     markdown_refs_impl!();
 
     fn text(&self, node: Node) -> &'t str {
@@ -317,6 +339,10 @@ impl<'t> Walker<'t> {
         if matches!(kind, "function" | "method" | "constant" | "variable") {
             self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
         }
+        self.emit_decl_binding(kind, name, row, node);
+        if kind == "function" || kind == "method" {
+            self.emit_param_bindings(node);
+        }
         Some(row)
     }
 
@@ -445,6 +471,9 @@ impl<'t> Walker<'t> {
             self.extract_call(node);
         } else if kind == "composite_literal" {
             self.extract_instantiation(node);
+        }
+        if matches!(kind, "short_var_declaration" | "var_declaration" | "range_clause") {
+            self.emit_local_rows(node);
         }
 
         if kind == "function_declaration" {
@@ -715,6 +744,8 @@ impl<'t> Walker<'t> {
                 Extra { signature: Some(signature), ..Extra::default() },
             );
             w.push_ref_at(parent, &import_path, imports_kind, spec);
+            let local = w.import_local_name(spec, &import_path);
+            w.emit_import_binding(&local, &import_path, spec);
         };
 
         let spec_list = (0..node.named_child_count())
@@ -734,6 +765,217 @@ impl<'t> Walker<'t> {
                 .find(|c| c.kind() == "import_spec");
             if let Some(spec) = spec {
                 handle_spec(self, spec);
+            }
+        }
+    }
+
+    // --- bindings (resolution-binding-model-plan.md, Phase 3: Go) --------------------
+
+    /// The local name an import binds: the alias when written (`f "fmt"`, a
+    /// dot or blank import as spelled), else the path's last segment — the
+    /// resolver's long-standing reading (a package's declared name can differ).
+    fn import_local_name(&self, spec: Node<'t>, import_path: &str) -> String {
+        if let Some(alias) = spec.child_by_field_name("name") {
+            return self.text(alias).to_string();
+        }
+        import_path.rsplit('/').next().unwrap_or(import_path).to_string()
+    }
+
+    /// The enclosing node's lines, or None at package level.
+    fn enclosing_scope(&self) -> Option<(u32, u32)> {
+        let top = self.stack.last()?;
+        if top.kind == "file" {
+            return None;
+        }
+        Some(self.tables.node_lines(top.row))
+    }
+
+    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
+        let name_ref = self.arena.put(name);
+        let (target_spec, target_name) = match target {
+            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
+            None => (NONE_STR, NONE_STR),
+        };
+        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
+        self.tables.push_binding(&BindingRow {
+            kind,
+            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+            node_idx,
+            scope_start: scope.0,
+            scope_end: scope.1,
+            name: name_ref,
+            target_spec,
+            target_name,
+            exported_as: if exported { name_ref } else { NONE_STR },
+            storage: storage_ref,
+            line,
+        });
+    }
+
+    /// Go exports by case: a capitalized package-level name is `public`, a
+    /// lowercase one is `storage = package` (visible to its package only).
+    fn is_exported_name(name: &str) -> bool {
+        name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+    }
+
+    fn package_level_decl_row(&mut self, name: &str, node_idx: u32, line: u32) {
+        let exported = Self::is_exported_name(name);
+        let storage = if exported { None } else { Some("package") };
+        self.push_binding_row(BINDING_DECL, name, node_idx, (1, self.line_count), line, None, exported, storage);
+    }
+
+    fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
+        if matches!(kind, "file" | "import") {
+            return;
+        }
+        let line = self.line_of(node);
+        match self.enclosing_scope() {
+            None => self.package_level_decl_row(name, row, line),
+            Some(scope) => self.push_binding_row(BINDING_LOCAL, name, row, scope, line, None, false, None),
+        }
+    }
+
+    /// One `param` row per parameter and receiver name, scoped to the function.
+    fn emit_param_bindings(&mut self, node: Node<'t>) {
+        let scope = (self.line_of(node), node.end_position().row as u32 + 1);
+        for field in ["receiver", "parameters"] {
+            let Some(list) = node.child_by_field_name(field) else { continue };
+            for i in 0..list.named_child_count() {
+                let Some(p) = list.named_child(i) else { continue };
+                if !matches!(p.kind(), "parameter_declaration" | "variadic_parameter_declaration") {
+                    continue;
+                }
+                for j in 0..p.named_child_count() {
+                    let Some(c) = p.named_child(j) else { continue };
+                    if c.kind() == "identifier" {
+                        let name = self.text(c).to_string();
+                        let line = self.line_of(c);
+                        self.push_binding_row(BINDING_PARAM, &name, NONE, scope, line, None, false, None);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Nodeless `local` rows for names a function body binds: `x := …`,
+    /// `var x T` and `for i, v := range …`.
+    fn emit_local_rows(&mut self, node: Node<'t>) {
+        let Some(scope) = self.enclosing_scope() else { return };
+        self.emit_local_rows_scoped(node, scope);
+    }
+
+    fn emit_local_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
+        let mut names: Vec<Node<'t>> = Vec::new();
+        match node.kind() {
+            "short_var_declaration" | "range_clause" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if left.kind() == "expression_list" {
+                        names.extend((0..left.named_child_count()).filter_map(|i| left.named_child(i)).filter(|c| c.kind() == "identifier"));
+                    } else if left.kind() == "identifier" {
+                        names.push(left);
+                    }
+                }
+            }
+            "var_declaration" => {
+                for i in 0..node.named_child_count() {
+                    let Some(spec) = node.named_child(i) else { continue };
+                    if spec.kind() != "var_spec" {
+                        continue;
+                    }
+                    names.extend((0..spec.named_child_count()).filter_map(|j| spec.named_child(j)).filter(|c| c.kind() == "identifier"));
+                }
+            }
+            _ => {}
+        }
+        for n in names {
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    fn emit_import_binding(&mut self, local: &str, import_path: &str, node: Node<'t>) {
+        let line = self.line_of(node);
+        let line_count = self.line_count;
+        self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((import_path, "*")), false, None);
+    }
+
+    /// AST-only rows for `bindings_only`: the walk's rules without nodes. The
+    /// TS side attaches node ids by name and line. Iterative.
+    fn collect_ast_rows(&mut self, root: Node<'t>) {
+        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
+        while let Some((node, scope)) = stack.pop() {
+            let kind = node.kind();
+            let mut child_scope = scope;
+            match kind {
+                "function_declaration" | "method_declaration" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = self.text(name_node).to_string();
+                        let line = self.line_of(node);
+                        match scope {
+                            None => self.package_level_decl_row(&name, NONE, line),
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                        }
+                    }
+                    self.emit_param_bindings(node);
+                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                }
+                "method_elem" | "method_spec" => {
+                    // An interface method spec is a method node in the walk,
+                    // with parameter rows scoped to the spec's own line(s).
+                    self.emit_param_bindings(node);
+                }
+                "func_literal" => {
+                    // The walk names a closure after its variable and gives it
+                    // parameter rows scoped to the literal; the rows are the same.
+                    self.emit_param_bindings(node);
+                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                }
+                "type_spec" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = self.text(name_node).to_string();
+                        let line = self.line_of(node);
+                        match scope {
+                            None => self.package_level_decl_row(&name, NONE, line),
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                        }
+                    }
+                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                }
+                "var_declaration" | "const_declaration" if scope.is_none() => {
+                    for i in 0..node.named_child_count() {
+                        let Some(spec) = node.named_child(i) else { continue };
+                        if !matches!(spec.kind(), "var_spec" | "const_spec") {
+                            continue;
+                        }
+                        if let Some(n) = spec.named_child(0).filter(|c| c.kind() == "identifier") {
+                            let name = self.text(n).to_string();
+                            let line = self.line_of(spec);
+                            self.package_level_decl_row(&name, NONE, line);
+                        }
+                    }
+                }
+                "short_var_declaration" | "var_declaration" | "range_clause" => {
+                    if let Some(s) = scope {
+                        self.emit_local_rows_scoped(node, s);
+                    }
+                }
+                "import_spec" => {
+                    let lit = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "interpreted_string_literal");
+                    if let Some(lit) = lit {
+                        let import_path: String = self.text(lit).chars().filter(|c| *c != '\'' && *c != '"').collect();
+                        if !import_path.is_empty() {
+                            let local = self.import_local_name(node, &import_path);
+                            self.emit_import_binding(&local, &import_path, node);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(c) = node.named_child(i) {
+                    stack.push((c, child_scope));
+                }
             }
         }
     }

@@ -903,62 +903,15 @@ export function extractImportMappings(
 ): ImportMapping[] {
   const mappings: ImportMapping[] = [];
 
-  // The JS/TS family (and the Vue / Svelte / Astro script blocks) and Python
-  // answer from the `bindings` table (importMappingsFromBindings); no source
-  // regex here.
-  if (language === 'go') {
-    mappings.push(...extractGoImports(content));
-  } else if (language === 'java' || language === 'kotlin') {
+  // The JS/TS family (and the Vue / Svelte / Astro script blocks), Python and
+  // Go answer from the `bindings` table (importMappingsFromBindings); no
+  // source regex here.
+  if (language === 'java' || language === 'kotlin') {
     mappings.push(...extractJavaImports(content));
   } else if (language === 'php') {
     mappings.push(...extractPHPImports(content));
   } else if (language === 'c' || language === 'cpp') {
     mappings.push(...extractCppImports(content));
-  }
-
-  return mappings;
-}
-
-/**
- * Extract Go import mappings
- */
-function extractGoImports(content: string): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-
-  // import "path" or import alias "path"
-  const singleImportRegex = /import\s+(?:(\w+)\s+)?["']([^"']+)["']/g;
-  let match;
-
-  while ((match = singleImportRegex.exec(content)) !== null) {
-    const [, alias, source] = match;
-    const packageName = source!.split('/').pop()!;
-    mappings.push({
-      localName: alias || packageName,
-      exportedName: '*',
-      source: source!,
-      isDefault: false,
-      isNamespace: true,
-    });
-  }
-
-  // import ( ... ) block
-  const blockImportRegex = /import\s*\(\s*([^)]+)\s*\)/gs;
-  while ((match = blockImportRegex.exec(content)) !== null) {
-    const block = match[1]!;
-    const lineRegex = /(?:(\w+)\s+)?["']([^"']+)["']/g;
-    let lineMatch;
-
-    while ((lineMatch = lineRegex.exec(block)) !== null) {
-      const [, alias, source] = lineMatch;
-      const packageName = source!.split('/').pop()!;
-      mappings.push({
-        localName: alias || packageName,
-        exportedName: '*',
-        source: source!,
-        isDefault: false,
-        isNamespace: true,
-      });
-    }
   }
 
   return mappings;

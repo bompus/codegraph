@@ -47,6 +47,12 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
     commit: 'd73fa1cdcbd8b1465c151db8924ba58b1dd14e35',
     note: 'Python corpus for binding-model Phase 3 (import rows replace the Python import regex).',
   },
+  gin: {
+    key: 'gin',
+    repo: 'https://github.com/gin-gonic/gin.git',
+    commit: 'dcaa4296d111981ffb31ac3eba90bb63e1eb5ab9',
+    note: 'Go corpus for binding-model Phase 3 (import rows replace the Go import regex).',
+  },
 };
 
 export const edgeCases: EdgeCase[] = [
