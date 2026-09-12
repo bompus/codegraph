@@ -65,6 +65,12 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
     commit: '2155404863401e0257f89c301509cde59e7becd1',
     note: 'Kotlin corpus for binding-model Phase 3 (import rows replace the JVM import regex).',
   },
+  slim: {
+    key: 'slim',
+    repo: 'https://github.com/slimphp/Slim.git',
+    commit: '3675bf6baac66b07032575b7bef4200b60b7974b',
+    note: 'PHP corpus for binding-model Phase 3 (use rows replace the PHP import regex).',
+  },
 };
 
 export const edgeCases: EdgeCase[] = [

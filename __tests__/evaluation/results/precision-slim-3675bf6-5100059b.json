@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-09-12T06:09:05.249Z",
+  "corpus": "slim",
+  "repo": "https://github.com/slimphp/Slim.git",
+  "commit": "3675bf6",
+  "codegraphSha": "5100059b",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 2173,
+    "exact-match": 1468,
+    "instance-method": 992,
+    "qualified-name": 306,
+    "import": 69,
+    "function-ref": 4,
+    "file-path": 4
+  },
+  "edges": 5016,
+  "results": []
+}

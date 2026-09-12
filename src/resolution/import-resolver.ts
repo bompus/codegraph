@@ -903,38 +903,10 @@ export function extractImportMappings(
 ): ImportMapping[] {
   const mappings: ImportMapping[] = [];
 
-  // The JS/TS family (and the Vue / Svelte / Astro script blocks), Python, Go,
-  // Java and Kotlin answer from the `bindings` table
+  // Every language but C/C++ answers from the `bindings` table
   // (importMappingsFromBindings); no source regex here.
-  if (language === 'php') {
-    mappings.push(...extractPHPImports(content));
-  } else if (language === 'c' || language === 'cpp') {
+  if (language === 'c' || language === 'cpp') {
     mappings.push(...extractCppImports(content));
-  }
-
-  return mappings;
-}
-
-/**
- * Extract PHP import mappings (use statements)
- */
-function extractPHPImports(content: string): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-
-  // use Namespace\Class; or use Namespace\Class as Alias;
-  const useRegex = /use\s+([\w\\]+)(?:\s+as\s+(\w+))?;/g;
-  let match;
-
-  while ((match = useRegex.exec(content)) !== null) {
-    const [, fullPath, alias] = match;
-    const className = fullPath!.split('\\').pop()!;
-    mappings.push({
-      localName: alias || className,
-      exportedName: className,
-      source: fullPath!,
-      isDefault: false,
-      isNamespace: false,
-    });
   }
 
   return mappings;
