@@ -43,13 +43,19 @@ char* any_content_keyword[] = {
     "procedure division",
 };
 
+/* MSVC has no variable-length arrays (C99 VLAs); every caller passes a
+ * fixed table well under this bound. (codegraph portability patch — see
+ * codegraph-kernel/grammars/PROVENANCE.md.) */
+#define CG_COBOL_MAX_WORDS 64
+
 static bool start_with_word( TSLexer *lexer, char *words[], int number_of_words, int width) {
     while(lexer->lookahead == ' ' || lexer->lookahead == '\t') {
         lexer->advance(lexer, true);
     }
 
-    char *keyword_pointer[number_of_words];
-    bool continue_check[number_of_words];
+    if (number_of_words > CG_COBOL_MAX_WORDS) number_of_words = CG_COBOL_MAX_WORDS;
+    char *keyword_pointer[CG_COBOL_MAX_WORDS];
+    bool continue_check[CG_COBOL_MAX_WORDS];
     for(int i=0; i<number_of_words; ++i) {
         keyword_pointer[i] = words[i];
         continue_check[i] = true;
