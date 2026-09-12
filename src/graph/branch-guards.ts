@@ -30,9 +30,14 @@
  */
 
 import * as fs from 'fs';
-import type { Node as SyntaxNode, Tree } from 'web-tree-sitter';
 import type { Language } from '../types';
-import { getParser, loadGrammarsForLanguages } from '../extraction/grammars';
+import { loadGrammarsForLanguages } from '../extraction/grammars';
+import {
+  parseSourceTree,
+  parseSourceTreeSync,
+  type ParsedTree as Tree,
+  type TreeNode as SyntaxNode,
+} from '../extraction/parse-tree';
 
 // =============================================================================
 // Public shape
@@ -171,7 +176,7 @@ const treeCache = new Map<string, CachedTree>();
  */
 export const MAX_PARSE_BYTES = 256 * 1024;
 
-/** The `web-tree-sitter` trees held above are native memory: evict explicitly. */
+/** A wasm tree held above is native memory: evict explicitly (a kernel tree's delete is a no-op). */
 function remember(path: string, entry: CachedTree): void {
   const old = treeCache.get(path);
   if (old) old.tree.delete();
@@ -209,14 +214,8 @@ async function treeFor(absPath: string, language: Language): Promise<CachedTree 
 }
 
 async function parse(source: string, language: Language): Promise<Tree | null> {
-  try {
-    await loadGrammarsForLanguages([language]);
-    const parser = getParser(language);
-    if (!parser) return null;
-    return parser.parse(source) ?? null;
-  } catch {
-    return null;
-  }
+  // Kernel first, wasm fallback (parse-tree.ts).
+  return parseSourceTree(source, language);
 }
 
 // =============================================================================
@@ -285,15 +284,15 @@ export function guardsForFileSync(
   let cached = treeCache.get(absPath);
   if (!cached || cached.key !== key) {
     if (stat.size > MAX_PARSE_BYTES) return out;
-    const parser = getParser(language);
-    if (!parser) return out;
     let source: string;
     try {
       source = fs.readFileSync(absPath, 'utf8');
     } catch {
       return out;
     }
-    const tree = parser.parse(source);
+    // The kernel path is synchronous; the wasm path serves only a grammar
+    // that warmBranchGuardGrammars already loaded.
+    const tree = parseSourceTreeSync(source, language);
     if (!tree) return out;
     cached = { key, tree, source };
     remember(absPath, cached);

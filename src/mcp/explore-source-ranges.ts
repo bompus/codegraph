@@ -1,6 +1,5 @@
-import type { Node as SyntaxNode } from 'web-tree-sitter';
 import type { Language, Node } from '../types';
-import { getParser, loadGrammarsForLanguages } from '../extraction/grammars';
+import { parseSourceTree, type TreeNode as SyntaxNode } from '../extraction/parse-tree';
 import { seedLiteralsInQuery } from '../extraction/literal-capture';
 import { extractSearchTerms, isTestPath } from '../search/query-utils';
 
@@ -75,8 +74,7 @@ export async function requestedSourceRanges(
       if (hit > 0 && end - start < 200) ranges.push({ start, end, name: 'style', score: hit });
     }
   } else if (test) {
-    await loadGrammarsForLanguages([language]);
-    const tree = getParser(language)?.parse(source);
+    const tree = await parseSourceTree(source, language);
     if (!tree) return [];
     try {
       const visit = (node: SyntaxNode): void => {
