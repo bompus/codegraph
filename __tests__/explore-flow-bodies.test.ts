@@ -107,3 +107,25 @@ it('does not reduce an explicitly requested implementation file to signatures', 
   expect(text).toContain("return 'first renderer';");
   expect(text).toContain("return 'third renderer';");
 });
+
+it('returns a precisely named constant alongside callable loaders without usage edges', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-named-constant-'));
+  fs.writeFileSync(path.join(root, 'constants.ts'), [
+    'export const DEFAULT_CONFIG_FILES = [',
+    "  'app.config.js',",
+    "  'app.config.ts',",
+    "  'app.config.mts',",
+    '];',
+  ].join('\n'));
+  for (const name of ['bundleConfig', 'runnerConfig', 'nativeConfig']) {
+    fs.writeFileSync(path.join(root, `${name}.ts`), `export function ${name}() { return 42; }`);
+  }
+  graph = await CodeGraph.init(root, { index: true });
+  const response = await new ToolHandler(graph).execute('codegraph_explore', {
+    query: 'bundleConfig runnerConfig nativeConfig DEFAULT_CONFIG_FILES',
+  });
+  const text = response.content?.[0]?.text ?? '';
+  expect(text).toContain('**`constants.ts`**');
+  for (const name of ['app.config.js', 'app.config.ts', 'app.config.mts']) expect(text).toContain(name);
+  expect(text.length).toBeLessThanOrEqual(25000);
+});

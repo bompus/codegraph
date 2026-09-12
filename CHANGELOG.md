@@ -156,6 +156,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Explicitly named constants and variables stay visible in code exploration even when their uses cannot be traced.
+
 - `codegraph_explore` keeps requested function bodies and relevant call sites together more reliably, reducing gaps that require follow-up reads.
 
 - Method calls now follow receiver types more reliably across Python, Go, Java, Kotlin, PHP and C++, with unresolved receiver diagnostics and correct ordering of chained calls in the viewer.

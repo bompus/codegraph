@@ -3826,6 +3826,7 @@ export class ToolHandler {
     };
 
     const namedSeedIds = new Set<string>();
+    const preciseValueSeedIds = new Set<string>();
     // The subset of named seeds that earns the named-FIRST sort tier. We still
     // SEED every ≤3-def name (so RWR / flow ranking is unchanged), but only the
     // most-substantive def is tiered — a bare name's unrelated namesakes (Go's
@@ -3997,6 +3998,8 @@ export class ToolHandler {
           // named-file sort below. (Previously only NEW injections were marked,
           // so a named symbol FTS already gathered never sorted to the top.)
           namedSeedIds.add(n.id);
+          if (isPreciseToken(t) && n.name.toLowerCase() === t.toLowerCase()
+              && (n.kind === 'constant' || n.kind === 'variable')) preciseValueSeedIds.add(n.id);
         }
         // An interface's `method_signature` seeds (so RWR and the flow ranking
         // still see it, and a query that names it still reaches its file) but
@@ -4097,6 +4100,10 @@ export class ToolHandler {
         ? TYPE_MEMBER_RELEVANCE_WEIGHT
         : RELEVANCE_KIND_WEIGHT[node.kind] ?? DEFAULT_RELEVANCE_KIND_WEIGHT;
       if (!probeIsolation || !(signatureOnly || WEAK_RELEVANCE_KINDS.has(node.kind))) return weight;
+      // An exact, shape-precise value name is an explicit request for its
+      // declaration even when static usage edges are absent. Incidental and
+      // natural-language matches still pay the isolation penalty.
+      if (preciseValueSeedIds.has(node.id)) return weight;
       return isUsageIsolated(node) ? ISOLATED_WEAK_KIND_WEIGHT : weight;
     };
 
