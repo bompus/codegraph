@@ -121,14 +121,14 @@ Medians over the ten corpora: the binding rows (head vs `72a5703b`) cost +4% wal
 | vite | `createServer resolveHttpServer` | 206 / 24927 | 271 / 21961 |
 | vite | `resolveConfig createLogger` | 206 / 24837 | 284 / 24877 |
 
-Reading: every probe answered on both builds with a same-sized rendering; the head answers 20 to 80 ms later per call (the row lookups and the larger graph), which is invisible next to an agent turn. The probe cannot say which answer an agent would stop reading at; that is the unmeasured item below.
+Reading: every probe answered on both builds with a same-sized rendering; the head answers 20 to 80 ms later per call (the row lookups and the larger graph), which is invisible next to an agent turn. The probe cannot say which answer an agent would stop reading at; the subsequent agent baseline is linked below.
 
 ### 5.3 Coverage
 
 The "failed refs" column above is the coverage counter: references the extractor emitted that resolution left unbound. Between `72a5703b` and head it moves by less than 1% on every corpus (down on flask, jq, svelte, exposed; up on vite and vitest, where bare package imports that used to bind wrongly now stay unbound by design). Between 1.6.0 and head it rises with the node count, because the fork emits more references (interface members, nested functions, value references) than it can bind; that ratio is a property of the added extraction, not of resolution.
 
-## 6. Not measured
+## 6. Agent measurements and remaining gaps
 
-- Agent A/B (`scripts/agent-eval/run-all.sh`, with vs without CodeGraph, or new build vs baseline build) has not been re-run since the parser swap. It is the only measure of the tool-call and Read/Grep counts the project optimises for, and it needs a live Claude session per arm.
+- The post-parser-swap [agent baseline](../benchmarks/binding-model-agent-baseline-2026-09-12.md) now has 36 runs against 1.6.0 and frozen `86fc9dbc`. Flask and Gin used fewer tools; Vite did not show a time improvement and still required reads. Phase 2b before/after measurements remain separate.
 - macOS: no run of the native-only kernel on macOS at all. Validation remains outstanding and needs a separate build/test run; see the fork release policy in [AGENTS.md](../../AGENTS.md#releases).
 - A truth set for same-name ties (Go `BindBody`, C++ `begin`): the changes are described and sampled, not scored.
