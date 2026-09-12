@@ -174,7 +174,32 @@ Every phase records before-and-after numbers here so the work can be judged, not
 | Whole-graph regressions caught by the golden gate | | 1 (missing parse-collapse warning, Phase 1) plus 1 stale-dist false alarm | `kernel-golden-dumps.test.ts` and the full suite |
 | Test surface | 4,773 tests | 4,791 tests (Phase 2) | full engine suite, 7 workers |
 
-Not yet measured, and the numbers that will decide whether Phase 5 is worth it: peak RSS with the WASM grammars no longer loaded in parse workers (the espn-draft Bun probe put the per-worker grammar heap at about 60 MB per worker on that runtime), cold start of the MCP server without `--liftoff-only`, and install size without the 30 `.wasm` files. Retrieval quality is held constant by construction (goldens) and is not a lever here.
+### Phase 5 payoff, measured before committing to the ports (2026-09-11)
+
+A measurement-only switch skipped the WASM grammar loads for kernel-routed languages in the parse workers (not merged); the MCP cold start was timed with and without the `--liftoff-only` relaunch; disk footprint was read from `dist/`. Fresh redis index, kernel path, n=1 per cell:
+
+| Parse workers | Grammars loaded in workers | Wall | Peak RSS |
+|---|---|---|---|
+| 1 | yes | 6.55 s | 1,238 MB |
+| 1 | skipped | 5.88 s | 1,250 MB |
+| 4 | yes | 5.00 s | 1,237 MB |
+| 4 | skipped | 4.30 s | 1,225 MB |
+| 8 | yes | 4.34 s | 1,356 MB |
+| 8 | skipped | 4.06 s | 1,316 MB |
+
+| MCP server (`serve --mcp`, small indexed project, median of 7) | Time to `initialize` reply | RSS after init | Processes |
+|---|---|---|---|
+| Default (relaunch with `--liftoff-only`) | 120 ms | 191 MB | 3 |
+| `CODEGRAPH_NO_RELAUNCH=1` | 81 ms | 139 MB | 2 |
+
+| On disk | Size |
+|---|---|
+| `dist/` today | 75 MB, of which `extraction/wasm` is 65 MB (29 grammars) |
+| `dist/` without WASM | 10 MB |
+| Kernel prebuild (linux-x64) | 34 MB |
+| `web-tree-sitter` + `tree-sitter-wasms` in `node_modules` | 54 MB |
+
+Reading it: on Node the per-worker WASM grammar heap is about 5 MB per worker, not the 60 MB the Bun probe saw (that was a JavaScriptCore compiler-thread leak). Peak RSS at index time is dominated by the main thread's store and resolution work, so deleting WASM does not move the memory headline on Node. It does buy roughly 0.3 to 0.7 s of grammar compile per fresh index, a 40 ms and 50 MB cheaper MCP cold start with one process fewer per session, a 41% smaller install (75 MB to 44 MB with the kernel counted), two fewer runtime dependencies, and the removal of the Node 25 block and the relaunch machinery that forced a dedicated Node 24 alias on the espn-draft host. The engineering payoff (one grammar supply chain, no parity oracle to maintain, about 27k lines gone) is not in these tables and is the larger part of the case. Retrieval quality is held constant by construction (goldens) and is not a lever here.
 
 ## 4. What is removed, by the numbers
 
