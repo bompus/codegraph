@@ -53,6 +53,18 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
     commit: 'dcaa4296d111981ffb31ac3eba90bb63e1eb5ab9',
     note: 'Go corpus for binding-model Phase 3 (import rows replace the Go import regex).',
   },
+  petclinic: {
+    key: 'petclinic',
+    repo: 'https://github.com/spring-projects/spring-petclinic.git',
+    commit: '818c4136ea971c21674525f9053de0d9c7ad8cfe',
+    note: 'Java corpus for binding-model Phase 3 (import rows replace the JVM import regex).',
+  },
+  exposed: {
+    key: 'exposed',
+    repo: 'https://github.com/JetBrains/Exposed.git',
+    commit: '2155404863401e0257f89c301509cde59e7becd1',
+    note: 'Kotlin corpus for binding-model Phase 3 (import rows replace the JVM import regex).',
+  },
 };
 
 export const edgeCases: EdgeCase[] = [

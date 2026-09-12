@@ -23,6 +23,7 @@
 //! Positions in UTF-16 code units.
 
 use crate::buffers::{
+    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE, EXPORT_PUBLIC,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
     NONE, NONE_STR,
@@ -202,6 +203,21 @@ pub struct Walker<'t> {
     fs_values: HashMap<String, u32>,
     fs_value_counts: HashMap<String, u32>,
     value_scopes: Vec<ValueScope<'t>>,
+    line_count: u32,
+}
+
+/// Binding rows for a Kotlin file from the AST alone (resolution-binding-model-plan.md §2.4).
+pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
+    let grammar = crate::langs::grammar_for("kotlin").ok_or("no kotlin grammar")?;
+    let t0 = std::time::Instant::now();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).map_err(|e| format!("set_language(kotlin) failed: {e}"))?;
+    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
+    let mut w = Walker::new(source, file_path);
+    w.collect_ast_rows(tree.root_node());
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -215,25 +231,9 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
 
-    let mut w = Walker {
-        src: source,
-        file_path,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        md_ref_keys: HashSet::new(),
-        stack: Vec::new(),
-        node_ids: Vec::new(),
-        nodes_meta: Vec::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-    };
+    let mut w = Walker::new(source, file_path);
 
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+    let line_count = w.line_count;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(FLAG_IS_EXPORTED, false);
@@ -314,6 +314,26 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 }
 
 impl<'t> Walker<'t> {
+    fn new(source: &'t str, file_path: &'t str) -> Walker<'t> {
+        Walker {
+            src: source,
+            file_path,
+            line_starts: util::line_starts(source),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            md_ref_keys: HashSet::new(),
+            stack: Vec::new(),
+            node_ids: Vec::new(),
+            nodes_meta: Vec::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+        }
+    }
     markdown_refs_impl!();
 
     fn text(&self, node: Node) -> &'t str {
@@ -497,6 +517,10 @@ impl<'t> Walker<'t> {
         }
         if matches!(kind, "function" | "method" | "constant" | "variable") {
             self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
+        }
+        self.emit_decl_binding(kind, name, row, node, extra.visibility);
+        if kind == "function" || kind == "method" {
+            self.emit_param_bindings(node);
         }
         Some(row)
     }
@@ -998,6 +1022,9 @@ impl<'t> Walker<'t> {
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();
+        if node.kind() == "property_declaration" {
+            self.emit_local_rows(node);
+        }
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
         let md_owner = self.top_row();
@@ -1259,6 +1286,215 @@ impl<'t> Walker<'t> {
         );
         let parent = self.top_row();
         self.push_ref_at(parent, &module_name.clone(), edge_kind_index("imports").unwrap(), node);
+        self.import_row_of(node, &module_name);
+    }
+
+    /// `import a.b.C [as D]` binds `D` or `C`; `import a.b.*` binds no single name.
+    fn import_row_of(&mut self, node: Node<'t>, fqn: &str) {
+        let wildcard = (0..node.child_count()).filter_map(|i| node.child(i)).any(|c| c.kind() == "wildcard_import" || c.kind() == "*");
+        if wildcard || fqn.is_empty() {
+            return;
+        }
+        let alias = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .find(|c| c.kind() == "import_alias")
+            .and_then(|a| (0..a.named_child_count()).filter_map(|j| a.named_child(j)).find(|c| c.kind() == "type_identifier" || c.kind() == "simple_identifier"))
+            .map(|n| self.text(n).to_string());
+        let local = alias.unwrap_or_else(|| fqn.rsplit('.').next().unwrap_or(fqn).to_string());
+        self.emit_import_binding(&local, fqn, node);
+    }
+
+    fn parameter_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
+        let params = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "function_value_parameters");
+        let Some(params) = params else { return out };
+        for i in 0..params.named_child_count() {
+            let Some(p) = params.named_child(i) else { continue };
+            if p.kind() != "parameter" {
+                continue;
+            }
+            if let Some(n) = (0..p.named_child_count()).filter_map(|j| p.named_child(j)).find(|c| c.kind() == "simple_identifier") {
+                out.push(n);
+            }
+        }
+        out
+    }
+
+    fn local_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
+        let decl = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "variable_declaration");
+        if let Some(decl) = decl {
+            if let Some(n) = (0..decl.named_child_count()).filter_map(|j| decl.named_child(j)).find(|c| c.kind() == "simple_identifier") {
+                out.push(n);
+            }
+        }
+        out
+    }
+
+    /// AST-only rows for `bindings_only` (resolution-binding-model-plan.md §2.4).
+    fn collect_ast_rows(&mut self, root: Node<'t>) {
+        // (node, scope, scope is a function body): the walk mints nodeless
+        // locals for a `val` only inside a function body; a class-level `val`
+        // is a field node, and an `init { }` body mints nothing.
+        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>, bool)> = vec![(root, None, false)];
+        while let Some((node, scope, in_fn)) = stack.pop() {
+            let kind = node.kind();
+            let mut child_scope = scope;
+            let mut child_in_fn = in_fn;
+            match kind {
+                // A local object inside a function is not a node in the walk:
+                // no row, and its members scope to the enclosing function.
+                "object_declaration" if scope.is_some() => {}
+                "class_declaration" | "object_declaration" | "function_declaration" | "type_alias" => {
+                    let name_node = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "type_identifier" || c.kind() == "simple_identifier");
+                    if let Some(name_node) = name_node {
+                        let name = self.text(name_node).to_string();
+                        let line = self.line_of(node);
+                        match scope {
+                            None => { let v = self.visibility_of(node); self.file_level_decl_row(&name, NONE, line, Some(v)); }
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                        }
+                    }
+                    if kind == "function_declaration" {
+                        self.emit_param_bindings(node);
+                    }
+                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                    child_in_fn = kind == "function_declaration";
+                }
+                // A companion object and an object literal are not scopes in the
+                // walk: their members attach to the enclosing class or function.
+                // An enum entry's body is not walked at all.
+                "enum_entry" => continue,
+                "property_declaration" => match scope {
+                    Some(s) => { if in_fn { self.emit_local_rows_scoped(node, s) } }
+                    None => {
+                        let names = self.local_names(node);
+                        for n in names {
+                            let name = self.text(n).to_string();
+                            let line = self.line_of(node);
+                            let v = self.visibility_of(node);
+                            self.file_level_decl_row(&name, NONE, line, Some(v));
+                        }
+                        // The walk visits the initializer under the property's
+                        // node: `val x = object { fun run() }` scopes `run` to it.
+                        child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                        child_in_fn = false;
+                    }
+                },
+                "import_header" => {
+                    let identifier = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "identifier");
+                    if let Some(identifier) = identifier {
+                        let fqn = self.text(identifier).to_string();
+                        self.import_row_of(node, &fqn);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(c) = node.named_child(i) {
+                    stack.push((c, child_scope, child_in_fn));
+                }
+            }
+        }
+    }
+
+    // --- bindings (resolution-binding-model-plan.md, Phase 3: JVM) --------------------
+
+    /// The enclosing node's lines, or None at file level. The package
+    /// declaration's `namespace` node wraps every top-level declaration for
+    /// qualified names; it is not a scope.
+    fn enclosing_scope(&self) -> Option<(u32, u32)> {
+        let top = self.stack.last()?;
+        if top.kind == "file" || top.kind == "namespace" {
+            return None;
+        }
+        Some(self.tables.node_lines(top.row))
+    }
+
+    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
+        let name_ref = self.arena.put(name);
+        let (target_spec, target_name) = match target {
+            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
+            None => (NONE_STR, NONE_STR),
+        };
+        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
+        self.tables.push_binding(&BindingRow {
+            kind,
+            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+            node_idx,
+            scope_start: scope.0,
+            scope_end: scope.1,
+            name: name_ref,
+            target_spec,
+            target_name,
+            exported_as: if exported { name_ref } else { NONE_STR },
+            storage: storage_ref,
+            line,
+        });
+    }
+
+    /// A file-level declaration is `public` unless its modifier narrows it:
+    /// `private` and `internal` are not visible across files; `protected` is,
+    /// through subclasses; Kotlin's default is public.
+    fn file_level_decl_row(&mut self, name: &str, node_idx: u32, line: u32, visibility: Option<u8>) {
+        let (exported, storage) = match visibility {
+            Some(2) => (false, Some("private")),
+            Some(3) => (true, Some("protected")),
+            Some(4) => (false, Some("internal")),
+            Some(_) => (true, None),
+            None => (true, None),
+        };
+        self.push_binding_row(BINDING_DECL, name, node_idx, (1, self.line_count), line, None, exported, storage);
+    }
+
+    fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>, visibility: Option<u8>) {
+        // The package `namespace` node is qualified-name scaffolding, not a binding.
+        if matches!(kind, "file" | "import" | "namespace") {
+            return;
+        }
+        // A property node is created from its `variable_declaration`, whose
+        // modifiers sit on the enclosing `property_declaration`.
+        let visibility = visibility.or_else(|| {
+            let decl = if node.kind() == "variable_declaration" { node.parent().unwrap_or(node) } else { node };
+            Some(self.visibility_of(decl))
+        });
+        let line = self.line_of(node);
+        match self.enclosing_scope() {
+            None => self.file_level_decl_row(name, row, line, visibility),
+            Some(scope) => self.push_binding_row(BINDING_LOCAL, name, row, scope, line, None, false, None),
+        }
+    }
+
+    /// One `param` row per parameter name, scoped to the function.
+    fn emit_param_bindings(&mut self, node: Node<'t>) {
+        let scope = (self.line_of(node), node.end_position().row as u32 + 1);
+        let names = self.parameter_names(node);
+        for n in names {
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_PARAM, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    fn emit_local_rows(&mut self, node: Node<'t>) {
+        let Some(scope) = self.enclosing_scope() else { return };
+        self.emit_local_rows_scoped(node, scope);
+    }
+
+    fn emit_local_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
+        let names = self.local_names(node);
+        for n in names {
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    fn emit_import_binding(&mut self, local: &str, fqn: &str, node: Node<'t>) {
+        let line = self.line_of(node);
+        let line_count = self.line_count;
+        self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((fqn, local)), false, None);
     }
 
     /// extractCall — the kotlin paths: navigation member branch (+ the #750

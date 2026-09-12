@@ -903,60 +903,15 @@ export function extractImportMappings(
 ): ImportMapping[] {
   const mappings: ImportMapping[] = [];
 
-  // The JS/TS family (and the Vue / Svelte / Astro script blocks), Python and
-  // Go answer from the `bindings` table (importMappingsFromBindings); no
-  // source regex here.
-  if (language === 'java' || language === 'kotlin') {
-    mappings.push(...extractJavaImports(content));
-  } else if (language === 'php') {
+  // The JS/TS family (and the Vue / Svelte / Astro script blocks), Python, Go,
+  // Java and Kotlin answer from the `bindings` table
+  // (importMappingsFromBindings); no source regex here.
+  if (language === 'php') {
     mappings.push(...extractPHPImports(content));
   } else if (language === 'c' || language === 'cpp') {
     mappings.push(...extractCppImports(content));
   }
 
-  return mappings;
-}
-
-/**
- * Extract Java / Kotlin import mappings.
- *
- * Java/Kotlin imports carry the full qualified name of the imported
- * symbol — `import com.example.dao.converter.FooConverter;` — which is
- * exactly the disambiguation signal we need when two packages both
- * declare a `FooConverter`. Pre-#314 the resolver had no Java branch
- * here at all, so this mapping was empty and cross-module name
- * collisions were resolved by file-path proximity (often wrongly).
- *
- * `import static com.example.Foo.bar;` is parsed as a local-name `bar`
- * pointing at FQN `com.example.Foo.bar` so static-method call sites
- * (`bar(...)`) can resolve through the same import lookup.
- */
-function extractJavaImports(content: string): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-  // Strip line and block comments so `// import foo;` doesn't false-match.
-  const stripped = content
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '');
-  // `import [static] <fqn>[.*];`
-  const re = /^\s*import\s+(static\s+)?([\w.]+(?:\.\*)?)\s*;/gm;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(stripped)) !== null) {
-    const fqn = match[2]!;
-    // `import com.example.*;` — wildcard. We can't materialize a single
-    // local name; skip and let name-matching handle members reachable
-    // through the wildcard. (Future enhancement: enumerate package files.)
-    if (fqn.endsWith('.*')) continue;
-    const parts = fqn.split('.');
-    const localName = parts[parts.length - 1];
-    if (!localName) continue;
-    mappings.push({
-      localName,
-      exportedName: localName,
-      source: fqn,
-      isDefault: false,
-      isNamespace: false,
-    });
-  }
   return mappings;
 }
 

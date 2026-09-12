@@ -193,8 +193,8 @@ export function tryKernelExtract(
   }
 }
 
-/** Languages `bindingsFile` handles: the TS/JS family, ArkTS, Python and Go. */
-const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'python', 'go']);
+/** Languages `bindingsFile` handles: the TS/JS family, ArkTS, Python, Go, Java and Kotlin. */
+const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'python', 'go', 'java', 'kotlin']);
 
 /**
  * Binding rows for a TS/JS-family file from the kernel's AST-only emitter,
