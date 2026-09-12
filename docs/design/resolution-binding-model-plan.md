@@ -1,5 +1,7 @@
 # Resolution binding model — one source of truth for exports and bindings
 
+**Metrics:** every phase's before/after numbers are lined up in [metrics-ledger.md](metrics-ledger.md).
+
 **Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 done (2026-09-12): Python, Go, Java, Kotlin, PHP and C/C++ emit rows and every per-language import regex is deleted; Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.

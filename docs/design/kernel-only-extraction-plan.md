@@ -167,6 +167,8 @@ Exit met: `grep -r web-tree-sitter src __tests__ scripts` is empty; the full eng
 
 ## 3a. Measurements so far
 
+(Consolidated with the binding-model numbers and the release-baseline comparison in [metrics-ledger.md](metrics-ledger.md).)
+
 Every phase records before-and-after numbers here so the work can be judged, not assumed. All figures are from this WSL host (15 vCPUs exposed, Node 24) unless stated; single runs are marked.
 
 | What | Before | After | How measured |
