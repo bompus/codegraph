@@ -166,6 +166,7 @@ Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond
 - `sqlite-backend.test.ts` / `node-sqlite-backend.test.ts` — pin that `node:sqlite` is the sole backend: `getBackend()` reports `node-sqlite` and the DB comes up in WAL.
 - `pr19-improvements.test.ts`, `frameworks-integration.test.ts` — regression coverage for specific past PRs/incidents; don't rename these, the names anchor to git history.
 - `kernel-golden-dumps.test.ts` — whole-graph golden dumps for a fixed fixture corpus (`__tests__/fixtures/golden/`); any extraction, resolution or synthesis change re-baselines with `UPDATE_GOLDEN=1` and the `.dump` diff is the review artifact. See `docs/design/kernel-only-extraction-plan.md` Phase 0.
+- `bindings-*.test.ts` and `kernel-generic-extractor-tree.test.ts` — the kernel emits a `bindings` table per file (what each name is bound to: declaration, import, parameter, local, with scope and export form); the resolver reads it instead of scanning source. A resolution change is gated by `npm run eval:precision -- <corpus>` on the pinned real repositories in `__tests__/evaluation/edge-cases.ts` (known-wrong edges must stay absent, controls present) plus an edge-level before/after review. See `docs/design/resolution-binding-model-plan.md`.
 
 Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They write real files and exercise real SQLite — there is no DB mocking.
 

@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 in progress: Python, Go, Java, Kotlin and PHP done (2026-09-12); only C/C++ remains; Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 done (2026-09-12): Python, Go, Java, Kotlin, PHP and C/C++ emit rows and every per-language import regex is deleted; Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -215,6 +215,15 @@ Exit per language: its `extractXImports` function and inference table entries ar
 - Gate (slimphp/Slim at `3675bf6b`): 5,016 edges before and after, byte-identical dump (2,830 references, none changed); Slim's `use` statements are all the single form the regex already read. Goldens (`php-import-alias-static`, `torture-multilang`): rows and export flags only, no edge or ref changes.
 - `__tests__/bindings-php.test.ts` pins every row form.
 
+#### C and C++ — DONE 2026-09-12 (include regex and static-function source check retired; Phase 3 complete)
+
+- The C/C++ walker (`ccpp/mod.rs`) emits: `decl` rows for file-level definitions, exported as themselves, with `storage = static` when the definition carries the storage class (the resolver keeps its header exemption: a `static inline` in a header exists in every includer); node-backed `local` rows for members; `param` rows (the identifier under any pointer, reference or array wrapping; a function-pointer parameter names nothing, as the walk's own declarator reader); nodeless `local` rows for a function body's declarations; `import` rows for every `#include`, the header's basename without its extension as the local name and the path as written. A `namespace` block is a name prefix, not a scope.
+- `bindings_file` handles C and C++; the parity gate covers `torture.c`, `torture.cpp` and `torture.hpp`. Aligning it pinned more of the walk: a definition the parser mangled (no `declarator` field, a keyword name, an ERROR in its parameter list) is no node and its children stay at the enclosing scope; `class MACRO Name : Base { … }` parses as a function definition and is recovered as the class; a specifier without a body is skipped with its subtree; C file-scope variables take init / pointer / array declarators only, C++ only a bare identifier; class-body declarations are fields, not locals. The AST-only path now also applies the walker's offset-preserving pre-parse (C/C++ macro blanking), which the first cut had missed.
+- `extractCppImports` is deleted, and `isStaticCFunction` reads `storage` from the row instead of the definition's first two source lines. `extractImportMappings` now returns nothing for every language and remains only as the context hook's implementation.
+- Gate, C (jqlang/jq at `9d241e27`): 7,712 → 7,713 edges (import 115 → 117); 4,597 references unchanged, 2 relabelled, 0 target changes, 0 lost, 1 gained.
+- Gate, C++ (nlohmann/json at `aa391dc0`): 24,640 → 24,647 edges; import 644 → 686 (+42, mostly class references resolved through an include row the regex had not produced); exact-match 7,188 → 7,153. Edge review: 11,015 references unchanged, 319 with a different target, 2 lost, 43 gained. The 319 are ties among same-named C++ entities re-broken now that file-level definitions are `isExported` and class members are not: a bare `begin(…)` in a test moves from another test's `alt_string_iter::begin` member to a free `begin` function; `array` in an arithmetic helper moves from the `value_t::array` enum member to the `nlohmann::array` function. The 2 lost are `iteration_proxy<iterator>(*this)` constructor calls that had name-matched the constructor. Goldens: rows and export flags only (42 C and 27 C++ file-level nodes now `isExported`), no edge or ref changes.
+- `__tests__/bindings-ccpp.test.ts` pins every row form.
+
 ### Phase 4: move the binding lookup into the kernel
 
 With source-reading predicates gone, the resolve step is a join over `bindings`, `nodes` and `unresolved_refs`. Port it into the kernel as a batch entry point that takes a chunk of refs and returns resolved edges, mirroring today's `resolver-worker` chunk contract. The TypeScript `ReferenceResolver` becomes the orchestrator over the kernel and the framework resolvers. This is the P1 item in the migration plan, executed after the model is stable rather than before.
@@ -230,7 +239,7 @@ Exit: `settle` and `read` stages run natively; Linux-kernel resolution under the
 | `isBoundToBareImport`, `isBareJsCall`, `isLocallyBoundJsName` and their memos — `isLocallyBoundJsName`'s regexes and memo done, Phase 2; the other two stay (bare-import classification and call-site shape) | `name-matcher.ts:551-970` |
 | `isTsJsNestedCall` early-out and the host-global chain gate | `index.ts:1030`, `name-matcher.ts:3423`, `js-builtins.ts` |
 | `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases` — done, Phase 2 | `import-resolver.ts:96`, `alias-binding.ts:105` |
-| Per-language import regex extractors — JS/TS done, Phase 2; Python, Go, Java, Kotlin and PHP done, Phase 3; C/C++ remains | `import-resolver.ts:898-1174` |
+| Per-language import regex extractors — all done (JS/TS in Phase 2, the rest in Phase 3) | `import-resolver.ts:898-1174` |
 | Receiver inference regex table, as languages migrate | `name-matcher.ts:1950-2082` |
 | `strip-comments.ts` once no resolver reads source | 574 lines |
 

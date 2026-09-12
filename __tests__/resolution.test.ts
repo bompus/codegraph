@@ -3866,7 +3866,9 @@ int run() {
 #include "myheader.h"
 #include "utils/helpers.hpp"`;
 
-      const mappings = extractImportMappings('main.cpp', code, 'cpp');
+      // C/C++ mappings come from the kernel walker's include rows.
+      const rows = tryKernelExtract('main.cpp', code, 'cpp')?.bindings ?? [];
+      const mappings = importMappingsFromBindings(rows) ?? [];
 
       expect(mappings.length).toBe(3);
       expect(mappings[0]).toEqual({
@@ -3876,20 +3878,9 @@ int run() {
         isDefault: false,
         isNamespace: true,
       });
-      expect(mappings[1]).toEqual({
-        localName: 'myheader',
-        exportedName: '*',
-        source: 'myheader.h',
-        isDefault: false,
-        isNamespace: true,
-      });
-      expect(mappings[2]).toEqual({
-        localName: 'helpers',
-        exportedName: '*',
-        source: 'utils/helpers.hpp',
-        isDefault: false,
-        isNamespace: true,
-      });
+      expect(mappings[1]!.localName).toBe('myheader');
+      expect(mappings[2]).toMatchObject({ localName: 'helpers', source: 'utils/helpers.hpp' });
+      expect(extractImportMappings('main.cpp', code, 'cpp')).toEqual([]);
     });
 
     it('should discover include directories from compile_commands.json', () => {

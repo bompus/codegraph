@@ -193,8 +193,8 @@ export function tryKernelExtract(
   }
 }
 
-/** Languages `bindingsFile` handles: the TS/JS family, ArkTS, Python, Go, Java, Kotlin and PHP. */
-const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'python', 'go', 'java', 'kotlin', 'php']);
+/** Languages `bindingsFile` handles: every walker language with rows: the TS/JS family, ArkTS, Python, Go, Java, Kotlin, PHP, C and C++. */
+const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'python', 'go', 'java', 'kotlin', 'php', 'c', 'cpp']);
 
 /**
  * Binding rows for a TS/JS-family file from the kernel's AST-only emitter,
@@ -207,7 +207,9 @@ export function tryKernelBindings(filePath: string, source: string, language: La
   const kernel = getKernel();
   if (!kernel || typeof kernel.bindingsFile !== 'function') return null;
   try {
-    const buffers = kernel.bindingsFile(filePath, source, language);
+    // The same offset-preserving pre-parse the walker sees (C/C++ macro
+    // blanking, C# directives), so both paths read one tree.
+    const buffers = kernel.bindingsFile(filePath, preParsedSource(filePath, source, language), language);
     return decodeExtractBuffers(buffers, filePath, language).bindings ?? [];
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
