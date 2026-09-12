@@ -362,6 +362,14 @@ impl<'t> Walker<'t> {
             Some(list) if !list.is_empty() => self.arena.put_list(list),
             _ => NONE_STR,
         };
+        let type_params: Vec<String> = node.child_by_field_name("type_parameters")
+            .map(|params| {
+                let mut cursor = params.walk();
+                params.named_children(&mut cursor)
+                    .filter(|param| param.kind() == "type_parameter")
+                    .map(|param| self.text(param).to_string()).collect()
+            }).unwrap_or_default();
+        let type_params_ref = if type_params.is_empty() { NONE_STR } else { self.arena.put_list(&type_params) };
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: extra.visibility.unwrap_or(0),
@@ -376,7 +384,7 @@ impl<'t> Walker<'t> {
             docstring: doc_ref,
             signature: sig_ref,
             decorators: dec_ref,
-            type_parameters: NONE_STR,
+            type_parameters: type_params_ref,
             return_type: ret_ref,
             extra_json: NONE_STR,
         });

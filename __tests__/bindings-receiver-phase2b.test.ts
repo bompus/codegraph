@@ -234,3 +234,16 @@ it('does not borrow another class member from a JVM import target file', async (
   expect(calls('known')).toContain('own');
   expect(calls('unknown')).not.toContain('other');
 });
+
+it('respects Java generic declarations when resolving outer bounds', async () => {
+  await project({ 'App.java': `class Item { public String toString() { return ""; } }
+class T extends Item {}
+class App<T extends Item> {
+  <T> String unknown(T value) { return value.toString(); }
+  String known(T value) { return value.toString(); }
+  String collection(java.util.Collection<T> items, T value) { return value.toString(); }
+}` });
+  expect(calls('unknown')).not.toContain('toString');
+  expect(calls('known')).toContain('toString');
+  expect(calls('collection')).toContain('toString');
+});

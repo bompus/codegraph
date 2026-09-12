@@ -2448,6 +2448,22 @@ function matchGoFactoryReceiver(receiver: string, method: string, ref: Unresolve
 
 function resolveBoundType(type: string, ref: UnresolvedRef, context: ResolutionContext, depth = 0): Node | undefined {
   if (depth > 4) return undefined;
+  if (ref.language === 'java') {
+    const scopes = context.getNodesInFile(ref.filePath).filter(n =>
+      ['class', 'interface', 'method'].includes(n.kind) && n.startLine <= ref.line && n.endLine >= ref.line &&
+      (n.startLine !== ref.line || n.startColumn <= ref.column) &&
+      (n.endLine !== ref.line || n.endColumn >= ref.column))
+      .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine) || b.startColumn - a.startColumn);
+    for (const scope of scopes) {
+      const declaration = scope.typeParameters?.find(parameter => parameter.split(/\s+/)[0] === type);
+      if (declaration === undefined) continue;
+      const bound = declaration.match(/^\w+\s+extends\s+([\w.]+)$/)?.[1];
+      // An unbounded or unsupported inner declaration shadows any outer bound.
+      return bound && bound !== type
+        ? resolveBoundType(bound, { ...ref, line: scope.startLine, column: scope.startColumn }, context, depth + 1)
+        : undefined;
+    }
+  }
   const binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], type.split('.')[0]!, ref.line);
   const ownerId = binding?.kind === 'import'
     ? (resolveViaImport({ ...ref, referenceName: type, referenceKind: 'references' }, context)
@@ -2458,16 +2474,6 @@ function resolveBoundType(type: string, ref: UnresolvedRef, context: ResolutionC
     const qualified = binding.targetSpec.replace(/^\\/, '').replace(/\\([^\\]+)$/, '::$1');
     const owners = context.getNodesByQualifiedName(qualified).filter(n => n.language === 'php' && ['class', 'interface', 'trait'].includes(n.kind));
     owner = owners.length === 1 ? owners[0] : undefined;
-  }
-  if (!binding && ref.language === 'java') {
-    const scopes = context.getNodesInFile(ref.filePath).filter(n =>
-      ['class', 'interface', 'method'].includes(n.kind) && n.startLine <= ref.line && n.endLine >= ref.line)
-      .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine));
-    for (const scope of scopes) {
-      const header = context.getFileLines?.(ref.filePath)?.slice(scope.startLine - 1, scope.endLine).join('\n').split('{')[0];
-      const bound = header?.match(new RegExp(`[<,]\\s*${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+extends\\s+([\\w.]+)\\s*(?=[,>])`))?.[1];
-      if (bound && bound !== type) return resolveBoundType(bound, { ...ref, line: scope.startLine }, context, depth + 1);
-    }
   }
   if (!binding && !ESM_FAMILY.has(ref.language)) {
     const candidates = (type.includes('::') ? context.getNodesByQualifiedName(type) : context.getNodesByName(type)).filter(n =>
