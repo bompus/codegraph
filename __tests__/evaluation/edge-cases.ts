@@ -41,6 +41,12 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
     commit: '5895c637b04dc8667020c8d326807c3f3a984472',
     note: '#1713: 5 fuzzy edges removed, GAINED 0.',
   },
+  flask: {
+    key: 'flask',
+    repo: 'https://github.com/pallets/flask.git',
+    commit: 'd73fa1cdcbd8b1465c151db8924ba58b1dd14e35',
+    note: 'Python corpus for binding-model Phase 3 (import rows replace the Python import regex).',
+  },
 };
 
 export const edgeCases: EdgeCase[] = [
@@ -128,5 +134,15 @@ export const edgeCases: EdgeCase[] = [
     expect: 'present',
     source: 'control',
     why: "`import { createLogger } from './logger'` is a relative project import; the import resolver must still bind it.",
+  },
+  {
+    id: 'flask-control-relative-from-import',
+    corpus: 'flask',
+    kind: 'imports',
+    from: { file: 'src/flask/app.py', name: 'app.py' },
+    to: { file: 'src/flask/helpers.py', name: 'get_debug_flag' },
+    expect: 'present',
+    source: 'control',
+    why: '`from .helpers import get_debug_flag` is a relative package import; the Python import mappings must still bind it.',
   },
 ];

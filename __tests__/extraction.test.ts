@@ -1009,6 +1009,11 @@ export const fetchData = async () => {
 });
 
 describe('Generator Function Extraction (#1741)', () => {
+  // These exercise the generic extractor; the switch must not leak into the
+  // rest of the file (every later Python/TS test would lose its walker rows).
+  afterEach(() => {
+    delete process.env.CODEGRAPH_KERNEL;
+  });
   const functionNames = (file: string, code: string) =>
     extractFromSource(file, code)
       .nodes.filter((n) => n.kind === 'function')

@@ -10,8 +10,9 @@
 //! refs anywhere. Files with parse errors defer to wasm.
 
 use crate::buffers::{
-    build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
+    build_meta, edge_kind_index, node_kind_index, Arena, BindingRow, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    RefRow, StrRef, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE,
+    EXPORT_PUBLIC, FLAG_IS_ASYNC, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -65,6 +66,24 @@ pub struct Walker<'t> {
     value_scopes: Vec<ValueScope<'t>>,
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
+    line_count: u32,
+}
+
+/// Binding rows for a Python file from the AST alone, for the generic
+/// extractor's path (the `CODEGRAPH_KERNEL=0` switch, a stack-guard defer).
+/// Nodes, edges and refs are empty; the TS side attaches node ids by name
+/// and line (resolution-binding-model-plan.md §2.4).
+pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
+    let grammar = crate::langs::grammar_for("python").ok_or("no python grammar")?;
+    let t0 = std::time::Instant::now();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).map_err(|e| format!("set_language(python) failed: {e}"))?;
+    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
+    let mut w = Walker::new(source, file_path);
+    w.collect_ast_rows(tree.root_node());
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -78,24 +97,9 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
 
-    let mut w = Walker {
-        src: source,
-        file_path,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        stack: Vec::new(),
-        node_ids: Vec::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        md_ref_keys: HashSet::new(),
-    };
+    let mut w = Walker::new(source, file_path);
 
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+    let line_count = w.line_count;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(crate::buffers::FLAG_IS_EXPORTED, false);
@@ -147,6 +151,26 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 }
 
 impl<'t> Walker<'t> {
+    fn new(source: &'t str, file_path: &'t str) -> Walker<'t> {
+        Walker {
+            src: source,
+            file_path,
+            line_starts: util::line_starts(source),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            stack: Vec::new(),
+            node_ids: Vec::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            md_ref_keys: HashSet::new(),
+            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+        }
+    }
+
     fn text(&self, node: Node) -> &'t str {
         &self.src[node.byte_range()]
     }
@@ -282,6 +306,10 @@ impl<'t> Walker<'t> {
         if matches!(kind, "function" | "method" | "constant" | "variable") {
             self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
         }
+        self.emit_decl_binding(kind, name, row, node);
+        if kind == "function" || kind == "method" {
+            self.emit_param_bindings(node);
+        }
         Some(row)
     }
 
@@ -380,6 +408,16 @@ impl<'t> Walker<'t> {
 
         if kind == "call" {
             self.extract_call(node);
+        }
+        if kind == "assignment" {
+            self.emit_local_assignment_binding(node);
+        }
+        // An import inside a function body binds a name for that body: a row
+        // scoped to the function (no import node, no `imports` ref — the
+        // module-level walk owns those, as before).
+        if kind == "import_statement" || kind == "import_from_statement" {
+            self.emit_import_rows_only(node);
+            return;
         }
 
         // Nested NAMED functions become their own nodes.
@@ -569,6 +607,12 @@ impl<'t> Walker<'t> {
                     continue;
                 }
                 self.push_ref_at(parent, &local.to_string(), imports_kind, name_node);
+                let imported = if child.kind() == "aliased_import" {
+                    child.child_by_field_name("name").map(|n| self.text(n).to_string()).unwrap_or_else(|| raw.to_string())
+                } else {
+                    raw.to_string()
+                };
+                self.emit_import_binding(local, &module_name, &imported, name_node);
             }
             return;
         }
@@ -587,6 +631,10 @@ impl<'t> Walker<'t> {
                     Extra { signature: Some(import_text.clone()), ..Extra::default() },
                 );
                 self.push_ref_at(parent, &name, imports_kind, child);
+                // `import a.b` binds `a`; the row keeps the resolver's long-standing
+                // reading (the last segment) until the Python receiver rule lands.
+                let local = name.rsplit('.').next().unwrap_or(&name).to_string();
+                self.emit_import_binding(&local, &name, "*", child);
             } else if child.kind() == "aliased_import" {
                 let dotted = (0..child.named_child_count())
                     .filter_map(|j| child.named_child(j))
@@ -600,9 +648,255 @@ impl<'t> Walker<'t> {
                         Extra { signature: Some(import_text.clone()), ..Extra::default() },
                     );
                     self.push_ref_at(parent, &name, imports_kind, dotted);
+                    let local = child
+                        .child_by_field_name("alias")
+                        .map(|a| self.text(a).to_string())
+                        .unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+                    self.emit_import_binding(&local, &name, "*", dotted);
                 }
             }
         }
+    }
+
+    // --- bindings (resolution-binding-model-plan.md, Phase 3: Python) ---------------
+
+    /// AST-only rows for `bindings_only`: the rules the walk applies through
+    /// `create_node` / `visit_for_calls_and_structure`, without nodes. The TS
+    /// side attaches node ids by name and line. Iterative, so a file too deep
+    /// for the recursive walker still gets its rows.
+    fn collect_ast_rows(&mut self, root: Node<'t>) {
+        // (node, enclosing function/class range or None at module level)
+        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
+        while let Some((node, scope)) = stack.pop() {
+            let kind = node.kind();
+            let mut child_scope = scope;
+            match kind {
+                "function_definition" | "class_definition" => {
+                    let range = (self.line_of(node), node.end_position().row as u32 + 1);
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = self.text(name_node).to_string();
+                        let line = self.line_of(node);
+                        match scope {
+                            None => {
+                                let storage = if name.starts_with('_') { Some("private") } else { None };
+                                self.push_binding_row(BINDING_DECL, &name, NONE, (1, self.line_count), line, None, true, storage);
+                            }
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                        }
+                    }
+                    if kind == "function_definition" {
+                        self.emit_param_bindings(node);
+                    }
+                    child_scope = Some(range);
+                }
+                "assignment" => {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        if left.kind() == "identifier" {
+                            let name = self.text(left).to_string();
+                            let line = self.line_of(left);
+                            match scope {
+                                None => {
+                                    let storage = if name.starts_with('_') { Some("private") } else { None };
+                                    self.push_binding_row(BINDING_DECL, &name, NONE, (1, self.line_count), line, None, true, storage);
+                                }
+                                Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                            }
+                        }
+                    }
+                }
+                "import_statement" | "import_from_statement" => {
+                    // emit_import_rows_only scopes by the walk's stack; here the
+                    // scope is the explicit one.
+                    self.import_rows_scoped(node, scope.unwrap_or((1, self.line_count)));
+                    continue;
+                }
+                _ => {}
+            }
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(c) = node.named_child(i) {
+                    stack.push((c, child_scope));
+                }
+            }
+        }
+    }
+
+    fn import_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
+        let mut rows: Vec<(String, String, String, Node<'t>)> = Vec::new();
+        if node.kind() == "import_from_statement" {
+            let Some(module_node) = node.child_by_field_name("module_name") else { return };
+            let module_name = self.text(module_node).to_string();
+            for i in 0..node.named_child_count() {
+                let Some(child) = node.named_child(i) else { continue };
+                if child.start_byte() == module_node.start_byte() && child.end_byte() == module_node.end_byte() {
+                    continue;
+                }
+                let (name_node, imported) = match child.kind() {
+                    "aliased_import" => (
+                        child.child_by_field_name("alias").or_else(|| child.child_by_field_name("name")),
+                        child.child_by_field_name("name").map(|n| self.text(n).to_string()),
+                    ),
+                    "dotted_name" => (Some(child), Some(self.text(child).to_string())),
+                    _ => (None, None),
+                };
+                let (Some(name_node), Some(imported)) = (name_node, imported) else { continue };
+                let local = self.text(name_node).rsplit('.').next().unwrap_or("").to_string();
+                if !local.is_empty() {
+                    rows.push((local, module_name.clone(), imported, name_node));
+                }
+            }
+        } else {
+            for i in 0..node.named_child_count() {
+                let Some(child) = node.named_child(i) else { continue };
+                let (dotted, alias) = match child.kind() {
+                    "dotted_name" => (Some(child), None),
+                    "aliased_import" => (
+                        (0..child.named_child_count()).filter_map(|j| child.named_child(j)).find(|c| c.kind() == "dotted_name"),
+                        child.child_by_field_name("alias"),
+                    ),
+                    _ => (None, None),
+                };
+                let Some(dotted) = dotted else { continue };
+                let name = self.text(dotted).to_string();
+                let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+                rows.push((local, name, "*".to_string(), dotted));
+            }
+        }
+        for (local, module, imported, n) in rows {
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_IMPORT, &local, NONE, scope, line, Some((&module, &imported)), false, None);
+        }
+    }
+
+    /// The enclosing function or class node's lines, or None at module scope.
+    fn enclosing_scope(&self) -> Option<(u32, u32)> {
+        let top = self.stack.last()?;
+        if top.kind == "file" {
+            return None;
+        }
+        Some(self.tables.node_lines(top.row))
+    }
+
+    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
+        let name_ref = self.arena.put(name);
+        let (target_spec, target_name) = match target {
+            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
+            None => (NONE_STR, NONE_STR),
+        };
+        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
+        self.tables.push_binding(&BindingRow {
+            kind,
+            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+            node_idx,
+            scope_start: scope.0,
+            scope_end: scope.1,
+            name: name_ref,
+            target_spec,
+            target_name,
+            exported_as: if exported { name_ref } else { NONE_STR },
+            storage: storage_ref,
+            line,
+        });
+    }
+
+    /// A module-level definition is importable by every other module (`public`;
+    /// a leading underscore is recorded as `storage = private`, the convention,
+    /// not a boundary). A definition nested in a function or class is `local`
+    /// to it.
+    fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
+        if matches!(kind, "file" | "import") {
+            return;
+        }
+        let line = self.line_of(node);
+        match self.enclosing_scope() {
+            None => {
+                let storage = if name.starts_with('_') { Some("private") } else { None };
+                self.push_binding_row(BINDING_DECL, name, row, (1, self.line_count), line, None, true, storage);
+            }
+            Some(scope) => self.push_binding_row(BINDING_LOCAL, name, row, scope, line, None, false, None),
+        }
+    }
+
+    /// One `param` row per parameter name, scoped to the function's lines.
+    fn emit_param_bindings(&mut self, node: Node<'t>) {
+        let Some(params) = node.child_by_field_name("parameters") else { return };
+        let scope = (self.line_of(node), node.end_position().row as u32 + 1);
+        for i in 0..params.named_child_count() {
+            let Some(p) = params.named_child(i) else { continue };
+            let name_node = match p.kind() {
+                "identifier" => Some(p),
+                "default_parameter" | "typed_default_parameter" => p.child_by_field_name("name"),
+                "typed_parameter" | "list_splat_pattern" | "dictionary_splat_pattern" => p.named_child(0).filter(|c| c.kind() == "identifier"),
+                _ => None,
+            };
+            let Some(n) = name_node else { continue };
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_PARAM, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    /// `x = …` inside a function body: a nodeless `local` row for the name.
+    fn emit_local_assignment_binding(&mut self, node: Node<'t>) {
+        let Some(scope) = self.enclosing_scope() else { return };
+        let Some(left) = node.child_by_field_name("left") else { return };
+        if left.kind() != "identifier" {
+            return;
+        }
+        let name = self.text(left).to_string();
+        let line = self.line_of(left);
+        self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+    }
+
+    /// Rows for an import statement without the node and refs `extract_import`
+    /// emits: the function-body form.
+    fn emit_import_rows_only(&mut self, node: Node<'t>) {
+        if node.kind() == "import_from_statement" {
+            let Some(module_node) = node.child_by_field_name("module_name") else { return };
+            let module_name = self.text(module_node).to_string();
+            for i in 0..node.named_child_count() {
+                let Some(child) = node.named_child(i) else { continue };
+                if child.start_byte() == module_node.start_byte() && child.end_byte() == module_node.end_byte() {
+                    continue;
+                }
+                let (name_node, imported) = match child.kind() {
+                    "aliased_import" => (
+                        child.child_by_field_name("alias").or_else(|| child.child_by_field_name("name")),
+                        child.child_by_field_name("name").map(|n| self.text(n).to_string()),
+                    ),
+                    "dotted_name" => (Some(child), Some(self.text(child).to_string())),
+                    _ => (None, None),
+                };
+                let (Some(name_node), Some(imported)) = (name_node, imported) else { continue };
+                let local = self.text(name_node).rsplit('.').next().unwrap_or("").to_string();
+                if !local.is_empty() {
+                    self.emit_import_binding(&local, &module_name, &imported, name_node);
+                }
+            }
+            return;
+        }
+        for i in 0..node.named_child_count() {
+            let Some(child) = node.named_child(i) else { continue };
+            let (dotted, alias) = match child.kind() {
+                "dotted_name" => (Some(child), None),
+                "aliased_import" => (
+                    (0..child.named_child_count()).filter_map(|j| child.named_child(j)).find(|c| c.kind() == "dotted_name"),
+                    child.child_by_field_name("alias"),
+                ),
+                _ => (None, None),
+            };
+            let Some(dotted) = dotted else { continue };
+            let name = self.text(dotted).to_string();
+            let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+            self.emit_import_binding(&local, &name, "*", dotted);
+        }
+    }
+
+    /// An `import` row: the local name, the module as written, the imported name
+    /// (`*` for a whole-module import).
+    fn emit_import_binding(&mut self, local: &str, module: &str, imported: &str, node: Node<'t>) {
+        let line = self.line_of(node);
+        let scope = self.enclosing_scope().unwrap_or((1, self.line_count));
+        self.push_binding_row(BINDING_IMPORT, local, NONE, scope, line, Some((module, imported)), false, None);
     }
 
     /// extractCall — python `call` through the generic tail (attribute callees).
