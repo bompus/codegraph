@@ -84,6 +84,7 @@ export interface KernelTreeBuffers {
   meta: Buffer;
   nodes: Buffer;
   children: Buffer;
+  fields: Buffer;
 }
 export interface KernelTreeNames {
   kindCount: number;

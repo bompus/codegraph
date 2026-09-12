@@ -1,6 +1,6 @@
 import { getNodeText, getChildByField } from '../tree-sitter-helpers';
 import type { LanguageExtractor } from '../tree-sitter-types';
-import type { Node as SyntaxNode } from 'web-tree-sitter';
+import type { TreeNode as SyntaxNode } from '../parse-tree';
 
 /**
  * A TS/JS class field (`public_field_definition` / `field_definition`) is a

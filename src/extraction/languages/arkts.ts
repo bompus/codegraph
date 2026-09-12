@@ -1,6 +1,6 @@
 import type { LanguageExtractor } from '../tree-sitter-types';
 import { typescriptExtractor } from './typescript';
-import type { Node as SyntaxNode } from 'web-tree-sitter';
+import type { TreeNode as SyntaxNode } from '../parse-tree';
 
 /**
  * ArkTS (HarmonyOS / OpenHarmony, `.ets`) — a TypeScript superset whose

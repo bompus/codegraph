@@ -29,7 +29,7 @@
  * drift by 7 — acceptable for line-oriented consumers.
  */
 
-import type { Node as SyntaxNode } from 'web-tree-sitter';
+import type { TreeNode as SyntaxNode } from '../parse-tree';
 import { getNodeText, getChildByField } from '../tree-sitter-helpers';
 import type { ExtractorContext, LanguageExtractor } from '../tree-sitter-types';
 

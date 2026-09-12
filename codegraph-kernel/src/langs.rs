@@ -93,6 +93,14 @@ pub fn grammar_for(language: &str) -> Option<Language> {
         "dart" => {
             Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_dart) }.into())
         }
+        // Phase 4: parse-only grammars (no walker; the generic TS extractor
+        // walks the serialized tree). Not in LANGUAGES, so nothing routes an
+        // extract_file call here — parse_tree / tree_names are their surface.
+        "objc" => Some(tree_sitter_objc::LANGUAGE.into()),
+        "erlang" => Some(tree_sitter_erlang::LANGUAGE.into()),
+        "nix" => Some(tree_sitter_nix::LANGUAGE.into()),
+        "pascal" => Some(tree_sitter_pascal::LANGUAGE.into()),
+        "solidity" => Some(tree_sitter_solidity::LANGUAGE.into()),
         _ => None,
     }
 }

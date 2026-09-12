@@ -60,6 +60,15 @@ tree-sitter-luau = "=1.2.0"
 
 # tree-sitter-language: the version-agnostic LanguageFn shim for the vendored
 # kotlin grammar C (see build.rs — no kotlin crate dep is possible).
+# Phase 4 (kernel-only-extraction-plan.md): tail languages with NO bespoke
+# walker. The kernel only PARSES them (parse_tree); the generic TS extractor
+# walks the serialized tree. Versions are the crates.io releases closest to
+# the vendored wasm grammars; kind-table drift is recorded in the plan.
+tree-sitter-objc = "3.0"
+tree-sitter-erlang = "0.20"
+tree-sitter-nix = "0.3"
+tree-sitter-pascal = "0.10"
+tree-sitter-solidity = "1.2"
 tree-sitter-language = "0.1"
 
 # Stack-bounds queries for the walker stack guard (src/stack.rs, #1581):
