@@ -9,6 +9,7 @@
 //! see tsjs/mod.rs).
 
 use crate::buffers::{
+    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE, EXPORT_PUBLIC,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
@@ -138,6 +139,21 @@ pub struct Walker<'t> {
     value_scopes: Vec<ValueScope<'t>>,
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
+    line_count: u32,
+}
+
+/// Binding rows for a Java file from the AST alone (resolution-binding-model-plan.md §2.4).
+pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
+    let grammar = crate::langs::grammar_for("java").ok_or("no java grammar")?;
+    let t0 = std::time::Instant::now();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).map_err(|e| format!("set_language(java) failed: {e}"))?;
+    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
+    let mut w = Walker::new(source, file_path);
+    w.collect_ast_rows(tree.root_node());
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -151,26 +167,10 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
 
-    let mut w = Walker {
-        src: source,
-        file_path,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        stack: Vec::new(),
-        nodes_meta: Vec::new(),
-        node_ids: Vec::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        md_ref_keys: HashSet::new(),
-    };
+    let mut w = Walker::new(source, file_path);
 
     // File node (TreeSitterExtractor.extract).
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+    let line_count = w.line_count;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(crate::buffers::FLAG_IS_EXPORTED, false);
@@ -254,6 +254,26 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 }
 
 impl<'t> Walker<'t> {
+    fn new(source: &'t str, file_path: &'t str) -> Walker<'t> {
+        Walker {
+            src: source,
+            file_path,
+            line_starts: util::line_starts(source),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            stack: Vec::new(),
+            nodes_meta: Vec::new(),
+            node_ids: Vec::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            md_ref_keys: HashSet::new(),
+            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+        }
+    }
     markdown_refs_impl!();
 
     fn text(&self, node: Node) -> &'t str {
@@ -380,6 +400,10 @@ impl<'t> Walker<'t> {
             self.defined_fn_names.insert(name.to_string());
         }
         self.capture_value_ref_scope(kind, name, row, node);
+        self.emit_decl_binding(kind, name, row, node, extra.visibility);
+        if kind == "function" || kind == "method" {
+            self.emit_param_bindings(node);
+        }
         Some(row)
     }
 
@@ -557,6 +581,9 @@ impl<'t> Walker<'t> {
         self.maybe_capture_fn_refs(node);
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
+        if kind == "local_variable_declaration" {
+            self.emit_local_rows(node);
+        }
 
         if kind == "method_invocation" {
             self.extract_call(node);
@@ -847,6 +874,203 @@ impl<'t> Walker<'t> {
         );
         let parent = self.top_row();
         self.push_ref_at(parent, &module_name.clone(), edge_kind_index("imports").unwrap(), node);
+        self.import_row_of(node, &module_name);
+    }
+
+    /// `import [static] a.b.C;` binds `C`; a wildcard binds no single name.
+    fn import_row_of(&mut self, node: Node<'t>, fqn: &str) {
+        let wildcard = (0..node.child_count()).filter_map(|i| node.child(i)).any(|c| c.kind() == "asterisk");
+        if wildcard || fqn.is_empty() {
+            return;
+        }
+        let local = fqn.rsplit('.').next().unwrap_or(fqn).to_string();
+        self.emit_import_binding(&local, fqn, node);
+    }
+
+    fn parameter_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
+        let Some(params) = node.child_by_field_name("parameters") else { return out };
+        for i in 0..params.named_child_count() {
+            let Some(p) = params.named_child(i) else { continue };
+            if matches!(p.kind(), "formal_parameter" | "spread_parameter") {
+                if let Some(n) = p.child_by_field_name("name").or_else(|| (0..p.named_child_count()).filter_map(|j| p.named_child(j)).find(|c| c.kind() == "identifier" || c.kind() == "variable_declarator")) {
+                    if n.kind() == "variable_declarator" {
+                        if let Some(id) = n.child_by_field_name("name") { out.push(id); }
+                    } else {
+                        out.push(n);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn local_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
+        for i in 0..node.named_child_count() {
+            let Some(c) = node.named_child(i) else { continue };
+            if c.kind() == "variable_declarator" {
+                if let Some(n) = c.child_by_field_name("name") { out.push(n); }
+            }
+        }
+        out
+    }
+
+    /// AST-only rows for `bindings_only`: file-level declarations with their
+    /// modifiers, nested declarations as `local`, parameters, method-body
+    /// locals and imports. Iterative; the TS side attaches node ids.
+    fn collect_ast_rows(&mut self, root: Node<'t>) {
+        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
+        while let Some((node, scope)) = stack.pop() {
+            let kind = node.kind();
+            let mut child_scope = scope;
+            match kind {
+                "class_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration" | "annotation_type_declaration"
+                | "method_declaration" | "constructor_declaration" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = self.text(name_node).to_string();
+                        let line = self.line_of(node);
+                        match scope {
+                            None => { let v = self.visibility_of(node); self.file_level_decl_row(&name, NONE, line, v); }
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                        }
+                    }
+                    if matches!(kind, "method_declaration" | "constructor_declaration") {
+                        self.emit_param_bindings(node);
+                    }
+                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                }
+                "field_declaration" | "enum_constant" => {
+                    if let Some(s) = scope {
+                        let names: Vec<Node<'t>> = if kind == "enum_constant" { node.child_by_field_name("name").into_iter().collect() } else { self.local_names(node) };
+                        for n in names {
+                            let name = self.text(n).to_string();
+                            let line = self.line_of(n);
+                            self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None);
+                        }
+                    }
+                }
+                "local_variable_declaration" => {
+                    if let Some(s) = scope {
+                        self.emit_local_rows_scoped(node, s);
+                    }
+                }
+                "object_creation_expression" => {
+                    // `new Runnable() { … }`: the walk mints an anonymous class
+                    // node spanning the expression, and its members scope to it.
+                    let has_body = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).any(|c| c.kind() == "class_body");
+                    if has_body {
+                        child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                    }
+                }
+                "import_declaration" => {
+                    let scoped = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "scoped_identifier");
+                    if let Some(scoped) = scoped {
+                        let fqn = self.text(scoped).to_string();
+                        self.import_row_of(node, &fqn);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(c) = node.named_child(i) {
+                    stack.push((c, child_scope));
+                }
+            }
+        }
+    }
+
+    // --- bindings (resolution-binding-model-plan.md, Phase 3: JVM) --------------------
+
+    /// The enclosing node's lines, or None at file level. The package
+    /// declaration's `namespace` node wraps every top-level declaration for
+    /// qualified names; it is not a scope.
+    fn enclosing_scope(&self) -> Option<(u32, u32)> {
+        let top = self.stack.last()?;
+        if top.kind == "file" || top.kind == "namespace" {
+            return None;
+        }
+        Some(self.tables.node_lines(top.row))
+    }
+
+    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
+        let name_ref = self.arena.put(name);
+        let (target_spec, target_name) = match target {
+            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
+            None => (NONE_STR, NONE_STR),
+        };
+        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
+        self.tables.push_binding(&BindingRow {
+            kind,
+            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+            node_idx,
+            scope_start: scope.0,
+            scope_end: scope.1,
+            name: name_ref,
+            target_spec,
+            target_name,
+            exported_as: if exported { name_ref } else { NONE_STR },
+            storage: storage_ref,
+            line,
+        });
+    }
+
+    /// A file-level declaration is `public` unless its modifier narrows it:
+    /// `private` and `internal` are not visible across files; `protected` is,
+    /// through subclasses; no modifier is Java's package-private.
+    fn file_level_decl_row(&mut self, name: &str, node_idx: u32, line: u32, visibility: Option<u8>) {
+        let (exported, storage) = match visibility {
+            Some(2) => (false, Some("private")),
+            Some(3) => (true, Some("protected")),
+            Some(4) => (false, Some("internal")),
+            Some(_) => (true, None),
+            None => (false, Some("package")),
+        };
+        self.push_binding_row(BINDING_DECL, name, node_idx, (1, self.line_count), line, None, exported, storage);
+    }
+
+    fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>, visibility: Option<u8>) {
+        // The package `namespace` node is qualified-name scaffolding, not a binding.
+        if matches!(kind, "file" | "import" | "namespace") {
+            return;
+        }
+        let line = self.line_of(node);
+        match self.enclosing_scope() {
+            None => self.file_level_decl_row(name, row, line, visibility),
+            Some(scope) => self.push_binding_row(BINDING_LOCAL, name, row, scope, line, None, false, None),
+        }
+    }
+
+    /// One `param` row per parameter name, scoped to the function.
+    fn emit_param_bindings(&mut self, node: Node<'t>) {
+        let scope = (self.line_of(node), node.end_position().row as u32 + 1);
+        let names = self.parameter_names(node);
+        for n in names {
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_PARAM, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    fn emit_local_rows(&mut self, node: Node<'t>) {
+        let Some(scope) = self.enclosing_scope() else { return };
+        self.emit_local_rows_scoped(node, scope);
+    }
+
+    fn emit_local_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
+        let names = self.local_names(node);
+        for n in names {
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    fn emit_import_binding(&mut self, local: &str, fqn: &str, node: Node<'t>) {
+        let line = self.line_of(node);
+        let line_count = self.line_count;
+        self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((fqn, local)), false, None);
     }
 
     /// extractCall — the Java method_invocation paths.

@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-09-12T05:59:28.692Z",
+  "corpus": "exposed",
+  "repo": "https://github.com/JetBrains/Exposed.git",
+  "commit": "2155404",
+  "codegraphSha": "8b63b8dd",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "exact-match": 36827,
+    "(none)": 25780,
+    "import": 8032,
+    "instance-method": 3899,
+    "framework": 2603,
+    "function-ref": 2263,
+    "qualified-name": 909,
+    "file-path": 229,
+    "fuzzy": 31
+  },
+  "edges": 80573,
+  "results": []
+}
