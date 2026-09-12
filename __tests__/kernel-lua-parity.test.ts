@@ -202,18 +202,16 @@ describe.skipIf(!kernelBuilt)('kernel Lua/Luau extraction parity', () => {
     expect(xs[0]!.id).toBe(xs[1]!.id);
   });
 
-  it('cross-dialect syntax defers to the wasm extractor', () => {
+  it('cross-dialect syntax (grammar-inherent errors) extracts natively', () => {
     // Luau syntax in a .lua file and a luau default type parameter both
-    // ERROR (grammar-inherent, both-arm) — the kernel defers per-file.
+    // ERROR (grammar-inherent, both-arm) — the kernel extracts what it can.
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/compound.lua', 'x += 1\n', 'lua')).toBeNull();
-    expect(
-      tryKernelExtract('src/defaultparam.luau', 'type S<T = U> = {}\n', 'luau')
-    ).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/compound.lua', 'x += 1\n', 'lua');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    const lua = tryKernelExtract('src/compound.lua', 'x += 1\n', 'lua');
+    expect(lua).not.toBeNull();
+    expect(lua!.nodes.some((n) => n.kind === 'file')).toBe(true);
+    const luau = tryKernelExtract('src/defaultparam.luau', 'type S<T = U> = {}\n', 'luau');
+    expect(luau).not.toBeNull();
+    expect(luau!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 });

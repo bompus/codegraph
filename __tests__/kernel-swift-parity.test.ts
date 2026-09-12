@@ -112,16 +112,18 @@ describe.skipIf(!kernelBuilt)('kernel Swift extraction parity', () => {
     assertParity('fixtures/torture.swift (crlf)', crlf, 40);
   });
 
-  it('files with parse errors defer to the wasm extractor (recovery is encoding-dependent)', () => {
+  it('files with parse errors are extracted natively (kernel recovery is canonical)', () => {
     // A NEW-only regression construct (`#if` between enum cases — the swift
     // checklist's grammar-bump delta 5) — errors on the 0.7.3 grammar.
     const broken = 'enum E {\n  case a\n#if DEBUG\n  case b\n#endif\n}\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/Broken.swift', broken, 'swift')).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/Broken.swift', broken, 'swift');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    // Error RECOVERY differs between UTF-8 (native) and UTF-16 (wasm), so
+    // the two arms may disagree on an erroring file; the kernel's tree is the
+    // canonical one (kernel-only-extraction-plan.md, Phase 1). It must still
+    // serve the file: a file node, never a null/defer.
+    const native = tryKernelExtract('src/Broken.swift', broken, 'swift');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 });

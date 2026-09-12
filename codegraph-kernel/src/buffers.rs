@@ -343,6 +343,42 @@ pub struct EmitOut {
     pub arena: Vec<u8>,
 }
 
+/// The wasm extractor's parse-collapse warning (tree-sitter.ts, #1522): a tree
+/// with errors that yielded no symbol at all is indexed but contributes
+/// nothing to the graph. Emitted as the file's only `errors` entry so the CLI
+/// can surface it exactly as the wasm path does. NONE_STR otherwise.
+pub fn parse_collapse_warning(
+    arena: &mut Arena,
+    tables: &Tables,
+    root_has_error: bool,
+    file_path: &str,
+) -> StrRef {
+    if !root_has_error {
+        return NONE_STR;
+    }
+    let file_kind = node_kind_index("file").unwrap_or(u8::MAX);
+    let symbols = tables
+        .nodes
+        .chunks(NODE_ROW_SIZE)
+        .filter(|row| row.first().copied() != Some(file_kind))
+        .count();
+    if symbols > 0 {
+        return NONE_STR;
+    }
+    let path_json: String = file_path
+        .chars()
+        .flat_map(|c| match c {
+            '"' => vec!['\\', '"'],
+            '\\' => vec!['\\', '\\'],
+            c => vec![c],
+        })
+        .collect();
+    let json = format!(
+        "[{{\"message\":\"{path_json}: parse produced no symbols (tree has errors) — the file is indexed but contributes nothing to the graph\",\"severity\":\"warning\",\"code\":\"parse_error\"}}]"
+    );
+    arena.put(&json)
+}
+
 pub fn build_meta(t: &Tables, arena_len: u32, errors_json: StrRef, duration_ms: f64) -> Vec<u8> {
     let mut m = Vec::with_capacity(META_SIZE);
     m.push(KERNEL_ABI_VERSION);

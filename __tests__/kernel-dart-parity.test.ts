@@ -158,21 +158,21 @@ describe.skipIf(!kernelBuilt)('kernel Dart extraction parity', () => {
     expect(viaKernel!.edges.some((e) => e.metadata?.valueRef === true)).toBe(false);
   });
 
-  it('empty object patterns defer (the dominant dart-3 error class)', () => {
+  it('empty object patterns (the dominant dart-3 error class) extract natively', () => {
     const broken = 'int f(Object x) => switch (x) { Init() => 1, _ => 0 };\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('lib/pat.dart', broken, 'dart')).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('lib/pat.dart', broken, 'dart');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    const native = tryKernelExtract('lib/pat.dart', broken, 'dart');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 
-  it('unnamed `library;` defers', () => {
+  it('unnamed `library;` extracts natively', () => {
     const broken = '/// Doc.\nlibrary;\n\nvoid f() {}\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('lib/lib.dart', broken, 'dart')).toBeNull();
+    const native = tryKernelExtract('lib/lib.dart', broken, 'dart');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'function' && n.name === 'f')).toBe(true);
   });
 });

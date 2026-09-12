@@ -140,9 +140,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
-    if tree.root_node().has_error() {
-        return Err("defer: parse tree contains errors — wasm recovery is canonical".to_string());
-    }
 
     let mut w = Walker {
         src: source,
@@ -195,7 +192,13 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     w.stack.pop();
 
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    let errors_json = crate::buffers::parse_collapse_warning(
+        &mut w.arena,
+        &w.tables,
+        tree.root_node().has_error(),
+        file_path,
+    );
+    let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
     Ok(EmitOut {
         meta,
         nodes: w.tables.nodes,

@@ -31,9 +31,10 @@ export { decodeExtractBuffers } from './decode';
 /**
  * Languages routed to the kernel by default (gate-passed only — see the
  * per-language tracker in docs/design/rust-kernel-migration-plan.md §4).
- * Per-file safety valve regardless of routing: a file whose parse tree
- * contains ERRORS defers to the wasm extractor (error recovery differs
- * between UTF-8 and UTF-16 parsing — wasm's recovery is canonical).
+ * Files whose parse tree contains ERRORS are extracted natively like any
+ * other (error recovery differs between UTF-8 and UTF-16 parsing; the
+ * kernel's recovery is canonical — kernel-only-extraction-plan.md, Phase 1).
+ * The only `defer:` left is the stack-overflow guard.
  */
 const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
   'typescript',
@@ -160,16 +161,16 @@ export function kernelRoutes(language: Language): boolean {
 const warned = new Set<string>();
 
 /**
- * One-slot defer memo. A file the kernel defers (parse errors → wasm) used to
- * pay the full pipeline again at every seam: the worker's raw try blanked +
- * native-parsed it, extractFromSource's kernel try blanked + native-parsed it
- * AGAIN, and the wasm extractor then re-applied preParse a third time. On a
- * high-deferral tree (the Linux kernel defers ~79% of files) that waste
- * dominated the arm's parse phase. The slot remembers the LAST deferred
- * (file, source, language) so (a) a repeat kernel attempt for the same file
- * short-circuits to null, and (b) the wasm fallback can reuse the
- * already-blanked source instead of re-running preParse. Source is matched by
- * string identity — the worker passes the same string through every seam.
+ * One-slot defer memo. A file the kernel defers (today: only the stack-overflow
+ * guard, stack.rs) would otherwise pay the full pipeline again at every seam:
+ * the worker's raw try blanked + native-parsed it, extractFromSource's kernel
+ * try blanked + native-parsed it AGAIN, and the wasm extractor then re-applied
+ * preParse a third time. The slot remembers the LAST deferred (file, source,
+ * language) so (a) a repeat kernel attempt for the same file short-circuits to
+ * null, and (b) the wasm fallback can reuse the already-blanked source instead
+ * of re-running preParse. Source is matched by string identity — the worker
+ * passes the same string through every seam. Goes away with the wasm path
+ * (kernel-only-extraction-plan.md, Phase 5).
  */
 let deferSlot: { filePath: string; source: string; language: Language; pre: string } | null = null;
 
@@ -310,9 +311,8 @@ export function tryKernelExtract(
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // `defer:` is the kernel's expected-routing signal (files with parse
-    // errors take the wasm path — its error RECOVERY is the canonical one;
-    // recovery differs between UTF-8 and UTF-16 parsing). Silent by design.
+    // `defer:` is the kernel's expected-routing signal (only the stack-overflow
+    // guard emits it now; the file takes the wasm path). Silent by design.
     if (message.includes('defer:')) {
       deferSlot = { filePath, source, language, pre };
       return null;

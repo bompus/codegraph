@@ -150,7 +150,7 @@ describe.skipIf(!kernelBuilt)('kernel C/C++ extraction parity', () => {
     assertParity(`fixtures/${name} (crlf)`, crlf, lang);
   });
 
-  it('spaced explicit-operator call sites defer to the wasm extractor (#1247 rides an ERROR node)', () => {
+  it('spaced explicit-operator call sites emit the operator ref natively (#1247 rides an ERROR node)', () => {
     const source = [
       'struct It { int operator*() const { return 1; } };',
       'int read_it(const It &it) { return it.operator *(); }',
@@ -158,25 +158,21 @@ describe.skipIf(!kernelBuilt)('kernel C/C++ extraction parity', () => {
     ].join('\n');
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/op.cpp', source, 'cpp')).toBeNull();
-    // The seam still serves the file — through the wasm path, where the
-    // operator-call recovery emits the `it.operator*` ref.
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/op.cpp', source, 'cpp');
-    delete process.env.CODEGRAPH_KERNEL;
+    // The ERROR-child scan in the kernel's extract_call used to be a no-op
+    // because erroring files deferred; it is live now and must match wasm.
+    const native = tryKernelExtract('src/op.cpp', source, 'cpp');
+    expect(native).not.toBeNull();
     expect(
-      viaWasm.unresolvedReferences.some((r) => r.referenceName === 'it.operator*')
+      native!.unresolvedReferences.some((r) => r.referenceName === 'it.operator*')
     ).toBe(true);
   });
 
-  it('files with parse errors defer to the wasm extractor (recovery is encoding-dependent)', () => {
+  it('files with parse errors are extracted natively (kernel recovery is canonical)', () => {
     const broken = 'void f( {\n  return }} 12 (\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/broken.c', broken, 'c')).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/broken.c', broken, 'c');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    const native = tryKernelExtract('src/broken.c', broken, 'c');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 });

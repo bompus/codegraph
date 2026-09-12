@@ -117,26 +117,29 @@ describe.skipIf(!kernelBuilt)('kernel Kotlin extraction parity', () => {
     });
   }
 
-  it('fun-interface files defer to the wasm extractor (grammar-inherent error)', () => {
+  it('fun-interface misparses mint the interface natively (recovery hook ported)', () => {
     const src = 'package p\n\nfun interface Transformer {\n    fun transform(x: Int): Int\n}\n\nfun after() { work() }\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/FunIface.kt', src, 'kotlin')).toBeNull();
+    const native = tryKernelExtract('src/FunIface.kt', src, 'kotlin');
+    expect(native).not.toBeNull();
+    // The misparse-recovery hook (languages/kotlin.ts) is ported: the kernel
+    // mints the interface node and keeps the sibling function.
+    expect(native!.nodes.some((n) => n.kind === 'interface' && n.name === 'Transformer')).toBe(true);
+    expect(native!.nodes.some((n) => n.kind === 'function' && n.name === 'after')).toBe(true);
+    // And matches the wasm arm on this shape.
     process.env.CODEGRAPH_KERNEL = '0';
     const viaWasm = extractFromSource('src/FunIface.kt', src, 'kotlin');
     delete process.env.CODEGRAPH_KERNEL;
-    // The wasm arm's misparse-recovery hook still mints the interface node.
     expect(viaWasm.nodes.some((n) => n.kind === 'interface' && n.name === 'Transformer')).toBe(true);
   });
 
-  it('PHANTOM errors defer too — hasError with a complete, ERROR-node-free CST', () => {
+  it('PHANTOM errors (hasError on a complete, ERROR-node-free CST) extract natively', () => {
     const src = 'abstract class A { abstract fun i(): Int }\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/Phantom.kt', src, 'kotlin')).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/Phantom.kt', src, 'kotlin');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'class' && n.name === 'A')).toBe(true);
+    const native = tryKernelExtract('src/Phantom.kt', src, 'kotlin');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'class' && n.name === 'A')).toBe(true);
   });
 });

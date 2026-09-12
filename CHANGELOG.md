@@ -152,6 +152,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- **Files with syntax errors are now read by the native engine too.** Until now any file whose parse produced errors, common in macro-heavy C and C++ headers, in Kotlin `fun interface` declarations, and in a few Dart, Scala and Swift shapes, was quietly handed back to the older engine so both would agree byte for byte. The native engine now reads every file it parses, including its own recovery of the Kotlin `fun interface` misparse, so those files no longer pay for a second parse and the graph reflects one engine's view. Re-index to pick this up.
+
 - Window `postMessage` hops now connect a publisher to the listener that checks the same message `source`, so a cross-script event flow can show up without inventing edges from the event name alone.
 
 - Broad code questions now retain matching readers and writers, complete test assertions, and more of the requested Vue column and cell source.

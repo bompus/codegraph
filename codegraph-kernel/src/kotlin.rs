@@ -18,9 +18,9 @@
 //! receiver `com::qext` bug, the paren-then-lambda `trailing()` garbage
 //! callee, and the packaged-file value-ref target drop (namespace parents are
 //! not accepted). The fun-interface misparse-recovery hook branches are
-//! DEFER-SHIELDED (every such file has_error → wasm) and are not ported.
-//! Positions in UTF-16 code units. Expected deferral 4.7–8.5% (both-arm,
-//! grammar-inherent — incl. phantom errors: trust the has_error FLAG).
+//! ported below (erroring files are extracted natively since Phase 1 of
+//! kernel-only-extraction-plan.md; phantom hasError files were always clean).
+//! Positions in UTF-16 code units.
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
@@ -214,11 +214,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
-    if tree.root_node().has_error() {
-        // Includes the PHANTOM errors (complete CSTs with hasError set) and
-        // every fun-interface misparse — trust the flag, wasm is canonical.
-        return Err("defer: parse tree contains errors — wasm recovery is canonical".to_string());
-    }
 
     let mut w = Walker {
         src: source,
@@ -301,7 +296,13 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     w.stack.pop();
 
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    let errors_json = crate::buffers::parse_collapse_warning(
+        &mut w.arena,
+        &w.tables,
+        tree.root_node().has_error(),
+        file_path,
+    );
+    let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
     Ok(EmitOut {
         meta,
         nodes: w.tables.nodes,
@@ -677,8 +678,7 @@ impl<'t> Walker<'t> {
         if mods.is_empty() { None } else { Some(mods) }
     }
 
-    // --- the visitNode hook (property branch ONLY — fun-interface recovery is
-    // defer-shielded and not ported) ------------------------------------------------
+    // --- the visitNode hook (fun-interface recovery + property branch) ----------------
 
     /// A property's node kind, or None when the declaration mints no node at
     /// all: destructuring, an unreadable name, or a local (inside a function
@@ -734,6 +734,38 @@ impl<'t> Walker<'t> {
         })
     }
 
+    /// isFunInterfaceNode (languages/kotlin.ts): a `fun` keyword child plus a
+    /// `user_type` whose type_identifier reads `interface`, directly or inside
+    /// an ERROR child.
+    fn is_fun_interface_node(&self, node: Node<'t>) -> bool {
+        let user_type_is_interface = |ut: Node<'t>| -> bool {
+            (0..ut.named_child_count())
+                .filter_map(|i| ut.named_child(i))
+                .any(|c| c.kind() == "type_identifier" && self.text(c) == "interface")
+        };
+        let mut has_fun = false;
+        let mut has_interface = false;
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            if child.kind() == "fun" && !child.is_named() {
+                has_fun = true;
+            }
+            if child.kind() == "user_type" && user_type_is_interface(child) {
+                has_interface = true;
+            }
+            if child.kind() == "ERROR" {
+                for j in 0..child.child_count() {
+                    if let Some(gc) = child.child(j) {
+                        if gc.kind() == "user_type" && user_type_is_interface(gc) {
+                            has_interface = true;
+                        }
+                    }
+                }
+            }
+        }
+        has_fun && has_interface
+    }
+
     fn try_visit_hook(&mut self, node: Node<'t>) -> bool {
         // An own-line accessor already walked by its owning property below. The
         // ownership test re-derives the property's kind rather than remembering
@@ -743,6 +775,83 @@ impl<'t> Walker<'t> {
             return accessor_owner(node)
                 .and_then(|owner| self.property_kind(owner))
                 .is_some();
+        }
+        // Kotlin `fun interface` misparse recovery (languages/kotlin.ts visitNode
+        // hook). tree-sitter-kotlin has no `fun interface` production, so the
+        // declaration lands as (1) a top-level ERROR node followed by a sibling
+        // lambda_literal holding the body, or (2) a function_declaration whose
+        // real name sits inside an ERROR child. Mint the interface node; walk a
+        // pattern-1 body; skip the lambda_literal a pattern-1 ERROR consumed.
+        if node.kind() == "lambda_literal" {
+            if let Some(prev) = node.prev_sibling() {
+                if prev.kind() == "ERROR" && self.is_fun_interface_node(prev) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if matches!(node.kind(), "ERROR" | "function_declaration") {
+            // An ERROR that is a mangled class BODY (starts with `{`) holds the
+            // parent's methods; resolve_body walks it — never consume it here.
+            let body_error = node.kind() == "ERROR"
+                && node.child(0).map(|c| c.kind() == "{").unwrap_or(false);
+            if !body_error && self.is_fun_interface_node(node) {
+                let mut name: Option<String> = None;
+                if node.kind() == "function_declaration" {
+                    'outer: for i in 0..node.child_count() {
+                        let Some(child) = node.child(i) else { continue };
+                        if child.kind() != "ERROR" {
+                            continue;
+                        }
+                        for j in 0..child.child_count() {
+                            if let Some(gc) = child.child(j) {
+                                if gc.kind() == "simple_identifier" {
+                                    name = Some(self.text(gc).to_string());
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+                if name.is_none() {
+                    for i in 0..node.child_count() {
+                        if let Some(child) = node.child(i) {
+                            if child.kind() == "simple_identifier" {
+                                name = Some(self.text(child).to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                let Some(name) = name else { return false };
+                let extra = Extra {
+                    docstring: preceding_docstring(node, self.src),
+                    ..Extra::default()
+                };
+                let Some(row) = self.create_node("interface", &name, node, extra) else {
+                    return false;
+                };
+                self.stack.push(Scope { row, kind: "interface", name });
+                if node.kind() == "ERROR" {
+                    if let Some(next) = node.next_sibling() {
+                        if next.kind() == "lambda_literal" {
+                            for i in 0..next.named_child_count() {
+                                let Some(child) = next.named_child(i) else { continue };
+                                if child.kind() != "statements" {
+                                    continue;
+                                }
+                                for j in 0..child.named_child_count() {
+                                    if let Some(stmt) = child.named_child(j) {
+                                        self.visit_node(stmt);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                self.stack.pop();
+                return true;
+            }
         }
         if node.kind() != "property_declaration" {
             return false;
