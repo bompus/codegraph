@@ -173,6 +173,8 @@ Tests: `__tests__/bindings-tsjs.test.ts` (every new row form) and `__tests__/bin
 
 **Windows validation (2026-09-12).** `fork/consolidated` at `91902770` (PRs #29, #30, #31) on the Windows-local checkout (`C:\Users\bompus\src\codegraph-win`, Node 26.8.1, cargo 1.98.1, MSVC): `npm ci`, `bash scripts/build-kernel.sh` (53 s, 76 MB `win32-x64` prebuild, no source change needed), `npm run build`; the 14 binding-model and kernel suites pass (426 tests, golden dumps byte-identical), and the full suite passes: 268 files, 4,736 tests, 7 files skipped by the POSIX-only gates.
 
+**Windows validation of Phase 3 (2026-09-12).** `fork/consolidated` at `105210e3` (PRs #33 to #37: Python, Go, Java/Kotlin, PHP, C/C++) on the same Windows checkout: `npm ci`, `bash scripts/build-kernel.sh` (31 s, 76 MB `win32-x64` prebuild, no source change needed), `npm run build`; the 11 binding-model and kernel suites pass (995 tests, golden dumps byte-identical), and the full suite passes: 273 files, 4,766 tests, 7 files skipped by the POSIX-only gates.
+
 ### Phase 3: other languages
 
 Per language, in order of resolver regex weight: Python, Go, Java/Kotlin, C/C++ (`storage='static'`), Rust (visibility), PHP, Ruby, C#, Swift. Each phase deletes that language's import-extractor regex and its rows in the receiver inference table.
