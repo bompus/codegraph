@@ -1,7 +1,7 @@
 /**
  * `index` / `init` command supervision regression test (#999, secondary issues).
  *
- * `codegraph index` runs in a child re-exec'd with `--liftoff-only` whose parent
+ * `codegraph index` may run in a child of a launcher shim whose parent
  * blocks in `spawnSync` and so cannot forward a signal — when the parent shim is
  * killed the indexer used to keep running, orphaned, pinning a CPU core. The
  * `#850` liveness watchdog and `#277` ppid watchdog were also wired only into

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { extractFromSource } from '../src/extraction';
-import { getParser, initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { parseSourceTreeSync } from '../src/extraction/parse-tree';
 
 function rawStringSource(delimiter: string): string {
   return `const char* kTemplate = R"${delimiter}(
@@ -61,7 +62,7 @@ describe('C++ raw-string delimiter parse collapse (#1522)', () => {
 
   it('does not warn on parse errors when a function survives', () => {
     const source = 'int before_the_raw_string() { return 0; }\n' + rawStringSource('FILE_TEMPLATE_V1');
-    const tree = getParser('cpp')!.parse(source)!;
+    const tree = parseSourceTreeSync(source, 'cpp')!;
     try {
       expect(tree.rootNode.hasError).toBe(true);
     } finally {

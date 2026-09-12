@@ -157,9 +157,32 @@ function verifyContract(mod: KernelModule, from: string): boolean {
 
 /**
  * Load (once per process) and return the kernel module, or null when
- * unavailable. The kill switch is NOT checked here — callers route through
- * `kernelAvailable()` / `tryKernelExtract()` which check it per call.
+ * unavailable. Fail-soft callers (feature probes, tests that skip without a
+ * binary) use this; parse-time callers use {@link requireKernel}.
  */
+/** Thrown by {@link requireKernel} when no usable kernel binary was found. */
+export class KernelUnavailableError extends Error {
+  constructor(readonly searched: string[]) {
+    super(
+      `CodeGraph's native engine (codegraph-kernel.node for ${process.platform}-${process.arch}) was not found. ` +
+        `Looked in: ${searched.join(', ')}. ` +
+        `Install a release bundle for this platform, or build from source with \`npm run build:kernel\` (needs a Rust toolchain).`
+    );
+    this.name = 'KernelUnavailableError';
+  }
+}
+
+/**
+ * The kernel, or a {@link KernelUnavailableError}. Since the wasm path was
+ * removed (kernel-only-extraction-plan.md, Phase 5) there is no other parser,
+ * so every parse-time caller goes through this rather than tolerating null.
+ */
+export function requireKernel(): KernelModule {
+  const k = getKernel();
+  if (!k) throw new KernelUnavailableError(candidatePaths());
+  return k;
+}
+
 export function getKernel(): KernelModule | null {
   if (cached !== undefined) return cached;
   cached = null;

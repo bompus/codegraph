@@ -26,11 +26,11 @@
     "build:ui": "cd ui && npm run build && cd .. && node scripts/check-ui-build.mjs",
     "build:lib": "cd ui && npm run build:lib",
     "preuninstall": "node dist/bin/uninstall.js",
-    "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f))\"",
+    "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql')\"",
     "dev": "tsc --watch",
     "build:kernel": "bash scripts/build-kernel.sh",
     "cli": "npm run build && node dist/bin/codegraph.js",
-    "pretest": "npm run check:agent-docs",
+    "pretest": "npm run check:agent-docs && node scripts/ensure-kernel.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:eval": "vitest run __tests__/evaluation/",
@@ -52,9 +52,7 @@
     "ignore": "^7.0.5",
     "jsonc-parser": "^3.3.1",
     "picomatch": "^4.0.3",
-    "sisteransi": "^1.0.5",
-    "tree-sitter-wasms": "^0.1.11",
-    "web-tree-sitter": "^0.25.3"
+    "sisteransi": "^1.0.5"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
@@ -66,6 +64,6 @@
     "vitest": "^2.1.9"
   },
   "engines": {
-    "node": ">=20.0.0 <25.0.0"
+    "node": ">=20.0.0"
   }
 }

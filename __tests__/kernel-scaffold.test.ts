@@ -5,8 +5,7 @@
  * per-file fallback. These are SCAFFOLD tests — behavioral parity with the
  * wasm extractors is R3's equivalence gate, not asserted here.
  *
- * The kernel binary is optional: without a staged .node
- * (scripts/build-kernel.sh) the suite skips. CI that builds the kernel sets
+ * Without a staged .node (scripts/build-kernel.sh) the suite skips. CI that builds the kernel sets
  * CODEGRAPH_KERNEL_EXPECT=1, which turns "missing binary" into a FAILURE so
  * the gate can't silently pass by not building the kernel.
  */
@@ -40,7 +39,7 @@ const FIXTURE = [
   '',
 ].join('\n');
 
-const ENV_KEYS = ['CODEGRAPH_KERNEL', 'CODEGRAPH_KERNEL_LANGS', 'CODEGRAPH_KERNEL_PATH'] as const;
+const ENV_KEYS = ['CODEGRAPH_KERNEL_PATH'] as const;
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -72,22 +71,16 @@ describe.skipIf(!kernelBuilt)('kernel scaffold', () => {
     expect(info.languages).toContain('javascript');
   });
 
-  it('TS/JS family + Java + Python + Go route to the kernel by default; others stay wasm', () => {
-    for (const lang of ['typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go', 'ruby', 'php', 'swift', 'kotlin', 'scala'] as const) {
+  it('every walker language routes; a parse-only language takes the generic extractor', () => {
+    for (const lang of ['typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go', 'ruby', 'php', 'swift', 'kotlin', 'scala', 'c', 'cpp', 'rust', 'csharp', 'r', 'lua', 'luau', 'dart'] as const) {
       expect(kernelRoutes(lang), lang).toBe(true);
     }
+    // Pascal has a grammar in the kernel (parse_tree) but no walker.
     expect(kernelRoutes('pascal')).toBe(false);
     expect(tryKernelExtract('src/a.pas', 'program A;\nbegin\nend.\n', 'pascal')).toBeNull();
-    // CODEGRAPH_KERNEL_LANGS REPLACES the default set when present.
-    process.env.CODEGRAPH_KERNEL_LANGS = 'tsx';
-    expect(kernelRoutes('typescript')).toBe(false);
-    expect(kernelRoutes('tsx')).toBe(true);
   });
 
-  describe('with typescript routed (CODEGRAPH_KERNEL_LANGS)', () => {
-    beforeEach(() => {
-      process.env.CODEGRAPH_KERNEL_LANGS = 'typescript';
-    });
+  describe('typescript walker output', () => {
 
     it('decodes nodes, contains edges, and calls refs from the buffers', () => {
       const result = tryKernelExtract('src/utils.ts', FIXTURE, 'typescript');
@@ -148,19 +141,9 @@ describe.skipIf(!kernelBuilt)('kernel scaffold', () => {
       }
     });
 
-    it('CODEGRAPH_KERNEL=0 kill switch disables routing', () => {
-      process.env.CODEGRAPH_KERNEL = '0';
-      expect(kernelRoutes('typescript')).toBe(false);
-      expect(tryKernelExtract('src/a.ts', FIXTURE, 'typescript')).toBeNull();
-    });
 
-    it('languages outside the route stay on the wasm path', () => {
-      expect(kernelRoutes('javascript')).toBe(false);
-      expect(tryKernelExtract('src/a.js', 'function f() {}', 'javascript')).toBeNull();
-    });
 
     it('tsx routes with its own entry and returns a graph', () => {
-      process.env.CODEGRAPH_KERNEL_LANGS = 'typescript,tsx';
       const result = tryKernelExtract(
         'src/App.tsx',
         'export function App() { return render(); }\n',
@@ -178,24 +161,20 @@ describe.skipIf(!kernelBuilt)('kernel scaffold', () => {
     });
 
     it('kill switch routes through the wasm extractor unchanged', () => {
-      process.env.CODEGRAPH_KERNEL = '0';
       const result = extractFromSource('src/a.ts', 'export const f = () => 1;\n', 'typescript');
       expect(result.nodes.some((n) => n.kind === 'function' && n.name === 'f')).toBe(true);
-      delete process.env.CODEGRAPH_KERNEL;
       // Default-routed path produces the same node (R2 parity).
       const viaKernel = extractFromSource('src/a.ts', 'export const f = () => 1;\n', 'typescript');
       expect(viaKernel.nodes.some((n) => n.kind === 'function' && n.name === 'f')).toBe(true);
     });
 
     it('routed language takes the kernel and falls back per file on kernel absence', () => {
-      process.env.CODEGRAPH_KERNEL_LANGS = 'typescript';
       const viaKernel = extractFromSource('src/utils.ts', FIXTURE, 'typescript');
       expect(viaKernel.nodes.map((n) => n.kind)).toContain('method');
 
       // Point the loader at a nonexistent binary: routing is requested but the
       // kernel can't load, so the SAME call must fall back to wasm, not fail.
-      process.env.CODEGRAPH_KERNEL_PATH = path.join(__dirname, 'nope', 'missing.node');
-      process.env.CODEGRAPH_KERNEL = '0'; // and belt-and-braces the kill switch
+      process.env.CODEGRAPH_KERNEL_PATH = path.join(__dirname, 'nope', 'missing.node'); // and belt-and-braces the kill switch
       resetKernelForTests();
       const viaWasm = extractFromSource('src/utils.ts', FIXTURE, 'typescript');
       expect(viaWasm.nodes.some((n) => n.kind === 'class' && n.name === 'MathHelper')).toBe(true);

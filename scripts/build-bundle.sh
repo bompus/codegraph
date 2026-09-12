@@ -55,11 +55,11 @@ else
 fi
 [ -f "$NODE_BIN" ] || { echo "[bundle] error: node binary not found ($NODE_BIN)" >&2; exit 1; }
 
-# 2. Build the app (compiled JS + copied wasm/schema assets).
+# 2. Build the app (compiled JS + copied schema asset).
 echo "[bundle] building app"
 ( cd "$ROOT" && npm run build >/dev/null )
 
-# 3. Stage: app + production-only deps (pure JS/wasm → portable across platforms).
+# 3. Stage: app + production-only deps (pure JS → portable across platforms).
 STAGE="$WORK/codegraph-${TARGET}"
 mkdir -p "$STAGE/lib" "$STAGE/bin"
 cp -R "$ROOT/dist" "$STAGE/lib/dist"
@@ -77,13 +77,10 @@ echo "[bundle] installing production dependencies"
 ( cd "$STAGE/lib" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 )
 rm -f "$STAGE/lib/package-lock.json"
 
-# 3b. Native extraction kernel (optional). Included when a prebuilt .node for
-#     the target exists — release/kernel/<target>/codegraph-kernel.node (the
-#     release workflow's prebuild artifacts) or the locally staged
-#     codegraph-kernel/prebuilds/<target>/ (scripts/build-kernel.sh). Absent →
-#     the bundle simply runs the wasm extraction path; the kernel is a
-#     per-language speedup, never a requirement (see
-#     docs/design/rust-kernel-migration-plan.md).
+# 3b. Native extraction kernel (REQUIRED — it is the only parser). Taken from
+#     release/kernel/<target>/codegraph-kernel.node (the release workflow's
+#     prebuild artifacts) or the locally staged codegraph-kernel/prebuilds/
+#     <target>/ (scripts/build-kernel.sh). Absent → the bundle is not built.
 KERNEL_NODE=""
 for candidate in "$ROOT/release/kernel/${TARGET}/codegraph-kernel.node" \
                  "$ROOT/codegraph-kernel/prebuilds/${TARGET}/codegraph-kernel.node"; do
@@ -94,23 +91,17 @@ if [ -n "$KERNEL_NODE" ]; then
   cp "$KERNEL_NODE" "$STAGE/lib/kernel/codegraph-kernel.node"
   echo "[bundle] native kernel included ($KERNEL_NODE)"
 else
-  echo "[bundle] no native kernel for ${TARGET} — bundle uses the wasm extraction path"
+  echo "[bundle] ERROR: no native kernel for ${TARGET} — the kernel is the only parser (build it with scripts/build-kernel.sh --target <triple>)" >&2
+  exit 1
 fi
 
 # 4. Vendored Node + launcher (the launcher uses the bundled Node by relative
 #    path, so no system Node is ever needed).
 #
-# `--liftoff-only`: keep tree-sitter's large WASM grammars on V8's Liftoff
-# baseline compiler so they never reach the turboshaft optimizing tier, whose
-# per-compilation Zone arena OOMs the whole process (`Fatal process out of
-# memory: Zone`) on Node >= 22 — even with tens of GB free. The flag is read at
-# V8 engine init so it must be on node's command line; the parse worker inherits
-# it. See issues #293/#298 and src/extraction/wasm-runtime-flags.ts. (The CLI
-# also self-relaunches with this flag when launched without it, so non-bundled
-# runs are covered too; passing it here avoids that extra spawn.)
+# --disable-warning=ExperimentalWarning: node:sqlite's warning is noise for users.
 if [ "$OSFAM" = "win32" ]; then
   cp "$NODE_BIN" "$STAGE/node.exe"
-  printf '@"%%~dp0..\\node.exe" --liftoff-only --disable-warning=ExperimentalWarning "%%~dp0..\\lib\\dist\\bin\\codegraph.js" %%*\r\n' \
+  printf '@"%%~dp0..\\node.exe" --disable-warning=ExperimentalWarning "%%~dp0..\\lib\\dist\\bin\\codegraph.js" %%*\r\n' \
     > "$STAGE/bin/codegraph.cmd"
 else
   cp "$NODE_BIN" "$STAGE/node"
@@ -132,10 +123,9 @@ DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 # an already-threaded value (the npm shim sets the true host pid) wins.
 CODEGRAPH_HOST_PPID="${CODEGRAPH_HOST_PPID:-$PPID}"
 export CODEGRAPH_HOST_PPID
-# --liftoff-only: avoid the V8 turboshaft WASM Zone OOM (issues #293/#298).
 # --disable-warning=ExperimentalWarning: mute node:sqlite's per-thread
 # "experimental feature" warning that otherwise interleaves with the progress UI.
-exec "$DIR/node" --liftoff-only --disable-warning=ExperimentalWarning "$DIR/lib/dist/bin/codegraph.js" "$@"
+exec "$DIR/node" --disable-warning=ExperimentalWarning "$DIR/lib/dist/bin/codegraph.js" "$@"
 LAUNCH
   chmod +x "$STAGE/bin/codegraph"
 fi

@@ -16,7 +16,7 @@
  * claims" is exactly where this breaks.
  *
  * These run against the real grammars, which live in `src/extraction/wasm/`
- * and `tree-sitter-wasms` — the same ones indexing uses — so unlike the Shiki
+ * compiled into the native kernel — the same ones indexing uses — so unlike the Shiki
  * era there is nothing to build first and nothing to skip.
  */
 
@@ -35,7 +35,8 @@ import {
   type HighlightResult,
 } from '../src/ui-server/highlight';
 import { classifyTree, syntaxRegionsFor } from '../src/extraction/syntax-tokens';
-import { getParser, initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { parseSourceTreeSync } from '../src/extraction/parse-tree';
 import { LANGUAGES } from '../src/types';
 import { decodeLine, type Token } from '../ui/src/lib/highlight';
 import { assignRefs, type LineRef } from '../ui/src/lib/symbol-model';
@@ -433,10 +434,9 @@ describe('the classifier itself', () => {
       .slice(0, 40_000);
     await initGrammars();
     await loadGrammarsForLanguages(['typescript']);
-    const parser = getParser('typescript');
-    expect(parser).not.toBeNull();
-    const tree = (parser as NonNullable<typeof parser>).parse(source);
-    const spans = classifyTree((tree as NonNullable<typeof tree>).rootNode, source, 'typescript');
+    const tree = parseSourceTreeSync(source, 'typescript');
+    expect(tree).not.toBeNull();
+    const spans = classifyTree(tree!.rootNode, source, 'typescript');
 
     expect(spans.length).toBeGreaterThan(1000);
     let previous = 0;

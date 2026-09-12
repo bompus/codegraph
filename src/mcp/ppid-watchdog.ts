@@ -28,7 +28,7 @@ export interface SupervisionState {
   /**
    * The MCP host pid threaded past an intermediate launcher
    * (`CODEGRAPH_HOST_PPID`), or null when unknown — e.g. the standalone bundle,
-   * which pre-bakes `--liftoff-only` and so never runs the relaunch that sets it.
+   * which sets it for the child it spawns.
    */
   hostPpid: number | null;
   /** Liveness probe — `process.kill(pid, 0)` in production, stubbed in tests. */
@@ -81,7 +81,7 @@ export function parsePpidPollMs(raw: string | undefined): number {
 }
 
 /**
- * Parse the host PID propagated across the `--liftoff-only` re-exec
+ * Parse the host PID propagated by a launcher shim
  * (`CODEGRAPH_HOST_PPID`). Returns a positive integer PID, or null when
  * unset/invalid — the direct-launch path, where the watchdog falls back to
  * `process.ppid` divergence. PIDs of 0/1 are rejected (0 = unknown, 1 = init,

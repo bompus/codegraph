@@ -205,31 +205,6 @@ describe('ParseWorkerPool', () => {
     await pool.destroy();
   });
 
-  it('forwards pre-read grammar WASM bytes to every spawned worker (#1231 respawn I/O fix)', async () => {
-    const grammarBuffers = { typescript: new Uint8Array([1, 2, 3]) };
-    const loadMsgs: Array<{ grammarBuffers?: Record<string, Uint8Array> }> = [];
-    let worker!: FakeWorker;
-    const pool = new ParseWorkerPool({
-      languages: ['typescript'] as Language[],
-      size: 1,
-      grammarBuffers,
-      createWorker: () => {
-        worker = new FakeWorker(() => ({ result: result() }));
-        const orig = worker.postMessage.bind(worker);
-        worker.postMessage = (msg: unknown) => {
-          const m = msg as { type: string; grammarBuffers?: Record<string, Uint8Array> };
-          if (m.type === 'load-grammars') loadMsgs.push(m);
-          orig(msg);
-        };
-        return worker;
-      },
-    });
-    await pool.requestParse(task('a.ts'));
-    expect(loadMsgs).toHaveLength(1);
-    expect(loadMsgs[0].grammarBuffers).toBe(grammarBuffers);
-    await pool.destroy();
-  });
-
   it('serves a queue larger than the pool size', async () => {
     const { pool } = makePool(2, (m) => ({ result: result(Number(m.filePath.replace(/\D/g, ''))) }));
     const ps = Array.from({ length: 10 }, (_, i) => pool.requestParse(task(`${i}.ts`)));

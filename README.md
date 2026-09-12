@@ -124,7 +124,7 @@ run.** They describe the recorded cost of each revision; no controlled speed
 difference is claimed. The fork also indexes 84 more files.
 
 Both batches used Windows x64, Node 24.16.0, `--liftoff-only`, telemetry disabled,
-compiled JavaScript, and verified native kernels with per-file WASM fallback.
+compiled JavaScript, and verified native kernels (the wasm fallback that then existed was removed later).
 Each sample used a fresh index directory and an untimed `init`, which indexes
 and warms the corpus, before timing the full `index` process including startup
 and shutdown. These are warm full-reindex timings, not cold initial-index timings.
@@ -394,7 +394,7 @@ With the index available, the agent answers from one to four `codegraph_explore`
 
 ## Built for speed — the Rust kernel
 
-CodeGraph's parsing engine is a **native Rust kernel**: 20 languages — TypeScript, JavaScript, Java, Python, Go, C, C++, Rust, C#, Ruby, PHP, Swift, Kotlin, Scala, Dart, R, Lua, Luau (Metal and CUDA ride the C++ path) — parse in compiled code with one boundary crossing per file. Every language shipped only after its graphs proved **byte-for-byte identical** to the reference engine on real repositories, from small libraries up to the Linux kernel; platforms without a prebuilt binary and files with syntax errors fall back per-file automatically, same graph either way.
+CodeGraph's parsing engine is a **native Rust kernel**, and it is the only parser: every supported grammar is compiled into it. 20 languages — TypeScript, JavaScript, Java, Python, Go, C, C++, Rust, C#, Ruby, PHP, Swift, Kotlin, Scala, Dart, R, Lua, Luau (Metal and CUDA ride the C++ path) — parse in compiled code with one boundary crossing per file. Every language shipped only after its graphs proved **byte-for-byte identical** to the reference engine on real repositories, from small libraries up to the Linux kernel; the remaining languages are parsed by the kernel and walked by the generic extractor over its tree. Files with syntax errors are extracted from the native parse's recovery. Platforms: macOS (x64, arm64), Linux glibc (x64, arm64), Windows (x64, arm64); others need a from-source kernel build.
 
 **And it scales itself to the machine it's on.** Worker pools, parallel resolution, and analysis caches are sized from what the system actually has — real core counts (container/cgroup-aware, so a VPS that grants 2 cores gets sized for 2, not the host's 64), honestly-measured available RAM on macOS and Linux, and the measured cost of *your* project's resolution work:
 

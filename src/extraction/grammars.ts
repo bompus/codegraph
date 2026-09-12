@@ -1,56 +1,56 @@
 /**
- * Grammar Loading and Caching
+ * Language detection and the language table.
  *
- * Uses web-tree-sitter (WASM) for universal cross-platform support.
- * Grammars are loaded lazily — only languages actually present in the project
- * are compiled, keeping V8 WASM memory pressure low on large codebases.
+ * Which file extension is which language, which languages have a grammar in
+ * the native kernel, and which are handled by custom extractors. Parsing
+ * itself lives in parse-tree.ts (the kernel is the only parser since Phase 5
+ * of docs/design/kernel-only-extraction-plan.md).
  */
 
-import * as path from 'path';
-import * as fsp from 'fs/promises';
-import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
 
 export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'liquid' | 'razor' | 'yaml' | 'twig' | 'xml' | 'properties' | 'markdown' | 'unknown'>;
 
 /**
- * WASM filename map — maps each language to its .wasm grammar file
- * in the tree-sitter-wasms package.
+ * Every language the native kernel carries a grammar for (codegraph-kernel/src/
+ * langs.rs). `tsx` and `jsx` ride another grammar there, exactly as they did
+ * on the wasm side. This is the single list `isLanguageSupported`,
+ * `hasTreeSitterGrammar` and `getSupportedLanguages` answer from.
  */
-const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
-  typescript: 'tree-sitter-typescript.wasm',
-  tsx: 'tree-sitter-tsx.wasm',
-  javascript: 'tree-sitter-javascript.wasm',
-  jsx: 'tree-sitter-javascript.wasm',
-  python: 'tree-sitter-python.wasm',
-  go: 'tree-sitter-go.wasm',
-  rust: 'tree-sitter-rust.wasm',
-  java: 'tree-sitter-java.wasm',
-  c: 'tree-sitter-c.wasm',
-  cpp: 'tree-sitter-cpp.wasm',
-  csharp: 'tree-sitter-c_sharp.wasm',
-  php: 'tree-sitter-php.wasm',
-  ruby: 'tree-sitter-ruby.wasm',
-  swift: 'tree-sitter-swift.wasm',
-  kotlin: 'tree-sitter-kotlin.wasm',
-  dart: 'tree-sitter-dart.wasm',
-  pascal: 'tree-sitter-pascal.wasm',
-  scala: 'tree-sitter-scala.wasm',
-  lua: 'tree-sitter-lua.wasm',
-  r: 'tree-sitter-r.wasm',
-  luau: 'tree-sitter-luau.wasm',
-  objc: 'tree-sitter-objc.wasm',
-  cfml: 'tree-sitter-cfml.wasm',
-  cfscript: 'tree-sitter-cfscript.wasm',
-  cfquery: 'tree-sitter-cfquery.wasm',
-  cobol: 'tree-sitter-cobol.wasm',
-  vbnet: 'tree-sitter-vbnet.wasm',
-  erlang: 'tree-sitter-erlang.wasm',
-  solidity: 'tree-sitter-solidity.wasm',
-  terraform: 'tree-sitter-terraform.wasm',
-  arkts: 'tree-sitter-arkts.wasm',
-  nix: 'tree-sitter-nix.wasm',
-};
+const GRAMMAR_LANGUAGES: ReadonlySet<GrammarLanguage> = new Set<GrammarLanguage>([
+  'typescript',
+  'tsx',
+  'javascript',
+  'jsx',
+  'python',
+  'go',
+  'rust',
+  'java',
+  'c',
+  'cpp',
+  'csharp',
+  'php',
+  'ruby',
+  'swift',
+  'kotlin',
+  'dart',
+  'pascal',
+  'scala',
+  'lua',
+  'r',
+  'luau',
+  'objc',
+  'cfml',
+  'cfscript',
+  'cfquery',
+  'cobol',
+  'vbnet',
+  'erlang',
+  'solidity',
+  'terraform',
+  'arkts',
+  'nix',
+]);
 
 /**
  * File extension to Language mapping
@@ -231,244 +231,18 @@ export function isPlayRoutesFile(filePath: string): boolean {
 }
 
 /**
- * Caches for loaded grammars and parsers
+ * Grammar loading is a no-op since the wasm path was removed
+ * (docs/design/kernel-only-extraction-plan.md, Phase 5): every grammar is
+ * compiled into the native kernel and parsing goes through
+ * `parseSourceTreeSync` (parse-tree.ts). These entry points are kept so the
+ * public API (`src/index.ts`) and the many callers that "warm" grammars keep
+ * working unchanged; they resolve immediately.
  */
-const parserCache = new Map<Language, Parser>();
-const languageCache = new Map<Language, WasmLanguage>();
-const unavailableGrammarErrors = new Map<Language, string>();
+export async function initGrammars(): Promise<void> {}
 
-let parserInitialized = false;
+export async function loadGrammarsForLanguages(_languages: Language[]): Promise<void> {}
 
-/**
- * Initialize the tree-sitter WASM runtime. Must be called before loading grammars.
- * Does NOT load any grammar WASM files — use loadGrammarsForLanguages() for that.
- * Idempotent — safe to call multiple times.
- */
-export async function initGrammars(): Promise<void> {
-  if (parserInitialized) return;
-
-  await Parser.init();
-
-  parserInitialized = true;
-}
-
-/**
- * Grammars that ship their own vendored WASMs under `dist/extraction/wasm/`
- * (not in tree-sitter-wasms, or the tree-sitter-wasms build is too old).
- * Lua: tree-sitter-wasms ships an ABI-13 build that corrupts the shared WASM
- * heap under web-tree-sitter 0.25 (drops nested calls/imports on every file
- * after the first); we vendor the upstream ABI-15 wasm instead. C#: the
- * tree-sitter-wasms build (ABI 13) has no primary-constructor support and
- * parses `class Foo(...)` as an ERROR that swallows the whole class (#237); we
- * vendor the upstream ABI-15 tree-sitter-c-sharp 0.23.5 wasm, which parses
- * primary constructors natively. Terraform: tree-sitter-wasms does not ship
- * HCL/Terraform at all, so we vendor the prebuilt tree-sitter-terraform.wasm
- * from @tree-sitter-grammars/tree-sitter-hcl 1.2.0 (Apache-2.0) —
- * byte-identical to the npm package's artifact. ArkTS: tree-sitter-wasms
- * doesn't ship it either; we vendor the prebuilt tree-sitter-arkts.wasm from
- * the tree-sitter-arkts 0.2.0 npm package (harmony-contrib/tree-sitter-arkts,
- * MIT) — byte-identical to the npm tarball's artifact. It extends the
- * tree-sitter-javascript grammar the same way tree-sitter-typescript does,
- * adding `struct_declaration` and the `arkui_component_expression` build()
- * DSL. Nix: tree-sitter-wasms doesn't ship it; we vendor a wasm built from
- * nix-community/tree-sitter-nix @ 3d0173d (MIT) with tree-sitter-cli 0.25.10
- * (`generate` + `build --wasm`, ABI 15 — upstream's checked-in parser.c is
- * still ABI 13; all 54 upstream corpus tests pass on the regenerated parser).
- *
- * TypeScript/TSX/JavaScript (+jsx, which shares the javascript grammar): the
- * tree-sitter-wasms builds are 2023-era (^0.20.x); we vendor wasm built from
- * the SAME grammar revisions the native extraction kernel compiles
- * (codegraph-kernel/Cargo.toml), so the kernel path and the wasm fallback
- * parse identically and per-language routing stays graph-neutral:
- *   - tree-sitter/tree-sitter-typescript v0.23.2 (f975a62) → typescript + tsx
- *   - tree-sitter/tree-sitter-javascript v0.25.0 (44c892e) → javascript + jsx
- *   - tree-sitter/tree-sitter-java v0.23.5 (94703d5) → java
- *   - tree-sitter/tree-sitter-python v0.23.6 (bffb65a) → python
- *   - tree-sitter/tree-sitter-go v0.23.4 (3c3775f) → go
- * Built from each repo's CHECKED-IN parser.c (no `generate`) with
- * tree-sitter-cli 0.25.10 `build --wasm` — the same tables crates.io compiles
- * (parser.c sha-matched against the crates.io tarball).
- * The kernel-grammar-parity test asserts this alignment; bump the crate and
- * the vendored wasm together.
- */
-const VENDORED_WASM_LANGS: ReadonlySet<GrammarLanguage> = new Set([
-  'pascal', 'scala', 'lua', 'luau', 'csharp', 'r', 'cfml', 'cfscript', 'cfquery',
-  'cobol', 'vbnet', 'erlang', 'terraform', 'arkts', 'nix',
-  'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go',
-  // R7a (C/C++ kernel port prep): tree-sitter-c v0.24.2 (b780e47) +
-  // tree-sitter-cpp v0.23.4 (f41e1a0), parser.c/scanner.c sha-matched against
-  // the crates.io tarballs. `.metal`/`.cu` map to language 'cpp', so the
-  // dialects ride the same (single, coherent) upgraded grammar.
-  'c', 'cpp',
-  // R7b (Rust kernel port prep): tree-sitter-rust v0.24.2 (77a3747),
-  // parser.c/scanner.c sha-matched against the crates.io tarball. Replaces the
-  // 2023-era tree-sitter-wasms build (ABI 14 → 15).
-  'rust',
-  // R7b (Ruby kernel port prep): tree-sitter-ruby v0.23.1 (71bd32f),
-  // parser.c/scanner.c sha-matched against the crates.io tarball. Replaces the
-  // ^0.20.1 tree-sitter-wasms build. Content bump only — the tag's checked-in
-  // parser.c is still ABI 14 (predates the ABI-15 generator).
-  'ruby',
-  // R7b (PHP kernel port prep): tree-sitter-php v0.24.2 (5b5627f), the FULL
-  // `php` grammar variant (HTML interleaving — php_only errors on leading
-  // HTML), built from the tag's checked-in php/src/parser.c + scanner.c
-  // (+ shared common/scanner.h), all sha-matched against the crates.io
-  // tarball. Replaces the ^0.22 tree-sitter-wasms build (ABI 14 → 15). NOT
-  // graph-neutral — the classified delta list lives in the php checklist doc.
-  'php',
-  // R7b (Swift kernel port prep): tree-sitter-swift crate 0.7.3. Built from
-  // the CRATE TARBALL's src/ (NOT a tag sha-match: alex-pinkus keeps
-  // generated files off main and the 0.7.3-with-generated-files tag ships an
-  // older ABI-14 generation; grammar.json rules are JSON-equal, and the crate
-  // tarball is byte-for-byte what the kernel's cargo build compiles — table
-  // identity by construction). Replaces the ^0.4.0 tree-sitter-wasms build
-  // (ABI 13 → 15). NOT graph-neutral — delta is error-set membership only;
-  // classified list in the swift checklist doc.
-  'swift',
-  // R7b (Kotlin kernel port prep): fwcd tree-sitter-kotlin 0.3.8 (tag
-  // e1a2d5a), parser.c/scanner.c sha-matched crate↔tag; behavior-IDENTICAL
-  // to the tree-sitter-wasms build (0 CST/error disagreements across the
-  // gate repos) — a reproducibility re-vendor, ABI stays 14. The crates.io
-  // crate is UNUSABLE by the kernel (pins tree-sitter <0.23) and
-  // tree-sitter-kotlin-ng is a different grammar — the kernel compiles the
-  // same vendored C sources instead (codegraph-kernel/grammars/kotlin).
-  'kotlin',
-  // R7b batch 4 (Dart kernel port prep): the byte-copied tree-sitter-wasms
-  // 0.1.13 artifact (sha256 7f5364e4…, built from UserNobody14/
-  // tree-sitter-dart master@d4d8f3e337d8). tree-sitter-wasms' dart dep is an
-  // UNPINNED github ref, so a routine tree-sitter-wasms update would have
-  // silently changed dart's grammar — vendoring kills that hazard. The
-  // kernel compiles the same-commit vendored C (codegraph-kernel/grammars/
-  // dart); crates.io tree-sitter-dart is a different-lineage fork (rejected).
-  'dart',
-]);
-
-/** Absolute path of a language's grammar WASM (vendored or tree-sitter-wasms). */
-function resolveWasmPath(lang: GrammarLanguage): string {
-  const wasmFile = WASM_GRAMMAR_FILES[lang];
-  return VENDORED_WASM_LANGS.has(lang)
-    ? path.join(__dirname, 'wasm', wasmFile)
-    : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
-}
-
-/**
- * Expand an index set's languages to the grammars actually needed to parse it.
- * SFC languages (svelte/vue/astro) have no grammar of their own — their
- * extractors delegate <script>/frontmatter content to the TS/JS extractor, so
- * those grammars must be loaded even when no plain .ts/.js file is in the index
- * set (e.g. a pure-.astro content site). CFML (.cfc/.cfm) likewise delegates
- * bare-script content, <cfscript> tag bodies, and <cfquery> SQL bodies to the
- * cfscript/cfquery grammars (see injections.scm in tree-sitter-cfml).
- */
-function expandGrammarLanguages(languages: Language[]): Language[] {
-  if (languages.some((l) => l === 'svelte' || l === 'vue' || l === 'astro')) {
-    languages = [...languages, 'typescript', 'javascript'];
-  }
-  if (languages.some((l) => l === 'cfml')) {
-    languages = [...languages, 'cfscript', 'cfquery'];
-  }
-  return languages;
-}
-
-/**
- * Pre-read the grammar WASM bytes for an index set, keyed by language. The
- * orchestrator reads each grammar ONCE and hands the bytes to every parse
- * worker via its `load-grammars` message, so worker spawns/respawns load
- * grammars from memory instead of re-reading them from disk — on slow storage
- * (HDD, issue #1231) each respawn's grammar re-read otherwise amplifies the
- * I/O contention that caused the respawn. Best-effort: a language whose WASM
- * can't be read here is simply omitted, and the worker falls back to its own
- * disk load (which surfaces the real error/warning path).
- */
-export async function readGrammarWasmBytes(languages: Language[]): Promise<Record<string, Uint8Array>> {
-  const out: Record<string, Uint8Array> = {};
-  const toRead = [...new Set(expandGrammarLanguages(languages))].filter(
-    (lang): lang is GrammarLanguage => lang in WASM_GRAMMAR_FILES
-  );
-  for (const lang of toRead) {
-    try {
-      out[lang] = await fsp.readFile(resolveWasmPath(lang));
-    } catch {
-      // fall through — the worker's own load reports the failure
-    }
-  }
-  return out;
-}
-
-/**
- * Load grammar WASM files for specific languages only.
- * Skips languages that are already loaded or have no WASM grammar.
- * Must be called after initGrammars().
- *
- * `wasmBytes` (optional) holds pre-read grammar bytes keyed by language (from
- * {@link readGrammarWasmBytes}, forwarded through the parse pool); when a
- * language's bytes are present they're loaded from memory instead of disk.
- */
-export async function loadGrammarsForLanguages(languages: Language[], wasmBytes?: Record<string, Uint8Array>): Promise<void> {
-  if (!parserInitialized) {
-    await initGrammars();
-  }
-
-  languages = expandGrammarLanguages(languages);
-
-  // Deduplicate and filter to languages that have WASM grammars and aren't already loaded
-  const toLoad = [...new Set(languages)].filter(
-    (lang): lang is GrammarLanguage =>
-      lang in WASM_GRAMMAR_FILES &&
-      !languageCache.has(lang) &&
-      !unavailableGrammarErrors.has(lang)
-  );
-
-  // Load grammars sequentially to avoid web-tree-sitter WASM race condition on Node 20+
-  // See: https://github.com/tree-sitter/tree-sitter/issues/2338
-  for (const lang of toLoad) {
-    try {
-      const bytes = wasmBytes?.[lang];
-      const language = await WasmLanguage.load(bytes ?? resolveWasmPath(lang));
-      languageCache.set(lang, language);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[CodeGraph] Failed to load ${lang} grammar — parsing will be unavailable: ${message}`);
-      unavailableGrammarErrors.set(lang, message);
-    }
-  }
-}
-
-/**
- * Load ALL grammar WASM files. Convenience function for tests and
- * backward compatibility. Prefer loadGrammarsForLanguages() in production.
- */
-export async function loadAllGrammars(): Promise<void> {
-  const allLanguages = Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[];
-  await loadGrammarsForLanguages(allLanguages);
-}
-
-/**
- * Check if grammars have been initialized
- */
-export function isGrammarsInitialized(): boolean {
-  return parserInitialized;
-}
-
-/**
- * Get a parser for the specified language.
- * Returns synchronously from pre-loaded cache.
- */
-export function getParser(language: Language): Parser | null {
-  if (parserCache.has(language)) {
-    return parserCache.get(language)!;
-  }
-
-  const lang = languageCache.get(language);
-  if (!lang) {
-    return null;
-  }
-
-  const parser = new Parser();
-  parser.setLanguage(lang);
-  parserCache.set(language, parser);
-  return parser;
-}
+export async function loadAllGrammars(): Promise<void> {}
 
 /**
  * Detect language from file extension.
@@ -574,7 +348,7 @@ function looksLikeObjc(source: string): boolean {
  * instead.
  */
 export function hasTreeSitterGrammar(language: string | undefined | null): boolean {
-  return !!language && language in WASM_GRAMMAR_FILES;
+  return !!language && GRAMMAR_LANGUAGES.has(language as GrammarLanguage);
 }
 
 /**
@@ -593,17 +367,15 @@ export function isLanguageSupported(language: Language): boolean {
   if (language === 'properties') return true; // Spring config keys
   if (language === 'markdown') return true; // custom documentation extractor
   if (language === 'unknown') return false;
-  return language in WASM_GRAMMAR_FILES;
+  return GRAMMAR_LANGUAGES.has(language as GrammarLanguage);
 }
 
 /**
  * Check if a grammar has been loaded and is ready for parsing.
  */
 export function isGrammarLoaded(language: Language): boolean {
-  if (language === 'svelte' || language === 'vue' || language === 'astro' || language === 'liquid' || language === 'razor' || language === 'markdown') return true;
-  if (language === 'yaml' || language === 'twig') return true; // no WASM grammar needed
-  if (language === 'xml' || language === 'properties') return true; // no WASM grammar needed
-  return languageCache.has(language);
+  // No loading step exists any more; a supported language is always ready.
+  return isLanguageSupported(language);
 }
 
 /**
@@ -623,46 +395,7 @@ export function isFileLevelOnlyLanguage(language: Language): boolean {
  * Get all supported languages (those with grammar definitions).
  */
 export function getSupportedLanguages(): Language[] {
-  return [...(Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[]), 'svelte', 'vue', 'astro', 'liquid', 'markdown'];
-}
-
-/**
- * Reset the cached parser for a language to reclaim WASM heap memory.
- * The tree-sitter WASM runtime accumulates fragmented memory over thousands
- * of parses. Deleting and recreating the Parser instance forces the WASM
- * heap to reset, preventing "memory access out of bounds" crashes in
- * large repos.
- */
-export function resetParser(language: Language): void {
-  const old = parserCache.get(language);
-  if (old) {
-    old.delete();
-    parserCache.delete(language);
-  }
-}
-
-/**
- * Clear parser/grammar caches (useful for testing)
- */
-export function clearParserCache(): void {
-  for (const parser of parserCache.values()) {
-    parser.delete();
-  }
-  parserCache.clear();
-  // Note: languageCache is NOT cleared — WASM languages persist.
-  // To fully re-init, set parserInitialized = false and call initGrammars() again.
-  unavailableGrammarErrors.clear();
-}
-
-/**
- * Report grammars that failed to load.
- */
-export function getUnavailableGrammarErrors(): Partial<Record<Language, string>> {
-  const out: Partial<Record<Language, string>> = {};
-  for (const [language, message] of unavailableGrammarErrors.entries()) {
-    out[language] = message;
-  }
-  return out;
+  return [...GRAMMAR_LANGUAGES, 'svelte', 'vue', 'astro', 'liquid', 'markdown'];
 }
 
 /**

@@ -80,9 +80,13 @@ async function start({
   if (realCodeGraph) {
     const root = resolve(__dirname, "..");
     cpSync(join(root, "dist"), join(directory, "dist"), { recursive: true });
-    cpSync(join(root, "src", "extraction", "wasm"), join(directory, "dist", "extraction", "wasm"), {
-      recursive: true,
-    });
+    // The native kernel is the only parser: the launcher's copy of dist/
+    // needs the prebuild where the loader looks (<root>/kernel/).
+    mkdirSync(join(directory, "kernel"), { recursive: true });
+    copyFileSync(
+      join(root, "codegraph-kernel", "prebuilds", `${process.platform}-${process.arch}`, "codegraph-kernel.node"),
+      join(directory, "kernel", "codegraph-kernel.node"),
+    );
     copyFileSync(
       join(root, "src", "db", "schema.sql"),
       join(directory, "dist", "db", "schema.sql"),

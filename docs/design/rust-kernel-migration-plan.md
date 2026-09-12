@@ -1,5 +1,8 @@
 # Rust extraction-kernel migration plan + post-kernel roadmap
 
+> **Superseded 2026-09-12.** The "coexistence is permanent" stance below ended with [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md): the wasm path was removed in its Phase 5 and the kernel is the only parser. This document stays as the record of the port itself (R1–R7b) and the kernel-scale resolution measurements (§7a).
+
+
 **Audience:** the agent/engineer executing the native-kernel project. Self-contained handoff:
 context, current state, per-language tracker, gates, and the follow-on roadmap.
 **Companion:** `docs/design/native-extraction-kernel.md` (architecture + spike detail).

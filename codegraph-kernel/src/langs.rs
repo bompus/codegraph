@@ -43,6 +43,8 @@ extern "C" {
     fn tree_sitter_cfml() -> *const ();
     fn tree_sitter_cfscript() -> *const ();
     fn tree_sitter_cfquery() -> *const ();
+    fn tree_sitter_objc() -> *const ();
+    fn tree_sitter_solidity() -> *const ();
 }
 
 /// Languages this kernel binary can extract (reported by contractInfo;
@@ -107,11 +109,11 @@ pub fn grammar_for(language: &str) -> Option<Language> {
         // Phase 4: parse-only grammars (no walker; the generic TS extractor
         // walks the serialized tree). Not in LANGUAGES, so nothing routes an
         // extract_file call here — parse_tree / tree_names are their surface.
-        "objc" => Some(tree_sitter_objc::LANGUAGE.into()),
+        "objc" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_objc) }.into()),
         "erlang" => Some(tree_sitter_erlang::LANGUAGE.into()),
         "nix" => Some(tree_sitter_nix::LANGUAGE.into()),
         "pascal" => Some(tree_sitter_pascal::LANGUAGE.into()),
-        "solidity" => Some(tree_sitter_solidity::LANGUAGE.into()),
+        "solidity" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_solidity) }.into()),
         "arkts" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_arkts) }.into()),
         "terraform" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_hcl) }.into()),
         "vbnet" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vbnet) }.into()),

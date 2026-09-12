@@ -17,7 +17,8 @@ Distributed as `@colbymchenry/codegraph` on npm; same binary serves as installer
 ## Build, Test, Run
 
 ```bash
-npm run build           # tsc + copy schema.sql and *.wasm + build the viewer into dist/; chmods dist/bin/codegraph.js
+npm run build           # tsc + copy schema.sql + build the viewer into dist/; chmods dist/bin/codegraph.js
+npm run build:kernel    # the native Rust kernel (the only parser) → codegraph-kernel/prebuilds/<platform>/; needs cargo
 npm run build:lib       # the viewer's components as @colbymchenry/codegraph-ui (ui/dist) — NOT part of `build`
 npm run dev             # tsc --watch
 npm run clean           # rm -rf dist
@@ -34,14 +35,14 @@ npx vitest run __tests__/installer-targets.test.ts
 npx vitest run __tests__/extraction.test.ts -t "TypeScript"
 ```
 
-`copy-assets` (called from `build`) copies `src/db/schema.sql` and all `src/extraction/wasm/*.wasm` files into `dist/`. **Any new SQL or grammar wasm must be copied or it won't ship.**
+`copy-assets` (called from `build`) copies `src/db/schema.sql` into `dist/`. **Any new SQL asset must be copied or it won't ship.**
+
+The native kernel (`codegraph-kernel/`, Rust) is the **only parser**: every grammar is compiled into it (crates.io pins plus the vendored C under `codegraph-kernel/grammars/`, provenance in `grammars/PROVENANCE.md`). There is no wasm fallback. A source checkout needs a prebuild at `codegraph-kernel/prebuilds/<platform>-<arch>/codegraph-kernel.node`; `npm test` builds it through `scripts/ensure-kernel.mjs` when missing (needs a Rust toolchain), release bundles ship it, and a platform without a prebuild is unsupported (the CLI says so at startup). Languages with a bespoke walker are extracted in Rust; the rest are parsed by the kernel and walked by the generic TypeScript extractor over the serialized tree (`src/extraction/parse-tree.ts`). The whole-graph golden dumps (`__tests__/kernel-golden-dumps.test.ts`) are the regression gate for any extraction change; see `docs/design/kernel-only-extraction-plan.md`.
 
 One other build step writes into `dist/` and is subject to the same rule: `build:ui` builds the
 browser viewer into `dist/viewer/` (never `dist/ui/` — that's the terminal ui).
-`scripts/check-ui-build.mjs` asserts both `dist/viewer/` and the copied grammars in
-`dist/extraction/wasm/` after every build and inside every release archive — the viewer's syntax
-highlighting reads a file with the same grammar the engine indexed it with, so a missing wasm is an
-unhighlighted screen as well as an extraction gap.
+`scripts/check-ui-build.mjs` asserts `dist/viewer/` after every build and inside every release
+archive.
 
 `npm run build:lib` is separate and does NOT run as part of `npm run build`: it compiles the same
 `ui/src` tree a second way, with `svelte-package`, into `ui/dist` — the `@colbymchenry/codegraph-ui`
@@ -59,7 +60,7 @@ condition, and applied globally it hands the engine's suites the browser builds 
 ESM-only and the repo is CJS) is the shared base; note that a workspace project **concatenates**
 the base's `include` with its own, which is why the `ui` project does not `extends` it.
 
-Node engines: `>=20.0.0 <25.0.0`. There is a hard exit on Node 25.x and below 20 (see `src/bin/node-version-check.ts`).
+Node engines: `>=20.0.0`. There is a hard exit below Node 20 (see `src/bin/node-version-check.ts`). The Node 25 block went with the wasm path; Node 25+ is untested but no longer refused.
 
 ## Architecture
 
@@ -174,7 +175,7 @@ Behavior that differs by platform (path resolution, drive letters, `SENSITIVE_PA
 
 ## Cross-platform validation
 
-The development host and default test target are Ubuntu under WSL. Run CodeGraph build and test commands through `fnm exec --using codegraph` so they use the supported Node 24 runtime. Platform-sensitive changes (file watching, sockets or named pipes, paths and symlinks, process lifecycle, and inotify limits) still need validation on every affected operating system.
+The development host and default test target are Ubuntu under WSL. Run CodeGraph build and test commands through `fnm exec --using codegraph` so they use the supported Node 24 runtime, and have a Rust toolchain on PATH for the kernel. Platform-sensitive changes (file watching, sockets or named pipes, paths and symlinks, process lifecycle, and inotify limits) still need validation on every affected operating system.
 
 ### Linux and containers
 

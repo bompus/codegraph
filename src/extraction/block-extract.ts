@@ -4,12 +4,10 @@
  * block to a real language extractor.
  *
  * Phase 2 of docs/design/kernel-only-extraction-plan.md: the block goes to
- * the native kernel first (same `(filePath, content, language)` contract the
- * whole-file path uses, so the block's nodes, edges, refs, literals and the
- * parse-collapse warning come out identical to the wasm extractor's), and
- * only falls back to `TreeSitterExtractor` when the kernel declines — the
- * language is not routed, no binary is staged, or the stack guard deferred.
- * The fallback goes away with the wasm path (Phase 5).
+ * the kernel walker for the block's language (same `(filePath, content,
+ * language)` contract the whole-file path uses), and to the generic
+ * extractor over the kernel's serialized tree when there is no walker or the
+ * stack guard deferred.
  *
  * Callers keep their own position rebasing: results are block-relative, the
  * same as `new TreeSitterExtractor(...).extract()` returned.

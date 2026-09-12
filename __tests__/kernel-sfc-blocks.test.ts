@@ -1,37 +1,29 @@
 /**
  * Embedded-language blocks ride the kernel (Phase 2 of
- * docs/design/kernel-only-extraction-plan.md).
+ * docs/design/kernel-only-extraction-plan.md; re-based in Phase 5 when the
+ * wasm comparison arm was removed).
  *
- * Vue, Svelte, Astro and Razor slice a file and hand each script block to a
- * real language extractor. Before Phase 2 that was always `new
- * TreeSitterExtractor(...)` — the wasm path, even on a host with a kernel.
- * Now `extractEmbeddedBlock` tries the kernel first. Two pins:
+ * Vue, Svelte, Astro and Razor slice a file and hand each script block to
+ * `extractEmbeddedBlock`, which tries the kernel walker for the block's
+ * language and otherwise runs the generic extractor on the kernel's tree.
+ * Two pins:
  *
- *   1. With a kernel staged and every language routed, extracting an SFC
- *      never instantiates a wasm parser (`getParser` is not called).
- *   2. The result is identical to the wasm path's for the same file, so the
- *      golden dumps (vue-sfc, sfc-mix) hold on both paths.
- *
- * Skips without a kernel binary; CODEGRAPH_KERNEL_EXPECT=1 makes that a
- * failure (kernel-scaffold.test.ts owns that assertion).
+ *   1. Every sample SFC extracts a component node plus its script symbols.
+ *   2. For a block, the walker path and the generic-extractor path give the
+ *      same result — the same agreement the whole-file gate checks, at the
+ *      block seam the SFC extractors actually use.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { extractFromSource } from '../src/extraction';
-import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
-import * as grammars from '../src/extraction/grammars';
-import { resetKernelForTests } from '../src/extraction/kernel';
+import { extractEmbeddedBlock } from '../src/extraction/block-extract';
+import { TreeSitterExtractor } from '../src/extraction/tree-sitter';
 import type { ExtractionResult, Language } from '../src/types';
 
 const KERNEL_PATH = path.join(
-  __dirname,
-  '..',
-  'codegraph-kernel',
-  'prebuilds',
-  `${process.platform}-${process.arch}`,
-  'codegraph-kernel.node',
+  __dirname, '..', 'codegraph-kernel', 'prebuilds', `${process.platform}-${process.arch}`, 'codegraph-kernel.node',
 );
 const kernelBuilt = fs.existsSync(KERNEL_PATH);
 
@@ -56,48 +48,36 @@ function canon(result: ExtractionResult) {
   };
 }
 
-const ENV_KEYS = ['CODEGRAPH_KERNEL', 'CODEGRAPH_KERNEL_LANGS'] as const;
-let savedEnv: Record<string, string | undefined>;
-
 describe.skipIf(!kernelBuilt)('SFC blocks extract through the kernel', () => {
-  beforeAll(async () => {
-    await initGrammars();
-    await loadGrammarsForLanguages(['typescript', 'javascript', 'csharp']);
-  });
-  beforeEach(() => {
-    savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
-    resetKernelForTests();
-  });
-  afterEach(() => {
-    for (const k of ENV_KEYS) {
-      if (savedEnv[k] === undefined) delete process.env[k];
-      else process.env[k] = savedEnv[k];
-    }
-    vi.restoreAllMocks();
-    resetKernelForTests();
-  });
-
   for (const { rel, lang } of SAMPLES) {
     const name = path.relative(path.join(__dirname, 'fixtures', 'golden'), rel);
-
-    it(`${name}: no wasm parser is instantiated`, () => {
-      process.env.CODEGRAPH_KERNEL_LANGS = 'all';
-      delete process.env.CODEGRAPH_KERNEL;
-      const spy = vi.spyOn(grammars, 'getParser');
+    it(`${name}: extracts a component and its script symbols`, () => {
       const source = fs.readFileSync(rel, 'utf8');
       const result = extractFromSource(rel, source, lang);
       expect(result.nodes.some((n) => n.kind === 'component')).toBe(true);
-      expect(spy, 'TreeSitterExtractor was constructed for a script block').not.toHaveBeenCalled();
+      expect(result.errors.filter((e) => e.severity === 'error')).toEqual([]);
     });
+  }
 
-    it(`${name}: kernel and wasm block results are identical`, () => {
-      const source = fs.readFileSync(rel, 'utf8');
-      process.env.CODEGRAPH_KERNEL_LANGS = 'all';
-      delete process.env.CODEGRAPH_KERNEL;
-      const native = canon(extractFromSource(rel, source, lang));
-      process.env.CODEGRAPH_KERNEL = '0';
-      const wasm = canon(extractFromSource(rel, source, lang));
-      expect(native).toEqual(wasm);
+  const BLOCKS: Array<{ name: string; content: string; lang: Language }> = [
+    {
+      name: 'vue script setup (ts)',
+      lang: 'typescript',
+      content: 'import { ref } from "vue";\nconst count = ref(0);\nfunction bump(): void { count.value += 1; }\n',
+    },
+    { name: 'svelte plain script', lang: 'javascript', content: 'export let title;\nfunction describe() { return title + " panel"; }\n' },
+    {
+      name: 'razor @code wrapper',
+      lang: 'csharp',
+      content: 'class __RazorCode__ {\n    private string message = "";\n    private void SayHello() { message = Greeter.Greet(new GreetRequest("x")); }\n}\n',
+    },
+  ];
+  for (const { name, content, lang } of BLOCKS) {
+    it(`${name}: block seam agrees with the generic extractor`, () => {
+      const viaSeam = canon(extractEmbeddedBlock('src/Block.x', content, lang));
+      const viaGeneric = canon(new TreeSitterExtractor('src/Block.x', content, lang).extract());
+      expect(viaSeam).toEqual(viaGeneric);
+      expect(viaSeam.nodes.length).toBeGreaterThan(1);
     });
   }
 });

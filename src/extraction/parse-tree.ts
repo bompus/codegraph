@@ -1,23 +1,22 @@
 /**
- * One way to get a parse tree at read time (Phase 3 of
- * docs/design/kernel-only-extraction-plan.md).
+ * One way to get a parse tree (docs/design/kernel-only-extraction-plan.md).
  *
- * The viewer's highlighter, the branch-guard walker and explore's
- * requested-source ranges all parse a file on request and walk the tree.
- * They used to call `getParser(language).parse(source)` — the wasm parser,
- * always. `parseSourceTree` asks the kernel first (one crossing, the whole
- * tree as flat buffers — see kernel/tree.ts) and falls back to the wasm
- * parser only when the kernel cannot serve the language. The fallback goes
- * away with the wasm path (Phase 5).
+ * Every consumer that needs a tree — the generic extractor, the SFC
+ * extractors' blocks, the viewer's highlighter, the branch-guard walker,
+ * explore's requested-source ranges — comes through here. The kernel parses
+ * (one crossing, the whole CST as flat buffers, see kernel/tree.ts) and the
+ * `NativeNode` facade exposes the node surface the walkers were written
+ * against. There is no other parser: a host without a kernel binary cannot
+ * parse, and `requireKernel` says so with the paths it looked in.
  *
- * {@link TreeNode} is the structural surface the three consumers use. Both
- * the kernel facade (`NativeNode`) and web-tree-sitter's `Node` satisfy it,
- * so the walkers are written once and run on either tree.
+ * {@link TreeNode} is the structural surface the walkers use; `NativeNode`
+ * satisfies it. It is kept as an interface (rather than the class) so the
+ * walkers stay decoupled from the buffer layout.
  */
 
 import type { Language } from '../types';
-import { getParser, loadGrammarsForLanguages } from './grammars';
 import { parseNativeTree } from './kernel/tree';
+import { requireKernel } from './kernel/loader';
 
 export interface TreePoint {
   row: number;
@@ -60,46 +59,17 @@ export interface TreeNode {
 
 export interface ParsedTree {
   readonly rootNode: TreeNode;
-  /** Release native memory (wasm trees); a no-op for kernel trees. */
+  /** Kept for the walkers' `try/finally` shape; kernel trees are plain Buffers, so a no-op. */
   delete(): void;
 }
 
-/** Kernel first, wasm second. Null when neither can parse the language. */
+/** Parse with the kernel. Null only when the binary carries no grammar for `language`. */
 export async function parseSourceTree(source: string, language: Language): Promise<ParsedTree | null> {
-  const native = tryNative(source, language);
-  if (native) return native;
-  try {
-    await loadGrammarsForLanguages([language]);
-  } catch {
-    return null;
-  }
-  return parseWasm(source, language);
+  return parseSourceTreeSync(source, language);
 }
 
-/**
- * Synchronous twin for callers that cannot await. The kernel path is always
- * synchronous; the wasm path only serves a grammar that is ALREADY loaded.
- */
+/** Synchronous form; the kernel path is always synchronous. */
 export function parseSourceTreeSync(source: string, language: Language): ParsedTree | null {
-  return tryNative(source, language) ?? parseWasm(source, language);
-}
-
-function tryNative(source: string, language: Language): ParsedTree | null {
-  if (process.env.CODEGRAPH_KERNEL === '0') return null;
-  // Not gated on kernelSupports: that is the WALKER list. The parse-tree
-  // service serves every grammar compiled into the binary, walker or not
-  // (parseNativeTree remembers per language whether the grammar exists).
+  requireKernel();
   return parseNativeTree(source, language) as ParsedTree | null;
-}
-
-function parseWasm(source: string, language: Language): ParsedTree | null {
-  try {
-    const parser = getParser(language);
-    if (!parser) return null;
-    const tree = parser.parse(source);
-    if (!tree?.rootNode) return null;
-    return tree as unknown as ParsedTree;
-  } catch {
-    return null;
-  }
 }

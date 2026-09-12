@@ -20,10 +20,9 @@ describe.runIf(fs.existsSync(built))('literal persistence through compiled index
     vi.unstubAllEnvs();
   });
 
-  for (const mode of ['native-worker', 'native-main', 'wasm-worker']) {
-    it.runIf(mode === 'wasm-worker' || fs.existsSync(kernel))(`${mode}: fresh, unchanged, and migrated indexes retain exact owners`, async () => {
+  for (const mode of ['native-worker', 'native-main']) {
+    it.runIf(fs.existsSync(kernel))(`${mode}: fresh, unchanged, and migrated indexes retain exact owners`, async () => {
       vi.stubEnv('CODEGRAPH_PARSE_WORKERS', '1');
-      vi.stubEnv('CODEGRAPH_KERNEL', mode === 'wasm-worker' ? '0' : '1');
       vi.stubEnv('CODEGRAPH_NO_STORE_WORKER', mode === 'native-main' ? '1' : '0');
       const BuiltCodeGraph: typeof CodeGraph = require(built).default;
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-literal-compiled-'));
