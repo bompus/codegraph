@@ -121,14 +121,16 @@ describe.skipIf(!kernelBuilt)('kernel Ruby extraction parity', () => {
     if (other) expect(other.filePath).toBeUndefined();
   });
 
-  it('files with parse errors defer to the wasm extractor (recovery is encoding-dependent)', () => {
+  it('files with parse errors are extracted natively (kernel recovery is canonical)', () => {
     const broken = 'def broken(\n  x = [1,\nend\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/broken.rb', broken, 'ruby')).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/broken.rb', broken, 'ruby');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    // Error RECOVERY differs between UTF-8 (native) and UTF-16 (wasm), so
+    // the two arms may disagree on an erroring file; the kernel's tree is the
+    // canonical one (kernel-only-extraction-plan.md, Phase 1). It must still
+    // serve the file: a file node, never a null/defer.
+    const native = tryKernelExtract('src/broken.rb', broken, 'ruby');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 });

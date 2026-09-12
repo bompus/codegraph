@@ -12,12 +12,19 @@
  *   node scripts/kernel-parity.mjs <file-or-dir>... [--lang typescript,tsx]
  *        [--max-samples N] [--list-files] [--max-deferral 0.1]
  *
- * --max-deferral: the broken-kernel backstop (default 0.1). For C/C++ pass
- * 0.5: macro-heavy C/C++ trees genuinely parse with errors at 10–40% file
- * rates even after the preParse blanking family (git 19%, protobuf 26%, fmt
- * 42% — measured 2026-07-17), and every erroring file defers BY POLICY, so
- * the 10% bar calibrated on the 0–0.4% incidence of ts/java/py/go would fail
- * healthy sweeps. A broken walker still trips 0.5 (it defers ~everything).
+ *        [--error-files only|skip|all]
+ *
+ * --max-deferral: the broken-kernel backstop (default 0.1). Since Phase 1 of
+ * docs/design/kernel-only-extraction-plan.md the kernel extracts erroring
+ * files itself; the only defer left is the stack-overflow guard, so any
+ * deferral rate above noise means the kernel is broken.
+ *
+ * --error-files: files whose wasm parse tree has errors are where the two
+ * arms are EXPECTED to diverge (UTF-8 vs UTF-16 error recovery). `all`
+ * (default) compares every file and reports error files in their own
+ * buckets; `skip` compares clean files only (the parity gate for a walker
+ * change); `only` compares just the erroring files (the divergence survey
+ * that Phase 1 records).
  *
  * Requires: npm run build (dist/) and a staged kernel (npm run build:kernel).
  * Exit code: 0 = parity, 1 = diffs found, 2 = setup error.
@@ -36,11 +43,13 @@ let langFilter = null;
 let maxSamples = 5;
 let listFiles = false;
 let maxDeferral = 0.1;
+let errorFiles = 'all';
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--lang') langFilter = new Set(args[++i].split(','));
   else if (args[i] === '--max-samples') maxSamples = Number(args[++i]);
   else if (args[i] === '--list-files') listFiles = true;
   else if (args[i] === '--max-deferral') maxDeferral = Number(args[++i]);
+  else if (args[i] === '--error-files') errorFiles = args[++i];
   else paths.push(args[i]);
 }
 if (paths.length === 0) {
@@ -104,7 +113,7 @@ if (files.length === 0) {
 
 // --- load the built engine ---------------------------------------------------
 const { extractFromSource } = await import(dist('extraction/tree-sitter.js'));
-const { initGrammars, loadGrammarsForLanguages, detectLanguage } = await import(dist('extraction/grammars.js'));
+const { initGrammars, loadGrammarsForLanguages, detectLanguage, getParser } = await import(dist('extraction/grammars.js'));
 const kernel = await import(dist('extraction/kernel/index.js'));
 
 await initGrammars();
@@ -187,6 +196,8 @@ function report(category, sample) {
 let filesWithDiffs = 0;
 let filesOk = 0;
 let deferred = 0;
+let errorFileCount = 0;
+let errorFilesWithDiffs = 0;
 let processed = 0; // collected files minus content-detect skips
 let totals = { nodes: 0, edges: 0, refs: 0 };
 
@@ -199,14 +210,21 @@ for (const { file, lang: extLang } of files) {
   const lang = extLang === 'detect' ? detectLanguage(rel, source) : extLang;
   if (!KERNEL_LANGS.has(lang)) continue;
   if (langFilter && !langFilter.has(lang)) continue;
+  // Does the wasm parse tree carry errors? That is where recovery may differ.
+  const parser = getParser(lang);
+  const tree = parser ? parser.parse(source) : null;
+  const hasError = !!tree?.rootNode.hasError;
+  tree?.delete?.();
+  if (hasError && errorFiles === 'skip') continue;
+  if (!hasError && errorFiles === 'only') continue;
   processed++;
+  if (hasError) errorFileCount++;
 
   delete process.env.CODEGRAPH_KERNEL; // kernel path on
   const kres = kernel.tryKernelExtract(rel, source, lang);
   if (!kres) {
-    // Expected: files with parse errors defer to wasm (parity by
-    // construction — both arms run the same extractor). Counted, and
-    // guarded below so a broken kernel can't silently defer everything.
+    // Only the stack-overflow guard defers now. Counted, and guarded below
+    // so a broken kernel can't silently defer everything.
     deferred++;
     report('kernel-deferred', rel);
     continue;
@@ -220,6 +238,7 @@ for (const { file, lang: extLang } of files) {
   totals.refs += wres.unresolvedReferences.length;
 
   let fileHasDiff = false;
+  const tag = hasError ? 'error-file:' : '';
   const tables = [
     ['node', wres.nodes.map(canonNode), kres.nodes.map(canonNode)],
     ['edge', wres.edges.map(canonEdge), kres.edges.map(canonEdge)],
@@ -230,12 +249,12 @@ for (const { file, lang: extLang } of files) {
     for (const x of onlyA) {
       fileHasDiff = true;
       const o = JSON.parse(x);
-      report(`${table}:missing-in-kernel:${o.kind ?? ''}`, `${rel}: ${x}`);
+      report(`${tag}${table}:missing-in-kernel:${o.kind ?? ''}`, `${rel}: ${x}`);
     }
     for (const x of onlyB) {
       fileHasDiff = true;
       const o = JSON.parse(x);
-      report(`${table}:extra-in-kernel:${o.kind ?? ''}`, `${rel}: ${x}`);
+      report(`${tag}${table}:extra-in-kernel:${o.kind ?? ''}`, `${rel}: ${x}`);
     }
     // ORDER matters too: identical multisets in a different emission order
     // change DB rowids, and resolution iterates refs in rowid order — the
@@ -245,7 +264,7 @@ for (const { file, lang: extLang } of files) {
       for (let i = 0; i < wasm.length; i++) {
         if (wasm[i] !== kern[i]) {
           fileHasDiff = true;
-          report(`${table}:order-mismatch`, `${rel}: index ${i}: wasm=${wasm[i]} kernel=${kern[i]}`);
+          report(`${tag}${table}:order-mismatch`, `${rel}: index ${i}: wasm=${wasm[i]} kernel=${kern[i]}`);
           break;
         }
       }
@@ -253,14 +272,15 @@ for (const { file, lang: extLang } of files) {
   }
   if (fileHasDiff) {
     filesWithDiffs++;
-    if (listFiles) console.log(`DIFF ${rel}`);
+    if (hasError) errorFilesWithDiffs++;
+    if (listFiles) console.log(`DIFF${hasError ? ' (error file)' : ''} ${rel}`);
   } else {
     filesOk++;
   }
 }
 
 console.log(`\n=== kernel parity: ${filesOk}/${processed} files byte-parity` +
-  ` (${filesWithDiffs} with diffs, ${deferred} deferred-to-wasm)` +
+  ` (${filesWithDiffs} with diffs, ${deferred} deferred; ${errorFileCount} error files, ${errorFilesWithDiffs} of them differ)` +
   ` | wasm totals: ${totals.nodes} nodes / ${totals.edges} edges / ${totals.refs} refs ===\n`);
 
 const sorted = [...buckets.entries()].sort((a, b) => b[1].count - a[1].count);
@@ -269,10 +289,8 @@ for (const [cat, { count, samples }] of sorted) {
   for (const s of samples) console.log(`    ${s.length > 400 ? s.slice(0, 400) + '…' : s}`);
 }
 
-// Deferrals are per-file parse-error routing (expected; rare for most
-// languages, routine for macro-heavy C/C++ — see --max-deferral above). A
-// rate past the threshold means the kernel is broken and hiding behind the
-// fallback — fail loudly.
+// Only the stack guard defers. A rate past the threshold means the kernel is
+// broken and hiding behind the fallback — fail loudly.
 const deferralRate = deferred / Math.max(processed, 1);
 if (deferralRate > maxDeferral) {
   console.error(
@@ -280,4 +298,7 @@ if (deferralRate > maxDeferral) {
   );
   process.exit(1);
 }
-process.exit(filesWithDiffs > 0 ? 1 : 0);
+// Error-file divergence is expected (recovery differs by encoding); it fails
+// the run only when the caller asked to compare error files exclusively.
+const gatingDiffs = errorFiles === 'only' ? filesWithDiffs : filesWithDiffs - errorFilesWithDiffs;
+process.exit(gatingDiffs > 0 ? 1 : 0);

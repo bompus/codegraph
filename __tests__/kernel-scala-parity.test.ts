@@ -142,23 +142,23 @@ describe.skipIf(!kernelBuilt)('kernel Scala extraction parity', () => {
     );
   });
 
-  it('scala-3 PHANTOM hasError defers (flag-true, zero ERROR nodes)', () => {
+  it('scala-3 PHANTOM hasError (flag-true, zero ERROR nodes) extracts natively', () => {
     // Capture-checking postfix `^` — a complete, correct CST whose hasError
-    // flag is still true. The kernel must defer on the FLAG.
+    // flag is still true. Nothing to recover; the kernel just extracts it.
     const phantom = 'def f(x: List[Int]^): Int = 1\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/phantom.scala', phantom, 'scala')).toBeNull();
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/phantom.scala', phantom, 'scala');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    const native = tryKernelExtract('src/phantom.scala', phantom, 'scala');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'function' && n.name === 'f')).toBe(true);
   });
 
-  it('real parse errors defer (given-with syntax)', () => {
+  it('real parse errors extract natively (given-with syntax)', () => {
     const broken = 'trait C\ngiven x: C with { def y = 1 }\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/gw.scala', broken, 'scala')).toBeNull();
+    const native = tryKernelExtract('src/gw.scala', broken, 'scala');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 });

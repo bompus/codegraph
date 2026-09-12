@@ -25,10 +25,11 @@ and the raw bulk path), so no blanking ported to Rust.
   Macro-heavy C/C++ genuinely parses with errors at double-digit file rates
   (final sweeps: als 9%, git 16.1%, redis 25.3%, protobuf 25.8%, fmt 42% —
   fmt's template metaprogramming + `.operator[]`-in-decltype shapes are
-  grammar-inherent), and every erroring file defers BY POLICY. Measured with
-  the defer disabled (`CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT=1`, sweep-only
-  hatch): recovery-divergence is real (21/207 redis, 8/382 git, 9/31 fmt
-  erroring files extract differently across UTF-8/UTF-16), so the defer
+  grammar-inherent), and every erroring file deferred BY POLICY until Phase 1
+  of kernel-only-extraction-plan.md (2026-09-11) made native recovery
+  canonical; the `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT=1` hatch is gone.
+  Measured at the time: recovery-divergence is real (21/207 redis, 8/382 git,
+  9/31 fmt erroring files extract differently across UTF-8/UTF-16), so the defer
   stays. The sweep harness now takes `--max-deferral` (default 0.1; use 0.5
   for c/cpp — a broken walker still trips it by deferring ~everything).
 - **Seven NEW/extended preParse blanks** cut real incidence (from 32%/52%

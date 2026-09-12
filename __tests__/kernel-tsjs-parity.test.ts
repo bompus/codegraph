@@ -222,19 +222,17 @@ function nested(holder, höldér) {
     assertParity(`fixtures/${name} (crlf)`, crlf, lang);
   });
 
-  it('files with parse errors defer to the wasm extractor (recovery is encoding-dependent)', () => {
+  it('files with parse errors are extracted natively (kernel recovery is canonical)', () => {
     // tree-sitter error RECOVERY differs between UTF-8 (native) and UTF-16
     // (web-tree-sitter) parsing — same grammar, same core version — so the
-    // kernel defers any erroring file to keep routing graph-neutral.
+    // arms may disagree on an erroring file; the kernel's tree is canonical
+    // (kernel-only-extraction-plan.md, Phase 1). It must still serve the file.
     const broken = 'export function f( {\n  return }} 12 (\n';
     process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     delete process.env.CODEGRAPH_KERNEL;
-    expect(tryKernelExtract('src/broken.ts', broken, 'typescript')).toBeNull();
-    // The seam still serves the file — through the wasm path.
-    process.env.CODEGRAPH_KERNEL = '0';
-    const viaWasm = extractFromSource('src/broken.ts', broken, 'typescript');
-    delete process.env.CODEGRAPH_KERNEL;
-    expect(viaWasm.nodes.some((n) => n.kind === 'file')).toBe(true);
+    const native = tryKernelExtract('src/broken.ts', broken, 'typescript');
+    expect(native).not.toBeNull();
+    expect(native!.nodes.some((n) => n.kind === 'file')).toBe(true);
   });
 
   it('typescript fixture parsed as plain typescript variant', () => {

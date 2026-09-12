@@ -88,13 +88,24 @@ Each phase lands on `fork/consolidated` behind the golden-dump gate and leaves t
 
 Exit met: the gate is green on `fork/consolidated` with no extraction change.
 
-### Phase 1: error recovery flip
+### Phase 1: error recovery flip — DONE 2026-09-11
 
-- Remove the `defer:` throw for parse errors in every walker; keep it for the stack guard.
-- Delete `takeDeferredPreParse` and the one-slot memo.
-- Bump `EXTRACTION_VERSION`. Re-baseline the golden dumps and record the node and edge deltas per fixture in this document.
+- The `defer:` throw for parse errors is removed from all 14 walkers and the `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT` hatch is gone; only the stack-overflow guard defers. The one-slot memo stays until Phase 5 because a stack-guard defer still needs the pre-parsed source for the WASM fallback (a deviation from the original bullet).
+- The one recovery path that existed only on the WASM side, the Kotlin `fun interface` misparse hook, is ported into `kotlin.rs` (`is_fun_interface_node` and the hook in `try_visit_hook`). The C++ explicit-operator scan that was already in the kernel is now live. Every other "defer-shielded" note was a phantom-error or both-arm-error case with nothing to recover.
+- `EXTRACTION_VERSION` 28 → 29. The golden corpus did not change: no fixture file has a parse error, so the six goldens hold byte-for-byte.
+- `scripts/kernel-parity.mjs` gained `--error-files only|skip|all`. Clean-file parity is still the walker gate (`skip`); `only` is the divergence survey.
+- Measured divergence between native and WASM recovery on error files, with the survey mode, before any re-baseline:
 
-Exit: no file reaches WASM because of an ERROR node. Deferral rate in `scripts/kernel-parity.mjs --max-deferral` reads zero for every routed language.
+| Repo | Files with parse errors | Differ from WASM | Net symbols in kernel view |
+|---|---|---|---|
+| redis (C, 794 files) | 350 | 21 | +6 functions, +6 constants, +7 variables, +96 call refs |
+| fmt (C++, 74 files) | 39 | 10 | +1 function, −1 method, +1 struct, −1 type alias (positions shift, symbol sets nearly equal) |
+| okio (Kotlin, 315 files) | 24 | 0 | identical, including the ported fun-interface hook |
+
+- The 16 parity tests that pinned "erroring file → null" now assert native extraction, and the Kotlin and C++ ones assert the recovered symbol on the kernel result.
+- The parse-collapse warning the WASM extractor records when an erroring tree yields no symbol (#1522) is now emitted by every kernel walker (`parse_collapse_warning` in `buffers.rs`), so `codegraph index` shows the same warning on either path; the full suite caught its absence.
+
+Exit met: no file reaches WASM because of an ERROR node; deferral reads zero on all three survey repos.
 
 ### Phase 2: SFC extractors call the kernel
 

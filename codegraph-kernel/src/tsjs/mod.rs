@@ -209,18 +209,10 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
 
-    // Files with parse ERRORS defer to the wasm extractor (the `defer:` prefix
-    // tells the TS side this is expected routing, not a malfunction). Reason:
-    // tree-sitter's error RECOVERY — same grammar, same core version — resolves
-    // differently under UTF-8 (native) vs UTF-16 (web-tree-sitter) parsing, so
-    // an erroring file's tree can differ between the paths (proven on vscode:
-    // `readonly import('x').T[]` recovered with the ERROR inside vs outside the
-    // type annotation). Erroring files are rare (0-0.42% across express/
-    // excalidraw/vscode) and per-file wasm fallback keeps routing graph-neutral
-    // by construction; clean files — 99.6%+ — stay on the fast path.
-    if tree.root_node().has_error() {
-        return Err("defer: parse tree contains errors — wasm recovery is canonical".to_string());
-    }
+    // Files with parse ERRORS are extracted natively like any other file. Error
+    // RECOVERY differs between UTF-8 (native) and UTF-16 (web-tree-sitter)
+    // parsing, so an erroring file's graph may differ from the wasm path's; the
+    // kernel's recovery is canonical (kernel-only-extraction-plan.md, Phase 1).
 
     let mut w = Walker {
         src: source,
@@ -279,7 +271,13 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     w.stack.pop();
 
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    let errors_json = crate::buffers::parse_collapse_warning(
+        &mut w.arena,
+        &w.tables,
+        tree.root_node().has_error(),
+        file_path,
+    );
+    let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
     Ok(EmitOut {
         meta,
         nodes: w.tables.nodes,

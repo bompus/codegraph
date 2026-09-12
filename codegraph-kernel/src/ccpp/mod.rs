@@ -44,10 +44,8 @@
 //!    `references` refs; qualified_identifier is checked too but its scope
 //!    child is namespace_identifier/template_type/…, never a plain
 //!    identifier, so it can't emit.
-//!  - explicit operator calls (#1247) ride an ERROR child — but has_error()
-//!    defers the whole file to wasm, so the ported branch is a faithful no-op
-//!    here; kept so an error-free shape (if a grammar bump ever produces one)
-//!    stays parity-true.
+//!  - explicit operator calls (#1247) ride an ERROR child; erroring files
+//!    are extracted natively, so this branch is live.
 //!  - local fn-pointer fan-out (#932-adjacent): `auto k = &fn<…>;` records
 //!    per-caller targets (insertion-ordered, branch reassignments accumulate);
 //!    a later bare `k(args)` emits one `calls` ref PER target and suppresses
@@ -65,8 +63,8 @@
 //!  - fn-ref capture (#756): cFamilySpec for both; cpp adds addressOfOnly
 //!    (bare identifiers only qualify in file-scope value/list positions).
 //!
-//! Files with parse errors defer to wasm (`defer:`) — error recovery is
-//! encoding-dependent and the wasm recovery is canonical.
+//! Files with parse errors are extracted natively; the kernel's error recovery
+//! is canonical (kernel-only-extraction-plan.md, Phase 1).
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
@@ -370,14 +368,6 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
-    // Measurement hatch (parity sweeps only — never set in production): skip
-    // the defer so the sweep can QUANTIFY how often UTF-8 vs UTF-16 error
-    // recovery actually diverges on this language's erroring files.
-    let no_defer = std::env::var("CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT").as_deref() == Ok("1");
-    if tree.root_node().has_error() && !no_defer {
-        return Err("defer: parse tree contains errors — wasm recovery is canonical".to_string());
-    }
-
     let mut w = Walker {
         src: source,
         file_path,
@@ -434,7 +424,13 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     w.stack.pop();
 
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    let errors_json = crate::buffers::parse_collapse_warning(
+        &mut w.arena,
+        &w.tables,
+        tree.root_node().has_error(),
+        file_path,
+    );
+    let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
     Ok(EmitOut {
         meta,
         nodes: w.tables.nodes,
@@ -1298,8 +1294,7 @@ impl<'t> Walker<'t> {
         let calls_kind = edge_kind_index("calls").unwrap();
 
         // C++ explicit operator call `a.operator+(b)` (#1247): the
-        // operator_name hides in an ERROR child. (has_error() defers such
-        // files to wasm, so this scan is a faithful no-op today.)
+        // operator_name hides in an ERROR child.
         if self.variant == Variant::Cpp {
             if let Some(func) = func {
                 let mut operator_name = String::new();

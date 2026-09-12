@@ -301,8 +301,8 @@ pub fn cfnptr_strip_c(text: String) -> String {
 pub fn extract_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
     // The whole walk runs under the stack guard (stack.rs, #1581): a file
     // nested deeply enough to overflow this thread's stack comes back as a
-    // `defer:` error — the TS side's routine "take the wasm path" signal —
-    // instead of a SIGSEGV that kills the entire indexer process.
+    // `defer:` error — the TS side's routine "serve this one file another way"
+    // signal — instead of a SIGSEGV that kills the entire indexer process.
     let out = stack::run_guarded(|| match language.as_str() {
         "java" => java::extract(&file_path, &content),
         "python" => python::extract(&file_path, &content),
