@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-09-12T04:31:53.855Z",
+  "corpus": "vite",
+  "repo": "https://github.com/vitejs/vite.git",
+  "commit": "8492422",
+  "codegraphSha": "b82f0faa",
+  "summary": {
+    "absentCases": 5,
+    "absentHeld": 5,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 13098,
+    "exact-match": 6820,
+    "import": 5635,
+    "qualified-name": 1791,
+    "instance-method": 827,
+    "file-path": 258,
+    "function-ref": 202,
+    "framework": 41,
+    "fuzzy": 16
+  },
+  "edges": 28688,
+  "results": [
+    {
+      "caseId": "vite-bare-import-self-edge",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-bare-import-getEnv",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-fuzzy-nested-resolveConfig-getEnv",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-fuzzy-nested-build-scan",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-sealed-module-defineConfig",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-control-relative-import",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "file:packages/vite/src/node/config.ts",
+          "to": "function:0c2f36c32c5742aee412978220fd5b23",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}

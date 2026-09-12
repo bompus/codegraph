@@ -100,6 +100,15 @@ describe.skipIf(!kernelBuilt)('resolution reads bindings', () => {
     expect(graph.getIncomingEdges(bridge.id).some((e) => e.kind === 'imports')).toBe(true);
   });
 
+  it('a bare call never lands on a property, field or enum member, and the rejection manufactures no other match', async () => {
+    const graph = await project({
+      'types.ts': 'export interface Options { trace: () => void }\nexport enum E { a, b }',
+      'other.ts': 'export const holder = { trace: 1 };',
+      'app.ts': 'export function run() { trace(); a(); }',
+    });
+    expect(callsFrom(graph, 'run')).toEqual([]);
+  });
+
   it('a dynamic bare import stays external', async () => {
     const graph = await project({
       'server.ts': 'export function createServer() { return 1; }',

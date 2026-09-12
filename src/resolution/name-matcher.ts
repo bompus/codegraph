@@ -942,6 +942,15 @@ function isBareJsCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
   return !/[.\w$\]\)]\s*$/.test(line.slice(0, ref.column)) || /\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$/.test(line.slice(0, ref.column));
 }
 
+/**
+ * Kinds a receiver-less JS/TS call may resolve to: a function, a class, a
+ * component, or a binding that may hold a function. A property or field needs
+ * a receiver; an enum member, interface or type alias is never called. Applied
+ * to the candidate exact-match would commit to, never to the candidate set.
+ * Without it a free `a()` landed, cross-language, on a Dart enum member.
+ */
+const BARE_CALL_TARGET_KINDS = new Set<string>(['function', 'class', 'component', 'constant', 'variable']);
+
 /** Per-context memo: `file\0name` → "the file binds this name locally". */
 const LOCAL_BINDING_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>();
 
@@ -1078,6 +1087,7 @@ export function matchByExactName(
   // If only one match, use it — but penalize cross-language matches
   if (candidates.length === 1) {
     if (!isCrossFileReachable(candidates[0]!, ref, context)) return null;
+    if (bareJs && !BARE_CALL_TARGET_KINDS.has(candidates[0]!.kind)) return null;
     const isCrossLanguage = candidates[0]!.language !== ref.language;
     return {
       original: ref,
@@ -1098,6 +1108,10 @@ export function matchByExactName(
 
   // Multiple matches - try to narrow down
   const bestMatch = findBestMatch(ref, candidates, context);
+  // The kind rule rejects the winner and never filters the crowd: dropping
+  // the non-callable candidates from a crowd left a lone wrong survivor
+  // (`import(...)` onto a function named `import`) and manufactured edges.
+  if (bestMatch && bareJs && !BARE_CALL_TARGET_KINDS.has(bestMatch.kind)) return null;
   if (bestMatch && isCrossFileReachable(bestMatch, ref, context)) {
     // Lower confidence when the match is from a distant/unrelated module
     const proximity = computePathProximity(ref.filePath, bestMatch.filePath);
