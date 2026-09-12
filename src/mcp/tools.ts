@@ -3886,7 +3886,7 @@ export class ToolHandler {
       const isPreciseToken = (x: string) =>
         /[._$]|::|\//.test(x) || /[a-z][A-Z]/.test(x) || /^[A-Z]/.test(x);
       const fileNameSets = new Map<string, Set<string>>();
-      const coNamedInFile = (t: string, fp: string): boolean => {
+      const coNamedCount = (t: string, fp: string): number => {
         let names = fileNameSets.get(fp);
         if (!names) {
           names = new Set<string>();
@@ -3896,10 +3896,7 @@ export class ToolHandler {
           fileNameSets.set(fp, names);
         }
         const self = t.toLowerCase();
-        for (const o of lcTokens) {
-          if (o !== self && names.has(o)) return true;
-        }
-        return false;
+        return [...lcTokens].filter(o => o !== self && names.has(o)).length;
       };
       for (const t of tokens) {
         // Enumerate ALL defs of a bare token via the direct index, not FTS — a
@@ -3964,7 +3961,7 @@ export class ToolHandler {
         // single-pick fallback — an uncorroborated bare `run` must not tier its
         // most-substantive namesake any more than a 1-def `check` may.
         if (!isPreciseToken(t)) {
-          cands = cands.filter((n) => coNamedInFile(t, n.filePath));
+          cands = cands.filter((n) => coNamedCount(t, n.filePath) > 0);
         }
         // A specific name (<=3 defs) injects all its defs. An overloaded name
         // (`validate` = 10, `request` = 44) would flood the subgraph, so inject
@@ -3987,7 +3984,8 @@ export class ToolHandler {
           tierPicks = cands.filter((c, i) => i === 0 || (counts.get(c.id) ?? 0) >= maxCallers * 0.25);
         } else {
           const typed = cands.filter(inNamedContext);
-          const ctx = typed.length > 0 ? typed : cands.filter(n => coNamedInFile(t, n.filePath));
+          const ctx = typed.length > 0 ? typed : cands.filter(n => coNamedCount(t, n.filePath) > 0)
+            .sort((a, b) => coNamedCount(t, b.filePath) - coNamedCount(t, a.filePath));
           picks = ctx.length > 0 ? ctx.slice(0, 4) : cands.slice(0, 1);
           tierPicks = picks; // corroborated overloads (or the single fallback) all earn it
         }
@@ -5822,7 +5820,18 @@ export class ToolHandler {
           // an empty section sends the agent to Read, which costs far more. How
           // far it may overshoot is bounded by the caller's ceiling (CG-30), which
           // windows a runaway member instead of dropping it.
-          if (keep.length > 0 && kept + sz > cap) continue;
+          if (keep.length > 0 && kept + sz > cap) {
+            // A requested body that cannot fit whole still gets a bounded
+            // excerpt before lower-priority declarations spend the remainder.
+            const room = cap - kept - GAP_MARKER.length;
+            if (r.importance >= 12 && room > 0) {
+              const windows = windowToCeiling(buildSection(r), room,
+                r.spineCallLine ? [r.start, r.spineCallLine] : [r.start]);
+              for (const part of windows) keep.push({ ...r, ...part.range });
+              kept += sectionText(windows).length;
+            }
+            continue;
+          }
           keep.push(r);
           kept += sz;
         }

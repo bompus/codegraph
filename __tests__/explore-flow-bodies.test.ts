@@ -54,6 +54,7 @@ it('retains the call site when a two-symbol flow has an oversized caller', async
     query: 'resolveSettings loadSettings',
   });
   const text = response.content?.[0]?.text ?? '';
+  expect(text).toContain('export function resolveSettings() {');
   expect(text).toContain('const loaded = loadSettings();');
   expect(text).toContain("return { source: 'config.json' };");
   expect(text.length).toBeLessThanOrEqual(25000);
@@ -72,6 +73,7 @@ it('corroborates an overloaded callable using another query symbol in its file',
     '}',
   ].join('\n'));
   for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(root, `decoy${i}.ts`), [
+    "import { resolveTransport } from './transport';",
     'export function createServer() {',
     ...Array.from({ length: 90 }, (_, j) => `  // unrelated implementation ${j}`),
     `  return ${i};`,
