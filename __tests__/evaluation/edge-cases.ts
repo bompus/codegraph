@@ -71,6 +71,18 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
     commit: '3675bf6baac66b07032575b7bef4200b60b7974b',
     note: 'PHP corpus for binding-model Phase 3 (use rows replace the PHP import regex).',
   },
+  jq: {
+    key: 'jq',
+    repo: 'https://github.com/jqlang/jq.git',
+    commit: '9d241e277204b83c4a7ddc7d733e5c72f99ef500',
+    note: 'C corpus for binding-model Phase 3 (include rows and static storage replace the C/C++ regexes).',
+  },
+  json: {
+    key: 'json',
+    repo: 'https://github.com/nlohmann/json.git',
+    commit: 'aa391dc0a56f8409e2e7aca6e7c9a9d766d44ce8',
+    note: 'C++ corpus for binding-model Phase 3.',
+  },
 };
 
 export const edgeCases: EdgeCase[] = [

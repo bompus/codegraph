@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-09-12T06:24:02.106Z",
+  "corpus": "jq",
+  "repo": "https://github.com/jqlang/jq.git",
+  "commit": "9d241e2",
+  "codegraphSha": "d926de92",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "exact-match": 5328,
+    "(none)": 1956,
+    "qualified-name": 223,
+    "import": 117,
+    "function-ref": 87,
+    "file-path": 2
+  },
+  "edges": 7713,
+  "results": []
+}

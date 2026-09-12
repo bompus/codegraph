@@ -754,10 +754,10 @@ const C_STATIC_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>();
 const C_SOURCE_EXT = /\.(c|cc|cpp|cxx|c\+\+|m|mm)$/i;
 
 /**
- * Whether a C/C++ function definition carries the `static` storage class —
- * read from its first source line(s), since the extractor records no storage
- * class and the kernel arm would need the same field. `static` on the line
- * above the name (`static void\nfoo(void)`) is the common alternative layout.
+ * Whether a C/C++ function definition carries the `static` storage class:
+ * its binding row says `storage = static` (the walker reads the
+ * storage-class specifier; resolution-binding-model-plan.md, Phase 3). A
+ * function with no row is not known to be static.
  */
 function isStaticCFunction(candidate: Node, context: ResolutionContext): boolean {
   let memo = C_STATIC_MEMO.get(context);
@@ -767,9 +767,8 @@ function isStaticCFunction(candidate: Node, context: ResolutionContext): boolean
   }
   const hit = memo.get(candidate.id);
   if (hit !== undefined) return hit;
-  const lines = context.getFileLines?.(candidate.filePath) ?? context.readFile(candidate.filePath)?.split('\n') ?? [];
-  const head = [lines[candidate.startLine - 2] ?? '', lines[candidate.startLine - 1] ?? ''].join('\n');
-  const isStatic = /(^|[\s;}])static\s/.test(head);
+  const row = context.getBindings?.(candidate.filePath)?.find((r) => r.nodeId === candidate.id);
+  const isStatic = row?.storage === 'static';
   memo.set(candidate.id, isStatic);
   return isStatic;
 }

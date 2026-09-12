@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-09-12T06:24:08.057Z",
+  "corpus": "json",
+  "repo": "https://github.com/nlohmann/json.git",
+  "commit": "aa391dc",
+  "codegraphSha": "d926de92",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 11963,
+    "exact-match": 7153,
+    "instance-method": 2289,
+    "file-path": 1742,
+    "qualified-name": 761,
+    "import": 686,
+    "function-ref": 47,
+    "fuzzy": 6
+  },
+  "edges": 24647,
+  "results": []
+}

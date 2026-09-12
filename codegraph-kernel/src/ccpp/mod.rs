@@ -67,6 +67,7 @@
 //! is canonical (kernel-only-extraction-plan.md, Phase 1).
 
 use crate::buffers::{
+    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE, EXPORT_PUBLIC,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
@@ -351,6 +352,22 @@ pub struct Walker<'t> {
     value_scopes: Vec<ValueScope<'t>>,
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
+    line_count: u32,
+}
+
+/// Binding rows for a C/C++ file from the AST alone (resolution-binding-model-plan.md §2.4).
+pub fn bindings_only(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
+    let variant = if language == "cpp" { Variant::Cpp } else { Variant::C };
+    let grammar = crate::langs::grammar_for(language).ok_or("no c/cpp grammar")?;
+    let t0 = std::time::Instant::now();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).map_err(|e| format!("set_language({language}) failed: {e}"))?;
+    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
+    let mut w = Walker::new(source, file_path, variant);
+    w.collect_ast_rows(tree.root_node());
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
@@ -368,28 +385,9 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker {
-        src: source,
-        file_path,
-        variant,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        stack: Vec::new(),
-        nodes_meta: Vec::new(),
-        node_ids: Vec::new(),
-        namespace_prefix: Vec::new(),
-        local_fn_ptrs: HashMap::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        md_ref_keys: HashSet::new(),
-    };
+    let mut w = Walker::new(source, file_path, variant);
 
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+    let line_count = w.line_count;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(FLAG_IS_EXPORTED, false);
@@ -442,6 +440,29 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
 }
 
 impl<'t> Walker<'t> {
+    fn new(source: &'t str, file_path: &'t str, variant: Variant) -> Walker<'t> {
+        Walker {
+            src: source,
+            file_path,
+            variant,
+            line_starts: util::line_starts(source),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            stack: Vec::new(),
+            nodes_meta: Vec::new(),
+            node_ids: Vec::new(),
+            namespace_prefix: Vec::new(),
+            local_fn_ptrs: HashMap::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            md_ref_keys: HashSet::new(),
+            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+        }
+    }
     markdown_refs_impl!();
 
     fn text(&self, node: Node) -> &'t str {
@@ -581,6 +602,10 @@ impl<'t> Walker<'t> {
         }
         if matches!(kind, "function" | "method" | "constant" | "variable") {
             self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
+        }
+        self.emit_decl_binding(kind, name, row, node);
+        if kind == "function" || kind == "method" {
+            self.emit_param_bindings(node);
         }
         Some(row)
     }
@@ -1279,7 +1304,313 @@ impl<'t> Walker<'t> {
         if !module_name.is_empty() {
             let parent = self.top_row();
             self.push_ref_at(parent, &module_name, edge_kind_index("imports").unwrap(), node);
+            let local = include_local_name(&module_name);
+            self.emit_import_binding(&local, &module_name, node);
         }
+    }
+
+    /// Parameter names of a function definition: the identifier inside each
+    /// `parameter_declaration`, under any pointer / reference / array wrapping.
+    fn parameter_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
+        let Some(mut decl) = node.child_by_field_name("declarator") else { return out };
+        while matches!(decl.kind(), "pointer_declarator" | "reference_declarator") {
+            match decl.child_by_field_name("declarator").or_else(|| decl.named_child(0)) {
+                Some(i) => decl = i,
+                None => break,
+            }
+        }
+        if decl.kind() != "function_declarator" {
+            return out;
+        }
+        let Some(params) = decl.child_by_field_name("parameters") else { return out };
+        for i in 0..params.named_child_count() {
+            let Some(p) = params.named_child(i) else { continue };
+            if !matches!(p.kind(), "parameter_declaration" | "optional_parameter_declaration" | "variadic_parameter_declaration") {
+                continue;
+            }
+            if let Some(d) = p.child_by_field_name("declarator") {
+                if let Some(id) = declarator_identifier(d) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// Names a `declaration` binds: every declarator's identifier.
+    fn local_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
+        for i in 0..node.named_child_count() {
+            let Some(c) = node.named_child(i) else { continue };
+            if matches!(c.kind(), "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator" | "reference_declarator") {
+                if let Some(id) = declarator_identifier(c) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// AST-only rows for `bindings_only` (resolution-binding-model-plan.md §2.4).
+    /// A `namespace` block is not a scope (the walk keeps it as a name prefix).
+    fn collect_ast_rows(&mut self, root: Node<'t>) {
+        // (node, scope, scope is a function body): the walk mints nodeless
+        // locals only inside a function body; a class body's declarations
+        // are fields or nothing.
+        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>, bool)> = vec![(root, None, false)];
+        while let Some((node, scope, in_fn)) = stack.pop() {
+            let kind = node.kind();
+            let mut child_scope = scope;
+            let mut child_in_fn = in_fn;
+            match kind {
+                "function_definition" => {
+                    // `class MACRO Name : Base { … }` parses as a function
+                    // definition whose first child is a bodyless class_specifier
+                    // and whose name sits in an ERROR: the walk recovers the
+                    // class (#946/#1061); so does this pass.
+                    if let Some(class_name) = self.macro_class_name(node) {
+                        let line = self.line_of(node);
+                        match scope {
+                            None => self.file_level_decl_row(&class_name, NONE, line, false),
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &class_name, NONE, s, line, None, false, None),
+                        }
+                        child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                        child_in_fn = false;
+                    } else {
+                        // The walk's own name and misparse rules: a definition the
+                        // parser mangled (no `declarator` field, a keyword name, an
+                        // ERROR in its parameter list) is no node, and its children
+                        // stay at the enclosing scope.
+                        let name = if node.child_by_field_name("declarator").is_some() { self.extract_name(node) } else { "<anonymous>".to_string() };
+                        if name != "<anonymous>" && !name.is_empty() && !self.is_misparsed_function(&name, node) && !self.parameter_list_has_error(node) {
+                            let line = self.line_of(node);
+                            match scope {
+                                None => { let st = self.has_static_storage(node); self.file_level_decl_row(&name, NONE, line, st); }
+                                Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                            }
+                            self.emit_param_bindings(node);
+                            child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                            child_in_fn = true;
+                        }
+                    }
+                }
+                "struct_specifier" | "union_specifier" | "enum_specifier" | "class_specifier" => {
+                    // As the walk: a specifier without a body (a forward
+                    // declaration, a mangled header) is skipped with its subtree.
+                    if node.child_by_field_name("body").is_none() {
+                        continue;
+                    }
+                    if kind == "class_specifier" && self.variant != Variant::Cpp {
+                        continue;
+                    }
+                    let name = self.extract_name(node);
+                    if name != "<anonymous>" && !name.is_empty() {
+                        let line = self.line_of(node);
+                        match scope {
+                            None => self.file_level_decl_row(&name, NONE, line, false),
+                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
+                        }
+                    }
+                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
+                    child_in_fn = false;
+                }
+                "declaration" => match scope {
+                    Some(s) => { if in_fn { self.emit_local_rows_scoped(node, s) } }
+                    None => {
+                        // The walk's extract_variable: C takes init / pointer /
+                        // array declarators, C++ only a bare identifier.
+                        let st = self.has_static_storage(node);
+                        let mut names: Vec<Node<'t>> = Vec::new();
+                        for i in 0..node.named_child_count() {
+                            let Some(c) = node.named_child(i) else { continue };
+                            let take = match self.variant {
+                                Variant::C => matches!(c.kind(), "init_declarator" | "pointer_declarator" | "array_declarator"),
+                                Variant::Cpp => c.kind() == "identifier",
+                            };
+                            if take {
+                                if let Some(id) = declarator_identifier(c) {
+                                    names.push(id);
+                                }
+                            }
+                        }
+                        for n in names {
+                            let name = self.text(n).to_string();
+                            if name.is_empty() {
+                                continue;
+                            }
+                            let line = self.line_of(n);
+                            self.file_level_decl_row(&name, NONE, line, st);
+                        }
+                    }
+                },
+                "preproc_include" => {
+                    let module_name: Option<String> = if let Some(sys) = self.find_child_by_kind(node, "system_lib_string") {
+                        let t = self.text(sys);
+                        Some(t.strip_prefix('<').unwrap_or(t).strip_suffix('>').unwrap_or(t).to_string())
+                    } else if let Some(lit) = self.find_child_by_kind(node, "string_literal") {
+                        self.find_child_by_kind(lit, "string_content").map(|sc| self.text(sc).to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(m) = module_name {
+                        if !m.is_empty() {
+                            let local = include_local_name(&m);
+                            self.emit_import_binding(&local, &m, node);
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            for i in (0..node.named_child_count()).rev() {
+                if let Some(c) = node.named_child(i) {
+                    stack.push((c, child_scope, child_in_fn));
+                }
+            }
+        }
+    }
+
+    /// The class name of a `class MACRO Name` misparse: a function_definition
+    /// whose first named child is a bodyless class/struct specifier and whose
+    /// name is the identifier inside a direct ERROR child.
+    fn macro_class_name(&self, node: Node<'t>) -> Option<String> {
+        let first = node.named_child(0)?;
+        if !matches!(first.kind(), "class_specifier" | "struct_specifier") || first.child_by_field_name("body").is_some() {
+            return None;
+        }
+        for i in 0..node.named_child_count() {
+            let c = node.named_child(i)?;
+            if c.kind() == "ERROR" {
+                let id = (0..c.named_child_count()).filter_map(|j| c.named_child(j)).find(|n| n.kind() == "identifier")?;
+                let name = self.text(id).to_string();
+                return if name.is_empty() { None } else { Some(name) };
+            }
+        }
+        None
+    }
+
+    fn parameter_list_has_error(&self, node: Node<'t>) -> bool {
+        let Some(mut decl) = node.child_by_field_name("declarator") else { return false };
+        while matches!(decl.kind(), "pointer_declarator" | "reference_declarator") {
+            match decl.child_by_field_name("declarator").or_else(|| decl.named_child(0)) {
+                Some(i) => decl = i,
+                None => break,
+            }
+        }
+        let Some(params) = decl.child_by_field_name("parameters") else { return false };
+        (0..params.child_count()).filter_map(|i| params.child(i)).any(|c| c.kind() == "ERROR")
+    }
+
+    // --- bindings (resolution-binding-model-plan.md, Phase 3: C/C++) --------------------
+
+    /// The enclosing node's lines, or None at file level. The package
+    /// declaration's `namespace` node wraps every top-level declaration for
+    /// qualified names; it is not a scope.
+    fn enclosing_scope(&self) -> Option<(u32, u32)> {
+        let top = self.stack.last()?;
+        if top.kind == "file" || top.kind == "namespace" {
+            return None;
+        }
+        Some(self.tables.node_lines(top.row))
+    }
+
+    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
+        let name_ref = self.arena.put(name);
+        let (target_spec, target_name) = match target {
+            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
+            None => (NONE_STR, NONE_STR),
+        };
+        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
+        self.tables.push_binding(&BindingRow {
+            kind,
+            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+            node_idx,
+            scope_start: scope.0,
+            scope_end: scope.1,
+            name: name_ref,
+            target_spec,
+            target_name,
+            exported_as: if exported { name_ref } else { NONE_STR },
+            storage: storage_ref,
+            line,
+        });
+    }
+
+    /// A file-level definition is reachable from every unit that includes or
+    /// links it (`public`); `static` narrows it to its own translation unit,
+    /// recorded as `storage = static` and left to the resolver, which exempts
+    /// a header (a `static inline` there exists in every includer).
+    fn file_level_decl_row(&mut self, name: &str, node_idx: u32, line: u32, is_static: bool) {
+        let storage = if is_static { Some("static") } else { None };
+        self.push_binding_row(BINDING_DECL, name, node_idx, (1, self.line_count), line, None, true, storage);
+    }
+
+    fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
+        if matches!(kind, "file" | "import") {
+            return;
+        }
+        let line = self.line_of(node);
+        match self.enclosing_scope() {
+            None => { let st = self.has_static_storage(node); self.file_level_decl_row(name, row, line, st); }
+            Some(scope) => self.push_binding_row(BINDING_LOCAL, name, row, scope, line, None, false, None),
+        }
+    }
+
+    /// `static` among the declaration's storage-class specifiers, on the
+    /// definition itself or on the `declaration` a declarator sits in.
+    fn has_static_storage(&self, node: Node<'t>) -> bool {
+        let mut cur = Some(node);
+        while let Some(n) = cur {
+            for i in 0..n.named_child_count() {
+                if let Some(c) = n.named_child(i) {
+                    if c.kind() == "storage_class_specifier" && self.text(c) == "static" {
+                        return true;
+                    }
+                }
+            }
+            if matches!(n.kind(), "function_definition" | "declaration" | "type_definition") {
+                return false;
+            }
+            cur = n.parent();
+        }
+        false
+    }
+
+    /// One `param` row per parameter name, scoped to the function.
+    fn emit_param_bindings(&mut self, node: Node<'t>) {
+        let scope = (self.line_of(node), node.end_position().row as u32 + 1);
+        let names = self.parameter_names(node);
+        for n in names {
+            let name = self.text(n).to_string();
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_PARAM, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    fn emit_local_rows(&mut self, node: Node<'t>) {
+        let Some(scope) = self.enclosing_scope() else { return };
+        self.emit_local_rows_scoped(node, scope);
+    }
+
+    fn emit_local_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
+        let names = self.local_names(node);
+        for n in names {
+            let name = self.text(n).to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let line = self.line_of(n);
+            self.push_binding_row(BINDING_LOCAL, &name, NONE, scope, line, None, false, None);
+        }
+    }
+
+    /// An `#include` row: the header's basename without its extension as the
+    /// local name (the resolver's long-standing reading), the path as written.
+    fn emit_import_binding(&mut self, local: &str, path: &str, node: Node<'t>) {
+        let line = self.line_of(node);
+        let line_count = self.line_count;
+        self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((path, "*")), false, None);
     }
 
     // --- calls / instantiation ----------------------------------------------
@@ -1585,6 +1916,9 @@ impl<'t> Walker<'t> {
             self.extract_call(node);
         } else if kind == "new_expression" {
             self.extract_instantiation(node);
+        }
+        if kind == "declaration" {
+            self.emit_local_rows(node);
         }
 
         // C++ stack construction `Calculator calc(0)` / `Widget w{1,2}` (#1035).
@@ -2074,5 +2408,33 @@ fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
     match s {
         Some(s) => arena.put(s),
         None => NONE_STR,
+    }
+}
+
+/// The header's basename without its extension — the resolver's local name
+/// for an include (`#include "utils/helpers.hpp"` → `helpers`).
+fn include_local_name(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let stem = match base.rsplit_once('.') {
+        Some((stem, ext)) if matches!(ext, "h" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "cxx" | "cc" | "cpp") => stem,
+        _ => base,
+    };
+    if stem.is_empty() { path.to_string() } else { stem.to_string() }
+}
+
+/// The identifier a (possibly wrapped) declarator names.
+fn declarator_identifier<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    let mut cur = node;
+    loop {
+        match cur.kind() {
+            "identifier" | "field_identifier" | "type_identifier" => return Some(cur),
+            "init_declarator" | "pointer_declarator" | "reference_declarator" | "array_declarator" | "parenthesized_declarator" | "attributed_declarator" => {
+                cur = cur.child_by_field_name("declarator").or_else(|| cur.named_child(0))?;
+            }
+            // A function_declarator is a prototype or a function pointer: as the
+            // walk's cDeclaratorIdentifier, it names nothing.
+            "function_declarator" => return None,
+            _ => return None,
+        }
     }
 }

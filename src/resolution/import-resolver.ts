@@ -903,44 +903,11 @@ export function extractImportMappings(
 ): ImportMapping[] {
   const mappings: ImportMapping[] = [];
 
-  // Every language but C/C++ answers from the `bindings` table
-  // (importMappingsFromBindings); no source regex here.
-  if (language === 'c' || language === 'cpp') {
-    mappings.push(...extractCppImports(content));
-  }
-
-  return mappings;
-}
-
-/**
- * Extract C/C++ import mappings from #include directives.
- *
- * #include brings all symbols from the included header into scope
- * (namespace import), so each mapping uses isNamespace: true and
- * exportedName: '*'. The localName is set to the header's basename
- * without extension so that symbol references like `MyClass` can
- * match against any include that might provide it.
- */
-function extractCppImports(content: string): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-
-  // Match both #include <...> and #include "..."
-  const includeRegex = /^\s*#\s*include\s+[<"]([^>"]+)[>"]/gm;
-  let match;
-
-  while ((match = includeRegex.exec(content)) !== null) {
-    const modulePath = match[1]!;
-    // Basename without extension for localName matching
-    const basename = modulePath.split('/').pop()!.replace(/\.(h|hpp|hxx|hh|inl|ipp|cxx|cc|cpp)$/,'');
-    mappings.push({
-      localName: basename || modulePath,
-      exportedName: '*',
-      source: modulePath,
-      isDefault: false,
-      isNamespace: true,
-    });
-  }
-
+  // Every language answers from the `bindings` table
+  // (importMappingsFromBindings); no source regex remains here. Kept for the
+  // context hook and its callers; returns nothing.
+  void content;
+  void language;
   return mappings;
 }
 

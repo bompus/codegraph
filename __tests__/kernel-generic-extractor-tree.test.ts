@@ -107,10 +107,10 @@ describe.skipIf(!kernelBuilt)('walker and generic extractor agree on the kernel 
  * resolver's predicates read (import, reexport, param, nodeless local, every
  * declaration's export form) are identical.
  */
-describe.skipIf(!kernelBuilt)('AST-only binding rows agree with the walker (JS family, Python, Go, Java, Kotlin, PHP)', () => {
+describe.skipIf(!kernelBuilt)('AST-only binding rows agree with the walker (JS family, Python, Go, Java, Kotlin, PHP, C/C++)', () => {
   const key = (b: Binding) =>
     [b.kind, b.name, b.scopeStart, b.scopeEnd, b.line, b.targetSpec ?? '', b.targetName ?? '', b.exportedAs ?? '', b.exportForm ?? '', b.nodeId ?? ''].join('|');
-  const JS_EXT: Record<string, Language> = { '.js': 'javascript', '.jsx': 'jsx', '.ts': 'typescript', '.tsx': 'tsx', '.py': 'python', '.go': 'go', '.java': 'java', '.kt': 'kotlin', '.kts': 'kotlin', '.php': 'php' };
+  const JS_EXT: Record<string, Language> = { '.js': 'javascript', '.jsx': 'jsx', '.ts': 'typescript', '.tsx': 'tsx', '.py': 'python', '.go': 'go', '.java': 'java', '.kt': 'kotlin', '.kts': 'kotlin', '.php': 'php', '.c': 'c', '.cpp': 'cpp', '.hpp': 'cpp' };
   const fixtures = fs
     .readdirSync(FIXTURE_DIR)
     .filter((f) => JS_EXT[path.extname(f)])
@@ -131,8 +131,21 @@ describe.skipIf(!kernelBuilt)('AST-only binding rows agree with the walker (JS f
       const walkerOnly = (walker.bindings ?? []).filter((b) => !astKeys.has(key(b)));
       // A walker-only row is a node the AST pass does not know as a declaration
       // (a class member, an object-literal store action inside an exported
-      // object); its export flag comes from the node itself on both paths.
-      expect(walkerOnly.filter((b) => b.nodeId === undefined || (b.kind !== 'decl' && b.kind !== 'local')), 'walker rows the AST pass must also emit').toEqual([]);
+      // object, a function the walk recovers from a misparse); its export flag
+      // comes from the node itself on both paths. The parameters of such a
+      // node are walker-only too: their scope is the node's own lines.
+      const walkerOnlyNodeScopes = new Set(
+        walkerOnly.filter((b) => b.nodeId !== undefined).map((b) => {
+          const n = walker.nodes.find((x) => x.id === b.nodeId);
+          return n ? `${n.startLine}-${n.endLine}` : '';
+        }),
+      );
+      const unexplained = walkerOnly.filter((b) =>
+        b.nodeId === undefined
+          ? !(b.kind === 'param' && walkerOnlyNodeScopes.has(`${b.scopeStart}-${b.scopeEnd}`))
+          : b.kind !== 'decl' && b.kind !== 'local',
+      );
+      expect(unexplained, 'walker rows the AST pass must also emit').toEqual([]);
     });
   }
 });
