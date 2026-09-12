@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 in progress: Python, Go, Java and Kotlin done (2026-09-12); Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 in progress: Python, Go, Java, Kotlin and PHP done (2026-09-12); only C/C++ remains; Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -207,6 +207,14 @@ Exit per language: its `extractXImports` function and inference table entries ar
 - Gate, Kotlin (JetBrains/Exposed at `2155404`): 80,302 → 80,573 edges; import 3,595 → 8,032, exact-match 39,041 → 36,827, qualified-name 2,080 → 909, framework 3,310 → 2,603, fuzzy 7 → 31. Edge-level review: 34,730 references unchanged, 2,893 relabelled to `import` with the same target, 2,678 with a different target, 0 lost, 261 gained. Of the target changes that moved to `import`, 480 crossed from a same-named class in the wrong module (jdbc vs r2dbc, whose source trees mirror each other) to the one the file's own import names, 0 went the other way, 15 landed in a third module. The 1,750 exact-match → exact-match target changes are ties among same-named candidates re-broken now that Kotlin's file-level export flags are set (65 flips in the golden); sampled, they move from doc-snippet methods to the library's extension functions (`batchInsert`, `union`). The 24 new fuzzy edges are unique-callable guesses the previous unresolved refs now reach; the fuzzy rule is unchanged.
 - `__tests__/bindings-jvm.test.ts` pins every row form for both languages.
 
+#### PHP — DONE 2026-09-12 (import regex retired)
+
+- The PHP walker (`php.rs`) emits: `decl` rows for file-level declarations, exported as themselves (PHP has no file-level visibility); node-backed `local` rows for members; `param` rows (names as written, with `$`); nodeless `local` rows for `$x = …` in a function body; `import` rows for every `use` clause — single, aliased (`use A\B as C`), grouped (`use A\{B, C as D}`), `use function` and `use const` — with the imported name as `target_spec` and the alias or last segment as the local name. A trait `use` inside a class body is not an import. The walk makes no nodes inside `new class { … }`, and the AST-only pass mirrors that.
+- The regex had matched trait `use` statements as imports and missed grouped, `use function` and `use const` forms; the rows do the reverse.
+- `bindings_file` handles PHP; the parity gate covers `torture.php` and `TortureHtml.php`. `extractPHPImports` is deleted. File-level PHP declarations are now `isExported` (15 flips in the golden).
+- Gate (slimphp/Slim at `3675bf6b`): 5,016 edges before and after, byte-identical dump (2,830 references, none changed); Slim's `use` statements are all the single form the regex already read. Goldens (`php-import-alias-static`, `torture-multilang`): rows and export flags only, no edge or ref changes.
+- `__tests__/bindings-php.test.ts` pins every row form.
+
 ### Phase 4: move the binding lookup into the kernel
 
 With source-reading predicates gone, the resolve step is a join over `bindings`, `nodes` and `unresolved_refs`. Port it into the kernel as a batch entry point that takes a chunk of refs and returns resolved edges, mirroring today's `resolver-worker` chunk contract. The TypeScript `ReferenceResolver` becomes the orchestrator over the kernel and the framework resolvers. This is the P1 item in the migration plan, executed after the model is stable rather than before.
@@ -222,7 +230,7 @@ Exit: `settle` and `read` stages run natively; Linux-kernel resolution under the
 | `isBoundToBareImport`, `isBareJsCall`, `isLocallyBoundJsName` and their memos — `isLocallyBoundJsName`'s regexes and memo done, Phase 2; the other two stay (bare-import classification and call-site shape) | `name-matcher.ts:551-970` |
 | `isTsJsNestedCall` early-out and the host-global chain gate | `index.ts:1030`, `name-matcher.ts:3423`, `js-builtins.ts` |
 | `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases` — done, Phase 2 | `import-resolver.ts:96`, `alias-binding.ts:105` |
-| Per-language import regex extractors — JS/TS done, Phase 2; Python, Go, Java and Kotlin done, Phase 3; PHP and C/C++ remain | `import-resolver.ts:898-1174` |
+| Per-language import regex extractors — JS/TS done, Phase 2; Python, Go, Java, Kotlin and PHP done, Phase 3; C/C++ remains | `import-resolver.ts:898-1174` |
 | Receiver inference regex table, as languages migrate | `name-matcher.ts:1950-2082` |
 | `strip-comments.ts` once no resolver reads source | 574 lines |
 

@@ -107,10 +107,10 @@ describe.skipIf(!kernelBuilt)('walker and generic extractor agree on the kernel 
  * resolver's predicates read (import, reexport, param, nodeless local, every
  * declaration's export form) are identical.
  */
-describe.skipIf(!kernelBuilt)('AST-only binding rows agree with the walker (JS family, Python, Go, Java, Kotlin)', () => {
+describe.skipIf(!kernelBuilt)('AST-only binding rows agree with the walker (JS family, Python, Go, Java, Kotlin, PHP)', () => {
   const key = (b: Binding) =>
     [b.kind, b.name, b.scopeStart, b.scopeEnd, b.line, b.targetSpec ?? '', b.targetName ?? '', b.exportedAs ?? '', b.exportForm ?? '', b.nodeId ?? ''].join('|');
-  const JS_EXT: Record<string, Language> = { '.js': 'javascript', '.jsx': 'jsx', '.ts': 'typescript', '.tsx': 'tsx', '.py': 'python', '.go': 'go', '.java': 'java', '.kt': 'kotlin', '.kts': 'kotlin' };
+  const JS_EXT: Record<string, Language> = { '.js': 'javascript', '.jsx': 'jsx', '.ts': 'typescript', '.tsx': 'tsx', '.py': 'python', '.go': 'go', '.java': 'java', '.kt': 'kotlin', '.kts': 'kotlin', '.php': 'php' };
   const fixtures = fs
     .readdirSync(FIXTURE_DIR)
     .filter((f) => JS_EXT[path.extname(f)])

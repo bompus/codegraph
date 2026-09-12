@@ -310,6 +310,7 @@ pub fn bindings_file(file_path: String, content: String, language: String) -> Re
         "go" => go::bindings_only(&file_path, &content),
         "java" => java::bindings_only(&file_path, &content),
         "kotlin" => kotlin::bindings_only(&file_path, &content),
+        "php" => php::bindings_only(&file_path, &content),
         _ => tsjs::bindings_only(&file_path, &content, &language),
     }
     .map_err(Error::from_reason)?;
