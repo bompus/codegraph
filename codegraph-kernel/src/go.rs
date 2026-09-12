@@ -1035,6 +1035,11 @@ impl<'t> Walker<'t> {
                                     callee_name = method_name.to_string();
                                 }
                             }
+                            "composite_literal" => {
+                                if let Some(ty) = r.child_by_field_name("type") {
+                                    callee_name = format!("{}.{}", self.text(ty), method_name);
+                                }
+                            }
                             "selector_expression" => {
                                 // 2-hop field chain `t.conn.Exec` (#1276).
                                 let chain: String = self

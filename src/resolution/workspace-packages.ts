@@ -18,8 +18,9 @@
  *   - reads `workspaces` (array OR `{ packages: [...] }`) from package.json,
  *     plus a minimal `pnpm-workspace.yaml` `packages:` list
  *   - expands one level of `*` / `**` globs (`packages/*`, `apps/*`)
- *   - subpath resolution is directory-based (`@scope/ui/sub` → `<ui>/sub`);
- *     it does NOT yet honour a member's `exports` map or `main` field
+ *   - exact `exports` backed by static Rollup/Rolldown bundle entries resolve
+ *     to source; otherwise subpaths use directories (`@scope/ui/sub` → `<ui>/sub`)
+ *   - npm `main`, dynamic bundle configs and wildcard exports are not inferred
  *   - returns null when the project declares no workspaces, so single-
  *     package repos pay nothing and see no behaviour change.
  */
@@ -27,8 +28,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { logDebug } from '../errors';
+import { loadWorkspaceSourceEntries } from './workspace-source-entries';
 
 export interface WorkspacePackages {
+  /** Exact public exports mapped through static Rollup/Rolldown bundle entries. */
+  sourceEntries?: Map<string, string>;
   /** Member package `name` → directory relative to projectRoot (posix). */
   byName: Map<string, string>;
   /**
@@ -99,9 +103,17 @@ export function loadWorkspacePackages(projectRoot: string): WorkspacePackages | 
 
   if (byName.size === 0 && localLinkNames.size === 0) return null;
 
+  const sourceEntries = new Map<string, string>();
+  for (const [name, dir] of byName) {
+    for (const [specifier, source] of loadWorkspaceSourceEntries(projectRoot, dir, name)) {
+      sourceEntries.set(specifier, source);
+    }
+  }
+
   logDebug('workspace packages loaded', { count: byName.size, linked: localLinkNames.size });
   return {
     byName,
+    sourceEntries: sourceEntries.size ? sourceEntries : undefined,
     entryByName: entryByName.size > 0 ? entryByName : undefined,
     localLinkNames: localLinkNames.size > 0 ? localLinkNames : undefined,
   };
@@ -232,6 +244,8 @@ export function resolveWorkspaceImport(
   importPath: string,
   ws: WorkspacePackages
 ): string | null {
+  const source = ws.sourceEntries?.get(importPath);
+  if (source) return source;
   // Longest matching package name wins, so `@scope/ui/core` prefers a
   // `@scope/ui/core` package over a `@scope/ui` one when both exist.
   let bestName: string | null = null;

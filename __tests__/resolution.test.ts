@@ -3581,7 +3581,7 @@ export function useGet() { return api.get(); }
       }
     }, 30000);
 
-    it('leaves a non-literal value receiver on its existing path', async () => {
+    it('does not mistake an imported non-literal receiver for its called member', async () => {
       const tmpDir = setup({
         'src/mk.ts': `export function m() { return 'top-level, unrelated to obj'; }
 export const obj = makeObj();
@@ -3597,14 +3597,13 @@ export function remoteUse() { return obj.m(); }
         await cg.indexAll();
         // `obj` holds a call result, not a literal: the same-named top-level
         // `m` lies outside its declaration, so containment finds nothing and
-        // both calls keep today's behavior (unresolved in the defining file;
-        // the constant edge through the import) rather than guessing.
+        // both calls stay unresolved rather than targeting the receiver constant.
         expect(await callersOf(cg, 'm', 'function')).toEqual([]);
         const obj = (await cg.searchNodes('obj', { limit: 5 })).find((r) => r.node.kind === 'constant');
         const remote = (await cg.searchNodes('remoteUse', { limit: 5 })).find((r) => r.node.kind === 'function');
         expect(
           cg.getOutgoingEdges(remote!.node.id).some((e) => e.kind === 'calls' && e.target === obj!.node.id)
-        ).toBe(true);
+        ).toBe(false);
         cg.close();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });

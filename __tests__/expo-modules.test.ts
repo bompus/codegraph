@@ -120,6 +120,9 @@ const Haptics = requireNativeModule('ExpoHaptics');
 export async function impactAsync() {
   return await Haptics.uniqueExpoHapticCall();
 }
+export function unknown(Haptics: any) { return Haptics.uniqueExpoHapticCall(); }
+const Other = requireNativeModule('Other');
+export function wrongModule() { return Other.uniqueExpoHapticCall(); }
 `
     );
 
@@ -147,6 +150,10 @@ export async function impactAsync() {
            AND t.name = 'uniqueExpoHapticCall'`
       )
       .all();
+    for (const name of ['unknown', 'wrongModule']) {
+      const caller = cg.getNodesByName(name)[0]!;
+      expect(cg.getOutgoingEdges(caller.id).filter(e => e.kind === 'calls')).toEqual([]);
+    }
     cg.close?.();
     expect(callEdge.length).toBeGreaterThanOrEqual(1);
     expect(callEdge[0].target_id.startsWith('expo-module:')).toBe(true);

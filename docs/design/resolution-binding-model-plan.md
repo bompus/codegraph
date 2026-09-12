@@ -177,6 +177,32 @@ Tests: `__tests__/bindings-tsjs.test.ts` (every new row form) and `__tests__/bin
 
 **Windows validation of Phase 3 (2026-09-12).** `fork/consolidated` at `105210e3` (PRs #33 to #37: Python, Go, Java/Kotlin, PHP, C/C++) on the same Windows checkout: `npm ci`, `bash scripts/build-kernel.sh` (31 s, 76 MB `win32-x64` prebuild, no source change needed), `npm run build`; the 11 binding-model and kernel suites pass (995 tests, golden dumps byte-identical), and the full suite passes: 273 files, 4,766 tests, 7 files skipped by the POSIX-only gates.
 
+### Phase 2b: receiver evidence — TS/JS first cut
+
+The current implementation gates ordinary TS/JS member calls on the innermost
+receiver binding. Typed locals, parameters, inherited members and one typed
+field hop retain their exact owner; unknown, shadowed and externally bound
+receivers no longer borrow a same-named project method. Existing implicit
+`this`/`self`/`super` and call-result chains retain their specialized paths.
+Expo calls use the module registration and factory import as receiver evidence.
+The Go composite-literal extraction fix preserves the concrete type in the
+reference, correcting the previously recorded `BindBody` ties.
+
+Typed factory results are followed through their declaration and return type.
+Vite exposed a prerequisite: both its factory and return type are imported
+through package entries pointing at unbuilt bundles. Exact package exports now
+map through explicit static Rollup/Rolldown input/output declarations, then the
+ordinary import resolver follows the source barrel and export aliases. Configs
+are parsed with the kernel and never executed. A direct package build script
+establishes the working directory. Dynamic or conflicting entries, mutations,
+wildcard exports and preserved-module layouts are left unresolved. Arbitrary
+plugin behavior is outside this static mapping's scope.
+
+This is **not completion of all §2.3**: the broad receiver rule for other
+languages and a persisted `unknown-receiver` reason remain open. Go/Kotlin
+range/lambda inference and other established language-specific paths are not
+replaced by the TS/JS gate. Extraction version 32 requires re-indexing.
+
 ### Phase 3: other languages
 
 Per language, in order of resolver regex weight: Python, Go, Java/Kotlin, C/C++ (`storage='static'`), Rust (visibility), PHP, Ruby, C#, Swift. Each phase deletes that language's import-extractor regex and its rows in the receiver inference table.

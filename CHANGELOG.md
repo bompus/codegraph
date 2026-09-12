@@ -156,6 +156,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- JavaScript and TypeScript method calls now follow the receiver's binding, avoiding unrelated same-named methods while preserving typed receivers and Expo native-module calls.
+- Workspace packages with explicit Rollup or Rolldown build entries can resolve their public imports to source before their bundles are built.
+- Go calls on newly constructed values now reach that value's own method instead of a same-named method on another type.
+
 - **A symbol exported later in its file (`export { x }`, `export default x`) is now recorded as exported in TypeScript and JavaScript.** The graph used to mark only declarations written with `export` in front of them, so a store or function exported at the bottom of the file read as private. Extraction now records, per file, what each name is bound to and how it is exported, and the export flag comes from that record. Re-index to pick this up.
 
 - **Objective-C, Erlang, Nix, Pascal, Solidity, ArkTS, Terraform, VB.NET, COBOL and CFML are now parsed by the native engine.** These languages had no native reader and always went through the older parser. The native engine now carries their grammars, built from the same sources as before, and the existing symbol extraction runs on that parse, so projects in these languages index without the second parser and produce the same graph.

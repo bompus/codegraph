@@ -145,6 +145,8 @@ export interface ResolutionContext {
    * method). Optional so external/test contexts compile without it.
    */
   getSupertypes?(typeName: string, language: Language): string[];
+  /** Direct inheritance targets for one exact declaration, preserving module identity. */
+  getSupertypeNodes?(nodeId: string): Node[];
   /**
    * Look up a node by its id. Lets matchers derive the FROM-symbol's
    * enclosing-class scope (Swift implicit-self method scoping, `this.X`

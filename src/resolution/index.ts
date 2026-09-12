@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
+import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -33,7 +33,7 @@ import { logDebug } from '../errors';
 import { lexicalPathWithinRoot } from '../utils';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
-import { JS_BUILT_INS, isTsJsNestedCall } from './js-builtins';
+import { JS_BUILT_INS } from './js-builtins';
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -613,6 +613,9 @@ export class ReferenceResolver {
         return this.queries.getNodeById(id);
       },
 
+      getSupertypeNodes: (nodeId: string) => this.queries.getOutgoingEdges(nodeId, ['extends', 'implements'])
+        .map(e => this.queries.getNodeById(e.target)).filter((n): n is Node => n !== null),
+
       getSupertypes: (typeName: string, language) => {
         // Union the `implements`/`extends` targets of every same-named type node.
         // Matching by simple name (not id) reconciles a type declared in one node
@@ -1032,12 +1035,11 @@ export class ReferenceResolver {
     if (this.profileStages) this.stageAdd('frameworks', ref, fwEarly !== null, tFw);
     if (fwEarly) return fwEarly;
 
-    // An imported root is not the called nested member. Keep framework
-    // evidence, but never bind holder.values.get to holder or an unrelated get.
-    if (isTsJsNestedCall(ref)) {
-      return candidates.length > 0
-        ? candidates.reduce((best, curr) => curr.confidence > best.confidence ? curr : best)
-        : null;
+    const receiverResult = matchBoundReceiverCall(ref, this.context);
+    if (receiverResult !== undefined) {
+      const valid = this.gateLanguage(receiverResult, ref);
+      if (valid) candidates.push(valid);
+      return candidates.length ? candidates.reduce((best, curr) => curr.confidence > best.confidence ? curr : best) : null;
     }
 
     // Strategy 2: Try import-based resolution

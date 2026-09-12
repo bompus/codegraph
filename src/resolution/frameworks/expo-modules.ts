@@ -13,9 +13,8 @@
  * This framework extractor walks the file source for those declarative
  * literals and emits method nodes named `takePictureAsync` /
  * `notificationAsync` / `width` / etc., attributed to the Swift / Kotlin
- * file. The standard name-matcher then resolves JS `Foo.takePictureAsync(...)`
- * to them via the existing `obj.method` → method-name path — no separate
- * resolve() branch needed.
+ * file. Calls resolve through the receiver's requireNativeModule binding,
+ * which identifies the native module even when several modules share a method.
  *
  * Real-world shape (expo-haptics):
  *
@@ -39,6 +38,8 @@
  *   Fabric (Phase 6) and is left to that phase.
  */
 import type { Node } from '../../types';
+import { innermostBinding } from '../name-matcher';
+import { resolveViaImport } from '../import-resolver';
 import {
   FrameworkExtractionResult,
   FrameworkResolver,
@@ -186,13 +187,23 @@ export const expoModulesResolver: FrameworkResolver = {
     };
   },
 
-  /**
-   * No bespoke resolution needed — the synthetic method nodes emitted by
-   * `extract()` get picked up by the standard name-matcher when a JS
-   * callsite like `Foo.takePictureAsync(args)` resolves. Returning null
-   * here is correct.
-   */
-  resolve() {
-    return null;
+  resolve(ref, context) {
+    if (ref.referenceKind !== 'calls') return null;
+    const call = /^([\w$]+)\.([\w$]+)$/.exec(ref.referenceName);
+    if (!call) return null;
+    const binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], call[1]!, ref.line);
+    const receiverId = binding?.kind === 'import'
+      ? resolveViaImport({ ...ref, referenceName: call[1]!, referenceKind: 'references' }, context)?.targetNodeId
+      : binding?.nodeId;
+    const receiver = receiverId && context.getNodeById?.(receiverId);
+    if (!receiver) return null;
+    const factory = /^=\s*([\w$]+)\s*(?:<[^>]+>)?\s*\(\s*['"]([\w]+)['"]\s*\)/.exec(receiver.signature ?? '');
+    if (!factory) return null;
+    const imported = innermostBinding(context.getBindings?.(receiver.filePath) ?? [], factory[1]!, receiver.startLine);
+    if (imported?.kind !== 'import' || imported.targetSpec !== 'expo-modules-core' ||
+        !['requireNativeModule', 'requireOptionalNativeModule'].includes(imported.targetName ?? '')) return null;
+    const target = context.getNodesByName(call[2]!).find(n =>
+      n.id.startsWith('expo-module:') && n.qualifiedName.endsWith(`::${factory[2]}.${call[2]}`));
+    return target ? { original: ref, targetNodeId: target.id, confidence: 0.9, resolvedBy: 'framework' } : null;
   },
 };

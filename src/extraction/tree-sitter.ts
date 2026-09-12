@@ -425,15 +425,15 @@ const TS_JS_CHAIN_LANGUAGES = new Set(['typescript', 'tsx', 'javascript', 'jsx']
 const TS_JS_CHAIN_RECEIVER_TYPES = new Set(['member_expression', 'subscript_expression']);
 
 /**
- * Nested identifier receivers retain their call-site text; window keeps its
- * existing project-namespace behavior. Call-result and this paths are separate.
+ * Nested identifier receivers retain their call-site text.
+ * Call-result and this paths are separate.
  */
-function isTsJsIdentifierChain(node: SyntaxNode, source: string): boolean {
+function isTsJsIdentifierChain(node: SyntaxNode): boolean {
   let cur: SyntaxNode | null = node;
   while (cur && TS_JS_CHAIN_RECEIVER_TYPES.has(cur.type)) {
     cur = getChildByField(cur, 'object');
   }
-  return !!cur && cur.type === 'identifier' && getNodeText(cur, source) !== 'window';
+  return !!cur && cur.type === 'identifier';
 }
 
 /**
@@ -5010,6 +5010,12 @@ export class TreeSitterExtractor {
               if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(innerCallee)) return;
               calleeName = `${innerCallee}().${methodName}`;
             } else if (
+              this.language === 'go' && receiver?.type === 'composite_literal'
+            ) {
+              const type = getChildByField(receiver, 'type');
+              if (!type) return;
+              calleeName = `${getNodeText(type, this.source)}.${methodName}`;
+            } else if (
               this.language === 'go' &&
               receiver &&
               receiver.type === 'selector_expression' &&
@@ -5028,7 +5034,7 @@ export class TreeSitterExtractor {
               TS_JS_CHAIN_LANGUAGES.has(this.language) &&
               receiver &&
               TS_JS_CHAIN_RECEIVER_TYPES.has(receiver.type) &&
-              isTsJsIdentifierChain(receiver, this.source)
+              isTsJsIdentifierChain(receiver)
             ) {
               // Keep call-site evidence for framework resolution and Steps.
               // Generic resolution must not guess a target from the last name

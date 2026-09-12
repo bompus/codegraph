@@ -6,9 +6,8 @@
 #
 #   codegraph-kernel/prebuilds/<platform>-<arch>/codegraph-kernel.node
 #
-# The kernel is OPTIONAL everywhere: when the .node is absent the extraction
-# path falls back to the wasm pipeline. This script needs a Rust toolchain
-# (rustup.rs); nothing else in the repo does.
+# The kernel is the only parser. Building it from source requires a Rust
+# toolchain (rustup.rs); packaged installations include a native prebuild.
 #
 # Usage:
 #   scripts/build-kernel.sh                 # host platform

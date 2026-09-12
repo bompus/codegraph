@@ -86,6 +86,32 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
 };
 
 export const edgeCases: EdgeCase[] = [
+  {
+    id: 'vite-factory-receiver-control', corpus: 'vite', kind: 'calls',
+    from: { file: 'packages/vite/scripts/benchCircularImport.ts', name: 'runBenchmark' },
+    to: { file: 'packages/vite/src/module-runner/runner.ts', name: 'import' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'createServerModuleRunner declares ModuleRunner as its return type.',
+  },
+  {
+    id: 'vite-external-receiver-not-project-method', corpus: 'vite', kind: 'calls',
+    from: { file: 'packages/create-vite/src/index.ts', name: 'init' },
+    to: { file: 'packages/vite/src/client/overlay.ts', name: 'text' }, expect: 'absent',
+    source: 'binding-model Phase 2b', why: 'prompts.text belongs to the imported prompt library, not ErrorOverlay.',
+  },
+
+  {
+    id: 'gin-composite-receiver-json-control', corpus: 'gin', kind: 'calls',
+    from: { file: 'binding/json_test.go', name: 'TestJSONBindingBindBody' },
+    to: { file: 'binding/json.go', name: 'BindBody' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'jsonBinding{}.BindBody names the JSON implementation explicitly.',
+  },
+  {
+    id: 'gin-composite-receiver-not-bson', corpus: 'gin', kind: 'calls',
+    from: { file: 'binding/json_test.go', name: 'TestJSONBindingBindBody' },
+    to: { file: 'binding/bson.go', name: 'BindBody' }, expect: 'absent',
+    source: 'binding-model Phase 2b', why: 'A JSON composite literal cannot invoke bsonBinding.BindBody.',
+  },
+
   // --- #1713: a bare (npm / builtin) import must never fuzzy-match a project symbol ---
   {
     id: 'vite-bare-import-self-edge',

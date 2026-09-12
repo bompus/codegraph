@@ -9,7 +9,8 @@ import * as path from 'path';
 import { Binding, Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, isInheritanceRef, isImportableKind } from './types';
 import { resolveWorkspaceImport } from './workspace-packages';
-import { JS_BUILT_INS, isTsJsNestedCall } from './js-builtins';
+import { JS_BUILT_INS } from './js-builtins';
+import { resolveViaImport } from './import-resolver';
 
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will
@@ -1910,7 +1911,7 @@ function buildLocalReceiverTypePatterns(language: Language, r: string): RegExp[]
         // at `<` so a generic-typed param (`repo: Repository<User>`) still yields
         // `Repository`. resolveMethodOnType validates the type actually declares
         // the method, so the looser match produces no edge on a mis-inference.
-        new RegExp(`\\b${r}\\b\\s*:\\s*([A-Z][\\w.$]*)`), // lg: Logger  (annotation or typed param)
+        new RegExp(`\\b${r}\\b\\s*:\\s*([A-Z][\\w.$]*)(?![\\w.$]|\\s*(?:<[^>]*>)?\\s*[\\[|&])`), // named type, not an array/union/intersection
       ];
     case 'python':
       return [
@@ -2072,6 +2073,7 @@ function inferLocalReceiverType(
   receiverName: string,
   ref: UnresolvedRef,
   context: ResolutionContext,
+  preserveQualifiedName = false,
 ): string | null {
   // CFML scope prefixes: `variables.svc` / `this.svc` name a COMPONENT-scoped
   // field whose assignment or `property` declaration usually lives outside the
@@ -2141,7 +2143,7 @@ function inferLocalReceiverType(
       const m = line.match(re);
       if (m && m[1]) {
         const type = normalizeInferredTypeName(m[1]);
-        if (type) return type;
+        if (type) return preserveQualifiedName ? m[1] : type;
       }
     }
     return null;
@@ -2162,7 +2164,7 @@ function inferLocalReceiverType(
   // semantics.
   if (!componentScoped) {
     const states = getInferScanStates(context);
-    const key = `${ref.filePath}|${startIdx}|${ref.language}|${scanReceiver}`;
+    const key = `${ref.filePath}|${startIdx}|${ref.language}|${scanReceiver}|${preserveQualifiedName}`;
     const state = states.get(key);
     if (!state) {
       for (let i = callIdx; i >= startIdx; i--) {
@@ -2305,12 +2307,94 @@ function inferPhpAssignedPropertyType(
   return null;
 }
 
-/**
- * Try to resolve by method name on a class/object
- */
+/** A member call with binding evidence is exclusive: unknown receivers never name-match. */
+export function matchBoundReceiverCall(
+  ref: UnresolvedRef, context: ResolutionContext,
+): ResolvedRef | null | undefined {
+  if (ref.referenceKind !== 'calls' || !context.getBindings ||
+      !ESM_FAMILY.has(ref.language)) return undefined;
+  const call = ref.referenceName.match(/^(.+)\.([\w$]+)$/);
+  if (!call) return undefined;
+  const [, receiver, method] = call;
+  // Existing factory/store and implicit-instance paths validate their own receiver types.
+  if (receiver!.includes('()') || /^(this|self|super)(\.|$)/.test(receiver!)) return undefined;
+  const root = receiver!.split('.')[0]!;
+  const binding = innermostBinding(context.getBindings(ref.filePath), root, ref.line);
+  if (binding?.kind === 'import') {
+    // The import resolver descends one member. A deeper receiver must not
+    // mistake that first member for the final call (service.child.run).
+    if (receiver!.includes('.')) return null;
+    const hit = resolveViaImport(ref, context);
+    const target = hit && context.getNodeById?.(hit.targetNodeId);
+    return target && ['function', 'method', 'class', 'component'].includes(target.kind) ? hit : null;
+  }
+  if (!binding) return null;
+  if (receiver!.includes('.')) {
+    const parts = receiver!.split('.');
+    if (parts.length !== 2) return null;
+    const type = inferLocalReceiverType(root, {
+      ...ref, line: binding.line, fromNodeId: binding.nodeId ?? ref.fromNodeId,
+    }, context, true);
+    if (!type) return null;
+    const typeBinding = innermostBinding(context.getBindings(ref.filePath), type.split('.')[0]!, binding.line);
+    const ownerId = typeBinding?.kind === 'import'
+      ? resolveViaImport({ ...ref, referenceName: type, referenceKind: 'references' }, context)?.targetNodeId
+      : typeBinding?.nodeId;
+    const owner = ownerId && context.getNodeById?.(ownerId);
+    return owner && ['class', 'interface', 'component', 'type_alias'].includes(owner.kind)
+      ? matchTsFieldCall(owner.name, parts[1]!, method!, ref, context, owner) : null;
+  }
+  const direct = matchMethodCall(ref, context, true);
+  if (direct) return direct;
+  if (binding.kind === 'param') return null;
+  const value = binding.nodeId ? context.getNodeById?.(binding.nodeId) : undefined;
+  const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lines = context.getFileLines?.(ref.filePath);
+  const declaresValue = new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=`).test(lines?.[binding.line - 1] ?? '');
+  const declaration = declaresValue ? lines?.slice(binding.line - 1, binding.line + 2).join('\n') : undefined;
+  const signature = value?.signature ?? declaration?.match(new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*(=[\\s\\S]+)`))?.[1];
+  const factory = /^=\s*(await\s+)?([\w$]+)\s*(?:<[^>]+>)?\s*\(/.exec(signature ?? '');
+  if (!factory) return null;
+  const site = { ...ref, line: binding.line };
+  const factoryBinding = innermostBinding(context.getBindings(ref.filePath), factory[2]!, binding.line);
+  const calleeId = factoryBinding?.kind === 'import'
+    ? resolveViaImport({ ...site, referenceName: factory[2]! }, context)?.targetNodeId
+    : factoryBinding?.nodeId;
+  const callee = calleeId ? context.getNodeById?.(calleeId) : undefined;
+  if (!callee) return null;
+  const returnType = callee.returnType ?? callee.signature?.match(/\)\s*:\s*([\w$]+(?:<[\w$]+>)?)\s*$/)?.[1];
+  if (!returnType) return null;
+  const type = factory[1] ? returnType.replace(/^Promise<(.+)>$/, '$1') : returnType;
+  const hit = matchBoundTypeMember(type, method!, { ...site, filePath: callee.filePath, line: callee.startLine }, context);
+  return hit ? { ...hit, original: ref } : null;
+}
+
+/** Resolve a declared type through its own lexical binding before selecting a member. */
+function matchBoundTypeMember(type: string, method: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  const binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], type.split('.')[0]!, ref.line);
+  const ownerId = binding?.kind === 'import'
+    ? resolveViaImport({ ...ref, referenceName: type, referenceKind: 'references' }, context)?.targetNodeId
+    : binding?.nodeId;
+  const owner = ownerId ? context.getNodeById?.(ownerId) : undefined;
+  if (!owner || !['class', 'interface', 'component', 'type_alias'].includes(owner.kind)) return null;
+  const pending = [owner];
+  const seen = new Set<string>();
+  while (pending.length) {
+    const typeNode = pending.shift()!;
+    if (seen.has(typeNode.id)) continue;
+    seen.add(typeNode.id);
+    const member = context.getNodesByQualifiedName(`${typeNode.qualifiedName}::${method}`)
+      .find(n => n.filePath === typeNode.filePath && n.kind === 'method');
+    if (member) return { original: ref, targetNodeId: member.id, confidence: 0.9, resolvedBy: 'instance-method' };
+    pending.push(...(context.getSupertypeNodes?.(typeNode.id) ?? []));
+  }
+  return null;
+}
+
 export function matchMethodCall(
   ref: UnresolvedRef,
-  context: ResolutionContext
+  context: ResolutionContext,
+  requireReceiverEvidence = false,
 ): ResolvedRef | null {
   // Parse method call patterns like "obj.method" or "Class::method". The method
   // part allows trailing `:` keywords so Objective-C selectors resolve
@@ -2380,6 +2464,9 @@ export function matchMethodCall(
   // A simple `receiver.method` / `receiver:method` / `receiver$method` shape whose
   // receiver type we can try to infer from its local declaration.
   const inferableReceiver = dotMatch || luaColonMatch || rDollarMatch;
+  const binding = requireReceiverEvidence
+    ? innermostBinding(context.getBindings?.(ref.filePath) ?? [], objectOrClass!, ref.line)
+    : undefined;
 
   // Infer the receiver's type from its local declaration/initializer in the
   // enclosing scope, then resolve the method on that type (#1108). C++ keeps its
@@ -2390,8 +2477,14 @@ export function matchMethodCall(
     const inferredType = nmTimedT('mc-infer', ref, () =>
       ref.language === 'cpp'
         ? inferCppReceiverType(objectOrClass!, ref, context)
-        : inferLocalReceiverType(objectOrClass!, ref, context));
+        : inferLocalReceiverType(objectOrClass!, binding
+          ? { ...ref, line: binding.line, fromNodeId: binding.nodeId ?? ref.fromNodeId }
+          : ref, context, requireReceiverEvidence));
     if (inferredType) {
+      if (requireReceiverEvidence) {
+        const hit = matchBoundTypeMember(inferredType, methodName!, { ...ref, line: binding?.line ?? ref.line }, context);
+        return hit ? { ...hit, original: ref } : null;
+      }
       // Java/Kotlin: when two classes share the simple name, the file's import
       // pins WHICH one (#314). Other languages disambiguate by call-site file.
       const importedFqn =
@@ -2505,6 +2598,7 @@ export function matchMethodCall(
         (n) => (n.kind === 'constant' || n.kind === 'variable') && n.filePath === ref.filePath
       );
       for (const holder of holders) {
+        if (requireReceiverEvidence && binding?.nodeId !== holder.id) continue;
         const hit = resolveObjectLiteralMember(holder, methodName!, ref, context, 0.85, 'instance-method');
         if (hit) return hit;
       }
@@ -2525,6 +2619,8 @@ export function matchMethodCall(
     );
 
     for (const classNode of classCandidates) {
+      if (requireReceiverEvidence && binding && binding.nodeId !== classNode.id) continue;
+      if (requireReceiverEvidence) return matchBoundTypeMember(objectOrClass!, methodName!, ref, context);
       if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
         // Skip cross-language class matches
         if (classNode.language !== ref.language) continue;
@@ -2550,6 +2646,8 @@ export function matchMethodCall(
     return null;
   });
   if (strat1) return strat1;
+
+  if (requireReceiverEvidence) return null;
 
   // Strategy 2: Instance variable receiver - try capitalized form to find class
   // e.g., "permissionEngine" → look for classes containing "PermissionEngine"
@@ -2874,7 +2972,13 @@ function matchTsThisFieldCall(
   const owner = caller.qualifiedName.slice(0, sep).split('::').pop();
   if (!owner) return null;
 
-  const owners = preferCallSiteFile(context.getNodesByName(owner), ref.filePath).filter(
+  return matchTsFieldCall(owner, field, methodName, ref, context);
+}
+
+function matchTsFieldCall(
+  owner: string, field: string, methodName: string, ref: UnresolvedRef, context: ResolutionContext, boundOwner?: Node,
+): ResolvedRef | null {
+  const owners = boundOwner ? [boundOwner] : preferCallSiteFile(context.getNodesByName(owner), ref.filePath).filter(
     (n) => (n.kind === 'class' || n.kind === 'component') && sameLanguageFamily(n.language, ref.language)
   );
   const fieldEsc = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2907,7 +3011,16 @@ function matchTsThisFieldCall(
       for (const { re, valueType } of patterns) {
         const m = line.match(re);
         if (!m || !m[1]) continue;
+        if (boundOwner && /^[\s]*(?:<[^>]*>)?\s*[\[|&]/.test(line.slice((m.index ?? 0) + m[0].length))) return null;
         if (valueType) {
+          if (boundOwner) {
+            const row = innermostBinding(context.getBindings?.(cls.filePath) ?? [], m[1], cls.startLine);
+            const holderId = row?.kind === 'import'
+              ? resolveViaImport({ ...ref, filePath: cls.filePath, line: cls.startLine, referenceName: m[1], referenceKind: 'references' }, context)?.targetNodeId
+              : row?.nodeId;
+            const holder = holderId && context.getNodeById?.(holderId);
+            return holder ? resolveObjectLiteralMember(holder, methodName, ref, context, 0.85, 'instance-method') : null;
+          }
           // The value's declaration may live in another file (it is imported);
           // the call site's file is preferred when several share the name.
           const holderName = m[1].split('.').pop()!;
@@ -2923,6 +3036,10 @@ function matchTsThisFieldCall(
         // `ns.Mailer` → `Mailer`; a primitive or builtin names no project type.
         const typeName = m[1].split('.').pop()!;
         if (!/^[A-Z]/.test(typeName)) return null;
+        if (boundOwner) {
+          const hit = matchBoundTypeMember(m[1], methodName, { ...ref, filePath: cls.filePath, line: cls.startLine }, context);
+          return hit ? { ...hit, original: ref } : null;
+        }
         // Two apps in one repo may each declare a `UserService`. The bare-name
         // path this replaces broke that tie by directory proximity, so keep the
         // same signal: among the type's declarations of the method, prefer the
@@ -3375,8 +3492,8 @@ export function matchReference(
     }
   }
 
-  // No generic fallback can establish an unknown nested receiver's type.
-  if (isTsJsNestedCall(ref)) return null;
+  const receiverResult = matchBoundReceiverCall(ref, context);
+  if (receiverResult !== undefined) return receiverResult;
 
   // Try strategies in order of confidence
   let result: ResolvedRef | null;

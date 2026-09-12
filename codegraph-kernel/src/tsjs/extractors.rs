@@ -1143,7 +1143,6 @@ impl<'t> Walker<'t> {
     // --- extractCall (TS/JS generic tail) -------------------------------------------------
 
     /// Identifier-rooted nested receivers retain their full call-site text.
-    /// Preserve the existing window namespace escape (#1794, #1566).
     fn is_identifier_chain(&self, receiver: Node<'t>) -> bool {
         let mut cur = receiver;
         if !matches!(cur.kind(), "member_expression" | "subscript_expression") {
@@ -1155,7 +1154,7 @@ impl<'t> Walker<'t> {
                 None => return false,
             }
         }
-        cur.kind() == "identifier" && self.text(cur) != "window"
+        cur.kind() == "identifier"
     }
 
     pub(super) fn extract_call(&mut self, node: Node<'t>) {

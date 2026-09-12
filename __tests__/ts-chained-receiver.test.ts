@@ -4,7 +4,7 @@
  * the bare method name for it let every such call exact-match whatever project
  * symbol shared the name, so a storage wrapper's `get` called itself (#1707).
  * Complete call references are retained; only proven targets become edges.
- * `window.MyNs.run()` and `this.<field>.m()` keep their existing resolution.
+ * Unknown window namespaces stay unresolved; typed this fields still resolve.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -88,9 +88,9 @@ describe('TS/JS call through a host-global chain (#1707)', () => {
     );
   });
 
-  it('keeps a chain rooted at a project value — window.MyNs.m() and this.<field>.m()', () => {
+  it('requires receiver evidence for window namespaces and preserves typed this fields', () => {
     const ping = fn('ping', 'service.ts').id;
-    expect(callTargets(fn('viaGlobal', 'service.ts').id)).toContain(ping);
+    expect(callTargets(fn('viaGlobal', 'service.ts').id)).not.toContain(ping);
     expect(callTargets(method('Runner::run').id)).toEqual([method('PingService::ping').id]);
   });
 
