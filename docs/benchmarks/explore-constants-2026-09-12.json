@@ -1,0 +1,7231 @@
+{
+  "comparison": {
+    "before": "c32a76c526215cc94f2ececc2cc67f361453a998",
+    "after": "41d9740f26d2039a80085cd106574460e0bc4b94",
+    "model": "sonnet",
+    "effort": "high",
+    "runsPerQuestionPerBuild": 2,
+    "order": "before-after in repeat 1, after-before in repeat 2",
+    "questions": {
+      "flask": [
+        "How does Flask dispatch_request select and invoke a view, including ensure_sync? Trace the actual call path with file and line references."
+      ],
+      "gin": [
+        "How does Context JSON reach the renderer and write the response? Trace the actual call path with file and line references."
+      ],
+      "vite": [
+        "How does resolveConfig find, load, and merge a config file through loadConfigFromFile? Trace the actual call path with file and line references."
+      ]
+    }
+  },
+  "checks": {
+    "linuxTests": 4871,
+    "skipped": 12,
+    "files": 285,
+    "build": "passed",
+    "windowsRun": false,
+    "macOSRun": false
+  },
+  "sequence": [
+    {
+      "arm": "before",
+      "responseChars": 24810,
+      "declarationLinesReturned": 0,
+      "declarationLines": 8
+    },
+    {
+      "arm": "after",
+      "responseChars": 24936,
+      "declarationLinesReturned": 8,
+      "declarationLines": 8
+    }
+  ],
+  "controlProbes": [
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "query": "Flask dispatch_request ensure_sync full_dispatch_request",
+      "ms": 74.36124400000001,
+      "chars": 18105,
+      "coverage": [
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 969,
+          "end": 993,
+          "sent": 25,
+          "total": 25
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 78,
+          "end": 83,
+          "sent": 1,
+          "total": 6
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 182,
+          "end": 191,
+          "sent": 1,
+          "total": 10
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_async.py",
+          "start": 25,
+          "end": 27,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 21,
+          "end": 22,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 92,
+          "end": 93,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 109,
+          "end": 110,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 128,
+          "end": 129,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 144,
+          "end": 145,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 188,
+          "end": 189,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 266,
+          "end": 267,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/type_check/typing_route.py",
+          "start": 105,
+          "end": 106,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "ensure_sync",
+          "file": "src/flask/app.py",
+          "start": 1068,
+          "end": 1080,
+          "sent": 13,
+          "total": 13
+        },
+        {
+          "name": "full_dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 995,
+          "end": 1022,
+          "sent": 28,
+          "total": 28
+        }
+      ]
+    },
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "query": "full_dispatch_request finalize_request handle_user_exception handle_exception dispatch_request wsgi_app",
+      "ms": 55.545334999999994,
+      "chars": 16623,
+      "coverage": [
+        {
+          "name": "full_dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 995,
+          "end": 1022,
+          "sent": 28,
+          "total": 28
+        },
+        {
+          "name": "finalize_request",
+          "file": "src/flask/app.py",
+          "start": 1024,
+          "end": 1054,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "handle_user_exception",
+          "file": "src/flask/app.py",
+          "start": 868,
+          "end": 898,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "handle_exception",
+          "file": "src/flask/app.py",
+          "start": 900,
+          "end": 951,
+          "sent": 52,
+          "total": 52
+        },
+        {
+          "name": "handle_exception",
+          "file": "tests/test_basic.py",
+          "start": 1036,
+          "end": 1037,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "handle_exception",
+          "file": "tests/test_user_error_handler.py",
+          "start": 289,
+          "end": 290,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 969,
+          "end": 993,
+          "sent": 25,
+          "total": 25
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 78,
+          "end": 83,
+          "sent": 1,
+          "total": 6
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 182,
+          "end": 191,
+          "sent": 1,
+          "total": 10
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_async.py",
+          "start": 25,
+          "end": 27,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 21,
+          "end": 22,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 92,
+          "end": 93,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 109,
+          "end": 110,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 128,
+          "end": 129,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 144,
+          "end": 145,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 188,
+          "end": 189,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 266,
+          "end": 267,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/type_check/typing_route.py",
+          "start": 105,
+          "end": 106,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "wsgi_app",
+          "file": "src/flask/app.py",
+          "start": 1569,
+          "end": 1619,
+          "sent": 51,
+          "total": 51
+        }
+      ]
+    },
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "query": "url_for BuildError url_rule_class Map MapAdapter build handle_url_build_error",
+      "ms": 54.604697000000016,
+      "chars": 16113,
+      "coverage": [
+        {
+          "name": "url_for",
+          "file": "src/flask/app.py",
+          "start": 1105,
+          "end": 1225,
+          "sent": 121,
+          "total": 121
+        },
+        {
+          "name": "url_for",
+          "file": "src/flask/helpers.py",
+          "start": 200,
+          "end": 251,
+          "sent": 52,
+          "total": 52
+        },
+        {
+          "name": "handle_url_build_error",
+          "file": "src/flask/sansio/app.py",
+          "start": 981,
+          "end": 1013,
+          "sent": 33,
+          "total": 33
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "createServer resolveHttpServer resolveConfig ViteDevServer",
+      "ms": 122.49436800000001,
+      "chars": 24926,
+      "coverage": [
+        {
+          "name": "createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 506,
+          "end": 510,
+          "sent": 5,
+          "total": 5
+        },
+        {
+          "name": "createServer",
+          "file": "playground/css-lightningcss-proxy/server.js",
+          "start": 16,
+          "end": 77,
+          "sent": 0,
+          "total": 62
+        },
+        {
+          "name": "createServer",
+          "file": "playground/optimize-missing-deps/server.js",
+          "start": 8,
+          "end": 58,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-conditions/server.js",
+          "start": 8,
+          "end": 77,
+          "sent": 0,
+          "total": 70
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-deps/server.js",
+          "start": 15,
+          "end": 117,
+          "sent": 0,
+          "total": 103
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-html/server.js",
+          "start": 24,
+          "end": 115,
+          "sent": 0,
+          "total": 92
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-noexternal/server.js",
+          "start": 7,
+          "end": 75,
+          "sent": 0,
+          "total": 69
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-pug/server.js",
+          "start": 17,
+          "end": 67,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-wasm/server.js",
+          "start": 6,
+          "end": 52,
+          "sent": 0,
+          "total": 47
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-webworker/worker.js",
+          "start": 6,
+          "end": 18,
+          "sent": 0,
+          "total": 13
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr/server.js",
+          "start": 7,
+          "end": 65,
+          "sent": 0,
+          "total": 59
+        },
+        {
+          "name": "resolveHttpServer",
+          "file": "packages/vite/src/node/http.ts",
+          "start": 119,
+          "end": 144,
+          "sent": 26,
+          "total": 26
+        },
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 341,
+          "total": 841
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "resolveConfig loadConfigFromFile",
+      "ms": 67.41817300000002,
+      "chars": 24919,
+      "coverage": [
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 360,
+          "total": 841
+        },
+        {
+          "name": "loadConfigFromFile",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 2375,
+          "end": 2455,
+          "sent": 81,
+          "total": 81
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "transformRequest doTransform loadAndTransform",
+      "ms": 76.58224799999999,
+      "chars": 24954,
+      "coverage": [
+        {
+          "name": "transformRequest",
+          "file": "packages/vite/src/node/server/environment.ts",
+          "start": 300,
+          "end": 302,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "transformRequest",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 377,
+          "end": 380,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "transformRequest",
+          "file": "packages/vite/src/node/server/transformRequest.ts",
+          "start": 78,
+          "end": 148,
+          "sent": 71,
+          "total": 71
+        },
+        {
+          "name": "doTransform",
+          "file": "packages/vite/src/node/server/transformRequest.ts",
+          "start": 150,
+          "end": 207,
+          "sent": 58,
+          "total": 58
+        },
+        {
+          "name": "loadAndTransform",
+          "file": "packages/vite/src/node/server/transformRequest.ts",
+          "start": 237,
+          "end": 444,
+          "sent": 208,
+          "total": 208
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "createServer resolveHttpServer resolveConfig",
+      "ms": 89.74039100000005,
+      "chars": 24590,
+      "coverage": [
+        {
+          "name": "createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 506,
+          "end": 510,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "createServer",
+          "file": "playground/css-lightningcss-proxy/server.js",
+          "start": 16,
+          "end": 77,
+          "sent": 0,
+          "total": 62
+        },
+        {
+          "name": "createServer",
+          "file": "playground/optimize-missing-deps/server.js",
+          "start": 8,
+          "end": 58,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-conditions/server.js",
+          "start": 8,
+          "end": 77,
+          "sent": 0,
+          "total": 70
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-deps/server.js",
+          "start": 15,
+          "end": 117,
+          "sent": 37,
+          "total": 103
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-html/server.js",
+          "start": 24,
+          "end": 115,
+          "sent": 0,
+          "total": 92
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-noexternal/server.js",
+          "start": 7,
+          "end": 75,
+          "sent": 0,
+          "total": 69
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-pug/server.js",
+          "start": 17,
+          "end": 67,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-wasm/server.js",
+          "start": 6,
+          "end": 52,
+          "sent": 0,
+          "total": 47
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-webworker/worker.js",
+          "start": 6,
+          "end": 18,
+          "sent": 0,
+          "total": 13
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr/server.js",
+          "start": 7,
+          "end": 65,
+          "sent": 0,
+          "total": 59
+        },
+        {
+          "name": "resolveHttpServer",
+          "file": "packages/vite/src/node/http.ts",
+          "start": 119,
+          "end": 144,
+          "sent": 26,
+          "total": 26
+        },
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 441,
+          "total": 841
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "packages/vite/src/node/server/index.ts createServer _createServer resolveHttpServer resolveConfig httpServer",
+      "ms": 109.08981700000004,
+      "chars": 24181,
+      "coverage": [
+        {
+          "name": "createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 506,
+          "end": 510,
+          "sent": 5,
+          "total": 5
+        },
+        {
+          "name": "createServer",
+          "file": "playground/css-lightningcss-proxy/server.js",
+          "start": 16,
+          "end": 77,
+          "sent": 0,
+          "total": 62
+        },
+        {
+          "name": "createServer",
+          "file": "playground/optimize-missing-deps/server.js",
+          "start": 8,
+          "end": 58,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-conditions/server.js",
+          "start": 8,
+          "end": 77,
+          "sent": 0,
+          "total": 70
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-deps/server.js",
+          "start": 15,
+          "end": 117,
+          "sent": 0,
+          "total": 103
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-html/server.js",
+          "start": 24,
+          "end": 115,
+          "sent": 0,
+          "total": 92
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-noexternal/server.js",
+          "start": 7,
+          "end": 75,
+          "sent": 0,
+          "total": 69
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-pug/server.js",
+          "start": 17,
+          "end": 67,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-wasm/server.js",
+          "start": 6,
+          "end": 52,
+          "sent": 0,
+          "total": 47
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-webworker/worker.js",
+          "start": 6,
+          "end": 18,
+          "sent": 0,
+          "total": 13
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr/server.js",
+          "start": 7,
+          "end": 65,
+          "sent": 0,
+          "total": 59
+        },
+        {
+          "name": "_createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 512,
+          "end": 1137,
+          "sent": 179,
+          "total": 626
+        },
+        {
+          "name": "resolveHttpServer",
+          "file": "packages/vite/src/node/http.ts",
+          "start": 119,
+          "end": 144,
+          "sent": 26,
+          "total": 26
+        },
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 259,
+          "total": 841
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "Engine ServeHTTP handleHTTPRequest Context Next",
+      "ms": 53.01270499999998,
+      "chars": 16574,
+      "coverage": [
+        {
+          "name": "Engine",
+          "file": "binding/binding.go",
+          "start": 66,
+          "end": 66,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Engine",
+          "file": "binding/binding_nomsgpack.go",
+          "start": 63,
+          "end": 63,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Engine",
+          "file": "binding/default_validator.go",
+          "start": 88,
+          "end": 91,
+          "sent": 4,
+          "total": 4
+        },
+        {
+          "name": "ServeHTTP",
+          "file": "gin.go",
+          "start": 662,
+          "end": 675,
+          "sent": 14,
+          "total": 14
+        },
+        {
+          "name": "ServeHTTP",
+          "file": "utils_test.go",
+          "start": 33,
+          "end": 38,
+          "sent": 0,
+          "total": 6
+        },
+        {
+          "name": "handleHTTPRequest",
+          "file": "gin.go",
+          "start": 690,
+          "end": 760,
+          "sent": 71,
+          "total": 71
+        },
+        {
+          "name": "Next",
+          "file": "context.go",
+          "start": 198,
+          "end": 206,
+          "sent": 9,
+          "total": 9
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "Context JSON Render WriteJSON",
+      "ms": 48.36569899999995,
+      "chars": 13102,
+      "coverage": [
+        {
+          "name": "JSON",
+          "file": "context.go",
+          "start": 1255,
+          "end": 1257,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 55,
+          "end": 74,
+          "sent": 20,
+          "total": 20
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 141,
+          "end": 154,
+          "sent": 14,
+          "total": 14
+        },
+        {
+          "name": "Render",
+          "file": "context.go",
+          "start": 1202,
+          "end": 1216,
+          "sent": 15,
+          "total": 15
+        },
+        {
+          "name": "Render",
+          "file": "context_test.go",
+          "start": 1131,
+          "end": 1133,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/bson.go",
+          "start": 21,
+          "end": 29,
+          "sent": 0,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/data.go",
+          "start": 19,
+          "end": 26,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/html.go",
+          "start": 89,
+          "end": 96,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 57,
+          "end": 59,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 78,
+          "end": 86,
+          "sent": 9,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 94,
+          "end": 109,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 117,
+          "end": 147,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 155,
+          "end": 176,
+          "sent": 22,
+          "total": 22
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 184,
+          "end": 189,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Render",
+          "file": "render/msgpack.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/pdf.go",
+          "start": 17,
+          "end": 21,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "Render",
+          "file": "render/protobuf.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/reader.go",
+          "start": 22,
+          "end": 33,
+          "sent": 0,
+          "total": 12
+        },
+        {
+          "name": "Render",
+          "file": "render/redirect.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Render",
+          "file": "render/render.go",
+          "start": 12,
+          "end": 12,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "Render",
+          "file": "render/text.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/toml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/xml.go",
+          "start": 20,
+          "end": 23,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "Render",
+          "file": "render/yaml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "WriteJSON",
+          "file": "render/json.go",
+          "start": 67,
+          "end": 75,
+          "sent": 9,
+          "total": 9
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "Context ShouldBindJSON ShouldBindWith Bind decodeJSON",
+      "ms": 51.977953999999954,
+      "chars": 14400,
+      "coverage": [
+        {
+          "name": "ShouldBindJSON",
+          "file": "context.go",
+          "start": 890,
+          "end": 892,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "ShouldBindWith",
+          "file": "context.go",
+          "start": 942,
+          "end": 944,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/binding.go",
+          "start": 34,
+          "end": 34,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Bind",
+          "file": "binding/binding_nomsgpack.go",
+          "start": 32,
+          "end": 32,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Bind",
+          "file": "binding/bson.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/form.go",
+          "start": 24,
+          "end": 35,
+          "sent": 1,
+          "total": 12
+        },
+        {
+          "name": "Bind",
+          "file": "binding/form.go",
+          "start": 41,
+          "end": 49,
+          "sent": 1,
+          "total": 9
+        },
+        {
+          "name": "Bind",
+          "file": "binding/form.go",
+          "start": 55,
+          "end": 64,
+          "sent": 1,
+          "total": 10
+        },
+        {
+          "name": "Bind",
+          "file": "binding/header.go",
+          "start": 19,
+          "end": 25,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/json.go",
+          "start": 33,
+          "end": 38,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Bind",
+          "file": "binding/msgpack.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/plain.go",
+          "start": 18,
+          "end": 25,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Bind",
+          "file": "binding/protobuf.go",
+          "start": 21,
+          "end": 27,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/query.go",
+          "start": 15,
+          "end": 21,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/toml.go",
+          "start": 21,
+          "end": 23,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/xml.go",
+          "start": 20,
+          "end": 22,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/yaml.go",
+          "start": 21,
+          "end": 23,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "context.go",
+          "start": 780,
+          "end": 783,
+          "sent": 4,
+          "total": 4
+        },
+        {
+          "name": "Bind",
+          "file": "utils.go",
+          "start": 29,
+          "end": 44,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "decodeJSON",
+          "file": "binding/json.go",
+          "start": 44,
+          "end": 56,
+          "sent": 13,
+          "total": 13
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "render/json.go JSON Render WriteContentType WriteJSON; context.go Context Render method",
+      "ms": 59.9433590000001,
+      "chars": 16746,
+      "coverage": [
+        {
+          "name": "JSON",
+          "file": "context.go",
+          "start": 1255,
+          "end": 1257,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 55,
+          "end": 74,
+          "sent": 0,
+          "total": 20
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 141,
+          "end": 154,
+          "sent": 0,
+          "total": 14
+        },
+        {
+          "name": "Render",
+          "file": "context.go",
+          "start": 1202,
+          "end": 1216,
+          "sent": 15,
+          "total": 15
+        },
+        {
+          "name": "Render",
+          "file": "context_test.go",
+          "start": 1131,
+          "end": 1133,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/bson.go",
+          "start": 21,
+          "end": 29,
+          "sent": 0,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/data.go",
+          "start": 19,
+          "end": 26,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/html.go",
+          "start": 89,
+          "end": 96,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 57,
+          "end": 59,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 78,
+          "end": 86,
+          "sent": 9,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 94,
+          "end": 109,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 117,
+          "end": 147,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 155,
+          "end": 176,
+          "sent": 22,
+          "total": 22
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 184,
+          "end": 189,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Render",
+          "file": "render/msgpack.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/pdf.go",
+          "start": 17,
+          "end": 21,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "Render",
+          "file": "render/protobuf.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/reader.go",
+          "start": 22,
+          "end": 33,
+          "sent": 0,
+          "total": 12
+        },
+        {
+          "name": "Render",
+          "file": "render/redirect.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Render",
+          "file": "render/render.go",
+          "start": 12,
+          "end": 12,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "Render",
+          "file": "render/text.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/toml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/xml.go",
+          "start": 20,
+          "end": 23,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "Render",
+          "file": "render/yaml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "WriteContentType",
+          "file": "context_test.go",
+          "start": 1135,
+          "end": 1135,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/bson.go",
+          "start": 32,
+          "end": 34,
+          "sent": 1,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/data.go",
+          "start": 29,
+          "end": 31,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/html.go",
+          "start": 99,
+          "end": 101,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 62,
+          "end": 64,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 89,
+          "end": 91,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 112,
+          "end": 114,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 150,
+          "end": 152,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 179,
+          "end": 181,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 192,
+          "end": 194,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/msgpack.go",
+          "start": 29,
+          "end": 31,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/pdf.go",
+          "start": 24,
+          "end": 26,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/protobuf.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/reader.go",
+          "start": 36,
+          "end": 38,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/redirect.go",
+          "start": 29,
+          "end": 29,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/render.go",
+          "start": 14,
+          "end": 14,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/text.go",
+          "start": 28,
+          "end": 30,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/toml.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/xml.go",
+          "start": 26,
+          "end": 28,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/yaml.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "context.go",
+          "start": 1202,
+          "end": 1216,
+          "sent": 15,
+          "total": 15
+        },
+        {
+          "name": "Render",
+          "file": "context_test.go",
+          "start": 1131,
+          "end": 1133,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/bson.go",
+          "start": 21,
+          "end": 29,
+          "sent": 0,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/data.go",
+          "start": 19,
+          "end": 26,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/html.go",
+          "start": 89,
+          "end": 96,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 57,
+          "end": 59,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 78,
+          "end": 86,
+          "sent": 9,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 94,
+          "end": 109,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 117,
+          "end": 147,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 155,
+          "end": 176,
+          "sent": 22,
+          "total": 22
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 184,
+          "end": 189,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Render",
+          "file": "render/msgpack.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/pdf.go",
+          "start": 17,
+          "end": 21,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "Render",
+          "file": "render/protobuf.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/reader.go",
+          "start": 22,
+          "end": 33,
+          "sent": 0,
+          "total": 12
+        },
+        {
+          "name": "Render",
+          "file": "render/redirect.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Render",
+          "file": "render/render.go",
+          "start": 12,
+          "end": 12,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "Render",
+          "file": "render/text.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/toml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/xml.go",
+          "start": 20,
+          "end": 23,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "Render",
+          "file": "render/yaml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        }
+      ]
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "query": "Flask dispatch_request ensure_sync full_dispatch_request",
+      "ms": 65.44604600000002,
+      "chars": 18105,
+      "coverage": [
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 969,
+          "end": 993,
+          "sent": 25,
+          "total": 25
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 78,
+          "end": 83,
+          "sent": 1,
+          "total": 6
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 182,
+          "end": 191,
+          "sent": 1,
+          "total": 10
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_async.py",
+          "start": 25,
+          "end": 27,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 21,
+          "end": 22,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 92,
+          "end": 93,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 109,
+          "end": 110,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 128,
+          "end": 129,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 144,
+          "end": 145,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 188,
+          "end": 189,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 266,
+          "end": 267,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/type_check/typing_route.py",
+          "start": 105,
+          "end": 106,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "ensure_sync",
+          "file": "src/flask/app.py",
+          "start": 1068,
+          "end": 1080,
+          "sent": 13,
+          "total": 13
+        },
+        {
+          "name": "full_dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 995,
+          "end": 1022,
+          "sent": 28,
+          "total": 28
+        }
+      ]
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "query": "full_dispatch_request finalize_request handle_user_exception handle_exception dispatch_request wsgi_app",
+      "ms": 62.14272600000004,
+      "chars": 16623,
+      "coverage": [
+        {
+          "name": "full_dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 995,
+          "end": 1022,
+          "sent": 28,
+          "total": 28
+        },
+        {
+          "name": "finalize_request",
+          "file": "src/flask/app.py",
+          "start": 1024,
+          "end": 1054,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "handle_user_exception",
+          "file": "src/flask/app.py",
+          "start": 868,
+          "end": 898,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "handle_exception",
+          "file": "src/flask/app.py",
+          "start": 900,
+          "end": 951,
+          "sent": 52,
+          "total": 52
+        },
+        {
+          "name": "handle_exception",
+          "file": "tests/test_basic.py",
+          "start": 1036,
+          "end": 1037,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "handle_exception",
+          "file": "tests/test_user_error_handler.py",
+          "start": 289,
+          "end": 290,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/app.py",
+          "start": 969,
+          "end": 993,
+          "sent": 25,
+          "total": 25
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 78,
+          "end": 83,
+          "sent": 1,
+          "total": 6
+        },
+        {
+          "name": "dispatch_request",
+          "file": "src/flask/views.py",
+          "start": 182,
+          "end": 191,
+          "sent": 1,
+          "total": 10
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_async.py",
+          "start": 25,
+          "end": 27,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 21,
+          "end": 22,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 92,
+          "end": 93,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 109,
+          "end": 110,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 128,
+          "end": 129,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 144,
+          "end": 145,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 188,
+          "end": 189,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/test_views.py",
+          "start": 266,
+          "end": 267,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "dispatch_request",
+          "file": "tests/type_check/typing_route.py",
+          "start": 105,
+          "end": 106,
+          "sent": 0,
+          "total": 2
+        },
+        {
+          "name": "wsgi_app",
+          "file": "src/flask/app.py",
+          "start": 1569,
+          "end": 1619,
+          "sent": 51,
+          "total": 51
+        }
+      ]
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "query": "url_for BuildError url_rule_class Map MapAdapter build handle_url_build_error",
+      "ms": 51.92443299999991,
+      "chars": 16113,
+      "coverage": [
+        {
+          "name": "url_for",
+          "file": "src/flask/app.py",
+          "start": 1105,
+          "end": 1225,
+          "sent": 121,
+          "total": 121
+        },
+        {
+          "name": "url_for",
+          "file": "src/flask/helpers.py",
+          "start": 200,
+          "end": 251,
+          "sent": 52,
+          "total": 52
+        },
+        {
+          "name": "handle_url_build_error",
+          "file": "src/flask/sansio/app.py",
+          "start": 981,
+          "end": 1013,
+          "sent": 33,
+          "total": 33
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "createServer resolveHttpServer resolveConfig ViteDevServer",
+      "ms": 116.12169199999994,
+      "chars": 24926,
+      "coverage": [
+        {
+          "name": "createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 506,
+          "end": 510,
+          "sent": 5,
+          "total": 5
+        },
+        {
+          "name": "createServer",
+          "file": "playground/css-lightningcss-proxy/server.js",
+          "start": 16,
+          "end": 77,
+          "sent": 0,
+          "total": 62
+        },
+        {
+          "name": "createServer",
+          "file": "playground/optimize-missing-deps/server.js",
+          "start": 8,
+          "end": 58,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-conditions/server.js",
+          "start": 8,
+          "end": 77,
+          "sent": 0,
+          "total": 70
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-deps/server.js",
+          "start": 15,
+          "end": 117,
+          "sent": 0,
+          "total": 103
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-html/server.js",
+          "start": 24,
+          "end": 115,
+          "sent": 0,
+          "total": 92
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-noexternal/server.js",
+          "start": 7,
+          "end": 75,
+          "sent": 0,
+          "total": 69
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-pug/server.js",
+          "start": 17,
+          "end": 67,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-wasm/server.js",
+          "start": 6,
+          "end": 52,
+          "sent": 0,
+          "total": 47
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-webworker/worker.js",
+          "start": 6,
+          "end": 18,
+          "sent": 0,
+          "total": 13
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr/server.js",
+          "start": 7,
+          "end": 65,
+          "sent": 0,
+          "total": 59
+        },
+        {
+          "name": "resolveHttpServer",
+          "file": "packages/vite/src/node/http.ts",
+          "start": 119,
+          "end": 144,
+          "sent": 26,
+          "total": 26
+        },
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 341,
+          "total": 841
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "resolveConfig loadConfigFromFile",
+      "ms": 69.9102640000001,
+      "chars": 24919,
+      "coverage": [
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 360,
+          "total": 841
+        },
+        {
+          "name": "loadConfigFromFile",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 2375,
+          "end": 2455,
+          "sent": 81,
+          "total": 81
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "transformRequest doTransform loadAndTransform",
+      "ms": 75.16194599999994,
+      "chars": 24954,
+      "coverage": [
+        {
+          "name": "transformRequest",
+          "file": "packages/vite/src/node/server/environment.ts",
+          "start": 300,
+          "end": 302,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "transformRequest",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 377,
+          "end": 380,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "transformRequest",
+          "file": "packages/vite/src/node/server/transformRequest.ts",
+          "start": 78,
+          "end": 148,
+          "sent": 71,
+          "total": 71
+        },
+        {
+          "name": "doTransform",
+          "file": "packages/vite/src/node/server/transformRequest.ts",
+          "start": 150,
+          "end": 207,
+          "sent": 58,
+          "total": 58
+        },
+        {
+          "name": "loadAndTransform",
+          "file": "packages/vite/src/node/server/transformRequest.ts",
+          "start": 237,
+          "end": 444,
+          "sent": 208,
+          "total": 208
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "createServer resolveHttpServer resolveConfig",
+      "ms": 96.24403000000007,
+      "chars": 24590,
+      "coverage": [
+        {
+          "name": "createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 506,
+          "end": 510,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "createServer",
+          "file": "playground/css-lightningcss-proxy/server.js",
+          "start": 16,
+          "end": 77,
+          "sent": 0,
+          "total": 62
+        },
+        {
+          "name": "createServer",
+          "file": "playground/optimize-missing-deps/server.js",
+          "start": 8,
+          "end": 58,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-conditions/server.js",
+          "start": 8,
+          "end": 77,
+          "sent": 0,
+          "total": 70
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-deps/server.js",
+          "start": 15,
+          "end": 117,
+          "sent": 37,
+          "total": 103
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-html/server.js",
+          "start": 24,
+          "end": 115,
+          "sent": 0,
+          "total": 92
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-noexternal/server.js",
+          "start": 7,
+          "end": 75,
+          "sent": 0,
+          "total": 69
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-pug/server.js",
+          "start": 17,
+          "end": 67,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-wasm/server.js",
+          "start": 6,
+          "end": 52,
+          "sent": 0,
+          "total": 47
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-webworker/worker.js",
+          "start": 6,
+          "end": 18,
+          "sent": 0,
+          "total": 13
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr/server.js",
+          "start": 7,
+          "end": 65,
+          "sent": 0,
+          "total": 59
+        },
+        {
+          "name": "resolveHttpServer",
+          "file": "packages/vite/src/node/http.ts",
+          "start": 119,
+          "end": 144,
+          "sent": 26,
+          "total": 26
+        },
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 441,
+          "total": 841
+        }
+      ]
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "packages/vite/src/node/server/index.ts createServer _createServer resolveHttpServer resolveConfig httpServer",
+      "ms": 109.07188799999994,
+      "chars": 24181,
+      "coverage": [
+        {
+          "name": "createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 506,
+          "end": 510,
+          "sent": 5,
+          "total": 5
+        },
+        {
+          "name": "createServer",
+          "file": "playground/css-lightningcss-proxy/server.js",
+          "start": 16,
+          "end": 77,
+          "sent": 0,
+          "total": 62
+        },
+        {
+          "name": "createServer",
+          "file": "playground/optimize-missing-deps/server.js",
+          "start": 8,
+          "end": 58,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-conditions/server.js",
+          "start": 8,
+          "end": 77,
+          "sent": 0,
+          "total": 70
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-deps/server.js",
+          "start": 15,
+          "end": 117,
+          "sent": 0,
+          "total": 103
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-html/server.js",
+          "start": 24,
+          "end": 115,
+          "sent": 0,
+          "total": 92
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-noexternal/server.js",
+          "start": 7,
+          "end": 75,
+          "sent": 0,
+          "total": 69
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-pug/server.js",
+          "start": 17,
+          "end": 67,
+          "sent": 0,
+          "total": 51
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-wasm/server.js",
+          "start": 6,
+          "end": 52,
+          "sent": 0,
+          "total": 47
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr-webworker/worker.js",
+          "start": 6,
+          "end": 18,
+          "sent": 0,
+          "total": 13
+        },
+        {
+          "name": "createServer",
+          "file": "playground/ssr/server.js",
+          "start": 7,
+          "end": 65,
+          "sent": 0,
+          "total": 59
+        },
+        {
+          "name": "_createServer",
+          "file": "packages/vite/src/node/server/index.ts",
+          "start": 512,
+          "end": 1137,
+          "sent": 179,
+          "total": 626
+        },
+        {
+          "name": "resolveHttpServer",
+          "file": "packages/vite/src/node/http.ts",
+          "start": 119,
+          "end": 144,
+          "sent": 26,
+          "total": 26
+        },
+        {
+          "name": "resolveConfig",
+          "file": "packages/vite/src/node/config.ts",
+          "start": 1461,
+          "end": 2301,
+          "sent": 259,
+          "total": 841
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "Engine ServeHTTP handleHTTPRequest Context Next",
+      "ms": 53.276304999999866,
+      "chars": 16574,
+      "coverage": [
+        {
+          "name": "Engine",
+          "file": "binding/binding.go",
+          "start": 66,
+          "end": 66,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Engine",
+          "file": "binding/binding_nomsgpack.go",
+          "start": 63,
+          "end": 63,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Engine",
+          "file": "binding/default_validator.go",
+          "start": 88,
+          "end": 91,
+          "sent": 4,
+          "total": 4
+        },
+        {
+          "name": "ServeHTTP",
+          "file": "gin.go",
+          "start": 662,
+          "end": 675,
+          "sent": 14,
+          "total": 14
+        },
+        {
+          "name": "ServeHTTP",
+          "file": "utils_test.go",
+          "start": 33,
+          "end": 38,
+          "sent": 0,
+          "total": 6
+        },
+        {
+          "name": "handleHTTPRequest",
+          "file": "gin.go",
+          "start": 690,
+          "end": 760,
+          "sent": 71,
+          "total": 71
+        },
+        {
+          "name": "Next",
+          "file": "context.go",
+          "start": 198,
+          "end": 206,
+          "sent": 9,
+          "total": 9
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "Context JSON Render WriteJSON",
+      "ms": 47.434465000000046,
+      "chars": 13102,
+      "coverage": [
+        {
+          "name": "JSON",
+          "file": "context.go",
+          "start": 1255,
+          "end": 1257,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 55,
+          "end": 74,
+          "sent": 20,
+          "total": 20
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 141,
+          "end": 154,
+          "sent": 14,
+          "total": 14
+        },
+        {
+          "name": "Render",
+          "file": "context.go",
+          "start": 1202,
+          "end": 1216,
+          "sent": 15,
+          "total": 15
+        },
+        {
+          "name": "Render",
+          "file": "context_test.go",
+          "start": 1131,
+          "end": 1133,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/bson.go",
+          "start": 21,
+          "end": 29,
+          "sent": 0,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/data.go",
+          "start": 19,
+          "end": 26,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/html.go",
+          "start": 89,
+          "end": 96,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 57,
+          "end": 59,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 78,
+          "end": 86,
+          "sent": 9,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 94,
+          "end": 109,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 117,
+          "end": 147,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 155,
+          "end": 176,
+          "sent": 22,
+          "total": 22
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 184,
+          "end": 189,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Render",
+          "file": "render/msgpack.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/pdf.go",
+          "start": 17,
+          "end": 21,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "Render",
+          "file": "render/protobuf.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/reader.go",
+          "start": 22,
+          "end": 33,
+          "sent": 0,
+          "total": 12
+        },
+        {
+          "name": "Render",
+          "file": "render/redirect.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Render",
+          "file": "render/render.go",
+          "start": 12,
+          "end": 12,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "Render",
+          "file": "render/text.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/toml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/xml.go",
+          "start": 20,
+          "end": 23,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "Render",
+          "file": "render/yaml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "WriteJSON",
+          "file": "render/json.go",
+          "start": 67,
+          "end": 75,
+          "sent": 9,
+          "total": 9
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "Context ShouldBindJSON ShouldBindWith Bind decodeJSON",
+      "ms": 51.83379600000012,
+      "chars": 14400,
+      "coverage": [
+        {
+          "name": "ShouldBindJSON",
+          "file": "context.go",
+          "start": 890,
+          "end": 892,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "ShouldBindWith",
+          "file": "context.go",
+          "start": 942,
+          "end": 944,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/binding.go",
+          "start": 34,
+          "end": 34,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Bind",
+          "file": "binding/binding_nomsgpack.go",
+          "start": 32,
+          "end": 32,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "Bind",
+          "file": "binding/bson.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/form.go",
+          "start": 24,
+          "end": 35,
+          "sent": 1,
+          "total": 12
+        },
+        {
+          "name": "Bind",
+          "file": "binding/form.go",
+          "start": 41,
+          "end": 49,
+          "sent": 1,
+          "total": 9
+        },
+        {
+          "name": "Bind",
+          "file": "binding/form.go",
+          "start": 55,
+          "end": 64,
+          "sent": 1,
+          "total": 10
+        },
+        {
+          "name": "Bind",
+          "file": "binding/header.go",
+          "start": 19,
+          "end": 25,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/json.go",
+          "start": 33,
+          "end": 38,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Bind",
+          "file": "binding/msgpack.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/plain.go",
+          "start": 18,
+          "end": 25,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Bind",
+          "file": "binding/protobuf.go",
+          "start": 21,
+          "end": 27,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/query.go",
+          "start": 15,
+          "end": 21,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Bind",
+          "file": "binding/toml.go",
+          "start": 21,
+          "end": 23,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/xml.go",
+          "start": 20,
+          "end": 22,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "binding/yaml.go",
+          "start": 21,
+          "end": 23,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Bind",
+          "file": "context.go",
+          "start": 780,
+          "end": 783,
+          "sent": 4,
+          "total": 4
+        },
+        {
+          "name": "Bind",
+          "file": "utils.go",
+          "start": 29,
+          "end": 44,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "decodeJSON",
+          "file": "binding/json.go",
+          "start": 44,
+          "end": 56,
+          "sent": 13,
+          "total": 13
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "render/json.go JSON Render WriteContentType WriteJSON; context.go Context Render method",
+      "ms": 58.87633600000004,
+      "chars": 16746,
+      "coverage": [
+        {
+          "name": "JSON",
+          "file": "context.go",
+          "start": 1255,
+          "end": 1257,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 55,
+          "end": 74,
+          "sent": 0,
+          "total": 20
+        },
+        {
+          "name": "JSON",
+          "file": "errors.go",
+          "start": 141,
+          "end": 154,
+          "sent": 0,
+          "total": 14
+        },
+        {
+          "name": "Render",
+          "file": "context.go",
+          "start": 1202,
+          "end": 1216,
+          "sent": 15,
+          "total": 15
+        },
+        {
+          "name": "Render",
+          "file": "context_test.go",
+          "start": 1131,
+          "end": 1133,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/bson.go",
+          "start": 21,
+          "end": 29,
+          "sent": 0,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/data.go",
+          "start": 19,
+          "end": 26,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/html.go",
+          "start": 89,
+          "end": 96,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 57,
+          "end": 59,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 78,
+          "end": 86,
+          "sent": 9,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 94,
+          "end": 109,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 117,
+          "end": 147,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 155,
+          "end": 176,
+          "sent": 22,
+          "total": 22
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 184,
+          "end": 189,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Render",
+          "file": "render/msgpack.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/pdf.go",
+          "start": 17,
+          "end": 21,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "Render",
+          "file": "render/protobuf.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/reader.go",
+          "start": 22,
+          "end": 33,
+          "sent": 0,
+          "total": 12
+        },
+        {
+          "name": "Render",
+          "file": "render/redirect.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Render",
+          "file": "render/render.go",
+          "start": 12,
+          "end": 12,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "Render",
+          "file": "render/text.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/toml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/xml.go",
+          "start": 20,
+          "end": 23,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "Render",
+          "file": "render/yaml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "WriteContentType",
+          "file": "context_test.go",
+          "start": 1135,
+          "end": 1135,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/bson.go",
+          "start": 32,
+          "end": 34,
+          "sent": 1,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/data.go",
+          "start": 29,
+          "end": 31,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/html.go",
+          "start": 99,
+          "end": 101,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 62,
+          "end": 64,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 89,
+          "end": 91,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 112,
+          "end": 114,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 150,
+          "end": 152,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 179,
+          "end": 181,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/json.go",
+          "start": 192,
+          "end": 194,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/msgpack.go",
+          "start": 29,
+          "end": 31,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/pdf.go",
+          "start": 24,
+          "end": 26,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/protobuf.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/reader.go",
+          "start": 36,
+          "end": 38,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/redirect.go",
+          "start": 29,
+          "end": 29,
+          "sent": 0,
+          "total": 1
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/render.go",
+          "start": 14,
+          "end": 14,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/text.go",
+          "start": 28,
+          "end": 30,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/toml.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/xml.go",
+          "start": 26,
+          "end": 28,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "WriteContentType",
+          "file": "render/yaml.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "context.go",
+          "start": 1202,
+          "end": 1216,
+          "sent": 15,
+          "total": 15
+        },
+        {
+          "name": "Render",
+          "file": "context_test.go",
+          "start": 1131,
+          "end": 1133,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/bson.go",
+          "start": 21,
+          "end": 29,
+          "sent": 0,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/data.go",
+          "start": 19,
+          "end": 26,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/html.go",
+          "start": 89,
+          "end": 96,
+          "sent": 0,
+          "total": 8
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 57,
+          "end": 59,
+          "sent": 3,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 78,
+          "end": 86,
+          "sent": 9,
+          "total": 9
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 94,
+          "end": 109,
+          "sent": 16,
+          "total": 16
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 117,
+          "end": 147,
+          "sent": 31,
+          "total": 31
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 155,
+          "end": 176,
+          "sent": 22,
+          "total": 22
+        },
+        {
+          "name": "Render",
+          "file": "render/json.go",
+          "start": 184,
+          "end": 189,
+          "sent": 6,
+          "total": 6
+        },
+        {
+          "name": "Render",
+          "file": "render/msgpack.go",
+          "start": 34,
+          "end": 36,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/pdf.go",
+          "start": 17,
+          "end": 21,
+          "sent": 0,
+          "total": 5
+        },
+        {
+          "name": "Render",
+          "file": "render/protobuf.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/reader.go",
+          "start": 22,
+          "end": 33,
+          "sent": 0,
+          "total": 12
+        },
+        {
+          "name": "Render",
+          "file": "render/redirect.go",
+          "start": 20,
+          "end": 26,
+          "sent": 0,
+          "total": 7
+        },
+        {
+          "name": "Render",
+          "file": "render/render.go",
+          "start": 12,
+          "end": 12,
+          "sent": 1,
+          "total": 1
+        },
+        {
+          "name": "Render",
+          "file": "render/text.go",
+          "start": 23,
+          "end": 25,
+          "sent": 0,
+          "total": 3
+        },
+        {
+          "name": "Render",
+          "file": "render/toml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        },
+        {
+          "name": "Render",
+          "file": "render/xml.go",
+          "start": 20,
+          "end": 23,
+          "sent": 0,
+          "total": 4
+        },
+        {
+          "name": "Render",
+          "file": "render/yaml.go",
+          "start": 21,
+          "end": 31,
+          "sent": 0,
+          "total": 11
+        }
+      ]
+    }
+  ],
+  "controlResponsesByteIdentical": 12,
+  "runs": [
+    {
+      "name": "flask-q1-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 21.461,
+      "cost": 0.1174896,
+      "processed": 105971,
+      "occupancy": {
+        "ctxFinal": 41624,
+        "ctxBase": 28738,
+        "windowTokens": 200000,
+        "charsPerToken": 2.6245537792953595,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0054387835287357,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 12886,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 12886,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 33820,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "dispatch_request ensure_sync full_dispatch_request Flask",
+            "files": 4,
+            "chars": 18105,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "async_to_sync View.as_view View.dispatch_request add_url_rule view_functions",
+            "files": 4,
+            "chars": 15715,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 15624,
+            "used": 14125,
+            "usedPath": 12453,
+            "files": [
+              {
+                "path": "src/flask/app.py",
+                "chars": 11911,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/views.py",
+                "chars": 542,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1499,
+                "symbols": [
+                  {
+                    "name": "AppContext",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "__init__",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "src/flask/wrappers.py",
+                "chars": 1672,
+                "symbols": [
+                  {
+                    "name": "max_content_length",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_memory_size",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_parts",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "endpoint",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprint",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "endpoint"
+              }
+            ],
+            "efficiency": 0.904057859703021
+          },
+          {
+            "call": 2,
+            "envelope": 14072,
+            "used": 14072,
+            "usedPath": 14072,
+            "files": [
+              {
+                "path": "src/flask/views.py",
+                "chars": 4196,
+                "symbols": [
+                  {
+                    "name": "http_method_funcs",
+                    "kind": "variable"
+                  },
+                  {
+                    "name": "dispatch_request",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "view",
+                    "kind": "function"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/sansio/scaffold.py",
+                "chars": 4982,
+                "symbols": [
+                  {
+                    "name": "T_route",
+                    "kind": "variable"
+                  },
+                  {
+                    "name": "setupmethod",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "__init__",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/app.py",
+                "chars": 2222,
+                "symbols": [
+                  {
+                    "name": "__init_subclass__",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/sansio/app.py",
+                "chars": 2672,
+                "symbols": [
+                  {
+                    "name": "debug",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "template_filter",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "_make_timedelta",
+                    "kind": "function"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          }
+        ],
+        "files": [
+          {
+            "path": "src/flask/app.py",
+            "chars": 14133,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/sansio/scaffold.py",
+            "chars": 4982,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/views.py",
+            "chars": 4738,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/sansio/app.py",
+            "chars": 2672,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/wrappers.py",
+            "chars": 1672,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "endpoint"
+          },
+          {
+            "path": "src/flask/ctx.py",
+            "chars": 1499,
+            "calls": 1,
+            "via": null
+          }
+        ],
+        "envelope": 29696,
+        "used": 28197,
+        "usedPath": 26525,
+        "efficiency": 0.9495218211206896,
+        "efficiencyPath": 0.8932179418103449,
+        "filesReturned": 6,
+        "filesUsed": 5,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "flask-q1-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 19.861,
+      "cost": 0.1158168,
+      "processed": 106166,
+      "occupancy": {
+        "ctxFinal": 41826,
+        "ctxBase": 28738,
+        "windowTokens": 200000,
+        "charsPerToken": 2.58221271393643,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.022521302527136,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 13088,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 13088,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 33796,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "Flask dispatch_request full_dispatch_request ensure_sync",
+            "files": 4,
+            "chars": 18105,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "Flask wsgi_app full_dispatch_request async_to_sync",
+            "files": 4,
+            "chars": 15691,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 15624,
+            "used": 12453,
+            "usedPath": 12453,
+            "files": [
+              {
+                "path": "src/flask/app.py",
+                "chars": 11911,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/views.py",
+                "chars": 542,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1499,
+                "symbols": [
+                  {
+                    "name": "AppContext",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "__init__",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "src/flask/wrappers.py",
+                "chars": 1672,
+                "symbols": [
+                  {
+                    "name": "max_content_length",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_memory_size",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_parts",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "endpoint",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprint",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.7970430107526881
+          },
+          {
+            "call": 2,
+            "envelope": 14489,
+            "used": 9120,
+            "usedPath": 9120,
+            "files": [
+              {
+                "path": "src/flask/app.py",
+                "chars": 9120,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/globals.py",
+                "chars": 1528,
+                "symbols": [],
+                "via": null
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1494,
+                "symbols": [],
+                "via": null
+              },
+              {
+                "path": "src/flask/cli.py",
+                "chars": 2347,
+                "symbols": [
+                  {
+                    "name": "NoAppException",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "find_best_app",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "app",
+                    "kind": "function"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.6294430257436676
+          }
+        ],
+        "files": [
+          {
+            "path": "src/flask/app.py",
+            "chars": 21031,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/ctx.py",
+            "chars": 2993,
+            "calls": 2,
+            "via": null
+          },
+          {
+            "path": "src/flask/cli.py",
+            "chars": 2347,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "src/flask/wrappers.py",
+            "chars": 1672,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "src/flask/globals.py",
+            "chars": 1528,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "src/flask/views.py",
+            "chars": 542,
+            "calls": 1,
+            "via": "path"
+          }
+        ],
+        "envelope": 30113,
+        "used": 21573,
+        "usedPath": 21573,
+        "efficiency": 0.7164015541460499,
+        "efficiencyPath": 0.7164015541460499,
+        "filesReturned": 6,
+        "filesUsed": 2,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "flask-q1-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 24.827,
+      "cost": 0.09258140000000001,
+      "processed": 105492,
+      "occupancy": {
+        "ctxFinal": 41507,
+        "ctxBase": 28738,
+        "windowTokens": 200000,
+        "charsPerToken": 2.586733495183648,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0020140939374879117,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 12769,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 12769,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 33030,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "Flask dispatch_request ensure_sync full_dispatch_request view_functions",
+            "files": 4,
+            "chars": 16858,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "View.dispatch_request View.as_view MethodView.dispatch_request iscoroutinefunction",
+            "files": 4,
+            "chars": 16172,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 14526,
+            "used": 11569,
+            "usedPath": 11569,
+            "files": [
+              {
+                "path": "src/flask/app.py",
+                "chars": 11027,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/views.py",
+                "chars": 542,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1499,
+                "symbols": [
+                  {
+                    "name": "AppContext",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "__init__",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "src/flask/wrappers.py",
+                "chars": 1458,
+                "symbols": [
+                  {
+                    "name": "max_content_length",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprint",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprints",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "on_json_loading_failed",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.7964339804488504
+          },
+          {
+            "call": 2,
+            "envelope": 15032,
+            "used": 10805,
+            "usedPath": 10805,
+            "files": [
+              {
+                "path": "src/flask/views.py",
+                "chars": 7769,
+                "symbols": [
+                  {
+                    "name": "as_view",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "dispatch_request",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "MethodView",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "view",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "View",
+                    "kind": "class"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/app.py",
+                "chars": 3036,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1494,
+                "symbols": [],
+                "via": null
+              },
+              {
+                "path": "src/flask/wrappers.py",
+                "chars": 2733,
+                "symbols": [
+                  {
+                    "name": "max_content_length",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprints",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_memory_size",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_parts",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "_load_form_data",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.7187998935604045
+          }
+        ],
+        "files": [
+          {
+            "path": "src/flask/app.py",
+            "chars": 14063,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/views.py",
+            "chars": 8311,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/wrappers.py",
+            "chars": 4191,
+            "calls": 2,
+            "via": null
+          },
+          {
+            "path": "src/flask/ctx.py",
+            "chars": 2993,
+            "calls": 2,
+            "via": null
+          }
+        ],
+        "envelope": 29558,
+        "used": 22374,
+        "usedPath": 22374,
+        "efficiency": 0.7569524325055822,
+        "efficiencyPath": 0.7569524325055822,
+        "filesReturned": 4,
+        "filesUsed": 2,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "flask-q1-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 24.971,
+      "cost": 0.09050820000000001,
+      "processed": 105301,
+      "occupancy": {
+        "ctxFinal": 41327,
+        "ctxBase": 28738,
+        "windowTokens": 200000,
+        "charsPerToken": 2.584399078560648,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.005034642574998036,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 12589,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 12589,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 32535,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "dispatch_request ensure_sync full_dispatch_request view_functions",
+            "files": 4,
+            "chars": 16852,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "View.as_view View.dispatch_request MethodView.dispatch_request full source",
+            "files": 4,
+            "chars": 15683,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 14526,
+            "used": 11569,
+            "usedPath": 11569,
+            "files": [
+              {
+                "path": "src/flask/app.py",
+                "chars": 11027,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/views.py",
+                "chars": 542,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1499,
+                "symbols": [
+                  {
+                    "name": "AppContext",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "__init__",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "src/flask/wrappers.py",
+                "chars": 1458,
+                "symbols": [
+                  {
+                    "name": "max_content_length",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprint",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprints",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "on_json_loading_failed",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.7964339804488504
+          },
+          {
+            "call": 2,
+            "envelope": 14551,
+            "used": 10379,
+            "usedPath": 10379,
+            "files": [
+              {
+                "path": "src/flask/views.py",
+                "chars": 7769,
+                "symbols": [
+                  {
+                    "name": "as_view",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "dispatch_request",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "MethodView",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "View",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "view",
+                    "kind": "function"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/app.py",
+                "chars": 2610,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "src/flask/ctx.py",
+                "chars": 1494,
+                "symbols": [],
+                "via": null
+              },
+              {
+                "path": "src/flask/wrappers.py",
+                "chars": 2678,
+                "symbols": [
+                  {
+                    "name": "max_content_length",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "blueprints",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_memory_size",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "max_form_parts",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "_load_form_data",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.7132843103566765
+          }
+        ],
+        "files": [
+          {
+            "path": "src/flask/app.py",
+            "chars": 13637,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/views.py",
+            "chars": 8311,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "src/flask/wrappers.py",
+            "chars": 4136,
+            "calls": 2,
+            "via": null
+          },
+          {
+            "path": "src/flask/ctx.py",
+            "chars": 2993,
+            "calls": 2,
+            "via": null
+          }
+        ],
+        "envelope": 29077,
+        "used": 21948,
+        "usedPath": 21948,
+        "efficiency": 0.7548233999380954,
+        "efficiencyPath": 0.7548233999380954,
+        "filesReturned": 4,
+        "filesUsed": 2,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "gin-q1-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 14.32,
+      "cost": 0.11518040000000002,
+      "processed": 104942,
+      "occupancy": {
+        "ctxFinal": 41880,
+        "ctxBase": 28746,
+        "windowTokens": 200000,
+        "charsPerToken": 2.165372316126085,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0014940215757656065,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 13134,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 13134,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 28440,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "Context JSON render Render WriteContentType Write response",
+            "files": 4,
+            "chars": 12051,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "render/json.go WriteJSON full body",
+            "files": 4,
+            "chars": 16389,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 11028,
+            "used": 11028,
+            "usedPath": 11028,
+            "files": [
+              {
+                "path": "render/json.go",
+                "chars": 699,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "context.go",
+                "chars": 4464,
+                "symbols": [
+                  {
+                    "name": "AsciiJSON",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "response_writer.go",
+                "chars": 3960,
+                "symbols": [
+                  {
+                    "name": "ResponseWriter",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Write",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "render/render.go",
+                "chars": 1905,
+                "symbols": [
+                  {
+                    "name": "Render",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "writeContentType",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          },
+          {
+            "call": 2,
+            "envelope": 15344,
+            "used": 15344,
+            "usedPath": 10689,
+            "files": [
+              {
+                "path": "render/json.go",
+                "chars": 5823,
+                "symbols": [
+                  {
+                    "name": "WriteJSON",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "JSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "IndentedJSON",
+                    "kind": "struct"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "errors.go",
+                "chars": 4655,
+                "symbols": [
+                  {
+                    "name": "JSON",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "errorMsgs",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "Last",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "MarshalJSON",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "ByType",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "JSON"
+              },
+              {
+                "path": "response_writer.go",
+                "chars": 2844,
+                "symbols": [
+                  {
+                    "name": "Hijack",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "CloseNotify",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "context.go",
+                "chars": 2022,
+                "symbols": [
+                  {
+                    "name": "Context",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          }
+        ],
+        "files": [
+          {
+            "path": "response_writer.go",
+            "chars": 6804,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "render/json.go",
+            "chars": 6522,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "context.go",
+            "chars": 6486,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "errors.go",
+            "chars": 4655,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "JSON"
+          },
+          {
+            "path": "render/render.go",
+            "chars": 1905,
+            "calls": 1,
+            "via": "path"
+          }
+        ],
+        "envelope": 26372,
+        "used": 26372,
+        "usedPath": 21717,
+        "efficiency": 1,
+        "efficiencyPath": 0.8234870317002881,
+        "filesReturned": 5,
+        "filesUsed": 5,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "gin-q1-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 17.429,
+      "cost": 0.11867200000000001,
+      "processed": 107139,
+      "occupancy": {
+        "ctxFinal": 42650,
+        "ctxBase": 28746,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1325517836593786,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.006385129053707744,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 13904,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 13904,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 29651,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "Context JSON render.JSON writeContentType WriteJSON",
+            "files": 4,
+            "chars": 14805,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "func (c *Context) Render Status WriteHeaderNow",
+            "files": 4,
+            "chars": 14846,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 13952,
+            "used": 13952,
+            "usedPath": 9381,
+            "files": [
+              {
+                "path": "render/json.go",
+                "chars": 5823,
+                "symbols": [
+                  {
+                    "name": "JSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "WriteJSON",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "IndentedJSON",
+                    "kind": "struct"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "context.go",
+                "chars": 2113,
+                "symbols": [
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Get",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "render/render.go",
+                "chars": 1445,
+                "symbols": [
+                  {
+                    "name": "Render",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "writeContentType",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "errors.go",
+                "chars": 4571,
+                "symbols": [
+                  {
+                    "name": "JSON",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "JSON"
+              }
+            ],
+            "efficiency": 1
+          },
+          {
+            "call": 2,
+            "envelope": 13697,
+            "used": 13697,
+            "usedPath": 13697,
+            "files": [
+              {
+                "path": "response_writer.go",
+                "chars": 3958,
+                "symbols": [
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Status",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "WriteHeaderNow",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "context.go",
+                "chars": 2633,
+                "symbols": [
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Get",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "XML",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "PDF",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Data",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "render/json.go",
+                "chars": 5731,
+                "symbols": [
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "render/render.go",
+                "chars": 1375,
+                "symbols": [
+                  {
+                    "name": "Render",
+                    "kind": "interface"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          }
+        ],
+        "files": [
+          {
+            "path": "render/json.go",
+            "chars": 11554,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "context.go",
+            "chars": 4746,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "errors.go",
+            "chars": 4571,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "JSON"
+          },
+          {
+            "path": "response_writer.go",
+            "chars": 3958,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "render/render.go",
+            "chars": 2820,
+            "calls": 2,
+            "via": "path"
+          }
+        ],
+        "envelope": 27649,
+        "used": 27649,
+        "usedPath": 23078,
+        "efficiency": 1,
+        "efficiencyPath": 0.8346775651922311,
+        "filesReturned": 5,
+        "filesUsed": 5,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "gin-q1-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 20.931,
+      "cost": 0.11342319999999999,
+      "processed": 150481,
+      "occupancy": {
+        "ctxFinal": 46256,
+        "ctxBase": 28746,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1580239862935464,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.009738885996536382,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 17510,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 17510,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 37787,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "Context JSON render Write response",
+            "files": 4,
+            "chars": 13266,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "Context.Render method render/json.go Render WriteJSON WriteContentType",
+            "files": 4,
+            "chars": 12399,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "func (c *Context) Render(code int, r render.Render)",
+            "files": 4,
+            "chars": 12122,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 2,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 3
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 12438,
+            "used": 12438,
+            "usedPath": 7867,
+            "files": [
+              {
+                "path": "context.go",
+                "chars": 2975,
+                "symbols": [
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "AsciiJSON",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "response_writer.go",
+                "chars": 3960,
+                "symbols": [
+                  {
+                    "name": "ResponseWriter",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Write",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "errors.go",
+                "chars": 4571,
+                "symbols": [
+                  {
+                    "name": "JSON",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "JSON"
+              },
+              {
+                "path": "render/json.go",
+                "chars": 932,
+                "symbols": [],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          },
+          {
+            "call": 2,
+            "envelope": 11295,
+            "used": 5818,
+            "usedPath": 5818,
+            "files": [
+              {
+                "path": "render/json.go",
+                "chars": 5818,
+                "symbols": [
+                  {
+                    "name": "JSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "IndentedJSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "SecureJSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "JsonpJSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "AsciiJSON",
+                    "kind": "struct"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "render/bson.go",
+                "chars": 943,
+                "symbols": [
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "render/data.go",
+                "chars": 886,
+                "symbols": [
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "render/html.go",
+                "chars": 3648,
+                "symbols": [
+                  {
+                    "name": "WriteContentType",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.515095174856131
+          },
+          {
+            "call": 3,
+            "envelope": 11126,
+            "used": 11126,
+            "usedPath": 11126,
+            "files": [
+              {
+                "path": "render/json.go",
+                "chars": 5731,
+                "symbols": [
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "context.go",
+                "chars": 2646,
+                "symbols": [
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Get",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Data",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "File",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "SSEvent",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "render/render.go",
+                "chars": 1391,
+                "symbols": [
+                  {
+                    "name": "Render",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "Render",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "response_writer.go",
+                "chars": 1358,
+                "symbols": [
+                  {
+                    "name": "reset",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "ResponseWriter",
+                    "kind": "interface"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          }
+        ],
+        "files": [
+          {
+            "path": "render/json.go",
+            "chars": 12481,
+            "calls": 3,
+            "via": "path"
+          },
+          {
+            "path": "context.go",
+            "chars": 5621,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "response_writer.go",
+            "chars": 5318,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "errors.go",
+            "chars": 4571,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "JSON"
+          },
+          {
+            "path": "render/html.go",
+            "chars": 3648,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "render/render.go",
+            "chars": 1391,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "render/bson.go",
+            "chars": 943,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "render/data.go",
+            "chars": 886,
+            "calls": 1,
+            "via": null
+          }
+        ],
+        "envelope": 34859,
+        "used": 29382,
+        "usedPath": 24811,
+        "efficiency": 0.8428813218967842,
+        "efficiencyPath": 0.7117530623368427,
+        "filesReturned": 8,
+        "filesUsed": 5,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "gin-q1-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 4,
+      "reads": 2,
+      "grep": 0,
+      "bash": 1,
+      "cg": 1,
+      "dur": 18.685,
+      "cost": 0.06981419999999999,
+      "processed": 133308,
+      "occupancy": {
+        "ctxFinal": 35513,
+        "ctxBase": 28746,
+        "windowTokens": 200000,
+        "charsPerToken": 1.3913405495420483,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.5569732153477523,
+        "evicted": 2881,
+        "residual": {
+          "codegraph": 5172,
+          "read": 790,
+          "search": 0,
+          "bash": 646,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 8053,
+          "read": 790,
+          "search": 0,
+          "bash": 646,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 11204,
+          "read": 1099,
+          "search": 0,
+          "bash": 899,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 2,
+          "search": 0,
+          "bash": 1,
+          "other": 0
+        },
+        "residualFileAccess": 1436,
+        "contributedFileAccess": 1436,
+        "charsFileAccess": 1998
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "Context JSON render write response",
+            "files": 3,
+            "chars": 11204,
+            "bucket": "read_returned",
+            "next": "Read json.go"
+          }
+        ],
+        "counts": {
+          "explore_again": 0,
+          "read_returned": 1,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 0
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 1
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 10616,
+            "used": 10616,
+            "usedPath": 6045,
+            "files": [
+              {
+                "path": "context.go",
+                "chars": 3810,
+                "symbols": [
+                  {
+                    "name": "AsciiJSON",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Get",
+                    "kind": "method"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "errors.go",
+                "chars": 4571,
+                "symbols": [
+                  {
+                    "name": "JSON",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "JSON"
+              },
+              {
+                "path": "render/json.go",
+                "chars": 2235,
+                "symbols": [
+                  {
+                    "name": "AsciiJSON",
+                    "kind": "struct"
+                  },
+                  {
+                    "name": "IndentedJSON",
+                    "kind": "struct"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 1
+          }
+        ],
+        "files": [
+          {
+            "path": "errors.go",
+            "chars": 4571,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "JSON"
+          },
+          {
+            "path": "context.go",
+            "chars": 3810,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "render/json.go",
+            "chars": 2235,
+            "calls": 1,
+            "via": "path"
+          }
+        ],
+        "envelope": 10616,
+        "used": 10616,
+        "usedPath": 6045,
+        "efficiency": 1,
+        "efficiencyPath": 0.5694235116804823,
+        "filesReturned": 3,
+        "filesUsed": 3,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "vite-q1-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 25.054,
+      "cost": 0.158886,
+      "processed": 119876,
+      "occupancy": {
+        "ctxFinal": 51081,
+        "ctxBase": 28765,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2254436278903027,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.009908490303426443,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 22316,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 22316,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49663,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "resolveConfig loadConfigFromFile",
+            "files": 5,
+            "chars": 24808,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "bundleAndLoadConfigFile runnerImportConfigFile nativeImportConfigFile DEFAULT_CONFIG_FILES mergeConfig",
+            "files": 5,
+            "chars": 24855,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 22031,
+            "used": 18456,
+            "usedPath": 18456,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 17686,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/packages.ts",
+                "chars": 301,
+                "symbols": [
+                  {
+                    "name": "PackageCache",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/plugins/oxc.ts",
+                "chars": 770,
+                "symbols": [
+                  {
+                    "name": "OxcOptions",
+                    "kind": "interface"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/server/pluginContainer.ts",
+                "chars": 2504,
+                "symbols": [
+                  {
+                    "name": "throwClosedServerError",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "createEnvironmentPluginContainer",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "SkipInformation",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "getSortedPlugins",
+                    "kind": "property"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "docs/.vitepress/config.ts",
+                "chars": 770,
+                "symbols": [
+                  {
+                    "name": "viteVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "viteMajorVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogDescription",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogImage",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogTitle",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogUrl",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployURL",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "commitRef",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployType",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 0.8377286550769371
+          },
+          {
+            "call": 2,
+            "envelope": 21481,
+            "used": 20714,
+            "usedPath": 19812,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 14437,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/constants.ts",
+                "chars": 392,
+                "symbols": [
+                  {
+                    "name": "DEFAULT_CONFIG_FILES",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/utils.ts",
+                "chars": 4983,
+                "symbols": [
+                  {
+                    "name": "isNodeLikeBuiltin",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "isNodeBuiltin",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "createDebugger",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "normalizePath",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "isObject",
+                    "kind": "function"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/logger.ts",
+                "chars": 767,
+                "symbols": [
+                  {
+                    "name": "createLogger",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "error",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Logger",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "LogLevel",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "warn",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+                "chars": 902,
+                "symbols": [
+                  {
+                    "name": "createRunnableDevEnvironment",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "RunnableDevEnvironment",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "constructor",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "runner",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "close",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "runner"
+              }
+            ],
+            "efficiency": 0.9642940272799218
+          }
+        ],
+        "files": [
+          {
+            "path": "packages/vite/src/node/config.ts",
+            "chars": 32123,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/utils.ts",
+            "chars": 4983,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/server/pluginContainer.ts",
+            "chars": 2504,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+            "chars": 902,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "runner"
+          },
+          {
+            "path": "packages/vite/src/node/plugins/oxc.ts",
+            "chars": 770,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "docs/.vitepress/config.ts",
+            "chars": 770,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/logger.ts",
+            "chars": 767,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/constants.ts",
+            "chars": 392,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/packages.ts",
+            "chars": 301,
+            "calls": 1,
+            "via": null
+          }
+        ],
+        "envelope": 43512,
+        "used": 39170,
+        "usedPath": 38268,
+        "efficiency": 0.9002114359257216,
+        "efficiencyPath": 0.8794815223386652,
+        "filesReturned": 9,
+        "filesUsed": 5,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "vite-q1-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 21.445,
+      "cost": 0.1555966,
+      "processed": 119752,
+      "occupancy": {
+        "ctxFinal": 50910,
+        "ctxBase": 28765,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2485888462406862,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.019893733760971463,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 22145,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 22145,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49795,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "resolveConfig loadConfigFromFile",
+            "files": 5,
+            "chars": 24919,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "bundleAndLoadConfigFile runnerImportConfigFile nativeImportConfigFile",
+            "files": 5,
+            "chars": 24876,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 22142,
+            "used": 19198,
+            "usedPath": 19198,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 17683,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/packages.ts",
+                "chars": 301,
+                "symbols": [
+                  {
+                    "name": "PackageCache",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/plugins/oxc.ts",
+                "chars": 770,
+                "symbols": [
+                  {
+                    "name": "OxcOptions",
+                    "kind": "interface"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/server/pluginContainer.ts",
+                "chars": 1873,
+                "symbols": [
+                  {
+                    "name": "throwClosedServerError",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "createEnvironmentPluginContainer",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "SkipInformation",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "docs/.vitepress/config.ts",
+                "chars": 1515,
+                "symbols": [
+                  {
+                    "name": "viteVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "viteMajorVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogDescription",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogImage",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogTitle",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogUrl",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployURL",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "commitRef",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployType",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 0.8670400144521724
+          },
+          {
+            "call": 2,
+            "envelope": 21533,
+            "used": 17280,
+            "usedPath": 14524,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 12721,
+                "symbols": [
+                  {
+                    "name": "debug",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "promisifiedRealpath",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ConfigEnv",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "UserConfig",
+                    "kind": "interface"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/server/pluginContainer.ts",
+                "chars": 4253,
+                "symbols": [
+                  {
+                    "name": "throwClosedServerError",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "SkipInformation",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "EnvironmentPluginContainer",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "getSortedPlugins",
+                    "kind": "property"
+                  },
+                  {
+                    "name": "constructor",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "docs/.vitepress/config.ts",
+                "chars": 1803,
+                "symbols": [
+                  {
+                    "name": "viteVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "viteMajorVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogDescription",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogImage",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogTitle",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogUrl",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployURL",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "commitRef",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployType",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/logger.ts",
+                "chars": 1908,
+                "symbols": [
+                  {
+                    "name": "createLogger",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "error",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Logger",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "LogLevel",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "warn",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "createLogger"
+              },
+              {
+                "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+                "chars": 848,
+                "symbols": [
+                  {
+                    "name": "createRunnableDevEnvironment",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "RunnableDevEnvironment",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "constructor",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "runner",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "close",
+                    "kind": "method"
+                  }
+                ],
+                "via": "symbol",
+                "symbol": "runner"
+              }
+            ],
+            "efficiency": 0.8024892026192356
+          }
+        ],
+        "files": [
+          {
+            "path": "packages/vite/src/node/config.ts",
+            "chars": 30404,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/server/pluginContainer.ts",
+            "chars": 6126,
+            "calls": 2,
+            "via": null
+          },
+          {
+            "path": "docs/.vitepress/config.ts",
+            "chars": 3318,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/logger.ts",
+            "chars": 1908,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "createLogger"
+          },
+          {
+            "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+            "chars": 848,
+            "calls": 1,
+            "via": "symbol",
+            "symbol": "runner"
+          },
+          {
+            "path": "packages/vite/src/node/plugins/oxc.ts",
+            "chars": 770,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/packages.ts",
+            "chars": 301,
+            "calls": 1,
+            "via": null
+          }
+        ],
+        "envelope": 43675,
+        "used": 36478,
+        "usedPath": 33722,
+        "efficiency": 0.8352146536920435,
+        "efficiencyPath": 0.7721121923297081,
+        "filesReturned": 7,
+        "filesUsed": 4,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "vite-q1-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 18.864,
+      "cost": 0.13092900000000002,
+      "processed": 119945,
+      "occupancy": {
+        "ctxFinal": 51101,
+        "ctxBase": 28765,
+        "windowTokens": 200000,
+        "charsPerToken": 2.228420487106017,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.010935790999446192,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 22336,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 22336,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49774,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "resolveConfig loadConfigFromFile",
+            "files": 5,
+            "chars": 24919,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "bundleAndLoadConfigFile runnerImportConfigFile nativeImportConfigFile mergeConfig DEFAULT_CONFIG_FILES",
+            "files": 5,
+            "chars": 24855,
+            "bucket": "sufficient",
+            "next": "(final answer)"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 22142,
+            "used": 19198,
+            "usedPath": 19198,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 17683,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/packages.ts",
+                "chars": 301,
+                "symbols": [
+                  {
+                    "name": "PackageCache",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/plugins/oxc.ts",
+                "chars": 770,
+                "symbols": [
+                  {
+                    "name": "OxcOptions",
+                    "kind": "interface"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/server/pluginContainer.ts",
+                "chars": 1873,
+                "symbols": [
+                  {
+                    "name": "throwClosedServerError",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "createEnvironmentPluginContainer",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "SkipInformation",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "docs/.vitepress/config.ts",
+                "chars": 1515,
+                "symbols": [
+                  {
+                    "name": "viteVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "viteMajorVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogDescription",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogImage",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogTitle",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogUrl",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployURL",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "commitRef",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployType",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 0.8670400144521724
+          },
+          {
+            "call": 2,
+            "envelope": 21481,
+            "used": 19812,
+            "usedPath": 19812,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 14437,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/constants.ts",
+                "chars": 392,
+                "symbols": [
+                  {
+                    "name": "DEFAULT_CONFIG_FILES",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/utils.ts",
+                "chars": 4983,
+                "symbols": [
+                  {
+                    "name": "isNodeLikeBuiltin",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "isNodeBuiltin",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "createDebugger",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "normalizePath",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "isObject",
+                    "kind": "function"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/logger.ts",
+                "chars": 767,
+                "symbols": [
+                  {
+                    "name": "createLogger",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "error",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Logger",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "LogLevel",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "warn",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+                "chars": 902,
+                "symbols": [
+                  {
+                    "name": "createRunnableDevEnvironment",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "RunnableDevEnvironment",
+                    "kind": "class"
+                  },
+                  {
+                    "name": "constructor",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "runner",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "close",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.9223034309389693
+          }
+        ],
+        "files": [
+          {
+            "path": "packages/vite/src/node/config.ts",
+            "chars": 32120,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/utils.ts",
+            "chars": 4983,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/server/pluginContainer.ts",
+            "chars": 1873,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "docs/.vitepress/config.ts",
+            "chars": 1515,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+            "chars": 902,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/plugins/oxc.ts",
+            "chars": 770,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/logger.ts",
+            "chars": 767,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/constants.ts",
+            "chars": 392,
+            "calls": 1,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/packages.ts",
+            "chars": 301,
+            "calls": 1,
+            "via": null
+          }
+        ],
+        "envelope": 43623,
+        "used": 39010,
+        "usedPath": 39010,
+        "efficiency": 0.8942530316576118,
+        "efficiencyPath": 0.8942530316576118,
+        "filesReturned": 9,
+        "filesUsed": 4,
+        "hasAnswer": true
+      }
+    },
+    {
+      "name": "vite-q1-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 1,
+      "cg": 2,
+      "dur": 27.885,
+      "cost": 0.14536100000000002,
+      "processed": 171208,
+      "occupancy": {
+        "ctxFinal": 51463,
+        "ctxBase": 28765,
+        "windowTokens": 200000,
+        "charsPerToken": 2.246724496250113,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.019253909643268594,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 22134,
+          "read": 0,
+          "search": 0,
+          "bash": 121,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 22134,
+          "read": 0,
+          "search": 0,
+          "bash": 121,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49729,
+          "read": 0,
+          "search": 0,
+          "bash": 271,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 1,
+          "other": 0
+        },
+        "residualFileAccess": 121,
+        "contributedFileAccess": 121,
+        "charsFileAccess": 271
+      },
+      "sufficiency": {
+        "calls": [
+          {
+            "thread": "main",
+            "query": "resolveConfig loadConfigFromFile",
+            "files": 5,
+            "chars": 24919,
+            "bucket": "explore_again",
+            "next": "codegraph_explore"
+          },
+          {
+            "thread": "main",
+            "query": "bundleAndLoadConfigFile runnerImportConfigFile nativeImportConfigFile DEFAULT_CONFIG_FILES",
+            "files": 4,
+            "chars": 24810,
+            "bucket": "search",
+            "next": "Bash search"
+          }
+        ],
+        "counts": {
+          "explore_again": 1,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 1,
+          "sufficient": 0
+        },
+        "errors": 0,
+        "concurrent": 0,
+        "answered": 2
+      },
+      "allocation": {
+        "calls": [
+          {
+            "call": 1,
+            "envelope": 22142,
+            "used": 19198,
+            "usedPath": 19198,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 17683,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/packages.ts",
+                "chars": 301,
+                "symbols": [
+                  {
+                    "name": "PackageCache",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/plugins/oxc.ts",
+                "chars": 770,
+                "symbols": [
+                  {
+                    "name": "OxcOptions",
+                    "kind": "interface"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/server/pluginContainer.ts",
+                "chars": 1873,
+                "symbols": [
+                  {
+                    "name": "throwClosedServerError",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "createEnvironmentPluginContainer",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "SkipInformation",
+                    "kind": "type_alias"
+                  }
+                ],
+                "via": null
+              },
+              {
+                "path": "docs/.vitepress/config.ts",
+                "chars": 1515,
+                "symbols": [
+                  {
+                    "name": "viteVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "viteMajorVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogDescription",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogImage",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogTitle",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogUrl",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployURL",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "commitRef",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployType",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              }
+            ],
+            "efficiency": 0.8670400144521724
+          },
+          {
+            "call": 2,
+            "envelope": 21336,
+            "used": 15577,
+            "usedPath": 15577,
+            "files": [
+              {
+                "path": "packages/vite/src/node/config.ts",
+                "chars": 13697,
+                "symbols": [],
+                "via": "path"
+              },
+              {
+                "path": "docs/.vitepress/config.ts",
+                "chars": 1880,
+                "symbols": [
+                  {
+                    "name": "viteVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "viteMajorVersion",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogDescription",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogImage",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogTitle",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "ogUrl",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployURL",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "commitRef",
+                    "kind": "constant"
+                  },
+                  {
+                    "name": "deployType",
+                    "kind": "constant"
+                  }
+                ],
+                "via": "path"
+              },
+              {
+                "path": "packages/vite/src/node/server/pluginContainer.ts",
+                "chars": 3797,
+                "symbols": [],
+                "via": null
+              },
+              {
+                "path": "packages/vite/src/node/logger.ts",
+                "chars": 1962,
+                "symbols": [
+                  {
+                    "name": "createLogger",
+                    "kind": "function"
+                  },
+                  {
+                    "name": "error",
+                    "kind": "method"
+                  },
+                  {
+                    "name": "Logger",
+                    "kind": "interface"
+                  },
+                  {
+                    "name": "LogLevel",
+                    "kind": "type_alias"
+                  },
+                  {
+                    "name": "warn",
+                    "kind": "method"
+                  }
+                ],
+                "via": null
+              }
+            ],
+            "efficiency": 0.7300806149231346
+          }
+        ],
+        "files": [
+          {
+            "path": "packages/vite/src/node/config.ts",
+            "chars": 31380,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/server/pluginContainer.ts",
+            "chars": 5670,
+            "calls": 2,
+            "via": null
+          },
+          {
+            "path": "docs/.vitepress/config.ts",
+            "chars": 3395,
+            "calls": 2,
+            "via": "path"
+          },
+          {
+            "path": "packages/vite/src/node/logger.ts",
+            "chars": 1962,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/plugins/oxc.ts",
+            "chars": 770,
+            "calls": 1,
+            "via": null
+          },
+          {
+            "path": "packages/vite/src/node/packages.ts",
+            "chars": 301,
+            "calls": 1,
+            "via": null
+          }
+        ],
+        "envelope": 43478,
+        "used": 34775,
+        "usedPath": 34775,
+        "efficiency": 0.7998297989787939,
+        "efficiencyPath": 0.7998297989787939,
+        "filesReturned": 6,
+        "filesUsed": 2,
+        "hasAnswer": true
+      }
+    }
+  ],
+  "summary": [
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "runs": 2,
+      "durationMedian": 22.416,
+      "durationRange": [
+        19.861,
+        24.971
+      ],
+      "totals": {
+        "tools": 4,
+        "reads": 0,
+        "grep": 0,
+        "bash": 0,
+        "cg": 4
+      },
+      "feedback": {
+        "medianResidualFileAccessTokens": 0.0,
+        "exploreNext": {
+          "explore_again": 2,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 2
+        },
+        "medianAllocationEfficiency": 0.7356124770420727
+      }
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "runs": 2,
+      "durationMedian": 23.144,
+      "durationRange": [
+        21.461,
+        24.827
+      ],
+      "totals": {
+        "tools": 4,
+        "reads": 0,
+        "grep": 0,
+        "bash": 0,
+        "cg": 4
+      },
+      "feedback": {
+        "medianResidualFileAccessTokens": 0.0,
+        "exploreNext": {
+          "explore_again": 2,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 2
+        },
+        "medianAllocationEfficiency": 0.8532371268131359
+      }
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "runs": 2,
+      "durationMedian": 18.057,
+      "durationRange": [
+        17.429,
+        18.685
+      ],
+      "totals": {
+        "tools": 6,
+        "reads": 2,
+        "grep": 0,
+        "bash": 1,
+        "cg": 3
+      },
+      "feedback": {
+        "medianResidualFileAccessTokens": 718.0,
+        "exploreNext": {
+          "explore_again": 1,
+          "read_returned": 1,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 1
+        },
+        "medianAllocationEfficiency": 1.0
+      }
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "runs": 2,
+      "durationMedian": 17.625500000000002,
+      "durationRange": [
+        14.32,
+        20.931
+      ],
+      "totals": {
+        "tools": 5,
+        "reads": 0,
+        "grep": 0,
+        "bash": 0,
+        "cg": 5
+      },
+      "feedback": {
+        "medianResidualFileAccessTokens": 0.0,
+        "exploreNext": {
+          "explore_again": 3,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 2
+        },
+        "medianAllocationEfficiency": 0.921440660948392
+      }
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "runs": 2,
+      "durationMedian": 24.665,
+      "durationRange": [
+        21.445,
+        27.885
+      ],
+      "totals": {
+        "tools": 5,
+        "reads": 0,
+        "grep": 0,
+        "bash": 1,
+        "cg": 4
+      },
+      "feedback": {
+        "medianResidualFileAccessTokens": 60.5,
+        "exploreNext": {
+          "explore_again": 2,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 1,
+          "sufficient": 1
+        },
+        "medianAllocationEfficiency": 0.8175222263354187
+      }
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "runs": 2,
+      "durationMedian": 21.959,
+      "durationRange": [
+        18.864,
+        25.054
+      ],
+      "totals": {
+        "tools": 4,
+        "reads": 0,
+        "grep": 0,
+        "bash": 0,
+        "cg": 4
+      },
+      "feedback": {
+        "medianResidualFileAccessTokens": 0.0,
+        "exploreNext": {
+          "explore_again": 2,
+          "read_returned": 0,
+          "read_missed": 0,
+          "search": 0,
+          "sufficient": 2
+        },
+        "medianAllocationEfficiency": 0.8972322337916667
+      }
+    }
+  ],
+  "limitations": [
+    "Two runs per arm per question; this sample does not establish general speedup or universal zero-read behavior.",
+    "Bash source access is counted separately from Read/Grep."
+  ]
+}
