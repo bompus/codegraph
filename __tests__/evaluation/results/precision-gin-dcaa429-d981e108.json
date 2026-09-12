@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-09-12T05:46:38.377Z",
+  "corpus": "gin",
+  "repo": "https://github.com/gin-gonic/gin.git",
+  "commit": "dcaa429",
+  "codegraphSha": "d981e108",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 3441,
+    "exact-match": 2895,
+    "instance-method": 1656,
+    "framework": 250,
+    "qualified-name": 126,
+    "file-path": 104,
+    "import": 58,
+    "function-ref": 14
+  },
+  "edges": 8544,
+  "results": []
+}

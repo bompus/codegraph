@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 started with Python (2026-09-12); Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 in progress: Python and Go done (2026-09-12); Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -190,6 +190,14 @@ Exit per language: its `extractXImports` function and inference table entries ar
 - One resolver rule came with the export flag: a chained call resolved by import onto a plain function or method is declined (`send_welcome.delay(x)` after `from .tasks import send_welcome` is Celery's dispatch on the task object, not a call to the function). Binding it hid the queue step in the Steps view; the celery-dispatch synthesizer keeps the edge it always made.
 - `__tests__/bindings-python.test.ts` pins every row form and the mappings built from them.
 
+#### Go — DONE 2026-09-12 (import regex retired)
+
+- The Go walker (`codegraph-kernel/src/go.rs`) emits: `decl` rows for every package-level name, exported by case (`public` when capitalized, else `storage = package`); `local` rows for names nested in a type or function (node-backed) and, nodeless, for `x := …`, `var x` and `for i, v := range` inside a function body; `param` rows for parameters and receivers (functions, methods, closures the walk names, interface method specs); `import` rows per import spec with the alias as spelled (`str "strconv"`, a dot or blank import) or the path's last segment — the resolver's long-standing reading, since a package's declared name can differ from its path. Go set `isExported` by case for functions and types but not for every package-level kind; the rows now set it by case for all of them (constants, variables, methods), which the goldens show as flag-only node changes.
+- `bindings_file` handles Go (`go::bindings_only`, iterative AST-only pass), so the generic extractor's path has rows; the parity gate covers `torture.go`.
+- `extractGoImports` is deleted; `getImportMappings` reads the rows.
+- Gate: a Go corpus was added (gin-gonic/gin at `dcaa4296`, no cases yet). 8,544 edges before and after, byte-identical histogram (import 58, exact-match 2,895). The edge dump differs in 11 edges, all one shape: `jsonBinding{}.BindBody(…)` in the binding tests, a call whose receiver is a composite literal, name-matched among ten same-named `BindBody` methods; the tie moved from the interface's method to `bsonBinding`'s because method export flags are now consistent by case. Both picks are wrong (the receiver names `jsonBinding`); the Go receiver rule in Phase 2b/§2.3 is where that gets fixed. Deterministic: two runs of the new build agree. Goldens (`payroll-go`, `torture.go`): rows and export flags only, no edge or ref changes.
+- `__tests__/bindings-go.test.ts` pins every row form and the mappings built from them.
+
 ### Phase 4: move the binding lookup into the kernel
 
 With source-reading predicates gone, the resolve step is a join over `bindings`, `nodes` and `unresolved_refs`. Port it into the kernel as a batch entry point that takes a chunk of refs and returns resolved edges, mirroring today's `resolver-worker` chunk contract. The TypeScript `ReferenceResolver` becomes the orchestrator over the kernel and the framework resolvers. This is the P1 item in the migration plan, executed after the model is stable rather than before.
@@ -205,7 +213,7 @@ Exit: `settle` and `read` stages run natively; Linux-kernel resolution under the
 | `isBoundToBareImport`, `isBareJsCall`, `isLocallyBoundJsName` and their memos — `isLocallyBoundJsName`'s regexes and memo done, Phase 2; the other two stay (bare-import classification and call-site shape) | `name-matcher.ts:551-970` |
 | `isTsJsNestedCall` early-out and the host-global chain gate | `index.ts:1030`, `name-matcher.ts:3423`, `js-builtins.ts` |
 | `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases` — done, Phase 2 | `import-resolver.ts:96`, `alias-binding.ts:105` |
-| Per-language import regex extractors — JS/TS done, Phase 2; Python done, Phase 3; Go, JVM, PHP, C/C++ remain | `import-resolver.ts:898-1174` |
+| Per-language import regex extractors — JS/TS done, Phase 2; Python and Go done, Phase 3; JVM, PHP, C/C++ remain | `import-resolver.ts:898-1174` |
 | Receiver inference regex table, as languages migrate | `name-matcher.ts:1950-2082` |
 | `strip-comments.ts` once no resolver reads source | 574 lines |
 
