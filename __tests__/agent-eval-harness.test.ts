@@ -44,7 +44,8 @@ let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end',
   return { root, bin, corpus, target, out };
 }
 
-describe('agent evaluation harness safety', () => {
+// The harness is a bash script: POSIX only (seen failing on Windows 2026-09-12).
+describe.runIf(process.platform !== 'win32')('agent evaluation harness safety', () => {
   it('returns a failure when a headless Claude arm fails', () => {
     const f = fixture();
     const codegraph = join(f.root, 'codegraph-under-test');

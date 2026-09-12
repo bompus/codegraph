@@ -207,6 +207,22 @@ A measurement-only switch skipped the WASM grammar loads for kernel-routed langu
 
 Reading it: on Node the per-worker WASM grammar heap is about 5 MB per worker, not the 60 MB the Bun probe saw (that was a JavaScriptCore compiler-thread leak). Peak RSS at index time is dominated by the main thread's store and resolution work, so deleting WASM does not move the memory headline on Node. It does buy roughly 0.3 to 0.7 s of grammar compile per fresh index, a 40 ms and 50 MB cheaper MCP cold start with one process fewer per session, a 41% smaller install (75 MB to 44 MB with the kernel counted), two fewer runtime dependencies, and the removal of the Node 25 block and the relaunch machinery that forced a dedicated Node 24 alias on the espn-draft host. The engineering payoff (one grammar supply chain, no parity oracle to maintain, about 27k lines gone) is not in these tables and is the larger part of the case. Retrieval quality is held constant by construction (goldens) and is not a lever here.
 
+### Windows validation (2026-09-12)
+
+Run on the Windows host itself (Windows-local checkout under `C:\Users\bompus\src\codegraph-win`, Node 26.8.1, MSVC Build Tools 18 / 14.51, cargo 1.98.1, Git Bash for the build script), against `fork/consolidated` at `de37daee` plus the fix below:
+
+| Step | Result |
+|---|---|
+| `npm ci` | ok |
+| `bash scripts/build-kernel.sh` | **failed first**: `grammars/cobol/scanner.c` uses C99 variable-length arrays, which MSVC rejects (C2466/C2133). The wasm build had used clang. Fixed with a fixed-size-array patch recorded in `grammars/PROVENANCE.md`; then built in 53 s, 76 MB prebuild |
+| `npm run build` | ok (no grammar copy; check-ui-build passes) |
+| Kernel suites (`kernel-` filter, `CODEGRAPH_KERNEL_EXPECT=1`) | 8 files, 145 tests pass — the golden dumps are byte-identical on Windows |
+| Full engine suite, 6 workers | 264 files pass, 2 fail, 4688 tests pass |
+
+The two failures are POSIX-only test fixtures unrelated to extraction: `extraction-old-git.test.ts` installs a `#!/bin/sh` git shim with a `:`-separated PATH, and `agent-eval-harness.test.ts` runs a bash script. Both are now gated with `it.runIf(process.platform !== 'win32')` per the repository's Windows-gated-tests rule; they still run on Linux.
+
+macOS has not been run; the release matrix builds both Apple targets.
+
 ## 4. What is removed, by the numbers
 
 | Item | Lines or count |

@@ -27,7 +27,8 @@ function createTempDir(): string {
 //
 // A PATH shim reproduces that on any git version, which is what makes this
 // testable in CI at all.
-describe('Old git without `ls-files -s --recurse-submodules` support (#1549)', () => {
+// The shim is a #!/bin/sh script on a ':'-joined PATH: POSIX only (seen failing on Windows 2026-09-12).
+describe.runIf(process.platform !== 'win32')('Old git without `ls-files -s --recurse-submodules` support (#1549)', () => {
   let tempDir: string;
   let originalPath: string | undefined;
 
