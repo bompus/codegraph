@@ -348,7 +348,12 @@
 {"from_node_id":"namespace:e96e1e122a8df78e6f4d85a703bb5724","reference_name":"eunit/include/eunit.hrl","reference_kind":"imports","line":2,"col":0,"candidates":null,"file_path":"erlang/counter_tests.erl","language":"erlang","status":"failed","name_tail":"hrl"}
 {"from_node_id":"namespace:f596155bb751fabdca26671539d4c89f","reference_name":"gen_server","reference_kind":"implements","line":2,"col":0,"candidates":null,"file_path":"erlang/counter.erl","language":"erlang","status":"failed","name_tail":"gen_server"}
 {"from_node_id":"property:1e7069012ccaabcb8a98d0790ea607ef","reference_name":"State","reference_kind":"decorates","line":4,"col":2,"candidates":null,"file_path":"arkts/Greeter.ets","language":"arkts","status":"failed","name_tail":"State"}
-== bindings (0)
+== bindings (5)
+{"file_path":"arkts/Greeter.ets","name":"GreeterService","kind":"decl","node_id":"class:3e6591165ac27455fccf18fc888a0823","target_spec":null,"target_name":null,"exported_as":"GreeterService","export_form":"esm","scope_start":1,"scope_end":18,"storage":null,"line":15}
+{"file_path":"arkts/Greeter.ets","name":"formatName","kind":"import","node_id":null,"target_spec":"./util","target_name":"formatName","exported_as":null,"export_form":null,"scope_start":1,"scope_end":18,"storage":null,"line":1}
+{"file_path":"arkts/Greeter.ets","name":"name","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":16,"scope_end":16,"storage":null,"line":16}
+{"file_path":"arkts/util.ets","name":"formatName","kind":"decl","node_id":"function:5616f3b8fc746c8c0c09a11ece0dbf24","target_spec":null,"target_name":null,"exported_as":"formatName","export_form":"esm","scope_start":1,"scope_end":2,"storage":null,"line":1}
+{"file_path":"arkts/util.ets","name":"n","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":1,"scope_end":1,"storage":null,"line":1}
 == files (20)
 {"path":"arkts/Greeter.ets","language":"arkts","node_count":10}
 {"path":"arkts/util.ets","language":"arkts","node_count":2}

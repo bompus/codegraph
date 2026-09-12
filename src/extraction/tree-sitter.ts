@@ -7,6 +7,7 @@
 import type { TreeNode as SyntaxNode, ParsedTree as Tree } from './parse-tree';
 import * as path from 'path';
 import {
+  Binding,
   Language,
   Node,
   Edge,
@@ -33,7 +34,7 @@ import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { MarkdownExtractor } from './markdown-extractor';
 import { CfmlExtractor } from './cfml-extractor';
-import { tryKernelExtract } from './kernel';
+import { tryKernelExtract, tryKernelBindings, attachBindingNodeIds } from './kernel';
 import { captureLiterals } from './literal-capture';
 import {
   getAllFrameworkResolvers,
@@ -451,6 +452,8 @@ export class TreeSitterExtractor {
   private laterExports = new Set<string>();
   private nodes: Node[] = [];
   private edges: Edge[] = [];
+  /** Binding rows from the kernel's AST-only emitter (TS/JS family, ArkTS). */
+  private bindings: Binding[] | undefined;
   private unresolvedReferences: UnresolvedReference[] = [];
   // Value-reference edges (default ON; set CODEGRAPH_VALUE_REFS=0 to disable; see flushValueRefs).
   // Same-file reads of file-scope const/var symbols → `references` edges so impact analysis catches
@@ -586,6 +589,11 @@ export class TreeSitterExtractor {
       this.flushValueRefs();
       captureLiterals(this.source, this.nodes);
 
+      // Binding rows come from the kernel even on this path (one emitter,
+      // resolution-binding-model-plan.md §2.4); node ids attach by name/line.
+      const rows = tryKernelBindings(this.filePath, this.source, this.language);
+      if (rows && rows.length > 0) this.bindings = attachBindingNodeIds(rows, this.nodes);
+
       if (packageNodeId) this.nodeStack.pop();
       this.nodeStack.pop();
 
@@ -631,6 +639,7 @@ export class TreeSitterExtractor {
       nodes: this.nodes,
       edges: this.edges,
       unresolvedReferences: this.unresolvedReferences,
+      ...(this.bindings ? { bindings: this.bindings } : {}),
       errors: this.errors,
       durationMs: Date.now() - startTime,
     };

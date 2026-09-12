@@ -96,6 +96,10 @@ export interface KernelTreeNames {
 
 export interface KernelModule {
   extractFile(filePath: string, content: string, language: string): KernelBuffers;
+  /** Binding rows only, from the AST, for a TS/JS-family or ArkTS file the
+   *  generic extractor extracts (resolution-binding-model-plan.md §2.4).
+   *  OPTIONAL: absent on older binaries; the caller then emits no rows. */
+  bindingsFile?(filePath: string, content: string, language: string): KernelBuffers;
   /** Parse-tree service for read-time consumers (Phase 3). OPTIONAL: absent
    *  on older binaries — kernel/tree.ts feature-detects and the consumers
    *  keep the wasm parser. */

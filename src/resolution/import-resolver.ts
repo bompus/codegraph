@@ -9,7 +9,6 @@ import * as path from 'path';
 import { Binding, Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping, ReExport } from './types';
 import { applyAliases } from './path-aliases';
-import { extractLocalExportAliases } from './alias-binding';
 import { resolveWorkspaceImport } from './workspace-packages';
 import {
   resolveMethodOnType,
@@ -92,19 +91,12 @@ interface FileExportIndex {
 }
 
 const DEFAULT_BINDING_KINDS = new Set<string>(['function', 'class', 'component', 'constant', 'variable']);
-const DEFAULT_EXPORT_BINDING_RE = /^[ \t]*export\s+default\s+([A-Za-z_$][\w$]*)\s*;?[ \t]*$/m;
 const JS_FAMILY_FILE = /\.(?:[cm]?[jt]sx?)$/;
 
-/** The identifier `export default NAME` names in a JS-family file, or null. */
+/** The identifier `export default NAME` names, from the file's binding rows, or null. */
 function defaultExportBinding(filePath: string, context: ResolutionContext): string | null {
   const rows = context.getBindings?.(filePath);
-  if (rows && rows.length > 0) {
-    return rows.find((r) => r.exportedAs === 'default' && r.nodeId)?.name ?? null;
-  }
-  if (!JS_FAMILY_FILE.test(filePath)) return null;
-  const source = context.readFile(filePath);
-  if (!source || !source.includes('export default')) return null;
-  return source.match(DEFAULT_EXPORT_BINDING_RE)?.[1] ?? null;
+  return rows?.find((r) => r.exportedAs === 'default' && r.nodeId)?.name ?? null;
 }
 const fileExportIndexes = new WeakMap<ResolutionContext, Map<string, FileExportIndex>>();
 
@@ -137,21 +129,13 @@ function getFileExportIndex(filePath: string, context: ResolutionContext): FileE
     // Bind names introduced by a local export clause to their declarations, so
     // an importer asking for the renamed name gets the real symbol instead of
     // falling through to the name-matcher (which cannot cross the rename).
-    const rows = context.getBindings?.(filePath);
-    if (rows && rows.length > 0) {
+    const rows = context.getBindings?.(filePath) ?? [];
+    if (rows.length > 0) {
       const byId = new Map(nodesInFile.map((n) => [n.id, n]));
       for (const r of rows) {
         if (!r.exportedAs || !r.nodeId || idx.byName.has(r.exportedAs)) continue;
         const decl = byId.get(r.nodeId);
         if (decl) idx.byName.set(r.exportedAs, decl);
-      }
-    }
-    const content = rows && rows.length > 0 ? null : context.readFile(filePath);
-    if (content && content.includes('export')) {
-      for (const { exportedName, localName } of extractLocalExportAliases(content)) {
-        if (idx.byName.has(exportedName)) continue;
-        const decl = declared.get(localName);
-        if (decl) idx.byName.set(exportedName, decl);
       }
     }
     perFile.set(filePath, idx);
@@ -919,21 +903,9 @@ export function extractImportMappings(
 ): ImportMapping[] {
   const mappings: ImportMapping[] = [];
 
-  if (language === 'typescript' || language === 'javascript' || language === 'tsx' || language === 'jsx' || language === 'arkts') {
-    mappings.push(...extractJSImports(content));
-  } else if (language === 'svelte' || language === 'vue' || language === 'astro') {
-    // Svelte/Vue single-file components import via plain ES6 inside their
-    // `<script>` block (Astro: the `---` frontmatter). Without this, a
-    // `.svelte`/`.vue`/`.astro` consumer produces
-    // zero import mappings, so `resolveViaImport` can't run and a barrel
-    // import (`import { Foo } from './lib'`) falls back to name-matching —
-    // which silently fails whenever the re-export alias differs from the
-    // component's real name, yielding a false 0 callers (#629). The ES6
-    // import regex only matches `import … from '…'`, so running it over the
-    // whole SFC (markup + styles included) is safe.
-    mappings.push(...extractJSImports(content));
-  } else if (language === 'python') {
-    mappings.push(...extractPythonImports(content));
+  // The JS/TS family (and the Vue / Svelte / Astro script blocks) answer from
+  // the `bindings` table (importMappingsFromBindings); no source regex here.
+  if (language === 'python') {    mappings.push(...extractPythonImports(content));
   } else if (language === 'go') {
     mappings.push(...extractGoImports(content));
   } else if (language === 'java' || language === 'kotlin') {
@@ -942,110 +914,6 @@ export function extractImportMappings(
     mappings.push(...extractPHPImports(content));
   } else if (language === 'c' || language === 'cpp') {
     mappings.push(...extractCppImports(content));
-  }
-
-  return mappings;
-}
-
-/**
- * Extract JS/TS import mappings
- */
-function extractJSImports(content: string): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-
-  // ES6 imports
-  const importRegex = /import\s+(?:(\w+)\s*,?\s*)?(?:\{([^}]+)\})?\s*(?:(\*)\s+as\s+(\w+))?\s*from\s*['"]([^'"]+)['"]/g;
-
-  let match;
-  while ((match = importRegex.exec(content)) !== null) {
-    const [, defaultImport, namedImports, star, namespaceAlias, source] = match;
-
-    // Default import
-    if (defaultImport) {
-      mappings.push({
-        localName: defaultImport,
-        exportedName: 'default',
-        source: source!,
-        isDefault: true,
-        isNamespace: false,
-      });
-    }
-
-    // Named imports
-    if (namedImports) {
-      const names = namedImports.split(',').map((s) => s.trim());
-      for (const name of names) {
-        const aliasMatch = name.match(/(\w+)\s+as\s+(\w+)/);
-        if (aliasMatch) {
-          mappings.push({
-            localName: aliasMatch[2]!,
-            exportedName: aliasMatch[1]!,
-            source: source!,
-            isDefault: false,
-            isNamespace: false,
-          });
-        } else if (name) {
-          mappings.push({
-            localName: name,
-            exportedName: name,
-            source: source!,
-            isDefault: false,
-            isNamespace: false,
-          });
-        }
-      }
-    }
-
-    // Namespace import
-    if (star && namespaceAlias) {
-      mappings.push({
-        localName: namespaceAlias,
-        exportedName: '*',
-        source: source!,
-        isDefault: false,
-        isNamespace: true,
-      });
-    }
-  }
-
-  // Require statements
-  const requireRegex = /(?:const|let|var)\s+(?:(\w+)|{([^}]+)})\s*=\s*require\(['"]([^'"]+)['"]\)/g;
-  while ((match = requireRegex.exec(content)) !== null) {
-    const [, defaultName, destructured, source] = match;
-
-    if (defaultName) {
-      mappings.push({
-        localName: defaultName,
-        exportedName: 'default',
-        source: source!,
-        isDefault: true,
-        isNamespace: false,
-      });
-    }
-
-    if (destructured) {
-      const names = destructured.split(',').map((s) => s.trim());
-      for (const name of names) {
-        const aliasMatch = name.match(/(\w+)\s*:\s*(\w+)/);
-        if (aliasMatch) {
-          mappings.push({
-            localName: aliasMatch[2]!,
-            exportedName: aliasMatch[1]!,
-            source: source!,
-            isDefault: false,
-            isNamespace: false,
-          });
-        } else if (name) {
-          mappings.push({
-            localName: name,
-            exportedName: name,
-            source: source!,
-            isDefault: false,
-            isNamespace: false,
-          });
-        }
-      }
-    }
   }
 
   return mappings;
@@ -1260,127 +1128,6 @@ export function clearImportMappingCache(): void {
   cppIncludeDirCache.clear();
 }
 
-/**
- * Strip JS line + block comments from `content` while preserving
- * string literals (so `"//"` inside a string stays intact). Used by
- * {@link extractReExports} so commented-out export-from statements
- * don't generate phantom re-export edges.
- *
- * Scanner is deliberately small: it only tracks the three contexts
- * relevant for JS/TS — single-quote string, double-quote string, and
- * template literal. Comment recognition is the JS spec subset, no
- * regex-literal awareness (which is fine for our use case: we don't
- * apply this to function bodies, only to top-level files).
- */
-function stripJsComments(content: string): string {
-  let out = '';
-  let i = 0;
-  let str: '"' | "'" | '`' | null = null;
-  while (i < content.length) {
-    const ch = content[i]!;
-    if (str !== null) {
-      out += ch;
-      if (ch === '\\' && i + 1 < content.length) {
-        out += content[i + 1]!;
-        i += 2;
-        continue;
-      }
-      if (ch === str) str = null;
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      str = ch;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === '/' && content[i + 1] === '/') {
-      while (i < content.length && content[i] !== '\n') i++;
-      continue;
-    }
-    if (ch === '/' && content[i + 1] === '*') {
-      i += 2;
-      while (i < content.length && !(content[i] === '*' && content[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
-
-/**
- * Extract JS/TS re-export declarations from `content`.
- *
- * Recognised forms:
- *   export { foo } from './a';
- *   export { foo as bar } from './a';
- *   export * from './a';
- *   export * as ns from './a';   (treated as wildcard for chasing)
- *   export { default as Foo } from './a';
- *
- * The walker intentionally stays regex-based — the import-resolver
- * elsewhere in this file already chooses regex over a fresh
- * tree-sitter pass, and this function shares that trade-off. Errors
- * fall through silently; resolution simply skips the broken file.
- */
-export function extractReExports(content: string, language: Language): ReExport[] {
-  if (
-    language !== 'typescript' &&
-    language !== 'javascript' &&
-    language !== 'tsx' &&
-    language !== 'jsx' &&
-    language !== 'arkts'
-  ) {
-    return [];
-  }
-  const out: ReExport[] = [];
-
-  // Pre-strip block comments + line comments so a commented-out
-  // `// export { x } from '...'` doesn't produce a phantom edge.
-  // (Template literals are still a possible source of false positives;
-  // a project that builds export statements as runtime strings is
-  // out of scope.)
-  const cleaned = stripJsComments(content);
-
-  // Wildcard: `export * from '...'` or `export * as ns from '...'`
-  const wildcardRe = /export\s*\*(?:\s+as\s+\w+)?\s*from\s*['"]([^'"]+)['"]/g;
-  let m: RegExpExecArray | null;
-  while ((m = wildcardRe.exec(cleaned)) !== null) {
-    out.push({ kind: 'wildcard', source: m[1]! });
-  }
-
-  // Named: `export { a, b as c } from '...'`
-  const namedRe = /export\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g;
-  while ((m = namedRe.exec(cleaned)) !== null) {
-    const inner = m[1]!;
-    const source = m[2]!;
-    for (const raw of inner.split(',')) {
-      const item = raw.trim();
-      if (!item) continue;
-      const aliasMatch = item.match(/^(\w+)\s+as\s+(\w+)$/);
-      if (aliasMatch) {
-        out.push({
-          kind: 'named',
-          exportedName: aliasMatch[2]!,
-          originalName: aliasMatch[1]!,
-          source,
-        });
-      } else if (/^\w+$/.test(item)) {
-        out.push({
-          kind: 'named',
-          exportedName: item,
-          originalName: item,
-          source,
-        });
-      }
-    }
-  }
-
-  return out;
-}
 
 /**
  * Resolve a reference using import mappings

@@ -20,7 +20,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { extractFromSource } from '../src/extraction';
 import { TreeSitterExtractor } from '../src/extraction/tree-sitter';
-import { tryKernelExtract } from '../src/extraction/kernel';
+import { tryKernelExtract, tryKernelBindings, attachBindingNodeIds } from '../src/extraction/kernel';
+import type { Binding } from '../src/types';
 import type { ExtractionResult, Language } from '../src/types';
 
 const KERNEL_PATH = path.join(
@@ -93,6 +94,45 @@ describe.skipIf(!kernelBuilt)('walker and generic extractor agree on the kernel 
         expect(ratio, `symbol count ratio ${ratio}`).toBeGreaterThan(0.95);
         expect(ratio).toBeLessThan(1.05);
       }
+    });
+  }
+});
+
+/**
+ * The kernel's AST-only binding emitter (`bindings_file`, the generic
+ * extractor's path for a deferred file or ArkTS) agrees with the walker's
+ * rows (resolution-binding-model-plan.md §2.4: one emitter). Every AST-only
+ * row must be a walker row, and a walker row the AST-only pass lacks must be
+ * node-backed (a class member, an object-literal action) — the rows the
+ * resolver's predicates read (import, reexport, param, nodeless local, every
+ * declaration's export form) are identical.
+ */
+describe.skipIf(!kernelBuilt)('AST-only binding rows agree with the walker', () => {
+  const key = (b: Binding) =>
+    [b.kind, b.name, b.scopeStart, b.scopeEnd, b.line, b.targetSpec ?? '', b.targetName ?? '', b.exportedAs ?? '', b.exportForm ?? '', b.nodeId ?? ''].join('|');
+  const JS_EXT: Record<string, Language> = { '.js': 'javascript', '.jsx': 'jsx', '.ts': 'typescript', '.tsx': 'tsx' };
+  const fixtures = fs
+    .readdirSync(FIXTURE_DIR)
+    .filter((f) => JS_EXT[path.extname(f)])
+    .map((f) => ({ file: path.join(FIXTURE_DIR, f), lang: JS_EXT[path.extname(f)]! }));
+
+  it('has JS-family fixtures', () => {
+    expect(fixtures.length).toBeGreaterThan(0);
+  });
+
+  for (const { file, lang } of fixtures) {
+    it(`${path.basename(file)} (${lang})`, () => {
+      const source = fs.readFileSync(file, 'utf8');
+      const walker = tryKernelExtract(file, source, lang)!;
+      const ast = attachBindingNodeIds(tryKernelBindings(file, source, lang)!, walker.nodes);
+      const walkerKeys = new Set((walker.bindings ?? []).map(key));
+      const astKeys = new Set(ast.map(key));
+      expect([...astKeys].filter((k) => !walkerKeys.has(k)), 'AST-only rows the walker lacks').toEqual([]);
+      const walkerOnly = (walker.bindings ?? []).filter((b) => !astKeys.has(key(b)));
+      // A walker-only row is a node the AST pass does not know as a declaration
+      // (a class member, an object-literal store action inside an exported
+      // object); its export flag comes from the node itself on both paths.
+      expect(walkerOnly.filter((b) => b.nodeId === undefined || (b.kind !== 'decl' && b.kind !== 'local')), 'walker rows the AST pass must also emit').toEqual([]);
     });
   }
 });

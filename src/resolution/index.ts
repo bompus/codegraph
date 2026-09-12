@@ -20,7 +20,7 @@ import {
   isImportableKind,
 } from './types';
 import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
-import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, extractReExports, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
+import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworks } from './frameworks';
@@ -698,28 +698,12 @@ export class ReferenceResolver {
         return this.workspacePackages;
       },
 
-      getReExports: (filePath: string, language) => {
+      getReExports: (filePath: string) => {
         const cached = this.reExportCache.get(filePath);
         if (cached) return cached;
-        const fromRows = reExportsFromBindings(this.context.getBindings!(filePath));
-        if (fromRows) {
-          this.reExportCache.set(filePath, fromRows);
-          return fromRows;
-        }
-        const content = this.context.readFile(filePath);
-        if (!content) {
-          this.reExportCache.set(filePath, []);
-          return [];
-        }
-        // Re-exports are a JS/TS-only construct, and what matters is the
-        // BARREL file's own language — not the consuming reference's. A
-        // `.svelte`/`.vue` consumer threads its own language down the
-        // re-export chase, which would make extractReExports() bail on a
-        // `.ts` index barrel and silently break the chain (#629). Re-key
-        // the parse on the barrel's extension so the chase works no matter
-        // what kind of file imports through it.
-        const isJsFamily = /\.(?:d\.ts|[cm]?tsx?|[cm]?jsx?|ets)$/i.test(filePath);
-        const reExports = extractReExports(content, isJsFamily ? 'typescript' : language);
+        // Re-exports are a JS/TS-family construct and come from the barrel
+        // file's own binding rows, whatever language the consumer is (#629).
+        const reExports = reExportsFromBindings(this.context.getBindings!(filePath)) ?? [];
         this.reExportCache.set(filePath, reExports);
         return reExports;
       },

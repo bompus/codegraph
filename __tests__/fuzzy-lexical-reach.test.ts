@@ -151,9 +151,17 @@ describe('fuzzy reachability rejects a unique guess but never manufactures one',
     expect(matchFuzzy(callFrom('vite.config.js', 3), contextWith([method]))?.targetNodeId).toBe('m:resolve');
   });
 
+  // A sealed module is read from the bindings table: an `import` node, no
+  // row exported under any form (the source is never read).
+  const sealedRows = (file: string, name: string, kind: 'decl' | 'local') => [
+    { filePath: file, name, kind, scopeStart: 1, scopeEnd: 40, line: 2 },
+  ];
+  const importNode = (file: string) => node({ id: `i:${file}`, kind: 'import', name: './setup', filePath: file, startLine: 1, endLine: 1 });
+
   it('rejects a sole sealed-module candidate across files but allows its own file', () => {
     const context = contextWith([method]);
-    context.readFile = () => "import './setup';\nclass PluginContainer { resolve() {} }";
+    context.getNodesInFile = (file) => file === 'pluginContainer.ts' ? [importNode(file), method] : [];
+    context.getBindings = (file) => file === 'pluginContainer.ts' ? sealedRows(file, 'resolve', 'local') : [];
     expect(matchFuzzy(callFrom('vite.config.js', 3), context)).toBeNull();
     expect(matchFuzzy(callFrom('pluginContainer.ts', 20), context)?.targetNodeId).toBe('m:resolve');
   });
@@ -161,7 +169,8 @@ describe('fuzzy reachability rejects a unique guess but never manufactures one',
   it('keeps a sealed candidate in the ambiguity count alongside a reachable method', () => {
     const sealed = node({ id: 'f:sealed', kind: 'function', name: 'resolve', filePath: 'sealed.ts' });
     const context = contextWith([sealed, method]);
-    context.readFile = (file) => file === 'sealed.ts' ? "import './setup';\nfunction resolve() {}" : null;
+    context.getNodesInFile = (file) => file === 'sealed.ts' ? [importNode(file), sealed] : [];
+    context.getBindings = (file) => file === 'sealed.ts' ? sealedRows(file, 'resolve', 'decl') : [];
     expect(matchFuzzy(callFrom('vite.config.js', 3), context)).toBeNull();
   });
 });

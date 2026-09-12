@@ -300,6 +300,22 @@ pub fn cfnptr_strip_c(text: String) -> String {
     String::from_utf8_lossy(&cfnptr::strip_c(text.as_bytes())).into_owned()
 }
 
+/// Binding rows only, from the AST, for a TS/JS-family or ArkTS file the
+/// generic extractor extracts (resolution-binding-model-plan.md §2.4). The
+/// pre-walks are iterative, so this never defers.
+#[napi]
+pub fn bindings_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
+    let out = tsjs::bindings_only(&file_path, &content, &language).map_err(Error::from_reason)?;
+    Ok(ExtractBuffers {
+        meta: out.meta.into(),
+        nodes: out.nodes.into(),
+        edges: out.edges.into(),
+        refs: out.refs.into(),
+        bindings: out.bindings.into(),
+        arena: out.arena.into(),
+    })
+}
+
 #[napi]
 pub fn extract_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
     // The whole walk runs under the stack guard (stack.rs, #1581): a file
