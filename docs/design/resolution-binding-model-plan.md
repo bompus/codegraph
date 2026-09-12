@@ -171,6 +171,8 @@ Tests: `__tests__/bindings-tsjs.test.ts` (every new row form) and `__tests__/bin
 
 **Follow-up, kind eligibility for bare calls (same day).** A receiver-less JS/TS call may only resolve to a function, class, component, constant or variable (`BARE_CALL_TARGET_KINDS`, `name-matcher.ts`). The rule rejects the candidate exact-match would commit to; it does not filter the candidate set. The filtering form was tried first and manufactured 192 edges on vitest (dropping the property candidates from a crowd left a lone wrong survivor: every dynamic `import(...)` landed on a function named `import`, `trace()` on a Vue constant); the rejection form lost 102 property-target edges and gained 2 fuzzy ones. Corpus totals after: vite 28,826 → 28,688, vitest 74,987 → 74,887, svelte 70,603 → 70,589, all cases held. Goldens: the `a()` → Dart `enum_member` edge and an `expensive()` → Swift `field` edge are gone.
 
+**Windows validation (2026-09-12).** `fork/consolidated` at `91902770` (PRs #29, #30, #31) on the Windows-local checkout (`C:\Users\bompus\src\codegraph-win`, Node 26.8.1, cargo 1.98.1, MSVC): `npm ci`, `bash scripts/build-kernel.sh` (53 s, 76 MB `win32-x64` prebuild, no source change needed), `npm run build`; the 14 binding-model and kernel suites pass (426 tests, golden dumps byte-identical), and the full suite passes: 268 files, 4,736 tests, 7 files skipped by the POSIX-only gates.
+
 ### Phase 3: other languages
 
 Per language, in order of resolver regex weight: Python, Go, Java/Kotlin, C/C++ (`storage='static'`), Rust (visibility), PHP, Ruby, C#, Swift. Each phase deletes that language's import-extractor regex and its rows in the receiver inference table.
