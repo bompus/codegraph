@@ -203,6 +203,11 @@ languages and a persisted `unknown-receiver` reason remain open. Go/Kotlin
 range/lambda inference and other established language-specific paths are not
 replaced by the TS/JS gate. Extraction version 32 requires re-indexing.
 
+The [validation report](../benchmarks/receiver-bindings-2026-09-12.md) records
+the scored edge changes, platform checks and balanced 36-run agent comparison.
+The precision gates pass; the agent comparison does not establish a general
+speedup and the broader zero-read sufficiency target remains unmet.
+
 ### Phase 3: other languages
 
 Per language, in order of resolver regex weight: Python, Go, Java/Kotlin, C/C++ (`storage='static'`), Rust (visibility), PHP, Ruby, C#, Swift. Each phase deletes that language's import-extractor regex and its rows in the receiver inference table.

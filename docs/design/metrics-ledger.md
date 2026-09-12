@@ -129,6 +129,7 @@ The "failed refs" column above is the coverage counter: references the extractor
 
 ## 6. Agent measurements and remaining gaps
 
-- The post-parser-swap [agent baseline](../benchmarks/binding-model-agent-baseline-2026-09-12.md) now has 36 runs against 1.6.0 and frozen `86fc9dbc`. Flask and Gin used fewer tools; Vite did not show a time improvement and still required reads. Phase 2b before/after measurements remain separate.
+- The post-parser-swap [agent baseline](../benchmarks/binding-model-agent-baseline-2026-09-12.md) has 36 runs against 1.6.0 and frozen `86fc9dbc`. Flask and Gin used fewer tools; Vite did not show a time improvement and still required reads.
+- The [receiver first-cut comparison](../benchmarks/receiver-bindings-2026-09-12.md) has a separate balanced 36 runs against `86fc9dbc` and `d3c330db`. Precision cases hold on four corpora. Agent time/read outcomes are mixed, with no general speedup or zero-read claim; Flask's deterministic outputs are byte-identical despite different agent read counts. Other-language receiver gating and a persisted `unknown-receiver` reason remain open.
 - macOS: no run of the native-only kernel on macOS at all. Validation remains outstanding and needs a separate build/test run; see the fork release policy in [AGENTS.md](../../AGENTS.md#releases).
-- A truth set for same-name ties (Go `BindBody`, C++ `begin`): the changes are described and sampled, not scored.
+- Go `BindBody` now has scored present/absent controls and all seven corrected endpoints were reviewed. The C++ `begin` same-name ties still need a scored truth set.

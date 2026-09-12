@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-09-12T17:48:33.301Z",
+  "corpus": "gin",
+  "repo": "https://github.com/gin-gonic/gin.git",
+  "commit": "dcaa429",
+  "codegraphSha": "d3c330db",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 3441,
+    "exact-match": 2888,
+    "instance-method": 1656,
+    "framework": 250,
+    "qualified-name": 133,
+    "file-path": 104,
+    "import": 58,
+    "function-ref": 14
+  },
+  "edges": 8544,
+  "results": [
+    {
+      "caseId": "gin-composite-receiver-json-control",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:e6a071cb9b3ce2eeba6fb82f941cef3d",
+          "to": "method:3ab506d0531aac0489e0c51fcc2128aa",
+          "resolvedBy": "qualified-name"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "gin-composite-receiver-not-bson",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 Measured 2026-09-12: npm platform package 1.6.0 versus a frozen build of `86fc9dbc`, before Phase 2b receiver changes. These are whole-build comparisons, including the runtime and MCP instructions; they do not isolate the cost or benefit of binding rows.
 
-Three pinned repositories (Flask, Gin and Vite), three flow questions each, two repetitions per question and build: 36 runs. Each build used its own CLI-created index; test files were excluded by that CLI policy. The first repetition ran old then head, the second head then old. Daemons were prewarmed. All arms used Sonnet with high effort through `run-all.sh`, with the CLI-blocking hook enabled.
+Three pinned repositories (Flask, Gin and Vite), three flow questions each, two repetitions per question and build: 36 runs. Each build used its own CLI-created index with default filtering; this is not a test-free index (Flask includes 41 files under `tests/`, including fixtures). The first repetition ran old then head, the second head then old. Daemons were prewarmed. All arms used Sonnet with high effort through `run-all.sh`, with the CLI-blocking hook enabled.
 
 All 36 runs completed successfully, with no successful CodeGraph CLI bypass and no reported missing-tool race. Both builds exposed a connected MCP server. The agent used CodeGraph in every head run, but only three old runs; tool choice is part of this unsteered measurement.
 

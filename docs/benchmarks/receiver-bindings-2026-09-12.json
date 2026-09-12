@@ -1,0 +1,3390 @@
+{
+  "manifest": {
+    "before": "86fc9dbc",
+    "after": "d3c330db804c7a54a112c585690bf1379914cf51",
+    "model": "sonnet",
+    "effort": "high",
+    "runsPerQuestionPerBuild": 2,
+    "order": "before-after in repeat 1, after-before in repeat 2",
+    "nativeSha256": "005ed97ec71e2c6b798016971318d8c4035f7f3ca7ccd440c9376fe5d892b8c1"
+  },
+  "questions": {
+    "flask": [
+      "How does Flask dispatch_request select and invoke a view, including ensure_sync? Trace the actual call path with file and line references.",
+      "How does Flask full_dispatch_request process a request, handle exceptions, and finalize the response? Trace the actual call path with file and line references.",
+      "How does Flask url_for build a URL and handle URL build errors? Trace the actual call path with file and line references."
+    ],
+    "gin": [
+      "How does Engine ServeHTTP reach a registered handler through handleHTTPRequest and Context Next? Trace the actual call path with file and line references.",
+      "How does Context JSON reach the renderer and write the response? Trace the actual call path with file and line references.",
+      "How does Context ShouldBindJSON reach jsonBinding Bind and decodeJSON? Trace the actual call path with file and line references."
+    ],
+    "vite": [
+      "How does createServer resolve configuration and create the HTTP server through resolveHttpServer? Trace the actual call path with file and line references.",
+      "How does resolveConfig find, load, and merge a config file through loadConfigFromFile? Trace the actual call path with file and line references.",
+      "How does transformRequest load and transform a requested module through doTransform and loadAndTransform? Trace the actual call path with file and line references."
+    ]
+  },
+  "precision": [
+    {
+      "corpus": "vite",
+      "beforeEdges": 28730,
+      "afterEdges": 28174,
+      "lost": 677,
+      "gained": 121,
+      "lostByStrategy": {
+        "import": 101,
+        "instance-method": 574,
+        "exact-match": 2
+      },
+      "gainedByStrategy": {
+        "instance-method": 118,
+        "import": 3
+      },
+      "cases": {
+        "absentCases": 6,
+        "absentHeld": 6,
+        "presentCases": 2,
+        "presentHeld": 2,
+        "unjudgeable": 0
+      },
+      "samples": [
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "packages/create-vite/src/index.ts",
+            "sn": "init",
+            "tf": "packages/vite/src/client/overlay.ts",
+            "tn": "ErrorOverlay::text",
+            "kind": "calls",
+            "line": 473,
+            "col": 32,
+            "ref": "prompts.text",
+            "strategy": "instance-method"
+          },
+          "source": "  if (!targetDir) {\n    if (interactive) {\n      const projectName = await prompts.text({\n        message: 'Project name:',"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "packages/create-vite/src/index.ts",
+            "sn": "init",
+            "tf": "packages/vite/src/client/overlay.ts",
+            "tn": "ErrorOverlay::text",
+            "kind": "calls",
+            "line": 539,
+            "col": 38,
+            "ref": "prompts.text",
+            "strategy": "instance-method"
+          },
+          "source": "  if (!isValidPackageName(packageName)) {\n    if (interactive) {\n      const packageNameResult = await prompts.text({\n        message: 'Package name:',"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "packages/plugin-legacy/src/index.ts",
+            "sn": "buildPolyfillChunk",
+            "tf": "packages/vite/src/node/server/pluginContainer.ts",
+            "tn": "PluginContext::emitFile",
+            "kind": "calls",
+            "line": 1023,
+            "col": 2,
+            "ref": "ctx.emitFile",
+            "strategy": "instance-method"
+          },
+          "source": "\n  // add the chunk to the bundle\n  ctx.emitFile({\n    type: 'prebuilt-chunk',"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "packages/plugin-legacy/src/index.ts",
+            "sn": "buildPolyfillChunk",
+            "tf": "packages/vite/src/node/server/pluginContainer.ts",
+            "tn": "PluginContext::emitFile",
+            "kind": "calls",
+            "line": 1042,
+            "col": 6,
+            "ref": "ctx.emitFile",
+            "strategy": "instance-method"
+          },
+          "source": "    ) as Rollup.OutputAsset | undefined\n    if (polyfillChunkMapAsset) {\n      ctx.emitFile({\n        type: 'asset',"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/plugin-legacy/src/index.ts",
+            "sn": "viteLegacyPlugin",
+            "tf": "packages/vite/src/node/logger.ts",
+            "tn": "Logger::warn",
+            "kind": "calls",
+            "line": 322,
+            "col": 8,
+            "ref": "config.logger.warn",
+            "strategy": "instance-method"
+          },
+          "source": "    configResolved(config) {\n      if (overriddenBuildTarget) {\n        config.logger.warn(\n          colors.yellow("
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/plugin-legacy/src/index.ts",
+            "sn": "viteLegacyPlugin",
+            "tf": "packages/vite/src/node/logger.ts",
+            "tn": "Logger::warn",
+            "kind": "calls",
+            "line": 329,
+            "col": 8,
+            "ref": "config.logger.warn",
+            "strategy": "instance-method"
+          },
+          "source": "      }\n      if (overriddenBuildTargetOnlyModern) {\n        config.logger.warn(\n          colors.yellow("
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/plugin-legacy/src/index.ts",
+            "sn": "viteLegacyPlugin",
+            "tf": "packages/vite/src/node/logger.ts",
+            "tn": "Logger::warn",
+            "kind": "calls",
+            "line": 336,
+            "col": 8,
+            "ref": "config.logger.warn",
+            "strategy": "instance-method"
+          },
+          "source": "      }\n      if (overriddenDefaultModernTargets) {\n        config.logger.warn(\n          colors.yellow("
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/plugin-legacy/src/index.ts",
+            "sn": "viteLegacyPlugin",
+            "tf": "packages/vite/src/node/logger.ts",
+            "tn": "Logger::warn",
+            "kind": "calls",
+            "line": 343,
+            "col": 8,
+            "ref": "config.logger.warn",
+            "strategy": "instance-method"
+          },
+          "source": "      }\n      if (config.isWorker) {\n        config.logger.warn(\n          colors.yellow("
+        }
+      ]
+    },
+    {
+      "corpus": "vitest",
+      "beforeEdges": 74878,
+      "afterEdges": 70574,
+      "lost": 4477,
+      "gained": 173,
+      "lostByStrategy": {
+        "instance-method": 1864,
+        "import": 2603,
+        "exact-match": 5,
+        "qualified-name": 5
+      },
+      "gainedByStrategy": {
+        "import": 86,
+        "instance-method": 87
+      },
+      "cases": {
+        "absentCases": 1,
+        "absentHeld": 1,
+        "presentCases": 0,
+        "presentHeld": 0,
+        "unjudgeable": 0
+      },
+      "samples": [
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "docs/.vitepress/config.ts",
+            "sn": "docs/.vitepress/config.ts",
+            "tf": "docs/.vitepress/contributors.ts",
+            "tn": "teamMembers",
+            "kind": "calls",
+            "line": 55,
+            "col": 45,
+            "ref": "teamMembers.map",
+            "strategy": "import"
+          },
+          "source": "      ['link', { rel: 'icon', href: '/favicon.ico', sizes: '48x48' }],\n      ['link', { rel: 'icon', href: '/logo-without-border.svg', type: 'image/svg+xml' }],\n      ['meta', { name: 'author', content: `${teamMembers.map(c => c.name).join(', ')} and ${vitestName} contributors` }],\n      ['meta', { name: 'keywords', content: 'vitest, vite, test, coverage, snapshot, react, vue, preact, svelte, solid, lit, marko, ruby, cypress, puppeteer, jsdom, happy-dom, test-runner, jest, typescript, esm, node' }],"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "docs/.vitepress/scripts/cli-generator.ts",
+            "sn": "resolveCommand",
+            "tf": "packages/mocker/src/registry.ts",
+            "tn": "MockerRegistry::has",
+            "kind": "calls",
+            "line": 57,
+            "col": 17,
+            "ref": "skipCli.has",
+            "strategy": "instance-method"
+          },
+          "source": "\nfunction resolveCommand(name: string, config: CLIOption<any> | null): any {\n  if (!config || skipCli.has(name)) {\n    return null"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "examples/basic/test/basic.test.ts",
+            "sn": "examples/basic/test/basic.test.ts",
+            "tf": "packages/vitest/src/integrations/chai/index.ts",
+            "tn": "assert",
+            "kind": "calls",
+            "line": 26,
+            "col": 2,
+            "ref": "assert.deepEqual",
+            "strategy": "import"
+          },
+          "source": "\n  expect(output).eq('{\"foo\":\"hello\",\"bar\":\"world\"}')\n  assert.deepEqual(JSON.parse(output), input, 'matches original')\n})"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "examples/basic/test/suite.test.ts",
+            "sn": "examples/basic/test/suite.test.ts",
+            "tf": "packages/vitest/src/integrations/chai/index.ts",
+            "tn": "assert",
+            "kind": "calls",
+            "line": 5,
+            "col": 4,
+            "ref": "assert.equal",
+            "strategy": "import"
+          },
+          "source": "describe('suite name', () => {\n  it('foo', () => {\n    assert.equal(Math.sqrt(4), 2)\n  })"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/browser/src/client/tester/context.ts",
+            "sn": "convertToLocator",
+            "tf": "packages/browser/context.d.ts",
+            "tn": "BrowserPage::elementLocator",
+            "kind": "calls",
+            "line": 464,
+            "col": 11,
+            "ref": "page.elementLocator",
+            "strategy": "instance-method"
+          },
+          "source": "function convertToLocator(element: Element | Locator): Locator {\n  if (element instanceof Element) {\n    return page.elementLocator(element)\n  }"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/browser/src/client/tester/context.ts",
+            "sn": "createUserEvent",
+            "tf": "packages/browser/context.d.ts",
+            "tn": "Locator::dropTo",
+            "kind": "calls",
+            "line": 104,
+            "col": 13,
+            "ref": "sourceLocator.dropTo",
+            "strategy": "instance-method"
+          },
+          "source": "      const sourceLocator = convertToLocator(source)\n      const targetLocator = convertToLocator(target)\n      return sourceLocator.dropTo(targetLocator, options)\n    },"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/browser/src/client/tester/context.ts",
+            "sn": "getElementLocatorSelectors",
+            "tf": "packages/browser/context.d.ts",
+            "tn": "BrowserPage::elementLocator",
+            "kind": "calls",
+            "line": 500,
+            "col": 18,
+            "ref": "page.elementLocator",
+            "strategy": "instance-method"
+          },
+          "source": "\nfunction getElementLocatorSelectors(element: Element): LocatorSelectors {\n  const locator = page.elementLocator(element)\n  return {"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/browser/src/node/index.ts",
+            "sn": "resolveBrowserOptimizeDeps::isPackageExists",
+            "tf": "packages/vitest/src/node/packageInstaller.ts",
+            "tn": "VitestPackageInstaller::isPackageExists",
+            "kind": "calls",
+            "line": 526,
+            "col": 11,
+            "ref": "harness.packageInstaller.isPackageExists",
+            "strategy": "instance-method"
+          },
+          "source": "\n  const isPackageExists = (pkg: string) => {\n    return harness.packageInstaller.isPackageExists(pkg, { paths: [root] })\n  }"
+        }
+      ]
+    },
+    {
+      "corpus": "svelte",
+      "beforeEdges": 70587,
+      "afterEdges": 69610,
+      "lost": 1202,
+      "gained": 225,
+      "lostByStrategy": {
+        "instance-method": 1079,
+        "import": 113,
+        "exact-match": 10
+      },
+      "gainedByStrategy": {
+        "instance-method": 225
+      },
+      "cases": {
+        "absentCases": 1,
+        "absentHeld": 1,
+        "presentCases": 0,
+        "presentHeld": 0,
+        "unjudgeable": 0
+      },
+      "samples": [
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "benchmarking/analyze-compiler-profile.js",
+            "sn": "analyze_compiler_profiles::get_frame_index",
+            "tf": "packages/svelte/src/internal/server/renderer.js",
+            "tn": "Renderer::push",
+            "kind": "calls",
+            "line": 168,
+            "col": 2,
+            "ref": "frames.push",
+            "strategy": "instance-method"
+          },
+          "source": "\t\tconst index = frames.length;\n\t\tconst location = frame.url ? ` (${frame.url}:${frame.line})` : '';\n\t\tframes.push({\n\t\t\tname: `${frame.function_name}${location}`,"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "benchmarking/analyze-compiler-profile.js",
+            "sn": "get_stack",
+            "tf": "packages/svelte/src/internal/server/renderer.js",
+            "tn": "Renderer::push",
+            "kind": "calls",
+            "line": 195,
+            "col": 2,
+            "ref": "stack.push",
+            "strategy": "instance-method"
+          },
+          "source": "\n\t\tconst call_frame = node.callFrame || {};\n\t\tstack.push({\n\t\t\tfunction_name: call_frame.functionName || '(anonymous)',"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "benchmarking/analyze-compiler-profile.js",
+            "sn": "render_markdown",
+            "tf": "packages/svelte/src/internal/server/renderer.js",
+            "tn": "Renderer::push",
+            "kind": "calls",
+            "line": 298,
+            "col": 2,
+            "ref": "lines.push",
+            "strategy": "instance-method"
+          },
+          "source": "\n\tfor (const [index, row] of summary.hotspots.slice(0, 50).entries()) {\n\t\tlines.push(render_row(index, row));\n\t}"
+        },
+        {
+          "change": "lost",
+          "edge": {
+            "sf": "benchmarking/analyze-compiler-profile.js",
+            "sn": "render_markdown",
+            "tf": "packages/svelte/src/internal/server/renderer.js",
+            "tn": "Renderer::push",
+            "kind": "calls",
+            "line": 301,
+            "col": 1,
+            "ref": "lines.push",
+            "strategy": "instance-method"
+          },
+          "source": "\t}\n\n\tlines.push(\n\t\t'',"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/svelte/src/internal/client/dom/blocks/if.js",
+            "sn": "if_block::update_branch",
+            "tf": "packages/svelte/src/internal/client/dom/blocks/branches.js",
+            "tn": "BranchManager::ensure",
+            "kind": "calls",
+            "line": 50,
+            "col": 4,
+            "ref": "branches.ensure",
+            "strategy": "instance-method"
+          },
+          "source": "\n\t\t\t\tset_hydrating(false);\n\t\t\t\tbranches.ensure(key, fn);\n\t\t\t\tset_hydrating(true);"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/svelte/src/internal/client/dom/blocks/if.js",
+            "sn": "if_block::update_branch",
+            "tf": "packages/svelte/src/internal/client/dom/blocks/branches.js",
+            "tn": "BranchManager::ensure",
+            "kind": "calls",
+            "line": 57,
+            "col": 2,
+            "ref": "branches.ensure",
+            "strategy": "instance-method"
+          },
+          "source": "\t\t}\n\n\t\tbranches.ensure(key, fn);\n\t}"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/svelte/src/internal/server/hydratable.test.ts",
+            "sn": "component",
+            "tf": "packages/svelte/src/internal/server/renderer.js",
+            "tn": "Renderer::child",
+            "kind": "calls",
+            "line": 18,
+            "col": 2,
+            "ref": "renderer.child",
+            "strategy": "instance-method"
+          },
+          "source": "\tconst component = (renderer: Renderer) => {\n\t\thydratable('key', () => Promise.resolve(`$'`));\n\t\trenderer.child(async () => {\n\t\t\tawait Promise.resolve();"
+        },
+        {
+          "change": "gained",
+          "edge": {
+            "sf": "packages/svelte/src/internal/server/hydratable.test.ts",
+            "sn": "component",
+            "tf": "packages/svelte/src/internal/server/renderer.js",
+            "tn": "Renderer::push",
+            "kind": "calls",
+            "line": 21,
+            "col": 2,
+            "ref": "renderer.push",
+            "strategy": "instance-method"
+          },
+          "source": "\t\t\tawait Promise.resolve();\n\t\t});\n\t\trenderer.push('ok');\n\t};"
+        }
+      ]
+    },
+    {
+      "corpus": "gin",
+      "beforeEdges": 8544,
+      "afterEdges": 8544,
+      "lost": 7,
+      "gained": 7,
+      "lostByStrategy": {
+        "exact-match": 7
+      },
+      "gainedByStrategy": {
+        "qualified-name": 7
+      },
+      "cases": {
+        "absentCases": 1,
+        "absentHeld": 1,
+        "presentCases": 1,
+        "presentHeld": 1,
+        "unjudgeable": 0
+      },
+      "samples": {
+        "lost": [
+          {
+            "sf": "binding/json_test.go",
+            "sn": "TestJSONBindingBindBodyMap",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 33,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          },
+          {
+            "sf": "binding/toml_test.go",
+            "sn": "TestTOMLBindingBindBody",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 19,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          },
+          {
+            "sf": "binding/msgpack_test.go",
+            "sn": "TestMsgpackBindingBindBody",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 23,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          },
+          {
+            "sf": "binding/json_test.go",
+            "sn": "TestJSONBindingBindBody",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 26,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          },
+          {
+            "sf": "binding/json_test.go",
+            "sn": "TestCustomJsonCodec",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 51,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          },
+          {
+            "sf": "binding/xml_test.go",
+            "sn": "TestXMLBindingBindBody",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 22,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          },
+          {
+            "sf": "binding/yaml_test.go",
+            "sn": "TestYAMLBindingBindBody",
+            "tf": "binding/bson.go",
+            "tn": "bsonBinding::BindBody",
+            "kind": "calls",
+            "line": 18,
+            "col": 8,
+            "ref": "BindBody",
+            "strategy": "exact-match"
+          }
+        ],
+        "gained": [
+          {
+            "sf": "binding/json_test.go",
+            "sn": "TestJSONBindingBindBody",
+            "tf": "binding/json.go",
+            "tn": "jsonBinding::BindBody",
+            "kind": "calls",
+            "line": 26,
+            "col": 8,
+            "ref": "jsonBinding.BindBody",
+            "strategy": "qualified-name"
+          },
+          {
+            "sf": "binding/msgpack_test.go",
+            "sn": "TestMsgpackBindingBindBody",
+            "tf": "binding/msgpack.go",
+            "tn": "msgpackBinding::BindBody",
+            "kind": "calls",
+            "line": 23,
+            "col": 8,
+            "ref": "msgpackBinding.BindBody",
+            "strategy": "qualified-name"
+          },
+          {
+            "sf": "binding/yaml_test.go",
+            "sn": "TestYAMLBindingBindBody",
+            "tf": "binding/yaml.go",
+            "tn": "yamlBinding::BindBody",
+            "kind": "calls",
+            "line": 18,
+            "col": 8,
+            "ref": "yamlBinding.BindBody",
+            "strategy": "qualified-name"
+          },
+          {
+            "sf": "binding/json_test.go",
+            "sn": "TestCustomJsonCodec",
+            "tf": "binding/json.go",
+            "tn": "jsonBinding::BindBody",
+            "kind": "calls",
+            "line": 51,
+            "col": 8,
+            "ref": "jsonBinding.BindBody",
+            "strategy": "qualified-name"
+          },
+          {
+            "sf": "binding/toml_test.go",
+            "sn": "TestTOMLBindingBindBody",
+            "tf": "binding/toml.go",
+            "tn": "tomlBinding::BindBody",
+            "kind": "calls",
+            "line": 19,
+            "col": 8,
+            "ref": "tomlBinding.BindBody",
+            "strategy": "qualified-name"
+          },
+          {
+            "sf": "binding/xml_test.go",
+            "sn": "TestXMLBindingBindBody",
+            "tf": "binding/xml.go",
+            "tn": "xmlBinding::BindBody",
+            "kind": "calls",
+            "line": 22,
+            "col": 8,
+            "ref": "xmlBinding.BindBody",
+            "strategy": "qualified-name"
+          },
+          {
+            "sf": "binding/json_test.go",
+            "sn": "TestJSONBindingBindBodyMap",
+            "tf": "binding/json.go",
+            "tn": "jsonBinding::BindBody",
+            "kind": "calls",
+            "line": 33,
+            "col": 8,
+            "ref": "jsonBinding.BindBody",
+            "strategy": "qualified-name"
+          }
+        ]
+      }
+    }
+  ],
+  "graphs": [
+    {
+      "corpus": "flask",
+      "arms": {
+        "before": {
+          "nodes": {
+            "count": 2727,
+            "sha256": "1ccf918ff446252ec70c854e83ef8a4b03a4bd7a62cdbc63073ff56c476ec0b0"
+          },
+          "edges": {
+            "count": 5292,
+            "sha256": "0842f79408d74231dab90ddec89eeeab227062d69cda2fefbfb8cbcfd239b974"
+          }
+        },
+        "after": {
+          "nodes": {
+            "count": 2727,
+            "sha256": "1ccf918ff446252ec70c854e83ef8a4b03a4bd7a62cdbc63073ff56c476ec0b0"
+          },
+          "edges": {
+            "count": 5292,
+            "sha256": "0842f79408d74231dab90ddec89eeeab227062d69cda2fefbfb8cbcfd239b974"
+          }
+        }
+      }
+    },
+    {
+      "corpus": "gin",
+      "arms": {
+        "before": {
+          "nodes": {
+            "count": 2958,
+            "sha256": "d61a5dbe1bf86815c3be2e21ea2f0f7287ff2c2cad5bd4301ee53e8216efe430"
+          },
+          "edges": {
+            "count": 8544,
+            "sha256": "b801a35e8725af6f9aa52ae7c084ae0ad576506fb20911367c1ef17aa3aa3e94"
+          }
+        },
+        "after": {
+          "nodes": {
+            "count": 2958,
+            "sha256": "d61a5dbe1bf86815c3be2e21ea2f0f7287ff2c2cad5bd4301ee53e8216efe430"
+          },
+          "edges": {
+            "count": 8544,
+            "sha256": "1059234a5e03c697872ba98a5dbda9bc70c67ede6f09856a79ba8b343a0100be"
+          }
+        }
+      }
+    },
+    {
+      "corpus": "vite",
+      "arms": {
+        "before": {
+          "nodes": {
+            "count": 13799,
+            "sha256": "4b91aa1b5cebafe725226690809b8b87c8451857186a4889627f612956e6ef4b"
+          },
+          "edges": {
+            "count": 28729,
+            "sha256": "214700745221686c130e5b090150b46ca2edc008bd817ae33bf85251bec4afb9"
+          }
+        },
+        "after": {
+          "nodes": {
+            "count": 13799,
+            "sha256": "4b91aa1b5cebafe725226690809b8b87c8451857186a4889627f612956e6ef4b"
+          },
+          "edges": {
+            "count": 28173,
+            "sha256": "7ff0e01bc73af15164fd9d341c30d710086cfe1832f3545ef09095e2eaf0c5e3"
+          }
+        }
+      }
+    }
+  ],
+  "probes": [
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "query": "Flask dispatch_request ensure_sync",
+      "ms": 61.56757400000001,
+      "chars": 16213,
+      "isError": false,
+      "sha256": "2940d29e0732f7c49c6b51c513a2a49dcae17e57a7344b1ba7f806d282f4b30f"
+    },
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "query": "Flask full_dispatch_request handle_user_exception finalize_request",
+      "ms": 35.782533,
+      "chars": 17232,
+      "isError": false,
+      "sha256": "2faccd6cf4963db1557b3abc6ceca1cac4d2c7fa334167d1e69ded49aec8c949"
+    },
+    {
+      "corpus": "flask",
+      "arm": "before",
+      "query": "Flask url_for handle_url_build_error",
+      "ms": 38.740914000000004,
+      "chars": 17894,
+      "isError": false,
+      "sha256": "eb40b977689264d51036f62b8791cc32352cc3d5cd191268d634db92c639bd44"
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "query": "Flask dispatch_request ensure_sync",
+      "ms": 50.955277999999964,
+      "chars": 16213,
+      "isError": false,
+      "sha256": "2940d29e0732f7c49c6b51c513a2a49dcae17e57a7344b1ba7f806d282f4b30f"
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "query": "Flask full_dispatch_request handle_user_exception finalize_request",
+      "ms": 39.60583799999995,
+      "chars": 17232,
+      "isError": false,
+      "sha256": "2faccd6cf4963db1557b3abc6ceca1cac4d2c7fa334167d1e69ded49aec8c949"
+    },
+    {
+      "corpus": "flask",
+      "arm": "after",
+      "query": "Flask url_for handle_url_build_error",
+      "ms": 36.40187700000001,
+      "chars": 17894,
+      "isError": false,
+      "sha256": "eb40b977689264d51036f62b8791cc32352cc3d5cd191268d634db92c639bd44"
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "Engine ServeHTTP handleHTTPRequest Context Next",
+      "ms": 50.19169700000003,
+      "chars": 17040,
+      "isError": false,
+      "sha256": "3f4d85f11f18cb0709a58a3417284d4a27c2aa0e8addb29f3229f77a5fc20419"
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "Context JSON Render WriteJSON",
+      "ms": 40.692091000000005,
+      "chars": 12399,
+      "isError": false,
+      "sha256": "0f5199d4d50fd3d5571b8cf5495ad75411743640a3035a89472daeea79b95ede"
+    },
+    {
+      "corpus": "gin",
+      "arm": "before",
+      "query": "Context ShouldBindJSON ShouldBindWith Bind decodeJSON",
+      "ms": 42.34209200000009,
+      "chars": 15371,
+      "isError": false,
+      "sha256": "363aeb5785b07be7b81297aae1455094be890cea2a77c4f86d9af042798f2427"
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "Engine ServeHTTP handleHTTPRequest Context Next",
+      "ms": 49.405235999999945,
+      "chars": 17040,
+      "isError": false,
+      "sha256": "3f4d85f11f18cb0709a58a3417284d4a27c2aa0e8addb29f3229f77a5fc20419"
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "Context JSON Render WriteJSON",
+      "ms": 41.79946000000007,
+      "chars": 12399,
+      "isError": false,
+      "sha256": "0f5199d4d50fd3d5571b8cf5495ad75411743640a3035a89472daeea79b95ede"
+    },
+    {
+      "corpus": "gin",
+      "arm": "after",
+      "query": "Context ShouldBindJSON ShouldBindWith Bind decodeJSON",
+      "ms": 49.75035100000002,
+      "chars": 15395,
+      "isError": false,
+      "sha256": "b31741a962c7064d3b3f5a1aad945f3bbcd2e7aae90d8b31e2bb523794895974"
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "createServer _createServer resolveConfig resolveHttpServer",
+      "ms": 107.23124999999993,
+      "chars": 18727,
+      "isError": false,
+      "sha256": "485879e5ef8d7270e817c9079945ad7af8c4419f54f2f5f5f429cf0e5975f31e"
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "resolveConfig loadConfigFromFile mergeConfig",
+      "ms": 63.26383699999997,
+      "chars": 24971,
+      "isError": false,
+      "sha256": "01b5371e03ea4823dd199a8e8ffd63bd2d8481b3c8f7d7f83e9ddbaed70abf56"
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "transformRequest doTransform loadAndTransform",
+      "ms": 66.91317700000002,
+      "chars": 24986,
+      "isError": false,
+      "sha256": "f75c73ae69629c609b8da53b46750d9f1f07f80087fa246f220dcb8a6fdc1d02"
+    },
+    {
+      "corpus": "vite",
+      "arm": "before",
+      "query": "runBenchmark createServerModuleRunner ModuleRunner.import",
+      "ms": 113.157148,
+      "chars": 24950,
+      "isError": false,
+      "sha256": "a07628a437e6519d40f3cf224dff3fa944b45d2c4e168f99f55daf26af5b113e"
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "createServer _createServer resolveConfig resolveHttpServer",
+      "ms": 100.78823499999999,
+      "chars": 18727,
+      "isError": false,
+      "sha256": "485879e5ef8d7270e817c9079945ad7af8c4419f54f2f5f5f429cf0e5975f31e"
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "resolveConfig loadConfigFromFile mergeConfig",
+      "ms": 60.62423600000011,
+      "chars": 24951,
+      "isError": false,
+      "sha256": "b961296c958b3a69d821d810afd195b11a494071def5cab254a08aec4f37100e"
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "transformRequest doTransform loadAndTransform",
+      "ms": 68.0043740000001,
+      "chars": 24991,
+      "isError": false,
+      "sha256": "80c7e93d7bf314c028c3720d9af9b307874847ab43274aba390ba002579fc1a7"
+    },
+    {
+      "corpus": "vite",
+      "arm": "after",
+      "query": "runBenchmark createServerModuleRunner ModuleRunner.import",
+      "ms": 118.22144500000013,
+      "chars": 24970,
+      "isError": false,
+      "sha256": "11821a4194ccf72460f2ed013a536098dd8926d44912d534c2508d823a9965e8"
+    }
+  ],
+  "runs": [
+    {
+      "name": "flask-q1-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 17.938,
+      "cost": 0.08937,
+      "processed": 64441,
+      "occupancy": {
+        "ctxFinal": 35790,
+        "ctxBase": 28647,
+        "windowTokens": 200000,
+        "charsPerToken": 2.629987400251995,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 7143,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 7143,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 18786,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 17108,
+        "used": 15158,
+        "efficiency": 0.8860182370820668,
+        "filesReturned": 4,
+        "filesUsed": 3
+      }
+    },
+    {
+      "name": "flask-q1-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 21.702,
+      "cost": 0.11904520000000002,
+      "processed": 106302,
+      "occupancy": {
+        "ctxFinal": 42019,
+        "ctxBase": 28647,
+        "windowTokens": 200000,
+        "charsPerToken": 2.5616960813640444,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.028786774519934215,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 13372,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 13372,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 34255,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 31432,
+        "used": 21784,
+        "efficiency": 0.6930516670908629,
+        "filesReturned": 6,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "flask-q1-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 18.359,
+      "cost": 0.060297,
+      "processed": 64283,
+      "occupancy": {
+        "ctxFinal": 35625,
+        "ctxBase": 28647,
+        "windowTokens": 200000,
+        "charsPerToken": 2.6365720836916022,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 6978,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 6978,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 18398,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 16887,
+        "used": 13196,
+        "efficiency": 0.7814295019837745,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "flask-q1-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 13.81,
+      "cost": 0.05664500000000001,
+      "processed": 64423,
+      "occupancy": {
+        "ctxFinal": 35767,
+        "ctxBase": 28647,
+        "windowTokens": 200000,
+        "charsPerToken": 2.638483146067416,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 7120,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 7120,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 18786,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 17108,
+        "used": 13417,
+        "efficiency": 0.7842529810614917,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "flask-q2-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 5,
+      "reads": 4,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 33.637,
+      "cost": 0.1267382,
+      "processed": 141455,
+      "occupancy": {
+        "ctxFinal": 39960,
+        "ctxBase": 28651,
+        "windowTokens": 200000,
+        "charsPerToken": 2.5479706428508266,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.029215642637638487,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 5566,
+          "read": 5743,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 5566,
+          "read": 5743,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 14182,
+          "read": 14633,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 4,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 5743,
+        "contributedFileAccess": 5743,
+        "charsFileAccess": 14633
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 12673,
+        "used": 12673,
+        "efficiency": 1,
+        "filesReturned": 2,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "flask-q2-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 33.913,
+      "cost": 0.1272922,
+      "processed": 106255,
+      "occupancy": {
+        "ctxFinal": 42146,
+        "ctxBase": 28651,
+        "windowTokens": 200000,
+        "charsPerToken": 2.6220822526861802,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0011267849561185077,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 13495,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 13495,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 35385,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 31996,
+        "used": 30584,
+        "efficiency": 0.9558694836854607,
+        "filesReturned": 6,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "flask-q2-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 4,
+      "reads": 3,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 35.491,
+      "cost": 0.0937304,
+      "processed": 171903,
+      "occupancy": {
+        "ctxFinal": 37087,
+        "ctxBase": 28651,
+        "windowTokens": 200000,
+        "charsPerToken": 2.4438122332859176,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.08072030627930463,
+        "evicted": 452,
+        "residual": {
+          "codegraph": 5529,
+          "read": 2455,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 5981,
+          "read": 2455,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 14617,
+          "read": 5999,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 3,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 2455,
+        "contributedFileAccess": 2455,
+        "charsFileAccess": 5999
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 12823,
+        "used": 9654,
+        "efficiency": 0.7528659440068627,
+        "filesReturned": 3,
+        "filesUsed": 1
+      }
+    },
+    {
+      "name": "flask-q2-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 39.254,
+      "cost": 0.13521819999999998,
+      "processed": 150962,
+      "occupancy": {
+        "ctxFinal": 47251,
+        "ctxBase": 28651,
+        "windowTokens": 200000,
+        "charsPerToken": 2.5983870967741933,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.007582597602912381,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 18600,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 18600,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 48330,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 43731,
+        "used": 43731,
+        "efficiency": 1,
+        "filesReturned": 5,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "flask-q3-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 2,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 19.52,
+      "cost": 0.1004834,
+      "processed": 100306,
+      "occupancy": {
+        "ctxFinal": 36765,
+        "ctxBase": 28641,
+        "windowTokens": 200000,
+        "charsPerToken": 2.550713934022649,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.04332585502069481,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 6520,
+          "read": 1604,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 6520,
+          "read": 1604,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 16630,
+          "read": 4092,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 2,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 1604,
+        "contributedFileAccess": 1604,
+        "charsFileAccess": 4092
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 15361,
+        "used": 7357,
+        "efficiency": 0.4789401731658095,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "flask-q3-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 21.718,
+      "cost": 0.1164492,
+      "processed": 104649,
+      "occupancy": {
+        "ctxFinal": 40968,
+        "ctxBase": 28641,
+        "windowTokens": 200000,
+        "charsPerToken": 2.5555285146426545,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.010802990736199327,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 12327,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 12327,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 31502,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 28768,
+        "used": 19483,
+        "efficiency": 0.6772455506117909,
+        "filesReturned": 6,
+        "filesUsed": 3
+      }
+    },
+    {
+      "name": "flask-q3-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 34.777,
+      "cost": 0.137296,
+      "processed": 156230,
+      "occupancy": {
+        "ctxFinal": 49791,
+        "ctxBase": 28641,
+        "windowTokens": 200000,
+        "charsPerToken": 2.5520567375886527,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.008344948667571586,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 21150,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 21150,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 53976,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 49552,
+        "used": 40258,
+        "efficiency": 0.8124394575395544,
+        "filesReturned": 9,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "flask-q3-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 4,
+      "reads": 3,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 18.174,
+      "cost": 0.0789154,
+      "processed": 137269,
+      "occupancy": {
+        "ctxFinal": 37022,
+        "ctxBase": 28641,
+        "windowTokens": 200000,
+        "charsPerToken": 2.541439205955335,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.04679833925263623,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 6544,
+          "read": 1603,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 6544,
+          "read": 1603,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 16630,
+          "read": 4073,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 3,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 1603,
+        "contributedFileAccess": 1603,
+        "charsFileAccess": 4073
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 15361,
+        "used": 7357,
+        "efficiency": 0.4789401731658095,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "gin-q1-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 14.515,
+      "cost": 0.0831226,
+      "processed": 64895,
+      "occupancy": {
+        "ctxFinal": 36237,
+        "ctxBase": 28655,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2474281192297547,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 7582,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 7582,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 17040,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 14777,
+        "used": 12894,
+        "efficiency": 0.8725722406442444,
+        "filesReturned": 4,
+        "filesUsed": 3
+      }
+    },
+    {
+      "name": "gin-q1-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 15.072,
+      "cost": 0.08269760000000001,
+      "processed": 64876,
+      "occupancy": {
+        "ctxFinal": 36217,
+        "ctxBase": 28655,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2533721237767788,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 7562,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 7562,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 17040,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 14777,
+        "used": 14777,
+        "efficiency": 1,
+        "filesReturned": 4,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "gin-q1-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 12.757,
+      "cost": 0.0526702,
+      "processed": 64874,
+      "occupancy": {
+        "ctxFinal": 36216,
+        "ctxBase": 28655,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2536701494511306,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 1.2028762091957786e-16,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 7561,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 7561,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 17040,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 14777,
+        "used": 14777,
+        "efficiency": 1,
+        "filesReturned": 4,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "gin-q1-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 14.675,
+      "cost": 0.0517662,
+      "processed": 64880,
+      "occupancy": {
+        "ctxFinal": 36195,
+        "ctxBase": 28655,
+        "windowTokens": 200000,
+        "charsPerToken": 2.259946949602122,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 7540,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 7540,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 17040,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 14777,
+        "used": 12894,
+        "efficiency": 0.8725722406442444,
+        "filesReturned": 4,
+        "filesUsed": 3
+      }
+    },
+    {
+      "name": "gin-q2-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 21.641,
+      "cost": 0.1415288,
+      "processed": 150004,
+      "occupancy": {
+        "ctxFinal": 45936,
+        "ctxBase": 28638,
+        "windowTokens": 200000,
+        "charsPerToken": 2.140536478205573,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.014302005400985706,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 17298,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 17298,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 37027,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 34103,
+        "used": 31823,
+        "efficiency": 0.9331437116969181,
+        "filesReturned": 7,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "gin-q2-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 20.411,
+      "cost": 0.11106640000000001,
+      "processed": 103187,
+      "occupancy": {
+        "ctxFinal": 40740,
+        "ctxBase": 28638,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1437778879524045,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.009548789481020307,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 11742,
+          "read": 360,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 11742,
+          "read": 360,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 25172,
+          "read": 772,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 360,
+        "contributedFileAccess": 360,
+        "charsFileAccess": 772
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 23222,
+        "used": 23222,
+        "efficiency": 1,
+        "filesReturned": 5,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "gin-q2-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 14.545,
+      "cost": 0.08609900000000001,
+      "processed": 103738,
+      "occupancy": {
+        "ctxFinal": 41315,
+        "ctxBase": 28638,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1830874812652836,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0013031244136816457,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 12191,
+          "read": 486,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 12191,
+          "read": 486,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 26613,
+          "read": 1062,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 486,
+        "contributedFileAccess": 486,
+        "charsFileAccess": 1062
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 24565,
+        "used": 24565,
+        "efficiency": 1,
+        "filesReturned": 5,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "gin-q2-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 17.914,
+      "cost": 0.1121202,
+      "processed": 146440,
+      "occupancy": {
+        "ctxFinal": 45708,
+        "ctxBase": 28638,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1350322202694785,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.01679829107618762,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 17070,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 17070,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 36445,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 33741,
+        "used": 32752,
+        "efficiency": 0.9706884798909339,
+        "filesReturned": 7,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "gin-q3-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 10.065,
+      "cost": 0.07278100000000001,
+      "processed": 63194,
+      "occupancy": {
+        "ctxFinal": 34536,
+        "ctxBase": 28652,
+        "windowTokens": 200000,
+        "charsPerToken": 2.177600271923861,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 5884,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 5884,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 12813,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 11448,
+        "used": 5334,
+        "efficiency": 0.4659329140461216,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "gin-q3-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 10.616,
+      "cost": 0.07292,
+      "processed": 63202,
+      "occupancy": {
+        "ctxFinal": 34547,
+        "ctxBase": 28652,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1735368956743004,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 5895,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 5895,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 12813,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 11448,
+        "used": 5334,
+        "efficiency": 0.4659329140461216,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "gin-q3-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 17.306,
+      "cost": 0.080268,
+      "processed": 104231,
+      "occupancy": {
+        "ctxFinal": 41046,
+        "ctxBase": 28652,
+        "windowTokens": 200000,
+        "charsPerToken": 2.19388413748588,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.005318813897669062,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 12394,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 12394,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 27191,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 25068,
+        "used": 18954,
+        "efficiency": 0.7561033987553853,
+        "filesReturned": 7,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "gin-q3-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 1,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 9.713,
+      "cost": 0.045438,
+      "processed": 63211,
+      "occupancy": {
+        "ctxFinal": 34547,
+        "ctxBase": 28652,
+        "windowTokens": 200000,
+        "charsPerToken": 2.1735368956743004,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 5895,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 5895,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 12813,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 11448,
+        "used": 5334,
+        "efficiency": 0.4659329140461216,
+        "filesReturned": 4,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "vite-q1-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 22.914,
+      "cost": 0.1966042,
+      "processed": 168987,
+      "occupancy": {
+        "ctxFinal": 57489,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.263488210818308,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0018319910061987475,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 28840,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 28840,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 65279,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 56195,
+        "used": 36267,
+        "efficiency": 0.6453777026425839,
+        "filesReturned": 12,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "vite-q1-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 36.305,
+      "cost": 0.154339,
+      "processed": 161680,
+      "occupancy": {
+        "ctxFinal": 48098,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.346968976269753,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.038808149477208835,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 18921,
+          "read": 156,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 18921,
+          "read": 156,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 44407,
+          "read": 365,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 156,
+        "contributedFileAccess": 156,
+        "charsFileAccess": 365
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 37962,
+        "used": 33582,
+        "efficiency": 0.884621463568832,
+        "filesReturned": 9,
+        "filesUsed": 5
+      }
+    },
+    {
+      "name": "vite-q1-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 22.283,
+      "cost": 0.1297848,
+      "processed": 160513,
+      "occupancy": {
+        "ctxFinal": 48882,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2496910987001435,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.011668288176527557,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 18275,
+          "read": 1958,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 18275,
+          "read": 1958,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 41113,
+          "read": 4405,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 1958,
+        "contributedFileAccess": 1958,
+        "charsFileAccess": 4405
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 35237,
+        "used": 27223,
+        "efficiency": 0.7725686068621052,
+        "filesReturned": 9,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "vite-q1-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 22.293,
+      "cost": 0.1463852,
+      "processed": 165915,
+      "occupancy": {
+        "ctxFinal": 53748,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2767839356149646,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0032796369367902845,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 25099,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 25099,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 57145,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 47855,
+        "used": 41704,
+        "efficiency": 0.8714658865322328,
+        "filesReturned": 7,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "vite-q2-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 26.414,
+      "cost": 0.1692508,
+      "processed": 161835,
+      "occupancy": {
+        "ctxFinal": 52020,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.216208121175816,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.002666703630388288,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 22496,
+          "read": 875,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 22496,
+          "read": 875,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49856,
+          "read": 1939,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 875,
+        "contributedFileAccess": 875,
+        "charsFileAccess": 1939
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 44637,
+        "used": 24298,
+        "efficiency": 0.5443466182763178,
+        "filesReturned": 10,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "vite-q2-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 2,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 26.29,
+      "cost": 0.1338046,
+      "processed": 153606,
+      "occupancy": {
+        "ctxFinal": 42888,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.132101973453192,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.05323802706635841,
+        "evicted": 591,
+        "residual": {
+          "codegraph": 11107,
+          "read": 2541,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 11698,
+          "read": 2541,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 24942,
+          "read": 5417,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 2,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 2541,
+        "contributedFileAccess": 2541,
+        "charsFileAccess": 5417
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 22117,
+        "used": 10232,
+        "efficiency": 0.46263055568115025,
+        "filesReturned": 8,
+        "filesUsed": 2
+      }
+    },
+    {
+      "name": "vite-q2-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 3,
+      "dur": 26.416,
+      "cost": 0.1880712,
+      "processed": 182042,
+      "occupancy": {
+        "ctxFinal": 61934,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.237223974763407,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.020469855604014056,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 33285,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 33285,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 74466,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 3,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 2,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 64889,
+        "used": 47027,
+        "efficiency": 0.7247299234076654,
+        "filesReturned": 9,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "vite-q2-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 24.911,
+      "cost": 0.1302342,
+      "processed": 119407,
+      "occupancy": {
+        "ctxFinal": 50902,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2394283916775266,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.00843638379419677,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 22253,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 22253,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49834,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 43414,
+        "used": 33117,
+        "efficiency": 0.7628184456626894,
+        "filesReturned": 7,
+        "filesUsed": 3
+      }
+    },
+    {
+      "name": "vite-q3-r1-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 3,
+      "reads": 2,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 19.986,
+      "cost": 0.1448348,
+      "processed": 156989,
+      "occupancy": {
+        "ctxFinal": 45587,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.2922422954303934,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.012385654732428338,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 10902,
+          "read": 6036,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 10902,
+          "read": 6036,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 24991,
+          "read": 13835,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 2,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 6036,
+        "contributedFileAccess": 6036,
+        "charsFileAccess": 13835
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 21492,
+        "used": 11157,
+        "efficiency": 0.5191233947515355,
+        "filesReturned": 7,
+        "filesUsed": 3
+      }
+    },
+    {
+      "name": "vite-q3-r1-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 0,
+      "grep": 0,
+      "bash": 0,
+      "cg": 2,
+      "dur": 24.9,
+      "cost": 0.15519400000000003,
+      "processed": 118005,
+      "occupancy": {
+        "ctxFinal": 49952,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.3368539642303903,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.005010892718382956,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 21303,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 21303,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 49782,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 2,
+          "read": 0,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 0,
+        "contributedFileAccess": 0,
+        "charsFileAccess": 0
+      },
+      "sufficiency": {
+        "explore_again": 1,
+        "read_returned": 0,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 1
+      },
+      "allocation": {
+        "envelope": 42633,
+        "used": 38618,
+        "efficiency": 0.9058241268500926,
+        "filesReturned": 7,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "vite-q3-r2-after",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 29.352,
+      "cost": 0.11047699999999999,
+      "processed": 113665,
+      "occupancy": {
+        "ctxFinal": 45487,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.307162370827889,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.0029528011669815667,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 10832,
+          "read": 6006,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 10832,
+          "read": 6006,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 24991,
+          "read": 13857,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 6006,
+        "contributedFileAccess": 6006,
+        "charsFileAccess": 13857
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 21492,
+        "used": 17787,
+        "efficiency": 0.8276102735901731,
+        "filesReturned": 7,
+        "filesUsed": 4
+      }
+    },
+    {
+      "name": "vite-q3-r2-before",
+      "ok": true,
+      "raced": false,
+      "cliContaminated": 0,
+      "tools": 2,
+      "reads": 1,
+      "grep": 0,
+      "bash": 0,
+      "cg": 1,
+      "dur": 24.997,
+      "cost": 0.1084312,
+      "processed": 113335,
+      "occupancy": {
+        "ctxFinal": 45301,
+        "ctxBase": 28649,
+        "windowTokens": 200000,
+        "charsPerToken": 2.332632716790776,
+        "calibrated": true,
+        "compactions": 0,
+        "dispersion": 0.001723951984017464,
+        "evicted": 0,
+        "residual": {
+          "codegraph": 10712,
+          "read": 5940,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "contributed": {
+          "codegraph": 10712,
+          "read": 5940,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "chars": {
+          "codegraph": 24986,
+          "read": 13857,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "results": {
+          "codegraph": 1,
+          "read": 1,
+          "search": 0,
+          "bash": 0,
+          "other": 0
+        },
+        "residualFileAccess": 5940,
+        "contributedFileAccess": 5940,
+        "charsFileAccess": 13857
+      },
+      "sufficiency": {
+        "explore_again": 0,
+        "read_returned": 1,
+        "read_missed": 0,
+        "search": 0,
+        "sufficient": 0
+      },
+      "allocation": {
+        "envelope": 21582,
+        "used": 17567,
+        "efficiency": 0.8139653414882773,
+        "filesReturned": 7,
+        "filesUsed": 4
+      }
+    }
+  ]
+}
