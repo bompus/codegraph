@@ -97,6 +97,11 @@ fn main() {
         ("cfml", vec!["parser.c", "scanner.c", "tag.c"]),
         ("cfscript", vec!["parser.c", "scanner.c"]),
         ("cfquery", vec!["parser.c", "scanner.c"]),
+        // Phase 5: the two tail grammars first taken from crates.io drifted
+        // from the wasm builds (35 / 39 kinds); vendored at the exact npm /
+        // git revisions the wasm files were built from instead.
+        ("objc", vec!["parser.c"]),
+        ("solidity", vec!["parser.c"]),
     ] {
         let dir = format!("grammars/{name}");
         let mut b = cc::Build::new();

@@ -26,7 +26,7 @@ import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './
 import { StoreWriter, StoreBundle, finalizeStoreBundle } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
-import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes } from './grammars';
+import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
@@ -2018,11 +2018,6 @@ export class ExtractionOrchestrator {
       // old oversubscribed pool on the kernel-scale 2-cpuset envelope
       // (493s vs 369s) — main + store-worker don't fill the second core.
       const poolSize = resolveParsePoolSize(process.env.CODEGRAPH_PARSE_WORKERS, Math.max(3, os.availableParallelism()));
-      // Read each needed grammar's WASM ONCE here and hand the bytes to every
-      // worker, so spawns/respawns load grammars from memory instead of
-      // re-reading them from disk (#1231: on an HDD, respawn re-reads amplify
-      // the very I/O contention that caused the respawn).
-      const grammarBuffers = await readGrammarWasmBytes(neededLanguages);
       pool = new ParseWorkerPool({
         languages: neededLanguages,
         size: poolSize,
@@ -2030,7 +2025,6 @@ export class ExtractionOrchestrator {
         recycleInterval: WORKER_RECYCLE_INTERVAL,
         parseTimeoutMs: PARSE_TIMEOUT_MS,
         log,
-        grammarBuffers,
       });
       log(`Parse worker pool: ${poolSize} worker(s)`);
       // Bulk index: every core will be needed — spawn the whole pool now so
@@ -3038,7 +3032,7 @@ export class ExtractionOrchestrator {
      */
     backpressure?: () => Promise<void> | null
   ): Promise<SyncResult> {
-    await initGrammars(); // Initialize WASM runtime (grammars loaded lazily below)
+    await initGrammars();
     const startTime = Date.now();
     let filesChecked = 0;
     let filesAdded = 0;

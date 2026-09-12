@@ -3,7 +3,7 @@ import { getNodeText, getChildByField } from '../tree-sitter-helpers';
 import type { LanguageExtractor } from '../tree-sitter-types';
 
 // Node names follow the vendored ABI-15 grammar (@tree-sitter-grammars/
-// tree-sitter-lua), NOT the older tree-sitter-wasms build — see grammars.ts.
+// tree-sitter-lua) compiled into the kernel — see codegraph-kernel/grammars/lua.
 
 /** First descendant of a given type (breadth-first), or null. */
 function findDescendant(node: SyntaxNode, type: string): SyntaxNode | null {

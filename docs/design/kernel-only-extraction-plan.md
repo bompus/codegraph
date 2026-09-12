@@ -1,6 +1,6 @@
 # Kernel-only extraction — removing the WASM path
 
-**Status:** plan, not started. Written 2026-09-11. Companion to [resolution-binding-model-plan.md](resolution-binding-model-plan.md) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Supersedes the "coexistence is permanent" stance in [rust-kernel-migration-plan.md](rust-kernel-migration-plan.md) §4d once approved.
+**Status:** implemented through Phase 5 (2026-09-12); the WASM path is gone. Written 2026-09-11. Companion to [resolution-binding-model-plan.md](resolution-binding-model-plan.md) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Supersedes the "coexistence is permanent" stance in [rust-kernel-migration-plan.md](rust-kernel-migration-plan.md) §4d once approved.
 
 **Goal:** the Rust kernel (`codegraph-kernel/`) is the only parser and extractor. `web-tree-sitter`, the vendored `.wasm` grammars, the per-language routing table, the error-file deferral, the V8 `--liftoff-only` relaunch, and the Node 25 block are all removed.
 
@@ -154,15 +154,16 @@ Measured, TypeScript sources of this repo, median per file: bare parse 0.69 ms W
 
 Exit met: every language in `EXTENSION_MAP` with a grammar parses natively. The only remaining WASM use in `src/extraction/` is the fallback itself, which Phase 5 removes.
 
-### Phase 5: delete WASM
+### Phase 5: delete WASM — DONE 2026-09-12
 
-- Remove `web-tree-sitter` and `tree-sitter-wasms` from `package.json`, `src/extraction/wasm/`, `copy-assets`, `grammars.ts`, `tree-sitter.ts`'s WASM branch, `TreeSitterExtractor`, `parse-worker.ts`'s Emscripten stderr filter and OOM exit, `resetParser`.
-- Remove `wasm-runtime-flags.ts` except `NODE_RUNTIME_FLAGS`, the relaunch in `bin/codegraph.ts`, `command-supervision.ts` if it has no other purpose, the liftoff lines in `npm-shim.js` and `build-bundle.sh`, and the Node 25 block in `node-version-check.ts`.
-- Make the loader fatal. Make `build-bundle.sh` fatal on a missing prebuild. Add the musl targets.
-- Delete the 15 parity tests, `kernel-parity.mjs`, and the wasm-flag tests. Rewrite `kernel-scaffold.test.ts` for the new semantics. Re-check the four MCP orphan tests that depended on the re-exec process shape.
-- Update `server-instructions.ts` only if the language list changes. Update `AGENTS.md` build notes and the `copy-assets` rule.
+- Removed: `web-tree-sitter` and `tree-sitter-wasms` from `package.json`, the 29 vendored `.wasm` files and the `copy-assets` step for them, the `web-tree-sitter` type shim, the per-language routing table and `CODEGRAPH_KERNEL` / `CODEGRAPH_KERNEL_LANGS` / `CODEGRAPH_KERNEL_EXPECT`-driven routing in `kernel/index.ts`, the defer memo, the worker-side grammar loads, the Emscripten stderr filter, the parser reset and the WASM-OOM worker exit, the `--liftoff-only` relaunch (`wasm-runtime-flags.ts` is now `node-runtime-flags.ts`), the Node 25 block, `scripts/kernel-parity.mjs`, `scripts/bench-parse-tree.mjs`, the 12 per-language parity suites, the grammar-table parity suite, the wasm-bytes and runtime-flag suites.
+- Kept as no-ops for API stability: `initGrammars`, `loadGrammarsForLanguages`, `loadAllGrammars`, `isGrammarLoaded` (the public API re-exports them and dozens of tests warm grammars).
+- Hard failure: `requireKernel()` throws `KernelUnavailableError` naming the paths searched; the CLI checks it at startup and exits with that message; `build-bundle.sh` refuses a target without a prebuild; `npm test` runs `scripts/ensure-kernel.mjs`, which builds the kernel when the host has cargo and otherwise explains.
+- ObjC and Solidity were re-vendored as C at the exact revisions the wasm files were built from (npm `tree-sitter-objc` 2.1.0, JoranHonig `b239a95`), replacing the drifting crates: their tables now match the removed wasm exactly, so every grammar in the binary is table-identical to what shipped before. Solidity's extractor had already started to miss a `revert` reference on the newer crate, which the extraction suite caught.
+- `package.json` engines is `>=20.0.0` (the upper bound existed for the wasm compiler bug); Node 25+ is untested rather than refused.
+- Not done here: musl targets. `build-kernel.sh` maps only gnu, darwin and msvc triples; adding `x86_64-unknown-linux-musl` needs a cross toolchain on the runner and a loader that tells glibc from musl at runtime. Alpine and other platforms without a prebuild get the startup message and the from-source route.
 
-Exit: `grep -r web-tree-sitter src __tests__ scripts` is empty. Full suite green on Linux, Windows and macOS. The espn-draft host no longer needs the Node 24 alias.
+Exit met: `grep -r web-tree-sitter src __tests__ scripts` is empty; the full engine suite is green on Linux; Windows and macOS run through the release matrix.
 
 ## 3a. Measurements so far
 

@@ -20,7 +20,7 @@
 
 import * as fs from 'fs';
 import * as net from 'net';
-import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
+import { HOST_PPID_ENV } from '../extraction/node-runtime-flags';
 import { DaemonClientHello, DaemonHello, MAX_HELLO_LINE_BYTES } from './daemon';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';

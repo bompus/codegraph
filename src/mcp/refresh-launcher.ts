@@ -11,7 +11,7 @@ import { join, resolve } from "path";
 import { createInterface } from "readline";
 import { isDeepStrictEqual } from "util";
 import { parseHostPpid, parsePpidPollMs, supervisionLostReason } from "./ppid-watchdog";
-import { HOST_PPID_ENV } from "../extraction/wasm-runtime-flags";
+import { HOST_PPID_ENV } from "../extraction/node-runtime-flags";
 import { WRITER_LOCK_DEFER_ENV } from "./writer-lock";
 import { armStartupHandshakeTimeout } from "./startup-handshake";
 
@@ -63,7 +63,6 @@ class Backend {
     this.child = spawn(
       process.execPath,
       [
-        "--liftoff-only",
         "--disable-warning=ExperimentalWarning",
         join(directory, "dist", "bin", "codegraph.js"),
         ...args,

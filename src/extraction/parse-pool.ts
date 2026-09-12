@@ -171,15 +171,6 @@ export interface ParseWorkerPoolOptions {
   createWorker?: () => ParsePoolWorker;
   /** Optional verbose logger (the orchestrator's `[worker] …` logger). */
   log?: (msg: string) => void;
-  /**
-   * Pre-read grammar WASM bytes keyed by language, forwarded to every worker's
-   * `load-grammars` message so a spawn/respawn loads grammars from memory
-   * instead of re-reading them from disk — on slow storage each respawn's
-   * grammar re-read otherwise amplifies the very I/O contention that caused
-   * the respawn (issue #1231). Best-effort: a missing language falls back to
-   * the worker's own disk read.
-   */
-  grammarBuffers?: Record<string, Uint8Array>;
 }
 
 export class ParseWorkerPool {
@@ -201,11 +192,9 @@ export class ParseWorkerPool {
   private readonly parseTimeoutMs: number;
   private readonly createWorker: () => ParsePoolWorker;
   private readonly log: (msg: string) => void;
-  private readonly grammarBuffers?: Record<string, Uint8Array>;
 
   constructor(opts: ParseWorkerPoolOptions) {
     this.languages = opts.languages;
-    this.grammarBuffers = opts.grammarBuffers;
     this.maxSize = Math.max(1, Math.min(opts.size, MAX_PARSE_POOL_SIZE));
     this.recycleInterval = opts.recycleInterval ?? DEFAULT_RECYCLE_INTERVAL;
     this.parseTimeoutMs = opts.parseTimeoutMs ?? DEFAULT_PARSE_TIMEOUT_MS;
@@ -281,10 +270,8 @@ export class ParseWorkerPool {
     w.on('message', (m) => this.onMessage(w, (m ?? {}) as ParseWorkerMessage));
     w.on('error', (e) => this.onWorkerGone(w, `Worker error: ${e?.message ?? 'unknown'}`));
     w.on('exit', (code) => { if (code !== 0) this.onWorkerGone(w, `Worker exited with code ${code}`); });
-    // Load grammars; the worker replies 'grammars-loaded' and only then is idle.
-    // Pre-read WASM bytes (when the orchestrator provided them) make this a
-    // memory load instead of a per-spawn disk read.
-    w.postMessage({ type: 'load-grammars', languages: this.languages, grammarBuffers: this.grammarBuffers });
+    // Readiness handshake; the worker replies 'grammars-loaded' and only then is idle.
+    w.postMessage({ type: 'load-grammars', languages: this.languages });
   }
 
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {

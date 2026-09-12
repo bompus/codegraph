@@ -1,17 +1,16 @@
 /**
- * Kernel routing — which languages go through the native kernel, and the
- * single entry point the extraction path calls.
+ * Kernel extraction — the single entry point the extraction path calls.
  *
- * Routing policy is deliberately TS-side and per-language (migration plan §2):
- * a language routes to the kernel only after its equivalence gate passes;
- * everything else stays on the wasm path forever if need be. Rollback per
- * language = removing it from DEFAULT_ROUTED (or CODEGRAPH_KERNEL=0 for all).
+ * Every language with a bespoke Rust walker (`LANGUAGES` in langs.rs, reported
+ * by contractInfo) is extracted here. A language the kernel only PARSES (no
+ * walker) returns null and the caller runs the generic TypeScript extractor
+ * over the kernel's serialized tree instead (tree-sitter.ts → parse-tree.ts).
+ * The only other null is the stack-overflow guard's `defer:` (stack.rs), which
+ * takes the same generic path — parse_tree is iterative, so it survives the
+ * nesting the recursive walker would not.
  *
- * Routing status: TypeScript/TSX/JavaScript/JSX are default-routed (R3 gate
- * passed 2026-07-16 — full-index dumps byte-identical on express/excalidraw/
- * vscode, control repo unchanged; see the migration plan §4a). Override with
- *   CODEGRAPH_KERNEL_LANGS=<langs|all>  (replaces the default set), or
- *   CODEGRAPH_KERNEL=0                  (kill switch, everything → wasm).
+ * The per-language routing table, the CODEGRAPH_KERNEL kill switch and the
+ * old fallback parser were removed in Phase 5 of kernel-only-extraction-plan.md.
  */
 
 import type { ExtractionResult, Language } from '../../types';
@@ -29,92 +28,6 @@ export { getKernel, kernelSupports, resetKernelForTests } from './loader';
 export { decodeExtractBuffers } from './decode';
 
 /**
- * Languages routed to the kernel by default (gate-passed only — see the
- * per-language tracker in docs/design/rust-kernel-migration-plan.md §4).
- * Files whose parse tree contains ERRORS are extracted natively like any
- * other (error recovery differs between UTF-8 and UTF-16 parsing; the
- * kernel's recovery is canonical — kernel-only-extraction-plan.md, Phase 1).
- * The only `defer:` left is the stack-overflow guard.
- */
-const DEFAULT_ROUTED: ReadonlySet<Language> = new Set<Language>([
-  'typescript',
-  'tsx',
-  'javascript',
-  'jsx',
-  'java',
-  'python',
-  'go',
-  // R7a (2026-07-17): parity swept 0-diff on redis/git/fmt/protobuf/ALS
-  // (2,389 files compared) + full-init dump-diffs byte-identical; erroring
-  // files defer per-file to wasm (routine for macro-heavy C/C++ — see
-  // scripts/kernel-parity.mjs --max-deferral).
-  'c',
-  'cpp',
-  // R7b (2026-07-20): parity swept 0-diff on ripgrep/tokio/rust-analyzer
-  // (2,108 files byte-parity) + full-init dump-diffs byte-identical. Rust
-  // deferral is ~0% on normal repos; token-macro-table sources (rust-analyzer's
-  // parser crates, 18%) error on BOTH arms — grammar-inherent, not a walker
-  // signal.
-  'rust',
-  // R7b (2026-07-20): parity swept 0-diff on serilog/Newtonsoft.Json/jellyfin
-  // (3,229 files byte-parity) + full-init dump-diffs byte-identical ×3.
-  // Deferral 0.05–3.3% — both-branches-kept `#if` damage that errors on BOTH
-  // arms (the preParse blanking hoist keeps the kernel's input identical).
-  'csharp',
-  // R7b (2026-07-20): parity swept 0-diff on sinatra/jekyll/rails (3,763
-  // files byte-parity, 0 deferrals — ruby error incidence is 0.00%) +
-  // full-init dump-diffs byte-identical ×3. Any deferral on a ruby sweep is
-  // a walker-bug signal, not grammar reality.
-  'ruby',
-  // R7b (2026-07-20): parity swept 0-diff on monolog/laravel-framework/
-  // symfony (13,950 files byte-parity) + full-init dump-diffs byte-identical
-  // ×3. Deferral ≈0–0.1% (genuinely-broken fixtures) — default sweep guard.
-  'php',
-  // R7b (2026-07-20): parity swept 0-diff on Alamofire/vapor/swift-nio (720
-  // clean files byte-parity; Alamofire's 348 #1020 property nodes reproduced
-  // exactly) + full-init dump-diffs byte-identical ×3. Swift error incidence
-  // is structurally 9–27% on BOTH arms (heavy #if conditionalization) —
-  // sweeps run --max-deferral 0.3; a deferral-rate JUMP is the bug signal.
-  'swift',
-  // R7b (2026-07-20): parity swept 0-diff on okio/okhttp/kotlinx.coroutines
-  // (1,861 clean files byte-parity; KMP expect/actual synthesis identical —
-  // 412 edges both arms on kotlinx.coroutines) + full-init dump-diffs
-  // byte-identical ×3. Deferral 4.7–8.5% both-arm grammar reality
-  // (fun-interface misparses + PHANTOM hasError files) — default sweep guard
-  // holds; a JUMP past ~10% is the bug signal.
-  'kotlin',
-  // R7b batch 4 (2026-07-20): parity swept 0-diff on dplyr/ggplot2/shiny +
-  // AnomalyDetection + full-init dump-diffs byte-identical ×3. R error
-  // incidence is ~0% (deferrals 0/0/0/1 across the gate repos — the 1 is a
-  // moustache-template pseudo-R file, both-arm): any deferral on an R sweep
-  // is a walker-bug signal, not grammar reality.
-  'r',
-  // R7b batch 4 (2026-07-20): one walker, two dialects. Parity swept 0-diff
-  // on kong/lazy.nvim/lua-resty-core (lua) + lune/Fusion (luau) + full-init
-  // dump-diffs byte-identical. Lua error incidence ~0% (any deferral is a
-  // walker-bug signal); luau 1.4–7.1% both-arm grammar reality (generic type
-  // packs, default type params) — a JUMP past ~10% is the bug signal.
-  'lua',
-  'luau',
-  // R7b batch 4 (2026-07-20): parity swept 0-diff on os-lib/cats + scala3
-  // compiler/src + library/src + full-init dump-diffs byte-identical.
-  // Error incidence is bimodal: mainstream Scala-2-style repos ~0-2%
-  // (os-lib 0%, cats 1.8%) but scala-3-frontier code runs 10-18% with
-  // PHANTOM-dominated error sets (hasError=true, zero ERROR nodes —
-  // capture-checking `^` types; defer on the FLAG). Sweeps over
-  // scala3-style repos use --max-deferral 0.3 (swift precedent); a
-  // deferral JUMP on cats/os-lib-style code is the bug signal.
-  'scala',
-  // R7b batch 4 (2026-07-20): parity swept 0-diff on shelf/bloc/flutter +
-  // full-init dump-diffs byte-identical. Error incidence 3.4-20.7% both-arm
-  // grammar reality (empty object patterns — the sealed-class idiom — and
-  // unnamed `library;` dominate; flutter sits at ~21%) — sweeps use
-  // --max-deferral 0.3; the RATE, not the count, is the signal (flutter
-  // HEAD drifts).
-  'dart',
-]);
-
-/**
  * Per-language TS post-pass over the decoded result — the escape hatch for
  * logic `.scm` queries can't express (macro salvage, dialect sniffing,
  * wrapper-based component recognition). Runs synchronously after decode,
@@ -130,9 +43,9 @@ const POST_PASSES: Partial<Record<Language, KernelPostPass>> = {
  * The preParse hoist (checklist §arch-1): languages with an offset-preserving
  * `preParse` hook (c/cpp macro blanking, csharp #237, metal #1121, cuda #1172)
  * apply it HERE, before the kernel call, so both arms parse identical blanked
- * bytes and none of the blanking logic needs a Rust port. The wasm fallback
- * path is untouched — TreeSitterExtractor applies the same hook itself on the
- * RAW source it receives, so a kernel error/defer still extracts identically.
+ * bytes and none of the blanking logic needs a Rust port. The generic
+ * extractor applies the same hook itself on the RAW source it receives, so a
+ * walker-less language or a stack-guard defer still extracts identically.
  * Every blank is an equal-length-space replacement, so offsets, lines, and
  * columns survive; `filePath` rides along for the extension-gated dialect
  * blanks (`.metal` attributes; `.cu`/`.cuh` + content-gated CUDA).
@@ -142,54 +55,13 @@ function preParsedSource(filePath: string, source: string, language: Language): 
   return pre ? pre(source, filePath) : source;
 }
 
-function isRouted(language: Language): boolean {
-  const env = process.env.CODEGRAPH_KERNEL_LANGS;
-  if (env === undefined || env === '') return DEFAULT_ROUTED.has(language);
-  if (env === 'all') return true;
-  return env
-    .split(',')
-    .map((s) => s.trim())
-    .includes(language);
-}
-
-/** True when `language` would be extracted by the kernel right now. */
+/** True when `language` has a bespoke kernel walker (contractInfo.languages). */
 export function kernelRoutes(language: Language): boolean {
-  return isRouted(language) && kernelSupports(language);
+  return kernelSupports(language);
 }
 
 /** Warned-once registry so a broken language logs a single line, not one per file. */
 const warned = new Set<string>();
-
-/**
- * One-slot defer memo. A file the kernel defers (today: only the stack-overflow
- * guard, stack.rs) would otherwise pay the full pipeline again at every seam:
- * the worker's raw try blanked + native-parsed it, extractFromSource's kernel
- * try blanked + native-parsed it AGAIN, and the wasm extractor then re-applied
- * preParse a third time. The slot remembers the LAST deferred (file, source,
- * language) so (a) a repeat kernel attempt for the same file short-circuits to
- * null, and (b) the wasm fallback can reuse the already-blanked source instead
- * of re-running preParse. Source is matched by string identity — the worker
- * passes the same string through every seam. Goes away with the wasm path
- * (kernel-only-extraction-plan.md, Phase 5).
- */
-let deferSlot: { filePath: string; source: string; language: Language; pre: string } | null = null;
-
-/** The hoisted preParse output for a just-deferred file, if it matches. */
-export function takeDeferredPreParse(
-  filePath: string,
-  source: string,
-  language: Language
-): string | null {
-  if (
-    deferSlot &&
-    deferSlot.filePath === filePath &&
-    deferSlot.source === source &&
-    deferSlot.language === language
-  ) {
-    return deferSlot.pre;
-  }
-  return null;
-}
 
 /** The raw table buffers + the cheap facts the orchestrator needs pre-decode. */
 export interface KernelRawResult {
@@ -214,7 +86,6 @@ export function tryKernelExtractRaw(
   if (!kernelRoutes(language) || POST_PASSES[language]) return null;
   const kernel = getKernel();
   if (!kernel) return null;
-  if (takeDeferredPreParse(filePath, source, language) !== null) return null; // already deferred
   const pre = preParsedSource(filePath, source, language);
   try {
     const buffers = kernel.extractFile(filePath, pre, language);
@@ -238,14 +109,13 @@ export function tryKernelExtractRaw(
     return { buffers: { ...buffers, literalSource: pre }, counts, errors };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('defer:')) {
-      deferSlot = { filePath, source, language, pre };
-      return null;
-    }
+    // `defer:` is the stack guard's signal; the generic extractor takes the
+    // file (parse_tree is iterative). Silent by design.
+    if (message.includes('defer:')) return null;
     if (!warned.has(language)) {
       warned.add(language);
       process.stderr.write(
-        `[codegraph-kernel] ${language} extraction failed (${message}) — falling back to the wasm path\n`
+        `[codegraph-kernel] ${language} walker failed (${message}) — using the generic extractor for this language\n`
       );
     }
     return null;
@@ -278,7 +148,7 @@ export function materializeKernelResult(
 /**
  * Extract via the native kernel. Returns null when the kernel doesn't apply
  * (not routed / not available / kill switch) — the caller falls back to the
- * wasm TreeSitterExtractor. A kernel ERROR on a routed file also returns
+ * generic TreeSitterExtractor. A kernel ERROR on a routed file also returns
  * null: per-file fallback keeps indexing correct while a kernel bug costs
  * only that file's speedup.
  */
@@ -290,7 +160,6 @@ export function tryKernelExtract(
   if (!kernelRoutes(language)) return null;
   const kernel = getKernel();
   if (!kernel) return null;
-  if (takeDeferredPreParse(filePath, source, language) !== null) return null; // already deferred
   const t0 = Date.now();
   const pre = preParsedSource(filePath, source, language);
   try {
@@ -299,9 +168,9 @@ export function tryKernelExtract(
     POST_PASSES[language]?.(result, source);
     // Literal seeds are a pass over source text and the node list, never over
     // the tree (literal-capture.ts), so they need no Rust mirror — the same
-    // pass the wasm extractor runs at the end of extract() applies to the
+    // pass the generic extractor runs at the end of extract() applies to the
     // kernel's nodes here, and the two paths stay node-for-node identical.
-    // `pre`, not `source`: the wasm extractor captures from its own preParsed
+    // `pre`, not `source`: the generic extractor captures from its own preParsed
     // text, and a preParse blanks bytes a literal could otherwise be read from.
     // Without this every routed language loses its seeds while markdown and the
     // unrouted ones keep theirs, and a quoted-key explore query silently stops
@@ -311,16 +180,13 @@ export function tryKernelExtract(
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // `defer:` is the kernel's expected-routing signal (only the stack-overflow
-    // guard emits it now; the file takes the wasm path). Silent by design.
-    if (message.includes('defer:')) {
-      deferSlot = { filePath, source, language, pre };
-      return null;
-    }
+    // `defer:` is the stack guard's signal; the generic extractor takes the
+    // file (parse_tree is iterative). Silent by design.
+    if (message.includes('defer:')) return null;
     if (!warned.has(language)) {
       warned.add(language);
       process.stderr.write(
-        `[codegraph-kernel] ${language} extraction failed (${message}) — falling back to the wasm path\n`
+        `[codegraph-kernel] ${language} walker failed (${message}) — using the generic extractor for this language\n`
       );
     }
     return null;

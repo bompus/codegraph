@@ -19,11 +19,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { extractFromSource } from '../src/extraction';
 import {
-  getParser,
   isLanguageSupported,
   getSupportedLanguages,
-  clearParserCache,
-  getUnavailableGrammarErrors,
   initGrammars,
   loadAllGrammars,
 } from '../src/extraction/grammars';
@@ -63,34 +60,9 @@ const HAS_SQLITE = hasSqliteBindings();
 // Lazy Grammar Loading
 // =============================================================================
 
-describe('Lazy Grammar Loading', () => {
-  afterEach(() => {
-    clearParserCache();
-  });
+describe('Language support table', () => {
 
-  it('should load grammars lazily on first use', () => {
-    // Clear cache to force fresh load
-    clearParserCache();
 
-    // TypeScript should be loadable
-    const parser = getParser('typescript');
-    expect(parser).not.toBeNull();
-  });
-
-  it('should cache loaded grammars', () => {
-    clearParserCache();
-
-    const parser1 = getParser('typescript');
-    const parser2 = getParser('typescript');
-
-    // Same reference from cache
-    expect(parser1).toBe(parser2);
-  });
-
-  it('should return null for unknown language', () => {
-    const parser = getParser('unknown');
-    expect(parser).toBeNull();
-  });
 
   it('should handle unavailable grammars gracefully', () => {
     // 'unknown' is not a valid grammar, should not crash
@@ -106,36 +78,8 @@ describe('Lazy Grammar Loading', () => {
     expect(supported).toContain('liquid');
   });
 
-  it('should return unavailable grammar errors as a record', () => {
-    clearParserCache();
-    const errors = getUnavailableGrammarErrors();
-    // Should be a plain object (may or may not have entries depending on platform)
-    expect(typeof errors).toBe('object');
-  });
 
-  it('should support multiple languages independently', () => {
-    clearParserCache();
 
-    // Load two different languages - one failing shouldn't affect the other
-    const tsParser = getParser('typescript');
-    const pyParser = getParser('python');
-
-    expect(tsParser).not.toBeNull();
-    expect(pyParser).not.toBeNull();
-    expect(tsParser).not.toBe(pyParser);
-  });
-
-  it('should clear all caches on clearParserCache', () => {
-    // Load a grammar
-    getParser('typescript');
-
-    // Clear
-    clearParserCache();
-
-    // Errors should be cleared too
-    const errors = getUnavailableGrammarErrors();
-    expect(Object.keys(errors)).toHaveLength(0);
-  });
 });
 
 // =============================================================================
@@ -689,19 +633,13 @@ describe('CLI uninit', () => {
 // Tree-sitter Version Pinning
 // =============================================================================
 
-describe('Tree-sitter WASM Setup', () => {
-  it('should use web-tree-sitter and tree-sitter-wasms in dependencies', () => {
+describe('Parser dependencies', () => {
+  it('has no tree-sitter runtime in npm dependencies — the native kernel is the only parser', () => {
     const pkgPath = path.join(__dirname, '..', 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
 
-    expect(pkg.dependencies['web-tree-sitter']).toBeDefined();
-    expect(pkg.dependencies['tree-sitter-wasms']).toBeDefined();
-  });
-
-  it('should not have native tree-sitter in dependencies', () => {
-    const pkgPath = path.join(__dirname, '..', 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-
+    expect(pkg.dependencies['web-tree-sitter']).toBeUndefined();
+    expect(pkg.dependencies['tree-sitter-wasms']).toBeUndefined();
     expect(pkg.dependencies['tree-sitter']).toBeUndefined();
     expect(pkg.overrides).toBeUndefined();
   });

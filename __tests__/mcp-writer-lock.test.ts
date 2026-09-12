@@ -83,7 +83,7 @@ describe('issue #1740 — direct-mode writer lock', () => {
       CODEGRAPH_MCP_DEBUG: '1',
       CODEGRAPH_NO_WATCHDOG: '1',
       CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: '0',
-      // Avoid wasm --liftoff-only re-exec so lock.pid matches the spawned pid.
+      // No re-exec happens any more; the env is harmless and kept for older branches.
       CODEGRAPH_NO_RELAUNCH: '1',
       CODEGRAPH_WASM_RELAUNCHED: '1',
     };

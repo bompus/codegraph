@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { extractFromSource } from '../src/extraction';
-import { getParser, initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
+import { parseSourceTreeSync } from '../src/extraction/parse-tree';
 import {
   blankCppAnnotationMacroCalls,
   blankCppInlineAnnotationMacros,
@@ -51,7 +52,7 @@ describe('C/C++ raw strings survive preParse (#1505)', () => {
     const source = scaffoldSource();
     const rewritten = cppExtractor.preParse!(source, 'scaffold.cpp');
     for (const text of [source, rewritten]) {
-      const tree = getParser('cpp')!.parse(text)!;
+      const tree = parseSourceTreeSync(text, 'cpp')!;
       try {
         expect(tree.rootNode.hasError).toBe(false);
       } finally {

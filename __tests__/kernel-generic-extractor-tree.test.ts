@@ -1,27 +1,26 @@
 /**
- * The generic TypeScript extractor on a native tree ≡ on a wasm tree
- * (Phase 4 of docs/design/kernel-only-extraction-plan.md).
+ * Walker ≡ generic extractor on the kernel's tree (Phase 4 of
+ * docs/design/kernel-only-extraction-plan.md; re-based in Phase 5 when the
+ * wasm comparison arm was removed).
  *
- * `TreeSitterExtractor` (7,000 lines of language-agnostic walking driven by
- * the per-language tables in `languages/`) parses through `parseSourceTreeSync`
- * now, so on a host with a kernel it walks the serialized native tree via
- * the `NativeNode` facade. That is the mechanism that puts every language
- * WITHOUT a bespoke Rust walker on the kernel. This suite is its gate: with
- * walker routing switched off (`CODEGRAPH_KERNEL_LANGS=none`) but native
- * trees on, extraction of every torture fixture must equal the wasm arm's
- * (`CODEGRAPH_KERNEL=0`, which disables both) as canonical multisets.
+ * Two extractors exist for a walker language: the bespoke Rust walker
+ * (`tryKernelExtract`) and the generic TypeScript `TreeSitterExtractor`
+ * walking the same tree through the NativeNode facade. Every walker shipped
+ * only after proving byte-parity with the generic extractor, and the
+ * generic extractor is the path for every language WITHOUT a walker, for a
+ * stack-guard defer, and for SFC blocks. So the two must agree on every
+ * clean torture fixture, as canonical multisets. Erroring C/C++ fixtures are
+ * compared loosely.
  *
- * Erroring trees (the C/C++ torture files) are compared loosely: same file
- * node, same non-empty symbol set size within 5% — recovery may differ.
+ * The tail languages (no walker) are checked for extracting real symbols.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { extractFromSource } from '../src/extraction';
-import { getParser, initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
-import * as grammars from '../src/extraction/grammars';
-import { resetKernelForTests } from '../src/extraction/kernel';
+import { TreeSitterExtractor } from '../src/extraction/tree-sitter';
+import { tryKernelExtract } from '../src/extraction/kernel';
 import type { ExtractionResult, Language } from '../src/types';
 
 const KERNEL_PATH = path.join(
@@ -35,6 +34,7 @@ const EXT_LANG: Record<string, Language> = {
   '.rs': 'rust', '.cs': 'csharp', '.rb': 'ruby', '.php': 'php', '.swift': 'swift', '.kt': 'kotlin', '.kts': 'kotlin',
   '.R': 'r', '.lua': 'lua', '.luau': 'luau', '.scala': 'scala', '.sc': 'scala', '.dart': 'dart',
 };
+const ERRORING = new Set(['torture.c', 'torture.cpp']);
 
 function canon(r: ExtractionResult) {
   return {
@@ -44,93 +44,52 @@ function canon(r: ExtractionResult) {
   };
 }
 
-/**
- * The five tail languages have no walker at all; the kernel carries their
- * grammars (Cargo.toml, Phase 4) purely for parse_tree. Extracting them on a
- * kernel host must never instantiate a wasm parser.
- */
-const TAIL: Array<{ rel: string; lang: Language }> = [
-  { rel: 'objc/Greeter.m', lang: 'objc' },
-  { rel: 'erlang/counter.erl', lang: 'erlang' },
-  { rel: 'nix/default.nix', lang: 'nix' },
-  { rel: 'pascal/Greeter.pas', lang: 'pascal' },
-  { rel: 'solidity/Greeter.sol', lang: 'solidity' },
-  // Phase 4b: vendored-C grammars for the languages once slated for dropping,
-  // plus CFML (whose tag-based extractor walks the facade directly).
-  { rel: 'arkts/Greeter.ets', lang: 'arkts' },
-  { rel: 'terraform/main.tf', lang: 'terraform' },
-  { rel: 'vbnet/Greeter.vb', lang: 'vbnet' },
-  { rel: 'cobol/GREETER.cbl', lang: 'cobol' },
-  { rel: 'cfml/Greeter.cfc', lang: 'cfml' },
-  { rel: 'cfml/greet.cfm', lang: 'cfml' },
+/** Languages the kernel only parses: the generic extractor is their only path. */
+const TAIL: Array<{ rel: string; lang: Language; minSymbols: number }> = [
+  { rel: 'objc/Greeter.m', lang: 'objc', minSymbols: 3 },
+  { rel: 'erlang/counter.erl', lang: 'erlang', minSymbols: 3 },
+  { rel: 'nix/default.nix', lang: 'nix', minSymbols: 3 },
+  { rel: 'pascal/Greeter.pas', lang: 'pascal', minSymbols: 3 },
+  { rel: 'solidity/Greeter.sol', lang: 'solidity', minSymbols: 3 },
+  { rel: 'arkts/Greeter.ets', lang: 'arkts', minSymbols: 3 },
+  { rel: 'terraform/main.tf', lang: 'terraform', minSymbols: 3 },
+  { rel: 'vbnet/Greeter.vb', lang: 'vbnet', minSymbols: 3 },
+  { rel: 'cobol/GREETER.cbl', lang: 'cobol', minSymbols: 3 },
+  { rel: 'cfml/Greeter.cfc', lang: 'cfml', minSymbols: 3 },
+  { rel: 'cfml/greet.cfm', lang: 'cfml', minSymbols: 1 },
 ];
 
-const ENV_KEYS = ['CODEGRAPH_KERNEL', 'CODEGRAPH_KERNEL_LANGS'] as const;
-let saved: Record<string, string | undefined>;
-
-describe.skipIf(!kernelBuilt)('generic extractor on native trees', () => {
+describe.skipIf(!kernelBuilt)('walker and generic extractor agree on the kernel tree', () => {
   const fixtures = fs
     .readdirSync(FIXTURE_DIR)
     .filter((f) => EXT_LANG[path.extname(f)])
     .map((f) => ({ file: path.join(FIXTURE_DIR, f), lang: EXT_LANG[path.extname(f)]! }));
 
-  beforeAll(async () => {
-    await initGrammars();
-    await loadGrammarsForLanguages([...new Set(fixtures.map((f) => f.lang)), ...TAIL.map((t) => t.lang), 'cfscript', 'cfquery']);
-  });
-  beforeEach(() => {
-    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
-    resetKernelForTests();
-  });
-  afterEach(() => {
-    for (const k of ENV_KEYS) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
-    resetKernelForTests();
-  });
-
   it('has fixtures for every walker language', () => {
     expect(fixtures.length).toBeGreaterThan(15);
   });
 
-  for (const { rel, lang } of TAIL) {
-    it(`${rel}: extracts natively with no wasm parser`, () => {
+  for (const { rel, lang, minSymbols } of TAIL) {
+    it(`${rel} (${lang}): the generic extractor yields symbols`, () => {
       const file = path.join(__dirname, 'fixtures', 'golden', 'tail-langs', rel);
-      const source = fs.readFileSync(file, 'utf8');
-      delete process.env.CODEGRAPH_KERNEL;
-      const spy = vi.spyOn(grammars, 'getParser');
-      try {
-        const result = extractFromSource(file, source, lang);
-        // A .cfm page holds one <cfscript> function; a .cfc/.pas/.m file holds several.
-        expect(result.nodes.filter((n) => n.kind !== 'file').length).toBeGreaterThanOrEqual(1);
-        expect(spy, 'wasm parser instantiated for a kernel-parsed language').not.toHaveBeenCalled();
-      } finally {
-        spy.mockRestore();
-      }
+      const result = extractFromSource(file, fs.readFileSync(file, 'utf8'), lang);
+      expect(result.errors.filter((e) => e.severity === 'error')).toEqual([]);
+      expect(result.nodes.filter((n) => n.kind !== 'file').length).toBeGreaterThanOrEqual(minSymbols);
     });
   }
 
   for (const { file, lang } of fixtures) {
-    it(`${path.basename(file)} (${lang}): generic extractor gives the same graph on the native tree`, () => {
+    it(`${path.basename(file)} (${lang}): walker output equals the generic extractor's`, () => {
       const source = fs.readFileSync(file, 'utf8');
-      const wasmTree = getParser(lang)!.parse(source)!;
-      const erroring = wasmTree.rootNode.hasError;
-      wasmTree.delete();
-
-      // Native tree, no walker: the generic extractor over the facade.
-      process.env.CODEGRAPH_KERNEL_LANGS = 'none';
-      delete process.env.CODEGRAPH_KERNEL;
-      const native = canon(extractFromSource(file, source, lang));
-      // Everything wasm.
-      process.env.CODEGRAPH_KERNEL = '0';
-      const wasm = canon(extractFromSource(file, source, lang));
-
-      if (!erroring) {
-        expect(native).toEqual(wasm);
+      const walker = tryKernelExtract(file, source, lang);
+      expect(walker, 'walker declined').not.toBeNull();
+      const generic = new TreeSitterExtractor(file, source, lang).extract();
+      const a = canon(walker!);
+      const b = canon(generic);
+      if (!ERRORING.has(path.basename(file))) {
+        expect(a).toEqual(b);
       } else {
-        expect(native.nodes.length).toBeGreaterThan(1);
-        const ratio = native.nodes.length / wasm.nodes.length;
+        const ratio = a.nodes.length / b.nodes.length;
         expect(ratio, `symbol count ratio ${ratio}`).toBeGreaterThan(0.95);
         expect(ratio).toBeLessThan(1.05);
       }

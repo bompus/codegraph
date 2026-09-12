@@ -23,6 +23,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Conditions and arguments for more languages.** What a call passes, and the `if` / `switch` / `try` it runs under, are now read for Python, Java, Kotlin, C#, Go and C as well as JavaScript, TypeScript and Swift.
 - **Upgrading:** re-index your projects after this release — several of the new readings rest on edges that are written while indexing.
 
+### Breaking Changes
+
+- **The native engine is now the only parser; the older WebAssembly parser is gone.** Every supported language is built into the native engine, so there is no fallback for a platform without a native build. Release bundles cover macOS (Intel and Apple silicon), Linux (x64 and arm64, glibc) and Windows (x64 and arm64); other platforms need a from-source build with a Rust toolchain, and CodeGraph now says so at startup instead of failing later. Installs are about 40% smaller, the MCP server starts one process lighter, and `CODEGRAPH_KERNEL`, `CODEGRAPH_KERNEL_LANGS`, `CODEGRAPH_NO_RELAUNCH` and `CODEGRAPH_ALLOW_UNSAFE_NODE` no longer do anything.
+- **Node.js 25 and newer are no longer refused.** The block existed for a V8 bug in compiling the old parser's grammars. Those versions are untested rather than unsupported.
+
 ### New Features
 
 - **`codegraph_sessions` also searches Codex, Cursor/T3, OpenCode, and AGY transcripts for this project.** Hits are tagged `claude:`, `codex:`, `cursor:`, `opencode:`, or `agy:` so the ids cannot collide. OpenCode uses `session.directory` in its local database; AGY is included only when a `file://` workspace URI is present. Tool payloads and injected instruction blobs stay out; `"sessions": false` still opts the whole feature off.

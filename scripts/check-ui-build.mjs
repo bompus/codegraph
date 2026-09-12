@@ -13,7 +13,9 @@
  * where tsc puts the TERMINAL ui, so a mis-pointed outDir silently deletes
  * modules the CLI requires at startup.
  *
- * The tree-sitter grammars in dist/extraction/wasm/ are checked the same way
+ * (The tree-sitter wasm grammars this once checked went with the wasm path in
+ * Phase 5 of kernel-only-extraction-plan.md; the engine's parser is the
+ * native kernel, checked by build-bundle.sh.)
  * and for the same reason. They are copied by `npm run copy-assets`, they are
  * what both indexing and the viewer's syntax classification parse with, and
  * their absence is survivable at runtime — source is served unhighlighted —
@@ -96,62 +98,8 @@ for (const compiled of [join('bin', 'codegraph.js'), 'index.js', join('ui', 'shi
   }
 }
 
-// The vendored tree-sitter grammars (`npm run copy-assets`). The viewer reads
-// every file with the same grammar the engine indexed it with, so a missing
-// wasm is both an extraction gap and a silently unhighlighted screen.
-const wasmDir = join(root, 'dist', 'extraction', 'wasm');
-
-/**
- * The grammars the syntax classification is gated on — the eight languages
- * CG-57 measured parity against, plus the two the TS family needs. Every one is
- * vendored (see VENDORED_WASM_LANGS), so all of them must be in this directory
- * rather than resolved out of node_modules.
- */
-const GATE_GRAMMARS = [
-  'tree-sitter-typescript.wasm',
-  'tree-sitter-tsx.wasm',
-  'tree-sitter-javascript.wasm',
-  'tree-sitter-go.wasm',
-  'tree-sitter-python.wasm',
-  'tree-sitter-rust.wasm',
-  'tree-sitter-swift.wasm',
-  'tree-sitter-c_sharp.wasm',
-  'tree-sitter-ruby.wasm',
-  'tree-sitter-php.wasm',
-];
-
-if (!existsSync(wasmDir)) {
-  fail(
-    `missing ${wasmDir}`,
-    staged
-      ? 'dist/extraction/wasm was not copied into the bundle — re-run scripts/build-bundle.sh'
-      : 'run `npm run copy-assets` (it copies src/extraction/wasm/*.wasm into dist/)'
-  );
-}
-
-// Against the source tree, the source directory IS the list — nothing to drift.
-// Inside a staged bundle there is no src/, so the gate list carries it.
-const expectedGrammars = new Set(GATE_GRAMMARS);
-const srcWasmDir = join(root, 'src', 'extraction', 'wasm');
-if (!staged && existsSync(srcWasmDir)) {
-  for (const name of readdirSync(srcWasmDir)) {
-    if (name.endsWith('.wasm')) expectedGrammars.add(name);
-  }
-}
-
-const missingGrammars = [...expectedGrammars].filter(
-  (name) => !existsSync(join(wasmDir, name))
-);
-if (missingGrammars.length > 0) {
-  fail(
-    `dist/extraction/wasm is missing ${missingGrammars.length} grammar(s): ${missingGrammars.join(', ')}`,
-    'the copy-assets step was interrupted or dist/extraction/wasm was copied incompletely'
-  );
-}
-
-const grammarCount = readdirSync(wasmDir).filter((n) => n.endsWith('.wasm')).length;
 
 console.log(
   `[check-ui-build] dist/viewer ok (index.html + ${assets} referenced asset(s)); ` +
-    `dist/extraction/wasm ok (${grammarCount} grammars); dist/ engine intact`
+    `dist/ engine intact`
 );

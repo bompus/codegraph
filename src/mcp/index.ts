@@ -61,7 +61,7 @@ import { supervisionLostReason, parsePpidPollMs, parseHostPpid } from './ppid-wa
 import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
-import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
+import { HOST_PPID_ENV } from '../extraction/node-runtime-flags';
 
 /**
  * Env var that marks a process as the *detached daemon* itself (set by
@@ -181,7 +181,7 @@ function resolveDaemonRoot(explicitPath: string | null): string | null {
  * reach it) with stdio decoupled from the launcher (logs to
  * `.codegraph/daemon.log`). Re-invokes the *same* CLI faithfully across dev and
  * bundled launches by reusing `process.argv[0]` (the right node), the current
- * `process.execArgv` (carries `--liftoff-only`, so the daemon never re-execs)
+ * `process.execArgv` (carries the runtime flags, so the daemon never re-execs)
  * and `process.argv[1]` (this script). The spawned process self-arbitrates the
  * O_EXCL lock, so racing launchers may each spawn one — losers exit and every
  * launcher proxies through the single winner.

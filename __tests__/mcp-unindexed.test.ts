@@ -31,7 +31,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
     // Direct (in-process) mode — the unindexed path never has a daemon
     // anyway (the daemon socket lives in .codegraph/), and this keeps the
     // suite from leaking a detached daemon in the indexed test.
-    // CODEGRAPH_WASM_RELAUNCHED skips the --liftoff-only re-exec: without
+    // CODEGRAPH_WASM_RELAUNCHED is inert since the re-exec was removed; without
     // it the server runs as a GRANDCHILD that survives child.kill() on
     // Windows and holds the temp cwd/SQLite handles, failing teardown with
     // EPERM no matter how long rmSync retries (the class documented for

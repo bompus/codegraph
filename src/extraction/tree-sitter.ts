@@ -33,7 +33,7 @@ import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { MarkdownExtractor } from './markdown-extractor';
 import { CfmlExtractor } from './cfml-extractor';
-import { tryKernelExtract, takeDeferredPreParse } from './kernel';
+import { tryKernelExtract } from './kernel';
 import { captureLiterals } from './literal-capture';
 import {
   getAllFrameworkResolvers,
@@ -7366,16 +7366,9 @@ export function extractFromSource(
     if (kernelResult) {
       result = kernelResult;
     } else {
-      // A kernel-deferred file already paid the (offset-preserving) preParse
-      // at the route point — reuse those bytes instead of blanking again.
-      const deferredPre = takeDeferredPreParse(filePath, source, detectedLanguage);
-      const extractor = new TreeSitterExtractor(
-        filePath,
-        deferredPre ?? source,
-        detectedLanguage,
-        { sourceIsPreParsed: deferredPre != null }
-      );
-      result = extractor.extract();
+      // No walker for this language (or the stack guard deferred): the
+      // generic extractor over the kernel's serialized tree.
+      result = new TreeSitterExtractor(filePath, source, detectedLanguage).extract();
     }
   }
 

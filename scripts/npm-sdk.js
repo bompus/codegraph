@@ -8,7 +8,7 @@
 // API — `require("@colbymchenry/codegraph")` returning the CodeGraph class et al.
 //
 // The compiled library + its production dependencies (web-tree-sitter,
-// tree-sitter-wasms, …) ship INSIDE the per-platform bundle, at
+// …) ship INSIDE the per-platform bundle, at
 //   @colbymchenry/codegraph-<platform>-<arch>/lib/dist/index.js
 // (with the deps in the sibling lib/node_modules). Re-exporting that bundle keeps
 // the main package thin — no second 50 MB copy of the grammars — while making the
@@ -20,7 +20,7 @@
 // the SQLite adapter — so loading this module is safe on older Node, and the
 // node:sqlite requirement surfaces with an actionable error only when a DB is
 // actually opened. Heavy extraction additionally wants the bundled launcher's
-// --liftoff-only flag (the WASM Zone-OOM guard, issues #293/#298); an embedded
+// runtime flags; an embedded
 // host that drives large indexing should pass that flag to its own Node.
 
 var path = require('path');
