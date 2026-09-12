@@ -177,7 +177,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Storage-key and flag searches now survive native worker indexing and repeated indexing, and distinguish functions sharing a source line; rebuild existing indexes to refresh these matches.
 
-- `codegraph sync` now refuses outdated extraction indexes instead of reporting them as up to date, and directs users to a full rebuild. (#1798)
+- `codegraph sync` now refuses outdated extraction indexes instead of reporting them as up to date, and directs users to a full rebuild; with `--quiet` the reason is still printed as one line on stderr so a git hook failure is explainable. (#1798)
 
 - Questions about selectors and cache invalidation now retain matching declarations alongside named source bodies within the existing response limit.
 
