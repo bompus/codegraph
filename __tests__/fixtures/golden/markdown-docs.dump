@@ -77,15 +77,18 @@
 {"from_node_id":"file:src/widget.test.ts","reference_name":"test","reference_kind":"calls","line":2,"col":0,"candidates":null,"file_path":"src/widget.test.ts","language":"typescript","status":"failed","name_tail":"test"}
 {"from_node_id":"function:e78917dda989e6051383586a18681419","reference_name":"console.log","reference_kind":"calls","line":11,"col":2,"candidates":null,"file_path":"src/widget.ts","language":"typescript","status":"failed","name_tail":"log"}
 {"from_node_id":"module:9f3c3ccfb61608be0c4ec12471d12a83","reference_name":"src/widget.test.ts","reference_kind":"references","line":7,"col":50,"candidates":null,"file_path":"CONTRIBUTING.md","language":"markdown","status":"failed","name_tail":"ts"}
-== bindings (8)
+== bindings (11)
 {"file_path":"src/widget.test.ts","name":"createWidget","kind":"import","node_id":null,"target_spec":"./widget","target_name":"createWidget","exported_as":null,"export_form":null,"scope_start":1,"scope_end":3,"storage":null,"line":1}
 {"file_path":"src/widget.test.ts","name":"render","kind":"import","node_id":null,"target_spec":"./widget","target_name":"render","exported_as":null,"export_form":null,"scope_start":1,"scope_end":3,"storage":null,"line":1}
 {"file_path":"src/widget.ts","name":"Widget","kind":"decl","node_id":"interface:ab6dd6533e8d0ea717ea20228caff60d","target_spec":null,"target_name":null,"exported_as":"Widget","export_form":"esm","scope_start":1,"scope_end":13,"storage":null,"line":5}
 {"file_path":"src/widget.ts","name":"createWidget","kind":"decl","node_id":"function:3fcd88d75bb6b2eadaaa3fc892131772","target_spec":null,"target_name":null,"exported_as":"createWidget","export_form":"esm","scope_start":1,"scope_end":13,"storage":null,"line":2}
 {"file_path":"src/widget.ts","name":"name","kind":"local","node_id":"property:be7baf08291a74417811a1bd17d1181f","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":5,"scope_end":5,"storage":null,"line":5}
+{"file_path":"src/widget.ts","name":"name","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":10,"scope_end":12,"storage":null,"line":10}
+{"file_path":"src/widget.ts","name":"name","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":2,"scope_end":4,"storage":null,"line":2}
 {"file_path":"src/widget.ts","name":"paint","kind":"decl","node_id":"function:e78917dda989e6051383586a18681419","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":1,"scope_end":13,"storage":null,"line":10}
 {"file_path":"src/widget.ts","name":"paint","kind":"local","node_id":"method:b9d8b2e3a5c74ffdd9c1dc2a7242a576","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":5,"scope_end":5,"storage":null,"line":5}
 {"file_path":"src/widget.ts","name":"render","kind":"decl","node_id":"function:604b4956dd7a65b6dbce17af7d610c5f","target_spec":null,"target_name":null,"exported_as":"render","export_form":"esm","scope_start":1,"scope_end":13,"storage":null,"line":7}
+{"file_path":"src/widget.ts","name":"w","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":7,"scope_end":9,"storage":null,"line":7}
 == files (5)
 {"path":"CONTRIBUTING.md","language":"markdown","node_count":6}
 {"path":"README.md","language":"markdown","node_count":7}

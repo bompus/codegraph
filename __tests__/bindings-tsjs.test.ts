@@ -1,5 +1,5 @@
 /**
- * Bindings emitted by the TS/JS kernel walker (Phase 1 of
+ * Bindings emitted by the TS/JS kernel walker (Phases 1 and 2 of
  * docs/design/resolution-binding-model-plan.md).
  *
  * The `bindings` table is the single answer to "is X exported" and "what
@@ -140,5 +140,89 @@ describe.skipIf(!kernelBuilt)('TS/JS bindings: storage', () => {
     expect(store.isExported).toBe(true);
     const never = cg.getNodesByName('neverExported')[0]!;
     expect(never.isExported).toBe(false);
+  });
+});
+
+/**
+ * Phase 2 rows: the names that shadow a cross-file symbol without becoming a
+ * node (parameters, function-body locals), the CommonJS import and export
+ * forms, wildcard and default re-exports, and a default export that binds no
+ * declaration. These are what let the resolver drop its source regexes.
+ */
+const PHASE2 = `import Widget from './widget';
+const util = require('./util');
+const { readSync, statSync: stat } = require('node:fs');
+export { Widget };
+export * from './all';
+export * as ns from './space';
+export { default as Card } from './card';
+export default defineConfig({ plugins: [] });
+
+export async function main(first, { second, third = 1 }, ...rest) {
+  const loaded = await load();
+  const dyn = await import('./dyn');
+  const { a: renamedA } = await import('./ab');
+  const picked = useStore((s) => s.picked);
+  const { fetchUser } = useStore.getState();
+  try { loaded(); } catch (err) { console.log(err); }
+  return [first, second, third, rest, dyn, renamedA, picked, fetchUser];
+}
+function helper() { return 1; }
+function bracketed() { return 2; }
+const text = \`outer \${\`inner \${module.exports = { helper, renamed: bracketed }}\`}\`;
+exports['bracketed'] = bracketed;
+`;
+
+describe.skipIf(!kernelBuilt)('TS/JS bindings: scoped rows, CommonJS and default forms', () => {
+  const result = kernelBuilt ? tryKernelExtract('src/p2.js', PHASE2, 'javascript') : null;
+  const bindings = result?.bindings ?? [];
+  const rows = (name: string) => bindings.filter((b) => b.name === name);
+
+  it('parameters are `param` rows scoped to their function, including destructured, defaulted and rest names', () => {
+    for (const name of ['first', 'second', 'third', 'rest']) {
+      expect(by(bindings, name), name).toMatchObject({ kind: 'param', scopeStart: 10, scopeEnd: 18 });
+    }
+    expect(by(bindings, 's')).toMatchObject({ kind: 'param', scopeStart: 14, scopeEnd: 14 });
+    expect(by(bindings, 'err')).toMatchObject({ kind: 'param' });
+  });
+
+  it('a function-body `const x = call()` is a nodeless `local` row', () => {
+    expect(by(bindings, 'loaded')).toMatchObject({ kind: 'local', scopeStart: 10, scopeEnd: 18 });
+    expect(by(bindings, 'loaded')!.nodeId).toBeUndefined();
+  });
+
+  it('a store selector and a destructured member are not local bindings', () => {
+    expect(rows('picked')).toEqual([]);
+    expect(rows('fetchUser')).toEqual([]);
+  });
+
+  it('`require` and `await import()` are `import` rows, at module scope and inside a function', () => {
+    expect(by(bindings, 'util')).toMatchObject({ kind: 'import', targetSpec: './util', targetName: 'default' });
+    expect(by(bindings, 'util')!.nodeId).toBeDefined();
+    expect(by(bindings, 'readSync')).toMatchObject({ kind: 'import', targetSpec: 'node:fs', targetName: 'readSync' });
+    expect(by(bindings, 'stat')).toMatchObject({ kind: 'import', targetSpec: 'node:fs', targetName: 'statSync' });
+    expect(by(bindings, 'dyn')).toMatchObject({ kind: 'import', targetSpec: './dyn', scopeStart: 10, scopeEnd: 18 });
+    expect(by(bindings, 'renamedA')).toMatchObject({ kind: 'import', targetSpec: './ab', targetName: 'a' });
+  });
+
+  it('an imported name a later clause exports carries the export on its import row', () => {
+    expect(by(bindings, 'Widget')).toMatchObject({ kind: 'import', exportedAs: 'Widget', exportForm: 'esm-later' });
+  });
+
+  it('wildcard and default re-exports are rows', () => {
+    const wild = bindings.filter((b) => b.kind === 'reexport' && b.name === '*');
+    expect(wild.map((b) => [b.targetSpec, b.exportedAs])).toEqual([['./all', '*'], ['./space', 'ns']]);
+    expect(bindings.find((b) => b.kind === 'reexport' && b.name === 'default')).toMatchObject({ targetSpec: './card', exportedAs: 'Card' });
+  });
+
+  it('`export default <expression>` is a nodeless `default` row', () => {
+    const def = by(bindings, 'default', 'decl');
+    expect(def).toMatchObject({ exportedAs: 'default', exportForm: 'esm-default' });
+    expect(def!.nodeId).toBeUndefined();
+  });
+
+  it('CommonJS object and bracket exports, wherever the assignment sits', () => {
+    expect(by(bindings, 'helper')).toMatchObject({ kind: 'decl', exportedAs: 'helper', exportForm: 'cjs-object' });
+    expect(by(bindings, 'bracketed')).toMatchObject({ kind: 'decl', exportedAs: 'renamed', exportForm: 'cjs-object' });
   });
 });

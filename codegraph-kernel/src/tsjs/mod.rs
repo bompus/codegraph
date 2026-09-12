@@ -9,13 +9,14 @@
 //! parity gate fails. Positions are emitted in UTF-16 code units (what
 //! web-tree-sitter reports), see util::col16.
 
+mod bindings;
 mod extractors;
 mod fnref;
 use crate::textutil as util;
 
 use crate::buffers::{
-    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_REEXPORT, EXPORT_CJS, EXPORT_ESM,
-    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE,
+    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_REEXPORT, EXPORT_CJS, EXPORT_CJS_OBJECT, EXPORT_ESM,
+    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE, EXPORT_PUBLIC,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
     NONE, NONE_STR,
@@ -83,7 +84,7 @@ fn is_signature_method_type(kind: &str) -> bool {
     kind == "method_signature"
 }
 
-fn is_function_type(kind: &str) -> bool {
+pub(super) fn is_function_type(kind: &str) -> bool {
     matches!(kind, "function_declaration" | "generator_function_declaration" | "arrow_function" | "function_expression" | "generator_function")
 }
 
@@ -198,6 +199,12 @@ pub struct Walker<'t> {
     /// (docs/design/resolution-binding-model-plan.md, Phase 1).
     later_exports: HashMap<String, (String, u8)>,
     line_count: u32,
+    /// (name, line) → specifier for a module-level `const x = require(..)`
+    /// declarator: the walk emits its row as an `import` row (node-backed, so
+    /// a later `module.exports = { x }` can still export it).
+    import_decls: HashMap<(String, u32), String>,
+    /// (name, line) of `param`/`local` rows the pre-walk emitted (dedupe).
+    scoped_rows: HashSet<(String, u32)>,
 }
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
@@ -241,6 +248,8 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         md_ref_keys: HashSet::new(),
         later_exports: HashMap::new(),
         line_count: 0,
+        import_decls: HashMap::new(),
+        scoped_rows: HashSet::new(),
     };
 
     // File node (TreeSitterExtractor.extract): id `file:<path>`, endLine =
@@ -274,6 +283,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
     w.line_count = line_count;
     w.collect_later_exports(tree.root_node());
+    w.collect_scoped_bindings(tree.root_node());
 
     w.visit_node(tree.root_node());
 
@@ -466,12 +476,20 @@ impl<'t> Walker<'t> {
             if stmt.kind() != "export_statement" || stmt.child_by_field_name("source").is_some() {
                 continue;
             }
-            // `export default NAME;`
+            // `export default NAME;` / `export = NAME;` name a declaration.
+            // `export default <expression>` binds none: a nodeless `default`
+            // row records that the module still exports something.
             if let Some(value) = stmt.child_by_field_name("value") {
                 if value.kind() == "identifier" {
                     let name = self.text(value).to_string();
                     self.later_exports.entry(name).or_insert(("default".to_string(), EXPORT_ESM_DEFAULT));
+                } else if !matches!(value.kind(), "function_declaration" | "class_declaration" | "generator_function_declaration") {
+                    self.push_default_export_row(stmt);
                 }
+                continue;
+            }
+            if stmt.child_by_field_name("declaration").is_none() && self.has_keyword_child(stmt, "default") {
+                self.push_default_export_row(stmt);
                 continue;
             }
             // `export { a, b as c, d as default }`
@@ -496,6 +514,85 @@ impl<'t> Walker<'t> {
         }
     }
 
+    /// CommonJS export assignments, keyed by the LOCAL name they
+    /// export: `module.exports = { a, b: c }` (`cjs-object`), `module.exports =
+    /// NAME` (as `default`), `exports.x = NAME` / `exports['x'] = NAME` /
+    /// `module.exports.x = NAME` (`cjs`). A function-valued right side is the
+    /// walk's own exported node and needs no entry here.
+    pub(super) fn collect_cjs_export(&mut self, expr: Node<'t>) {
+        let (Some(left), Some(right)) = (expr.child_by_field_name("left"), expr.child_by_field_name("right")) else { return };
+        let left_text: String = self.text(left).chars().filter(|c| !c.is_whitespace()).collect();
+        if left_text == "module.exports" {
+            if right.kind() == "object" {
+                for j in 0..right.named_child_count() {
+                    let Some(prop) = right.named_child(j) else { continue };
+                    match prop.kind() {
+                        "shorthand_property_identifier" => {
+                            let name = self.text(prop).to_string();
+                            self.later_exports.entry(name.clone()).or_insert((name, EXPORT_CJS_OBJECT));
+                        }
+                        "pair" => {
+                            let key = prop.child_by_field_name("key").map(|k| self.text(k).trim_matches(|c| c == '\'' || c == '"').to_string());
+                            let value = prop.child_by_field_name("value").filter(|v| v.kind() == "identifier");
+                            if let (Some(key), Some(value)) = (key, value) {
+                                self.later_exports.entry(self.text(value).to_string()).or_insert((key, EXPORT_CJS_OBJECT));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if right.kind() == "identifier" {
+                self.later_exports.entry(self.text(right).to_string()).or_insert(("default".to_string(), EXPORT_CJS));
+            }
+            return;
+        }
+        if right.kind() != "identifier" || !matches!(left.kind(), "member_expression" | "subscript_expression") {
+            return;
+        }
+        let Some(obj) = left.child_by_field_name("object") else { return };
+        let obj_text: String = self.text(obj).chars().filter(|c| !c.is_whitespace()).collect();
+        if obj_text != "exports" && obj_text != "module.exports" {
+            return;
+        }
+        let key = left
+            .child_by_field_name("property")
+            .or_else(|| left.child_by_field_name("index"))
+            .map(|k| self.text(k).trim_matches(|c| c == '\'' || c == '"').to_string());
+        if let Some(key) = key {
+            if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
+                self.later_exports.entry(self.text(right).to_string()).or_insert((key, EXPORT_CJS));
+            }
+        }
+    }
+
+    /// A `default` row with no node: `export default defineConfig({ … })`.
+    fn push_default_export_row(&mut self, stmt: Node<'t>) {
+        let name_ref = self.arena.put("default");
+        let line = self.line_of(stmt);
+        let line_count = self.line_count;
+        self.tables.push_binding(&BindingRow {
+            kind: BINDING_DECL,
+            export_form: EXPORT_ESM_DEFAULT,
+            node_idx: NONE,
+            scope_start: 1,
+            scope_end: line_count,
+            name: name_ref,
+            target_spec: NONE_STR,
+            target_name: NONE_STR,
+            exported_as: name_ref,
+            storage: NONE_STR,
+            line,
+        });
+    }
+
+    /// The (exported-as, form) a later statement gives `name`, or none.
+    pub(super) fn later_export_of(&mut self, name: &str) -> (StrRef, u8) {
+        match self.later_exports.get(name).cloned() {
+            Some((alias, form)) => (self.arena.put(&alias), form),
+            None => (NONE_STR, EXPORT_NONE),
+        }
+    }
+
     /// Replaces the regex `is_exported_later`: same question, answered from the AST.
     pub(super) fn is_exported_later(&self, name: &str) -> bool {
         self.later_exports.contains_key(name)
@@ -509,6 +606,11 @@ impl<'t> Walker<'t> {
         if matches!(kind, "file" | "import") {
             return;
         }
+        let line = self.line_of(node);
+        if self.scoped_rows.contains(&(name.to_string(), line)) {
+            return;
+        }
+        let require_spec = self.import_decls.get(&(name.to_string(), line)).cloned();
         let scope_top = self.stack.last().map(|s| s.kind).unwrap_or("file");
         let at_module_scope = scope_top == "file";
         let (scope_start, scope_end) = if at_module_scope {
@@ -521,8 +623,19 @@ impl<'t> Walker<'t> {
         let mut form = EXPORT_NONE;
         if at_module_scope {
             if exported_flag && self.is_exported(node) {
+                // `export default function NAME` / `class NAME` exports the name
+                // as `default`: the declaration itself is the statement's value.
+                // A member nested in a default-exported object literal is not.
+                let is_default = self
+                    .export_statement_of(node)
+                    .map(|e| self.has_keyword_child(e, "default") && e.child_by_field_name("declaration") == Some(node))
+                    .unwrap_or(false);
+                exported_as = Some(if is_default { "default".to_string() } else { name.to_string() });
+                form = if is_default { EXPORT_ESM_DEFAULT } else { EXPORT_ESM };
+            } else if self.in_declare_global(node) {
+                // `declare global { … }` contributes the name to every file.
                 exported_as = Some(name.to_string());
-                form = EXPORT_ESM;
+                form = EXPORT_PUBLIC;
             } else if let Some((alias, f)) = self.later_exports.get(name) {
                 exported_as = Some(alias.clone());
                 form = *f;
@@ -533,16 +646,19 @@ impl<'t> Walker<'t> {
         }
         let name_ref = self.arena.put(name);
         let exported_ref = opt_str(&mut self.arena, exported_as.as_deref());
-        let line = self.line_of(node);
+        let (kind_code, target_spec, target_name) = match require_spec {
+            Some(spec) => (BINDING_IMPORT, self.arena.put(&spec), self.arena.put("default")),
+            None => (if at_module_scope { BINDING_DECL } else { BINDING_LOCAL }, NONE_STR, NONE_STR),
+        };
         self.tables.push_binding(&BindingRow {
-            kind: if at_module_scope { BINDING_DECL } else { BINDING_LOCAL },
+            kind: kind_code,
             export_form: form,
             node_idx: row,
             scope_start,
             scope_end,
             name: name_ref,
-            target_spec: NONE_STR,
-            target_name: NONE_STR,
+            target_spec,
+            target_name,
             exported_as: exported_ref,
             storage: NONE_STR,
             line,
@@ -550,22 +666,25 @@ impl<'t> Walker<'t> {
     }
 
     /// An `import` row: the local name, the specifier, and the imported name.
+    /// An imported name a later clause exports (`import X from './x'; export
+    /// { X }`) carries that export like a declaration would.
     pub(super) fn emit_import_binding(&mut self, local: &str, spec: &str, imported: &str, node: Node<'t>) {
         let name_ref = self.arena.put(local);
         let spec_ref = self.arena.put(spec);
         let imported_ref = self.arena.put(imported);
         let line = self.line_of(node);
         let line_count = self.line_count;
+        let (exported_as, form) = self.later_export_of(local);
         self.tables.push_binding(&BindingRow {
             kind: BINDING_IMPORT,
-            export_form: EXPORT_NONE,
+            export_form: form,
             node_idx: NONE,
             scope_start: 1,
             scope_end: line_count,
             name: name_ref,
             target_spec: spec_ref,
             target_name: imported_ref,
-            exported_as: NONE_STR,
+            exported_as,
             storage: NONE_STR,
             line,
         });
@@ -1064,6 +1183,30 @@ impl<'t> Walker<'t> {
             }
         }
         None
+    }
+
+    /// The `export_statement` ancestor, when there is one.
+    fn export_statement_of(&self, node: Node<'t>) -> Option<Node<'t>> {
+        let mut cur = node.parent();
+        while let Some(p) = cur {
+            if p.kind() == "export_statement" {
+                return Some(p);
+            }
+            cur = p.parent();
+        }
+        None
+    }
+
+    /// Inside a `declare global { … }` ambient block.
+    fn in_declare_global(&self, node: Node) -> bool {
+        let mut cur = node.parent();
+        while let Some(p) = cur {
+            if p.kind() == "ambient_declaration" && self.has_keyword_child(p, "global") {
+                return true;
+            }
+            cur = p.parent();
+        }
+        false
     }
 
     /// isExported: walk the parent chain for an export_statement.

@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Language, Node, UnresolvedReference, Edge } from '../types';
+import { Binding, Language, Node, UnresolvedReference, Edge } from '../types';
 import { QueryBuilder } from '../db/queries';
 import {
   UnresolvedRef,
@@ -20,7 +20,7 @@ import {
   isImportableKind,
 } from './types';
 import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
-import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
+import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, extractReExports, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworks } from './frameworks';
@@ -233,6 +233,7 @@ export class ReferenceResolver {
   private fileCache: LRUCache<string, string | null>; // per-file content cache
   private importMappingCache: LRUCache<string, ImportMapping[]>;
   private reExportCache: LRUCache<string, ReExport[]>;
+  private bindingsCache: LRUCache<string, Binding[]>; // file → bindings rows
   private nameCache: LRUCache<string, Node[]>; // name → nodes cache
   private lowerNameCache: LRUCache<string, Node[]>; // lower(name) → nodes cache
   private qualifiedNameCache: LRUCache<string, Node[]>; // qualified_name → nodes cache
@@ -297,6 +298,7 @@ export class ReferenceResolver {
     this.fileCache = new LRUCache(contentLimit);
     this.importMappingCache = new LRUCache(limit);
     this.reExportCache = new LRUCache(limit);
+    this.bindingsCache = new LRUCache(limit);
     this.nameCache = new LRUCache(limit);
     this.lowerNameCache = new LRUCache(limit);
     this.qualifiedNameCache = new LRUCache(limit);
@@ -395,6 +397,7 @@ export class ReferenceResolver {
     this.fileCache.clear();
     this.importMappingCache.clear();
     this.reExportCache.clear();
+    this.bindingsCache.clear();
     this.nameCache.clear();
     this.lowerNameCache.clear();
     this.qualifiedNameCache.clear();
@@ -642,10 +645,26 @@ export class ReferenceResolver {
         return supers;
       },
 
+      getBindings: (filePath: string) => {
+        const cached = this.bindingsCache.get(filePath);
+        if (cached) return cached;
+        const rows = this.queries.getBindingsByFile(filePath);
+        this.bindingsCache.set(filePath, rows);
+        return rows;
+      },
+
       getImportMappings: (filePath: string, language) => {
         const cacheKey = filePath;
         const cached = this.importMappingCache.get(cacheKey);
         if (cached) return cached;
+
+        // A file with binding rows answers from them: one `import` row per
+        // local name, ESM and `require` alike, from the AST.
+        const fromRows = importMappingsFromBindings(this.context.getBindings!(filePath));
+        if (fromRows) {
+          this.importMappingCache.set(cacheKey, fromRows);
+          return fromRows;
+        }
 
         const content = this.context.readFile(filePath);
         if (!content) {
@@ -682,6 +701,11 @@ export class ReferenceResolver {
       getReExports: (filePath: string, language) => {
         const cached = this.reExportCache.get(filePath);
         if (cached) return cached;
+        const fromRows = reExportsFromBindings(this.context.getBindings!(filePath));
+        if (fromRows) {
+          this.reExportCache.set(filePath, fromRows);
+          return fromRows;
+        }
         const content = this.context.readFile(filePath);
         if (!content) {
           this.reExportCache.set(filePath, []);

@@ -6,7 +6,7 @@
 
 import { builtinModules } from 'module';
 import * as path from 'path';
-import { Language, Node } from '../types';
+import { Binding, Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, isInheritanceRef, isImportableKind } from './types';
 import { resolveWorkspaceImport } from './workspace-packages';
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
@@ -559,10 +559,18 @@ export function isBoundToBareImport(ref: UnresolvedRef, context: ResolutionConte
     return false;
   }
   // Optional-called: a minimal context (tests, embedders) may not carry
-  // import mappings, and without them nothing is known to be bare.
-  const source = context
-    .getImportMappings?.(ref.filePath, ref.language)
-    ?.find((i) => i.localName === ref.referenceName)?.source;
+  // import mappings, and without them nothing is known to be bare. A file
+  // with binding rows answers from its innermost `import` row for the name.
+  const rows = context.getBindings?.(ref.filePath);
+  let source: string | undefined;
+  if (rows && rows.length > 0) {
+    const bound = innermostBinding(rows, ref.referenceName, ref.line);
+    source = bound?.kind === 'import' ? bound.targetSpec : undefined;
+  } else {
+    source = context
+      .getImportMappings?.(ref.filePath, ref.language)
+      ?.find((i) => i.localName === ref.referenceName)?.source;
+  }
   if (source === undefined) return false;
   if (source.startsWith('.') || source.startsWith('/')) return false;
   // `~`, `#` and `$` cannot begin an npm package name, so the prefix alone
@@ -598,6 +606,21 @@ export function isBoundToBareImport(ref: UnresolvedRef, context: ResolutionConte
     if (local) return false;
   }
   return true;
+}
+
+/**
+ * The binding row for `name` whose scope contains `line`, innermost (narrowest
+ * scope) first; a row of any scope when `line` is unknown. Rows are few per
+ * file and the callers memoise, so a linear scan is fine.
+ */
+export function innermostBinding(rows: Binding[], name: string, line?: number): Binding | undefined {
+  let best: Binding | undefined;
+  for (const r of rows) {
+    if (r.name !== name) continue;
+    if (line !== undefined && (line < r.scopeStart || line > r.scopeEnd)) continue;
+    if (!best || r.scopeEnd - r.scopeStart < best.scopeEnd - best.scopeStart) best = r;
+  }
+  return best;
 }
 
 /**
@@ -677,6 +700,20 @@ function isSealedModule(filePath: string, context: ResolutionContext): boolean {
   }
   const hit = memo.get(filePath);
   if (hit !== undefined) return hit;
+  const rows = context.getBindings?.(filePath);
+  if (rows && rows.length > 0) {
+    // From the table: an `import` statement node (ESM only; `require` makes
+    // no such node, so a classic script stays exempt) makes it a module, and
+    // any row exported under any form (ESM, later clause, CommonJS object or
+    // bracket assignment, `declare global`) means it offers something.
+    const nodes = context.getNodesInFile(filePath);
+    const sealed =
+      nodes.some((n) => n.kind === 'import') &&
+      !rows.some((r) => r.exportedAs !== undefined) &&
+      !nodes.some((n) => n.isExported);
+    memo.set(filePath, sealed);
+    return sealed;
+  }
   const source = context.readFile(filePath);
   const code = source === null ? '' : blankStringContents(stripCommentsForRegex(source, 'typescript'));
   // CommonJS assignments can execute inside template interpolations, which the
@@ -929,7 +966,16 @@ const LOCAL_BINDING_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>(
  * once methods stop being candidates for a bare call (#1714), the function
  * that was out-ranked steps in. Read from source, memoised per file+name.
  */
-function isLocallyBoundJsName(name: string, filePath: string, context: ResolutionContext): boolean {
+function isLocallyBoundJsName(name: string, filePath: string, context: ResolutionContext, line?: number): boolean {
+  // From the table: a `decl`, `local` or `param` row for the name whose scope
+  // holds the reference. An `import` row is not a local binding (the symbol
+  // lives in the other file), and a store selector / destructured member is
+  // no row at all — the same carve-outs the regex path below makes.
+  const rows = context.getBindings?.(filePath);
+  if (rows && rows.length > 0) {
+    const bound = innermostBinding(rows, name, line);
+    return bound !== undefined && (bound.kind === 'decl' || bound.kind === 'local' || bound.kind === 'param');
+  }
   let memo = LOCAL_BINDING_MEMO.get(context);
   if (!memo) {
     memo = new Map();
@@ -1012,7 +1058,7 @@ export function matchByExactName(
     .filter((n) => !(bareJs && n.kind === 'method'))
     // A name the file binds itself (a parameter, a const) shadows every other
     // file's symbol of that name, so a bare call has no cross-file candidate.
-    .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context)));
+    .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context, ref.line)));
 
   // A name bound to a bare import (`import { test } from 'vitest'`) has its
   // target outside the graph: no other file's `test` is it, however unique.
@@ -3242,7 +3288,7 @@ export function matchFuzzy(
     isCrossFileReachable(finalCandidates[0]!, ref, context) &&
     !(isBareJsCall(ref, context) &&
       (finalCandidates[0]!.kind === 'method' ||
-        (finalCandidates[0]!.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context)))) &&
+        (finalCandidates[0]!.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context, ref.line)))) &&
     isLexicallyReachable(finalCandidates[0]!, ref, context)
   ) {
     const isCrossLanguage = finalCandidates[0]!.language !== ref.language;

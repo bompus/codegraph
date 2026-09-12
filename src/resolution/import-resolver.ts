@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Language, Node } from '../types';
+import { Binding, Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping, ReExport } from './types';
 import { applyAliases } from './path-aliases';
 import { extractLocalExportAliases } from './alias-binding';
@@ -97,6 +97,10 @@ const JS_FAMILY_FILE = /\.(?:[cm]?[jt]sx?)$/;
 
 /** The identifier `export default NAME` names in a JS-family file, or null. */
 function defaultExportBinding(filePath: string, context: ResolutionContext): string | null {
+  const rows = context.getBindings?.(filePath);
+  if (rows && rows.length > 0) {
+    return rows.find((r) => r.exportedAs === 'default' && r.nodeId)?.name ?? null;
+  }
   if (!JS_FAMILY_FILE.test(filePath)) return null;
   const source = context.readFile(filePath);
   if (!source || !source.includes('export default')) return null;
@@ -133,7 +137,16 @@ function getFileExportIndex(filePath: string, context: ResolutionContext): FileE
     // Bind names introduced by a local export clause to their declarations, so
     // an importer asking for the renamed name gets the real symbol instead of
     // falling through to the name-matcher (which cannot cross the rename).
-    const content = context.readFile(filePath);
+    const rows = context.getBindings?.(filePath);
+    if (rows && rows.length > 0) {
+      const byId = new Map(nodesInFile.map((n) => [n.id, n]));
+      for (const r of rows) {
+        if (!r.exportedAs || !r.nodeId || idx.byName.has(r.exportedAs)) continue;
+        const decl = byId.get(r.nodeId);
+        if (decl) idx.byName.set(r.exportedAs, decl);
+      }
+    }
+    const content = rows && rows.length > 0 ? null : context.readFile(filePath);
     if (content && content.includes('export')) {
       for (const { exportedName, localName } of extractLocalExportAliases(content)) {
         if (idx.byName.has(exportedName)) continue;
@@ -852,6 +865,48 @@ function resolvePhpIncludePath(
     if (context.fileExists(relativePath + ext)) return relativePath + ext;
   }
   return null;
+}
+
+/**
+ * Import mappings from a file's binding rows, or null when the file has no
+ * rows at all (its extractor emits none, so the source regexes still apply).
+ * Local scope is irrelevant here: the mappings answer "what does this local
+ * name import", and a `require` inside a function is still that.
+ */
+export function importMappingsFromBindings(rows: Binding[]): ImportMapping[] | null {
+  if (rows.length === 0) return null;
+  const out: ImportMapping[] = [];
+  for (const r of rows) {
+    if (r.kind !== 'import' || !r.targetSpec) continue;
+    const exportedName = r.targetName ?? r.name;
+    out.push({
+      localName: r.name,
+      exportedName,
+      source: r.targetSpec,
+      isDefault: exportedName === 'default',
+      isNamespace: exportedName === '*',
+    });
+  }
+  return out;
+}
+
+/**
+ * Re-exports from a file's binding rows, or null when the file has none.
+ * A wildcard row is named `*`; `export * as ns` carries the namespace in
+ * `exportedAs`, which the chase does not follow (the regex path never did).
+ */
+export function reExportsFromBindings(rows: Binding[]): ReExport[] | null {
+  if (rows.length === 0) return null;
+  const out: ReExport[] = [];
+  for (const r of rows) {
+    if (r.kind !== 'reexport' || !r.targetSpec) continue;
+    if (r.name === '*') {
+      out.push({ kind: 'wildcard', source: r.targetSpec });
+    } else {
+      out.push({ kind: 'named', exportedName: r.exportedAs ?? r.name, originalName: r.name, source: r.targetSpec });
+    }
+  }
+  return out;
 }
 
 /**

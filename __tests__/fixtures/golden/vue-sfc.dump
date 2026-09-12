@@ -147,7 +147,7 @@
 {"from_node_id":"file:src/views/Login.vue","reference_name":"vue-router","reference_kind":"imports","line":6,"col":0,"candidates":null,"file_path":"src/views/Login.vue","language":"vue","status":"failed","name_tail":"vue-router"}
 {"from_node_id":"function:8d98565edda11804927409e8e272013e","reference_name":"session.login","reference_kind":"calls","line":12,"col":2,"candidates":null,"file_path":"src/views/Login.vue","language":"vue","status":"failed","name_tail":"login"}
 {"from_node_id":"function:cbf5b3b6d9cf6f3f971b79716cb24ec1","reference_name":"row.startsWith","reference_kind":"calls","line":7,"col":9,"candidates":null,"file_path":"src/components/PlayerTable.vue","language":"vue","status":"failed","name_tail":"startsWith"}
-== bindings (8)
+== bindings (11)
 {"file_path":"src/router/index.ts","name":"createRouter","kind":"import","node_id":null,"target_spec":"vue-router","target_name":"createRouter","exported_as":null,"export_form":null,"scope_start":1,"scope_end":11,"storage":null,"line":1}
 {"file_path":"src/router/index.ts","name":"createWebHistory","kind":"import","node_id":null,"target_spec":"vue-router","target_name":"createWebHistory","exported_as":null,"export_form":null,"scope_start":1,"scope_end":11,"storage":null,"line":1}
 {"file_path":"src/router/index.ts","name":"router","kind":"decl","node_id":"constant:cc53d30032c6a64950637c56908b7d0b","target_spec":null,"target_name":null,"exported_as":"default","export_form":"esm-default","scope_start":1,"scope_end":11,"storage":null,"line":2}
@@ -155,7 +155,10 @@
 {"file_path":"src/stores/session.ts","name":"loggedIn","kind":"decl","node_id":"function:98084f78440e902f0fb6526f37df2e46","target_spec":null,"target_name":null,"exported_as":"loggedIn","export_form":"esm","scope_start":1,"scope_end":10,"storage":null,"line":4}
 {"file_path":"src/stores/session.ts","name":"login","kind":"decl","node_id":"function:6be3944381225a6a828e91729caf5788","target_spec":null,"target_name":null,"exported_as":"login","export_form":"esm","scope_start":1,"scope_end":10,"storage":null,"line":6}
 {"file_path":"src/stores/session.ts","name":"logout","kind":"decl","node_id":"function:085111786b044269e1e486b05662945a","target_spec":null,"target_name":null,"exported_as":"logout","export_form":"esm","scope_start":1,"scope_end":10,"storage":null,"line":7}
+{"file_path":"src/stores/session.ts","name":"s","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":4,"scope_end":4,"storage":null,"line":4}
+{"file_path":"src/stores/session.ts","name":"token","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":6,"scope_end":6,"storage":null,"line":6}
 {"file_path":"src/stores/session.ts","name":"useSessionStore","kind":"decl","node_id":"constant:452cdd44fc910418f24644cca18f6ebf","target_spec":null,"target_name":null,"exported_as":"useSessionStore","export_form":"esm","scope_start":1,"scope_end":10,"storage":null,"line":2}
+{"file_path":"src/stores/session.ts","name":"username","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":6,"scope_end":6,"storage":null,"line":6}
 == files (7)
 {"path":"src/components/PlayerTable.vue","language":"vue","node_count":3}
 {"path":"src/components/TheHeader.vue","language":"vue","node_count":3}
