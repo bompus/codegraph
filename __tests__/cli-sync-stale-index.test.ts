@@ -53,9 +53,14 @@ describe('explicit CLI sync with stale extraction', () => {
           const result = run(...args);
           expect(result.status).toBe(1);
           const output = result.stdout + result.stderr;
-          if (quiet) expect(output).toBe('');
-          else expect(output).toContain('Run "codegraph index"');
+          expect(output).toContain('Run "codegraph index"');
           expect(output).not.toContain('Already up to date');
+          if (quiet) {
+            // One explanatory line on stderr, nothing on stdout, so a hook that
+            // fails the commit on exit 1 still shows the user why. (#1798)
+            expect(result.stdout).toBe('');
+            expect(result.stderr.trim().split('\n')).toHaveLength(1);
+          }
           const cg = CodeGraph.openSync(root);
           try {
             expect(cg.isIndexStale()).toBe(true);
