@@ -1,0 +1,1 @@
+{ "name": "golden-sfc-mix", "private": true, "dependencies": { "svelte": "5", "astro": "5" } }

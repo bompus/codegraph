@@ -1,0 +1,16 @@
+@page "/greet"
+@inject GreetingService Greeter
+
+<h1>@Title</h1>
+<button @onclick="SayHello">Greet</button>
+<p>@message</p>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Hello";
+    private string message = "";
+    private void SayHello()
+    {
+        var req = new GreetRequest(Title);
+        message = Greeter.Greet(req);
+    }
+}

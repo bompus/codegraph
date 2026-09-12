@@ -107,12 +107,13 @@ Exit met: the gate is green on `fork/consolidated` with no extraction change.
 
 Exit met: no file reaches WASM because of an ERROR node; deferral reads zero on all three survey repos.
 
-### Phase 2: SFC extractors call the kernel
+### Phase 2: SFC extractors call the kernel — DONE 2026-09-11
 
-- Replace `new TreeSitterExtractor(...)` in the four SFC extractors with `extract_file` on the block, then the existing position rebase.
-- Add SFC fixtures to the golden set.
+- `src/extraction/block-extract.ts` is the one seam: `extractEmbeddedBlock(filePath, content, language)` tries `tryKernelExtract` and falls back to `TreeSitterExtractor` only when the kernel declines (language not routed, no binary, stack-guard defer). Vue, Svelte, Astro and Razor call it in place of constructing the WASM extractor; their position rebasing is untouched, since results are block-relative either way.
+- A second SFC golden, `golden/sfc-mix` (Svelte with `lang="ts"`, `context="module"` and plain script; Astro frontmatter plus inline script; Razor `@code` with a C# sibling), was generated on the WASM block path before the change and holds byte-for-byte after it, as does `vue-sfc`.
+- `__tests__/kernel-sfc-blocks.test.ts` pins both halves on six sample files: with a kernel staged, extracting an SFC never calls `getParser` (no WASM parser instantiated), and the kernel and WASM results are canonically equal.
 
-Exit: the espn-draft fixture indexes with zero WASM parses (instrument `getParser` to throw under a test flag).
+Exit met: SFC fixtures index with zero WASM parses on a host with a kernel. The remaining WASM users in `src/extraction/` are the CFML extractor (live CST), the tail languages, and the fallback itself.
 
 ### Phase 3: parse-tree service
 

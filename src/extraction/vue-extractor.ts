@@ -1,6 +1,6 @@
 import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Language } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
-import { TreeSitterExtractor } from './tree-sitter';
+import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
 
 /**
@@ -31,7 +31,7 @@ function kebabToPascal(name: string): string {
  *
  * Vue SFCs are multi-language (script + template + style). Rather than
  * parsing the full Vue grammar, we extract the <script> block content
- * and delegate it to the TypeScript/JavaScript TreeSitterExtractor.
+ * and delegate it to the TypeScript/JavaScript extractor (kernel first, wasm fallback).
  *
  * Every .vue file produces a component node (Vue components are always importable).
  */
@@ -166,7 +166,7 @@ export class VueExtractor {
   }
 
   /**
-   * Process a script block by delegating to TreeSitterExtractor
+   * Process a script block by delegating to the language extractor (kernel first)
    */
   private processScriptBlock(
     block: { content: string; startLine: number; isSetup: boolean; isTypeScript: boolean },
@@ -183,9 +183,8 @@ export class VueExtractor {
       return;
     }
 
-    // Delegate to TreeSitterExtractor
-    const extractor = new TreeSitterExtractor(this.filePath, block.content, scriptLanguage);
-    const result = extractor.extract();
+    // Kernel first, wasm fallback (block-extract.ts)
+    const result = extractEmbeddedBlock(this.filePath, block.content, scriptLanguage);
 
     // Offset line numbers from script block back to .vue file positions
     for (const node of result.nodes) {

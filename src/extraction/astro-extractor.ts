@@ -1,6 +1,6 @@
 import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
-import { TreeSitterExtractor } from './tree-sitter';
+import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
 
 /**
@@ -15,7 +15,7 @@ const ASTRO_BUILTIN_COMPONENTS = new Set(['Fragment', 'Code', 'Debug']);
  * Astro files are multi-language: a TypeScript frontmatter block fenced by
  * `---` lines, a JSX-like HTML template, and optional <script>/<style> blocks.
  * Rather than parsing a full Astro grammar, we extract the frontmatter and
- * <script> contents and delegate them to the TypeScript TreeSitterExtractor
+ * <script> contents and delegate them to the TypeScript extractor (kernel first)
  * (Astro processes both as TypeScript by default — no `lang` attr needed).
  *
  * Also extracts function calls from template expressions (`{fn(...)}`) and
@@ -179,7 +179,7 @@ export class AstroExtractor {
   }
 
   /**
-   * Process frontmatter / script content by delegating to TreeSitterExtractor.
+   * Process frontmatter / script content by delegating to the TypeScript extractor (kernel first).
    * Astro treats both as TypeScript by default.
    */
   private processScriptContent(
@@ -195,9 +195,8 @@ export class AstroExtractor {
       return;
     }
 
-    // Delegate to TreeSitterExtractor
-    const extractor = new TreeSitterExtractor(this.filePath, block.content, 'typescript');
-    const result = extractor.extract();
+    // Kernel first, wasm fallback (block-extract.ts)
+    const result = extractEmbeddedBlock(this.filePath, block.content, 'typescript');
 
     // Offset line numbers from the block back to .astro file positions
     for (const node of result.nodes) {
