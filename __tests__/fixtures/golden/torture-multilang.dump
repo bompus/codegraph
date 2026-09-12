@@ -4469,7 +4469,7 @@
 {"from_node_id":"variable:e5d1acb1f72fa51c98bb94af8c35fada","reference_name":"example.com/remote.md","reference_kind":"references","line":70,"col":22,"candidates":null,"file_path":"torture.go","language":"go","status":"failed","name_tail":"md"}
 {"from_node_id":"variable:f90ca95a6ecd4291f24e8cc99492595f","reference_name":"notes.md#top","reference_kind":"references","line":70,"col":20,"candidates":null,"file_path":"torture.luau","language":"luau","status":"failed","name_tail":"md#top"}
 {"from_node_id":"variable:feb330d554c5d0caaa8978323a006e52","reference_name":"README.md","reference_kind":"references","line":238,"col":11,"candidates":null,"file_path":"torture.rb","language":"ruby","status":"failed","name_tail":"md"}
-== bindings (687)
+== bindings (688)
 {"file_path":"Torture.java","name":"<Runnable$anon@27>","kind":"local","node_id":"class:c4ed77533cd6f14e451fe7962f484e20","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":27,"scope_end":32,"storage":null,"line":27}
 {"file_path":"Torture.java","name":"<Runnable$anon@42>","kind":"local","node_id":"class:66085d60d16ebfd037ddd1bd9273a82e","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":36,"scope_end":48,"storage":null,"line":42}
 {"file_path":"Torture.java","name":"API_BASE","kind":"local","node_id":"constant:027c429f02116e6725f83e648b4778cf","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":16,"scope_end":85,"storage":null,"line":21}
@@ -4770,6 +4770,7 @@
 {"file_path":"torture.js","name":"v","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":94,"scope_end":100,"storage":null,"line":94}
 {"file_path":"torture.js","name":"wrapped","kind":"local","node_id":"method:9fc0d6eb8488738cd8156f94d9984dce","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":15,"scope_end":39,"storage":null,"line":22}
 {"file_path":"torture.js","name":"x","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":13,"scope_end":13,"storage":null,"line":13}
+{"file_path":"torture.kt","name":"*","kind":"import","node_id":null,"target_spec":"com.example.wild.*","target_name":"*","exported_as":null,"export_form":null,"scope_start":1,"scope_end":307,"storage":null,"line":6}
 {"file_path":"torture.kt","name":"AbstractK","kind":"decl","node_id":"class:6eaad8867487d566e0bb0bf5c0a032d9","target_spec":null,"target_name":null,"exported_as":"AbstractK","export_form":"public","scope_start":1,"scope_end":307,"storage":null,"line":93}
 {"file_path":"torture.kt","name":"AccessorK","kind":"decl","node_id":"class:2f82bcd7b5b67d51341dff5d997de50b","target_spec":null,"target_name":null,"exported_as":"AccessorK","export_form":"public","scope_start":1,"scope_end":307,"storage":null,"line":291}
 {"file_path":"torture.kt","name":"ActualFile","kind":"decl","node_id":"class:4cc0425446f472c0e4e9753dc27b8c07","target_spec":null,"target_name":null,"exported_as":"ActualFile","export_form":"public","scope_start":1,"scope_end":307,"storage":null,"line":174}

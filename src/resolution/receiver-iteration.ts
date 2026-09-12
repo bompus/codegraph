@@ -12,6 +12,14 @@ export function inferIterationReceiver(
   if (ref.language !== 'kotlin' && ref.language !== 'go') return null;
   const source = context.readFile(ref.filePath);
   if (!source) return null;
+  const binding = (context.getBindings?.(ref.filePath) ?? []).filter(b => b.name === receiver &&
+    b.scopeStart <= ref.line && b.scopeEnd >= ref.line)
+    .sort((a, b) => (a.scopeEnd - a.scopeStart) - (b.scopeEnd - b.scopeStart))[0];
+  const declaration = binding ? context.getFileLines?.(ref.filePath)?.[binding.line - 1] : undefined;
+  // Parse only names that can be introduced by the scoped constructs below.
+  // Ordinary unknown calls must not reparse an entire file per reference.
+  if (ref.language === 'go' && !declaration?.includes('range')) return null;
+  if (ref.language === 'kotlin' && receiver !== 'it' && !declaration?.includes('->')) return null;
   const tree = parseSourceTreeSync(source, ref.language);
   if (!tree) return null;
   try {
@@ -71,6 +79,33 @@ export function inferIterationReceiver(
         const element = callee?.signature?.match(/\)\s*\(?\s*\[\]\s*\*?([\w.]+)/)?.[1];
         return element && callee ? { type: element, site: { ...ref, filePath: callee.filePath, line: callee.startLine } } : null;
       }
+    }
+    return null;
+  } finally { tree.delete(); }
+}
+
+/** A positive PHP instanceof branch supplies evidence only inside its body. */
+export function inferGuardedReceiver(receiver: string, ref: UnresolvedRef, context: ResolutionContext): string | null {
+  if (ref.language !== 'php') return null;
+  const source = context.readFile(ref.filePath);
+  if (!source?.includes('instanceof')) return null;
+  const tree = parseSourceTreeSync(source, ref.language);
+  if (!tree) return null;
+  try {
+    const call = tree.rootNode.descendantForPosition({ row: ref.line - 1, column: ref.column });
+    for (let node = call; node; node = node.parent) {
+      if (['anonymous_function', 'anonymous_function_creation_expression', 'arrow_function', 'function_definition', 'method_declaration'].includes(node.type)) return null;
+      if (node.type !== 'if_statement') continue;
+      const body = node.childForFieldName('body');
+      if (!body || !call || call.startIndex < body.startIndex || call.endIndex > body.endIndex) continue;
+      const condition = node.childForFieldName('condition')?.text;
+      const match = condition?.match(/^\(\s*\$([\w]+)\s+instanceof\s+([\w\\]+)\s*\)$/);
+      if (match?.[1] !== receiver) continue;
+      const shadow = context.getBindings?.(ref.filePath).some(b => b.name === receiver &&
+        b.scopeStart > node!.startPosition.row + 1 && b.scopeStart <= ref.line && b.scopeEnd >= ref.line);
+      const assigned = body.descendantsOfType('assignment_expression').some(n => n.startIndex < call.startIndex &&
+        n.childForFieldName('left')?.text === `$${receiver}`);
+      return shadow || assigned ? null : match[2]!;
     }
     return null;
   } finally { tree.delete(); }

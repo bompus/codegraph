@@ -1289,10 +1289,14 @@ impl<'t> Walker<'t> {
         self.import_row_of(node, &module_name);
     }
 
-    /// `import a.b.C [as D]` binds `D` or `C`; `import a.b.*` binds no single name.
+    /// `import a.b.C [as D]` binds `D` or `C`; `import a.b.*` records its package scope.
     fn import_row_of(&mut self, node: Node<'t>, fqn: &str) {
         let wildcard = (0..node.child_count()).filter_map(|i| node.child(i)).any(|c| c.kind() == "wildcard_import" || c.kind() == "*");
-        if wildcard || fqn.is_empty() {
+        if fqn.is_empty() {
+            return;
+        }
+        if wildcard {
+            self.emit_import_binding("*", &format!("{fqn}.*"), node);
             return;
         }
         let alias = (0..node.named_child_count())

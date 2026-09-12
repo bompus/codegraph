@@ -82,10 +82,11 @@ describe.skipIf(!kernelBuilt)('Java bindings', () => {
     expect(by(rows, 'reply')!.nodeId).toBeUndefined();
   });
 
-  it('imports: plain and static bind the last segment; a wildcard binds nothing', () => {
+  it('imports: plain and static bind the last segment; wildcards retain their package scope', () => {
     expect(by(rows, 'List')).toMatchObject({ kind: 'import', targetSpec: 'java.util.List', targetName: 'List' });
     expect(by(rows, 'emptyList')).toMatchObject({ kind: 'import', targetSpec: 'java.util.Collections.emptyList' });
-    expect(rows.filter((b) => b.kind === 'import')).toHaveLength(2);
+    expect(by(rows, '*')).toMatchObject({ kind: 'import', targetSpec: 'com.example.util.*', targetName: '*' });
+    expect(rows.filter((b) => b.kind === 'import')).toHaveLength(3);
     expect(importMappingsFromBindings(rows)!.find((m) => m.localName === 'List')).toMatchObject({ source: 'java.util.List', exportedName: 'List', isNamespace: false });
   });
 });
@@ -108,9 +109,10 @@ describe.skipIf(!kernelBuilt)('Kotlin bindings', () => {
     expect(by(rows, 'reply')).toMatchObject({ kind: 'local', scopeStart: 12, scopeEnd: 15 });
   });
 
-  it('imports: the alias or last segment; a wildcard binds nothing', () => {
+  it('imports: the alias or last segment; wildcards retain their package scope', () => {
     expect(by(rows, 'UUID')).toMatchObject({ kind: 'import', targetSpec: 'java.util.UUID' });
     expect(by(rows, 'Fmt')).toMatchObject({ kind: 'import', targetSpec: 'com.example.util.Formatter' });
-    expect(rows.filter((b) => b.kind === 'import')).toHaveLength(2);
+    expect(by(rows, '*')).toMatchObject({ kind: 'import', targetSpec: 'com.example.util.*', targetName: '*' });
+    expect(rows.filter((b) => b.kind === 'import')).toHaveLength(3);
   });
 });

@@ -877,10 +877,14 @@ impl<'t> Walker<'t> {
         self.import_row_of(node, &module_name);
     }
 
-    /// `import [static] a.b.C;` binds `C`; a wildcard binds no single name.
+    /// `import [static] a.b.C;` binds `C`; a wildcard records its package scope.
     fn import_row_of(&mut self, node: Node<'t>, fqn: &str) {
         let wildcard = (0..node.child_count()).filter_map(|i| node.child(i)).any(|c| c.kind() == "asterisk");
-        if wildcard || fqn.is_empty() {
+        if fqn.is_empty() {
+            return;
+        }
+        if wildcard {
+            self.emit_import_binding("*", &format!("{fqn}.*"), node);
             return;
         }
         let local = fqn.rsplit('.').next().unwrap_or(fqn).to_string();

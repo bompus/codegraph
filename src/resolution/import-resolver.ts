@@ -1632,14 +1632,21 @@ function findPythonModuleFile(
   const rel = mod.replace(/\./g, '/');
   const lastSeg = mod.split('.').pop()!;
   const endsWith = (p: string, want: string): boolean => p === want || p.endsWith('/' + want);
-  const moduleFile = context
-    .getNodesByName(`${lastSeg}.py`)
-    .find((n) => n.kind === 'file' && n.filePath !== excludeFilePath && endsWith(n.filePath, `${rel}.py`));
-  if (moduleFile) return moduleFile;
-  const pkgFile = context
-    .getNodesByName('__init__.py')
-    .find((n) => n.kind === 'file' && n.filePath !== excludeFilePath && endsWith(n.filePath, `${rel}/__init__.py`));
-  return pkgFile ?? null;
+  const candidates = [
+    ...context.getNodesByName(`${lastSeg}.py`).filter(n => n.kind === 'file' &&
+      n.filePath !== excludeFilePath && endsWith(n.filePath, `${rel}.py`)),
+    ...context.getNodesByName('__init__.py').filter(n => n.kind === 'file' &&
+      n.filePath !== excludeFilePath && endsWith(n.filePath, `${rel}/__init__.py`)),
+  ];
+  // Root and conventional src packages take precedence over similarly named
+  // test fixtures. Outside those roots, require an unambiguous module path.
+  for (const root of ['', 'src/']) {
+    for (const suffix of [`${rel}/__init__.py`, `${rel}.py`]) {
+      const hit = candidates.find(n => n.filePath === root + suffix);
+      if (hit) return hit;
+    }
+  }
+  return candidates.length === 1 ? candidates[0]! : null;
 }
 
 /**
@@ -2007,6 +2014,28 @@ function findExportedSymbolWalk(
   } else {
     const direct = exportIndex.byName.get(want.exportedName);
     if (direct) return direct;
+  }
+
+  // Python module-level imports are public bindings, including aliases in
+  // package __init__.py files. Follow the same bounded, cycle-safe export walk.
+  if (language === 'python') {
+    const name = want.isNamespace ? want.memberName : want.exportedName;
+    const bindings = (context.getBindings?.(filePath) ?? []).filter(row =>
+      row.name === name && row.scopeStart === 1 &&
+      !context.getNodesInFile(filePath).some(node =>
+        ['function', 'method', 'class'].includes(node.kind) &&
+        node.startLine <= row.line && node.endLine >= row.line));
+    if (bindings.length === 1) {
+      const binding = bindings[0]!;
+      if (binding.kind === 'import' && binding.targetSpec && binding.targetName !== '*') {
+        const next = resolveImportPath(binding.targetSpec, filePath, language, context)
+          ?? findPythonModuleFile(binding.targetSpec, context, filePath)?.filePath;
+        if (next) return findExportedSymbol(next, {
+          isDefault: false, isNamespace: false,
+          exportedName: binding.targetName ?? binding.name, memberName: null,
+        }, language, context, visited, depth + 1);
+      }
+    }
   }
 
   // 2. Re-export hit: the file forwards the symbol to another module.

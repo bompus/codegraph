@@ -2186,8 +2186,8 @@ export class ReferenceResolver {
       }
     }
 
-    // Go standard library packages — refs like "fmt.Println", "http.ListenAndServe", etc.
-    if (ref.language === 'go') {
+    // Member calls use receiver bindings, including values shadowing stdlib package names.
+    if (ref.language === 'go' && !isBindingReceiverCall(ref)) {
       const dotIdx = name.indexOf('.');
       if (dotIdx > 0) {
         const pkg = name.substring(0, dotIdx);

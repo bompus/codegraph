@@ -10,8 +10,8 @@ import { Binding, Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, isInheritanceRef, isImportableKind } from './types';
 import { resolveWorkspaceImport } from './workspace-packages';
 import { JS_BUILT_INS } from './js-builtins';
-import { resolveViaImport } from './import-resolver';
-import { inferIterationReceiver } from './receiver-iteration';
+import { resolveViaImport, resolveJvmImport } from './import-resolver';
+import { inferIterationReceiver, inferGuardedReceiver } from './receiver-iteration';
 
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will
@@ -1930,7 +1930,7 @@ function buildLocalReceiverTypePatterns(language: Language, r: string): RegExp[]
     case 'java':
       return [
         new RegExp(`\\b${r}\\b\\s*=\\s*new\\s+([A-Za-z_][\\w.]*)`), // = new Logger()
-        new RegExp(`\\b([A-Z][\\w.]*)\\s+${r}\\b\\s*[=;,)]`), // Logger lg;  / param
+        new RegExp(`\\b([A-Z][\\w.]*)\\s+${r}\\b\\s*[=;,:)]`), // Logger lg;  / param
       ];
     case 'kotlin':
       return [
@@ -2134,7 +2134,7 @@ function inferLocalReceiverType(
   const callIdx = Math.max(0, Math.min(lines.length - 1, ref.line - 1));
   const startIdx = componentScoped
     ? 0
-    : Math.max(0, enclosingScopeStartLine(ref, context) - 1);
+    : Math.min(callIdx, Math.max(0, enclosingScopeStartLine(ref, context) - 1));
 
   const matchLine = (i: number): string | null => {
     const line = lines[i];
@@ -2332,6 +2332,9 @@ export function matchBoundReceiverCall(
     // field and lambda receiver types. Keep it, but stop before name guesses.
     const phpVariable = ref.language === 'php' && context.getFileLines?.(ref.filePath)?.[ref.line - 1]?.slice(ref.column).startsWith('$');
     if (binding?.kind === 'import' && !phpVariable) {
+      if ((ref.language === 'java' || ref.language === 'kotlin') && resolveBoundType(root, ref, context)) {
+        return receiver === root ? matchBoundTypeMember(root, method!, ref, context) : null;
+      }
       const hit = resolveViaImport(ref, context);
       const target = hit && context.getNodeById?.(hit.targetNodeId);
       return target && ['function', 'method', 'class', 'component'].includes(target.kind) ? hit : null;
@@ -2387,16 +2390,84 @@ export function matchBoundReceiverCall(
   return hit ? { ...hit, original: ref } : null;
 }
 
-function resolveBoundType(type: string, ref: UnresolvedRef, context: ResolutionContext): Node | undefined {
+/** Go factories carry a declared result type; never infer one from the factory name. */
+function matchGoFactoryReceiver(receiver: string, method: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  let site = ref;
+  let binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], receiver, ref.line);
+  if (!binding) {
+    const values = context.getNodesByName(receiver).filter(node => node.language === 'go' &&
+      ['variable', 'constant'].includes(node.kind) &&
+      path.posix.dirname(node.filePath) === path.posix.dirname(ref.filePath) &&
+      (context.getBindings?.(node.filePath) ?? []).some(row => row.nodeId === node.id && row.kind === 'decl'));
+    if (values.length !== 1) return null;
+    const value = values[0]!;
+    site = { ...ref, filePath: value.filePath, line: value.startLine };
+    binding = innermostBinding(context.getBindings?.(site.filePath) ?? [], receiver, site.line);
+  }
+  if (!binding) return null;
+  const declaration = context.getFileLines?.(site.filePath)?.[binding.line - 1] ?? '';
+  const escaped = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const value = binding.nodeId ? context.getNodeById?.(binding.nodeId) : undefined;
+  const type = binding.kind === 'param'
+    ? declaration.match(new RegExp(`\\b${escaped}\\s+\\*?([\\w.]+)(?=\\s*[,)]|\\s*$)`))?.[1]
+    : value?.signature?.match(/^=\s*&?([\w.]+)\s*\{/)?.[1]
+      ?? declaration.match(new RegExp(`\\b${escaped}\\s+\\*?([\\w.]+)\\s*(?:=|$)`))?.[1];
+  if (type) {
+    const hit = matchBoundTypeMember(type, method, { ...site, line: binding.line }, context);
+    return hit ? { ...hit, original: ref } : null;
+  }
+  if (binding.kind === 'param') return null;
+  const assignments = declaration.matchAll(/\b([\w]+(?:\s*,\s*\w+)*)\s*:=\s*([\w.]+)\s*\(/g);
+  for (const assignment of assignments) {
+    const names = assignment[1]!.split(',').map(name => name.trim());
+    const position = names.indexOf(receiver);
+    // The kernel currently exposes only the first return type. Other result
+    // positions remain unresolved instead of borrowing the first result's type.
+    if (position !== 0) continue;
+    const name = assignment[2]!;
+    const factorySite = { ...site, line: binding.line, referenceName: name };
+    const factoryBinding = innermostBinding(context.getBindings?.(site.filePath) ?? [], name.split('.')[0]!, binding.line);
+    let callee: Node | undefined;
+    if (factoryBinding?.kind === 'import') {
+      const hit = resolveViaImport(factorySite, context);
+      callee = hit ? context.getNodeById?.(hit.targetNodeId) ?? undefined : undefined;
+    } else if (factoryBinding?.nodeId) {
+      callee = context.getNodeById?.(factoryBinding.nodeId) ?? undefined;
+    } else if (!factoryBinding && !name.includes('.')) {
+      const candidates = context.getNodesByName(name).filter(node => node.language === 'go' && node.kind === 'function' &&
+        path.posix.dirname(node.filePath) === path.posix.dirname(site.filePath));
+      if (candidates.length === 1) callee = candidates[0];
+    }
+    if (callee?.kind !== 'function' || !callee.returnType || !/^\*?[\w.]+$/.test(callee.returnType)) return null;
+    const hit = matchBoundTypeMember(callee.returnType.replace(/^\*/, ''), method,
+      { ...ref, filePath: callee.filePath, line: callee.startLine }, context);
+    return hit ? { ...hit, original: ref } : null;
+  }
+  return null;
+}
+
+function resolveBoundType(type: string, ref: UnresolvedRef, context: ResolutionContext, depth = 0): Node | undefined {
+  if (depth > 4) return undefined;
   const binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], type.split('.')[0]!, ref.line);
   const ownerId = binding?.kind === 'import'
-    ? resolveViaImport({ ...ref, referenceName: type, referenceKind: 'references' }, context)?.targetNodeId
+    ? (resolveViaImport({ ...ref, referenceName: type, referenceKind: 'references' }, context)
+      ?? resolveJvmImport({ ...ref, referenceName: binding.targetSpec ?? type, referenceKind: 'imports' }, context))?.targetNodeId
     : binding?.nodeId;
   let owner = ownerId ? context.getNodeById?.(ownerId) : undefined;
   if (binding?.kind === 'import' && ref.language === 'php' && binding.targetSpec) {
     const qualified = binding.targetSpec.replace(/^\\/, '').replace(/\\([^\\]+)$/, '::$1');
     const owners = context.getNodesByQualifiedName(qualified).filter(n => n.language === 'php' && ['class', 'interface', 'trait'].includes(n.kind));
     owner = owners.length === 1 ? owners[0] : undefined;
+  }
+  if (!binding && ref.language === 'java') {
+    const scopes = context.getNodesInFile(ref.filePath).filter(n =>
+      ['class', 'interface', 'method'].includes(n.kind) && n.startLine <= ref.line && n.endLine >= ref.line)
+      .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine));
+    for (const scope of scopes) {
+      const header = context.getFileLines?.(ref.filePath)?.slice(scope.startLine - 1, scope.endLine).join('\n').split('{')[0];
+      const bound = header?.match(new RegExp(`[<,]\\s*${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+extends\\s+([\\w.]+)\\s*(?=[,>])`))?.[1];
+      if (bound && bound !== type) return resolveBoundType(bound, { ...ref, line: scope.startLine }, context, depth + 1);
+    }
   }
   if (!binding && !ESM_FAMILY.has(ref.language)) {
     const candidates = (type.includes('::') ? context.getNodesByQualifiedName(type) : context.getNodesByName(type)).filter(n =>
@@ -2408,6 +2479,13 @@ function resolveBoundType(type: string, ref: UnresolvedRef, context: ResolutionC
       if (ref.language === 'python') return false; // Python types require a local or imported binding.
       if (ref.language === 'go') return path.posix.dirname(n.filePath) === path.posix.dirname(ref.filePath);
       if (ref.language === 'php') return n.qualifiedName === (namespace ? `${namespace}::${type}` : type);
+      if (ref.language === 'java' || ref.language === 'kotlin') {
+        const packages = context.getImportMappings(ref.filePath, ref.language)
+          .filter(imp => imp.isNamespace && imp.source.endsWith('.*')).map(imp => imp.source.slice(0, -2));
+        if (namespace) packages.unshift(namespace);
+        if (!namespace && n.qualifiedName === type) return true;
+        return packages.some(pkg => n.qualifiedName === `${pkg}::${type}`);
+      }
       return true;
     });
     const visible = local.length ? local : packageCandidates;
@@ -2428,7 +2506,7 @@ function matchBoundTypeMember(type: string, method: string, ref: UnresolvedRef, 
     if (seen.has(typeNode.id)) continue;
     seen.add(typeNode.id);
     const members = context.getNodesByQualifiedName(`${typeNode.qualifiedName}::${method}`)
-      .filter(n => n.kind === 'method' && n.language === ref.language &&
+      .filter(n => n.kind === 'method' && sameLanguageFamily(n.language, ref.language) &&
         (n.filePath === typeNode.filePath ||
           (ref.language === 'go' && path.posix.dirname(n.filePath) === path.posix.dirname(typeNode.filePath)) ||
           ref.language === 'cpp'));
@@ -2522,12 +2600,20 @@ export function matchMethodCall(
   // shared source-based inferrer. resolveMethodOnType validates the method
   // exists on the inferred type, so a mis-inference produces no edge.
   if (inferableReceiver) {
+    if (requireReceiverEvidence) {
+      const narrowed = inferGuardedReceiver(objectOrClass!, ref, context);
+      if (narrowed) return matchBoundTypeMember(narrowed, methodName!, ref, context);
+    }
     let inferredType = nmTimedT('mc-infer', ref, () =>
       ref.language === 'cpp'
         ? inferCppReceiverType(objectOrClass!, ref, context, 0, requireReceiverEvidence)
-        : inferLocalReceiverType(objectOrClass!, binding && ESM_FAMILY.has(ref.language)
+        : inferLocalReceiverType(objectOrClass!, binding && binding.kind !== 'import'
           ? { ...ref, line: binding.line, fromNodeId: binding.nodeId ?? ref.fromNodeId }
           : ref, context, requireReceiverEvidence));
+    if (!inferredType && requireReceiverEvidence && ref.language === 'go') {
+      const factory = matchGoFactoryReceiver(objectOrClass!, methodName!, ref, context);
+      if (factory) return factory;
+    }
     if (!inferredType && requireReceiverEvidence) {
       const iteration = inferIterationReceiver(objectOrClass!, ref, context,
         (name, site) => inferLocalReceiverType(name, site, context, true),

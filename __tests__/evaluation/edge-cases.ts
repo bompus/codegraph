@@ -87,6 +87,48 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
 
 export const edgeCases: EdgeCase[] = [
   {
+    id: 'slim-guarded-exception-receiver', corpus: 'slim', kind: 'calls',
+    from: { file: 'Slim/Error/AbstractErrorRenderer.php', name: 'getErrorTitle' },
+    to: { file: 'Slim/Exception/HttpException.php', name: 'getTitle' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'A positive instanceof HttpException branch narrows the receiver.',
+  },
+  {
+    id: 'json-value-not-internal-serializer', corpus: 'json', kind: 'calls',
+    from: { file: 'docs/mkdocs/docs/examples/dump.cpp', name: 'main' },
+    to: { file: 'include/nlohmann/detail/output/serializer.hpp', name: 'dump' }, expect: 'absent',
+    source: 'binding-model Phase 2b', why: 'Calls on JSON values do not directly call the internal serializer method.',
+  },
+  {
+    id: 'flask-package-reexport-receiver', corpus: 'flask', kind: 'calls',
+    from: { file: 'examples/tutorial/flaskr/auth.py', name: 'auth.py' },
+    to: { file: 'src/flask/sansio/scaffold.py', name: 'route' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'The module-level Blueprint instance inherits route through the public flask package export.',
+  },
+  {
+    id: 'gin-declared-factory-receiver', corpus: 'gin', kind: 'calls',
+    from: { file: 'auth.go', name: 'BasicAuthForRealm' },
+    to: { file: 'auth.go', name: 'searchCredential' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'processAccounts declares authPairs as its result type.',
+  },
+  {
+    id: 'petclinic-bounded-type-parameter', corpus: 'petclinic', kind: 'calls',
+    from: { file: 'src/test/java/org/springframework/samples/petclinic/service/EntityUtils.java', name: 'getById' },
+    to: { file: 'src/main/java/org/springframework/samples/petclinic/model/BaseEntity.java', name: 'getId' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'The receiver type parameter explicitly extends BaseEntity.',
+  },
+  {
+    id: 'exposed-wildcard-package-receiver', corpus: 'exposed', kind: 'calls',
+    from: { file: 'exposed-java-time/src/test/kotlin/org/jetbrains/exposed/v1/javatime/JavaTimeTests.kt', name: 'testTimestampWithTimeZoneThrowsExceptionForUnsupportedDialects' },
+    to: { file: 'exposed-jdbc/src/main/kotlin/org/jetbrains/exposed/v1/jdbc/SchemaUtils.kt', name: 'create' }, expect: 'present',
+    source: 'binding-model Phase 2b', why: 'The wildcard import names the JDBC package, not the same-named R2DBC object.',
+  },
+  {
+    id: 'exposed-wildcard-not-other-package', corpus: 'exposed', kind: 'calls',
+    from: { file: 'exposed-java-time/src/test/kotlin/org/jetbrains/exposed/v1/javatime/JavaTimeTests.kt', name: 'testTimestampWithTimeZoneThrowsExceptionForUnsupportedDialects' },
+    to: { file: 'exposed-r2dbc/src/main/kotlin/org/jetbrains/exposed/v1/r2dbc/SchemaUtils.kt', name: 'create' }, expect: 'absent',
+    source: 'binding-model Phase 2b', why: 'No R2DBC SchemaUtils import binds this receiver.',
+  },
+  {
     id: 'vite-factory-receiver-control', corpus: 'vite', kind: 'calls',
     from: { file: 'packages/vite/scripts/benchCircularImport.ts', name: 'runBenchmark' },
     to: { file: 'packages/vite/src/module-runner/runner.ts', name: 'import' }, expect: 'present',
