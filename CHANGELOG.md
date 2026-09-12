@@ -14,7 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Highlights
 
-- **One parser, built in.** The native engine now reads every language on its own; the WebAssembly fallback is gone. Installs are about 40% smaller, indexing is faster, the MCP server starts lighter, and Node.js 25 is no longer refused. Release bundles cover macOS, Linux and Windows.
+- **One parser, built in.** The native engine now reads every language on its own; the WebAssembly fallback is gone. Installs are smaller, the MCP server starts lighter, and Node.js 25 is no longer refused. Release bundles cover macOS, Linux and Windows.
 - **`codegraph ui` — your graph in a browser.** A local, read-only viewer: your code with its callers and callees in the margin, a map of the whole repository, a Screens tab for Expo Router, React Router, Next.js, TanStack Router, Vue Router / Nuxt and SvelteKit apps, and a Steps tab that draws what one action sets in motion, in the order the code runs, with the condition on each arrow.
 - **APIs too, and across tiers.** Endpoints in Express, NestJS, Fastify, Koa, Hono, FastAPI, Flask, Django, Spring, ASP.NET, Vapor and Gin, with a page's `fetch` following through to the route that serves it, a queued job to its consumer, an event to its handler.
 - **Your earlier agent sessions are searchable.** `codegraph sessions` and the `codegraph_sessions` tool find what a past Claude Code, Codex, Cursor, OpenCode or AGY session said about this project.

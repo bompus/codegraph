@@ -31,7 +31,7 @@ The kernel exposes `extract_file`, `contract_info`, `grammar_info`, `cfnptr_scan
 
 WASM was declared canonical on files with ERROR nodes only so that parity held by construction (migration plan §4b). The divergence is the UTF-16 versus UTF-8 encoding the parser sees; neither recovery is better. The C/C++ deferral round showed the kernel's own numbers improving as deferral dropped, and `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT=1` already extracts from erroring trees natively. Decision: the kernel extracts every file it parses. `EXTRACTION_VERSION` bumps once, and the golden dumps are re-baselined against the kernel.
 
-The stack-overflow guard in `stack.rs` keeps its defer semantics but the consumer changes: a deferred file is stored with an `errors` entry and zero symbols, the same as a file that fails to parse today.
+The stack-overflow guard in `stack.rs` keeps its defer semantics. Deferred files are walked by the generic TypeScript extractor over the kernel's serialized tree; they do not require WASM.
 
 ### 2.2 The kernel gains a region API, not an SFC parser
 
@@ -43,36 +43,29 @@ Moving the slicers themselves into Rust is a later optimization and is not requi
 
 **Revised 2026-09-11 (Phase 3 implementation).** The original text proposed two derivation entry points, `parse_tokens` and `walk_guards`. Reading the consumers changed that: `branch-guards.ts` is 2,300 lines of per-language rules with eight entry points (guards, call arguments, call sites, triggers, loops, decorators, member types), all walking the tree with `type`, `childForFieldName`, `text` and `parent`. Porting those rules to Rust is weeks of work for no retrieval gain.
 
-What shipped instead: `parse_tree(content, language)` returns the **whole CST as flat buffers in one crossing** (`codegraph-kernel/src/tree.rs`), and `src/extraction/kernel/tree.ts` wraps the rows in `NativeNode`, a facade with the web-tree-sitter node surface. `src/extraction/parse-tree.ts` is the one seam (`parseSourceTree`, kernel first, WASM fallback) and defines the structural `TreeNode` type both trees satisfy, so the three consumers run unchanged on either. Positions are UTF-16 code units so `source.slice` is exact; an all-ASCII file skips the prefix table; kind and field name tables are fetched once per language (`tree_names`); the child table is built by a counting pass; each row carries its index in its parent so sibling lookups are constant time.
+What shipped instead: `parse_tree(content, language)` returns the **whole CST as flat buffers in one crossing** (`codegraph-kernel/src/tree.rs`), and `src/extraction/kernel/tree.ts` wraps the rows in `NativeNode`, a facade with the web-tree-sitter node surface. `src/extraction/parse-tree.ts` is the one seam (`parseSourceTree`, now kernel-only) and defines the structural `TreeNode` type both trees satisfy, so the three consumers retain their tree-walking logic. Positions are UTF-16 code units so `source.slice` is exact; an all-ASCII file skips the prefix table; kind and field name tables are fetched once per language (`tree_names`); the child table is built by a counting pass; each row carries its index in its parent so sibling lookups are constant time.
 
 The earlier rejection was of a per-node handle over napi, which would cost a crossing per property read. A serialized tree costs one crossing and is what the consumers need.
 
 ### 2.4 Tail languages: all kept (revised)
 
-**Revised 2026-09-11 (Phase 4 implementation).** "Port" no longer means a hand-written Rust walker. Phase 3's serialized tree made a cheaper mechanism possible: `TreeSitterExtractor`, the 7,000-line generic TypeScript extractor driven by the per-language tables in `languages/`, now parses through the same kernel-first seam (`parseSourceTreeSync`) and walks the `NativeNode` facade. Any grammar compiled into the kernel is therefore extracted natively with no walker at all, with the extractor logic unchanged. Putting a tail language on the kernel is then one crate line in `Cargo.toml` plus one `grammar_for` arm, gated by the golden dump generated on WASM beforehand. The same mechanism is the fallback for a stack-guard defer on a walker language, and it changes the cost picture for the "drop" column: a dropped language costs only its grammar's compile, so that decision should be retaken with this in mind (see Phase 4 below).
+**Revised 2026-09-11 (Phase 4 implementation).** "Port" no longer means a hand-written Rust walker. Phase 3's serialized tree made a cheaper mechanism possible: `TreeSitterExtractor`, the 7,000-line generic TypeScript extractor driven by the per-language tables in `languages/`, now parses through the same kernel-first seam (`parseSourceTreeSync`) and walks the `NativeNode` facade. Any grammar compiled into the kernel is therefore extracted natively with no walker at all, with the extractor logic unchanged. Putting a tail language on the kernel is then one crate line in `Cargo.toml` plus one `grammar_for` arm, gated by the golden dump generated on WASM beforehand. The same mechanism is the fallback for a stack-guard defer on a walker language, and made it practical to retain every tail language (Phase 4b below).
 
-| Language | Decision | Basis |
+| Languages | Final decision | Implementation |
 |---|---|---|
-| Objective-C | Port | 181-line extractor, `tree-sitter-objc` on crates.io, feeds the Swift/ObjC bridge resolver with tests |
-| Erlang | Port | 384 lines, tests for arity and behaviour synthesizers, `tree-sitter-erlang` matches the ELP lineage we vendor |
-| Nix | Port | 324 lines, option synthesizer test, crate exists |
-| Pascal + DFM | Port | 72 lines plus the parser-free DFM extractor, 13 changelog entries show real users |
-| Solidity | Port | 282 lines, crate exists, low risk |
-| ArkTS | Drop unless a user asks | Crate lineage differs from our harmony-contrib fork; one test file |
-| Terraform | Drop unless a user asks | No `tree-sitter-terraform` crate; `tree-sitter-hcl` would need re-validation; no tests |
-| VB.NET | Drop | No crate, patched grammar with a C scanner, no tests, no changelog |
-| COBOL | Drop | 16 MB vendored fork grammar, no tests; copybook logic would need a port |
-| CFML (3 grammars) | Decide with the maintainer | Own grammars for cfquery and cfscript; 508-line extractor walks a live CST; two test files |
+| Objective-C, Erlang, Nix, Pascal, Solidity | Keep | Crates.io grammars; generic extractor over native trees |
+| ArkTS, Terraform, VB.NET, COBOL | Keep | Vendored grammar C; generic extractor over native trees |
+| CFML (3 grammars) | Keep | Vendored grammar C; CFML extractor over the native facade |
 
-"Drop" means the language is removed from `EXTENSION_MAP` and the README table in the same change, with a changelog entry. It does not mean silently unindexed.
+No language was dropped. Grammar provenance and measured parity are recorded in Phase 4.
 
 ### 2.5 The loader fails hard
 
-`kernel/loader.ts` returns null today on missing binary, ABI mismatch or kind-table drift. After this plan a load failure is a fatal startup error with the platform and the expected path in the message. `build-bundle.sh` errors instead of warning when a prebuild is absent. `CODEGRAPH_KERNEL`, `CODEGRAPH_KERNEL_LANGS`, `CODEGRAPH_KERNEL_EXPECT` and `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT` are removed. `CODEGRAPH_KERNEL_PATH` stays for source development.
+The native parser is required at startup, and `build-bundle.sh` errors when a prebuild is absent. `CODEGRAPH_KERNEL=0` still disables bespoke walkers for debugging; parsing remains native. `CODEGRAPH_KERNEL_EXPECT=1` remains a test assertion that the binary exists. `CODEGRAPH_KERNEL_PATH` stays for source development. The former WASM routing and relaunch settings no longer select a fallback.
 
 ### 2.6 Platform support is explicit
 
-Release matrix today: macOS x64 and arm64, Linux glibc x64 and arm64, Windows x64 and arm64. Add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` so Alpine containers work. Every other platform is unsupported and says so at install time. Source checkouts need a Rust toolchain; `npm test` builds the kernel in `pretest` if the prebuild for the host is missing.
+The inherited build matrix covers macOS x64 and arm64, Linux glibc x64 and arm64, and Windows x64 and arm64. Linux musl targets for Alpine are deferred, not implemented; they need a cross toolchain and libc-aware loading. The fork does not run this matrix through a release (see [AGENTS.md](../../AGENTS.md#releases)). Every other platform is unsupported and says so at install time. Source checkouts need a Rust toolchain; `npm test` builds the kernel in `pretest` if the prebuild for the host is missing.
 
 ### 2.7 Golden dumps replace the parity oracle
 
@@ -143,7 +136,7 @@ Reading it honestly: the WASM parser builds a lazy tree, so a bare parse is chea
 
 Exit met: no `getParser` call outside `src/extraction/` (`branch-guards.ts` and `explore-source-ranges.ts` no longer import it).
 
-### Phase 4: tail languages — five on the kernel 2026-09-11; drops and CFML pending a decision
+### Phase 4: tail languages — DONE 2026-09-11; all retained
 
 - The generic extractor runs on native trees (§2.4 revision). `__tests__/kernel-generic-extractor-tree.test.ts` gates it: with walker routing off and native trees on, extraction of every torture fixture equals the all-WASM arm as canonical multisets (erroring C/C++ files compared loosely). It caught one facade gap: web-tree-sitter's `childForFieldName` finds a child whose field is attached through a hidden grammar rule (Swift's `return_type`) while its `fieldNameForChild` does not; the kernel row now carries the cursor field plus an extra-field table gathered with the C-backed `child_by_field_id`, and the facade mirrors the asymmetry.
 - Objective-C, Erlang, Nix, Pascal and Solidity grammars are compiled into the kernel from crates.io (`tree-sitter-objc` 3.0.2, `tree-sitter-erlang` 0.20.0, `tree-sitter-nix` 0.3.0, `tree-sitter-pascal` 0.10.2, `tree-sitter-solidity` 1.2.13). Kind and field tables against the vendored WASM grammars: Erlang, Nix and Pascal identical; Objective-C 588 vs 570 kinds (35 differ) and Solidity 531 vs 512 kinds (39 differ), the crates being newer than the 2023-era `tree-sitter-wasms` builds. The `golden/tail-langs` fixture (ten files across the five languages) was generated on WASM before the grammars were added and holds byte-for-byte on native parsing despite the drift.
@@ -237,14 +230,14 @@ macOS has not been run. The inherited release matrix describes both Apple target
 | Runtime dependencies | 2 of 10 |
 | Node runtime constraints | Node 25 block, `--liftoff-only` relaunch, dedicated Node alias on hosts |
 
-What is added: about 5 Rust walkers for tail languages, two kernel entry points, two musl targets, the golden-dump test, and a `pretest` kernel build for source checkouts.
+What was added: native grammars for all tail languages, the serialized-tree facade and kernel parse entry points, the golden-dump test, and a `pretest` kernel build for source checkouts. Tail languages reuse the generic extractor; musl targets remain deferred.
 
 ## 5. Risks
 
 - **Error-recovery re-baseline changes graphs.** Expected and accepted. Phase 1 records per-fixture deltas. A regression in a fixture's symbol count is a walker bug to fix, not a reason to keep WASM.
 - **Source-checkout DX.** Contributors need cargo. Mitigation: `pretest` builds only when the prebuild is missing, and CI publishes prebuilds on every `fork/consolidated` push so most contributors never compile.
 - **Upstream divergence.** Upstream keeps coexistence. This fork's graph output stays byte-identical to upstream's kernel path for the 20 routed languages, so upstream resolution fixes still merge. Extraction changes upstream makes to WASM-only languages will not apply; that is the cost of dropping them.
-- **Read-time consumers.** Phase 3 is the least-explored piece. If `walk_guards` turns out to need a general tree, fall back to a narrow node-cursor API scoped to one file, not a global tree handle.
+- **Read-time consumers.** Phase 3 uses the serialized tree facade; the proposed `walk_guards` port was superseded. Preserve facade and golden-dump coverage when changing it.
 - **Deferred files.** A stack-overflow defer now yields an empty file instead of a WASM parse. Incidence is one known file in clang.
 
 ## 6. Settings after this plan
