@@ -70,6 +70,11 @@ const CORPUS: ReadonlyArray<{ name: string; source: string; why: string }> = [
     why: 'Svelte (ts + module + plain), Astro frontmatter + inline script, Razor @code with a C# sibling — every other embedded-language path',
   },
   {
+    name: 'tail-langs',
+    source: path.join(GOLDEN_DIR, 'tail-langs'),
+    why: 'Objective-C, Erlang, Nix, Pascal, Solidity — languages with no bespoke kernel walker (generic extractor)',
+  },
+  {
     name: 'markdown-docs',
     source: path.join(GOLDEN_DIR, 'markdown-docs'),
     why: 'Markdown sections, doc→code and code→doc path references',

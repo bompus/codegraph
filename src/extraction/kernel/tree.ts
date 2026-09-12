@@ -19,7 +19,7 @@ import { getKernel } from './loader';
 import type { Language } from '../../types';
 
 export const TREE_ABI_VERSION = 1;
-export const TREE_ROW_SIZE = 60;
+export const TREE_ROW_SIZE = 64;
 const NONE = 0xffffffff;
 const FLAG_NAMED = 1;
 const FLAG_HAS_ERROR = 2;
@@ -29,6 +29,7 @@ const ROW = {
   kind: 0, // u16
   flags: 2, // u8
   field: 4, // u16
+  extraFieldCount: 6, // u16
   parent: 8,
   startByte: 12,
   endByte: 16,
@@ -42,6 +43,7 @@ const ROW = {
   childCount: 48,
   namedChildCount: 52,
   indexInParent: 56,
+  extraFieldsOff: 60,
 } as const;
 
 export interface TreePoint {
@@ -53,8 +55,10 @@ interface TreeData {
   source: string;
   nodes: Buffer;
   children: Buffer;
+  fields: Buffer;
   kinds: string[];
-  fields: string[];
+  /** Field NAME table (index = field id); `fields` is the extra-field id buffer. */
+  fields_: string[];
   cache: Map<number, NativeNode>;
 }
 
@@ -180,22 +184,59 @@ export class NativeNode {
     while (s && !s.isNamed) s = s.previousSibling;
     return s;
   }
-  /** The field this node fills in its parent, or null. */
+  /**
+   * The field the cursor reports for this child, or null — what
+   * web-tree-sitter's `fieldNameForChild` answers. A field attached through a
+   * hidden rule is NOT here (see {@link hasField}); that matches wasm, whose
+   * `fieldNameForChild` is null for such a child while `childForFieldName`
+   * still finds it.
+   */
   get fieldName(): string | null {
     const f = this.u16(ROW.field);
-    return f === 0 ? null : (this.data.fields[f] ?? null);
+    return f === 0 ? null : (this.data.fields_[f] ?? null);
+  }
+  /** Every field name this child answers to, cursor field first. */
+  get fieldNames(): string[] {
+    const out: string[] = [];
+    const primary = this.fieldName;
+    if (primary) out.push(primary);
+    const n = this.u16(ROW.extraFieldCount);
+    if (n) {
+      const off = this.u32(ROW.extraFieldsOff);
+      for (let i = 0; i < n; i++) {
+        const f = this.data.fields.readUInt16LE((off + i) * 2);
+        const name = this.data.fields_[f];
+        if (name) out.push(name);
+      }
+    }
+    return out;
+  }
+  private hasField(name: string): boolean {
+    if (this.fieldName === name) return true;
+    const n = this.u16(ROW.extraFieldCount);
+    if (!n) return false;
+    const off = this.u32(ROW.extraFieldsOff);
+    for (let i = 0; i < n; i++) {
+      const f = this.data.fields.readUInt16LE((off + i) * 2);
+      if (this.data.fields_[f] === name) return true;
+    }
+    return false;
   }
   fieldNameForChild(index: number): string | null {
     return this.child(index)?.fieldName ?? null;
+  }
+  fieldNameForNamedChild(index: number): string | null {
+    return this.namedChild(index)?.fieldName ?? null;
   }
   childForFieldName(name: string): NativeNode | null {
     const n = this.childCount;
     for (let i = 0; i < n; i++) {
       const c = this.child(i)!;
-      if (c.fieldName === name) return c;
+      if (c.hasField(name)) return c;
     }
     return null;
   }
+  /** Cursor fields only — web-tree-sitter's `childrenForFieldName` is cursor-based too. */
   childrenForFieldName(name: string): NativeNode[] {
     const out: NativeNode[] = [];
     const n = this.childCount;
@@ -240,6 +281,24 @@ export class NativeNode {
       if (!next) return node;
       node = next;
     }
+  }
+  equals(other: { id: number } | null | undefined): boolean {
+    return !!other && other.id === this.id;
+  }
+  /** All descendants whose type is in `types` (web-tree-sitter semantics), preorder. */
+  descendantsOfType(types: string | string[], start?: TreePoint, end?: TreePoint): NativeNode[] {
+    const want = new Set(Array.isArray(types) ? types : [types]);
+    const out: NativeNode[] = [];
+    const before = (a: TreePoint, b: TreePoint) => a.row < b.row || (a.row === b.row && a.column <= b.column);
+    const stack: NativeNode[] = [this];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (start && before(n.endPosition, start) && !(n.endPosition.row === start.row && n.endPosition.column === start.column)) continue;
+      if (end && before(end, n.startPosition) && !(n.startPosition.row === end.row && n.startPosition.column === end.column)) continue;
+      if (want.has(n.type)) out.push(n);
+      for (let i = n.childCount - 1; i >= 0; i--) stack.push(n.child(i)!);
+    }
+    return out;
   }
   toString(): string {
     return `(${this.type} ${this.startPosition.row}:${this.startPosition.column}-${this.endPosition.row}:${this.endPosition.column})`;
@@ -295,6 +354,11 @@ export function parseNativeTree(source: string, language: Language): NativeTree 
     NAME_TABLES.clear();
     lastKernel = kernel;
   }
+  // The name table doubles as the "does this binary carry the grammar"
+  // check, cached per language, so an unsupported language costs one probe
+  // rather than a failed native call per file.
+  const names = namesFor(kernel, language);
+  if (!names) return null;
   let buffers;
   try {
     buffers = kernel.parseTree(source, language);
@@ -303,14 +367,13 @@ export function parseNativeTree(source: string, language: Language): NativeTree 
   }
   const meta = buffers.meta;
   if (meta.readUInt32LE(0) !== TREE_ABI_VERSION) return null;
-  const names = namesFor(kernel, language);
-  if (!names) return null;
   const data: TreeData = {
     source,
     nodes: buffers.nodes,
     children: buffers.children,
+    fields: buffers.fields,
     kinds: names.kinds,
-    fields: names.fields,
+    fields_: names.fields,
     cache: new Map(),
   };
   const rootNode = new NativeNode(data, 0);

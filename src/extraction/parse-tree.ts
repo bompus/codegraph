@@ -18,7 +18,6 @@
 import type { Language } from '../types';
 import { getParser, loadGrammarsForLanguages } from './grammars';
 import { parseNativeTree } from './kernel/tree';
-import { kernelSupports } from './kernel/loader';
 
 export interface TreePoint {
   row: number;
@@ -52,8 +51,11 @@ export interface TreeNode {
   childForFieldName(name: string): TreeNode | null;
   fieldNameForChild(index: number): string | null;
   childrenForFieldName(name: string): TreeNode[];
-  descendantForPosition(start: TreePoint, end?: TreePoint): TreeNode;
-  descendantForIndex(start: number, end?: number): TreeNode;
+  descendantForPosition(start: TreePoint, end?: TreePoint): TreeNode | null;
+  descendantForIndex(start: number, end?: number): TreeNode | null;
+  fieldNameForNamedChild(index: number): string | null;
+  equals(other: TreeNode | null | undefined): boolean;
+  descendantsOfType(types: string | string[], start?: TreePoint, end?: TreePoint): TreeNode[];
 }
 
 export interface ParsedTree {
@@ -84,7 +86,9 @@ export function parseSourceTreeSync(source: string, language: Language): ParsedT
 
 function tryNative(source: string, language: Language): ParsedTree | null {
   if (process.env.CODEGRAPH_KERNEL === '0') return null;
-  if (!kernelSupports(language)) return null;
+  // Not gated on kernelSupports: that is the WALKER list. The parse-tree
+  // service serves every grammar compiled into the binary, walker or not
+  // (parseNativeTree remembers per language whether the grammar exists).
   return parseNativeTree(source, language) as ParsedTree | null;
 }
 

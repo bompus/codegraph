@@ -49,6 +49,8 @@ The earlier rejection was of a per-node handle over napi, which would cost a cro
 
 ### 2.4 Tail languages: port five, drop four, decide CFML separately
 
+**Revised 2026-09-11 (Phase 4 implementation).** "Port" no longer means a hand-written Rust walker. Phase 3's serialized tree made a cheaper mechanism possible: `TreeSitterExtractor`, the 7,000-line generic TypeScript extractor driven by the per-language tables in `languages/`, now parses through the same kernel-first seam (`parseSourceTreeSync`) and walks the `NativeNode` facade. Any grammar compiled into the kernel is therefore extracted natively with no walker at all, with the extractor logic unchanged. Putting a tail language on the kernel is then one crate line in `Cargo.toml` plus one `grammar_for` arm, gated by the golden dump generated on WASM beforehand. The same mechanism is the fallback for a stack-guard defer on a walker language, and it changes the cost picture for the "drop" column: a dropped language costs only its grammar's compile, so that decision should be retaken with this in mind (see Phase 4 below).
+
 | Language | Decision | Basis |
 |---|---|---|
 | Objective-C | Port | 181-line extractor, `tree-sitter-objc` on crates.io, feeds the Swift/ObjC bridge resolver with tests |
@@ -141,13 +143,16 @@ Reading it honestly: the WASM parser builds a lazy tree, so a bare parse is chea
 
 Exit met: no `getParser` call outside `src/extraction/` (`branch-guards.ts` and `explore-source-ranges.ts` no longer import it).
 
-### Phase 4: tail languages
+### Phase 4: tail languages — five on the kernel 2026-09-11; drops and CFML pending a decision
 
-- Port Objective-C, Erlang, Nix, Pascal, Solidity in that order, each with its own checklist file following the existing `*-kernel-port-checklist.md` pattern and a golden fixture.
-- Remove ArkTS, Terraform, VB.NET and COBOL from `EXTENSION_MAP`, the README table, and `grammars.ts`, with a changelog entry under Breaking Changes.
-- CFML: separate decision recorded here before Phase 5 starts.
+- The generic extractor runs on native trees (§2.4 revision). `__tests__/kernel-generic-extractor-tree.test.ts` gates it: with walker routing off and native trees on, extraction of every torture fixture equals the all-WASM arm as canonical multisets (erroring C/C++ files compared loosely). It caught one facade gap: web-tree-sitter's `childForFieldName` finds a child whose field is attached through a hidden grammar rule (Swift's `return_type`) while its `fieldNameForChild` does not; the kernel row now carries the cursor field plus an extra-field table gathered with the C-backed `child_by_field_id`, and the facade mirrors the asymmetry.
+- Objective-C, Erlang, Nix, Pascal and Solidity grammars are compiled into the kernel from crates.io (`tree-sitter-objc` 3.0.2, `tree-sitter-erlang` 0.20.0, `tree-sitter-nix` 0.3.0, `tree-sitter-pascal` 0.10.2, `tree-sitter-solidity` 1.2.13). Kind and field tables against the vendored WASM grammars: Erlang, Nix and Pascal identical; Objective-C 588 vs 570 kinds (35 differ) and Solidity 531 vs 512 kinds (39 differ), the crates being newer than the 2023-era `tree-sitter-wasms` builds. The `golden/tail-langs` fixture (ten files across the five languages) was generated on WASM before the grammars were added and holds byte-for-byte on native parsing despite the drift.
+- The same test proves extracting each of the five on a kernel host never instantiates a WASM parser.
+- Not done, pending the maintainer's decision with the new cost picture: dropping ArkTS, Terraform, VB.NET and COBOL (each could instead be kept by compiling its grammar source into the kernel; VB.NET and COBOL are patched forks whose sources need locating), and CFML (three grammars of our own; `cfml-extractor.ts` walks a live CST and could move to the facade the same way).
 
-Exit: every language in `EXTENSION_MAP` has a kernel walker.
+Measured, TypeScript sources of this repo, median per file: bare parse 0.69 ms WASM vs 0.96 ms kernel (0.73x; the hidden-field gather costs about a quarter of the parse), tokenize 1.60 vs 1.16 ms (1.37x).
+
+Exit so far: every language with a kernel grammar extracts natively; four languages and CFML remain on WASM by decision, not by mechanism.
 
 ### Phase 5: delete WASM
 

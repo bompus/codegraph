@@ -4,7 +4,7 @@
  * Handles parsing source code and extracting structural information.
  */
 
-import { Node as SyntaxNode, Tree } from 'web-tree-sitter';
+import type { TreeNode as SyntaxNode, ParsedTree as Tree } from './parse-tree';
 import * as path from 'path';
 import {
   Language,
@@ -15,7 +15,8 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage } from './grammars';
+import { detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage } from './grammars';
+import { parseSourceTreeSync } from './parse-tree';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -526,24 +527,6 @@ export class TreeSitterExtractor {
       };
     }
 
-    const parser = getParser(this.language);
-    if (!parser) {
-      return {
-        nodes: [],
-        edges: [],
-        unresolvedReferences: [],
-        errors: [
-          {
-            message: `Failed to get parser for language: ${this.language}`,
-            filePath: this.filePath,
-            severity: 'error',
-            code: 'parser_error',
-          },
-        ],
-        durationMs: Date.now() - startTime,
-      };
-    }
-
     try {
       // Optional pre-parse source transform (offset-preserving) to work around
       // grammar gaps — e.g. C# blanks conditional-compilation directive lines
@@ -554,9 +537,13 @@ export class TreeSitterExtractor {
       if (this.extractor?.preParse && !this.sourceIsPreParsed) {
         this.source = this.extractor.preParse(this.source, this.filePath);
       }
-      this.tree = parser.parse(this.source) ?? null;
+      // Kernel first, wasm fallback (parse-tree.ts): every language the
+      // kernel binary carries a grammar for is parsed natively even when it
+      // has no bespoke Rust walker — this generic extractor then walks the
+      // serialized tree through the NativeNode facade.
+      this.tree = parseSourceTreeSync(this.source, this.language);
       if (!this.tree) {
-        throw new Error('Parser returned null tree');
+        throw new Error(`Failed to get parser for language: ${this.language}`);
       }
 
       // Create file node representing the source file

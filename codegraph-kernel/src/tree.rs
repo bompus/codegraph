@@ -17,8 +17,8 @@
 //!    0  u16  kind id            (index into the kind-name table)
 //!    2  u8   flags              (bit0 named, bit1 has_error, bit2 missing)
 //!    3  u8   reserved
-//!    4  u16  field id           (index into the field-name table; 0 = none)
-//!    6  u16  reserved
+//!    4  u16  field id           (the cursor's field for this child; 0 = none)
+//!    6  u16  extra field count  (fields reachable only through hidden rules — see below)
 //!    8  u32  parent index       (NONE for the root)
 //!   12  u32  start byte
 //!   16  u32  end byte
@@ -32,7 +32,19 @@
 //!   48  u32  child count
 //!   52  u32  named child count
 //!   56  u32  index in parent    (position among the parent's children; 0 for root)
+//!   60  u32  extra fields off   (into the u16 extra-field table)
 //! ```
+//!
+//! Two field views, on purpose. `TreeCursor::field_id` reports the field the
+//! grammar attached to the child DIRECTLY; `child_by_field_id` also finds a
+//! child whose field was attached to a hidden intermediate rule (Swift's
+//! `return_type` on `_possibly_implicitly_unwrapped_type` → `user_type`).
+//! web-tree-sitter exposes exactly that asymmetry — `fieldNameForChild` is
+//! null for such a child while `childForFieldName` finds it — and the TS
+//! extractors depend on both, so the row carries the cursor field and the
+//! extra-field table carries the rest, gathered per parent with the C-backed
+//! `child_by_field_id` over every field id of the grammar (the Rust
+//! `children_by_field_id` iterator is cursor-based and would miss them).
 //!
 //! Positions are reported in UTF-16 code units so `source.slice(startIndex,
 //! endIndex)` on the JS side is exact, matching what web-tree-sitter reported.
@@ -52,7 +64,7 @@ use tree_sitter::{Node, Parser};
 use crate::langs::grammar_for;
 use crate::stack;
 
-pub const TREE_ROW_SIZE: usize = 60;
+pub const TREE_ROW_SIZE: usize = 64;
 
 thread_local! {
     static PARSERS: std::cell::RefCell<std::collections::HashMap<String, Parser>> =
@@ -71,6 +83,8 @@ pub struct TreeBuffers {
     pub nodes: Buffer,
     /// u32 LE child indexes, sliced per node by (children offset, child count)
     pub children: Buffer,
+    /// u16 LE field ids, sliced per node by (extra fields off, extra field count)
+    pub fields: Buffer,
 }
 
 /// Kind and field names for one grammar (NUL-joined; kinds then fields), with
@@ -115,6 +129,7 @@ struct Row {
     end_col: u32,
     start_idx: u32,
     end_idx: u32,
+    extra_fields: Vec<u16>,
 }
 
 fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
@@ -155,12 +170,33 @@ fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
     };
 
     // Preorder walk with a cursor so field ids are available.
+    let grammar = tree.language();
+    let field_count = grammar.field_count() as u16;
     let mut rows: Vec<Row> = Vec::with_capacity(content.len() / 4 + 16);
     let mut cursor = tree.walk();
     let mut parent_stack: Vec<u32> = Vec::new();
+    // Fields attached through hidden rules, keyed by the child's tree-sitter
+    // node id, gathered when its PARENT is visited (children come later in
+    // preorder). Only fields the cursor will NOT report are kept.
+    let mut hidden_fields: std::collections::HashMap<usize, Vec<u16>> = std::collections::HashMap::new();
     'walk: loop {
         let node: Node = cursor.node();
         let parent = parent_stack.last().copied().unwrap_or(NONE);
+        if node.child_count() > 0 {
+            // `child_by_field_id` is the C lookup, which descends through hidden
+            // rules; the Rust `children_by_field_id` iterator is cursor-based
+            // and has the cursor's blind spot, so it must not be used here.
+            // web-tree-sitter's `childForFieldName` is the former and its
+            // `childrenForFieldName` the latter — the facade mirrors both.
+            for fid in 1..=field_count {
+                if let Some(child) = node.child_by_field_id(fid) {
+                    hidden_fields.entry(child.id()).or_default().push(fid);
+                }
+            }
+        }
+        let cursor_field = cursor.field_id().map(|f| f.get()).unwrap_or(0);
+        let mut extra_fields = hidden_fields.remove(&node.id()).unwrap_or_default();
+        extra_fields.retain(|&f| f != cursor_field);
         let mut flags = 0u8;
         if node.is_named() {
             flags |= FLAG_NAMED;
@@ -177,7 +213,7 @@ fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
         rows.push(Row {
             kind: node.kind_id(),
             flags,
-            field: cursor.field_id().map(|f| f.get()).unwrap_or(0),
+            field: cursor_field,
             parent,
             start_byte: node.start_byte() as u32,
             end_byte: node.end_byte() as u32,
@@ -187,6 +223,7 @@ fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
             end_col: col16(ep.row, ep.column, node.end_byte()),
             start_idx: idx16(node.start_byte()),
             end_idx: idx16(node.end_byte()),
+            extra_fields,
         });
         if cursor.goto_first_child() {
             parent_stack.push(idx);
@@ -240,12 +277,17 @@ fn finish(rows: Vec<Row>, root_has_error: bool) -> TreeBuffers {
     }
 
     let mut nodes: Vec<u8> = Vec::with_capacity(n * TREE_ROW_SIZE);
+    let mut fields: Vec<u8> = Vec::new();
     for (i, r) in rows.iter().enumerate() {
+        let extra_off = (fields.len() / 2) as u32;
+        for f in &r.extra_fields {
+            fields.extend_from_slice(&f.to_le_bytes());
+        }
         nodes.extend_from_slice(&r.kind.to_le_bytes());
         nodes.push(r.flags);
         nodes.push(0);
         nodes.extend_from_slice(&r.field.to_le_bytes());
-        nodes.extend_from_slice(&0u16.to_le_bytes());
+        nodes.extend_from_slice(&(r.extra_fields.len() as u16).to_le_bytes());
         for v in [
             r.parent,
             r.start_byte,
@@ -260,6 +302,7 @@ fn finish(rows: Vec<Row>, root_has_error: bool) -> TreeBuffers {
             counts[i],
             named[i],
             in_parent[i],
+            extra_off,
         ] {
             nodes.extend_from_slice(&v.to_le_bytes());
         }
@@ -275,7 +318,7 @@ fn finish(rows: Vec<Row>, root_has_error: bool) -> TreeBuffers {
     for v in [TREE_ABI_VERSION, n as u32, root_has_error as u32] {
         meta.extend_from_slice(&v.to_le_bytes());
     }
-    TreeBuffers { meta: meta.into(), nodes: nodes.into(), children: children.into() }
+    TreeBuffers { meta: meta.into(), nodes: nodes.into(), children: children.into(), fields: fields.into() }
 }
 
 /// Kind and field names for `language`'s grammar. Field ids are 1-based in
