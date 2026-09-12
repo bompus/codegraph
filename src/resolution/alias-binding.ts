@@ -90,36 +90,3 @@ export function resolveAliasBinding(
   if (sameFile.length > 1) return null;
   return candidates.length === 1 ? candidates[0]! : null;
 }
-
-/**
- * Local export clauses: `export { realImpl as alias }` / `export { realImpl }`
- * with no `from` source.
- *
- * `extractReExports` only models the `export … from './other'` form, so a local
- * clause leaves the exported name bound to nothing the export index knows —
- * importing `alias` matches no declaration and resolution falls through to the
- * name-matcher, which cannot cross the rename (a false 0 callers).
- *
- * Type-only specifiers are skipped: they carry no runtime call.
- */
-export function extractLocalExportAliases(content: string): Array<{ exportedName: string; localName: string }> {
-  const out: Array<{ exportedName: string; localName: string }> = [];
-  // `export { … }` NOT followed by `from` — the `from` form is a re-export.
-  const clauseRe = /export\s*\{([^}]*)\}\s*(?!\s*from)[;\n]/g;
-  let clause: RegExpExecArray | null;
-  while ((clause = clauseRe.exec(content)) !== null) {
-    for (const raw of clause[1]!.split(',')) {
-      const specifier = raw.trim();
-      if (!specifier || /^type\s/.test(specifier)) continue;
-      const renamed = /^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/.exec(specifier);
-      if (renamed) {
-        out.push({ localName: renamed[1]!, exportedName: renamed[2]! });
-        continue;
-      }
-      if (/^[A-Za-z_$][\w$]*$/.test(specifier)) {
-        out.push({ localName: specifier, exportedName: specifier });
-      }
-    }
-  }
-  return out;
-}

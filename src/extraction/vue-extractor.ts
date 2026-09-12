@@ -1,4 +1,4 @@
-import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Language } from '../types';
+import { Binding, Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Language } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
 import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
@@ -41,6 +41,8 @@ export class VueExtractor {
   private nodes: Node[] = [];
   private edges: Edge[] = [];
   private unresolvedReferences: UnresolvedReference[] = [];
+  /** Binding rows from each script block, rebased to file positions. */
+  private bindings: Binding[] = [];
   private errors: ExtractionError[] = [];
 
   constructor(filePath: string, source: string) {
@@ -81,6 +83,7 @@ export class VueExtractor {
       nodes: this.nodes,
       edges: this.edges,
       unresolvedReferences: this.unresolvedReferences,
+      ...(this.bindings.length > 0 ? { bindings: this.bindings } : {}),
       errors: this.errors,
       durationMs: Date.now() - startTime,
     };
@@ -216,6 +219,17 @@ export class VueExtractor {
       ref.filePath = this.filePath;
       ref.language = 'vue';
       this.unresolvedReferences.push(ref);
+    }
+
+    // Offset binding rows (scopes and lines are block-relative)
+    for (const b of result.bindings ?? []) {
+      this.bindings.push({
+        ...b,
+        filePath: this.filePath,
+        scopeStart: b.scopeStart + block.startLine,
+        scopeEnd: b.scopeEnd + block.startLine,
+        line: b.line + block.startLine,
+      });
     }
 
     // Carry over errors

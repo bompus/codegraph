@@ -84,6 +84,20 @@ fn is_signature_method_type(kind: &str) -> bool {
     kind == "method_signature"
 }
 
+/// A block that narrows a binding's scope: a statement block or class body,
+/// but not the body of `declare global { }` or a `namespace X { }`, whose
+/// declarations are module-level for every purpose the rows serve.
+pub(super) fn is_scope_block(node: Node) -> bool {
+    match node.kind() {
+        "class_body" => true,
+        "statement_block" => !matches!(
+            node.parent().map(|p| p.kind()).unwrap_or(""),
+            "ambient_declaration" | "internal_module" | "module" | "program"
+        ),
+        _ => false,
+    }
+}
+
 pub(super) fn is_function_type(kind: &str) -> bool {
     matches!(kind, "function_declaration" | "generator_function_declaration" | "arrow_function" | "function_expression" | "generator_function")
 }
@@ -205,6 +219,9 @@ pub struct Walker<'t> {
     import_decls: HashMap<(String, u32), String>,
     /// (name, line) of `param`/`local` rows the pre-walk emitted (dedupe).
     scoped_rows: HashSet<(String, u32)>,
+    /// `exports.x = function () {}` / `module.exports.x = () => …`: (x, line),
+    /// consumed by the AST-only decl pass (the walker names such nodes itself).
+    cjs_fn_exports: Vec<(String, u32)>,
 }
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
@@ -229,28 +246,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     // parsing, so an erroring file's graph may differ from the wasm path's; the
     // kernel's recovery is canonical (kernel-only-extraction-plan.md, Phase 1).
 
-    let mut w = Walker {
-        src: source,
-        file_path,
-        variant,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        stack: Vec::new(),
-        node_ids: Vec::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        vue_store_file: None,
-        md_ref_keys: HashSet::new(),
-        later_exports: HashMap::new(),
-        line_count: 0,
-        import_decls: HashMap::new(),
-        scoped_rows: HashSet::new(),
-    };
+    let mut w = Walker::new(source, file_path, variant);
 
     // File node (TreeSitterExtractor.extract): id `file:<path>`, endLine =
     // newline count + 1, isExported explicitly false.
@@ -310,7 +306,66 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     })
 }
 
+/// Binding rows for a TS/JS-family file from the AST alone, without the node
+/// walk: the path for a file the walker deferred on and for ArkTS, which the
+/// generic extractor extracts. Nodes, edges and refs are empty; the TS side
+/// attaches node ids to `decl` rows by name and line
+/// (resolution-binding-model-plan.md §2.4: one emitter, in the kernel).
+pub fn bindings_only(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
+    let variant = match language {
+        "arkts" => Variant::Typescript,
+        other => Variant::from_language(other).ok_or_else(|| format!("tsjs bindings do not handle language: {other}"))?,
+    };
+    let grammar = langs::grammar_for(language).ok_or_else(|| format!("no grammar for language: {language}"))?;
+    let t0 = std::time::Instant::now();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).map_err(|e| format!("set_language({language}) failed: {e}"))?;
+    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
+    let mut w = Walker::new(source, file_path, variant);
+    let root = tree.root_node();
+    w.collect_later_exports(root);
+    w.collect_scoped_bindings(root);
+    w.collect_import_rows(root);
+    w.collect_decl_rows(root);
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
+    Ok(EmitOut {
+        meta,
+        nodes: w.tables.nodes,
+        edges: w.tables.edges,
+        refs: w.tables.refs,
+        bindings: w.tables.bindings,
+        arena: w.arena.into_vec(),
+    })
+}
+
 impl<'t> Walker<'t> {
+    fn new(source: &'t str, file_path: &'t str, variant: Variant) -> Walker<'t> {
+        Walker {
+            src: source,
+            file_path,
+            variant,
+            line_starts: util::line_starts(source),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            stack: Vec::new(),
+            node_ids: Vec::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            vue_store_file: None,
+            md_ref_keys: HashSet::new(),
+            later_exports: HashMap::new(),
+            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+            import_decls: HashMap::new(),
+            scoped_rows: HashSet::new(),
+            cjs_fn_exports: Vec::new(),
+        }
+    }
+
     // --- small helpers --------------------------------------------------------
 
     fn text(&self, node: Node) -> &'t str {
@@ -546,7 +601,8 @@ impl<'t> Walker<'t> {
             }
             return;
         }
-        if right.kind() != "identifier" || !matches!(left.kind(), "member_expression" | "subscript_expression") {
+        let fn_valued = matches!(right.kind(), "function_expression" | "arrow_function" | "generator_function");
+        if (right.kind() != "identifier" && !fn_valued) || !matches!(left.kind(), "member_expression" | "subscript_expression") {
             return;
         }
         let Some(obj) = left.child_by_field_name("object") else { return };
@@ -560,7 +616,11 @@ impl<'t> Walker<'t> {
             .map(|k| self.text(k).trim_matches(|c| c == '\'' || c == '"').to_string());
         if let Some(key) = key {
             if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$') {
-                self.later_exports.entry(self.text(right).to_string()).or_insert((key, EXPORT_CJS));
+                if fn_valued {
+                    self.cjs_fn_exports.push((key, self.line_of(expr)));
+                } else {
+                    self.later_exports.entry(self.text(right).to_string()).or_insert((key, EXPORT_CJS));
+                }
             }
         }
     }
@@ -611,14 +671,12 @@ impl<'t> Walker<'t> {
             return;
         }
         let require_spec = self.import_decls.get(&(name.to_string(), line)).cloned();
-        let scope_top = self.stack.last().map(|s| s.kind).unwrap_or("file");
-        let at_module_scope = scope_top == "file";
-        let (scope_start, scope_end) = if at_module_scope {
-            (1, self.line_count)
-        } else {
-            let row_of_scope = self.stack.last().map(|s| s.row).unwrap_or(0);
-            self.tables.node_lines(row_of_scope)
-        };
+        // Scope from the AST, not the node stack: an IIFE or a callback has no
+        // node, so a function declared inside one is still nested. The same
+        // rule the pre-walk and the AST-only emitter use (bindings.rs).
+        let enclosing = self.enclosing_scope(node);
+        let at_module_scope = enclosing.is_none();
+        let (scope_start, scope_end) = enclosing.unwrap_or((1, self.line_count));
         let mut exported_as: Option<String> = None;
         let mut form = EXPORT_NONE;
         if at_module_scope {
@@ -639,7 +697,7 @@ impl<'t> Walker<'t> {
             } else if let Some((alias, f)) = self.later_exports.get(name) {
                 exported_as = Some(alias.clone());
                 form = *f;
-            } else if exported_flag {
+            } else if exported_flag || self.cjs_fn_exports.iter().any(|(n, l)| n == name && *l == line) {
                 exported_as = Some(name.to_string());
                 form = EXPORT_CJS;
             }
@@ -1195,6 +1253,25 @@ impl<'t> Walker<'t> {
             cur = p.parent();
         }
         None
+    }
+
+    /// The line range of the innermost function, method or `catch` enclosing
+    /// `node`; failing that, of a module-level block or class body; None at
+    /// module scope. Mirrors the scoped pre-walk's scope rule.
+    pub(super) fn enclosing_scope(&self, node: Node<'t>) -> Option<(u32, u32)> {
+        let mut block: Option<Node<'t>> = None;
+        let mut cur = node.parent();
+        while let Some(p) = cur {
+            let k = p.kind();
+            if is_function_type(k) || k == "method_definition" || k == "catch_clause" {
+                return Some((p.start_position().row as u32 + 1, p.end_position().row as u32 + 1));
+            }
+            if is_scope_block(p) {
+                block = Some(p);
+            }
+            cur = p.parent();
+        }
+        block.map(|b| (b.start_position().row as u32 + 1, b.end_position().row as u32 + 1))
     }
 
     /// Inside a `declare global { … }` ambient block.

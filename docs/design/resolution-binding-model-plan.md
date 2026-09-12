@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** Phases 0 to 2 done (2026-09-12; Phase 2 as a first cut, regex fallbacks still present); Phases 3 and 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phases 3 and 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -143,7 +143,7 @@ Rows the walker now emits, on top of Phase 1 (`codegraph-kernel/src/tsjs/binding
 Resolution (`ResolutionContext.getBindings(file)`, LRU-cached with the other per-file caches; `innermostBinding(rows, name, line)` picks the narrowest row whose scope holds the line):
 
 - `isBoundToBareImport` reads the innermost `import` row; `isLocallyBoundJsName` reads the innermost `decl`/`local`/`param` row **at the reference's line** — a parameter now shadows only inside its own function, where the regex shadowed the whole file; `isSealedModule` is "has an ESM `import` node, no row with `exported_as`, no exported node"; `defaultExportBinding` and the local export aliases come from rows with `exported_as`; `getImportMappings` and `getReExports` are built from `import` / `reexport` rows.
-- Every one of these keeps its regex path as the fallback **for a file with no rows**: SFC blocks (positions are block-relative, rows are dropped), the generic extractor, other languages and minimal test contexts. So the exit criterion ("no `RegExp` over source for TS/JS") is not met yet; §4's deletions wait on rows from the SFC and generic paths.
+- In the first cut every one of these kept its regex path as the fallback for a file with no rows (SFC blocks, the generic extractor). The second cut, below, gave those paths rows and deleted the regexes.
 - Not touched in this cut: `isBareJsCall` (a question about the call site's shape, not a binding), `isTsJsNestedCall` and the host-global list (the §2.3 receiver rule), `alias` rows (`alias-binding.ts` reads node signatures, not source).
 
 Precision gate (three corpora, all absent cases and the control held; baselines are the Phase 0 reports):
@@ -154,11 +154,20 @@ Precision gate (three corpora, all absent cases and the control held; baselines 
 | vitest | 75,035 → 74,987 (−48) | 13,647 → 12,398 | 31,966 → 33,190 | framework 86 → 64, fuzzy 28 → 26 |
 | svelte | 70,432 → 70,603 (+171) | 16,731 → 16,648 | 8,468 → 8,722 | fuzzy 159 → 159 |
 
-Edge-level review on vite (same extraction, rows on vs off): 289 edges lost, 221 gained; 201 of the lost references re-resolved through `import` (dynamic `await import('./x')` and `require` destructurings now follow the import instead of a name guess). Of the 76 references that lost their edge outright: bare and dynamic-bare imports (`const { createServer } = await import('node:http')` no longer lands on vite's `createServer`; `import type { OutputChunk } from 'rolldown'` no longer lands on a same-named local interface), parameters (`.then(({ lazyLoad }) => lazyLoad())`), function-body locals (`render = (await import('./dist/app.js')).render`), and edges that were never right (`type` read as a default import of `environment.ts` and resolved to `DevEnvironment`; a bare `log()` onto a `.d.ts` variable). None of the 76 is a project symbol the reference meant.
+Edge-level review on vite (same extraction, rows on vs off): 289 edges lost, 221 gained; 201 of the lost references re-resolved through `import` (dynamic `await import('./x')` and `require` destructurings now follow the import instead of a name guess). Of the 76 references that lost their edge outright: bare and dynamic-bare imports (`const { createServer } = await import('node:http')` no longer lands on vite's `createServer`; `import type { OutputChunk } from 'rolldown'` no longer lands on a same-named local interface), parameters (`.then(({ lazyLoad }) => lazyLoad())`), function-body locals (`render = (await import('./dist/app.js')).render`), and edges that were never right (`type` read as a default import of `environment.ts` and resolved to `DevEnvironment`; ). One class in that list was misjudged at the time: 41 bare `log()` calls onto `playground/hmr-ssr/event.d.ts`'s `let log` inside `declare global`, a name that block really does give every file. The second cut restored them (see below).
 
 Golden diff: binding rows only (57 `param`, 7 `local`, an `import` for a `require`, a wildcard `reexport`, a nodeless `default`), plus one edge: `a()` at `torture.tsx:243` now resolves cross-language onto a Dart `enum_member` named `a` by exact match. The regex had masked it (a parameter `a` elsewhere in the file counted as a file-wide shadow); the real defect was that a bare JS call could land on any kind. Fixed in the follow-up below.
 
 Tests: `__tests__/bindings-tsjs.test.ts` (every new row form) and `__tests__/bindings-resolution.test.ts` (six end-to-end shapes the regexes could not answer). `resolution.test.ts`, the #1794 and #1762 suites pass unchanged.
+
+**Second cut, rows for every TS/JS path and the regexes deleted (same day).**
+
+- `codegraph-kernel` gains `bindings_file(file, source, language)`: binding rows from the AST alone, without the node walk, for the files the walker does not extract — a stack-guard defer and ArkTS, which the generic extractor extracts. `tsjs::bindings_only` runs the same pre-walks the walker runs (`collect_later_exports`, `collect_scoped_bindings`) plus an AST-only declaration pass and import/re-export pass (`bindings.rs`). Every pre-walk is iterative, so a file too deep for the recursive walker still gets its rows. §2.4 holds: one emitter, in the kernel; the TypeScript side only attaches node ids to `decl` rows by name and line (`attachBindingNodeIds`).
+- The walker's own rows now take their scope from the AST (`enclosing_scope`), not the node stack: a function declared inside an IIFE or a callback is `local` to it. `declare global { }` and `namespace X { }` bodies are not scopes. `exports.x = function () {}` exports through the same `cjs_fn_exports` list on both paths.
+- Vue, Svelte and Astro rebase their script blocks' rows to file positions and carry them; Razor's C# block has none.
+- The parity gate (`kernel-generic-extractor-tree.test.ts`) compares the AST-only rows with the walker's on the JS-family fixtures: every AST-only row is a walker row, and a walker-only row is node-backed (a class member, an object-literal action whose export flag lives on the node).
+- Deleted from `src/resolution/` (434 lines net): `extractJSImports`, the JS body of `extractReExports` and `stripJsComments`, `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases`, the three sealed-module regexes and the local-binding regexes with their memo. `isBoundToBareImport` keeps `getImportMappings` as its no-rows fallback because that is a context hook, not a regex (a test context supplies mappings by hand). `EXTRACTION_VERSION` 30 → 31 so existing indexes re-index into rows for every file.
+- Gate: all cases held. vite 28,688 → 28,731 (+43: the 41 `declare global` `log()` edges above came back, plus file-path imports), vitest 74,887 → 74,888, svelte 70,589 → 70,589 (the SFC rows reproduce the whole-file regex's mappings exactly).
 
 **Follow-up, kind eligibility for bare calls (same day).** A receiver-less JS/TS call may only resolve to a function, class, component, constant or variable (`BARE_CALL_TARGET_KINDS`, `name-matcher.ts`). The rule rejects the candidate exact-match would commit to; it does not filter the candidate set. The filtering form was tried first and manufactured 192 edges on vitest (dropping the property candidates from a crowd left a lone wrong survivor: every dynamic `import(...)` landed on a function named `import`, `trace()` on a Vue constant); the rejection form lost 102 property-target edges and gained 2 fuzzy ones. Corpus totals after: vite 28,826 → 28,688, vitest 74,987 → 74,887, svelte 70,603 → 70,589, all cases held. Goldens: the `a()` → Dart `enum_member` edge and an `expensive()` → Swift `field` edge are gone.
 
@@ -178,12 +187,12 @@ Exit: `settle` and `read` stages run natively; Linux-kernel resolution under the
 
 | Item | Location |
 |---|---|
-| `isExportedLater` (both engines) | `tree-sitter.ts:2451`, `extractors.rs:359` |
-| `isSealedModule` and its three regexes | `name-matcher.ts:621-692` |
-| `isBoundToBareImport`, `isBareJsCall`, `isLocallyBoundJsName` and their memos | `name-matcher.ts:551-970` |
+| `isExportedLater` (both engines) — done, Phase 1 | `tree-sitter.ts:2451`, `extractors.rs:359` |
+| `isSealedModule`'s three regexes — done, Phase 2 (the predicate stays, over rows) | `name-matcher.ts:621-692` |
+| `isBoundToBareImport`, `isBareJsCall`, `isLocallyBoundJsName` and their memos — `isLocallyBoundJsName`'s regexes and memo done, Phase 2; the other two stay (bare-import classification and call-site shape) | `name-matcher.ts:551-970` |
 | `isTsJsNestedCall` early-out and the host-global chain gate | `index.ts:1030`, `name-matcher.ts:3423`, `js-builtins.ts` |
-| `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases` | `import-resolver.ts:96`, `alias-binding.ts:105` |
-| Per-language import regex extractors | `import-resolver.ts:898-1174` |
+| `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases` — done, Phase 2 | `import-resolver.ts:96`, `alias-binding.ts:105` |
+| Per-language import regex extractors — JS/TS done, Phase 2; Python, Go, JVM, PHP, C/C++ wait on Phase 3 | `import-resolver.ts:898-1174` |
 | Receiver inference regex table, as languages migrate | `name-matcher.ts:1950-2082` |
 | `strip-comments.ts` once no resolver reads source | 574 lines |
 

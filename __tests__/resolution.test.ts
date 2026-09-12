@@ -12,7 +12,8 @@ import { CodeGraph } from '../src';
 import { Node, UnresolvedReference } from '../src/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../src/resolution';
 import { matchReference, resolveMethodOnType, matchByQualifiedName, matchByExactName, preferCallSiteFile, matchMethodCall } from '../src/resolution/name-matcher';
-import { resolveImportPath, extractImportMappings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache, isPhpIncludePathRef } from '../src/resolution/import-resolver';
+import { resolveImportPath, extractImportMappings, importMappingsFromBindings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache, isPhpIncludePathRef } from '../src/resolution/import-resolver';
+import { tryKernelBindings } from '../src/extraction/kernel';
 import type { UnresolvedRef } from '../src/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../src/resolution/frameworks';
 import { QueryBuilder } from '../src/db/queries';
@@ -741,15 +742,15 @@ import * as utils from './utils';
 import { baz, qux } from './baz';
 `;
 
-      const mappings = extractImportMappings(
-        'src/index.ts',
-        content,
-        'typescript'
-      );
+      // JS/TS mappings come from the binding rows, never from source regexes.
+      const rows = tryKernelBindings('src/index.ts', content, 'typescript') ?? [];
+      const mappings = importMappingsFromBindings(rows) ?? [];
 
       expect(mappings.length).toBeGreaterThan(0);
       expect(mappings.some((m) => m.localName === 'foo')).toBe(true);
       expect(mappings.some((m) => m.localName === 'bar')).toBe(true);
+      expect(mappings.find((m) => m.localName === 'utils')).toMatchObject({ isNamespace: true, source: './utils' });
+      expect(extractImportMappings('src/index.ts', content, 'typescript')).toEqual([]);
     });
 
     it('should extract Python import mappings', () => {

@@ -21,6 +21,7 @@ import * as path from 'path';
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 import CodeGraph from '../src/index';
 import { tryKernelExtract } from '../src/extraction/kernel';
+import { extractFromSource } from '../src/extraction';
 import type { Binding } from '../src/types';
 
 const KERNEL_PATH = path.join(
@@ -224,5 +225,39 @@ describe.skipIf(!kernelBuilt)('TS/JS bindings: scoped rows, CommonJS and default
   it('CommonJS object and bracket exports, wherever the assignment sits', () => {
     expect(by(bindings, 'helper')).toMatchObject({ kind: 'decl', exportedAs: 'helper', exportForm: 'cjs-object' });
     expect(by(bindings, 'bracketed')).toMatchObject({ kind: 'decl', exportedAs: 'renamed', exportForm: 'cjs-object' });
+  });
+});
+
+/**
+ * Rows for the files the walker does not extract: the generic extractor's
+ * path (ArkTS here; a stack-guard defer takes the same path) gets rows from
+ * the kernel's AST-only emitter with node ids attached by name and line, and
+ * a Vue / Svelte / Astro file gets its script block's rows rebased to file
+ * positions.
+ */
+describe.skipIf(!kernelBuilt)('TS/JS bindings: generic-extractor and SFC paths', () => {
+  it('an ArkTS file has rows with node ids attached', () => {
+    const src = "import { Repo } from 'data';\nexport function load(id: string) { const r = new Repo(); return r.get(id); }\nfunction helper() { return 1; }\nexport { helper as util };\n";
+    const result = extractFromSource('entry/src/main/ets/Page.ets', src, 'arkts');
+    const rows = result.bindings ?? [];
+    expect(by(rows, 'Repo')).toMatchObject({ kind: 'import', targetSpec: 'data', targetName: 'Repo' });
+    const load = by(rows, 'load');
+    expect(load).toMatchObject({ kind: 'decl', exportedAs: 'load', exportForm: 'esm' });
+    expect(load!.nodeId).toBe(result.nodes.find((n) => n.name === 'load')!.id);
+    expect(by(rows, 'id')).toMatchObject({ kind: 'param', scopeStart: 2, scopeEnd: 2 });
+    expect(by(rows, 'r')).toMatchObject({ kind: 'local' });
+    expect(by(rows, 'helper')).toMatchObject({ kind: 'decl', exportedAs: 'util', exportForm: 'esm-later' });
+  });
+
+  it('a Vue file carries its script block rows at file positions', () => {
+    const src = "<template><div @click=\"go()\" /></template>\n<script setup lang=\"ts\">\nimport { useRouter } from 'vue-router';\nconst router = useRouter();\nfunction go(to: string) { router.push(to); }\n</script>\n";
+    const result = extractFromSource('src/views/Home.vue', src, 'vue');
+    const rows = result.bindings ?? [];
+    expect(rows.every((b) => b.filePath === 'src/views/Home.vue')).toBe(true);
+    expect(by(rows, 'useRouter')).toMatchObject({ kind: 'import', targetSpec: 'vue-router', line: 3 });
+    expect(by(rows, 'to')).toMatchObject({ kind: 'param', scopeStart: 5, scopeEnd: 5, line: 5 });
+    const go = by(rows, 'go');
+    expect(go).toMatchObject({ kind: 'decl', line: 5 });
+    expect(go!.nodeId).toBe(result.nodes.find((n) => n.name === 'go')!.id);
   });
 });

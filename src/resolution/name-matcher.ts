@@ -9,7 +9,6 @@ import * as path from 'path';
 import { Binding, Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, isInheritanceRef, isImportableKind } from './types';
 import { resolveWorkspaceImport } from './workspace-packages';
-import { blankStringContents, stripCommentsForRegex } from './strip-comments';
 import { JS_BUILT_INS, isTsJsNestedCall } from './js-builtins';
 
 /**
@@ -635,27 +634,6 @@ function packageNameOf(source: string): string {
 /** Languages whose module boundary is `import`/`export` (or CommonJS). */
 const ESM_FAMILY = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts']);
 
-/**
- * A line-initial `import` statement — the marker that a JS/TS file is a MODULE
- * rather than a classic script. Line-anchored and followed by a name, brace,
- * star or quote, so a dynamic `import(` and the word inside a comment or string
- * do not match.
- */
-const HAS_IMPORT_STATEMENT = /^[ \t]*import[\s{*'"]/m;
-
-/**
- * Anything the file could offer another file, in every form the extractor's own
- * `isExported` flag misses. `^export` covers the declaration and later forms
- * (`export const`, `export { x }`, `export default x`, `export *`); the
- * CommonJS shapes cover files that never use ESM syntax at all, in both the dot
- * and the bracket form; and `declare global` contributes names to every file
- * whether or not the module exports anything of its own. Kept as a source test
- * rather than a node scan precisely because `isExported` is set only from an
- * `export_statement` ancestor, so `const x = …; export { x }` and
- * `module.exports = { x }` both read as unexported on the node.
- */
-const HAS_ESM_EXPORT = /^[ \t]*export[\s{*]|^[ \t]*declare\s+global\b/m;
-const HAS_CJS_EXPORT = /\bmodule\.exports\b|\bexports\s*[.[]/;
 
 /**
  * Per-context memo of "this file is a module that exports nothing", asked once
@@ -700,28 +678,18 @@ function isSealedModule(filePath: string, context: ResolutionContext): boolean {
   }
   const hit = memo.get(filePath);
   if (hit !== undefined) return hit;
-  const rows = context.getBindings?.(filePath);
-  if (rows && rows.length > 0) {
-    // From the table: an `import` statement node (ESM only; `require` makes
-    // no such node, so a classic script stays exempt) makes it a module, and
-    // any row exported under any form (ESM, later clause, CommonJS object or
-    // bracket assignment, `declare global`) means it offers something.
-    const nodes = context.getNodesInFile(filePath);
-    const sealed =
-      nodes.some((n) => n.kind === 'import') &&
-      !rows.some((r) => r.exportedAs !== undefined) &&
-      !nodes.some((n) => n.isExported);
-    memo.set(filePath, sealed);
-    return sealed;
-  }
-  const source = context.readFile(filePath);
-  const code = source === null ? '' : blankStringContents(stripCommentsForRegex(source, 'typescript'));
-  // CommonJS assignments can execute inside template interpolations, which the
-  // masker blanks. Keep the conservative raw-source exemption for those forms.
+  // From the table: an `import` statement node (ESM only; `require` makes no
+  // such node, so a classic script stays exempt) makes it a module, and any
+  // row exported under any form (ESM, later clause, CommonJS object or
+  // bracket assignment, `declare global`) means it offers something. A file
+  // with no rows at all is not sealed: nothing is known about it.
+  const rows = context.getBindings?.(filePath) ?? [];
+  const nodes = context.getNodesInFile(filePath);
   const sealed =
-    source !== null && HAS_IMPORT_STATEMENT.test(code) &&
-    !context.getNodesInFile(filePath).some((n) => n.isExported) &&
-    !HAS_ESM_EXPORT.test(code) && !HAS_CJS_EXPORT.test(source);
+    rows.length > 0 &&
+    nodes.some((n) => n.kind === 'import') &&
+    !rows.some((r) => r.exportedAs !== undefined) &&
+    !nodes.some((n) => n.isExported);
   memo.set(filePath, sealed);
   return sealed;
 }
@@ -951,86 +919,15 @@ function isBareJsCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
  */
 const BARE_CALL_TARGET_KINDS = new Set<string>(['function', 'class', 'component', 'constant', 'variable']);
 
-/** Per-context memo: `file\0name` → "the file binds this name locally". */
-const LOCAL_BINDING_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>();
-
-/**
- * Whether a JS/TS file binds `name` itself — as a plain `const`/`let`/`var`/
- * `function`/`class` declaration or as a parameter of a function or arrow.
- * A binding that only re-names a same-named member of something defined
- * elsewhere is NOT one: `const { fetchUser } = useStore.getState()` and the
- * selector `const setZipUri = useStore((s) => s.setZipUri)` are how a store
- * action reaches its caller, and the store-action resolution follows exactly
- * those shapes — treating them as local would drop the `loginFlow → fetchUser`
- * edge the graph is built to hold. A plain alias with a fallback (`const now =
- * opts.now || Date.now`) is still local: on a Kotlin+JS app it otherwise
- * landed 24 `now()` calls on a Kotlin test's `private val now`. A definition
- * shadows every same-named symbol in
- * other files, so a bare call to it has no cross-file candidate: the
- * `resolve` of `new Promise((resolve, reject) => …)`, a spec's
- * `const transform = await makeTransform()`, a factory's `const now =
- * options.now || (() => new Date())`. None of these is a node the graph
- * holds (a parameter, a const bound to a call result), so without this the
- * matcher hands the call to whichever other file defines the name — and
- * once methods stop being candidates for a bare call (#1714), the function
- * that was out-ranked steps in. Read from source, memoised per file+name.
- */
 function isLocallyBoundJsName(name: string, filePath: string, context: ResolutionContext, line?: number): boolean {
   // From the table: a `decl`, `local` or `param` row for the name whose scope
   // holds the reference. An `import` row is not a local binding (the symbol
-  // lives in the other file), and a store selector / destructured member is
-  // no row at all — the same carve-outs the regex path below makes.
+  // lives in the other file), and a store selector or a destructured member
+  // is no row at all. A file with no rows binds nothing that is known.
   const rows = context.getBindings?.(filePath);
-  if (rows && rows.length > 0) {
-    const bound = innermostBinding(rows, name, line);
-    return bound !== undefined && (bound.kind === 'decl' || bound.kind === 'local' || bound.kind === 'param');
-  }
-  let memo = LOCAL_BINDING_MEMO.get(context);
-  if (!memo) {
-    memo = new Map();
-    LOCAL_BINDING_MEMO.set(context, memo);
-  }
-  const key = filePath + '\0' + name;
-  const hit = memo.get(key);
-  if (hit !== undefined) return hit;
-  const source = context.readFile(filePath) ?? '';
-  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // `const { name } = require('./m')` / `= await import('./m')` binds an IMPORT,
-  // not a shadow: the symbol lives in the other file and the call means it.
-  const declRe = new RegExp(
-    '\\b(?:const|let|var)\\s+' + n + '\\b\\s*(?:=\\s*([^;\\n]*))?',
-    'g'
-  );
-  let bound = false;
-  // A selector: an arrow whose body is the same-named member of its own
-  // argument — `useStore((s) => s.setZipUri)`, `useSelector((st) => st.now)`.
-  // `() => Date.now()` is not one: the member is not picked off a parameter.
-  const selector = new RegExp('\\(?\\s*([\\w$]+)\\s*\\)?\\s*=>\\s*[({]?\\s*\\1\\.' + n + '\\b');
-  for (const m of source.matchAll(declRe)) {
-    const init = m[1] ?? '';
-    // `const x = require(…)` is an import; `const setZipUri = useStore((s) =>
-    // s.setZipUri)` picks a same-named member out of something defined
-    // elsewhere. Neither defines the name — the graph's symbol is what it means.
-    // A plain alias with a fallback, `const now = opts.now || Date.now`, IS a
-    // local binding: nothing in the graph is what that call means.
-    if (/^\s*(?:await\s+)?(?:require|import)\s*\(/.test(init) || selector.test(init)) continue;
-    bound = true;
-    break;
-  }
-  if (!bound) {
-    bound =
-      new RegExp('\\b(?:function|class)\\s+' + n + '\\b').test(source) ||
-      // a parameter: every token before the name in the list is itself a
-      // parameter (identifier, optional type, optional default) — so a string
-      // argument containing the word cannot match.
-      new RegExp(
-        '\\(\\s*(?:(?:\\.\\.\\.)?[\\w$]+(?:\\s*\\??\\s*:\\s*[^,()]+)?(?:\\s*=\\s*[^,()]+)?\\s*,\\s*)*' +
-          n + '\\b(?:\\s*\\??\\s*:[^,()]*)?(?:\\s*=[^,()]*)?(?:\\s*,\\s*[^()]*)?\\)\\s*(?::[^=;{]*)?(?:=>|\\{)'
-      ).test(source) ||
-      new RegExp('(?:^|[^\\w$.])' + n + '\\s*=>').test(source);
-  }
-  memo.set(key, bound);
-  return bound;
+  if (!rows || rows.length === 0) return false;
+  const bound = innermostBinding(rows, name, line);
+  return bound !== undefined && (bound.kind === 'decl' || bound.kind === 'local' || bound.kind === 'param');
 }
 
 /**
@@ -1980,7 +1877,6 @@ export function clearNameMatcherMemos(context: ResolutionContext): void {
   C_STATIC_MEMO.delete(context);
   RUST_TRAIT_IMPL_MEMO.delete(context);
   SEALED_MODULES.delete(context);
-  LOCAL_BINDING_MEMO.delete(context);
 }
 
 function memoPatterns(key: string, build: () => RegExp[]): RegExp[] {

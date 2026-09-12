@@ -13,7 +13,7 @@
  * old fallback parser were removed in Phase 5 of kernel-only-extraction-plan.md.
  */
 
-import type { ExtractionResult, Language } from '../../types';
+import type { Binding, ExtractionResult, Language, Node } from '../../types';
 import { EXTRACTORS } from '../languages';
 import { getKernel, kernelSupports } from './loader';
 import { decodeExtractBuffers } from './decode';
@@ -191,4 +191,51 @@ export function tryKernelExtract(
     }
     return null;
   }
+}
+
+/** Languages `bindingsFile` handles: the TS/JS family and ArkTS. */
+const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts']);
+
+/**
+ * Binding rows for a TS/JS-family file from the kernel's AST-only emitter,
+ * for the generic extractor's path (a stack-guard defer, ArkTS). `decl` rows
+ * come back without node ids; the caller attaches them by name and line to
+ * the nodes it created. Null when the kernel does not apply.
+ */
+export function tryKernelBindings(filePath: string, source: string, language: Language): Binding[] | null {
+  if (!BINDINGS_LANGUAGES.has(language)) return null;
+  const kernel = getKernel();
+  if (!kernel || typeof kernel.bindingsFile !== 'function') return null;
+  try {
+    const buffers = kernel.bindingsFile(filePath, source, language);
+    return decodeExtractBuffers(buffers, filePath, language).bindings ?? [];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!warned.has(`bindings:${language}`)) {
+      warned.add(`bindings:${language}`);
+      process.stderr.write(`[codegraph-kernel] ${language} bindings failed (${message}) — this file has no binding rows\n`);
+    }
+    return null;
+  }
+}
+
+/**
+ * Attach node ids to rows the AST-only emitter left nodeless: a `decl` (or a
+ * node-backed `import`) row names the node the extractor created at the same
+ * line. Rows that match nothing stay nodeless; they still answer the
+ * shadowing, sealed-module and export questions.
+ */
+export function attachBindingNodeIds(bindings: Binding[], nodes: Node[]): Binding[] {
+  const byNameLine = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.kind === 'file' || n.kind === 'import') continue;
+    const key = `${n.name}\0${n.startLine}`;
+    if (!byNameLine.has(key)) byNameLine.set(key, n.id);
+  }
+  for (const b of bindings) {
+    if (b.nodeId !== undefined || (b.kind !== 'decl' && b.kind !== 'import' && b.kind !== 'local')) continue;
+    const id = byNameLine.get(`${b.name}\0${b.line}`);
+    if (id) b.nodeId = id;
+  }
+  return bindings;
 }
