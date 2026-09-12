@@ -41,9 +41,11 @@ Moving the slicers themselves into Rust is a later optimization and is not requi
 
 ### 2.3 The kernel gains a parse-tree service for the three read-time consumers
 
-Add a `parse_tokens(file, content, language)` entry point that returns the flat token stream `syntax-tokens.ts` derives today, and a `walk_guards(file, content, language, ranges)` entry point that returns the guard conditions `branch-guards.ts` computes. `explore-source-ranges.ts` needs only node boundaries and folds into the tokens call. All three return flat buffers through the existing layout mechanism.
+**Revised 2026-09-11 (Phase 3 implementation).** The original text proposed two derivation entry points, `parse_tokens` and `walk_guards`. Reading the consumers changed that: `branch-guards.ts` is 2,300 lines of per-language rules with eight entry points (guards, call arguments, call sites, triggers, loops, decorators, member types), all walking the tree with `type`, `childForFieldName`, `text` and `parent`. Porting those rules to Rust is weeks of work for no retrieval gain.
 
-Alternative considered: expose a generic tree handle over napi. Rejected. Per-node boundary crossings are exactly the cost the kernel exists to avoid, and the three consumers need three fixed derivations, not a tree.
+What shipped instead: `parse_tree(content, language)` returns the **whole CST as flat buffers in one crossing** (`codegraph-kernel/src/tree.rs`), and `src/extraction/kernel/tree.ts` wraps the rows in `NativeNode`, a facade with the web-tree-sitter node surface. `src/extraction/parse-tree.ts` is the one seam (`parseSourceTree`, kernel first, WASM fallback) and defines the structural `TreeNode` type both trees satisfy, so the three consumers run unchanged on either. Positions are UTF-16 code units so `source.slice` is exact; an all-ASCII file skips the prefix table; kind and field name tables are fetched once per language (`tree_names`); the child table is built by a counting pass; each row carries its index in its parent so sibling lookups are constant time.
+
+The earlier rejection was of a per-node handle over napi, which would cost a crossing per property read. A serialized tree costs one crossing and is what the consumers need.
 
 ### 2.4 Tail languages: port five, drop four, decide CFML separately
 
@@ -115,13 +117,29 @@ Exit met: no file reaches WASM because of an ERROR node; deferral reads zero on 
 
 Exit met: SFC fixtures index with zero WASM parses on a host with a kernel. The remaining WASM users in `src/extraction/` are the CFML extractor (live CST), the tail languages, and the fallback itself.
 
-### Phase 3: parse-tree service
+### Phase 3: parse-tree service — DONE 2026-09-11
 
-- Add `parse_tokens` and `walk_guards` to the kernel with layouts in `layout.ts`.
-- Port `syntax-tokens.ts`, `branch-guards.ts` and `explore-source-ranges.ts` to consume them.
-- Extend the viewer highlighting parity test (`cg57-highlighting-parity`) to run against the kernel tokens.
+- `codegraph-kernel/src/tree.rs` (`parse_tree`, `tree_names`), `src/extraction/kernel/tree.ts` (facade), `src/extraction/parse-tree.ts` (seam and `TreeNode` type). `syntax-tokens.ts`, `graph/branch-guards.ts` and `mcp/explore-source-ranges.ts` import the seam instead of `web-tree-sitter` and `getParser`; their walkers are untouched.
+- `__tests__/kernel-parse-tree.test.ts`: for 19 torture fixtures plus three of this repo's own sources, the facade matches the WASM tree node for node (type, named-ness, UTF-16 indexes, positions, child counts, field names), syntax spans are equal, and branch guards agree at up to 60 call sites per file. Erroring C/C++ fixtures are checked for `hasError` agreement only (Phase 1). The existing highlighter, branch-guard and Steps suites pass on the kernel path.
+- `scripts/bench-parse-tree.mjs` measures the read-time derivations on both arms and asserts output agreement on clean trees.
 
-Exit: no `getParser` call outside `src/extraction/`.
+Measured (median per file, warm, single thread, this host):
+
+| Corpus | Derivation | WASM | Kernel | Ratio |
+|---|---|---|---|---|
+| redis `src` (212 C files) | bare parse | 0.60 ms | 0.96 ms | 0.64x |
+| | tokenize | 1.23 ms | 1.09 ms | 1.08x |
+| | guards, 20 sites, re-parse per site | 11.1 ms | 17.4 ms | 0.70x |
+| okio (300 Kotlin files) | bare parse | 0.32 ms | 0.51 ms | 0.57x |
+| | tokenize | 0.59 ms | 0.58 ms | 1.03x |
+| | guards | 5.7 ms | 9.8 ms | 0.61x |
+| this repo (253 TS files) | bare parse | 0.67 ms | 0.70 ms | 0.96x |
+| | tokenize | 1.42 ms | 0.90 ms | 1.58x |
+| | guards | 13.6 ms | 13.6 ms | 1.07x |
+
+Reading it honestly: the WASM parser builds a lazy tree, so a bare parse is cheaper there; the kernel serializes every node up front. Once a consumer walks the tree, the facade's buffer reads are cheaper than WASM boundary crossings, so tokenizing is at par or faster and guards are at par on TypeScript. On the largest redis file (658 KB) the kernel's parse plus serialization took 62 ms against 40 ms for the WASM parse alone and 58 ms for WASM parse plus one full walk. The guards row overstates the cost because the benchmark re-parses per site; production callers parse once per file and cache the tree. None of these paths is on the retrieval critical path: an explore call is measured in hundreds of milliseconds. The value of this phase is removing the last read-time dependency on the WASM runtime, not speed. Outputs differed on 3 of 765 files, all with erroring trees.
+
+Exit met: no `getParser` call outside `src/extraction/` (`branch-guards.ts` and `explore-source-ranges.ts` no longer import it).
 
 ### Phase 4: tail languages
 
@@ -140,6 +158,23 @@ Exit: every language in `EXTENSION_MAP` has a kernel walker.
 - Update `server-instructions.ts` only if the language list changes. Update `AGENTS.md` build notes and the `copy-assets` rule.
 
 Exit: `grep -r web-tree-sitter src __tests__ scripts` is empty. Full suite green on Linux, Windows and macOS. The espn-draft host no longer needs the Node 24 alias.
+
+## 3a. Measurements so far
+
+Every phase records before-and-after numbers here so the work can be judged, not assumed. All figures are from this WSL host (15 vCPUs exposed, Node 24) unless stated; single runs are marked.
+
+| What | Before | After | How measured |
+|---|---|---|---|
+| Fresh index of redis (794 C/H files), WASM-only vs kernel, n=1 | 5.18 s, 1,301 MB peak RSS, 20,567 nodes / 76,845 edges | 4.06 s, 1,355 MB, 20,584 nodes / 76,927 edges | `codegraph init -y` under `/usr/bin/time -v`, `CODEGRAPH_KERNEL=0` vs default, after Phase 1 |
+| Files reaching WASM because of a parse error (redis, fmt, okio) | 350, 39, 24 | 0, 0, 0 | `scripts/kernel-parity.mjs --error-files only` (Phase 1) |
+| Symbol delta on erroring files, kernel view vs WASM (redis) | | +6 functions, +6 constants, +7 variables, +96 call refs | same |
+| SFC script blocks parsed by WASM on a kernel host (vue-sfc + sfc-mix fixtures) | every block | 0 | `kernel-sfc-blocks.test.ts` spies `getParser` (Phase 2) |
+| Graph output for the SFC fixtures | | byte-identical | golden dumps generated before Phase 2, unchanged after |
+| Read-time parse derivations, kernel vs WASM | see the Phase 3 table | | `scripts/bench-parse-tree.mjs` |
+| Whole-graph regressions caught by the golden gate | | 1 (missing parse-collapse warning, Phase 1) plus 1 stale-dist false alarm | `kernel-golden-dumps.test.ts` and the full suite |
+| Test surface | 4,773 tests | 4,791 tests (Phase 2) | full engine suite, 7 workers |
+
+Not yet measured, and the numbers that will decide whether Phase 5 is worth it: peak RSS with the WASM grammars no longer loaded in parse workers (the espn-draft Bun probe put the per-worker grammar heap at about 60 MB per worker on that runtime), cold start of the MCP server without `--liftoff-only`, and install size without the 30 `.wasm` files. Retrieval quality is held constant by construction (goldens) and is not a lever here.
 
 ## 4. What is removed, by the numbers
 

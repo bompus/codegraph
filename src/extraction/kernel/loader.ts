@@ -79,8 +79,26 @@ export interface CfnptrFactsOut {
   includes: string[];
 }
 
+/** Whole-CST buffers (codegraph-kernel/src/tree.rs); decoded by kernel/tree.ts. */
+export interface KernelTreeBuffers {
+  meta: Buffer;
+  nodes: Buffer;
+  children: Buffer;
+}
+export interface KernelTreeNames {
+  kindCount: number;
+  fieldCount: number;
+  names: Buffer;
+}
+
 export interface KernelModule {
   extractFile(filePath: string, content: string, language: string): KernelBuffers;
+  /** Parse-tree service for read-time consumers (Phase 3). OPTIONAL: absent
+   *  on older binaries — kernel/tree.ts feature-detects and the consumers
+   *  keep the wasm parser. */
+  parseTree?(content: string, language: string): KernelTreeBuffers;
+  /** Kind and field name tables for a grammar, fetched once per language. */
+  treeNames?(language: string): KernelTreeNames | null;
   contractInfo(): KernelContractInfo;
   grammarInfo(language: string): KernelGrammarInfo | null;
   /** Batched cFnPtr extraction sweep (task #5 step 2). OPTIONAL: absent on

@@ -152,6 +152,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- **Syntax colouring, `when` conditions and test-range lookup now read the native engine's parse.** The viewer's highlighting, the conditions shown on call sites in `codegraph_explore` and the viewer, and explore's search inside test files used to run a second, slower parser at query time on every host. They now use the same native parse the graph was built from, with identical output, and fall back to the older parser only on a platform without the native engine.
+
 - **Vue, Svelte, Astro and Razor files are now read by the native engine.** The script, frontmatter and `@code` blocks inside single-file components used to go through the older engine on every host, even where the native one was installed. Each block now takes the same native path as a plain TypeScript, JavaScript or C# file, with the same symbols coming out, so indexing a component-heavy project is faster and no longer keeps a second parser warm just for those files.
 
 - **Files with syntax errors are now read by the native engine too.** Until now any file whose parse produced errors, common in macro-heavy C and C++ headers, in Kotlin `fun interface` declarations, and in a few Dart, Scala and Swift shapes, was quietly handed back to the older engine so both would agree byte for byte. The native engine now reads every file it parses, including its own recovery of the Kotlin `fun interface` misparse, so those files no longer pay for a second parse and the graph reflects one engine's view. Re-index to pick this up.

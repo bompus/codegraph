@@ -38,10 +38,9 @@
  * that declares something in each language, plus the field its name hangs on.
  */
 
-import type { Node as SyntaxNode } from 'web-tree-sitter';
 import { Language } from '../types';
 import { EXTRACTORS } from './languages';
-import { getParser, loadGrammarsForLanguages } from './grammars';
+import { parseSourceTree, type TreeNode as SyntaxNode } from './parse-tree';
 import type { LanguageExtractor } from './tree-sitter-types';
 
 /* ------------------------------------------------------------- the classes -- */
@@ -447,11 +446,10 @@ async function tokenizeRegion(
   offset: number
 ): Promise<SyntaxSpan[] | null> {
   try {
-    await loadGrammarsForLanguages([language]);
-    const parser = getParser(language);
-    if (!parser) return null;
-    const tree = parser.parse(source);
-    if (!tree?.rootNode) return null;
+    // Kernel first, wasm fallback (parse-tree.ts): the same grammar the
+    // graph was built from, from the native parser when there is one.
+    const tree = await parseSourceTree(source, language);
+    if (!tree) return null;
     try {
       return classifyTree(tree.rootNode, source, language, offset);
     } finally {

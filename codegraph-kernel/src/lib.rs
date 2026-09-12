@@ -118,6 +118,7 @@ mod scala;
 mod stack;
 mod swift;
 mod textutil;
+mod tree;
 mod python;
 mod tsjs;
 
