@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phases 3 and 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 started with Python (2026-09-12); Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -179,6 +179,17 @@ Per language, in order of resolver regex weight: Python, Go, Java/Kotlin, C/C++ 
 
 Exit per language: its `extractXImports` function and inference table entries are deleted.
 
+#### Python — DONE 2026-09-12 (import regex retired)
+
+- The Python walker (`codegraph-kernel/src/python.rs`) emits: `decl` rows for every module-level definition, exported as itself with form `public` (a leading underscore is `storage = private`, the convention, not a boundary); `local` rows for a definition nested in a function or class and for an assignment inside a function body (nodeless); `param` rows for every parameter form (plain, default, typed, `*args`, `**kw`); `import` rows for `import a`, `import a.b as c`, `import x, y`, `from m import a, b as c` and relative `from .m` / `from ..m` (the module as written is `target_spec`; a whole-module import has `target_name = *`). `from m import *` emits no row, as the regex emitted no mapping.
+- `import a.b` keeps the resolver's long-standing reading of the local name (the last segment, `b`) rather than what Python binds (`a`), so the import mappings are byte-equal to the regex's; correcting it belongs with the Python receiver rule.
+- `extractPythonImports` is deleted; `getImportMappings` reads the rows. Python nodes at module level are now `isExported` (from the rows), where the walker had left the flag off.
+- Gate: a Python corpus was added to the precision runner (pallets/flask at `d73fa1cd`, one control: `from .helpers import get_debug_flag` in `app.py` resolves). Baseline 5,268 edges (import 90, exact-match 1,341, fuzzy 1); after: 5,292 (import 371, exact-match 1,110, fuzzy 1). Edge-level review (same corpus, previous walker vs this one): 267 references moved from a name guess to `import` now that the definitions are exported; 0 lost outright; 24 gained outright, all resolved by import (18 calls through an imported signal variable, `request_started.send(...)` → the `signals.py` variable, the same root-binding the JS path produces for an imported constant; 6 class references). Goldens: `torture.py` rows and export flags only, no edge or ref changes.
+- An import inside a function body (`from . import db` in flask's `create_app`) is a row scoped to that function; the first cut missed it and lost one edge the file-wide regex had found.
+- `bindings_file` handles Python too (`python::bindings_only`, an iterative AST-only pass with the same rules), so the generic extractor's path (`CODEGRAPH_KERNEL=0`, a stack-guard defer) has rows and the parity gate covers `torture.py`. Found by the extraction suite, where a test had left `CODEGRAPH_KERNEL=0` set for every later test in the file; the leak is fixed too.
+- One resolver rule came with the export flag: a chained call resolved by import onto a plain function or method is declined (`send_welcome.delay(x)` after `from .tasks import send_welcome` is Celery's dispatch on the task object, not a call to the function). Binding it hid the queue step in the Steps view; the celery-dispatch synthesizer keeps the edge it always made.
+- `__tests__/bindings-python.test.ts` pins every row form and the mappings built from them.
+
 ### Phase 4: move the binding lookup into the kernel
 
 With source-reading predicates gone, the resolve step is a join over `bindings`, `nodes` and `unresolved_refs`. Port it into the kernel as a batch entry point that takes a chunk of refs and returns resolved edges, mirroring today's `resolver-worker` chunk contract. The TypeScript `ReferenceResolver` becomes the orchestrator over the kernel and the framework resolvers. This is the P1 item in the migration plan, executed after the model is stable rather than before.
@@ -194,7 +205,7 @@ Exit: `settle` and `read` stages run natively; Linux-kernel resolution under the
 | `isBoundToBareImport`, `isBareJsCall`, `isLocallyBoundJsName` and their memos — `isLocallyBoundJsName`'s regexes and memo done, Phase 2; the other two stay (bare-import classification and call-site shape) | `name-matcher.ts:551-970` |
 | `isTsJsNestedCall` early-out and the host-global chain gate | `index.ts:1030`, `name-matcher.ts:3423`, `js-builtins.ts` |
 | `DEFAULT_EXPORT_BINDING_RE`, `extractLocalExportAliases` — done, Phase 2 | `import-resolver.ts:96`, `alias-binding.ts:105` |
-| Per-language import regex extractors — JS/TS done, Phase 2; Python, Go, JVM, PHP, C/C++ wait on Phase 3 | `import-resolver.ts:898-1174` |
+| Per-language import regex extractors — JS/TS done, Phase 2; Python done, Phase 3; Go, JVM, PHP, C/C++ remain | `import-resolver.ts:898-1174` |
 | Receiver inference regex table, as languages migrate | `name-matcher.ts:1950-2082` |
 | `strip-comments.ts` once no resolver reads source | 574 lines |
 

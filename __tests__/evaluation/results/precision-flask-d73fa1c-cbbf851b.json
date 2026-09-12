@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-09-12T05:29:28.899Z",
+  "corpus": "flask",
+  "repo": "https://github.com/pallets/flask.git",
+  "commit": "d73fa1c",
+  "codegraphSha": "cbbf851b",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 2474,
+    "exact-match": 1114,
+    "instance-method": 864,
+    "import": 366,
+    "qualified-name": 270,
+    "function-ref": 202,
+    "fuzzy": 1
+  },
+  "edges": 5291,
+  "results": [
+    {
+      "caseId": "flask-control-relative-from-import",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "file:src/flask/app.py",
+          "to": "function:00d6010e49ed947bc5858174234b23e4",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}

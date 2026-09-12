@@ -13,7 +13,7 @@ import { Node, UnresolvedReference } from '../src/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../src/resolution';
 import { matchReference, resolveMethodOnType, matchByQualifiedName, matchByExactName, preferCallSiteFile, matchMethodCall } from '../src/resolution/name-matcher';
 import { resolveImportPath, extractImportMappings, importMappingsFromBindings, resolveJvmImport, loadCppIncludeDirs, clearCppIncludeDirCache, isPhpIncludePathRef } from '../src/resolution/import-resolver';
-import { tryKernelBindings } from '../src/extraction/kernel';
+import { tryKernelBindings, tryKernelExtract } from '../src/extraction/kernel';
 import type { UnresolvedRef } from '../src/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../src/resolution/frameworks';
 import { QueryBuilder } from '../src/db/queries';
@@ -761,15 +761,16 @@ import os
 from ..services import auth_service
 `;
 
-      const mappings = extractImportMappings(
-        'src/main.py',
-        content,
-        'python'
-      );
+      // Python mappings come from the kernel walker's binding rows.
+      const rows = tryKernelExtract('src/main.py', content, 'python')?.bindings ?? [];
+      const mappings = importMappingsFromBindings(rows) ?? [];
 
       expect(mappings.length).toBeGreaterThan(0);
-      expect(mappings.some((m) => m.localName === 'helper')).toBe(true);
-      expect(mappings.some((m) => m.localName === 'User')).toBe(true);
+      expect(mappings.find((m) => m.localName === 'helper')).toMatchObject({ source: 'utils', exportedName: 'helper' });
+      expect(mappings.find((m) => m.localName === 'User')).toMatchObject({ source: '.models' });
+      expect(mappings.find((m) => m.localName === 'os')).toMatchObject({ isNamespace: true, source: 'os' });
+      expect(mappings.find((m) => m.localName === 'auth_service')).toMatchObject({ source: '..services' });
+      expect(extractImportMappings('src/main.py', content, 'python')).toEqual([]);
     });
   });
 

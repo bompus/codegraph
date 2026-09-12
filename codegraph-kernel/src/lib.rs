@@ -305,7 +305,11 @@ pub fn cfnptr_strip_c(text: String) -> String {
 /// pre-walks are iterative, so this never defers.
 #[napi]
 pub fn bindings_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
-    let out = tsjs::bindings_only(&file_path, &content, &language).map_err(Error::from_reason)?;
+    let out = match language.as_str() {
+        "python" => python::bindings_only(&file_path, &content),
+        _ => tsjs::bindings_only(&file_path, &content, &language),
+    }
+    .map_err(Error::from_reason)?;
     Ok(ExtractBuffers {
         meta: out.meta.into(),
         nodes: out.nodes.into(),

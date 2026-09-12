@@ -903,10 +903,10 @@ export function extractImportMappings(
 ): ImportMapping[] {
   const mappings: ImportMapping[] = [];
 
-  // The JS/TS family (and the Vue / Svelte / Astro script blocks) answer from
-  // the `bindings` table (importMappingsFromBindings); no source regex here.
-  if (language === 'python') {    mappings.push(...extractPythonImports(content));
-  } else if (language === 'go') {
+  // The JS/TS family (and the Vue / Svelte / Astro script blocks) and Python
+  // answer from the `bindings` table (importMappingsFromBindings); no source
+  // regex here.
+  if (language === 'go') {
     mappings.push(...extractGoImports(content));
   } else if (language === 'java' || language === 'kotlin') {
     mappings.push(...extractJavaImports(content));
@@ -914,59 +914,6 @@ export function extractImportMappings(
     mappings.push(...extractPHPImports(content));
   } else if (language === 'c' || language === 'cpp') {
     mappings.push(...extractCppImports(content));
-  }
-
-  return mappings;
-}
-
-/**
- * Extract Python import mappings
- */
-function extractPythonImports(content: string): ImportMapping[] {
-  const mappings: ImportMapping[] = [];
-
-  // from X import Y
-  const fromImportRegex = /from\s+([\w.]+)\s+import\s+([^#\n]+)/g;
-  let match;
-
-  while ((match = fromImportRegex.exec(content)) !== null) {
-    const [, source, imports] = match;
-    const names = imports!.split(',').map((s) => s.trim());
-
-    for (const name of names) {
-      const aliasMatch = name.match(/(\w+)\s+as\s+(\w+)/);
-      if (aliasMatch) {
-        mappings.push({
-          localName: aliasMatch[2]!,
-          exportedName: aliasMatch[1]!,
-          source: source!,
-          isDefault: false,
-          isNamespace: false,
-        });
-      } else if (name && name !== '*') {
-        mappings.push({
-          localName: name,
-          exportedName: name,
-          source: source!,
-          isDefault: false,
-          isNamespace: false,
-        });
-      }
-    }
-  }
-
-  // import X
-  const importRegex = /^import\s+([\w.]+)(?:\s+as\s+(\w+))?/gm;
-  while ((match = importRegex.exec(content)) !== null) {
-    const [, source, alias] = match;
-    const localName = alias || source!.split('.').pop()!;
-    mappings.push({
-      localName,
-      exportedName: '*',
-      source: source!,
-      isDefault: false,
-      isNamespace: true,
-    });
   }
 
   return mappings;
@@ -1516,6 +1463,17 @@ export function resolveViaImport(
             // constant edge below rather than fabricating a wrong one.
             const instanceMember = resolveImportedInstanceMember(targetNode, ref, imp.localName, context);
             if (instanceMember) return instanceMember;
+            // A function has no members to call: `send_welcome.delay(x)` after
+            // `from .tasks import send_welcome` is Celery's dispatch on the task
+            // object, not a call to the function, and `emitter.on(...)` after
+            // `import { emitter }` likewise names a member the graph does not
+            // hold. Binding the call to the function itself hid the queue step
+            // in the Steps view once Python names became importable (Phase 3).
+            // Decline, as before the export flag existed; the name matcher and
+            // the synthesizers keep their own evidence.
+            if (ref.referenceKind === 'calls' && (targetNode.kind === 'function' || targetNode.kind === 'method')) {
+              return null;
+            }
           }
 
           return {
