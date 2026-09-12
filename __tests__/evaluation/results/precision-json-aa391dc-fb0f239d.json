@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-09-12T20:04:48.780Z",
+  "corpus": "json",
+  "repo": "https://github.com/nlohmann/json.git",
+  "commit": "aa391dc",
+  "codegraphSha": "fb0f239d",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 11963,
+    "exact-match": 7146,
+    "file-path": 1742,
+    "qualified-name": 757,
+    "import": 682,
+    "instance-method": 475,
+    "function-ref": 47,
+    "fuzzy": 5
+  },
+  "edges": 22817,
+  "results": [
+    {
+      "caseId": "json-value-not-internal-serializer",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}

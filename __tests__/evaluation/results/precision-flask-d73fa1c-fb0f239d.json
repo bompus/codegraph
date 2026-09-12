@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-09-12T20:04:33.555Z",
+  "corpus": "flask",
+  "repo": "https://github.com/pallets/flask.git",
+  "commit": "d73fa1c",
+  "codegraphSha": "fb0f239d",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 2,
+    "presentHeld": 2,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 2474,
+    "import": 952,
+    "exact-match": 633,
+    "qualified-name": 269,
+    "instance-method": 210,
+    "function-ref": 193,
+    "fuzzy": 1
+  },
+  "edges": 4732,
+  "results": [
+    {
+      "caseId": "flask-package-reexport-receiver",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "file:examples/tutorial/flaskr/auth.py",
+          "to": "method:31833b8026746e7977b4c2736d71c63e",
+          "resolvedBy": "instance-method"
+        },
+        {
+          "from": "file:examples/tutorial/flaskr/auth.py",
+          "to": "method:31833b8026746e7977b4c2736d71c63e",
+          "resolvedBy": "instance-method"
+        },
+        {
+          "from": "file:examples/tutorial/flaskr/auth.py",
+          "to": "method:31833b8026746e7977b4c2736d71c63e",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "flask-control-relative-from-import",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "file:src/flask/app.py",
+          "to": "function:00d6010e49ed947bc5858174234b23e4",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}

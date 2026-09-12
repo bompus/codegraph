@@ -2,7 +2,7 @@
 
 **Metrics:** every phase's before/after numbers are lined up in [metrics-ledger.md](metrics-ledger.md).
 
-**Status:** Phases 0 to 2 done (2026-09-12; the Phase 2 exit criterion is met, no source regex remains for TS/JS in the resolver); Phase 3 done (2026-09-12): Python, Go, Java, Kotlin, PHP and C/C++ emit rows and every per-language import regex is deleted; Phase 2b (receiver rule, §2.3) and Phase 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0–2 binding/import/export migration and Phase 3 migration for Python, Go, Java, Kotlin, PHP and C/C++ are implemented. Phase 2b ordinary receiver evidence and persisted diagnostics are implemented for those migrated languages (`fb0f239d`, 2026-09-12; [validation](../benchmarks/receiver-phase2b-2026-09-12.md)). Receiver type inference still uses selected source patterns and kernel trees; the source-free target and Phase 4 remain open. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md).
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -177,36 +177,63 @@ Tests: `__tests__/bindings-tsjs.test.ts` (every new row form) and `__tests__/bin
 
 **Windows validation of Phase 3 (2026-09-12).** `fork/consolidated` at `105210e3` (PRs #33 to #37: Python, Go, Java/Kotlin, PHP, C/C++) on the same Windows checkout: `npm ci`, `bash scripts/build-kernel.sh` (31 s, 76 MB `win32-x64` prebuild, no source change needed), `npm run build`; the 11 binding-model and kernel suites pass (995 tests, golden dumps byte-identical), and the full suite passes: 273 files, 4,766 tests, 7 files skipped by the POSIX-only gates.
 
-### Phase 2b: receiver evidence — TS/JS first cut
+### Phase 2b: receiver evidence and diagnostics
 
-The current implementation gates ordinary TS/JS member calls on the innermost
-receiver binding. Typed locals, parameters, inherited members and one typed
-field hop retain their exact owner; unknown, shadowed and externally bound
-receivers no longer borrow a same-named project method. Existing implicit
-`this`/`self`/`super` and call-result chains retain their specialized paths.
-Expo calls use the module registration and factory import as receiver evidence.
-The Go composite-literal extraction fix preserves the concrete type in the
-reference, correcting the previously recorded `BindBody` ties.
+Ordinary member calls now require receiver evidence in TS/JS, Python, Go,
+Java, Kotlin, PHP and C/C++. The innermost binding and the declared or imported
+type select the owner; member lookup follows that owner's actual inheritance
+edges. Unknown receivers stop before method-name guesses. Existing implicit
+`this`/`self`/`super`, call-result chains and framework-specific bridges retain
+their specialized paths. Languages outside the binding migration retain their
+existing behavior.
 
-Typed factory results are followed through their declaration and return type.
-Vite exposed a prerequisite: both its factory and return type are imported
-through package entries pointing at unbuilt bundles. Exact package exports now
-map through explicit static Rollup/Rolldown input/output declarations, then the
-ordinary import resolver follows the source barrel and export aliases. Configs
-are parsed with the kernel and never executed. A direct package build script
-establishes the working directory. Dynamic or conflicting entries, mutations,
-wildcard exports and preserved-module layouts are left unresolved. Arbitrary
-plugin behavior is outside this static mapping's scope.
+The first TS/JS cut landed in `d3c330db` (integrated at `8976641d`). It covers
+typed locals and parameters, inherited members, one typed field hop and typed
+factory results. Its package-source prerequisite follows exact exports through
+explicit static Rollup/Rolldown input/output declarations without executing
+configs. Dynamic or conflicting entries, mutations, wildcard exports and
+preserved-module layouts remain unresolved. See the
+[first-cut validation](../benchmarks/receiver-bindings-2026-09-12.md).
 
-This is **not completion of all §2.3**: the broad receiver rule for other
-languages and a persisted `unknown-receiver` reason remain open. Go/Kotlin
-range/lambda inference and other established language-specific paths are not
-replaced by the TS/JS gate. Extraction version 32 requires re-indexing.
+The expanded implementation adds these evidence paths:
 
-The [validation report](../benchmarks/receiver-bindings-2026-09-12.md) records
-the scored edge changes, platform checks and balanced 36-run agent comparison.
-The precision gates pass; the agent comparison does not establish a general
-speedup and the broader zero-read sufficiency target remains unmet.
+- Python dotted imports bind their first segment; module-scope import aliases
+  can forward public package names. Root and `src` packages take precedence
+  over unrelated nested test modules; ambiguous fallback paths are declined.
+  Captured receiver declarations remain visible to nested functions.
+- Go preserves typed parameters, package values, declared first factory results
+  and supported range element types. A later factory result never borrows the
+  first result's type. Standard-library package names can be shadowed by typed
+  project values.
+- Java and Kotlin retain wildcard package bindings and use package identity
+  when selecting types. An imported type cannot borrow another class's member
+  merely because both classes share a file. Java enhanced-for elements and
+  explicitly bounded type parameters retain their declared members. Parsed
+  Java type-parameter declarations respect inner shadowing, including an
+  unbounded inner parameter; Kotlin
+  `let`/`also` parameters retain the enclosing receiver type.
+- PHP keeps class-import and variable namespaces distinct. A positive
+  `instanceof` branch supplies receiver evidence within its unchanged body,
+  excluding alternate branches, assignments and nested functions. C++ keeps
+  namespace identity for explicitly typed receivers.
+- JS, TS and TSX owners and members remain compatible across their language
+  family. Scoped iteration parsing is limited to possible range/lambda names
+  instead of reparsing a file for every ordinary unknown receiver.
+
+Schema version 12 persists `failure_reason = 'unknown-receiver'` on failed
+ordinary member references. Row-specific cleanup preserves sibling call sites;
+retry APIs return the reason, and subsequent attempts clear stale reasons.
+Sync, yielding and batched paths share the same reason assignment. Extraction
+version 35 requires re-indexing for the new binding and reference facts;
+the native ABI remains version 3.
+
+This implements the evidence gate and diagnostic contract for the migrated
+languages, not a general type checker. Untyped fixtures and higher-order
+callbacks, arbitrary factory results and other unsupported type flows can lose
+previous guessed links. The receiver inference table and selected kernel-tree
+reads still exist: the source-free objective is not complete. The broader
+zero-read retrieval target also remains open; the first-cut A/B did not
+establish a general speedup. The [expanded-candidate validation](../benchmarks/receiver-phase2b-2026-09-12.md) records 20 passing precision cases across ten corpora and a balanced 36-run A/B; its retrieval outcomes remain mixed.
 
 ### Phase 3: other languages
 
@@ -217,7 +244,7 @@ Exit per language: its `extractXImports` function and inference table entries ar
 #### Python — DONE 2026-09-12 (import regex retired)
 
 - The Python walker (`codegraph-kernel/src/python.rs`) emits: `decl` rows for every module-level definition, exported as itself with form `public` (a leading underscore is `storage = private`, the convention, not a boundary); `local` rows for a definition nested in a function or class and for an assignment inside a function body (nodeless); `param` rows for every parameter form (plain, default, typed, `*args`, `**kw`); `import` rows for `import a`, `import a.b as c`, `import x, y`, `from m import a, b as c` and relative `from .m` / `from ..m` (the module as written is `target_spec`; a whole-module import has `target_name = *`). `from m import *` emits no row, as the regex emitted no mapping.
-- `import a.b` keeps the resolver's long-standing reading of the local name (the last segment, `b`) rather than what Python binds (`a`), so the import mappings are byte-equal to the regex's; correcting it belongs with the Python receiver rule.
+- The initial migration retained the old last-segment reading of `import a.b`; Phase 2b corrects the binding to Python's actual root name, `a`.
 - `extractPythonImports` is deleted; `getImportMappings` reads the rows. Python nodes at module level are now `isExported` (from the rows), where the walker had left the flag off.
 - Gate: a Python corpus was added to the precision runner (pallets/flask at `d73fa1cd`, one control: `from .helpers import get_debug_flag` in `app.py` resolves). Baseline 5,268 edges (import 90, exact-match 1,341, fuzzy 1); after: 5,292 (import 371, exact-match 1,110, fuzzy 1). Edge-level review (same corpus, previous walker vs this one): 267 references moved from a name guess to `import` now that the definitions are exported; 0 lost outright; 24 gained outright, all resolved by import (18 calls through an imported signal variable, `request_started.send(...)` → the `signals.py` variable, the same root-binding the JS path produces for an imported constant; 6 class references). Goldens: `torture.py` rows and export flags only, no edge or ref changes.
 - An import inside a function body (`from . import db` in flask's `create_app`) is a row scoped to that function; the first cut missed it and lost one edge the file-wide regex had found.
@@ -235,7 +262,7 @@ Exit per language: its `extractXImports` function and inference table entries ar
 
 #### Java and Kotlin — DONE 2026-09-12 (JVM import regex retired)
 
-- Both walkers (`java.rs`, `kotlin.rs`) emit: `decl` rows for file-level declarations with the modifier as the export — `public` (Kotlin's default) exports, `protected` exports with `storage = protected`, `private` and Kotlin `internal` do not export (`storage = private` / `internal`), and Java's package-private default is `storage = package`; node-backed `local` rows for members, scoped to their class; `param` rows for method and function parameters; nodeless `local` rows for method-body variables (Java `local_variable_declaration`, Kotlin `val`/`var` inside a function body); `import` rows for every non-wildcard import with the FQN as `target_spec` and the alias (Kotlin `as`) or last segment as the local name. The package declaration's `namespace` node is scaffolding, not a scope or a binding.
+- Both walkers (`java.rs`, `kotlin.rs`) emit: `decl` rows for file-level declarations with the modifier as the export — `public` (Kotlin's default) exports, `protected` exports with `storage = protected`, `private` and Kotlin `internal` do not export (`storage = private` / `internal`), and Java's package-private default is `storage = package`; node-backed `local` rows for members, scoped to their class; `param` rows for method and function parameters; nodeless `local` rows for method-body variables (Java `local_variable_declaration`, Kotlin `val`/`var` inside a function body); `import` rows for every non-wildcard import with the FQN as `target_spec` and the alias (Kotlin `as`) or last segment as the local name. Phase 2b additionally emits a `*` import row with its package FQN for wildcard imports. The package declaration's `namespace` node supplies package identity; it is not a lexical name binding.
 - `bindings_file` handles both (`java::bindings_only`, `kotlin::bindings_only`); the parity gate covers `Torture.java`, `torture.kt` and `TortureScript.kts`. Aligning the AST-only pass with the walk fixed the walk's scoping rules into words: an anonymous class body is a scope in Java; in Kotlin a companion object, an object literal and an enum entry body are not scopes, a local `object` inside a function is not a node, a class-level `val` is a field, and a top-level `val x = object { fun run() }` scopes `run` to the property. A Kotlin property node created without a visibility now takes it from its `property_declaration`.
 - `extractJavaImports` is deleted. It required a trailing `;`, so Kotlin files had never had import mappings; they do now.
 - Gate, Java (spring-petclinic at `818c4136`): 1,457 edges before and after, byte-identical dump — the rows reproduce the regex's mappings exactly.

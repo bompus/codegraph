@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-09-12T20:05:03.443Z",
+  "corpus": "exposed",
+  "repo": "https://github.com/JetBrains/Exposed.git",
+  "commit": "2155404",
+  "codegraphSha": "fb0f239d",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "exact-match": 36827,
+    "(none)": 25780,
+    "import": 6861,
+    "framework": 2603,
+    "instance-method": 2486,
+    "function-ref": 2263,
+    "file-path": 229,
+    "qualified-name": 175,
+    "fuzzy": 31
+  },
+  "edges": 77255,
+  "results": [
+    {
+      "caseId": "exposed-wildcard-package-receiver",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:f40372af7132a6726971d7163deef334",
+          "to": "method:71e425ce8fd2d25d06c04cf318012e1a",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-wildcard-not-other-package",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}

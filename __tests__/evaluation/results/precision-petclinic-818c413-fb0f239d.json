@@ -1,0 +1,45 @@
+{
+  "timestamp": "2026-09-12T20:04:37.872Z",
+  "corpus": "petclinic",
+  "repo": "https://github.com/spring-projects/spring-petclinic.git",
+  "commit": "818c413",
+  "codegraphSha": "fb0f239d",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 950,
+    "instance-method": 270,
+    "exact-match": 169,
+    "import": 44,
+    "framework": 10,
+    "fuzzy": 4,
+    "function-ref": 2,
+    "file-path": 1
+  },
+  "edges": 1450,
+  "results": [
+    {
+      "caseId": "petclinic-bounded-type-parameter",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:2160e6191fa145dc29200531c30d1a5d",
+          "to": "method:efb8586338e2f81ea9d7cb6f694a2f0d",
+          "resolvedBy": "instance-method"
+        },
+        {
+          "from": "method:2160e6191fa145dc29200531c30d1a5d",
+          "to": "method:efb8586338e2f81ea9d7cb6f694a2f0d",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}
