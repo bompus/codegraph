@@ -2,7 +2,7 @@ import type { TreeNode as SyntaxNode } from './parse-tree';
 import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Language } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
 import { TreeSitterExtractor } from './tree-sitter';
-import { getParser } from './grammars';
+import { parseSourceTreeSync } from './parse-tree';
 
 /**
  * CfmlExtractor - Extracts code relationships from CFML source (.cfc/.cfm).
@@ -92,8 +92,11 @@ export class CfmlExtractor {
 
   /** Legacy tag-based CFML: walk `<cfcomponent>`/`<cffunction>`, delegating `<cfscript>` bodies. */
   private extractTagBased(): void {
-    const parser = getParser('cfml');
-    if (!parser) {
+    // Kernel first, wasm fallback (parse-tree.ts): the tag-aware cfml grammar
+    // is compiled into the kernel (Phase 4b), so this walk runs on the
+    // serialized native tree through the NativeNode facade.
+    const tree = parseSourceTreeSync(this.source, 'cfml');
+    if (!tree) {
       this.errors.push({
         message: 'cfml grammar not loaded',
         severity: 'error',
@@ -102,18 +105,12 @@ export class CfmlExtractor {
       return;
     }
 
-    const tree = parser.parse(this.source);
-    if (!tree) {
-      this.errors.push({
-        message: 'Failed to parse CFML source',
-        severity: 'error',
-        code: 'parse_error',
-      });
-      return;
-    }
-
     const fileNode = this.createFileNode();
-    this.walkProgram(tree.rootNode, fileNode.id);
+    try {
+      this.walkProgram(tree.rootNode, fileNode.id);
+    } finally {
+      tree.delete();
+    }
   }
 
   /** Build the file's own `kind:'file'` node, spanning the whole source. Tag-based files need this explicitly — unlike `extractBareScript` (which delegates the whole file to `TreeSitterExtractor` and inherits its file node), `extractTagBased` walks the tree itself and has no other source of one. */

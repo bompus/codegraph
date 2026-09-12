@@ -34,6 +34,17 @@ extern "C" {
     fn tree_sitter_dart() -> *const ();
 }
 
+// Phase 4b: parse-only vendored grammars (build.rs-compiled C, no walker).
+extern "C" {
+    fn tree_sitter_arkts() -> *const ();
+    fn tree_sitter_hcl() -> *const (); // the HCL grammar; `terraform` is codegraph's language name
+    fn tree_sitter_vbnet() -> *const ();
+    fn tree_sitter_COBOL() -> *const (); // the grammar exports an upper-case symbol
+    fn tree_sitter_cfml() -> *const ();
+    fn tree_sitter_cfscript() -> *const ();
+    fn tree_sitter_cfquery() -> *const ();
+}
+
 /// Languages this kernel binary can extract (reported by contractInfo;
 /// TS-side routing policy decides what actually routes).
 pub const LANGUAGES: [&str; 20] = [
@@ -101,6 +112,13 @@ pub fn grammar_for(language: &str) -> Option<Language> {
         "nix" => Some(tree_sitter_nix::LANGUAGE.into()),
         "pascal" => Some(tree_sitter_pascal::LANGUAGE.into()),
         "solidity" => Some(tree_sitter_solidity::LANGUAGE.into()),
+        "arkts" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_arkts) }.into()),
+        "terraform" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_hcl) }.into()),
+        "vbnet" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vbnet) }.into()),
+        "cobol" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_COBOL) }.into()),
+        "cfml" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_cfml) }.into()),
+        "cfscript" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_cfscript) }.into()),
+        "cfquery" => Some(unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_cfquery) }.into()),
         _ => None,
     }
 }

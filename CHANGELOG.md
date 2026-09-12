@@ -152,7 +152,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
-- **Objective-C, Erlang, Nix, Pascal and Solidity are now parsed by the native engine.** These languages had no native reader and always went through the older parser. The native engine now parses them and the existing symbol extraction runs on that parse, so projects in these languages index without the second parser and produce the same graph.
+- **Objective-C, Erlang, Nix, Pascal, Solidity, ArkTS, Terraform, VB.NET, COBOL and CFML are now parsed by the native engine.** These languages had no native reader and always went through the older parser. The native engine now carries their grammars, built from the same sources as before, and the existing symbol extraction runs on that parse, so projects in these languages index without the second parser and produce the same graph.
 
 - **Syntax colouring, `when` conditions and test-range lookup now read the native engine's parse.** The viewer's highlighting, the conditions shown on call sites in `codegraph_explore` and the viewer, and explore's search inside test files used to run a second, slower parser at query time on every host. They now use the same native parse the graph was built from, with identical output, and fall back to the older parser only on a platform without the native engine.
 

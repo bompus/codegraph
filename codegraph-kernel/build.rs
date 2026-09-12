@@ -84,4 +84,36 @@ fn main() {
     dart.flag_if_supported("-utf-8"); // msvc
     dart.compile("tree-sitter-dart");
     println!("cargo:rerun-if-changed=grammars/dart");
+
+    // Phase 4b (kernel-only-extraction-plan.md): the remaining wasm-only
+    // grammars, vendored from the same revisions the wasm files were built
+    // from (grammars/PROVENANCE.md). Parse-only: no walker, the generic TS
+    // extractor walks the serialized tree.
+    for (name, files) in [
+        ("arkts", vec!["parser.c", "scanner.c"]),
+        ("terraform", vec!["parser.c", "scanner.c"]),
+        ("vbnet", vec!["parser.c", "scanner.c"]),
+        ("cobol", vec!["parser.c", "scanner.c"]),
+        ("cfml", vec!["parser.c", "scanner.c", "tag.c"]),
+        ("cfscript", vec!["parser.c", "scanner.c"]),
+        ("cfquery", vec!["parser.c", "scanner.c"]),
+    ] {
+        let dir = format!("grammars/{name}");
+        let mut b = cc::Build::new();
+        b.include(&dir);
+        b.include("grammars/cfml-common");
+        b.include("grammars/arkts-common");
+        for f in files {
+            b.file(format!("{dir}/{f}"));
+        }
+        b.flag_if_supported("-Wno-unused-parameter");
+        b.flag_if_supported("-Wno-unused-but-set-variable");
+        b.flag_if_supported("-Wno-trigraphs");
+        b.flag_if_supported("-Wno-unused-function");
+        b.flag_if_supported("-utf-8"); // msvc
+        b.compile(&format!("tree-sitter-{name}"));
+        println!("cargo:rerun-if-changed={dir}");
+    }
+    println!("cargo:rerun-if-changed=grammars/cfml-common");
+    println!("cargo:rerun-if-changed=grammars/arkts-common");
 }

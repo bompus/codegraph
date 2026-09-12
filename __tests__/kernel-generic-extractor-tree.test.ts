@@ -55,6 +55,14 @@ const TAIL: Array<{ rel: string; lang: Language }> = [
   { rel: 'nix/default.nix', lang: 'nix' },
   { rel: 'pascal/Greeter.pas', lang: 'pascal' },
   { rel: 'solidity/Greeter.sol', lang: 'solidity' },
+  // Phase 4b: vendored-C grammars for the languages once slated for dropping,
+  // plus CFML (whose tag-based extractor walks the facade directly).
+  { rel: 'arkts/Greeter.ets', lang: 'arkts' },
+  { rel: 'terraform/main.tf', lang: 'terraform' },
+  { rel: 'vbnet/Greeter.vb', lang: 'vbnet' },
+  { rel: 'cobol/GREETER.cbl', lang: 'cobol' },
+  { rel: 'cfml/Greeter.cfc', lang: 'cfml' },
+  { rel: 'cfml/greet.cfm', lang: 'cfml' },
 ];
 
 const ENV_KEYS = ['CODEGRAPH_KERNEL', 'CODEGRAPH_KERNEL_LANGS'] as const;
@@ -68,7 +76,7 @@ describe.skipIf(!kernelBuilt)('generic extractor on native trees', () => {
 
   beforeAll(async () => {
     await initGrammars();
-    await loadGrammarsForLanguages([...new Set(fixtures.map((f) => f.lang)), ...TAIL.map((t) => t.lang)]);
+    await loadGrammarsForLanguages([...new Set(fixtures.map((f) => f.lang)), ...TAIL.map((t) => t.lang), 'cfscript', 'cfquery']);
   });
   beforeEach(() => {
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -94,7 +102,8 @@ describe.skipIf(!kernelBuilt)('generic extractor on native trees', () => {
       const spy = vi.spyOn(grammars, 'getParser');
       try {
         const result = extractFromSource(file, source, lang);
-        expect(result.nodes.filter((n) => n.kind !== 'file').length).toBeGreaterThan(2);
+        // A .cfm page holds one <cfscript> function; a .cfc/.pas/.m file holds several.
+        expect(result.nodes.filter((n) => n.kind !== 'file').length).toBeGreaterThanOrEqual(1);
         expect(spy, 'wasm parser instantiated for a kernel-parsed language').not.toHaveBeenCalled();
       } finally {
         spy.mockRestore();
