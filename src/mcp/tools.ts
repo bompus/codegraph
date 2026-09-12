@@ -1221,7 +1221,7 @@ function pointerLineFor(filePath: string, nodes: readonly Node[]): string {
  * traded away, but the agent must still be told that an uncovered area exists
  * and that another explore — not a Read — is how to reach it.
  */
-const EPILOGUE_LOST_NOTE = '> (Trailing pointer list omitted for size. The source above is complete and verbatim — treat it as already Read. For anything this call did not cover, run another codegraph_explore with the specific names rather than reading those files.)';
+const EPILOGUE_LOST_NOTE = '> (Trailing pointer list omitted for size. The returned source ranges are current and verbatim — treat it as already Read. For anything this call did not cover, run another codegraph_explore with the specific names rather than reading those files.)';
 
 /**
  * Per-file staleness banner emitted at the top of a tool response when the
@@ -3091,7 +3091,7 @@ export class ToolHandler {
           '(synthesized — the indirect hops grep/Read would reconstruct; the `@file:line` is the wiring site)',
           '', ...synthLines, '');
         if (boundaries) out.push(boundaries);
-        out.push('> Full source for these symbols is below.\n');
+        out.push('> Source for these symbols follows; gap markers identify any ranges omitted to fit the output budget.\n');
         return { text: out.join('\n'), pathNodeIds: new Set(), namedNodeIds: new Set<string>([...named.keys(), ...dynNamed.keys()]), uniqueNamedNodeIds, spineCallSites: new Map<string, number>() };
       }
       // The search itself lives in `../graph/named-symbol-flow`, so the viewer's
@@ -3168,7 +3168,9 @@ export class ToolHandler {
         hasMain ? (e: Edge) => pathIds.has(e.source) && pathIds.has(e.target) : null
       );
 
-      if (!hasMain && synthLines.length === 0 && !boundaryText && !polyText) return identityOnly();
+      if (!hasMain && synthLines.length === 0 && !boundaryText && !polyText) {
+        return { ...identityOnly(), pathNodeIds: pathIds, spineCallSites };
+      }
       const out: string[] = [];
       if (hasMain) {
         out.push('**Flow (call path among the symbols you queried)**', '');
@@ -3194,7 +3196,7 @@ export class ToolHandler {
       }
       if (boundaryText) out.push(boundaryText);
       if (polyText) out.push(polyText);
-      out.push('> Full source for these symbols is below — the call flow among them, followed by their bodies.', '');
+      out.push('> Source for these symbols follows; gap markers identify any ranges omitted to fit the output budget.', '');
       // namedNodeIds = every callable the agent explicitly named (a superset of
       // the spine). A file holding one is something the agent asked to SEE, so it
       // must keep full source even if it's an off-spine polymorphic sibling — the
@@ -3984,7 +3986,8 @@ export class ToolHandler {
           const maxCallers = Math.max(1, ...counts.values());
           tierPicks = cands.filter((c, i) => i === 0 || (counts.get(c.id) ?? 0) >= maxCallers * 0.25);
         } else {
-          const ctx = cands.filter(inNamedContext);
+          const typed = cands.filter(inNamedContext);
+          const ctx = typed.length > 0 ? typed : cands.filter(n => coNamedInFile(t, n.filePath));
           picks = ctx.length > 0 ? ctx.slice(0, 4) : cands.slice(0, 1);
           tierPicks = picks; // corroborated overloads (or the single fallback) all earn it
         }
@@ -4700,7 +4703,9 @@ export class ToolHandler {
         frontier = next.slice(0, Math.max(0, 8 - localCallers.size));
         for (const n of frontier) localCallers.add(n.id);
       }
-      if (!fileNamed && localCallers.size === 0) continue;
+      const hasNamedBody = group.nodes.some(n => namedSeedIds.has(n.id)
+        && exactQueryNames.has(n.name.toLowerCase()) && ['function', 'method'].includes(n.kind));
+      if (!fileNamed && !hasNamedBody && localCallers.size === 0) continue;
       try {
         const absolute = validatePathWithinRoot(projectRoot, fp);
         if (!absolute) continue;
@@ -4710,7 +4715,7 @@ export class ToolHandler {
         const requested = fileNamed ? await requestedSourceRanges(fp, source, group.nodes[0]?.language || 'unknown', matchQuery, nodes) : [];
         const supporting = requested.find(r => r.nodeId && !namedSeedIds.has(r.nodeId));
         const region = requested.find(r => !r.nodeId);
-        if (!supporting && !region && localCallers.size === 0) continue;
+        if (!supporting && !region && !hasNamedBody && localCallers.size === 0) continue;
         const needed = nodes.filter(n => namedSeedIds.has(n.id) && exactQueryNames.has(n.name.toLowerCase())
           && !['file', 'component', 'module'].includes(n.kind)
           && n.endLine - n.startLine + 1 <= sourceLines.length / 2)
@@ -5747,14 +5752,6 @@ export class ToolHandler {
       // until the per-file char cap is hit. Truly enormous single clusters
       // get tail-trimmed with a marker.
       const contextPadding = 3;
-      // An oversize spine method (the call path runs THROUGH a god-method — n8n's
-      // processRunExecutionData is 962 lines) is windowed to its next-hop CALL site
-      // plus the signature head, NOT dumped whole. Without this the cluster is too big
-      // for any per-file cap and gets dropped, so the agent Reads the method back —
-      // the exact gap this closes. Bounded, so a god-method can't blow the budget yet
-      // the spine's call still appears in context.
-      const OVERSIZE_SPINE_LINES = 200;
-      const SPINE_WINDOW = 28; // lines each side of the next-hop call site
       // Returns the rendered text as SPAN-KEYED PARTS. Every part carries the
       // exact line range its text was sliced from, which two things depend on:
       // the session record (CG-17) — a record claiming lines it never sent would
@@ -5771,30 +5768,8 @@ export class ToolHandler {
       const sectionText = (parts: ReadonlyArray<SectionPart>): string =>
         joinPartsWithNamedGaps(filePath, parts, fileIndexNodes);
       const buildSection = (
-        c: { start: number; end: number; hasSpine?: boolean; spineCallLine?: number },
+        c: { start: number; end: number },
       ): SectionPart[] => {
-        if (c.hasSpine && c.spineCallLine && (c.end - c.start + 1) > OVERSIZE_SPINE_LINES) {
-          const call = c.spineCallLine;
-          const winStart = Math.max(c.start, call - SPINE_WINDOW);
-          const winEnd = Math.min(c.end, call + SPINE_WINDOW);
-          const parts: SectionPart[] = [];
-          // Signature head, only when it sits clearly above the window (else the
-          // window already covers the method opening).
-          const headEnd = Math.min(c.start + 4, winStart - 2);
-          if (headEnd >= c.start) {
-            const head = fileLines.slice(c.start - 1, headEnd).join('\n');
-            parts.push({
-              range: { start: c.start, end: headEnd },
-              text: withLineNumbers ? numberSourceLines(head, c.start) : head,
-            });
-          }
-          const win = fileLines.slice(winStart - 1, winEnd).join('\n');
-          parts.push({
-            range: { start: winStart, end: winEnd },
-            text: withLineNumbers ? numberSourceLines(win, winStart) : win,
-          });
-          return parts;
-        }
         const startIdx = Math.max(0, c.start - 1 - contextPadding);
         const endIdx = Math.min(fileLines.length, c.end + contextPadding);
         const slice = fileLines.slice(startIdx, endIdx).join('\n');
@@ -5878,6 +5853,7 @@ export class ToolHandler {
        * the call path IS the answer.
        */
       const MIN_WINDOW_LINES = 12;
+      const SPINE_WINDOW = 28; // context around a next-hop call when the body exceeds its byte budget
       /** Rendered cost of one source line, line numbering included. */
       const lineCost = (ln: number): number =>
         (fileLines[ln - 1] ?? '').length + 1 + (withLineNumbers ? String(ln).length + 1 : 0);
@@ -5971,15 +5947,10 @@ export class ToolHandler {
               remaining.push({ range, text: renderSpan(range) });
             }
           }
-          const kept = [...protectedRanges];
-          let room = ceiling - protectedChars;
-          for (const p of remaining) {
-            const win = headWindowOf(p.range, room - GAP_MARKER.length);
-            if (!win || win.end - win.start + 1 < MIN_WINDOW_LINES) continue;
-            kept.push(win);
-            room -= GAP_MARKER.length + renderSpan(win).length;
-          }
-          return mergeRanges(kept).map(range => ({ range, text: renderSpan(range) }));
+          const room = ceiling - protectedChars - GAP_MARKER.length * protectedRanges.length;
+          const extra = room > 0 ? windowToCeiling(remaining, room, focusLines) : [];
+          return mergeRanges([...protectedRanges, ...extra.map(p => p.range)])
+            .map(range => ({ range, text: renderSpan(range) }));
         }
         const inParts = (line: number) =>
           parts.some((p) => line >= p.range.start && line <= p.range.end);
@@ -6096,7 +6067,7 @@ export class ToolHandler {
           if (!Number.isFinite(ceiling) || sectionText(r.parts).length <= ceiling) return r;
           // Windows are subsets of spans dedupeSpans already cleared, so the record
           // still only ever claims source that was actually sent.
-          const requested = c.hasSpine ? [] : c.members
+          const requested = c.members
             .filter(m => m.importance >= 12)
             .sort((a, b) => b.importance - a.importance || a.start - b.start);
           const parts = windowToCeiling(r.parts, ceiling, focusLinesOf(c), requested);
@@ -6617,7 +6588,7 @@ export class ToolHandler {
     const epilogueOnlyCut = epilogueStart < lines.length
       ? flow.text + lines.slice(0, epilogueStart).join('\n')
       : null;
-    const EPILOGUE_CUT_NOTE = '\n\n> (Trailing notes omitted for size. The source above is complete and verbatim — treat it as already Read. For anything this call did not cover, run another codegraph_explore with the specific names rather than reading those files.)';
+    const EPILOGUE_CUT_NOTE = '\n\n> (Trailing notes omitted for size. The returned source ranges are current and verbatim — treat it as already Read. For anything this call did not cover, run another codegraph_explore with the specific names rather than reading those files.)';
 
     if (output.length > hardCeiling
         && epilogueOnlyCut !== null

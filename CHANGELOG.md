@@ -156,6 +156,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph_explore` keeps requested function bodies and relevant call sites together more reliably, reducing gaps that require follow-up reads.
+
 - Method calls now follow receiver types more reliably across Python, Go, Java, Kotlin, PHP and C++, with unresolved receiver diagnostics and correct ordering of chained calls in the viewer.
 
 - JavaScript and TypeScript method calls now follow the receiver's binding, avoiding unrelated same-named methods while preserving typed receivers and Expo native-module calls.
