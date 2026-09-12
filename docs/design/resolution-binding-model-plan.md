@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** plan, not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phase 0 done (2026-09-12); Phases 1 to 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -97,11 +97,23 @@ The binding table is emitted by the kernel walkers only. This is why the kernel-
 
 ## 3. Phases
 
-### Phase 0: precision in the eval runner
+### Phase 0: precision in the eval runner — DONE 2026-09-12
 
-- Add a precision score to `__tests__/evaluation/scoring.ts`: for a fixed corpus (vite, vitest, svelte, rollup, the ones the PR bodies used), a checked-in list of known-wrong edges that must stay absent and known-right edges that must stay present. This is the gate every later phase runs against.
+- `__tests__/evaluation/scoring.ts` gains `scoreEdgeCase`: an `EdgeCase` names a `kind`, a target endpoint (file suffix + symbol name) and optionally a source endpoint, and expects the edge `absent` (known-wrong) or `present` (control). The recall scorers cannot see a false edge; this can. `__tests__/evaluation-edge-scoring.test.ts` pins the scorer on a synthetic project with the #1713 bare-import and #1746 sealed-module shapes, and proves it flags a violated case and a missing endpoint.
+- `__tests__/evaluation/edge-cases.ts` encodes the edges the PR bodies named, on the exact commits they measured (full SHAs, since `git fetch` of an arbitrary commit needs one): vite `8492422b` (#1713 self-import and `getEnv`, #1718 the two fuzzy nested calls, #1746 the sealed `defineConfig` → `test-stacktrace.js::vite`, plus a relative-import control), vitest `7c818153` (`evaluatedModules`), svelte `5895c637` (`bundle`). #1844's regression is already pinned by `ts-chained-receiver.test.ts`; rollup's PR table listed counts only, no endpoints, so it has no cases yet.
+- `npm run eval:precision -- <corpus>` (`precision-runner.ts`) fetches the pinned commit, indexes it, scores the cases, prints the resolved-edge histogram by resolver (the LOST/GAINED methodology the PRs used) and writes `results/precision-<corpus>-<commit>-<codegraph>.json`. The reports are committed as the baseline.
 
-Exit: the LOST/GAINED tables from #1713, #1718, #1746 and #1844 are encoded as tests.
+Baseline at codegraph `1498c2ff` (kernel-only branch, after Phase 5):
+
+| Corpus | Index | Edges | fuzzy | Cases |
+|---|---|---|---|---|
+| vite | 3.3 s | 28,893 | 16 | 5 absent held, 1 control held |
+| vitest | 5.8 s | 75,035 | 28 | 1 absent held |
+| svelte | 7.9 s | 70,432 | 159 | 1 absent held |
+
+Reading it: the resolution PRs' removals hold on the current engine. The `fuzzy` counts are the number to watch through Phases 1 to 3; the plan's claim is that they fall toward zero as bindings replace guesses, and any `absent` case flipping to found is a regression the recall scorers would never report.
+
+Exit met: the LOST/GAINED tables that named endpoints are encoded and green; the runner reports the histogram every later phase compares against.
 
 ### Phase 1: emit bindings for TS/JS
 
