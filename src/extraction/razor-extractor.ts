@@ -1,6 +1,6 @@
 import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
-import { TreeSitterExtractor } from './tree-sitter';
+import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
 
 /**
@@ -255,11 +255,11 @@ export class RazorExtractor {
       if (!block.content.trim()) continue;
       let result: ExtractionResult;
       try {
-        result = new TreeSitterExtractor(
+        result = extractEmbeddedBlock(
           this.filePath,
           `class __RazorCode__ {\n${block.content}\n}`,
           'csharp'
-        ).extract();
+        );
       } catch {
         continue; // grammar not loaded / parse failure — skip this block
       }

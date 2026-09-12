@@ -1,0 +1,18 @@
+---
+import Panel from "../lib/Panel.svelte";
+import { formatCount } from "../lib/store";
+const items: string[] = ["a", "b"];
+function shout(s: string): string { return s.toUpperCase(); }
+const heading = formatCount(items.length);
+---
+<html>
+  <body>
+    <h1>{heading}</h1>
+    <ul>{items.map((i) => <li>{shout(i)}</li>)}</ul>
+    <Panel client:load title="Home" />
+    <script>
+      function onReady(): void { console.log("ready"); }
+      document.addEventListener("DOMContentLoaded", onReady);
+    </script>
+  </body>
+</html>

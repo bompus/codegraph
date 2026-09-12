@@ -65,6 +65,11 @@ const CORPUS: ReadonlyArray<{ name: string; source: string; why: string }> = [
     why: 'Vue SFCs (script setup TS, options API, styles) + vue-router + pinia — the embedded-language path',
   },
   {
+    name: 'sfc-mix',
+    source: path.join(GOLDEN_DIR, 'sfc-mix'),
+    why: 'Svelte (ts + module + plain), Astro frontmatter + inline script, Razor @code with a C# sibling — every other embedded-language path',
+  },
+  {
     name: 'markdown-docs',
     source: path.join(GOLDEN_DIR, 'markdown-docs'),
     why: 'Markdown sections, doc→code and code→doc path references',
