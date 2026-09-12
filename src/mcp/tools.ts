@@ -5790,9 +5790,9 @@ export class ToolHandler {
        * it took ~40% more than it was allotted, and the file below it was then
        * dropped for lack of room (that is how `BuildPayslip` — the "calculate"
        * half of the #1500 query — went missing entirely). Shrinking by MEMBER
-       * keeps every rule that matters: only whole symbol ranges are emitted, so a
-       * body is never cut, and the members are chosen by the same importance the
-       * cluster ranking uses. Returns null when nothing needed shrinking.
+       * uses the same importance as cluster ranking. Whole bodies are preferred;
+       * an oversized requested body gets a bounded excerpt before incidental
+       * declarations consume the remainder. Returns null when no shrink is needed.
        *
        * `sizeOf` measures the RAW source span, while the render adds
        * `contextPadding` around every block and a line-number prefix to every
