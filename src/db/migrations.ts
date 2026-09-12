@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 11;
 
 /**
  * Migration definition
@@ -194,6 +194,34 @@ const migrations: Migration[] = [
           PRIMARY KEY (value, node_id)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_literals_file ON literals(file_path);
+      `);
+    },
+  },
+  {
+    version: 11,
+    description:
+      'Add bindings — what each name in a file is bound to and whether it is exported (resolution-binding-model-plan.md)',
+    up: (db) => {
+      // DDL only. No backfill: rows come from file CONTENT the migration cannot
+      // see, so the table stays empty until the next full index and readers
+      // union with nodes.is_exported until then. Keep in lockstep with schema.sql.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS bindings (
+          file_path   TEXT NOT NULL,
+          name        TEXT NOT NULL,
+          kind        TEXT NOT NULL,
+          node_id     TEXT,
+          target_spec TEXT,
+          target_name TEXT,
+          exported_as TEXT,
+          export_form TEXT,
+          scope_start INTEGER NOT NULL,
+          scope_end   INTEGER NOT NULL,
+          storage     TEXT,
+          line        INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_bindings_file ON bindings(file_path);
+        CREATE INDEX IF NOT EXISTS idx_bindings_name ON bindings(name);
       `);
     },
   },

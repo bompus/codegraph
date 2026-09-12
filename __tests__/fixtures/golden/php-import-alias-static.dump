@@ -29,6 +29,7 @@
 {"from_node_id":"class:8c9dc7b6ddc7d9ab896e4979ae8ff9b0","reference_name":"Controller","reference_kind":"extends","line":5,"col":31,"candidates":null,"file_path":"app/Http/Controllers/Backend/SettleController.php","language":"php","status":"failed","name_tail":"Controller"}
 {"from_node_id":"method:515f6e41dea6b2b840f43a7200673888","reference_name":"request","reference_kind":"calls","line":7,"col":50,"candidates":null,"file_path":"app/Http/Controllers/Backend/SettleController.php","language":"php","status":"failed","name_tail":"request"}
 {"from_node_id":"namespace:af3da8116f0d164b93963025e86c5e91","reference_name":"App\\Services\\SettleService","reference_kind":"imports","line":3,"col":0,"candidates":null,"file_path":"app/Http/Controllers/Backend/SettleController.php","language":"php","status":"failed","name_tail":"App\\Services\\SettleService"}
+== bindings (0)
 == files (3)
 {"path":"app/Http/Controllers/Backend/SettleController.php","language":"php","node_count":5}
 {"path":"app/Repositories/SettleRepository.php","language":"php","node_count":4}

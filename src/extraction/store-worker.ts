@@ -66,6 +66,7 @@ function decodeKernelBundle(bundle: KernelStoreBundle): StoreBundle {
       nodes: asBuf(bundle.buffers.nodes),
       edges: asBuf(bundle.buffers.edges),
       refs: asBuf(bundle.buffers.refs),
+      bindings: asBuf(bundle.buffers.bindings),
       arena: asBuf(bundle.buffers.arena),
     },
     bundle.filePath,

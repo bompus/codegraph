@@ -136,7 +136,7 @@ export function materializeKernelResult(
   const b = result.kernelBuffers;
   const asBuf = (u: Uint8Array) => Buffer.from(u.buffer, u.byteOffset, u.byteLength);
   const decoded = decodeExtractBuffers(
-    { meta: asBuf(b.meta), nodes: asBuf(b.nodes), edges: asBuf(b.edges), refs: asBuf(b.refs), arena: asBuf(b.arena) },
+    { meta: asBuf(b.meta), nodes: asBuf(b.nodes), edges: asBuf(b.edges), refs: asBuf(b.refs), bindings: asBuf(b.bindings), arena: asBuf(b.arena) },
     filePath,
     language
   );

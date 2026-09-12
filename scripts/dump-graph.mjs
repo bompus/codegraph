@@ -54,4 +54,10 @@ dump(
           file_path, language, status, name_tail
    FROM unresolved_refs`
 );
+dump(
+  'bindings',
+  `SELECT file_path, name, kind, node_id, target_spec, target_name, exported_as, export_form,
+          scope_start, scope_end, storage, line
+   FROM bindings`
+);
 dump('files', `SELECT path, language, node_count FROM files`);

@@ -23,7 +23,7 @@ import {
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
-import { StoreWriter, StoreBundle, finalizeStoreBundle } from './store-writer';
+import { StoreWriter, StoreBundle, finalizeStoreBundle, attachBindings } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
@@ -2777,6 +2777,9 @@ export class ExtractionOrchestrator {
         filePath: ref.filePath ?? filePath,
         language: ref.language ?? language,
       }));
+    // Bindings (resolution-binding-model-plan.md): kept for surviving nodes,
+    // and a `decl` row with exportedAs marks its node exported.
+    const bindings = attachBindings(result.bindings, validNodes);
 
     // Fast path for the common case (everything fits one chunk): the whole
     // file — nodes, edges, refs, file record — lands in ONE transaction with
@@ -2793,6 +2796,7 @@ export class ExtractionOrchestrator {
         nodes: validNodes,
         edges: validEdges,
         refs: validRefs,
+        ...(bindings ? { bindings } : {}),
         file: {
           path: filePath,
           contentHash,
@@ -2815,6 +2819,12 @@ export class ExtractionOrchestrator {
     for (let i = 0; i < validNodes.length; i += STORE_CHUNK) {
       this.queries.insertNodes(validNodes.slice(i, i + STORE_CHUNK));
       await onYield?.();
+    }
+    if (bindings && bindings.length > 0) {
+      for (let i = 0; i < bindings.length; i += STORE_CHUNK) {
+        this.queries.insertBindings(bindings.slice(i, i + STORE_CHUNK));
+        await onYield?.();
+      }
     }
 
     // Filter edges to only reference nodes that were actually inserted

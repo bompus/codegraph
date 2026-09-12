@@ -213,6 +213,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         nodes: w.tables.nodes,
         edges: w.tables.edges,
         refs: w.tables.refs,
+        bindings: w.tables.bindings,
         arena: w.arena.into_vec(),
     })
 }

@@ -1,6 +1,6 @@
 # Resolution binding model — one source of truth for exports and bindings
 
-**Status:** Phase 0 done (2026-09-12); Phases 1 to 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
+**Status:** Phases 0 and 1 done (2026-09-12); Phases 2 to 4 not started. Written 2026-09-11. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) (which should land first, so there is one extractor to emit the new facts) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Closes upstream issue #1721 and ends the fix cycle behind #1566, #1790, #1794 and #1844.
 
 **Goal:** extraction emits a per-file binding table. Resolution consumes it and never rescans raw source to answer "is X exported", "what does N bind to in F", or "is this receiver a known thing". Every resolver predicate that reads source today is replaced by a lookup.
 
@@ -115,14 +115,19 @@ Reading it: the resolution PRs' removals hold on the current engine. The `fuzzy`
 
 Exit met: the LOST/GAINED tables that named endpoints are encoded and green; the runner reports the histogram every later phase compares against.
 
-### Phase 1: emit bindings for TS/JS
+### Phase 1: emit bindings for TS/JS — DONE 2026-09-12 (first cut)
 
-- Add the `bindings` table and migration (DDL only, empty until re-index).
-- Kernel `tsjs` walker emits rows for declarations, imports, re-exports, aliases, parameters, and block-scoped locals, with `export_form` covering ESM, later-export, default, `module.exports.X`, `module.exports = {}`, and `exports["x"]`.
-- Set `nodes.isExported` from the table. Delete `isExportedLater` in both engines.
-- Bump `EXTRACTION_VERSION`.
+- `bindings` table and DDL-only migration v11 (`src/db/schema.sql`, `migrations.ts`); `EXTRACTION_VERSION` 29 → 30. Rows appear on re-index.
+- Wire contract ABI 2 → 3: a sixth buffer (`BindingRow`, 64 bytes, `buffers.rs` / `layout.ts`), decoded into `ExtractionResult.bindings` and persisted by both store paths (`attachBindings` in `store-writer.ts`; `queries.insertBindings`; per-file delete and full-index clear alongside literals). `scripts/dump-graph.mjs` dumps the table, so the goldens pin it.
+- The `tsjs` walker emits: `decl` rows for module-scope declarations with `export_form` `esm` / `esm-later` / `esm-default` / `cjs`; `local` rows for declarations nested in a function or class body, scoped to the enclosing node's lines; `import` rows (default, named, aliased, namespace) with the specifier; `reexport` rows with the source and exported name. Later exports are collected from the AST before the walk (`collect_later_exports`), and the same scan replaces the regex in the generic extractor (`collectLaterExports`), so both `isExportedLater` regexes are gone.
+- `nodes.isExported` is now set from the table for any node a `decl` row exports: the vue-sfc golden's `router` constant (declared, then `export default router`) flipped to exported, which the old flag could not see.
+- `__tests__/bindings-tsjs.test.ts` pins every emitted form at extraction and the stored export flag.
 
-Exit: `store-exported-later.test.ts` and `commonjs-exports.test.ts` pass against the table, not the regexes.
+Not in this cut, deferred to Phase 2 where they are consumed: `param` rows, block-scoped `let`/`const` inside blocks (only function/class-body declarations are `local` today), `alias` rows, and the CommonJS object forms `module.exports = { x }` / `exports["x"]` (the walker's CommonJS detection still covers `exports.NAME = fn` only). The generic TypeScript extractor does not emit bindings, so a TS/JS file that reaches it (stack-guard defer) has none; the walker ≡ generic gate compares nodes, edges and refs only.
+
+Precision gate after this cut (vite, same commit): every absent case still held, the control held, 28,893 edges unchanged in total, and 12 edges moved from `exact-match` to `import` (7,250 → 7,238 and 5,410 → 5,422): symbols exported by a later statement are now visible to the import resolver's export index, so the reference binds through the import instead of a name guess. `fuzzy` stayed at 16. Report: `__tests__/evaluation/results/precision-vite-8492422-72a5703b.json`.
+
+Exit met for the cut: the later-export regexes are deleted in both engines and the store-gate and export flag read the AST scan and the table.
 
 ### Phase 2: resolution reads bindings for TS/JS
 

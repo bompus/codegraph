@@ -5,7 +5,7 @@
  */
 
 import { SqliteDatabase, SqliteStatement } from './sqlite-adapter';
-import {
+import { Binding,
   Node,
   Edge,
   FileRecord,
@@ -258,6 +258,7 @@ export class QueryBuilder {
     deleteNode?: SqliteStatement;
     deleteNodesByFile?: SqliteStatement;
     deleteLiteralsByFile?: SqliteStatement;
+    deleteBindingsByFile?: SqliteStatement;
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
@@ -487,6 +488,30 @@ export class QueryBuilder {
     for (const value of node.literals ?? []) rows.push([value, node.id, node.filePath]);
   }
 
+  /** Rows for the `bindings` side table (see schema.sql). The file's old rows are removed by deleteNodesByFile. */
+  insertBindings(bindings: Binding[]): void {
+    const rows: unknown[][] = bindings.map((b) => [
+      b.filePath,
+      b.name,
+      b.kind,
+      b.nodeId ?? null,
+      b.targetSpec ?? null,
+      b.targetName ?? null,
+      b.exportedAs ?? null,
+      b.exportForm ?? null,
+      b.scopeStart,
+      b.scopeEnd,
+      b.storage ?? null,
+      b.line,
+    ]);
+    this.runBatched(
+      'insertBindings',
+      'INSERT INTO bindings (file_path, name, kind, node_id, target_spec, target_name, exported_as, export_form, scope_start, scope_end, storage, line) VALUES ',
+      '(?,?,?,?,?,?,?,?,?,?,?,?)',
+      rows
+    );
+  }
+
   private insertLiteralRows(rows: unknown[][]): void {
     this.runBatched(
       'insertLiterals',
@@ -621,10 +646,12 @@ export class QueryBuilder {
     nodes: Node[];
     edges: Edge[];
     refs: UnresolvedReference[];
+    bindings?: Binding[];
     file: FileRecord;
   }): void {
     this.db.transaction(() => {
       this.insertNodes(bundle.nodes);
+      if (bundle.bindings && bundle.bindings.length > 0) this.insertBindings(bundle.bindings);
       if (bundle.edges.length > 0) {
         const rows: unknown[][] = [];
         for (const edge of bundle.edges) {
@@ -764,7 +791,11 @@ export class QueryBuilder {
     if (!this.stmts.deleteLiteralsByFile) {
       this.stmts.deleteLiteralsByFile = this.db.prepare('DELETE FROM literals WHERE file_path = ?');
     }
+    if (!this.stmts.deleteBindingsByFile) {
+      this.stmts.deleteBindingsByFile = this.db.prepare('DELETE FROM bindings WHERE file_path = ?');
+    }
     this.stmts.deleteLiteralsByFile.run(filePath);
+    this.stmts.deleteBindingsByFile.run(filePath);
     this.stmts.deleteNodesByFile.run(filePath);
   }
 
@@ -781,6 +812,7 @@ export class QueryBuilder {
   /** Full indexing repopulates present files and removes literals from deleted files. */
   clearLiterals(): void {
     this.db.exec('DELETE FROM literals');
+    this.db.exec('DELETE FROM bindings');
   }
 
   // ===========================================================================
@@ -3739,6 +3771,7 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM unresolved_refs');
       this.db.exec('DELETE FROM edges');
       this.db.exec('DELETE FROM literals');
+    this.db.exec('DELETE FROM bindings');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
     })();

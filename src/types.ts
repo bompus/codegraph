@@ -280,6 +280,34 @@ export interface FileRecord {
 /**
  * Result from parsing a source file
  */
+export type BindingKind = 'decl' | 'import' | 'reexport' | 'alias' | 'param' | 'local';
+export type ExportForm = 'esm' | 'esm-later' | 'esm-default' | 'cjs' | 'cjs-object' | 'public';
+
+/**
+ * One binding of a name in a file — the single source of truth for "is X
+ * exported" and "what does N bind to in F" (resolution-binding-model-plan.md
+ * §2.1). Persisted in the `bindings` table.
+ */
+export interface Binding {
+  filePath: string;
+  name: string;
+  kind: BindingKind;
+  /** The declaring node for `decl` / `local` / `alias` rows. */
+  nodeId?: string;
+  /** Import or re-export specifier as written. */
+  targetSpec?: string;
+  /** Imported / re-exported name (`default`, `*`). */
+  targetName?: string;
+  /** The name this binding is exported under; undefined when not exported. */
+  exportedAs?: string;
+  exportForm?: ExportForm;
+  scopeStart: number;
+  scopeEnd: number;
+  /** Language-specific visibility word (`static`, `private`, `pub(crate)`). */
+  storage?: string;
+  line: number;
+}
+
 export interface ExtractionResult {
   /** Extracted nodes */
   nodes: Node[];
@@ -289,6 +317,13 @@ export interface ExtractionResult {
 
   /** References that couldn't be resolved yet */
   unresolvedReferences: UnresolvedReference[];
+
+  /**
+   * Per-file bindings (docs/design/resolution-binding-model-plan.md): what each
+   * name in the file is bound to and whether it is exported. Emitted by the
+   * native walkers that support it (TS/JS since Phase 1); absent otherwise.
+   */
+  bindings?: Binding[];
 
   /** Any errors during extraction */
   errors: ExtractionError[];
@@ -309,6 +344,7 @@ export interface ExtractionResult {
     nodes: Uint8Array;
     edges: Uint8Array;
     refs: Uint8Array;
+    bindings: Uint8Array;
     arena: Uint8Array;
     /** Preparsed source for literal attribution after deferred node decoding. */
     literalSource?: string;

@@ -351,28 +351,6 @@ impl<'t> Walker<'t> {
 
     // --- extractVariable (TS/JS branch) ------------------------------------------------
 
-    /// A top-level binding exported by a LATER statement rather than at its
-    /// declaration: `export default NAME`, `export { NAME }`, `export { NAME as
-    /// default }`. The declaration's own `is_exported` (an `export_statement`
-    /// ancestor) cannot see these. One anchored regex over the file source.
-    /// Mirrors TreeSitterExtractor.isExportedLater.
-    pub(super) fn is_exported_later(&self, name: &str) -> bool {
-        if name.is_empty()
-            || !name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$').unwrap_or(false)
-            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
-        {
-            return false;
-        }
-        let n = regex::escape(name);
-        let pattern = format!(
-            r"(?m)^[ \t]*export\s+(?:default\s+{n}\s*;?[ \t]*$|\{{[^}}]*\b{n}\b[^}}]*\}})",
-            n = n
-        );
-        match regex::Regex::new(&pattern) {
-            Ok(re) => re.is_match(self.src),
-            Err(_) => false,
-        }
-    }
 
     pub(super) fn extract_variable(&mut self, node: Node<'t>) {
         let is_const = self.is_const_decl(node);
@@ -1075,30 +1053,34 @@ impl<'t> Walker<'t> {
         let Some(clause) = clause else { return }; // side-effect import
 
         let imports_kind = edge_kind_index("imports").unwrap();
-        let push = |w: &mut Self, name_node: Option<Node>| {
+        let spec_text: String = node
+            .child_by_field_name("source")
+            .map(|s| self.text(s).chars().filter(|c| *c != '\'' && *c != '"').collect())
+            .unwrap_or_default();
+        let push = |w: &mut Self, name_node: Option<Node<'t>>, imported: &str| {
             let Some(n) = name_node else { return };
             let name = w.text(n).to_string();
             if name.is_empty() {
                 return;
             }
             w.push_ref(from_row, &name, imports_kind, n);
+            w.emit_import_binding(&name, &spec_text, imported, n);
         };
 
         for i in 0..clause.named_child_count() {
             let Some(child) = clause.named_child(i) else { continue };
             match child.kind() {
-                "identifier" => push(self, Some(child)),
+                "identifier" => push(self, Some(child), "default"),
                 "named_imports" => {
                     for j in 0..child.named_child_count() {
                         let Some(spec) = child.named_child(j) else { continue };
                         if spec.kind() != "import_specifier" {
                             continue;
                         }
-                        let n = spec
-                            .child_by_field_name("alias")
-                            .or_else(|| spec.child_by_field_name("name"))
-                            .or_else(|| spec.named_child(0));
-                        push(self, n);
+                        let original = spec.child_by_field_name("name").or_else(|| spec.named_child(0));
+                        let imported = original.map(|o| self.text(o).to_string()).unwrap_or_default();
+                        let n = spec.child_by_field_name("alias").or(original);
+                        push(self, n, &imported);
                     }
                 }
                 "namespace_import" => {
@@ -1106,7 +1088,7 @@ impl<'t> Walker<'t> {
                         .filter_map(|k| child.named_child(k))
                         .find(|c| c.kind() == "identifier")
                         .or_else(|| child.named_child(0));
-                    push(self, n);
+                    push(self, n, "*");
                 }
                 _ => {}
             }
@@ -1120,6 +1102,10 @@ impl<'t> Walker<'t> {
             .find(|c| c.kind() == "export_clause");
         let Some(clause) = clause else { return }; // `export * from './y'`
         let imports_kind = edge_kind_index("imports").unwrap();
+        let spec_text: String = node
+            .child_by_field_name("source")
+            .map(|s| self.text(s).chars().filter(|c| *c != '\'' && *c != '"').collect())
+            .unwrap_or_default();
         for i in 0..clause.named_child_count() {
             let Some(spec) = clause.named_child(i) else { continue };
             if spec.kind() != "export_specifier" {
@@ -1132,6 +1118,8 @@ impl<'t> Walker<'t> {
                 continue;
             }
             self.push_ref(from_row, &name, imports_kind, n);
+            let exported_as = spec.child_by_field_name("alias").map(|a| self.text(a).to_string()).unwrap_or_else(|| name.clone());
+            self.emit_reexport_binding(&name, &exported_as, &spec_text, n);
         }
     }
 
