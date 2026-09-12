@@ -83,3 +83,25 @@ it('corroborates an overloaded callable using another query symbol in its file',
   });
   expect(response.content?.[0]?.text).toContain('return resolveTransport();');
 });
+
+it('does not reduce an explicitly requested implementation file to signatures', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-pinned-implementations-'));
+  fs.writeFileSync(path.join(root, 'pipeline.ts'), [
+    'export function runPipeline() { return preparePipeline(); }',
+    'export function preparePipeline() { return finishPipeline(); }',
+    'export function finishPipeline() { return 42; }',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'renderers.ts'), [
+    'interface Renderer { render(): string; }',
+    "export class FirstRenderer implements Renderer {\n  render() {\n    return 'first renderer';\n  }\n}",
+    "export class SecondRenderer implements Renderer {\n  render() {\n    return 'second renderer';\n  }\n}",
+    "export class ThirdRenderer implements Renderer {\n  render() {\n    return 'third renderer';\n  }\n}",
+  ].join('\n'));
+  graph = await CodeGraph.init(root, { index: true });
+  const response = await new ToolHandler(graph).execute('codegraph_explore', {
+    query: 'renderers.ts runPipeline preparePipeline finishPipeline render',
+  });
+  const text = response.content?.[0]?.text ?? '';
+  expect(text).toContain("return 'first renderer';");
+  expect(text).toContain("return 'third renderer';");
+});

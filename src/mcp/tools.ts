@@ -5327,7 +5327,7 @@ export class ToolHandler {
       const onSpineGodFile = hasSpineNode
         && namedBodyChars > allowance
         && group.nodes.some(n => CALLABLE_BODY.has(n.kind) && flow.uniqueNamedNodeIds.has(n.id) && !flow.pathNodeIds.has(n.id));
-      if (!fileStale && adaptiveExploreEnabled() && flow.pathNodeIds.size > 0
+      if (!fileStale && !pinnedSet.has(filePath) && adaptiveExploreEnabled() && flow.pathNodeIds.size > 0
           && (onSpineGodFile || (!hasSpineNode && isPolymorphicSibling(group.nodes) && !spared))) {
         const syms = group.nodes
           .filter(n => n.kind !== 'import' && n.kind !== 'export' && n.startLine > 0)
@@ -6605,7 +6605,7 @@ export class ToolHandler {
       const lastSection = cut.lastIndexOf('\n' + FILE_SECTION_PREFIX);
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
-      finalText = safe + '\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)';
+      finalText = safe + '\n\n... (output truncated to budget; the returned source ranges are current and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)';
     } else {
       finalText = output;
     }
