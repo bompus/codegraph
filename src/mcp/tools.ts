@@ -3755,38 +3755,6 @@ export class ToolHandler {
       });
     }
 
-    // Graph-aware glue: findRelevantContext builds the subgraph from name/text
-    // search, so a method that BRIDGES named symbols — e.g. App.tsx's
-    // triggerRender, which calls the named triggerUpdate — is never a search hit
-    // and gets missed, forcing the agent to Read the file to trace it. Pull in
-    // the callers/callees of the entry (root) nodes, but ONLY those that live in
-    // files the subgraph already surfaces (where the agent reads to fill gaps),
-    // so we add wiring without dragging in unrelated files. These get an
-    // importance boost below so they survive the per-file cluster budget.
-    const glueNodeIds = new Set<string>();
-    const subgraphFiles = new Set<string>();
-    for (const n of subgraph.nodes.values()) subgraphFiles.add(n.filePath);
-    const GLUE_NODE_CAP = 60;
-    for (const rootId of subgraph.roots) {
-      if (glueNodeIds.size >= GLUE_NODE_CAP) break;
-      let neighbors: Node[] = [];
-      try {
-        neighbors = [
-          ...cg.getCallers(rootId).map(c => c.node),
-          ...cg.getCallees(rootId).map(c => c.node),
-        ];
-      } catch {
-        continue;
-      }
-      for (const nb of neighbors) {
-        if (glueNodeIds.size >= GLUE_NODE_CAP) break;
-        if (subgraph.nodes.has(nb.id)) continue;
-        if (!subgraphFiles.has(nb.filePath)) continue;
-        subgraph.nodes.set(nb.id, nb);
-        glueNodeIds.add(nb.id);
-      }
-    }
-
     // Named-symbol seeding: findRelevantContext is an FTS/text rank, so a query
     // that's a BAG of symbol names skewed toward one phase (Alamofire: 5 build
     // terms, each a high-frequency name, vs 3 validate terms) lets the
@@ -3867,6 +3835,8 @@ export class ToolHandler {
       const typeTokens = tokens.filter(
         (o) => /^[A-Z][A-Za-z0-9]{3,}/.test(o) && !projectNameTokens.has(normalizeNameToken(o)),
       );
+      const inNamedOwner = (n: Node) => typeTokens.some(t =>
+        n.qualifiedName.split(/::|\./).slice(0, -1).some(owner => owner.toLowerCase() === t.toLowerCase()));
       const inNamedContext = (n: Node) =>
         typeTokens.some((ct) => {
           const lc = ct.toLowerCase();
@@ -3906,7 +3876,13 @@ export class ToolHandler {
         // type-token bias below couldn't pick the harness.rs one. (Same fix as
         // codegraph_node's findSymbolMatches.) Qualified tokens keep findAllSymbols.
         const isQual = /[.\/]|::/.test(t);
-        const raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
+        let raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
+        // Go export capitalization often disappears in prose ("Context JSON
+        // render"). Recover only methods owned by an explicitly named type.
+        if (raw.length === 0 && /^[a-z]+$/.test(t) && typeTokens.length > 0) {
+          raw = cg.getNodesByName(t[0]!.toUpperCase() + t.slice(1))
+            .filter(n => n.kind === 'method' && inNamedOwner(n));
+        }
         // A query that NAMES a declared type is a question ABOUT that type, and
         // must still reach its declaration file at full weight — so record the
         // files those declarations live in and exempt them from the
@@ -3984,7 +3960,10 @@ export class ToolHandler {
           const maxCallers = Math.max(1, ...counts.values());
           tierPicks = cands.filter((c, i) => i === 0 || (counts.get(c.id) ?? 0) >= maxCallers * 0.25);
         } else {
-          const typed = cands.filter(inNamedContext);
+          // An exact owner is stronger than a file-name match: JSON.Render
+          // must precede JsonpJSON.Render even when both live in json.go.
+          const owned = cands.filter(inNamedOwner);
+          const typed = owned.length > 0 ? owned : cands.filter(inNamedContext);
           const ctx = typed.length > 0 ? typed : cands.filter(n => coNamedCount(t, n.filePath) > 0)
             .sort((a, b) => coNamedCount(t, b.filePath) - coNamedCount(t, a.filePath));
           picks = ctx.length > 0 ? ctx.slice(0, 4) : cands.slice(0, 1);
@@ -4028,6 +4007,38 @@ export class ToolHandler {
         tierSeedIds.add(id);
       }
     }
+    // Graph-aware glue: findRelevantContext builds the subgraph from name/text
+    // search, so a method that BRIDGES named symbols — e.g. App.tsx's
+    // triggerRender, which calls the named triggerUpdate — is never a search hit
+    // and gets missed, forcing the agent to Read the file to trace it. Pull in
+    // the callers/callees of named seeds and entry (root) nodes, but ONLY those that live in
+    // files the subgraph already surfaces (where the agent reads to fill gaps),
+    // so we add wiring without dragging in unrelated files. These get an
+    // importance boost below so they survive the per-file cluster budget.
+    const glueNodeIds = new Set<string>();
+    const subgraphFiles = new Set<string>();
+    for (const n of subgraph.nodes.values()) subgraphFiles.add(n.filePath);
+    const GLUE_NODE_CAP = 60;
+    for (const rootId of new Set([...namedSeedIds, ...subgraph.roots])) {
+      if (glueNodeIds.size >= GLUE_NODE_CAP) break;
+      let neighbors: Node[] = [];
+      try {
+        neighbors = [
+          ...cg.getCallers(rootId).map(c => c.node),
+          ...cg.getCallees(rootId).map(c => c.node),
+        ];
+      } catch {
+        continue;
+      }
+      for (const nb of neighbors) {
+        if (glueNodeIds.size >= GLUE_NODE_CAP) break;
+        if (subgraph.nodes.has(nb.id)) continue;
+        if (!subgraphFiles.has(nb.filePath)) continue;
+        subgraph.nodes.set(nb.id, nb);
+        glueNodeIds.add(nb.id);
+      }
+    }
+
     // Code symbols the query named, kept apart from the doc seeds added next: with
     // a doc tier, a code file renders only when it defines one of these.
     const codeNamedIds = new Set(tierSeedIds);

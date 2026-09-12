@@ -129,3 +129,36 @@ it('returns a precisely named constant alongside callable loaders without usage 
   for (const name of ['app.config.js', 'app.config.ts', 'app.config.mts']) expect(text).toContain(name);
   expect(text.length).toBeLessThanOrEqual(25000);
 });
+
+it('prefers an exact Go receiver over longer sibling renderers in the same file', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-render-owner-'));
+  fs.writeFileSync(path.join(root, 'go.mod'), 'module example.com/render\n\ngo 1.22\n');
+  fs.writeFileSync(path.join(root, 'context.go'), `package render
+ type Context struct{}
+ type Renderer interface { Render() string }
+ func (c Context) JSON() string { return c.Render(JSON{}) }
+ func (c Context) Render(r Renderer) string { return r.Render() }
+`);
+  fs.writeFileSync(path.join(root, 'json.go'), [
+    'package render',
+    'type JSON struct{}',
+    ...Array.from({ length: 90 }, (_, i) => `// declaration padding ${i}`),
+    'func (r JSON) Render() string { return WriteJSON() }',
+    'func WriteJSON() string { return "encoded JSON response" }',
+    ...['IndentedJSON', 'SecureJSON', 'JsonpJSON', 'PureJSON'].map(name => [
+      `type ${name} struct{}`,
+      `func (r ${name}) Render() string {`,
+      ...Array.from({ length: 85 }, (_, i) => `// unrelated ${name} option ${i}`),
+      `return "${name}"`,
+      '}',
+    ].join('\n')),
+  ].join('\n'));
+  graph = await CodeGraph.init(root, { index: true });
+  const response = await new ToolHandler(graph).execute('codegraph_explore', {
+    query: 'Context JSON render write response',
+  });
+  const text = response.content?.[0]?.text ?? '';
+  expect(text).toContain('func (r JSON) Render() string { return WriteJSON() }');
+  expect(text).toContain('encoded JSON response');
+  expect(text.length).toBeLessThanOrEqual(25000);
+});

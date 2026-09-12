@@ -156,6 +156,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Go exploration includes grouped variable declarations and better follows JSON rendering methods; re-index Go projects to include the newly extracted declarations.
+
 - Explicitly named constants and variables stay visible in code exploration even when their uses cannot be traced.
 
 - `codegraph_explore` keeps requested function bodies and relevant call sites together more reliably, reducing gaps that require follow-up reads.

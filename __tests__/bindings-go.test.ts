@@ -96,3 +96,26 @@ describe.skipIf(!kernelBuilt)('Go bindings', () => {
     expect(mappings.find((m) => m.localName === 'bytesconv')).toMatchObject({ source: 'example.com/proj/internal/bytesconv', isNamespace: true });
   });
 });
+
+it.skipIf(!kernelBuilt)('extracts grouped package variables and local shadow bindings', () => {
+  const result = tryKernelExtract('binding/binding.go', `package binding
+ type jsonBinding struct{}
+ var (
+   JSON = jsonBinding{}
+   hidden = 1
+ )
+ func use() {
+   var (
+     JSON = 2
+     local = 3
+   )
+   _ = JSON
+   _ = local
+ }
+`, 'go')!;
+  expect(result.nodes.find(n => n.name === 'JSON')).toMatchObject({ kind: 'variable', startLine: 4 });
+  expect(result.bindings?.find(b => b.name === 'JSON' && b.kind === 'decl')).toMatchObject({ exportedAs: 'JSON' });
+  expect(result.bindings?.find(b => b.name === 'hidden')).toMatchObject({ storage: 'package' });
+  expect(result.bindings?.find(b => b.name === 'JSON' && b.kind === 'local')).toBeDefined();
+  expect(result.bindings?.find(b => b.name === 'local' && b.kind === 'local')).toBeDefined();
+});

@@ -48,6 +48,23 @@ fn bracket_args_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").unwrap())
 }
 
+// Grouped var declarations wrap their specs in var_spec_list; constants and
+// ungrouped declarations expose specs directly. Share that grammar boundary
+// between symbol extraction and binding collection.
+fn declaration_specs(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut specs = Vec::new();
+    for i in 0..node.named_child_count() {
+        let Some(child) = node.named_child(i) else { continue };
+        if matches!(child.kind(), "var_spec" | "const_spec") {
+            specs.push(child);
+        } else if child.kind() == "var_spec_list" {
+            specs.extend((0..child.named_child_count()).filter_map(|j| child.named_child(j))
+                .filter(|n| n.kind() == "var_spec"));
+        }
+    }
+    specs
+}
+
 struct Scope {
     row: u32,
     kind: &'static str,
@@ -657,11 +674,7 @@ impl<'t> Walker<'t> {
         let docstring = preceding_docstring(node, self.src);
         let is_const_decl = node.kind() == "const_declaration";
 
-        for i in 0..node.named_child_count() {
-            let Some(spec) = node.named_child(i) else { continue };
-            if !matches!(spec.kind(), "var_spec" | "const_spec") {
-                continue;
-            }
+        for spec in declaration_specs(node) {
             let mut var_row: Option<u32> = None;
             if let Some(name_node) = spec.named_child(0) {
                 if name_node.kind() == "identifier" {
@@ -877,11 +890,7 @@ impl<'t> Walker<'t> {
                 }
             }
             "var_declaration" => {
-                for i in 0..node.named_child_count() {
-                    let Some(spec) = node.named_child(i) else { continue };
-                    if spec.kind() != "var_spec" {
-                        continue;
-                    }
+                for spec in declaration_specs(node) {
                     names.extend((0..spec.named_child_count()).filter_map(|j| spec.named_child(j)).filter(|c| c.kind() == "identifier"));
                 }
             }
@@ -943,11 +952,7 @@ impl<'t> Walker<'t> {
                     child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
                 }
                 "var_declaration" | "const_declaration" if scope.is_none() => {
-                    for i in 0..node.named_child_count() {
-                        let Some(spec) = node.named_child(i) else { continue };
-                        if !matches!(spec.kind(), "var_spec" | "const_spec") {
-                            continue;
-                        }
+                    for spec in declaration_specs(node) {
                         if let Some(n) = spec.named_child(0).filter(|c| c.kind() == "identifier") {
                             let name = self.text(n).to_string();
                             let line = self.line_of(spec);
