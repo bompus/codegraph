@@ -97,7 +97,7 @@
 {"from_node_id":"file:src/lib/store.ts","reference_name":"svelte/store","reference_kind":"imports","line":1,"col":0,"candidates":null,"file_path":"src/lib/store.ts","language":"typescript","status":"failed","name_tail":"svelte/store"}
 {"from_node_id":"file:src/lib/store.ts","reference_name":"writable","reference_kind":"imports","line":1,"col":9,"candidates":null,"file_path":"src/lib/store.ts","language":"typescript","status":"failed","name_tail":"writable"}
 {"from_node_id":"file:src/pages/index.astro","reference_name":"document.addEventListener","reference_kind":"calls","line":15,"col":6,"candidates":null,"file_path":"src/pages/index.astro","language":"astro","status":"failed","name_tail":"addEventListener"}
-{"from_node_id":"function:0026a1cae8e888523240c893a10aa70d","reference_name":"count.update","reference_kind":"calls","line":3,"col":36,"candidates":null,"file_path":"src/lib/store.ts","language":"typescript","status":"failed","name_tail":"update"}
+{"from_node_id":"function:0026a1cae8e888523240c893a10aa70d","reference_name":"count.update","reference_kind":"calls","line":3,"col":36,"candidates":null,"file_path":"src/lib/store.ts","language":"typescript","status":"failed","name_tail":"update","failure_reason":"unknown-receiver"}
 {"from_node_id":"function:9777ee45a9be2e3fad362e78e1d7b6f9","reference_name":"s.toUpperCase","reference_kind":"calls","line":5,"col":43,"candidates":null,"file_path":"src/pages/index.astro","language":"astro","status":"failed","name_tail":"toUpperCase"}
 {"from_node_id":"function:d2e12acb9fe4991a6ddced760347b343","reference_name":"console.log","reference_kind":"calls","line":14,"col":33,"candidates":null,"file_path":"src/pages/index.astro","language":"astro","status":"failed","name_tail":"log"}
 == bindings (23)

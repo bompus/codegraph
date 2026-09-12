@@ -1248,7 +1248,7 @@ export function resolveViaImport(
         ref.filePath,
         ref.language,
         context
-      );
+      ) ?? (ref.language === 'python' ? findPythonModuleFile(imp.source, context, ref.filePath)?.filePath ?? null : null);
 
       if (resolvedPath) {
         const exportedName = imp.isDefault ? 'default' : imp.exportedName;
@@ -1362,8 +1362,8 @@ function resolvePythonModuleMember(
   if (dotIdx <= 0) return null;
   const receiver = ref.referenceName.substring(0, dotIdx);
   // The immediate member of the module (first segment after the receiver).
-  const member = ref.referenceName.substring(dotIdx + 1).split('.')[0];
-  if (!member) return null;
+  const members = ref.referenceName.substring(dotIdx + 1).split('.');
+  if (!members[0]) return null;
 
   for (const imp of imports) {
     if (imp.localName !== receiver) continue;
@@ -1379,11 +1379,22 @@ function resolvePythonModuleMember(
     // form (where the two names coincide) worked (#1626). For an unaliased
     // import the two are identical, so this changes nothing there.
     const moduleName = imp.exportedName === '*' ? imp.localName : imp.exportedName;
-    const modulePath = imp.isNamespace
+    let modulePath = imp.isNamespace
       ? imp.source
       : imp.source.endsWith('.')
         ? imp.source + moduleName
         : imp.source + '.' + moduleName;
+
+    let remaining = members;
+    // `import pkg.sub` binds pkg; the imported file is pkg.sub, while an
+    // alias (`import pkg.sub as alias`) names that file directly.
+    if (imp.isNamespace && imp.source.startsWith(receiver + '.')) {
+      const suffix = imp.source.slice(receiver.length + 1).split('.');
+      if (!suffix.every((name, i) => remaining[i] === name)) continue;
+      remaining = remaining.slice(suffix.length);
+    }
+    if (remaining.length !== 1) continue;
+    const member = remaining[0]!;
 
     // resolveImportPath only maps RELATIVE dotted paths (`.mod`, `..pkg.mod`); an
     // ABSOLUTE package path (`pkg.module` from `from pkg import module`, or a bare

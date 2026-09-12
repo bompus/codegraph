@@ -32,7 +32,7 @@ const db = new DatabaseSync(dbPath, { readOnly: true });
 
 function dump(title, sql) {
   const rows = db.prepare(sql).all();
-  const lines = rows.map((r) => JSON.stringify(r)).sort();
+  const lines = rows.map((r) => JSON.stringify(r, (key, value) => key === 'failure_reason' && value == null ? undefined : value)).sort();
   process.stdout.write(`== ${title} (${lines.length})\n`);
   for (const l of lines) process.stdout.write(l + '\n');
 }
@@ -51,7 +51,7 @@ dump(
 dump(
   'refs',
   `SELECT from_node_id, reference_name, reference_kind, line, col, candidates,
-          file_path, language, status, name_tail
+          file_path, language, status, name_tail, failure_reason
    FROM unresolved_refs`
 );
 dump(

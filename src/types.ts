@@ -387,6 +387,8 @@ export type ReferenceKind = EdgeKind | 'function_ref';
  * A reference that couldn't be resolved during extraction
  */
 export interface UnresolvedReference {
+  /** Why the most recent resolution attempt declined this reference. */
+  failureReason?: 'unknown-receiver';
   /** ID of the node containing the reference */
   fromNodeId: string;
 

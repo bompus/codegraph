@@ -4861,7 +4861,7 @@ export class TreeSitterExtractor {
               return;
             }
             const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super']);
-            if (receiver && (receiver.type === 'identifier' || receiver.type === 'simple_identifier' || receiver.type === 'field_identifier')) {
+            if (receiver && (receiver.type === 'identifier' || receiver.type === 'simple_identifier' || receiver.type === 'field_identifier' || (this.language === 'python' && receiver.type === 'attribute'))) {
               const receiverName = getNodeText(receiver, this.source);
               if (!SKIP_RECEIVERS.has(receiverName)) {
                 calleeName = `${receiverName}.${methodName}`;

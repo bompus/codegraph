@@ -631,9 +631,8 @@ impl<'t> Walker<'t> {
                     Extra { signature: Some(import_text.clone()), ..Extra::default() },
                 );
                 self.push_ref_at(parent, &name, imports_kind, child);
-                // `import a.b` binds `a`; the row keeps the resolver's long-standing
-                // reading (the last segment) until the Python receiver rule lands.
-                let local = name.rsplit('.').next().unwrap_or(&name).to_string();
+                // An unaliased dotted import binds the root package.
+                let local = name.split('.').next().unwrap_or(&name).to_string();
                 self.emit_import_binding(&local, &name, "*", child);
             } else if child.kind() == "aliased_import" {
                 let dotted = (0..child.named_child_count())
@@ -651,7 +650,7 @@ impl<'t> Walker<'t> {
                     let local = child
                         .child_by_field_name("alias")
                         .map(|a| self.text(a).to_string())
-                        .unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+                        .unwrap_or_else(|| name.split('.').next().unwrap_or(&name).to_string());
                     self.emit_import_binding(&local, &name, "*", dotted);
                 }
             }
@@ -757,7 +756,7 @@ impl<'t> Walker<'t> {
                 };
                 let Some(dotted) = dotted else { continue };
                 let name = self.text(dotted).to_string();
-                let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+                let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.split('.').next().unwrap_or(&name).to_string());
                 rows.push((local, name, "*".to_string(), dotted));
             }
         }
@@ -886,7 +885,7 @@ impl<'t> Walker<'t> {
             };
             let Some(dotted) = dotted else { continue };
             let name = self.text(dotted).to_string();
-            let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.rsplit('.').next().unwrap_or(&name).to_string());
+            let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.split('.').next().unwrap_or(&name).to_string());
             self.emit_import_binding(&local, &name, "*", dotted);
         }
     }
@@ -930,7 +929,7 @@ impl<'t> Walker<'t> {
                         }
                     }
                     let recv_ident = receiver.filter(|r| {
-                        matches!(r.kind(), "identifier" | "simple_identifier" | "field_identifier")
+                        matches!(r.kind(), "identifier" | "simple_identifier" | "field_identifier" | "attribute")
                     });
                     if let Some(r) = recv_ident {
                         let receiver_name = self.text(r);

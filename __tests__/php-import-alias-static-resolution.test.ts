@@ -124,7 +124,7 @@ class OtherService {
     public function getSettlesToExcel() {}
 }
 `);
-    write(controllerPath, controllerSource.replace(
+    write(controllerPath, controllerSource.replace('use App\\Services\\SettleService as Settle;', 'use App\\Services\\SettleService as Settle;\nuse App\\Services\\OtherService;').replace(
       'return Settle::',
       '$Settle = new OtherService();\n        $Settle->getSettlesToExcel();\n        return Settle::',
     ));

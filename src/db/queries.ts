@@ -153,6 +153,7 @@ interface UnresolvedRefRow {
   language: string;
   status: string;
   name_tail: string;
+  failure_reason: UnresolvedReference['failureReason'] | null;
 }
 
 /**
@@ -2664,6 +2665,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -2693,6 +2695,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -3186,6 +3189,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -3204,6 +3208,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -3252,6 +3257,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -3288,6 +3294,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -3362,6 +3369,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 
@@ -3457,15 +3465,15 @@ export class QueryBuilder {
    * is (re)written here so rows inserted before the v8 migration get their
    * tail the first time they're attempted.
    */
-  markReferencesFailed(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): number {
+  markReferencesFailed(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedReference['failureReason'] }>): number {
     if (refs.length === 0) return 0;
     const stmt = this.db.prepare(
-      "UPDATE unresolved_refs SET status = 'failed', name_tail = ? WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?"
+      "UPDATE unresolved_refs SET status = 'failed', name_tail = ?, failure_reason = ? WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?"
     );
     let changed = 0;
     const markMany = this.db.transaction((items: typeof refs) => {
       for (const ref of items) {
-        changed += stmt.run(referenceNameTail(ref.referenceName), ref.fromNodeId, ref.referenceName, ref.referenceKind).changes;
+        changed += stmt.run(referenceNameTail(ref.referenceName), ref.failureReason ?? null, ref.fromNodeId, ref.referenceName, ref.referenceKind).changes;
       }
     });
     markMany(refs);
@@ -3480,15 +3488,15 @@ export class QueryBuilder {
    * can differ per call site (receiver-type inference reads the ref's line),
    * so a sibling must not inherit this row's failure.
    */
-  markReferencesFailedByRowIds(refs: Array<{ rowId: number; referenceName: string }>): number {
+  markReferencesFailedByRowIds(refs: Array<{ rowId: number; referenceName: string; failureReason?: UnresolvedReference['failureReason'] }>): number {
     if (refs.length === 0) return 0;
     const stmt = this.db.prepare(
-      "UPDATE unresolved_refs SET status = 'failed', name_tail = ? WHERE id = ?"
+      "UPDATE unresolved_refs SET status = 'failed', name_tail = ?, failure_reason = ? WHERE id = ?"
     );
     let changed = 0;
     const markMany = this.db.transaction((items: typeof refs) => {
       for (const ref of items) {
-        changed += stmt.run(referenceNameTail(ref.referenceName), ref.rowId).changes;
+        changed += stmt.run(referenceNameTail(ref.referenceName), ref.failureReason ?? null, ref.rowId).changes;
       }
     });
     markMany(refs);
@@ -3547,6 +3555,7 @@ export class QueryBuilder {
       filePath: row.file_path,
       language: row.language as Language,
       rowId: row.id,
+      failureReason: row.failure_reason ?? undefined,
     }));
   }
 

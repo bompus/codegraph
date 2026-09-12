@@ -11,6 +11,7 @@ import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, 
 import { resolveWorkspaceImport } from './workspace-packages';
 import { JS_BUILT_INS } from './js-builtins';
 import { resolveViaImport } from './import-resolver';
+import { inferIterationReceiver } from './receiver-iteration';
 
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will
@@ -1347,7 +1348,7 @@ const CPP_NON_TYPE_TOKENS = new Set([
   'sizeof', 'alignof', 'typeid', 'and', 'or', 'not', 'xor',
 ]);
 
-function normalizeCppTypeName(typeName: string): string | null {
+function normalizeCppTypeName(typeName: string, preserveQualifiedName = false): string | null {
   const normalized = typeName
     .replace(/\b(const|volatile|mutable|typename|class|struct)\b/g, ' ')
     .replace(/[&*]+/g, ' ')
@@ -1360,7 +1361,7 @@ function normalizeCppTypeName(typeName: string): string | null {
   const last = parts[parts.length - 1];
   if (!last) return null;
   if (CPP_NON_TYPE_TOKENS.has(last)) return null;
-  return last;
+  return preserveQualifiedName ? parts.join('::') : last;
 }
 
 // Declarator regex: matches `Type receiver`, `Type* receiver`, `Type *receiver`,
@@ -1379,6 +1380,7 @@ function inferCppReceiverType(
   ref: UnresolvedRef,
   context: ResolutionContext,
   depth = 0,
+  preserveQualifiedName = false,
 ): string | null {
   // Per-file lines cache when available — this runs per `receiver->method()`
   // ref and re-splitting the file each time is the same quadratic as the
@@ -1399,13 +1401,14 @@ function inferCppReceiverType(
 
     const declaratorMatch = line.match(declaratorRegex);
     if (declaratorMatch) {
-      const normalized = normalizeCppTypeName(declaratorMatch[1] ?? '');
+      const normalized = normalizeCppTypeName(declaratorMatch[1] ?? '', preserveQualifiedName);
       if (normalized === 'auto') {
         // `auto x = Foo::instance();` — the declared type is deduced; recover it
         // from the initializer (call return type / construction) (#645).
         const initType = inferCppAutoInitializerType(line, receiverName, ref, context, depth);
         if (initType) return initType;
-        // No usable initializer on this line — keep scanning earlier ones.
+        // An undeduced local/parameter shadows earlier declarations.
+        return null;
       } else if (normalized) {
         return normalized;
       }
@@ -1429,7 +1432,7 @@ function inferCppReceiverType(
       if (!receiverPattern.test(line)) continue;
       const declaratorMatch = line.match(declaratorRegex);
       if (!declaratorMatch) continue;
-      const normalized = normalizeCppTypeName(declaratorMatch[1] ?? '');
+      const normalized = normalizeCppTypeName(declaratorMatch[1] ?? '', preserveQualifiedName);
       if (normalized && normalized !== 'auto') return normalized;
     }
   }
@@ -1954,6 +1957,7 @@ function buildLocalReceiverTypePatterns(language: Language, r: string): RegExp[]
       ];
     case 'go':
       return [
+        new RegExp(`\\b${r}\\s+\\*?([a-z_][\\w]*\\.[A-Z][\\w]*)(?=\\s*[,)]|\\s*$)`), // imported parameter type
         new RegExp(`\\b${r}\\b\\s*:=\\s*&?([A-Za-z_][\\w.]*)\\s*{`), // lg := Logger{} / &Logger{}
         new RegExp(`\\bvar\\s+${r}\\s+\\*?([A-Za-z_][\\w.]*)`), // var lg Logger / *Logger
         // A typed parameter / method receiver (`func use(lg Logger)`,
@@ -2307,19 +2311,33 @@ function inferPhpAssignedPropertyType(
   return null;
 }
 
+/** Ordinary member calls covered by the migrated binding model. */
+export function isBindingReceiverCall(ref: UnresolvedRef): boolean {
+  return ref.referenceKind === 'calls' &&
+    (ESM_FAMILY.has(ref.language) || ['python', 'go', 'java', 'kotlin', 'php', 'c', 'cpp'].includes(ref.language)) &&
+    /^.+\.[\w$]+$/.test(ref.referenceName) &&
+    !ref.referenceName.includes('()') && !/^(this|self|super|cls)(\.|$)/.test(ref.referenceName);
+}
+
 /** A member call with binding evidence is exclusive: unknown receivers never name-match. */
 export function matchBoundReceiverCall(
   ref: UnresolvedRef, context: ResolutionContext,
 ): ResolvedRef | null | undefined {
-  if (ref.referenceKind !== 'calls' || !context.getBindings ||
-      !ESM_FAMILY.has(ref.language)) return undefined;
-  const call = ref.referenceName.match(/^(.+)\.([\w$]+)$/);
-  if (!call) return undefined;
-  const [, receiver, method] = call;
-  // Existing factory/store and implicit-instance paths validate their own receiver types.
-  if (receiver!.includes('()') || /^(this|self|super)(\.|$)/.test(receiver!)) return undefined;
+  if (!context.getBindings || !isBindingReceiverCall(ref)) return undefined;
+  const [, receiver, method] = ref.referenceName.match(/^(.+)\.([\w$]+)$/)!;
   const root = receiver!.split('.')[0]!;
   const binding = innermostBinding(context.getBindings(ref.filePath), root, ref.line);
+  if (!ESM_FAMILY.has(ref.language)) {
+    // Language-specific inference supplies declared parameter, range-variable,
+    // field and lambda receiver types. Keep it, but stop before name guesses.
+    const phpVariable = ref.language === 'php' && context.getFileLines?.(ref.filePath)?.[ref.line - 1]?.slice(ref.column).startsWith('$');
+    if (binding?.kind === 'import' && !phpVariable) {
+      const hit = resolveViaImport(ref, context);
+      const target = hit && context.getNodeById?.(hit.targetNodeId);
+      return target && ['function', 'method', 'class', 'component'].includes(target.kind) ? hit : null;
+    }
+    return matchMethodCall(ref, context, true);
+  }
   if (binding?.kind === 'import') {
     // The import resolver descends one member. A deeper receiver must not
     // mistake that first member for the final call (service.child.run).
@@ -2369,22 +2387,52 @@ export function matchBoundReceiverCall(
   return hit ? { ...hit, original: ref } : null;
 }
 
-/** Resolve a declared type through its own lexical binding before selecting a member. */
-function matchBoundTypeMember(type: string, method: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+function resolveBoundType(type: string, ref: UnresolvedRef, context: ResolutionContext): Node | undefined {
   const binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], type.split('.')[0]!, ref.line);
   const ownerId = binding?.kind === 'import'
     ? resolveViaImport({ ...ref, referenceName: type, referenceKind: 'references' }, context)?.targetNodeId
     : binding?.nodeId;
-  const owner = ownerId ? context.getNodeById?.(ownerId) : undefined;
-  if (!owner || !['class', 'interface', 'component', 'type_alias'].includes(owner.kind)) return null;
+  let owner = ownerId ? context.getNodeById?.(ownerId) : undefined;
+  if (binding?.kind === 'import' && ref.language === 'php' && binding.targetSpec) {
+    const qualified = binding.targetSpec.replace(/^\\/, '').replace(/\\([^\\]+)$/, '::$1');
+    const owners = context.getNodesByQualifiedName(qualified).filter(n => n.language === 'php' && ['class', 'interface', 'trait'].includes(n.kind));
+    owner = owners.length === 1 ? owners[0] : undefined;
+  }
+  if (!binding && !ESM_FAMILY.has(ref.language)) {
+    const candidates = (type.includes('::') ? context.getNodesByQualifiedName(type) : context.getNodesByName(type)).filter(n =>
+      ['class', 'struct', 'interface', 'component', 'type_alias', 'union'].includes(n.kind) &&
+      n.language === ref.language && isVisibleAcrossFiles(n, ref, context));
+    const local = candidates.filter(n => n.filePath === ref.filePath);
+    const namespace = context.getNodesInFile(ref.filePath).find(n => n.kind === 'namespace')?.qualifiedName;
+    const packageCandidates = candidates.filter(n => {
+      if (ref.language === 'python') return false; // Python types require a local or imported binding.
+      if (ref.language === 'go') return path.posix.dirname(n.filePath) === path.posix.dirname(ref.filePath);
+      if (ref.language === 'php') return n.qualifiedName === (namespace ? `${namespace}::${type}` : type);
+      return true;
+    });
+    const visible = local.length ? local : packageCandidates;
+    if (visible.length === 1) owner = visible[0];
+  }
+  if (!owner || !['class', 'struct', 'interface', 'component', 'type_alias', 'union'].includes(owner.kind)) return undefined;
+  return owner;
+}
+
+/** Resolve a declared type through its own lexical binding before selecting a member. */
+function matchBoundTypeMember(type: string, method: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  const owner = resolveBoundType(type, ref, context);
+  if (!owner) return null;
   const pending = [owner];
   const seen = new Set<string>();
   while (pending.length) {
     const typeNode = pending.shift()!;
     if (seen.has(typeNode.id)) continue;
     seen.add(typeNode.id);
-    const member = context.getNodesByQualifiedName(`${typeNode.qualifiedName}::${method}`)
-      .find(n => n.filePath === typeNode.filePath && n.kind === 'method');
+    const members = context.getNodesByQualifiedName(`${typeNode.qualifiedName}::${method}`)
+      .filter(n => n.kind === 'method' && n.language === ref.language &&
+        (n.filePath === typeNode.filePath ||
+          (ref.language === 'go' && path.posix.dirname(n.filePath) === path.posix.dirname(typeNode.filePath)) ||
+          ref.language === 'cpp'));
+    const member = members.length === 1 ? members[0] : members.find(n => n.filePath === typeNode.filePath);
     if (member) return { original: ref, targetNodeId: member.id, confidence: 0.9, resolvedBy: 'instance-method' };
     pending.push(...(context.getSupertypeNodes?.(typeNode.id) ?? []));
   }
@@ -2474,12 +2522,25 @@ export function matchMethodCall(
   // shared source-based inferrer. resolveMethodOnType validates the method
   // exists on the inferred type, so a mis-inference produces no edge.
   if (inferableReceiver) {
-    const inferredType = nmTimedT('mc-infer', ref, () =>
+    let inferredType = nmTimedT('mc-infer', ref, () =>
       ref.language === 'cpp'
-        ? inferCppReceiverType(objectOrClass!, ref, context)
-        : inferLocalReceiverType(objectOrClass!, binding
+        ? inferCppReceiverType(objectOrClass!, ref, context, 0, requireReceiverEvidence)
+        : inferLocalReceiverType(objectOrClass!, binding && ESM_FAMILY.has(ref.language)
           ? { ...ref, line: binding.line, fromNodeId: binding.nodeId ?? ref.fromNodeId }
           : ref, context, requireReceiverEvidence));
+    if (!inferredType && requireReceiverEvidence) {
+      const iteration = inferIterationReceiver(objectOrClass!, ref, context,
+        (name, site) => inferLocalReceiverType(name, site, context, true),
+        (type, site) => resolveBoundType(type, site, context),
+        (name, site) => {
+          const hit = matchBoundReceiverCall({ ...site, referenceName: name }, context);
+          return hit ? context.getNodeById?.(hit.targetNodeId) ?? undefined : undefined;
+        });
+      if (iteration) {
+        const hit = matchBoundTypeMember(iteration.type, methodName!, iteration.site, context);
+        return hit ? { ...hit, original: ref } : null;
+      }
+    }
     if (inferredType) {
       if (requireReceiverEvidence) {
         const hit = matchBoundTypeMember(inferredType, methodName!, { ...ref, line: binding?.line ?? ref.line }, context);
@@ -2621,6 +2682,7 @@ export function matchMethodCall(
     for (const classNode of classCandidates) {
       if (requireReceiverEvidence && binding && binding.nodeId !== classNode.id) continue;
       if (requireReceiverEvidence) return matchBoundTypeMember(objectOrClass!, methodName!, ref, context);
+      if (requireReceiverEvidence && !isVisibleAcrossFiles(classNode, ref, context)) continue;
       if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
         // Skip cross-language class matches
         if (classNode.language !== ref.language) continue;

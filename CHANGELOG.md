@@ -156,6 +156,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Method calls now follow receiver types more reliably across Python, Go, Java, Kotlin, PHP and C++, with unresolved receiver diagnostics and correct ordering of chained calls in the viewer.
+
 - JavaScript and TypeScript method calls now follow the receiver's binding, avoiding unrelated same-named methods while preserving typed receivers and Expo native-module calls.
 - Workspace packages with explicit Rollup or Rolldown build entries can resolve their public imports to source before their bundles are built.
 - Go calls on newly constructed values now reach that value's own method instead of a same-named method on another type.

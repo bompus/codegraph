@@ -75,7 +75,7 @@
 {"source":"module:d5ba6d93cad91a7a931e56387ae27c0f","target":"module:9f3c3ccfb61608be0c4ec12471d12a83","kind":"imports","metadata":"{\"confidence\":0.98,\"resolvedBy\":\"file-path\",\"refName\":\"CONTRIBUTING.md#repo-setup\"}","line":16,"col":2,"provenance":null}
 == refs (3)
 {"from_node_id":"file:src/widget.test.ts","reference_name":"test","reference_kind":"calls","line":2,"col":0,"candidates":null,"file_path":"src/widget.test.ts","language":"typescript","status":"failed","name_tail":"test"}
-{"from_node_id":"function:e78917dda989e6051383586a18681419","reference_name":"console.log","reference_kind":"calls","line":11,"col":2,"candidates":null,"file_path":"src/widget.ts","language":"typescript","status":"failed","name_tail":"log"}
+{"from_node_id":"function:e78917dda989e6051383586a18681419","reference_name":"console.log","reference_kind":"calls","line":11,"col":2,"candidates":null,"file_path":"src/widget.ts","language":"typescript","status":"failed","name_tail":"log","failure_reason":"unknown-receiver"}
 {"from_node_id":"module:9f3c3ccfb61608be0c4ec12471d12a83","reference_name":"src/widget.test.ts","reference_kind":"references","line":7,"col":50,"candidates":null,"file_path":"CONTRIBUTING.md","language":"markdown","status":"failed","name_tail":"ts"}
 == bindings (11)
 {"file_path":"src/widget.test.ts","name":"createWidget","kind":"import","node_id":null,"target_spec":"./widget","target_name":"createWidget","exported_as":null,"export_form":null,"scope_start":1,"scope_end":3,"storage":null,"line":1}

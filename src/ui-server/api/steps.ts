@@ -1086,7 +1086,10 @@ export async function buildSteps(cg: CodeGraph, projectRoot: string, query: URLS
           } catch {
             refs = [];
           }
-          for (const ref of [...refs].sort((a, b) => a.line - b.line || a.column - b.column)) {
+          // A call chain shares its start with its receiver call. Read the
+          // outer chain first so a shared effect keeps the span containing
+          // its arguments, independent of SQLite's row order.
+          for (const ref of [...refs].sort((a, b) => a.line - b.line || a.column - b.column || b.referenceName.length - a.referenceName.length)) {
             if (ref.referenceKind !== 'calls' && ref.referenceKind !== 'instantiates') continue;
             if (channelLines.has(ref.line)) continue;
             await effectLink(step, fold, { referenceName: ref.referenceName, referenceKind: ref.referenceKind, line: ref.line, column: ref.column }, null);

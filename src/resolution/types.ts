@@ -10,6 +10,8 @@ import { Binding, EdgeKind, Language, Node, ReferenceKind } from '../types';
  * An unresolved reference from extraction
  */
 export interface UnresolvedRef {
+  /** Why the most recent resolution attempt declined this reference. */
+  failureReason?: 'unknown-receiver';
   /** ID of the source node containing the reference */
   fromNodeId: string;
   /** The name being referenced */

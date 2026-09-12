@@ -19,8 +19,8 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
-import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
+import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
+import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworks } from './frameworks';
@@ -89,11 +89,6 @@ const PYTHON_BUILT_INS = new Set([
   'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
   'open', 'input', 'type', 'isinstance', 'hasattr', 'getattr', 'setattr',
   'super', 'self', 'cls', 'None', 'True', 'False',
-]);
-
-const PYTHON_BUILT_IN_TYPES = new Set([
-  'list', 'dict', 'set', 'tuple', 'str', 'int', 'float', 'bool',
-  'bytes', 'bytearray', 'frozenset', 'object', 'super',
 ]);
 
 const PYTHON_BUILT_IN_METHODS = new Set([
@@ -890,7 +885,9 @@ export class ReferenceResolver {
    * the alias names (see ./alias-binding), regardless of the strategy.
    */
   resolveOne(ref: UnresolvedRef): ResolvedRef | null {
+    delete ref.failureReason;
     const resolved = this.gateTargetKind(this.resolveOneInner(ref), ref);
+    if (!resolved && isBindingReceiverCall(ref)) ref.failureReason = 'unknown-receiver';
     if (!resolved || ref.referenceKind !== 'calls') return resolved;
 
     const target = this.queries.getNodeById(resolved.targetNodeId);
@@ -1258,17 +1255,18 @@ export class ReferenceResolver {
    * ref's line), so a sibling must not inherit this row's failure (#1269).
    */
   private static partitionFailedCleanup(unresolved: UnresolvedRef[]): {
-    byRowId: Array<{ rowId: number; referenceName: string }>;
-    legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>;
+    byRowId: Array<{ rowId: number; referenceName: string; failureReason?: UnresolvedRef['failureReason'] }>;
+    legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }>;
   } {
-    const byRowId: Array<{ rowId: number; referenceName: string }> = [];
-    const legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }> = [];
+    const byRowId: Array<{ rowId: number; referenceName: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
+    const legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
     for (const r of unresolved) {
-      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName });
+      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName, failureReason: r.failureReason });
       else legacyKeys.push({
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,
         referenceKind: r.referenceKind,
+        failureReason: r.failureReason,
       });
     }
     return { byRowId, legacyKeys };
@@ -2146,42 +2144,6 @@ export class ReferenceResolver {
   }
 
   /**
-   * True when `receiver` is a local name bound by an import that resolves to a
-   * file IN THIS PROJECT — the only case where letting a python
-   * built-in-method name through the filter is safe (#1681).
-   *
-   * Asking only whether SOME import bound the local name is not enough: every
-   * import produces a mapping, stdlib and PyPI included, so that would also be
-   * true for `os`, `requests`, `np`. Opening the filter for them lets
-   * resolveViaImport find no project file, fall through to bare-name matching,
-   * and bind `os.remove(p)` to whatever project method happens to be named
-   * `remove` — reintroducing, through its own escape hatch, the fabricated-edge
-   * class this filter exists to prevent.
-   *
-   * Resolving the specifier is the same question resolveViaImport will ask
-   * next, so a receiver that passes here is one the qualified path can actually
-   * serve; anything else stays a silent miss rather than a wrong edge.
-   */
-  private isPythonProjectModule(ref: UnresolvedRef, receiver: string): boolean {
-    for (const imp of this.context.getImportMappings(ref.filePath, ref.language)) {
-      if (imp.localName !== receiver) continue;
-      // `import pkg.mod` / `import pkg.mod as m` binds the module `source`
-      // names. `from pkg import mod` binds `pkg.mod`, and `from . import mod`
-      // binds `.mod` — join without doubling the dot that makes `.` mean the
-      // current package.
-      const specifier = imp.isNamespace
-        ? imp.source
-        : imp.source.endsWith('.')
-          ? `${imp.source}${imp.exportedName}`
-          : `${imp.source}.${imp.exportedName}`;
-      if (resolveImportPath(specifier, ref.filePath, ref.language!, this.context)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
    * Check if reference is to a built-in or external symbol
    */
   private isBuiltInOrExternal(ref: UnresolvedRef): boolean {
@@ -2202,11 +2164,6 @@ export class ReferenceResolver {
       return true;
     }
 
-    // Common JS/TS library calls (console.log, Math.floor, JSON.parse)
-    if (isJsTs && (name.startsWith('console.') || name.startsWith('Math.') || name.startsWith('JSON.'))) {
-      return true;
-    }
-
     // React hooks from React itself
     if (isJsTs && REACT_HOOKS.has(name)) {
       return true;
@@ -2219,46 +2176,6 @@ export class ReferenceResolver {
 
     // Python built-in method calls (e.g., list.extend, dict.update)
     if (ref.language === 'python') {
-      const dotIdx = name.indexOf('.');
-      if (dotIdx > 0) {
-        const receiver = name.substring(0, dotIdx);
-        const method = name.substring(dotIdx + 1);
-        // Filter calls on built-in types (list.append, dict.update, etc.)
-        if (PYTHON_BUILT_IN_TYPES.has(receiver)) {
-          return true;
-        }
-        // Filter built-in methods on non-class receivers
-        // (e.g., items.append where items is a local list variable)
-        // But allow if the capitalized receiver matches a known codebase class,
-        // OR the receiver is itself an imported project module — a module can
-        // export a top-level function sharing a common collection-method name
-        // (`ledger.append`, `from . import ledger`), and that call is a real
-        // project dependency, not `list.append` (#1681). Without this, the
-        // qualified ref never reaches resolveViaImport / resolvePythonModuleMember.
-        if (PYTHON_BUILT_IN_METHODS.has(method)) {
-          // A module-scope collection binding is stronger evidence than a
-          // coincidentally matching class name (#1652). Only use this file's
-          // binding: an unrelated module may reuse the receiver for a collection.
-          const isCollection = this.context.getNodesByName(receiver).some((node) =>
-            node.language === 'python' && node.filePath === ref.filePath &&
-            (node.kind === 'variable' || node.kind === 'constant') &&
-            node.qualifiedName === receiver &&
-            /^=\s*(?:[\[{]|(?:dict|list|set|tuple|frozenset)\s*\(|\(\s*\)|\([^()]*,)/.test(node.signature ?? '')
-          );
-          if (isCollection) return true;
-
-          const capitalized = receiver.charAt(0).toUpperCase() + receiver.slice(1);
-          const isKnownClass = this.context.getNodesByName(capitalized).some((node) =>
-            node.language === 'python' &&
-            (node.kind === 'class' || node.kind === 'struct' || node.kind === 'interface')
-          );
-          const isProjectModule =
-            !isKnownClass && this.isPythonProjectModule(ref, receiver);
-          if (!isKnownClass && !isProjectModule) {
-            return true;
-          }
-        }
-      }
       // A bare name colliding with a builtin method (index, get, update, count…)
       // is only a builtin when NOTHING in the codebase declares it. A declared
       // symbol with that exact name — e.g. a Flask/FastAPI view `def index()` or

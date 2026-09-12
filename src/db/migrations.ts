@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 
 /**
  * Migration definition
@@ -223,6 +223,16 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_bindings_file ON bindings(file_path);
         CREATE INDEX IF NOT EXISTS idx_bindings_name ON bindings(name);
       `);
+    },
+  },
+  {
+    version: 12,
+    description: 'Retain unresolved receiver diagnostics',
+    up: (db) => {
+      const columns = db.prepare('PRAGMA table_info(unresolved_refs)').all() as Array<{ name: string }>;
+      if (columns.length > 0 && !columns.some(column => column.name === 'failure_reason')) {
+        db.exec('ALTER TABLE unresolved_refs ADD COLUMN failure_reason TEXT');
+      }
     },
   },
 ];
