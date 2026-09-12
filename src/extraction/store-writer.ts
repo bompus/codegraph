@@ -8,14 +8,36 @@
  */
 
 import { Worker } from 'worker_threads';
-import { ExtractionResult, Language, Node, Edge, UnresolvedReference, FileRecord } from '../types';
+import { Binding, ExtractionResult, Language, Node, Edge, UnresolvedReference, FileRecord } from '../types';
 
 /** One file's complete store payload (pre-filtered — see storeFileBundle). */
 export interface StoreBundle {
   nodes: Node[];
   edges: Edge[];
   refs: UnresolvedReference[];
+  /** v3 kernel walkers emit these; absent for the rest (resolution-binding-model-plan.md). */
+  bindings?: Binding[];
   file: FileRecord;
+}
+
+/**
+ * Keep the bindings whose declaring node survived validation, and mark those
+ * nodes exported when a `decl` row says so. The bindings table is the single
+ * answer to "is X exported": a later `export { x }` / `export default x` or a
+ * CommonJS assignment is visible here and not to the extractor's own
+ * export_statement-ancestor check. Shared by both store paths.
+ */
+export function attachBindings(bindings: Binding[] | undefined, validNodes: Node[]): Binding[] | undefined {
+  if (!bindings || bindings.length === 0) return undefined;
+  const insertedIds = new Set(validNodes.map((n) => n.id));
+  const kept = bindings.filter((b) => b.nodeId === undefined || insertedIds.has(b.nodeId));
+  const exportedNodeIds = new Set(
+    kept.filter((b) => b.kind === 'decl' && b.exportedAs !== undefined && b.nodeId).map((b) => b.nodeId!)
+  );
+  if (exportedNodeIds.size > 0) {
+    for (const n of validNodes) if (exportedNodeIds.has(n.id)) n.isExported = true;
+  }
+  return kept;
 }
 
 /**
@@ -42,7 +64,7 @@ export interface KernelStoreBundle {
  *     filePath/language the resolver reads.
  */
 export function finalizeStoreBundle(
-  result: Pick<ExtractionResult, 'nodes' | 'edges' | 'unresolvedReferences'>,
+  result: Pick<ExtractionResult, 'nodes' | 'edges' | 'unresolvedReferences' | 'bindings'>,
   filePath: string,
   language: Language,
   file: FileRecord
@@ -59,7 +81,8 @@ export function finalizeStoreBundle(
       filePath: ref.filePath ?? filePath,
       language: ref.language ?? language,
     }));
-  return { nodes: validNodes, edges: validEdges, refs: validRefs, file };
+  const bindings = attachBindings(result.bindings, validNodes);
+  return { nodes: validNodes, edges: validEdges, refs: validRefs, ...(bindings ? { bindings } : {}), file };
 }
 
 export class StoreWriter {

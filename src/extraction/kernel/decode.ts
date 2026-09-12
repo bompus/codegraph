@@ -5,6 +5,7 @@
  */
 
 import type {
+  Binding,
   Edge,
   EdgeKind,
   ExtractionError,
@@ -18,8 +19,12 @@ import type {
 import { NODE_KINDS, EDGE_KINDS } from '../../types';
 import type { KernelBuffers } from './loader';
 import {
+  BINDING,
+  BINDING_KINDS,
+  BINDING_ROW_SIZE,
   EDGE,
   EDGE_ROW_SIZE,
+  EXPORT_FORMS,
   FLAG,
   FUNCTION_REF_CODE,
   KERNEL_ABI_VERSION,
@@ -75,6 +80,7 @@ export function decodeExtractBuffers(
   const nodeCount = meta.readUInt32LE(META.nodeCount);
   const edgeCount = meta.readUInt32LE(META.edgeCount);
   const refCount = meta.readUInt32LE(META.refCount);
+  const bindingCount = meta.readUInt32LE(META.bindingCount);
 
   const now = Date.now();
   const nodes: Node[] = new Array(nodeCount);
@@ -184,5 +190,31 @@ export function decodeExtractBuffers(
     errors = JSON.parse(arena.toString('utf8', errorsOff, errorsOff + errorsLen)) as ExtractionError[];
   }
 
-  return { nodes, edges, unresolvedReferences, errors, durationMs: 0 };
+  const bindings: Binding[] = new Array(bindingCount);
+  for (let i = 0; i < bindingCount; i++) {
+    const row = buffers.bindings.subarray(i * BINDING_ROW_SIZE, (i + 1) * BINDING_ROW_SIZE);
+    const nodeIdx = u32opt(row, BINDING.nodeIdx);
+    const b: Binding = {
+      filePath,
+      name: str(arena, row, BINDING.name)!,
+      kind: BINDING_KINDS[row.readUInt8(BINDING.kind)]!,
+      scopeStart: row.readUInt32LE(BINDING.scopeStart),
+      scopeEnd: row.readUInt32LE(BINDING.scopeEnd),
+      line: row.readUInt32LE(BINDING.line),
+    };
+    if (nodeIdx !== undefined) b.nodeId = idByRow[nodeIdx];
+    const targetSpec = str(arena, row, BINDING.targetSpec);
+    if (targetSpec !== undefined) b.targetSpec = targetSpec;
+    const targetName = str(arena, row, BINDING.targetName);
+    if (targetName !== undefined) b.targetName = targetName;
+    const exportedAs = str(arena, row, BINDING.exportedAs);
+    if (exportedAs !== undefined) b.exportedAs = exportedAs;
+    const form = EXPORT_FORMS[row.readUInt8(BINDING.exportForm)];
+    if (form !== undefined) b.exportForm = form;
+    const storage = str(arena, row, BINDING.storage);
+    if (storage !== undefined) b.storage = storage;
+    bindings[i] = b;
+  }
+
+  return { nodes, edges, unresolvedReferences, bindings, errors, durationMs: 0 };
 }

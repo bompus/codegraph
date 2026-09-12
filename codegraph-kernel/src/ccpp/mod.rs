@@ -436,6 +436,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         nodes: w.tables.nodes,
         edges: w.tables.edges,
         refs: w.tables.refs,
+        bindings: w.tables.bindings,
         arena: w.arena.into_vec(),
     })
 }

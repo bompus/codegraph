@@ -21,6 +21,7 @@
 //!   24  u32  errors-JSON byte length
 //!   28  f64  kernel-side wall duration (ms) — introspection only; the TS
 //!            wrapper measures the ExtractionResult.durationMs it reports
+//!   36  u32  binding count (v3)
 //!
 //! node row (96 bytes):
 //!   0   u8   NodeKind index (NODE_KINDS order)
@@ -68,13 +69,15 @@
 //!   24  str  candidates (NUL-joined list)
 //!   32  str  fromNodeIdStr
 
-pub const KERNEL_ABI_VERSION: u8 = 2;
+pub const KERNEL_ABI_VERSION: u8 = 3;
 pub const NONE: u32 = 0xFFFF_FFFF;
 
-pub const META_SIZE: usize = 36;
+pub const META_SIZE: usize = 40;
 pub const NODE_ROW_SIZE: usize = 96;
 pub const EDGE_ROW_SIZE: usize = 44;
 pub const REF_ROW_SIZE: usize = 40;
+/// Binding row (v3): see the layout note above `BindingRow`.
+pub const BINDING_ROW_SIZE: usize = 64;
 
 /// Mirror of NODE_KINDS in src/types.ts — order is the wire contract.
 pub const NODE_KINDS: [&str; 23] = [
@@ -238,6 +241,56 @@ pub struct EdgeRow {
     pub target_id_str: StrRef,
 }
 
+/// Binding kinds (v3) — `BINDING_KINDS` in layout.ts mirrors the order.
+pub const BINDING_DECL: u8 = 0;
+pub const BINDING_IMPORT: u8 = 1;
+pub const BINDING_REEXPORT: u8 = 2;
+#[allow(dead_code)]
+pub const BINDING_ALIAS: u8 = 3;
+#[allow(dead_code)]
+pub const BINDING_PARAM: u8 = 4;
+pub const BINDING_LOCAL: u8 = 5;
+
+/// Export forms (v3) — `EXPORT_FORMS` in layout.ts mirrors the order.
+pub const EXPORT_NONE: u8 = 0;
+pub const EXPORT_ESM: u8 = 1;
+pub const EXPORT_ESM_LATER: u8 = 2;
+pub const EXPORT_ESM_DEFAULT: u8 = 3;
+pub const EXPORT_CJS: u8 = 4;
+#[allow(dead_code)]
+pub const EXPORT_CJS_OBJECT: u8 = 5;
+#[allow(dead_code)]
+pub const EXPORT_PUBLIC: u8 = 6;
+
+/// One binding of a name in a file (docs/design/resolution-binding-model-plan.md
+/// §2.1). Row layout (64 bytes):
+///   0   u8   kind (BINDING_*)
+///   1   u8   export form (EXPORT_*)
+///   2   u16  pad
+///   4   u32  node row index (NONE when the binding declares no node)
+///   8   u32  scope start line (1-based)
+///   12  u32  scope end line
+///   16  str  name (as written in this file)
+///   24  str  target spec (import / re-export specifier, NONE otherwise)
+///   32  str  target name (imported / re-exported name; `default`, `*`)
+///   40  str  exported as (NONE when not exported)
+///   48  str  storage (language visibility word, NONE for JS/TS)
+///   56  u32  line of the binding site
+///   60  u32  pad
+pub struct BindingRow {
+    pub kind: u8,
+    pub export_form: u8,
+    pub node_idx: u32,
+    pub scope_start: u32,
+    pub scope_end: u32,
+    pub name: StrRef,
+    pub target_spec: StrRef,
+    pub target_name: StrRef,
+    pub exported_as: StrRef,
+    pub storage: StrRef,
+    pub line: u32,
+}
+
 pub struct RefRow {
     pub from_idx: u32,
     pub kind: u8,
@@ -257,9 +310,11 @@ pub struct Tables {
     pub nodes: Vec<u8>,
     pub edges: Vec<u8>,
     pub refs: Vec<u8>,
+    pub bindings: Vec<u8>,
     pub node_count: u32,
     pub edge_count: u32,
     pub ref_count: u32,
+    pub binding_count: u32,
 }
 
 impl Default for Tables {
@@ -268,9 +323,11 @@ impl Default for Tables {
             nodes: Vec::with_capacity(NODE_ROW_SIZE * 64),
             edges: Vec::with_capacity(EDGE_ROW_SIZE * 64),
             refs: Vec::with_capacity(REF_ROW_SIZE * 64),
+            bindings: Vec::new(),
             node_count: 0,
             edge_count: 0,
             ref_count: 0,
+            binding_count: 0,
         }
     }
 }
@@ -319,6 +376,32 @@ impl Tables {
         self.push_ref_flagged(r, 0);
     }
 
+    pub fn push_binding(&mut self, r: &BindingRow) {
+        let buf = &mut self.bindings;
+        buf.push(r.kind);
+        buf.push(r.export_form);
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&r.node_idx.to_le_bytes());
+        buf.extend_from_slice(&r.scope_start.to_le_bytes());
+        buf.extend_from_slice(&r.scope_end.to_le_bytes());
+        push_str_ref(buf, r.name);
+        push_str_ref(buf, r.target_spec);
+        push_str_ref(buf, r.target_name);
+        push_str_ref(buf, r.exported_as);
+        push_str_ref(buf, r.storage);
+        buf.extend_from_slice(&r.line.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        debug_assert_eq!(buf.len() % BINDING_ROW_SIZE, 0);
+        self.binding_count += 1;
+    }
+
+    /// (start_line, end_line) of an already-pushed node row.
+    pub fn node_lines(&self, row: u32) -> (u32, u32) {
+        let off = row as usize * NODE_ROW_SIZE;
+        let rd = |o: usize| u32::from_le_bytes(self.nodes[off + o..off + o + 4].try_into().unwrap());
+        (rd(4), rd(8))
+    }
+
     pub fn push_ref_flagged(&mut self, r: &RefRow, flags: u8) {
         let buf = &mut self.refs;
         buf.extend_from_slice(&r.from_idx.to_le_bytes());
@@ -340,6 +423,7 @@ pub struct EmitOut {
     pub nodes: Vec<u8>,
     pub edges: Vec<u8>,
     pub refs: Vec<u8>,
+    pub bindings: Vec<u8>,
     pub arena: Vec<u8>,
 }
 
@@ -390,6 +474,7 @@ pub fn build_meta(t: &Tables, arena_len: u32, errors_json: StrRef, duration_ms: 
     m.extend_from_slice(&errors_json.0.to_le_bytes());
     m.extend_from_slice(&errors_json.1.to_le_bytes());
     m.extend_from_slice(&duration_ms.to_le_bytes());
+    m.extend_from_slice(&t.binding_count.to_le_bytes());
     debug_assert_eq!(m.len(), META_SIZE);
     m
 }

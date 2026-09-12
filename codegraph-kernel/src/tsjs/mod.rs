@@ -14,6 +14,8 @@ mod fnref;
 use crate::textutil as util;
 
 use crate::buffers::{
+    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_REEXPORT, EXPORT_CJS, EXPORT_ESM,
+    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
     NONE, NONE_STR,
@@ -190,6 +192,12 @@ pub struct Walker<'t> {
     /// collapses that in `addReference`'s referenceKeys. Scoped to these refs
     /// because they are the only kernel path that reaches one node twice.
     md_ref_keys: HashSet<String>,
+    /// Names exported by a LATER top-level statement (`export { a, b as c }`,
+    /// `export default NAME`): name → (exported-as, form). Collected from the
+    /// AST before the walk, replacing the old anchored-regex `is_exported_later`
+    /// (docs/design/resolution-binding-model-plan.md, Phase 1).
+    later_exports: HashMap<String, (String, u8)>,
+    line_count: u32,
 }
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
@@ -231,6 +239,8 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         value_scopes: Vec::new(),
         vue_store_file: None,
         md_ref_keys: HashSet::new(),
+        later_exports: HashMap::new(),
+        line_count: 0,
     };
 
     // File node (TreeSitterExtractor.extract): id `file:<path>`, endLine =
@@ -262,6 +272,8 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     });
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
+    w.line_count = line_count;
+    w.collect_later_exports(tree.root_node());
 
     w.visit_node(tree.root_node());
 
@@ -283,6 +295,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         nodes: w.tables.nodes,
         edges: w.tables.edges,
         refs: w.tables.refs,
+        bindings: w.tables.bindings,
         arena: w.arena.into_vec(),
     })
 }
@@ -439,8 +452,145 @@ impl<'t> Walker<'t> {
         if kind == "function" || kind == "method" {
             self.defined_fn_names.insert(name.to_string());
         }
+        self.emit_decl_binding(kind, name, row, node, extra.is_exported == Some(true));
         self.capture_value_ref_scope(kind, name, row, node);
         Some(row)
+    }
+
+    // --- bindings (resolution-binding-model-plan.md §2.1) --------------------------
+
+    /// Pre-walk: the names a later top-level `export` statement exports.
+    fn collect_later_exports(&mut self, root: Node<'t>) {
+        for i in 0..root.named_child_count() {
+            let Some(stmt) = root.named_child(i) else { continue };
+            if stmt.kind() != "export_statement" || stmt.child_by_field_name("source").is_some() {
+                continue;
+            }
+            // `export default NAME;`
+            if let Some(value) = stmt.child_by_field_name("value") {
+                if value.kind() == "identifier" {
+                    let name = self.text(value).to_string();
+                    self.later_exports.entry(name).or_insert(("default".to_string(), EXPORT_ESM_DEFAULT));
+                }
+                continue;
+            }
+            // `export { a, b as c, d as default }`
+            let clause = (0..stmt.named_child_count())
+                .filter_map(|k| stmt.named_child(k))
+                .find(|c| c.kind() == "export_clause");
+            let Some(clause) = clause else { continue };
+            for j in 0..clause.named_child_count() {
+                let Some(spec) = clause.named_child(j) else { continue };
+                if spec.kind() != "export_specifier" {
+                    continue;
+                }
+                let Some(name_node) = spec.child_by_field_name("name").or_else(|| spec.named_child(0)) else { continue };
+                let name = self.text(name_node).to_string();
+                let exported_as = spec
+                    .child_by_field_name("alias")
+                    .map(|a| self.text(a).to_string())
+                    .unwrap_or_else(|| name.clone());
+                let form = if exported_as == "default" { EXPORT_ESM_DEFAULT } else { EXPORT_ESM_LATER };
+                self.later_exports.entry(name).or_insert((exported_as, form));
+            }
+        }
+    }
+
+    /// Replaces the regex `is_exported_later`: same question, answered from the AST.
+    pub(super) fn is_exported_later(&self, name: &str) -> bool {
+        self.later_exports.contains_key(name)
+    }
+
+    /// A `decl` row for a module-scope declaration, a `local` row for one nested
+    /// in a function/class body. `export_statement` ancestry is `esm`; a
+    /// declaration exported by a later statement takes that statement's form;
+    /// an exported flag with neither is the CommonJS assignment path.
+    fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>, exported_flag: bool) {
+        if matches!(kind, "file" | "import") {
+            return;
+        }
+        let scope_top = self.stack.last().map(|s| s.kind).unwrap_or("file");
+        let at_module_scope = scope_top == "file";
+        let (scope_start, scope_end) = if at_module_scope {
+            (1, self.line_count)
+        } else {
+            let row_of_scope = self.stack.last().map(|s| s.row).unwrap_or(0);
+            self.tables.node_lines(row_of_scope)
+        };
+        let mut exported_as: Option<String> = None;
+        let mut form = EXPORT_NONE;
+        if at_module_scope {
+            if exported_flag && self.is_exported(node) {
+                exported_as = Some(name.to_string());
+                form = EXPORT_ESM;
+            } else if let Some((alias, f)) = self.later_exports.get(name) {
+                exported_as = Some(alias.clone());
+                form = *f;
+            } else if exported_flag {
+                exported_as = Some(name.to_string());
+                form = EXPORT_CJS;
+            }
+        }
+        let name_ref = self.arena.put(name);
+        let exported_ref = opt_str(&mut self.arena, exported_as.as_deref());
+        let line = self.line_of(node);
+        self.tables.push_binding(&BindingRow {
+            kind: if at_module_scope { BINDING_DECL } else { BINDING_LOCAL },
+            export_form: form,
+            node_idx: row,
+            scope_start,
+            scope_end,
+            name: name_ref,
+            target_spec: NONE_STR,
+            target_name: NONE_STR,
+            exported_as: exported_ref,
+            storage: NONE_STR,
+            line,
+        });
+    }
+
+    /// An `import` row: the local name, the specifier, and the imported name.
+    pub(super) fn emit_import_binding(&mut self, local: &str, spec: &str, imported: &str, node: Node<'t>) {
+        let name_ref = self.arena.put(local);
+        let spec_ref = self.arena.put(spec);
+        let imported_ref = self.arena.put(imported);
+        let line = self.line_of(node);
+        let line_count = self.line_count;
+        self.tables.push_binding(&BindingRow {
+            kind: BINDING_IMPORT,
+            export_form: EXPORT_NONE,
+            node_idx: NONE,
+            scope_start: 1,
+            scope_end: line_count,
+            name: name_ref,
+            target_spec: spec_ref,
+            target_name: imported_ref,
+            exported_as: NONE_STR,
+            storage: NONE_STR,
+            line,
+        });
+    }
+
+    /// A `reexport` row: `export { name as alias } from spec`.
+    pub(super) fn emit_reexport_binding(&mut self, name: &str, exported_as: &str, spec: &str, node: Node<'t>) {
+        let name_ref = self.arena.put(name);
+        let spec_ref = self.arena.put(spec);
+        let exported_ref = self.arena.put(exported_as);
+        let line = self.line_of(node);
+        let line_count = self.line_count;
+        self.tables.push_binding(&BindingRow {
+            kind: BINDING_REEXPORT,
+            export_form: EXPORT_ESM,
+            node_idx: NONE,
+            scope_start: 1,
+            scope_end: line_count,
+            name: name_ref,
+            target_spec: spec_ref,
+            target_name: name_ref,
+            exported_as: exported_ref,
+            storage: NONE_STR,
+            line,
+        });
     }
 
     // --- value references (captureValueRefScope / flushValueRefs) --------------

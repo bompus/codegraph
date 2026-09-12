@@ -447,6 +447,8 @@ export class TreeSitterExtractor {
   private language: Language;
   private source: string;
   private tree: Tree | null = null;
+  /** Later-exported top-level names (JS family) — see collectLaterExports. */
+  private laterExports = new Set<string>();
   private nodes: Node[] = [];
   private edges: Edge[] = [];
   private unresolvedReferences: UnresolvedReference[] = [];
@@ -544,6 +546,9 @@ export class TreeSitterExtractor {
       this.tree = parseSourceTreeSync(this.source, this.language);
       if (!this.tree) {
         throw new Error(`Failed to get parser for language: ${this.language}`);
+      }
+      if (['javascript', 'typescript', 'jsx', 'tsx'].includes(this.language)) {
+        this.collectLaterExports(this.tree.rootNode);
       }
 
       // Create file node representing the source file
@@ -2436,12 +2441,33 @@ export class TreeSitterExtractor {
    * callers only.
    */
   private isExportedLater(name: string): boolean {
-    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
-    const re = new RegExp(
-      `^[ \\t]*export\\s+(?:default\\s+${name}\\s*;?[ \\t]*$|\\{[^}]*\\b${name}\\b[^}]*\\})`,
-      'm'
-    );
-    return re.test(this.source);
+    return this.laterExports.has(name);
+  }
+
+  /**
+   * Names a LATER top-level `export` statement exports, read from the AST
+   * before the walk (the kernel walker does the same — tsjs/mod.rs
+   * collect_later_exports). Replaces the anchored-regex form
+   * (resolution-binding-model-plan.md, Phase 1).
+   */
+  private collectLaterExports(root: SyntaxNode): void {
+    this.laterExports.clear();
+    for (let i = 0; i < root.namedChildCount; i++) {
+      const stmt = root.namedChild(i);
+      if (!stmt || stmt.type !== 'export_statement' || stmt.childForFieldName('source')) continue;
+      const value = stmt.childForFieldName('value');
+      if (value) {
+        if (value.type === 'identifier') this.laterExports.add(getNodeText(value, this.source));
+        continue;
+      }
+      const clause = stmt.namedChildren.find((c: SyntaxNode) => c.type === 'export_clause');
+      if (!clause) continue;
+      for (const spec of clause.namedChildren) {
+        if (spec.type !== 'export_specifier') continue;
+        const nameNode = spec.childForFieldName('name') ?? spec.namedChild(0);
+        if (nameNode) this.laterExports.add(getNodeText(nameNode, this.source));
+      }
+    }
   }
 
   /** Property-key text with surrounding quotes stripped (`'foo'` → `foo`). */

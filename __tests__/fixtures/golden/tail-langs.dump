@@ -348,6 +348,7 @@
 {"from_node_id":"namespace:e96e1e122a8df78e6f4d85a703bb5724","reference_name":"eunit/include/eunit.hrl","reference_kind":"imports","line":2,"col":0,"candidates":null,"file_path":"erlang/counter_tests.erl","language":"erlang","status":"failed","name_tail":"hrl"}
 {"from_node_id":"namespace:f596155bb751fabdca26671539d4c89f","reference_name":"gen_server","reference_kind":"implements","line":2,"col":0,"candidates":null,"file_path":"erlang/counter.erl","language":"erlang","status":"failed","name_tail":"gen_server"}
 {"from_node_id":"property:1e7069012ccaabcb8a98d0790ea607ef","reference_name":"State","reference_kind":"decorates","line":4,"col":2,"candidates":null,"file_path":"arkts/Greeter.ets","language":"arkts","status":"failed","name_tail":"State"}
+== bindings (0)
 == files (20)
 {"path":"arkts/Greeter.ets","language":"arkts","node_count":10}
 {"path":"arkts/util.ets","language":"arkts","node_count":2}

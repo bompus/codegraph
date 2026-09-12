@@ -34,6 +34,8 @@ export interface KernelBuffers {
   nodes: Buffer;
   edges: Buffer;
   refs: Buffer;
+  /** v3: per-file binding rows (resolution-binding-model-plan.md). */
+  bindings: Buffer;
   arena: Buffer;
 }
 

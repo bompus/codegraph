@@ -1,7 +1,7 @@
 /**
  * Native-kernel buffer layout — TS mirror of codegraph-kernel/src/buffers.rs.
  *
- * The kernel returns five Buffers per file: meta, nodes, edges, refs, arena.
+ * The kernel returns six Buffers per file: meta, nodes, edges, refs, bindings, arena.
  * Rows are fixed-width little-endian; strings are (offset, len) pairs into
  * the UTF-8 arena; `offset === NONE` means "field absent".
  *
@@ -17,15 +17,16 @@
  * path instead of mis-decoding.
  */
 
-export const KERNEL_ABI_VERSION = 2;
+export const KERNEL_ABI_VERSION = 3;
 
 /** Sentinel for "absent" in u32 slots and string-ref offsets. */
 export const NONE = 0xffffffff;
 
-export const META_SIZE = 36;
+export const META_SIZE = 40;
 export const NODE_ROW_SIZE = 96;
 export const EDGE_ROW_SIZE = 44;
 export const REF_ROW_SIZE = 40;
+export const BINDING_ROW_SIZE = 64;
 
 /** meta byte offsets */
 export const META = {
@@ -37,7 +38,26 @@ export const META = {
   errorsOff: 20, // u32 (NONE = no errors)
   errorsLen: 24, // u32
   durationMs: 28, // f64 (kernel-side wall; introspection only)
+  bindingCount: 36, // u32 (v3)
 } as const;
+
+/** binding row byte offsets (v3) — see BindingRow in buffers.rs */
+export const BINDING = {
+  kind: 0, // u8 — BINDING_KINDS index
+  exportForm: 1, // u8 — EXPORT_FORMS index
+  nodeIdx: 4, // u32 (NONE = declares no node)
+  scopeStart: 8, // u32
+  scopeEnd: 12, // u32
+  name: 16, // str
+  targetSpec: 24, // str
+  targetName: 32, // str
+  exportedAs: 40, // str
+  storage: 48, // str
+  line: 56, // u32
+} as const;
+
+export const BINDING_KINDS = ['decl', 'import', 'reexport', 'alias', 'param', 'local'] as const;
+export const EXPORT_FORMS = [undefined, 'esm', 'esm-later', 'esm-default', 'cjs', 'cjs-object', 'public'] as const;
 
 /** node row byte offsets */
 export const NODE = {

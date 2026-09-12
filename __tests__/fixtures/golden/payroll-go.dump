@@ -1317,6 +1317,7 @@
 {"from_node_id":"variable:02a9b4868be4f999189e4d930af29b95","reference_name":"grpc.ServiceDesc","reference_kind":"instantiates","line":95,"col":33,"candidates":null,"file_path":"internal/gen/payrollpb/payroll_grpc.pb.go","language":"go","status":"failed","name_tail":"ServiceDesc"}
 {"from_node_id":"variable:6b7bef84822056845bdabeb41a821f0a","reference_name":"errors.New","reference_kind":"calls","line":16,"col":21,"candidates":null,"file_path":"internal/usecase/payroll/cycle.go","language":"go","status":"failed","name_tail":"New"}
 {"from_node_id":"variable:baa4aee814b380ae99f1b1829407b106","reference_name":"errors.New","reference_kind":"calls","line":19,"col":21,"candidates":null,"file_path":"internal/usecase/payroll/cycle.go","language":"go","status":"failed","name_tail":"New"}
+== bindings (0)
 == files (20)
 {"path":"README.md","language":"markdown","node_count":37}
 {"path":"cmd/payrolld/main.go","language":"go","node_count":10}

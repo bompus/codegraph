@@ -177,6 +177,28 @@ CREATE TABLE IF NOT EXISTS literals (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_literals_file ON literals(file_path);
 
+-- Bindings: what each name in a file is bound to and whether it is exported
+-- (docs/design/resolution-binding-model-plan.md §2.1). Emitted by extraction
+-- for the languages whose walker supports it (TS/JS since Phase 1); the
+-- single answer to "is X exported" / "what does N bind to in F". DDL-only
+-- migration: rows appear on the next re-index.
+CREATE TABLE IF NOT EXISTS bindings (
+    file_path   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL,          -- decl | import | reexport | alias | param | local
+    node_id     TEXT,                   -- the declaring node for decl/local/alias
+    target_spec TEXT,                   -- import / re-export specifier as written
+    target_name TEXT,                   -- imported / re-exported name (default, *)
+    exported_as TEXT,                   -- NULL when not exported
+    export_form TEXT,                   -- esm | esm-later | esm-default | cjs | cjs-object | public
+    scope_start INTEGER NOT NULL,
+    scope_end   INTEGER NOT NULL,
+    storage     TEXT,                   -- language visibility word (static, private, pub(crate))
+    line        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_file ON bindings(file_path);
+CREATE INDEX IF NOT EXISTS idx_bindings_name ON bindings(name);
+
 -- Edge indexes.
 -- idx_edges_source / idx_edges_target are intentionally omitted —
 -- the (source, kind) and (target, kind) composites below cover the

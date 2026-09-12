@@ -125,7 +125,7 @@ mod tsjs;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-/// The five flat tables for one file. See buffers.rs for the byte layout;
+/// The six flat tables for one file. See buffers.rs for the byte layout;
 /// `src/extraction/kernel/layout.ts` is the TS mirror.
 #[napi(object)]
 pub struct ExtractBuffers {
@@ -133,6 +133,8 @@ pub struct ExtractBuffers {
     pub nodes: Buffer,
     pub edges: Buffer,
     pub refs: Buffer,
+    /// v3: per-file bindings (docs/design/resolution-binding-model-plan.md).
+    pub bindings: Buffer,
     pub arena: Buffer,
 }
 
@@ -327,6 +329,7 @@ pub fn extract_file(file_path: String, content: String, language: String) -> Res
         nodes: out.nodes.into(),
         edges: out.edges.into(),
         refs: out.refs.into(),
+        bindings: out.bindings.into(),
         arena: out.arena.into(),
     })
 }
