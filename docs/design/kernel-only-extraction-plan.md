@@ -163,7 +163,7 @@ Exit met: every language in `EXTENSION_MAP` with a grammar parses natively. The 
 - `package.json` engines is `>=20.0.0` (the upper bound existed for the wasm compiler bug); Node 25+ is untested rather than refused.
 - Not done here: musl targets. `build-kernel.sh` maps only gnu, darwin and msvc triples; adding `x86_64-unknown-linux-musl` needs a cross toolchain on the runner and a loader that tells glibc from musl at runtime. Alpine and other platforms without a prebuild get the startup message and the from-source route.
 
-Exit met: `grep -r web-tree-sitter src __tests__ scripts` is empty; the full engine suite is green on Linux; Windows and macOS run through the release matrix.
+Exit met: `grep -r web-tree-sitter src __tests__ scripts` is empty; the full engine suite is green on Linux; Windows validation is recorded below, and macOS validation remains outstanding.
 
 ## 3a. Measurements so far
 
@@ -223,7 +223,7 @@ Run on the Windows host itself (Windows-local checkout under `C:\Users\bompus\sr
 
 The two failures are POSIX-only test fixtures unrelated to extraction: `extraction-old-git.test.ts` installs a `#!/bin/sh` git shim with a `:`-separated PATH, and `agent-eval-harness.test.ts` runs a bash script. Both are now gated with `it.runIf(process.platform !== 'win32')` per the repository's Windows-gated-tests rule; they still run on Linux.
 
-macOS has not been run; the release matrix builds both Apple targets.
+macOS has not been run. The inherited release matrix describes both Apple targets, but validation needs a separate build/test run under the fork release policy in [AGENTS.md](../../AGENTS.md#releases).
 
 ## 4. What is removed, by the numbers
 

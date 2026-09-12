@@ -130,5 +130,5 @@ The "failed refs" column above is the coverage counter: references the extractor
 ## 6. Not measured
 
 - Agent A/B (`scripts/agent-eval/run-all.sh`, with vs without CodeGraph, or new build vs baseline build) has not been re-run since the parser swap. It is the only measure of the tool-call and Read/Grep counts the project optimises for, and it needs a live Claude session per arm.
-- macOS: no run of the native-only kernel on macOS at all; the release workflow's macOS matrix legs are the first.
+- macOS: no run of the native-only kernel on macOS at all. Validation remains outstanding and needs a separate build/test run; see the fork release policy in [AGENTS.md](../../AGENTS.md#releases).
 - A truth set for same-name ties (Go `BindBody`, C++ `begin`): the changes are described and sampled, not scored.

@@ -4,7 +4,7 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 
 **Instruction budget:** Keep this root file below 32,768 UTF-8 bytes; `npm run check:agent-docs` enforces the limit. Put conditional procedures, evidence, and worked examples in linked documents. Codex user configuration may set `project_doc_max_bytes = 65536` as a safety margin, but the larger limit does not replace the repository guard.
 
-**Completion boundary:** This repository's default integration branch is `fork/consolidated`. A worktree or other feature branch is intermediate. For authorized repository work, finish by committing the verified change, integrating it through any required checks or PR into `fork/consolidated`, pushing, and confirming that its remote head contains the commit. Stop earlier only when the user requests it or integration is blocked; report the exact blocker. Do not run `npm publish` or create a release tag without explicit authorization.
+**Completion boundary:** This repository's default integration branch is `fork/consolidated`. A worktree or other feature branch is intermediate. For authorized repository work, finish by committing the verified change, integrating it through any required checks or PR into `fork/consolidated`, pushing, and confirming that its remote head contains the commit. Stop earlier only when the user requests it or integration is blocked; report the exact blocker. Do not run `npm publish` without explicit authorization. Fork GitHub release policy is defined under Releases below.
 
 **Branch roles:** `origin/main` is an exact mirror of `upstream/main`; never commit or merge fork work into it. `.github/workflows/sync-upstream-main.yml` maintains that mirror. Merge upstream updates into `fork/consolidated`, which is this fork's canonical/default development branch. Base focused upstream contributions on `upstream/main` so they do not include the consolidated branch's experimental history.
 
@@ -196,7 +196,9 @@ For Windows-specific behavior, use a Windows-local checkout and the host's Power
 
 ## Releases
 
-Released to npm and mirrored as [GitHub Releases](https://github.com/colbymchenry/codegraph/releases). `CHANGELOG.md` is the source of truth; GitHub Release notes are extracted from it.
+**Fork policy:** `bompus/codegraph` does not publish GitHub releases. Do not prepare or create fork GitHub releases, create release tags, or dispatch `.github/workflows/release.yml` on this fork. Missing release credentials or upstream publishing targets are not fork setup tasks. Authorized fork work completes on remote `fork/consolidated`; validation must not depend on publishing a release.
+
+The release procedures below describe upstream `colbymchenry/codegraph` only. Upstream publishes to npm and [GitHub Releases](https://github.com/colbymchenry/codegraph/releases). `CHANGELOG.md` remains the source of truth for change notes.
 
 ### Writing changelog entries
 
@@ -213,9 +215,9 @@ Formatting rules for any entry (anywhere — `[Unreleased]` or otherwise):
 
 Multi-word headings like `### New Features` are safe on the normal release path: `prepare-release.mjs` **Case A** moves the whole `[Unreleased]` body verbatim into `[X.Y.Z]`. (Only its rarely-used **Case B** *merge* splits sub-sections with a single-word `^### (\w+)$` regex that wouldn't match them — and Case B fires only if a `[X.Y.Z]` block was pre-created, which rule above already forbids.)
 
-### Release flow (the user runs these)
+### Upstream release flow (reference only)
 
-The user runs releases through `.github/workflows/release.yml`; do not publish the root package manually. Agents do not bump versions unless explicitly asked. A requested release normally needs only the target version in `package.json`; the workflow synchronizes the lock file, promotes `[Unreleased]`, builds the platform bundles, creates the GitHub Release, and publishes through npm trusted publishing. Read the workflow before changing or describing this process.
+Upstream runs releases through `.github/workflows/release.yml`; do not publish the root package manually. Agents do not bump versions unless explicitly asked. A requested release normally needs only the target version in `package.json`; the workflow synchronizes the lock file, promotes `[Unreleased]`, builds the platform bundles, creates the GitHub Release, and publishes through npm trusted publishing. Read the workflow before changing or describing this process.
 
 ## House rules
 
