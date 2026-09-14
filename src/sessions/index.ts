@@ -31,6 +31,7 @@ import { parseCodexTranscript, codexFilesForProject } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
 import { parseAgyTranscript, agyFilesForProject } from './agy';
 import { opencodeSessionsForProject } from './opencode';
+import { devinSessionsForProject } from './devin';
 import { projectWorktreeRoots } from './project-roots';
 
 export const SESSIONS_DB_FILENAME = 'sessions.db';
@@ -367,6 +368,14 @@ function collectRecords(projectRoot: string): TranscriptRecord[] {
       load: () => ({ session: session.session, title: session.title, docs: session.docs }),
     });
   }
+  for (const session of devinSessionsForProject(projectRoot)) {
+    records.push({
+      path: session.path,
+      mtime: session.mtime,
+      size: session.size,
+      load: () => ({ session: session.session, title: session.title, docs: session.docs }),
+    });
+  }
   return records;
 }
 
@@ -406,7 +415,7 @@ export function querySessions(
 export class NoSessionsError extends Error {
   constructor(projectRoot: string) {
     super(
-      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, Cursor, OpenCode, or AGY ` +
+      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, Cursor, OpenCode, AGY, or Devin ` +
         'transcripts belong to this project, CODEGRAPH_SESSIONS_DIR points nowhere, ' +
         'or codegraph.json sets "sessions": false.',
     );
@@ -429,6 +438,6 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
     lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     lines.push('');
   }
-  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, or `agy:`); the transcript itself is the next step when the snippet is not enough.');
+  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, or `devin:`); the transcript itself is the next step when the snippet is not enough.');
   return lines.join('\n');
 }

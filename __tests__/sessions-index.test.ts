@@ -22,6 +22,7 @@ import {
 import { parseCodexTranscript, codexFilesForProject } from '../src/sessions/codex';
 import { parseAgyTranscript, agyFilesForProject } from '../src/sessions/agy';
 import { opencodeSessionsForProject } from '../src/sessions/opencode';
+import { devinSessionsForProject } from '../src/sessions/devin';
 import { parseCursorTranscript, cursorFilesForProject, cursorProjectSlug } from '../src/sessions/cursor';
 import { cwdBelongsToProject } from '../src/sessions/project-roots';
 import {
@@ -70,6 +71,7 @@ afterEach(() => {
     'CURSOR_CONFIG_DIR',
     'CODEGRAPH_OPENCODE_DB',
     'CODEGRAPH_ANTIGRAVITY_DIR',
+    'CODEGRAPH_DEVIN_DIR',
   ]) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
@@ -515,5 +517,57 @@ describe('querySessions (project entry point)', () => {
 
     const result = querySessions(project, 'write-time dedupe');
     expect([...new Set(result.hits.map((h) => h.session))].sort()).toEqual([`agy:${cid}`, 'opencode:ses_match'].sort());
+  });
+
+  it('indexes Devin sqlite sessions by working directory, skipping hidden, other-project and tool rows', () => {
+    const project = fixtureDir();
+    const other = fixtureDir();
+    fs.mkdirSync(path.join(project, '.codegraph'));
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CODEX_HOME = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = fixtureDir();
+
+    const devinRoot = fixtureDir();
+    process.env.CODEGRAPH_DEVIN_DIR = devinRoot;
+    const devinDb = path.join(devinRoot, 'cli-next', 'sessions.db');
+    fs.mkdirSync(path.dirname(devinDb), { recursive: true });
+    const { db } = createDatabase(devinDb);
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, working_directory TEXT NOT NULL, backend_type TEXT NOT NULL,
+        model TEXT NOT NULL, agent_mode TEXT NOT NULL, created_at INTEGER NOT NULL,
+        last_activity_at INTEGER NOT NULL, title TEXT, hidden INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE message_nodes (
+        row_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+        node_id INTEGER NOT NULL, parent_node_id INTEGER, chat_message TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    const addSession = db.prepare(
+      'INSERT INTO sessions (id, working_directory, backend_type, model, agent_mode, created_at, last_activity_at, title, hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const addNode = db.prepare(
+      'INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES (?, ?, ?, ?)',
+    );
+    addSession.run('brisk-otter', project, 'cli', 'swe-2-high', 'default', 1_700_000_000, 1_700_000_100, 'devin match', 0);
+    addSession.run('calm-finch', other, 'cli', 'swe-2-high', 'default', 1_700_000_000, 1_700_000_100, 'other repo', 0);
+    addSession.run('quiet-mole', project, 'cli', 'swe-2-high', 'default', 1_700_000_000, 1_700_000_100, 'hidden', 1);
+    const msg = (role: string, content: string) => JSON.stringify({ role, content });
+    addNode.run('brisk-otter', 1, msg('user', 'keep the write-time dedupe in Devin too'), 1_700_000_010);
+    addNode.run('brisk-otter', 2, msg('assistant', 'Devin kept the write-time dedupe path.'), 1_700_000_020);
+    addNode.run('brisk-otter', 3, msg('system', 'injected harness text that must never index'), 1_700_000_030);
+    addNode.run('brisk-otter', 4, msg('tool', 'tool output that must never index at all'), 1_700_000_040);
+    addNode.run('brisk-otter', 5, msg('user', 'ok'), 1_700_000_050);
+    db.close();
+
+    expect(devinSessionsForProject(project).map((s) => s.session)).toEqual(['devin:brisk-otter']);
+    expect(devinSessionsForProject(project)[0]!.docs.map((d) => d.role)).toEqual(['user', 'assistant']);
+
+    const result = querySessions(project, 'write-time dedupe');
+    expect([...new Set(result.hits.map((h) => h.session))]).toEqual(['devin:brisk-otter']);
+    expect(formatSessionHits('write-time dedupe', result)).toContain('devin:');
   });
 });
