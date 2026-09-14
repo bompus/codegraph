@@ -15,9 +15,6 @@ codegraph version on a chosen real-world repo. Drives the harness in
 
 ## Workflow
 
-Ask configuration questions in normal response text, with numbered choices when
-useful. Users may also type a value directly.
-
 Copy this checklist:
 ```
 - [ ] 1. Pick version (local or npm)
@@ -28,21 +25,21 @@ Copy this checklist:
 - [ ] 6. Report results
 ```
 
-**Step 1 — version.** Ask which codegraph version to test.
-Offer "Local dev build" and "Latest published", or a specific version
-(e.g. `0.7.10`). Map the answer to a VERSION token:
+**Step 1 — version.** Ask with `AskUserQuestion`: which codegraph version to test.
+Offer "Local dev build" and "Latest published"; the free-text "Other" lets the
+user type a specific version (e.g. `0.7.10`). Map the answer to a VERSION token:
 - "Local dev build" → `local`
 - "Latest published" → `latest`
 - a typed version → that string (e.g. `0.7.10`)
 
-**Step 2 — language.** Read `.claude/skills/agent-eval/corpus.json`. Ask which
-language to test, listing the languages that have entries.
+**Step 2 — language.** Read `.claude/skills/agent-eval/corpus.json`. Ask with
+`AskUserQuestion` which language to test, listing the languages that have entries.
 
 **Step 3 — repo.** From the chosen language's entries, ask which repo. Label each
 option with its size and file count, e.g. `excalidraw — Medium (~600 files)`.
 Each entry carries the `repo` URL and a representative `question`.
 
-**Step 4 — harness.** Ask which harness to run, and map
+**Step 4 — harness.** Ask with `AskUserQuestion` which harness to run, and map
 the answer to a MODE token:
 - "Headless" → `headless` — `claude -p` with stream-json: exact tokens/cost and a
   clean tool sequence (2 runs, fast, no TTY).
