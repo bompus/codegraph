@@ -35,9 +35,10 @@ own `begin` 23, `iteration_proxy::begin` 6, `Dictionary::begin` 3.
   `function`, unqualified). Correct entity.
 - ABI copy: `items()` → `iteration_proxy` constructor (2 edges,
   `return iteration_proxy<iterator>(*this)`). Explicit construction.
-  Correct — and the same shape in the main header has NO edge (the 2
-  lost edges from the Phase 3 gate). Not encoded (the gate needs the
-  main-header edge to exist first).
+  Correct — and the same shape in the main header has no `calls` edge
+  to the constructor (only `instantiates` edges to the class; the 2
+  lost `calls` edges from the Phase 3 gate). Not encoded (the gate
+  needs the main-header `calls` edge to exist first).
 
 ## Wrong today (documented, NOT encoded)
 
@@ -81,7 +82,8 @@ the other TU's helper. The tie-break is exactly backwards there.
 
 Tie-break asymmetry: in the main header the generic-`begin` sites
 land on the `iteration_proxy` member, while the same shapes in the
-vendored ABI copy land on that file's free `begin`. The break depends
+vendored ABI copy land on that file's `basic_json::begin` (likewise
+recorded as a `function` node, not a free function). The break depends
 on file context, not just the name.
 
 ## Out of scope, checked
@@ -102,7 +104,12 @@ on file context, not just the name.
 ## Limits
 
 - Verdicts are by pattern with named read sites, not all 105 sites
-  read. ABI-copy edges assume the main-header mirror except where
-  read (`front`, both `items` → ctor edges).
+  read. All 23 ABI-copy edges were read line-by-line during review:
+  5 correct (`operator[]`, `front`, `rend`, `basic_json`'s
+  `std::all_of` probe, one `basic_json::emplace`) and 18 same-shape
+  wrong (3 generic `construct`, 2 adapter probes, 1 vector-member
+  `operator/=`, 8 `ordered_map` `this->begin()`, `destroy`, `erase`,
+  2 `insert_iterator`). Wrong-present total is 75 main-tree + 18 ABI
+  = 93, not 75 as first written.
 - No agent A/B: this is a deterministic precision set, not a
   retrieval measurement. No macOS run.
