@@ -52,6 +52,7 @@ Each row is one gated change. "Edges" is the resolved-edge total on the pinned c
 | Phase 3: PHP | Slim | 5,016 → 5,016 | byte-identical |
 | Phase 3: C | jq | 7,712 → 7,713 | 0 lost, 1 gained |
 | Phase 3: C++ | nlohmann/json | 24,640 → 24,647 | import 644 → 686; 319 ties re-broken |
+| C++ iterator ADL ties | nlohmann/json | 22,817 → 22,587 | 93 wrong `calls`→`begin` removed; 12 correct implicit-this members remain; exact-match 7,146 → 6,916 |
 
 Reading: the binding table removes wrong cross-file links (bare imports, parameters, file-local names) and replaces name guesses with import-resolved edges; the big wins are where a language had no import mappings at all (Kotlin) or no export flags (Python). The remaining churn is same-name tie-breaks, which the receiver rule (Phase 2b) is meant to settle.
 

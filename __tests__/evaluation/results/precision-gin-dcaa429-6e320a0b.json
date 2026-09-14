@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-09-14T05:00:29.483Z",
+  "corpus": "gin",
+  "repo": "https://github.com/gin-gonic/gin.git",
+  "commit": "dcaa429",
+  "codegraphSha": "6e320a0b",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 2,
+    "presentHeld": 2,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 3573,
+    "exact-match": 2929,
+    "instance-method": 1523,
+    "framework": 267,
+    "qualified-name": 125,
+    "file-path": 104,
+    "import": 58,
+    "function-ref": 14
+  },
+  "edges": 8593,
+  "results": [
+    {
+      "caseId": "gin-declared-factory-receiver",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:285dcfdab6ec00ce5d1c87eddc233f0d",
+          "to": "method:08a6ca18de8a7f08f33790ca286e0a20",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "gin-composite-receiver-json-control",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:e6a071cb9b3ce2eeba6fb82f941cef3d",
+          "to": "method:3ab506d0531aac0489e0c51fcc2128aa",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "gin-composite-receiver-not-bson",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}
