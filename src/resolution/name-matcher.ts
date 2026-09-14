@@ -912,6 +912,82 @@ function isBareJsCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
 }
 
 /**
+ * Call-site form of a C/C++ `calls` ref whose extractor dropped the receiver
+ * (`this->m()`, `a.b->m()`). The ref column is the start of the call
+ * *expression*, not necessarily the name, so this finds the first `name(` on
+ * or after that column and classifies the characters immediately before it.
+ * Only the iterator ADL names: those are the same-name ties the C++ `begin`
+ * truth set measured; applying the decline to every C++ identifier would
+ * drop thousands of unrelated exact-match edges we have not reviewed.
+ */
+type CppBareCallForm = 'implicit-this' | 'this-member' | 'explicit-member' | 'qualified' | 'free-args';
+
+const CPP_ADL_RANGE_NAMES = new Set(['begin', 'end', 'rbegin', 'rend', 'cbegin', 'cend']);
+
+function cppBareCallForm(ref: UnresolvedRef, context: ResolutionContext): CppBareCallForm | null {
+  if (ref.referenceKind !== 'calls') return null;
+  if (ref.language !== 'c' && ref.language !== 'cpp') return null;
+  if (!CPP_ADL_RANGE_NAMES.has(ref.referenceName)) return null;
+  if (ref.referenceName.includes('.') || ref.referenceName.includes('::')) return null;
+  const line = context.getFileLines?.(ref.filePath)?.[ref.line - 1]
+    ?? context.readFile(ref.filePath)?.split('\n')[ref.line - 1];
+  if (line === undefined) return null;
+  const nameEsc = ref.referenceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const from = Math.max(0, Math.min(line.length, ref.column));
+  const m = line.slice(from).match(new RegExp('(^|[^\\w])' + nameEsc + '\\s*\\('));
+  if (!m || m.index === undefined) return null;
+  const nameAt = from + m.index + m[1]!.length;
+  const before = line.slice(0, nameAt).replace(/\s+$/, '').replace(/\s+/g, '');
+  if (before.endsWith('::')) return 'qualified';
+  if (/(?:^|[^\w])this->$/.test(before) || /(?:^|[^\w])this\.$/.test(before)) return 'this-member';
+  if (before.endsWith('->') || before.endsWith('.')) return 'explicit-member';
+  const afterName = line.slice(nameAt + ref.referenceName.length);
+  const open = afterName.search(/\(/);
+  if (open < 0) return 'implicit-this';
+  return /^\s*\)/.test(afterName.slice(open + 1)) ? 'implicit-this' : 'free-args';
+}
+
+function enclosingTypePrefix(node: Node | null | undefined): string | null {
+  if (!node) return null;
+  const sep = node.qualifiedName.lastIndexOf('::');
+  if (sep <= 0) return null;
+  return node.qualifiedName.slice(0, sep);
+}
+
+function callableOnType(candidate: Node, typePrefix: string): boolean {
+  if (candidate.kind !== 'method' && candidate.kind !== 'function') return false;
+  const qn = candidate.qualifiedName;
+  // Unqualified `begin` (a class member the walker recorded as a free
+  // function) is not a member of `typePrefix`; the suffix test below would
+  // treat every `Type::begin` want as matching it.
+  if (!qn.includes('::')) return false;
+  const want = `${typePrefix}::${candidate.name}`;
+  return qn === want || qn.endsWith(`::${want}`) || want.endsWith(`::${qn}`);
+}
+
+function applyCppCallSiteForm(
+  ref: UnresolvedRef,
+  candidates: Node[],
+  context: ResolutionContext,
+): Node[] | null {
+  const form = cppBareCallForm(ref, context);
+  if (!form) return candidates;
+  if (form === 'qualified' || form === 'explicit-member') return null;
+  if (form === 'this-member') {
+    const prefix = enclosingTypePrefix(context.getNodeById?.(ref.fromNodeId));
+    if (!prefix) return null;
+    return candidates.filter((n) => callableOnType(n, prefix));
+  }
+  if (form === 'free-args') {
+    const local = candidates.filter((n) => n.kind === 'function' && n.filePath === ref.filePath);
+    // Two overloads in one amalgamated header (nlohmann's ABI copy) are
+    // still a guess; only a unique same-file free function is a callee.
+    return local.length === 1 ? local : [];
+  }
+  return candidates;
+}
+
+/**
  * Kinds a receiver-less JS/TS call may resolve to: a function, a class, a
  * component, or a binding that may hold a function. A property or field needs
  * a receiver; an enum member, interface or type alias is never called. Applied
@@ -977,6 +1053,13 @@ export function matchByExactName(
   ) {
     candidates = candidates.filter((n) => n.filePath === ref.filePath);
   }
+
+  // C/C++ extractor drops `this` and 2-hop receivers, so a bare `begin` is
+  // often `array->begin()` or `begin(x)` (ADL / std) rather than the
+  // implicit-this member. Call-site form is the evidence; proximity is not.
+  const cppFormCandidates = applyCppCallSiteForm(ref, candidates, context);
+  if (!cppFormCandidates) return null;
+  candidates = cppFormCandidates;
 
   if (candidates.length === 0) {
     return null;
@@ -3430,6 +3513,13 @@ export function matchFuzzy(
   context: ResolutionContext
 ): ResolvedRef | null {
   if (isBoundToBareImport(ref, context)) return null;
+  // Exact-name already declined these C/C++ forms; a unique same-named
+  // survivor must not inherit the reference (the true callee is external
+  // or needs a receiver type exact-name does not have).
+  const cppForm = cppBareCallForm(ref, context);
+  if (cppForm === 'qualified' || cppForm === 'explicit-member' || cppForm === 'this-member' || cppForm === 'free-args') {
+    return null;
+  }
   const lowerName = ref.referenceName.toLowerCase();
 
   // Use pre-built lowercase index for O(1) lookup instead of scanning all nodes

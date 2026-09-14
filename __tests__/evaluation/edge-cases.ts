@@ -224,6 +224,42 @@ export const edgeCases: EdgeCase[] = [
     to: { file: 'tests/thirdparty/fifo_map/fifo_map.hpp', name: 'begin' }, expect: 'absent',
     source: 'cpp-begin-truth-set', why: 'A bare begin() in a test TU must not resolve onto the thirdparty fifo_map member.',
   },
+  {
+    id: 'json-begin-no-array-member', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/json.hpp', name: 'destroy' },
+    to: { file: 'include/nlohmann/json.hpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: '`array->begin()` in destroy is std::vector::begin, not the same-file basic_json member.',
+  },
+  {
+    id: 'json-begin-no-ordered-map-this', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/ordered_map.hpp', name: 'at' },
+    to: { file: 'include/nlohmann/json.hpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: '`this->begin()` on ordered_map (a std::vector subclass) must not resolve onto json.hpp begin.',
+  },
+  {
+    id: 'json-begin-no-adl-to-helper', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/src/unit-algorithms.cpp', name: 'unit-algorithms.cpp' },
+    to: { file: 'tests/src/unit-user_defined_input.cpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: '`begin(expected)` is ADL / std::begin, not the other TU\'s test-helper free begin.',
+  },
+  {
+    id: 'json-begin-no-using-std-to-proxy', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/detail/conversions/to_json.hpp', name: 'construct' },
+    to: { file: 'include/nlohmann/detail/iterators/iteration_proxy.hpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: '`using std::begin; begin(arr)` must not resolve onto iteration_proxy::begin.',
+  },
+  {
+    id: 'json-begin-no-doctest-to-dictionary', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/thirdparty/doctest/doctest.h', name: 'run' },
+    to: { file: 'tests/thirdparty/Fuzzer/FuzzerDictionary.h', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: '`reporters_currently_used.begin()` is a vector member, not Dictionary::begin.',
+  },
+  {
+    id: 'json-begin-no-abi-adl-to-member', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/abi/include/nlohmann/json_v3_10_5.hpp', name: 'construct' },
+    to: { file: 'tests/abi/include/nlohmann/json_v3_10_5.hpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: '`using std::begin; begin(arr)` in the vendored ABI header must not resolve onto that file\'s basic_json begin overloads.',
+  },
 
   // --- #1713: a bare (npm / builtin) import must never fuzzy-match a project symbol ---
   {

@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-09-14T05:00:30.958Z",
+  "corpus": "slim",
+  "repo": "https://github.com/slimphp/Slim.git",
+  "commit": "3675bf6",
+  "codegraphSha": "6e320a0b",
+  "summary": {
+    "absentCases": 0,
+    "absentHeld": 0,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 2173,
+    "exact-match": 1468,
+    "instance-method": 438,
+    "qualified-name": 306,
+    "import": 69,
+    "function-ref": 4,
+    "file-path": 4
+  },
+  "edges": 4462,
+  "results": [
+    {
+      "caseId": "slim-guarded-exception-receiver",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:a6f7723645dbd37b31799db2b356325f",
+          "to": "method:ea555ef764392cc4779c55819b7860c5",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}

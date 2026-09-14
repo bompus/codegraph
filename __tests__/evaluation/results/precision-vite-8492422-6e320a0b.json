@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-09-14T05:00:36.855Z",
+  "corpus": "vite",
+  "repo": "https://github.com/vitejs/vite.git",
+  "commit": "8492422",
+  "codegraphSha": "6e320a0b",
+  "summary": {
+    "absentCases": 6,
+    "absentHeld": 6,
+    "presentCases": 2,
+    "presentHeld": 2,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 13098,
+    "exact-match": 6591,
+    "import": 5805,
+    "qualified-name": 1791,
+    "instance-method": 371,
+    "file-path": 261,
+    "function-ref": 200,
+    "framework": 41,
+    "fuzzy": 16
+  },
+  "edges": 28174,
+  "results": [
+    {
+      "caseId": "vite-factory-receiver-control",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:d321dd128d90578bc69867835ec73ef8",
+          "to": "method:db73e5f5d9c7af61d0f22c5b9971ced3",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-external-receiver-not-project-method",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-bare-import-self-edge",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-bare-import-getEnv",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-fuzzy-nested-resolveConfig-getEnv",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-fuzzy-nested-build-scan",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-sealed-module-defineConfig",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-control-relative-import",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "file:packages/vite/src/node/config.ts",
+          "to": "function:0c2f36c32c5742aee412978220fd5b23",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ]
+}

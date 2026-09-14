@@ -1,14 +1,45 @@
 # C++ `begin` same-name ties — truth set and score (2026-09-14)
 
 Corpus: nlohmann/json at `aa391dc0` (the pinned Phase 3 commit).
-Engine: `fork/consolidated` at `7a53807d` (extraction 36, schema v12).
-Runner: `EVAL_REPOS=<clone> npm run eval:precision -- json` → `results/precision-json-aa391dc-7a53807d.json`.
+Engine: `fork/consolidated` at `7a53807d` (extraction 36, schema v12) for the
+baseline; the call-site-form fix scored at `t3code/cpp-begin-ties` on top of
+`6e320a0b`.
+Runner: `EVAL_REPOS=<clone> npm run eval:precision -- json`.
 Cases: `__tests__/evaluation/edge-cases.ts`, source `cpp-begin-truth-set`.
 
 ## Result
 
-11/11 held (5 absent, 6 present), gate green. Histogram unchanged
-(22,817 edges; exact-match 7,146, fuzzy 5).
+**Baseline (pre-fix, `7a53807d`):** 11/11 held (5 absent, 6 present),
+histogram 22,817 edges (exact-match 7,146, fuzzy 5). 105 `calls`→`begin`
+edges, all `exact-match`; 93 of them wrong.
+
+**After the call-site-form fix:** 17/17 held (11 absent, 6 present).
+Histogram 22,587 edges (exact-match 6,916, fuzzy 5): −230 exact-match
+edges. `calls`→`begin` is 12, and every remaining edge is one of the
+correct implicit-this members (the 6 encoded present controls, the
+`json.hpp` `all_of(begin(), end(), …)` probe, and the same five shapes
+in the vendored ABI header). The 93 wrong-present edges are gone.
+
+## Fix (call-site form at exact-name)
+
+The extractor emits `this->begin()` and `a.b->begin()` as a bare `begin`
+ref (column at the call expression, not the name). Exact-name used to
+pick among every same-named `begin` by same-file / proximity / exported.
+The matcher now reads the first `begin(` on or after that column:
+
+- implicit-this `begin()` — keep the existing same-file exact-name pick
+  (the present controls).
+- `this->begin()` — only a method/function whose qualified name is the
+  enclosing type's `begin`; otherwise nothing.
+- any other `.begin()` / `->begin()`, or `std::begin` — nothing (the
+  callee is a different type or external).
+- ADL `begin(x)` — only a unique same-file free `function`; two
+  overloads in one amalgamated header are still a guess.
+
+Scoped to the iterator ADL names (`begin`/`end`/`rbegin`/`rend`/
+`cbegin`/`cend`). Applying the same decline to every C++ identifier
+dropped thousands of unrelated exact-match edges that this set did not
+review.
 
 ## What was mined
 
@@ -40,12 +71,13 @@ own `begin` 23, `iteration_proxy::begin` 6, `Dictionary::begin` 3.
   lost `calls` edges from the Phase 3 gate). Not encoded (the gate
   needs the main-header `calls` edge to exist first).
 
-## Wrong today (documented, NOT encoded)
+## Wrong at baseline (now absent)
 
-An `absent` case for an edge the engine still draws would fail the
-gate, so these are recorded here as the backlog the set will judge
-once resolution work lands — that ordering is the point of building
-the set first.
+These 93 edges were documented before the call-site-form fix so an
+`absent` case would not fail the gate. Representative shapes are now
+encoded as absent (destroy, ordered_map `at`, algorithms ADL, to_json
+`using std::begin`, doctest `run`, ABI amalgamated `construct`). The
+full 93 are gone on the post-fix index (`calls`→`begin` 105 → 12).
 
 - Cross-TU test calls → helper free `begin` (49). All 49 attach to
   file nodes in a different TU than the target. Shapes sampled:
