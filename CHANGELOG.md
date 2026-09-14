@@ -165,6 +165,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Method calls now follow receiver types more reliably across Python, Go, Java, Kotlin, PHP and C++, with unresolved receiver diagnostics and correct ordering of chained calls in the viewer.
 
 - C++ no longer attaches a same-named `begin`/`end` (or `rbegin`/`rend`/`cbegin`/`cend`) to the nearest exported helper when the call is `this->begin()`, `array->begin()`, or ADL `begin(x)` — those stay unresolved unless they are a member of the enclosing type or a same-file free function. Re-index C++ projects to pick this up.
+- C++ `Type(...)` construction now links to that type's constructor when the graph has one, instead of only recording that the type was instantiated. Re-index C++ projects to pick this up.
 - JavaScript and TypeScript method calls now follow the receiver's binding, avoiding unrelated same-named methods while preserving typed receivers and Expo native-module calls.
 - Workspace packages with explicit Rollup or Rolldown build entries can resolve their public imports to source before their bundles are built.
 - Go calls on newly constructed values now reach that value's own method instead of a same-named method on another type.

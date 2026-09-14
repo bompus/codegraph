@@ -260,6 +260,14 @@ export const edgeCases: EdgeCase[] = [
     to: { file: 'tests/abi/include/nlohmann/json_v3_10_5.hpp', name: 'begin' }, expect: 'absent',
     source: 'cpp-begin-truth-set', why: '`using std::begin; begin(arr)` in the vendored ABI header must not resolve onto that file\'s basic_json begin overloads.',
   },
+  {
+    id: 'json-items-calls-proxy-ctor', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/json.hpp', name: 'items' },
+    to: { file: 'include/nlohmann/detail/iterators/iteration_proxy.hpp', name: 'iteration_proxy' },
+    expect: 'present',
+    source: 'cpp-items-ctor',
+    why: 'Main-header items() returns iteration_proxy(*this); that must stay a calls edge to the constructor, not only instantiates to the class.',
+  },
 
   // --- #1713: a bare (npm / builtin) import must never fuzzy-match a project symbol ---
   {
