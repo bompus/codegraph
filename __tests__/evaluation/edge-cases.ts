@@ -154,6 +154,77 @@ export const edgeCases: EdgeCase[] = [
     source: 'binding-model Phase 2b', why: 'A JSON composite literal cannot invoke bsonBinding.BindBody.',
   },
 
+  // --- cpp-begin-truth-set: same-name `begin` ties on nlohmann/json ---
+  // Phase 3 re-broke 319 same-name ties toward file-level (exported) entities
+  // and away from class members. These cases pin the ties that are correct
+  // today (member calls on the receiver's own type) and the cross-TU member
+  // picks that must stay gone. Bare `begin(x)` in one TU can never resolve
+  // onto a test-local member in another TU; `using std::begin` / ADL /
+  // std::vector-member sites have no in-project callee. Full per-site
+  // accounting is in docs/benchmarks/cpp-begin-truth-set-2026-09-14.md;
+  // the wrong-present edges it records are NOT encoded here (an `absent`
+  // case for an edge the engine still draws would fail the gate).
+  {
+    id: 'json-begin-fuzzer-contains-word', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/thirdparty/Fuzzer/FuzzerDictionary.h', name: 'ContainsWord' },
+    to: { file: 'tests/thirdparty/Fuzzer/FuzzerDictionary.h', name: 'begin' }, expect: 'present',
+    source: 'cpp-begin-truth-set', why: 'ContainsWord calls begin() on its own Dictionary; the same-file member is the callee.',
+  },
+  {
+    id: 'json-begin-fuzzer-end-calls-begin', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/thirdparty/Fuzzer/FuzzerDictionary.h', name: 'end' },
+    to: { file: 'tests/thirdparty/Fuzzer/FuzzerDictionary.h', name: 'begin' }, expect: 'present',
+    source: 'cpp-begin-truth-set', why: '`return begin() + Size` is a member call on the same Dictionary.',
+  },
+  {
+    id: 'json-begin-front-member', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/json.hpp', name: 'front' },
+    to: { file: 'include/nlohmann/json.hpp', name: 'begin' }, expect: 'present',
+    source: 'cpp-begin-truth-set', why: '`return *begin()` calls the basic_json member (recorded as a function node).',
+  },
+  {
+    id: 'json-begin-rend-member', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/json.hpp', name: 'rend' },
+    to: { file: 'include/nlohmann/json.hpp', name: 'begin' }, expect: 'present',
+    source: 'cpp-begin-truth-set', why: '`return reverse_iterator(begin())` calls the basic_json member.',
+  },
+  {
+    id: 'json-begin-subscript-member', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/json.hpp', name: 'operator[]' },
+    to: { file: 'include/nlohmann/json.hpp', name: 'begin' }, expect: 'present',
+    source: 'cpp-begin-truth-set', why: '`set_parents(begin() + ...)` calls the basic_json member.',
+  },
+  {
+    id: 'json-begin-emplace-member', corpus: 'json', kind: 'calls',
+    from: { file: 'include/nlohmann/json.hpp', name: 'emplace' },
+    to: { file: 'include/nlohmann/json.hpp', name: 'begin' }, expect: 'present',
+    source: 'cpp-begin-truth-set', why: '`auto it = begin()` calls the basic_json member.',
+  },
+  {
+    id: 'json-begin-no-cross-test-member', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/src/unit-algorithms.cpp', name: 'unit-algorithms.cpp' },
+    to: { file: 'tests/src/unit-convenience.cpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: 'A bare begin() on a const json in one TU must not resolve onto another test file-local alt_string_iter member (the Phase 3 old pick).',
+  },
+  {
+    id: 'json-begin-no-eigen-member', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/src/unit-class_iterator.cpp', name: 'unit-class_iterator.cpp' },
+    to: { file: 'tests/src/unit-regression3.cpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: 'A bare begin() in one TU must not resolve onto the issue_4320_eigen::vector3 test member in another TU.',
+  },
+  {
+    id: 'json-begin-no-udt-member', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/src/unit-bjdata.cpp', name: 'unit-bjdata.cpp' },
+    to: { file: 'tests/src/unit-udt.cpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: 'A bare begin() in one TU must not resolve onto the no_iterator_type test member in another TU.',
+  },
+  {
+    id: 'json-begin-no-fifo-member', corpus: 'json', kind: 'calls',
+    from: { file: 'tests/src/unit-diagnostics.cpp', name: 'unit-diagnostics.cpp' },
+    to: { file: 'tests/thirdparty/fifo_map/fifo_map.hpp', name: 'begin' }, expect: 'absent',
+    source: 'cpp-begin-truth-set', why: 'A bare begin() in a test TU must not resolve onto the thirdparty fifo_map member.',
+  },
+
   // --- #1713: a bare (npm / builtin) import must never fuzzy-match a project symbol ---
   {
     id: 'vite-bare-import-self-edge',

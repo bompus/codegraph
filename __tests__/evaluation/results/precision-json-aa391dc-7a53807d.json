@@ -1,0 +1,140 @@
+{
+  "timestamp": "2026-09-14T02:34:43.921Z",
+  "corpus": "json",
+  "repo": "https://github.com/nlohmann/json.git",
+  "commit": "aa391dc",
+  "codegraphSha": "7a53807d",
+  "summary": {
+    "absentCases": 5,
+    "absentHeld": 5,
+    "presentCases": 6,
+    "presentHeld": 6,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 11963,
+    "exact-match": 7146,
+    "file-path": 1742,
+    "qualified-name": 757,
+    "import": 682,
+    "instance-method": 475,
+    "function-ref": 47,
+    "fuzzy": 5
+  },
+  "edges": 22817,
+  "results": [
+    {
+      "caseId": "json-value-not-internal-serializer",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-fuzzer-contains-word",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:511ae2bab26a12794fe5b8e38095ef6f",
+          "to": "method:c7bd7bd104f933f1ecf2fcd44528462f",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-fuzzer-end-calls-begin",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:a583c5de8fb77fcf2e47f72d5f052f20",
+          "to": "method:c7bd7bd104f933f1ecf2fcd44528462f",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-front-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:d5d89f0474d967f87ea9bce0ad973225",
+          "to": "function:1833b3c49d9170b0fd591852fb0603ff",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-rend-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:422c279c5e0f6f5e874e8cf0e7b99c70",
+          "to": "function:ecf7731b6962205e8b775980c633cb5d",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-subscript-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:7852fa2d9a7432032a291c2c0ef2d8bd",
+          "to": "function:1833b3c49d9170b0fd591852fb0603ff",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-emplace-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:df3f85662cd1bee185e7367857996219",
+          "to": "function:1833b3c49d9170b0fd591852fb0603ff",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-cross-test-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-eigen-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-udt-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "json-begin-no-fifo-member",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}
