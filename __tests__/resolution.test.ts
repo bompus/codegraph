@@ -1213,6 +1213,44 @@ void initialize() { Packet(); }
       expect(outgoing.some((e) => e.kind === 'calls' && e.target === packet!.id)).toBe(false);
     });
 
+    it('keeps calls to a C++ constructor when Type() resolves through an include', async () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'proxy.hpp'),
+        `struct iteration_proxy {
+  explicit iteration_proxy(int& cont) {}
+};
+`
+      );
+      fs.writeFileSync(
+        path.join(tempDir, 'json.hpp'),
+        `#include "proxy.hpp"
+
+struct Json {
+  int n;
+  iteration_proxy items() { return iteration_proxy(n); }
+};
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+      cg.resolveReferences();
+
+      const items = cg.getNodesByKind('method').find((n) => n.name === 'items');
+      const ctor = cg.getNodesByKind('method').find(
+        (n) => n.name === 'iteration_proxy' && n.filePath.replace(/\\/g, '/').endsWith('proxy.hpp'),
+      );
+      const klass =
+        cg.getNodesByKind('struct').find((n) => n.name === 'iteration_proxy') ??
+        cg.getNodesByKind('class').find((n) => n.name === 'iteration_proxy');
+      expect(items).toBeDefined();
+      expect(ctor).toBeDefined();
+      expect(klass).toBeDefined();
+
+      const outgoing = cg.getOutgoingEdges(items!.id);
+      expect(outgoing.some((e) => e.kind === 'calls' && e.target === ctor!.id)).toBe(true);
+      expect(outgoing.some((e) => e.kind === 'instantiates' && e.target === klass!.id)).toBe(false);
+    });
+
     it('resolves a static call through an imported C++ union to its member', async () => {
       fs.writeFileSync(
         path.join(tempDir, 'ops.hpp'),

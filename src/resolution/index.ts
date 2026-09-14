@@ -76,6 +76,20 @@ function resolveCacheLimit(): number {
   return DEFAULT_CACHE_LIMIT;
 }
 
+/** C/C++ `Type(...)` that resolved to the class: keep `calls` on a constructor. */
+function cppConstructorForType(type: Node, queries: QueryBuilder): Node | null {
+  if (type.language !== 'cpp' && type.language !== 'c') return null;
+  const suffix = `::${type.name}::${type.name}`;
+  const exact = `${type.qualifiedName}::${type.name}`;
+  const ctors = queries.getNodesByName(type.name).filter((n) =>
+    n.kind === 'method' &&
+    n.filePath === type.filePath &&
+    n.language === type.language &&
+    (n.qualifiedName === exact || n.qualifiedName.endsWith(suffix) || n.qualifiedName === `${type.name}::${type.name}`)
+  );
+  return ctors[0] ?? null;
+}
+
 // Re-export types
 export * from './types';
 
@@ -1172,13 +1186,22 @@ export class ReferenceResolver {
       // express instantiation as `Foo()` — extraction can't tell that
       // apart from a function call without symbol info, but resolution
       // can: if `Foo` resolves to a class, the call IS an instantiation.
+      // C/C++ `Type(...)` is the same shape, but when the type has a
+      // constructor node the call is that constructor (nlohmann `items()`
+      // → `iteration_proxy::iteration_proxy`). Keep `calls` then; only
+      // promote when no constructor was extracted.
       if (kind === 'calls') {
         const targetNode = this.queries.getNodeById(ref.targetNodeId);
         if (
           targetNode &&
           (targetNode.kind === 'class' || targetNode.kind === 'struct' || targetNode.kind === 'union')
         ) {
-          kind = 'instantiates';
+          const ctor = cppConstructorForType(targetNode, this.queries);
+          if (ctor) {
+            ref = { ...ref, targetNodeId: ctor.id };
+          } else {
+            kind = 'instantiates';
+          }
         }
       }
 
