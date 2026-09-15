@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos, resolveAmbiguousNameCeiling } from './name-matcher';
+import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos, resolveAmbiguousNameCeiling } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -451,6 +451,7 @@ export class ReferenceResolver {
    */
   private createContext(): ResolutionContext {
     return {
+      resolveImport: (ref) => resolveViaImport(ref, this.context),
       getNodesInFile: (filePath: string) => {
         if (!this.nodeCache.has(filePath)) {
           this.nodeCache.set(filePath, this.queries.getNodesByFile(filePath));
@@ -486,7 +487,7 @@ export class ReferenceResolver {
           matches = [];
           for (const m of candidates) {
             if (m.kind !== 'method') continue;
-            if (m.language !== language) continue;
+            if (!sameLanguageFamily(m.language, language)) continue;
             const qn = m.qualifiedName;
             if (qn === want || qn.endsWith(`::${want}`)) matches.push(m);
           }
@@ -509,7 +510,7 @@ export class ReferenceResolver {
             ownerIndex = new Map<string, Node[]>();
             for (const m of candidates) {
               if (m.kind !== 'method') continue;
-              if (m.language !== language) continue;
+              if (!sameLanguageFamily(m.language, language)) continue;
               const qn = m.qualifiedName;
               const i2 = qn.lastIndexOf('::');
               if (i2 < 0) continue; // single-segment qn can never match `T::m`
@@ -1203,7 +1204,7 @@ export class ReferenceResolver {
       this.frameworks.some((f) => f.claimsReference?.(ref.referenceName));
     if (this.profileStages) this.stageAdd('preFilter', ref, preFilterPass, tPre);
     if (!preFilterPass) {
-      return null;
+      return this.gateLanguage(matchJsStoreBindingCall(ref, this.context), ref);
     }
 
     // Function-as-value refs (#756) get a dedicated, strictly-gated path:
@@ -1280,13 +1281,19 @@ export class ReferenceResolver {
     }
     if (this.profileStages) this.stageAdd('frameworks', ref, fwEarly !== null, tFw);
     if (fwEarly) return fwEarly;
-
+    // Bound receivers first: a declared type chain (`holder.values.get`
+    // with `holder: Holder`) proves its target, and an untyped one is
+    // refused here rather than name-guessed. Only what proof cannot serve
+    // reaches the untyped-chain guard below.
     const receiverResult = matchBoundReceiverCall(ref, this.context);
     if (receiverResult !== undefined) {
       const valid = this.gateLanguage(receiverResult, ref);
       if (valid) candidates.push(valid);
       return candidates.length ? candidates.reduce((best, curr) => curr.confidence > best.confidence ? curr : best) : null;
     }
+    // A retained untyped chain supplies effect/call-site evidence only. In
+    // particular, importing its root does not make the root its call target.
+    if (isUnresolvedJsMemberCall(ref)) return null;
 
     // Strategy 2: Try import-based resolution
     // A TS/JS/Python call-receiver chain (`useStore.getState().reset`, #1683)

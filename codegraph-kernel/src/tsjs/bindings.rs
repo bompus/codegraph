@@ -328,10 +328,28 @@ impl<'t> Walker<'t> {
                 return;
             }
         }
+        if name_node.kind() == "object_pattern" {
+            // `const { reset } = external()` binds `reset` locally: a bare
+            // call through it must not name-match a same-named project
+            // symbol. The store resolver owns two shapes, which stay rowless:
+            // `*.getState()` results (their names resolve to store actions)
+            // and selector picks (`f((s) => s.NAME)`). Mirrors the
+            // isLocallyBoundJsName contract the resolver answers from rows.
+            let store_owned = value.is_some_and(|v| self.is_store_accessor_value(v));
+            if !store_owned {
+                for (leaf, leaf_node) in self.pattern_leaves(name_node) {
+                    let selector = value.is_some_and(|v| self.is_selector_of(v, &leaf));
+                    if !selector {
+                        self.push_scoped_row(&leaf, BINDING_LOCAL, leaf_node, range);
+                    }
+                }
+            }
+            return;
+        }
         if name_node.kind() != "identifier" {
-            // `const { fetchUser } = useStore.getState()` re-names a member of
-            // something defined elsewhere; the graph's symbol is what a call
-            // through it means, so a destructured name is not a local binding.
+            // Array patterns and other exotic declarator names bind nothing
+            // the resolver asks about; parameters are covered by
+            // emit_pattern_bindings instead.
             return;
         }
         let name = self.text(name_node);
@@ -413,6 +431,54 @@ impl<'t> Walker<'t> {
         }
         let spec: String = self.text(first).chars().filter(|c| *c != '\'' && *c != '"').collect();
         if spec.is_empty() { None } else { Some(spec) }
+    }
+
+    /// `X.getState(...)`: names destructured off the result belong to the
+    /// store, not the local scope (see scan_declarator).
+    fn is_store_accessor_value(&self, value: Node<'t>) -> bool {
+        if value.kind() != "call_expression" {
+            return false;
+        }
+        let Some(func) = value.child_by_field_name("function") else { return false };
+        if func.kind() != "member_expression" {
+            return false;
+        }
+        func.child_by_field_name("property")
+            .is_some_and(|p| self.text(p) == "getState")
+    }
+
+    /// Leaf names an object pattern binds: shorthand names and renamed
+    /// (`{ a: b }`) values, descending into nested patterns.
+    fn pattern_leaves(&self, p: Node<'t>) -> Vec<(String, Node<'t>)> {
+        let mut out = Vec::new();
+        if p.kind() == "object_pattern" {
+            for i in 0..p.named_child_count() {
+                let Some(c) = p.named_child(i) else { continue };
+                match c.kind() {
+                    "shorthand_property_identifier_pattern" => {
+                        out.push((self.text(c).to_string(), c));
+                    }
+                    "pair_pattern" => {
+                        if let Some(v) = c.child_by_field_name("value") {
+                            if v.kind() == "identifier" {
+                                out.push((self.text(v).to_string(), v));
+                            } else {
+                                out.extend(self.pattern_leaves(v));
+                            }
+                        }
+                    }
+                    "object_assignment_pattern" => {
+                        if let Some(l) = c.child_by_field_name("left") {
+                            out.extend(self.pattern_leaves(l));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else if p.kind() == "identifier" {
+            out.push((self.text(p).to_string(), p));
+        }
+        out
     }
 
     /// `f((s) => s.NAME)`: an arrow argument whose body is `NAME` picked off

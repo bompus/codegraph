@@ -76,9 +76,11 @@ const SIGNATURE_METHOD_NODE_TYPES = new Set(['method_signature']);
  * and a Dart 3 `extension type` body is not class-like, so gating Dart on the
  * class-like check mints its members as free functions — `extension type
  * MetersT(double value) { double get km => … }` yields a top-level `km` and
- * breaks kernel parity.
+ * breaks kernel parity. `javascript`/`jsx` are gated too: the grammar can
+ * emit the node for declare-style signatures, and outside a class-like body
+ * those would otherwise mint free functions (upstream #1862).
  */
-const SIGNATURE_METHOD_LANGUAGES = new Set(['typescript', 'tsx', 'arkts']);
+const SIGNATURE_METHOD_LANGUAGES = new Set(['typescript', 'tsx', 'arkts', 'javascript', 'jsx']);
 
 /** Vue store collections whose object-literal members are the symbols an agent
  *  looks for. Extracted as function nodes so `actions`/`mutations`/`getters` are
@@ -5036,10 +5038,12 @@ export class TreeSitterExtractor {
               TS_JS_CHAIN_RECEIVER_TYPES.has(receiver.type) &&
               isTsJsIdentifierChain(receiver)
             ) {
-              // Keep call-site evidence for framework resolution and Steps.
-              // Generic resolution must not guess a target from the last name
-              // when the nested receiver's type is unknown (#1794, #1566).
-              calleeName = `${getNodeText(receiver, this.source)}.${methodName}`;
+              // Keep the source call for effect reporting, but never collapse
+              // it to a guessed method. The resolver only lets frameworks
+              // with receiver evidence handle these qualified chains.
+              const chain = getNodeText(func, this.source).replace(/\s+/g, '').replace(/\?\./g, '.');
+              if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){2,}$/.test(chain)) return;
+              calleeName = chain;
             } else {
               calleeName = methodName;
             }

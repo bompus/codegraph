@@ -35,16 +35,19 @@ beforeAll(async () => {
       Array.from({ length: CALLERS }, (_, i) => `export function caller${i}(): number { return warm(${i}); }`).join('\n') +
       '\n'
   );
-  // Two functions with the same bare name exercise per-definition grouping.
-  for (const suffix of ['a', 'b']) {
-    fs.writeFileSync(path.join(tmpDir, 'src', `hot-${suffix}.ts`), 'export function hot(n: number): number { return n; }\n');
-    fs.writeFileSync(
-      path.join(tmpDir, 'src', `hot-${suffix}-callers.ts`),
-      `import { hot } from './hot-${suffix}';\n` +
-        Array.from({ length: CALLERS }, (_, i) => `export function hot${suffix.toUpperCase()}Caller${i}(): number { return hot(${i}); }`).join('\n') +
-        '\n'
-    );
-  }
+  // Two real `hot` functions exercise per-definition truncation. A filename
+  // is not an overload of its exact-named function (#1809).
+  fs.writeFileSync(path.join(tmpDir, 'src', 'hot.ts'), 'export function hot(n: number): number { return n; }\n');
+  fs.writeFileSync(
+    path.join(tmpDir, 'src', 'hot-callers.ts'),
+    "import { hot } from './hot';\n" +
+      Array.from({ length: CALLERS }, (_, i) => `export function hotCaller${i}(): number { return hot(${i}); }`).join('\n') +
+      '\n'
+  );
+  fs.writeFileSync(path.join(tmpDir, 'src', 'other-hot.ts'), 'export function hot(n: number): number { return n + 1; }\n');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'other-hot-callers.ts'),
+    "import { hot } from './other-hot';\n" +
+    Array.from({ length: CALLERS }, (_, i) => `export function otherHotCaller${i}(): number { return hot(${i}); }`).join('\n') + '\n');
   fs.writeFileSync(
     path.join(tmpDir, 'src', 'fan.ts'),
     Array.from({ length: CALLERS }, (_, i) => `export function helper${i}(): number { return ${i}; }`).join('\n') +
@@ -78,8 +81,8 @@ describe('codegraph_callers truncation', () => {
 
   it('marks the cut inside each per-definition section too', async () => {
     const out = await text('codegraph_callers', { symbol: 'hot' });
-    expect(out).toContain('distinct definitions');
-    expect(out).toMatch(/- … \+\d+ more \(pass `limit` to widen\)/);
+    expect(out).toContain('2 distinct definitions');
+    expect(out.match(/- … \+\d+ more \(pass `limit` to widen\)/g)).toHaveLength(2);
     expect(await text('codegraph_callers', { symbol: 'hot', limit: 100 })).not.toContain('more (pass');
   });
 });
