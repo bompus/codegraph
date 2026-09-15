@@ -62,6 +62,14 @@ export interface CfnptrFileIn {
   structs: { id: string; startLine: number; endLine: number }[];
 }
 
+/** Path-driven sweep input: the kernel reads the file itself and fans the
+ *  batch across threads, so the corpus's ~1.5GB of text never crosses the
+ *  boundary. */
+export interface CfnptrPathIn {
+  path: string;
+  structs: { id: string; startLine: number; endLine: number }[];
+}
+
 /** Per-file facts from the native cFnPtr extraction sweep — mirror of the
  *  Rust `CfnptrFacts` (see codegraph-kernel/src/cfnptr.rs); semantics match
  *  the JS sweep in src/resolution/c-fnptr-synthesizer.ts. */
@@ -204,6 +212,9 @@ export interface KernelModule {
   /** Batched cFnPtr extraction sweep (task #5 step 2). OPTIONAL: absent on
    *  older binaries — callers feature-detect and keep their JS path. */
   cfnptrScanFiles?(files: CfnptrFileIn[]): CfnptrFactsOut[];
+  /** Path-driven, internally threaded sweep — the kernel reads each file
+   *  itself. OPTIONAL: absent on older binaries. */
+  cfnptrScanPaths?(files: CfnptrPathIn[]): CfnptrFactsOut[];
   /** Native `stripCommentsForRegex(text, 'c')` — differential-oracle hook. */
   cfnptrStripC?(text: string): string;
 }

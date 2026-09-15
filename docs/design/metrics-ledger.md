@@ -146,6 +146,24 @@ The "failed refs" column above is the coverage counter: references the extractor
 
 Reading: Phase 4's goal was determinism and deleting source rescans, and it delivers that — kernel-on and kernel-off produce a byte-identical edge set on the linux corpus (sorted edge dump sha256 `5ebfeee8…`, same failed-ref count). Wall-clock is **a few percent slower, not a speedup**: kernel-on means ~272s vs kernel-off ~254s (ranges overlap, n is small). The delta matches the structure: ~7–9s of kernel-outcome admission/marshal inside the settle stage (22.4–25.0s vs 13.6–15.6s) plus the one-time ~3s snapshot, i.e. ~4–7%. The phase is dominated by callback synthesis (~140s) and main-thread persist (~63s) — per-ref settle is not the bottleneck, so native resolution cannot move wall-clock here. The earlier serial-mode A/B (281s kernel-on vs 229s kernel-off, main-thread `resolveChunk` without the pool) overstated the gap.
 
+### 5.5 cFnPtr synthesis — threaded path sweep round
+
+§5.4 named `cFnPtrEdges` (~125s serial pass, ~half of callback-synthesis on the linux corpus) as the phase's biggest lever. Standalone probe against the live corpus DB (read-only `ReferenceResolver` + `cFnPointerDispatchEdges`, `CODEGRAPH_SYNTH_TIMINGS=1`), before/after the `cfnptrScanPaths` change:
+
+| Stage | Before | After |
+|---|---|---|
+| A — extraction sweep | 66.7 s | **16.1 s** |
+| B — struct layouts | 0.8 s | 0.8 s |
+| C — registration | 31.2 s | 30.3 s |
+| D — propagation | 10.0 s | 9.9 s |
+| E — dispatch | 15.7 s | 15.2 s |
+| **Pass total** | **124.5 s** | **72.3 s (−42%)** |
+| Edges / sha256 | 283,931 / `a6161359…` | 283,931 / `a6161359…` (identical) |
+
+What moved: stage A was already native (`cfnptrScanFiles`) but single-threaded on one worker, spending ~14s on 84k per-file `getNodesInFile` queries, ~10s on JS-side `readFileSync`, and the rest on the serial scan + ~1.5GB of text marshal across napi. The new `cfnptrScanPaths` takes absolute paths + bulk-prefetched struct extents (one kind-scan instead of per-file queries), reads each file inside Rust (utf-8-lossy, same bytes), and fans the batch across scoped threads (`available_parallelism`, ≤16) — reads, strips, and scans scale with cores. Output stays 1:1 with input order; unreadable/panicking files produce empty facts, which merge to nothing — the same as the JS sweep's `if (!rawText) continue`. Side benefit: stage A no longer populates the raw/strip caches, so the big all-or-nothing source cache only retains stage-C/D/E survivors (~16% of files).
+
+Remaining floor: C (30.3s) is now the biggest stage — `processUnit` regex work over surviving units + include re-scans with macro-env expansion; its inline-struct registration order (first-wins in file order) makes naive file sharding unsafe, so a real cut is a Rust port of the linking stages, not a JS change. D (9.9s) + E (15.2s) are the same class.
+
 ## 6. Agent measurements and remaining gaps
 
 - The post-parser-swap [agent baseline](../benchmarks/binding-model-agent-baseline-2026-09-12.md) has 36 runs against 1.6.0 and frozen `86fc9dbc`. Flask and Gin used fewer tools; Vite did not show a time improvement and still required reads.
