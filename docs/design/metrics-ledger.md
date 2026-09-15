@@ -19,6 +19,7 @@ Sources: [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) §3a, 
 | #29, #30, #31 | Binding Phase 2 | Resolution reads the rows; bare-call kind rule; TS/JS source regexes deleted |
 | #33 to #37 | Binding Phase 3 | Rows for Python, Go, Java, Kotlin, PHP, C/C++; every import regex deleted |
 | #39 | Release notes | — |
+| #44 | Binding Phase 4 | Kernel-native read+settle over persisted bindings; per-worker kernel conns on a snapshot copy |
 
 ## 2. Speed, size and footprint (kernel-only plan)
 
@@ -128,6 +129,22 @@ Reading: every probe answered on both builds with a same-sized rendering; the he
 ### 5.3 Coverage
 
 The "failed refs" column above is the coverage counter: references the extractor emitted that resolution left unbound. Between `72a5703b` and head it moves by less than 1% on every corpus (down on flask, jq, svelte, exposed; up on vite and vitest, where bare package imports that used to bind wrongly now stay unbound by design). Between 1.6.0 and head it rises with the node count, because the fork emits more references (interface members, nested functions, value references) than it can bind; that ratio is a property of the added extraction, not of resolution.
+
+### 5.4 Resolution phase cost (Phase 4, #44)
+
+`codegraph init` on the linux-kernel corpus (71,120 files, 5.88M unresolved refs), `CODEGRAPH_SYNTH_TIMINGS=1 CODEGRAPH_RESOLVE_PROFILE=1`, `nice -n 10`, one job on the host. Kernel-on is the merged build (per-worker `KernelResolver` on a checkpointed snapshot copy); kernel-off is the same build with `CODEGRAPH_KERNEL_RESOLVE=0`.
+
+| Measure | Kernel-off | Kernel-on |
+|---|---|---|
+| Resolution phase, total | 243.0–264.8 s (n=2) | 260.8–280.2 s (n=3) |
+| — batch loop stages (read+settle+persist+…) | ~80–86 s | ~95–103 s |
+| — callback-synthesis inside the phase | 136.9 s | 139.7 s (cFnPtr pass 125.4 s) |
+| — ref/edge index recreate | 23.9 s | 23.4 s |
+| — snapshot fold+copy at pool engage | n/a | ~3 s one-time |
+| Kernel-handled refs (of 5.86M loop refs) | 0 | 3,247,661 (55.4% native; rest passthrough to the TS path) |
+| Edges / failed refs | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 |
+
+Reading: Phase 4's goal was determinism and deleting source rescans, and it delivers that — kernel-on and kernel-off produce a byte-identical edge set on the linux corpus (sorted edge dump sha256 `5ebfeee8…`, same failed-ref count). Wall-clock is **a few percent slower, not a speedup**: kernel-on means ~272s vs kernel-off ~254s (ranges overlap, n is small). The delta matches the structure: ~7–9s of kernel-outcome admission/marshal inside the settle stage (22.4–25.0s vs 13.6–15.6s) plus the one-time ~3s snapshot, i.e. ~4–7%. The phase is dominated by callback synthesis (~140s) and main-thread persist (~63s) — per-ref settle is not the bottleneck, so native resolution cannot move wall-clock here. The earlier serial-mode A/B (281s kernel-on vs 229s kernel-off, main-thread `resolveChunk` without the pool) overstated the gap.
 
 ## 6. Agent measurements and remaining gaps
 

@@ -29,6 +29,7 @@ export interface ChunkResult {
   deferredChain: UnresolvedRef[];
   deferredThisMember: UnresolvedRef[];
   byMethod: Record<string, number>;
+  kernel?: { handled: number; passthrough: number };
 }
 
 interface PoolWorker {
@@ -181,6 +182,7 @@ export class ResolverPool {
             deferredChain: msg.deferredChain!,
             deferredThisMember: msg.deferredThisMember!,
             byMethod: msg.byMethod!,
+            kernel: msg.kernel,
           });
         } else if (msg.type === 'synth-result' && msg.id !== undefined) {
           pw.busy--;
@@ -273,6 +275,11 @@ export class ResolverPool {
       out.deferredChain.push(...c.deferredChain);
       out.deferredThisMember.push(...c.deferredThisMember);
       for (const [k, v] of Object.entries(c.byMethod)) out.byMethod[k] = (out.byMethod[k] || 0) + v;
+      if (c.kernel) {
+        out.kernel ??= { handled: 0, passthrough: 0 };
+        out.kernel.handled += c.kernel.handled;
+        out.kernel.passthrough += c.kernel.passthrough;
+      }
     }
     return out;
   }
