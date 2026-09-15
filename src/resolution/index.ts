@@ -935,7 +935,8 @@ export class ReferenceResolver {
   // (resolution-binding-model-plan.md §4). The kernel resolves the
   // binding-backed bare-name slice natively and reports `passthrough` for
   // everything else (unmigrated languages, qualified/receiver/path names,
-  // function_ref), which stays on the TypeScript pipeline.
+  // `this.`/`Cls::m` function-ref shapes), which stays on the TypeScript
+  // pipeline.
   // ------------------------------------------------------------------
 
   /**
