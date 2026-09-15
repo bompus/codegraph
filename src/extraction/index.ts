@@ -126,6 +126,8 @@ export interface SyncResult {
   nodesUpdated: number;
   durationMs: number;
   changedFilePaths?: string[];
+  /** Paths not absorbed because reading or extraction failed; retain for status/retry. */
+  failedFilePaths?: string[];
   /**
    * Symbol names whose set of definitions this sync CHANGED — names the synced
    * files gained or lost, as the symmetric difference of their `file\0name`
@@ -1312,7 +1314,7 @@ export function getGitChangedFiles(rootDir: string, sinceCommit?: string | null)
  * Metadata key: the commit the index was last brought up to date at. Written by
  * a full index AND by every successful sync — unlike the extraction stamp, which
  * a sync must not advance because it only touches a subset of files. This one is
- * about the TREE, and a sync does absorb the whole diff it computed. (#1829)
+ * about the tree; failed file paths remain explicit retry candidates. (#1829)
  */
 export const INDEXED_AT_COMMIT_KEY = 'indexed_at_commit';
 
@@ -1328,21 +1330,17 @@ export function getGitHeadSha(rootDir: string): string | null {
 }
 
 /**
- * `A<TAB>path` / `M<TAB>path` / `D<TAB>path` lines for every path committed
+ * NUL-delimited status/path pairs for every path committed
  * between `sinceCommit` and HEAD. Empty when the stamp IS HEAD, which is the
  * common case — one cheap git call on the hot path.
  */
 function gitCommittedChangesSince(repoDir: string, sinceCommit: string): string[] {
-  try {
-    const out = execFileSync('git', ['diff', '--name-status', '--no-renames', sinceCommit, 'HEAD'], {
-      cwd: repoDir, encoding: 'utf-8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    });
-    return out.split('\n').filter((l) => l.length > 2);
-  } catch {
-    // Unreachable in practice — isCommittedDiffUsable already proved the commit
-    // resolves — but a diff that fails must not take the whole fast path down.
-    return [];
-  }
+  // NUL framing preserves Unicode, quotes, tabs and newlines in Git paths.
+  // Let command failures reach getGitChangedFiles: [] would falsely mean clean.
+  const out = execFileSync('git', ['diff', '--relative', '--name-status', '--no-renames', '-z', sinceCommit, 'HEAD', '--', '.'], {
+    cwd: repoDir, encoding: 'utf-8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+  });
+  return out.split('\0');
 }
 
 /**
@@ -1386,7 +1384,7 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
     // below). Nested untracked git repos still collapse to `?? repo/` even
     // with `-uall` — git never crosses a repo boundary — so the recursion
     // still handles them. (#1213)
-    ['status', '--porcelain', '--no-renames', '-uall'],
+    ['status', '--porcelain', '--no-renames', '-z', '-uall'],
     { cwd: repoDir, encoding: 'utf-8', timeout: 10000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
   );
 
@@ -1436,7 +1434,7 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
   };
 
   const untrackedDirs: string[] = [];
-  for (const line of output.split('\n')) {
+  for (const line of output.split('\0')) {
     if (line.length < 4) continue; // Minimum: "XY file"
 
     const statusCode = line.substring(0, 2);
@@ -1458,11 +1456,9 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
   // `git commit` makes a real pending change read as zero (#1829). The stamp
   // belongs to the ROOT repo, so the embedded-repo recursion below passes none.
   if (sinceCommit) {
-    for (const line of gitCommittedChangesSince(repoDir, sinceCommit)) {
-      const tab = line.indexOf('\t');
-      if (tab < 1) continue;
-      // `A`/`M`/`D`/`T`… — padded to porcelain's two columns for `classify`.
-      classify(`${line.substring(0, tab).charAt(0)} `, normalizePath(line.substring(tab + 1)));
+    const fields = gitCommittedChangesSince(repoDir, sinceCommit);
+    for (let i = 0; i + 1 < fields.length; i += 2) {
+      classify(`${fields[i]!.charAt(0)} `, normalizePath(fields[i + 1]!));
     }
   }
 
@@ -3061,6 +3057,7 @@ export class ExtractionOrchestrator {
     });
 
     const filesToIndex: string[] = [];
+    const failedFilePaths: string[] = [];
     // === Filesystem reconcile (git-independent) ===
     // The source of truth for "what changed" is the filesystem vs the indexed
     // state — never git. We enumerate the current source files and reconcile
@@ -3186,6 +3183,7 @@ export class ExtractionOrchestrator {
           }
         } catch (error) {
           logDebug('Skipping unstattable file during sync', { filePath, error: String(error) });
+          failedFilePaths.push(filePath);
           continue;
         }
       }
@@ -3196,6 +3194,7 @@ export class ExtractionOrchestrator {
         content = fs.readFileSync(fullPath, 'utf-8');
       } catch (error) {
         logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
+        failedFilePaths.push(filePath);
         continue;
       }
       const contentHash = hashContent(content);
@@ -3237,6 +3236,7 @@ export class ExtractionOrchestrator {
       });
 
       const result = await this.indexFile(filePath);
+      if (result.errors.some(e => e.severity === 'error')) failedFilePaths.push(filePath);
       nodesUpdated += result.nodes.length;
 
       const pause = backpressure?.();
@@ -3270,8 +3270,50 @@ export class ExtractionOrchestrator {
       nodesUpdated,
       durationMs: Date.now() - startTime,
       changedFilePaths: changedFilePaths.length > 0 ? changedFilePaths : undefined,
+      ...(failedFilePaths.length > 0 ? { failedFilePaths } : {}),
       definitionDelta: definitionDelta.length > 0 ? definitionDelta : undefined,
     };
+  }
+
+  private indexedDirtyPaths(stamp: string | null): string[] | null {
+    try {
+      const state = JSON.parse(this.queries.getMetadata('indexed_dirty_paths') ?? 'null');
+      if (!state || state.commit !== (stamp ?? '') || !Array.isArray(state.paths)) return null;
+      if (!state.paths.every((p: unknown) => typeof p === 'string' && p.length > 0 &&
+        !path.isAbsolute(p) && !p.split('/').includes('..'))) return null;
+      return state.paths;
+    } catch { return null; }
+  }
+
+  /** Capture before file reads. In-flight/failed full writes must not claim freshness. */
+  beginGitIndexState(full: boolean): { head: string; stamp: string; dirty: string[] | null } {
+    const head = getGitHeadSha(this.rootDir) ?? '';
+    const stamp = this.queries.getMetadata(INDEXED_AT_COMMIT_KEY) ?? '';
+    const prior = this.indexedDirtyPaths(stamp);
+    const status = getGitChangedFiles(this.rootDir);
+    const dirty = status ? [...new Set([
+      ...(full ? [] : prior ?? []), ...status.added, ...status.modified, ...status.deleted,
+    ])] : null;
+    if (full || prior === null || dirty === null) {
+      this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, '');
+      this.queries.setMetadata('indexed_dirty_paths', '');
+    } else {
+      // Scoped writes leave the commit alone and retain dirty paths before the
+      // first write, so a crash cannot forget an indexed uncommitted edit.
+      this.queries.setMetadata('indexed_dirty_paths', JSON.stringify({ commit: stamp, paths: dirty }));
+    }
+    return { head, stamp, dirty };
+  }
+
+  finishGitIndexState(snapshot: { head: string; stamp: string; dirty: string[] | null }, full: boolean, retries: string[] = []): void {
+    const after = getGitChangedFiles(this.rootDir);
+    if (!snapshot.dirty || !after) return;
+    const commit = full ? snapshot.head : snapshot.stamp;
+    const paths = [...new Set([...snapshot.dirty, ...after.added, ...after.modified, ...after.deleted, ...retries])].sort();
+    // The embedded commit makes a torn pair fail closed: readers reject a dirty
+    // set that doesn't match the separately stored commit. Write the set first.
+    this.queries.setMetadata('indexed_dirty_paths', JSON.stringify({ commit, paths }));
+    if (full) this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, commit);
   }
 
   /**
@@ -3285,7 +3327,8 @@ export class ExtractionOrchestrator {
     // full index writes the stamp. (#1829)
     let sinceCommit: string | null = null;
     try { sinceCommit = this.queries.getMetadata(INDEXED_AT_COMMIT_KEY) ?? null; } catch { /* advisory */ }
-    const gitChanges = canTrustGitFastPath(this.rootDir, sinceCommit)
+    const dirtyPaths = this.indexedDirtyPaths(sinceCommit);
+    const gitChanges = dirtyPaths !== null && canTrustGitFastPath(this.rootDir, sinceCommit)
       ? getGitChangedFiles(this.rootDir, sinceCommit)
       : null;
 
@@ -3295,50 +3338,27 @@ export class ExtractionOrchestrator {
       const modified: string[] = [];
       const removed: string[] = [];
 
-      // One file can now reach these lists from two candidate sources — the
-      // working tree AND the committed diff — when it was committed and then
-      // edited again. It is still one changed file: counting it twice would
-      // inflate `pendingChanges` and hand sync the same path twice. (#1829)
-      // Kept per list, not shared: a path can legitimately be BOTH — a commit
-      // deleted it and the working tree recreated it untracked — and that is a
-      // removal followed by an add, exactly as before.
-      const seenGone = new Set<string>();
-      const seenHere = new Set<string>();
-
-      // Deleted files — only report if tracked in DB
-      for (const filePath of gitChanges.deleted) {
-        if (seenGone.has(filePath)) continue;
-        seenGone.add(filePath);
+      // Git supplies candidates, never the verdict. A committed deletion may
+      // have been recreated locally; a previously indexed dirty path may have
+      // vanished from git status after restore. Classify current disk vs DB once.
+      const candidates = new Set([...gitChanges.deleted, ...gitChanges.modified, ...gitChanges.added, ...dirtyPaths!]);
+      const scope = this.scopedSyncMatcher();
+      const overrides = loadExtensionOverrides(this.rootDir);
+      for (const filePath of candidates) {
         const tracked = this.queries.getFileByPath(filePath);
-        if (tracked) {
-          removed.push(filePath);
-        }
-      }
-
-      // Modified + added files — read + hash, compare with DB. Untracked (`??`)
-      // files stay untracked in git even after indexing, so they must be
-      // hash-compared like modified files instead of always counting as added —
-      // otherwise status reports them as pending forever. (See issue #206.)
-      for (const filePath of [...gitChanges.modified, ...gitChanges.added]) {
-        if (seenHere.has(filePath)) continue;
-        seenHere.add(filePath);
         const fullPath = path.join(this.rootDir, filePath);
+        if (!isSourceFile(filePath, overrides) || scope.ignores(filePath) || !fs.existsSync(fullPath)) {
+          if (tracked) removed.push(filePath);
+          continue;
+        }
         let content: string;
-        try {
-          content = fs.readFileSync(fullPath, 'utf-8');
-        } catch (error) {
+        try { content = fs.readFileSync(fullPath, 'utf-8'); }
+        catch (error) {
           logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
           continue;
         }
-
-        const contentHash = hashContent(content);
-        const tracked = this.queries.getFileByPath(filePath);
-
-        if (!tracked) {
-          added.push(filePath);
-        } else if (tracked.contentHash !== contentHash) {
-          modified.push(filePath);
-        }
+        if (!tracked) added.push(filePath);
+        else if (tracked.contentHash !== hashContent(content)) modified.push(filePath);
       }
 
       return { added, modified, removed };

@@ -521,6 +521,7 @@ export class CodeGraph {
         walValve.start();
       }
       try {
+        const gitState = this.orchestrator.beginGitIndexState(true);
         const before = this.queries.getNodeAndEdgeCount();
         // Mark the index as in-flight BEFORE any writes: a run killed
         // mid-index (OOM, SIGKILL, the #850 liveness watchdog) leaves this
@@ -711,6 +712,11 @@ export class CodeGraph {
           } catch { /* metadata is advisory — never fail an index over it */ }
         }
 
+        if (result.success && result.filesErrored === 0 &&
+          (result.filesDiscovered === undefined || result.filesIndexed + result.filesSkipped >= result.filesDiscovered)) {
+          this.orchestrator.finishGitIndexState(gitState, true);
+        }
+
         // Reconcile the scan's ground truth against what the pipeline
         // accounted for. A shortfall means files were silently dropped
         // (observed in the wild: a run under heavy load came up 37 files
@@ -843,11 +849,8 @@ export class CodeGraph {
         // timer-driven PASSIVE checkpoints ran, and a query-pool reader could
         // pin frames while the WAL grew without a bound.
         const backpressure = walValve ? () => walValve!.backpressure() : undefined;
-        // Captured BEFORE change detection runs, not after: if a commit lands
-        // while this sync is working, stamping the NEW head would claim we
-        // absorbed a diff we never looked at. Stamping the older commit only
-        // costs the next run a re-check of what it already has. (#1829)
-        const headBeforeSync = getGitHeadSha(this.projectRoot);
+        const fullReconcile = !options.paths || options.paths.length === 0;
+        const gitState = this.orchestrator.beginGitIndexState(fullReconcile);
 
         const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure);
 
@@ -1054,21 +1057,11 @@ export class CodeGraph {
         // A killed full index leaves this marker at `indexing`. Sync repairs
         // missing files, pending refs, and (on open) dropped indexes, so a
         // successful recovery must also close the metadata state (#1556).
-        const fullReconcile = !options.paths || options.paths.length === 0;
         if (fullReconcile && this.getIndexState() === 'indexing') {
           try { this.queries.setMetadata('index_state', 'complete'); } catch { /* advisory */ }
         }
 
-        // Stamp the commit this sync brought the tree up to date at, so the
-        // NEXT change detection can see what was committed since. Only on a
-        // whole-tree sync: a `--paths` subset absorbed part of the diff, and
-        // stamping HEAD would tell the next run the rest was already indexed.
-        // Unlike the extraction stamp above, a sync DOES advance this one —
-        // it is about which tree the files came from, not which extractor
-        // produced their symbols. (#1829)
-        if (fullReconcile && headBeforeSync) {
-          try { this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, headBeforeSync); } catch { /* advisory */ }
-        }
+        this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
 
         return result;
       } finally {
