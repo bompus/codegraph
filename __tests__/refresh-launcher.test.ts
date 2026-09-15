@@ -164,9 +164,9 @@ async function start({
         for (const match of readFileSync(log, "utf8").matchAll(/Listening on .*?\(pid (\d+)/g))
           pids.push(Number(match[1]));
       }
-      console.error("PIDS="+JSON.stringify(pids));
+      for (const pid of pids) if (alive(pid)) process.kill(pid);
       lines.close();
-      console.error("PRESERVED_DIR="+directory); /* await rmTempDir(directory); */
+      await rmTempDir(directory);
     }
   });
   if (initialize) {
