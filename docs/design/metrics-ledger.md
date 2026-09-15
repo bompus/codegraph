@@ -192,3 +192,20 @@ Reading: verdict-identical output — the only refs whose handling changed were 
 - The [Gin follow-up](../benchmarks/gin-fallbacks-2026-09-12.md) addresses the recorded rendering and binding gaps at `ed5033cb`. Exact-query replay restores 19/19 rendering lines and the missing grouped-variable declaration. Eight Flask/Vite control responses remain byte-identical; Gin precision retains all three cases with no lost edges. Both arms of its fresh 16-run A/B have zero fallback access, so the replay—not a reduction in fresh fallback counts—is the omission proof. Extraction version 36 requires re-indexing Go projects for the grouped declarations.
 - macOS: no run of the native-only kernel on macOS at all. Validation remains outstanding and needs a separate build/test run; see the fork release policy in [AGENTS.md](../../AGENTS.md#releases).
 - Go `BindBody` now has scored present/absent controls and all seven corrected endpoints were reviewed. The C++ `begin` same-name ties have a scored truth set at the commit below: 6 present + 4 absent cases, 11/11 held, with the wrong-present inventory (75 cross-TU / `using std::begin` / vector-member edges) recorded as the backlog for the next resolution work rather than encoded (review-corrected: 75 in the main tree plus 18 same-shape edges in the vendored ABI copy, 93 wrong-present total).
+
+### 5.7 `function_ref` bare-name port — native share round
+
+§5.6 left `function_ref` as the biggest remaining passthrough bucket: the kind was excluded from kernel eligibility outright, so ~700k corpus refs rode the TS pipeline to reach a dedicated path (`resolveViaImport` kind-gated to function/method/Python-class, then `matchFunctionRef`) that never touches frameworks or the fuzzy matchers. The kernel now runs that arm itself: prefilter miss is terminal (`matchJsStoreBindingCall` is `calls`-gated — dead for `function_ref`), the import hit is kind-gated and *discarded* on gate failure (not pooled), then the bare name arm — same-file earliest-line at 0.95/0.9, unique-or-drop cross-file at 0.8, `bareFnOnly`/`bareClassOk` kind gates, Swift implicit-self method scoping, `is_final` so no framework merge attaches. `this.`/`Cls::m` shapes carry a separator, stay ineligible, and keep the TS arms.
+
+Same corpus run (`codegraph index`, `SYNTH_TIMINGS=1 RESOLVE_PROFILE=1`, kernel-on, niced under a co-tenant build — timings carry contention):
+
+| Measure | After #47 | After (#48) |
+|---|---|---|
+| Kernel-handled refs (of 5.86M) | 4,803,308 (82.3%) | **5,366,728 (91.5%)** |
+| Passthrough to TS | 1,036,196 | 497,776 |
+| Edges / failed refs | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 (identical) |
+| Resolution phase, total | 278.3 s | 264.0 s |
+| — settle stage | 33.7 s | 27.4 s |
+| TS-path `function_ref` across workers | ~700 k | ~490 (the non-bare `this.`/`Cls::m` shapes) |
+
+Reading: the last excluded kind is native — 91.5% of the resolution loop now settles without a TS round-trip, verdict-identical (edges and failed refs byte-for-byte at the corpus level; the parity test pins every arm including the kind-gated import discard). Wall-clock again moves only within noise: the moved refs were cheap misses, and the floor remains persist + synthesis. Remaining passthroughs (~500k) are `no_candidates` punts, gated imports, JS store-bind files, and the non-bare function_ref shapes.
