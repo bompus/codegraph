@@ -1869,12 +1869,14 @@ export class ReferenceResolver {
     deferredChain: UnresolvedRef[];
     deferredThisMember: UnresolvedRef[];
     byMethod: Record<string, number>;
+    kernel?: { handled: number; passthrough: number };
   } {
     this.warmCaches();
     this.advanceSupertypeGeneration();
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
     const byMethod: Record<string, number> = {};
+    const kernelStats = { handled: 0, passthrough: 0 };
 
     // Phase 4 (worker variant): each pool worker holds a KernelResolver over
     // its own read-only connection, so the binding-backed bare-name slice
@@ -1913,6 +1915,8 @@ export class ReferenceResolver {
             rowId: raw.rowId,
           };
           const outcome = outcomes[i]!;
+          if (outcome.status === 'passthrough') kernelStats.passthrough++;
+          else kernelStats.handled++;
           const result = outcome.status === 'passthrough'
             ? this.resolveOneTimed(ref)
             : this.settleKernelOutcome(ref, outcome);
@@ -1933,6 +1937,7 @@ export class ReferenceResolver {
           deferredChain: this.deferredChainRefs.splice(0),
           deferredThisMember: this.deferredThisMemberRefs.splice(0),
           byMethod,
+          kernel: kernelStats,
         };
       } catch (err) {
         logDebug('Worker kernel resolution failed; staying on the TypeScript path', {
@@ -1968,6 +1973,7 @@ export class ReferenceResolver {
       deferredChain: this.deferredChainRefs.splice(0),
       deferredThisMember: this.deferredThisMemberRefs.splice(0),
       byMethod,
+      kernel: kernelStats,
     };
   }
 
@@ -2101,39 +2107,6 @@ export class ReferenceResolver {
     let shadowChecked = 0;
     let shadowDivergent = 0;
 
-    // CODEGRAPH_RESOLVE_DEBUG rolling undo-detector state (see the write-check
-    // block inside the loop).
-    const settledRing: Array<{ span: string; ids: number[]; deferred: Set<number> }> = [];
-    const RING_DEPTH = 16;
-    let inodeAtStart: string | null = null;
-    if (process.env.CODEGRAPH_RESOLVE_DEBUG && parallel?.dbPath) {
-      try {
-        const st = fs.statSync(parallel.dbPath);
-        inodeAtStart = `${st.dev}:${st.ino}`;
-      } catch { /* best-effort */ }
-    }
-    const settledIdsDb = (this.queries as unknown as { db: { prepare: (s: string) => { all: (...a: unknown[]) => { id: number }[] } } }).db;
-
-    // WAL-header tracker: bytes 12..24 hold ckpt_seq + salt1 + salt2 — a WAL
-    // restart (checkpoint resetting the index) bumps them. Per-iteration, so
-    // an undo correlates exactly with the restart that orphaned its frames.
-    let walHdrPrev: string | null = null;
-    const readWalHdr = (): string | null => {
-      if (!parallel?.dbPath) return null;
-      try {
-        const fd = fs.openSync(parallel.dbPath + '-wal', 'r');
-        try {
-          const buf = Buffer.alloc(24);
-          fs.readSync(fd, buf, 0, 24, 0);
-          return buf.toString('hex');
-        } finally {
-          fs.closeSync(fd);
-        }
-      } catch {
-        return null;
-      }
-    };
-
     const total = this.queries.getUnresolvedReferencesCount();
     let processed = 0;
     const aggregateStats = {
@@ -2141,6 +2114,7 @@ export class ReferenceResolver {
       resolved: 0,
       unresolved: 0,
       byMethod: {} as Record<string, number>,
+      kernel: undefined as { handled: number; passthrough: number } | undefined,
     };
 
     // Parallel pool, started immediately but never awaited up front: early
@@ -2412,6 +2386,7 @@ export class ReferenceResolver {
             resolved: resolved.length,
             unresolved: unresolved.length,
             byMethod,
+            kernel: { handled: inFlight.kernelRefs.length - inFlight.ptIdx.length, passthrough: inFlight.ptIdx.length },
           },
         };
       }
@@ -2427,6 +2402,7 @@ export class ReferenceResolver {
               resolved: settled.out.resolved.length,
               unresolved: settled.out.unresolved.length,
               byMethod: settled.out.byMethod,
+              kernel: settled.out.kernel,
             },
           };
         }
@@ -2501,9 +2477,6 @@ export class ReferenceResolver {
         next = readPage(afterRowId, prerequisites);
       }
       if (next.refs.length > 0) afterRowId = next.refs[next.refs.length - 1]!.rowId!;
-      if (process.env.CODEGRAPH_RESOLVE_DEBUG && next.refs.length > 0) {
-        fs.appendFileSync('/tmp/resolve-read-ids.txt', next.refs.map((r) => r.rowId).join(',') + '\n');
-      }
       return next;
     };
     tLp = Date.now();
@@ -2624,19 +2597,11 @@ export class ReferenceResolver {
       const edges = this.createEdges(result.resolved);
       lp('createEdges', tLp);
       tLp = Date.now();
-      if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
-        const raw = (this.queries as unknown as { db: { _db?: { isTransaction: boolean } } }).db._db;
-        if (raw?.isTransaction) console.error(`[resolve-debug] TX-OPEN-BEFORE-EDGES batch [${batch.refs[0]?.rowId}..${batch.refs[batch.refs.length - 1]?.rowId}]`);
-      }
       for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
         this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
         await maybeYield();
       }
       lp('insertEdges', tLp);
-      if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
-        const raw = (this.queries as unknown as { db: { _db?: { isTransaction: boolean } } }).db._db;
-        if (raw?.isTransaction) console.error(`[resolve-debug] TX-OPEN-AFTER-EDGES batch [${batch.refs[0]?.rowId}..${batch.refs[batch.refs.length - 1]?.rowId}]`);
-      }
 
       // NOW fan the next batch out — workers see exactly the edge state the
       // sequential baseline would (every batch ≤ this one committed), while
@@ -2660,10 +2625,6 @@ export class ReferenceResolver {
         await maybeYield();
       }
       lp('deletes', tLp);
-      if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
-        const raw = (this.queries as unknown as { db: { _db?: { isTransaction: boolean } } }).db._db;
-        if (raw?.isTransaction) console.error(`[resolve-debug] TX-OPEN-AFTER-DELETES batch [${batch.refs[0]?.rowId}..${batch.refs[batch.refs.length - 1]?.rowId}]`);
-      }
 
       // Park unresolvable refs from this batch as status='failed' so they
       // leave the pending set (the batch reader and non-progress guard below
@@ -2683,117 +2644,9 @@ export class ReferenceResolver {
       }
       lp('marks', tLp);
       if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
-        const raw = (this.queries as unknown as { db: { _db?: { isTransaction: boolean } } }).db._db;
-        if (raw?.isTransaction) console.error(`[resolve-debug] TX-OPEN-AFTER-MARKS batch [${batch.refs[0]?.rowId}..${batch.refs[batch.refs.length - 1]?.rowId}]`);
-      }
-
-      if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
         const first = batch.refs[0]?.rowId ?? -1;
         const last = batch.refs[batch.refs.length - 1]?.rowId ?? -1;
         console.error(`[resolve-debug] batch [${first}..${last}] mode=${inFlight.mode} refs=${batch.refs.length} res=${result.resolved.length} unres=${result.unresolved.length} deferred=${deferredCount} removed=${removedThisBatch}`);
-        // Bucket map per batch row: R=resolved-delete, F=failed-mark,
-        // L=legacy-key mark/delete, D=deferred-filtered, ?=absent from results.
-        const bucket = new Map<number, string>();
-        for (const id of resolvedCleanup.rowIds) bucket.set(id, 'R');
-        for (const f of failedCleanup.byRowId) bucket.set(f.rowId, 'F');
-        for (const _r of resolvedCleanup.legacyKeys) bucket.set(-1, 'L');
-        for (const u of result.unresolved) {
-          if (u.rowId != null && this.deferredRowIds.has(u.rowId)) bucket.set(u.rowId, 'D');
-        }
-        let map = '';
-        for (const r of batch.refs) map += bucket.get(r.rowId ?? -1) ?? '?';
-        fs.appendFileSync('/tmp/resolve-cleanup-map.txt', `${first}..${last} ${map}\n`);
-        // Read-your-writes: after this batch's deletes+marks commit, the only
-        // pending rows left among THIS batch's read ids should be the deferred
-        // ones. Check the actual id list, not the span (later unread rows
-        // share the range).
-        const batchIds = batch.refs.map((r) => r.rowId).filter((x): x is number => x != null);
-        const stillPending = (this.queries as unknown as { db: { prepare: (s: string) => { all: (...a: unknown[]) => { id: number }[] } } }).db
-          .prepare(`SELECT id FROM unresolved_refs WHERE status='pending' AND id IN (${batchIds.map(() => '?').join(',')})`)
-          .all(...batchIds).map((r) => r.id);
-        if (stillPending.length !== deferredCount) {
-          console.error(`[resolve-debug] WRITE-LOSS batch [${first}..${last}] stillPending=${stillPending.length} deferred=${deferredCount}`);
-          fs.appendFileSync('/tmp/resolve-write-loss.txt', `${first}..${last} stillPending=${stillPending.length} deferred=${deferredCount} ids=${stillPending.join(',')}\n`);
-        }
-        // Rolling undo detector: a batch verified clean at its own persist but
-        // pending again later brackets the undo to the iterations since. Check
-        // ALL ring entries every iteration (one join over a temp table) so the
-        // undo window narrows to a single iteration, not the ring depth.
-        const deferredIds = new Set(
-          result.unresolved.filter((u) => u.rowId != null && this.deferredRowIds.has(u.rowId)).map((u) => u.rowId as number)
-        );
-        settledRing.push({ span: `${first}..${last}`, ids: batchIds, deferred: deferredIds });
-        if (settledRing.length > RING_DEPTH) settledRing.shift();
-        if (settledRing.length > 1) {
-          (this.queries as unknown as { db: { exec: (s: string) => void; prepare: (s: string) => { run: (...a: unknown[]) => unknown; all: (...a: unknown[]) => { id: number }[] } } }).db.exec('CREATE TEMP TABLE IF NOT EXISTS cg_ring_ids (id INTEGER PRIMARY KEY)');
-          const ringDb = settledIdsDb as unknown as { exec: (s: string) => void; prepare: (s: string) => { run: (...a: unknown[]) => unknown; all: (...a: unknown[]) => { id: number }[] } };
-          ringDb.exec('DELETE FROM cg_ring_ids');
-          const ins = ringDb.prepare('INSERT INTO cg_ring_ids (id) VALUES (?)');
-          const idToSpan = new Map<number, string>();
-          const idToDeferred = new Map<number, Set<number>>();
-          for (const e of settledRing) {
-            for (const id of e.ids) { ins.run(id); idToSpan.set(id, e.span); idToDeferred.set(id, e.deferred); }
-          }
-          const againPending = ringDb
-            .prepare("SELECT r.id AS id FROM unresolved_refs u JOIN cg_ring_ids r ON u.id = r.id WHERE u.status='pending'")
-            .all()
-            .map((r) => r.id);
-          const realUndos = againPending.filter((id) => !idToDeferred.get(id)?.has(id));
-          if (realUndos.length > 0) {
-            const bySpan = new Map<string, number>();
-            for (const id of realUndos) bySpan.set(idToSpan.get(id)!, (bySpan.get(idToSpan.get(id)!) ?? 0) + 1);
-            const summary = [...bySpan.entries()].map(([s, n]) => `${s}:${n}`).join(' ');
-            console.error(`[resolve-debug] UNDO-DETECTED rePending=${realUndos.length} at current batch [${first}..${last}] spans: ${summary}`);
-            fs.appendFileSync('/tmp/resolve-undo.txt', `atBatch=${first}..${last} rePending=${realUndos.length} spans=${summary} ids=${realUndos.join(',')}\n`);
-            // World state at detection: journal/sync mode, tx state, file stats.
-            try {
-              const jm = ringDb.prepare('PRAGMA journal_mode').all() as unknown as Record<string, unknown>[];
-              const sy = ringDb.prepare('PRAGMA synchronous').all() as unknown as Record<string, unknown>[];
-              const raw = (settledIdsDb as unknown as { _db?: { isTransaction: boolean } })._db;
-              const p = (parallel?.dbPath ?? '') as string;
-              const stat = (f: string) => { try { const s = fs.statSync(f); return `${s.dev}:${s.ino}:${s.size}`; } catch { return 'absent'; } };
-              fs.appendFileSync(
-                '/tmp/resolve-undo.txt',
-                `STATE jm=${JSON.stringify(jm)} sync=${JSON.stringify(sy)} inTx=${raw?.isTransaction} db=${stat(p)} wal=${stat(p + '-wal')} shm=${stat(p + '-shm')}\n`
-              );
-            } catch { /* debug only */ }
-            // Forensic mode: die instantly so the live WAL+SHM survive for
-            // offline recovery analysis — a fresh open rebuilds the wal-index
-            // by scanning every frame, proving whether the lost commits'
-            // frames exist in the file (index corruption) or never landed.
-            if (process.env.CODEGRAPH_KILL_ON_UNDO === '1') {
-              fs.appendFileSync('/tmp/resolve-undo.txt', 'KILL_ON_UNDO firing\n');
-              process.kill(process.pid, 'SIGKILL');
-            }
-          }
-        }
-        // WAL restart detector: the -wal header's salt/ckpt_seq changes only
-        // when a checkpoint resets the log. Log every change; an undo whose
-        // window contains a change means the reset orphaned committed frames.
-        const walHdr = readWalHdr();
-        if (walHdr !== walHdrPrev) {
-          const line = `WALHDR atBatch=${first}..${last} ${walHdrPrev ?? 'init'} -> ${walHdr}`;
-          console.error(`[resolve-debug] ${line}`);
-          fs.appendFileSync('/tmp/resolve-undo.txt', line + '\n');
-          walHdrPrev = walHdr;
-        }
-        // Leaked-transaction probe: between persist calls the connection must
-        // be in autocommit; an open tx here means cleanup writes are buffered
-        // in a transaction that a later error path can roll back wholesale.
-        const rawDb = (settledIdsDb as unknown as { _db?: { isTransaction: boolean } })._db;
-        if (rawDb?.isTransaction) {
-          console.error(`[resolve-debug] TXLEAK at batch [${first}..${last}] — connection still in transaction after persists`);
-          fs.appendFileSync('/tmp/resolve-undo.txt', `TXLEAK atBatch=${first}..${last}\n`);
-        }
-        // Inode check: the live file must still be the one we opened — a
-        // same-path recreate would strand every write after the swap.
-        try {
-          const ino = `${fs.statSync((parallel?.dbPath ?? '') as string).dev}:${fs.statSync(parallel?.dbPath ?? '').ino}`;
-          if (inodeAtStart && ino !== inodeAtStart) {
-            console.error(`[resolve-debug] FILE-REPLACED at batch [${first}..${last}] inode ${inodeAtStart} -> ${ino}`);
-            fs.appendFileSync('/tmp/resolve-undo.txt', `FILE-REPLACED atBatch=${first}..${last}\n`);
-          }
-        } catch { /* transient absence during a swap shows up on the next pass too */ }
       }
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] batch persist: ${Date.now() - tPersist}ms`);
 
@@ -2803,6 +2656,11 @@ export class ReferenceResolver {
       aggregateStats.unresolved += result.stats.unresolved;
       for (const [method, count] of Object.entries(result.stats.byMethod)) {
         aggregateStats.byMethod[method] = (aggregateStats.byMethod[method] || 0) + count;
+      }
+      if (result.stats.kernel) {
+        aggregateStats.kernel ??= { handled: 0, passthrough: 0 };
+        aggregateStats.kernel.handled += result.stats.kernel.handled;
+        aggregateStats.kernel.passthrough += result.stats.kernel.passthrough;
       }
 
       processed += batch.refs.length;
@@ -2926,6 +2784,11 @@ export class ReferenceResolver {
     }
     if (kernelShadow) {
       console.error(`[kernel-shadow] ${shadowChecked} kernel-handled refs checked, ${shadowDivergent} divergent`);
+    }
+    if (aggregateStats.kernel && process.env.CODEGRAPH_RESOLVE_PROFILE) {
+      const { handled, passthrough } = aggregateStats.kernel;
+      const pct = handled + passthrough > 0 ? ((100 * handled) / (handled + passthrough)).toFixed(1) : '0';
+      console.error(`[resolve-profile] kernel: handled=${handled} passthrough=${passthrough} (${pct}% native)`);
     }
     if (loopProf) {
       const parts = Object.entries(loopProf).map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}s`).join(' ');

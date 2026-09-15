@@ -83,6 +83,8 @@ export interface ResolutionResult {
     resolved: number;
     unresolved: number;
     byMethod: Record<string, number>;
+    /** Kernel-path accounting: refs settled natively vs handed back to TS */
+    kernel?: { handled: number; passthrough: number };
   };
 }
 
