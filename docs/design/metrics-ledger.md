@@ -164,6 +164,25 @@ What moved: stage A was already native (`cfnptrScanFiles`) but single-threaded o
 
 Remaining floor: C (30.3s) is now the biggest stage — `processUnit` regex work over surviving units + include re-scans with macro-env expansion; its inline-struct registration order (first-wins in file order) makes naive file sharding unsafe, so a real cut is a Rust port of the linking stages, not a JS change. D (9.9s) + E (15.2s) are the same class.
 
+### 5.6 Framework `claimsReference` port — native share round
+
+§5.4's 55.4% native share was gated mostly by one boolean: with ANY framework detected (`frameworks_active`), every prefilter miss, empty-candidate list, and gated import deferred to TypeScript "in case a framework resolver wants it". On the linux corpus the detected set was `express` alone — which has no `claimsReference` at all — yet ~1.9M `fail:calls` refs still rode the full `resolveOneInner` dispatch to reach the same prefilter miss.
+
+Each `claimsReference` is a pure name-shape predicate, so the kernel now evaluates that arm natively: the config carries `frameworkNames` (the detected `f.name` list), `resolve.rs` replicates every registered resolver's predicate (JS `\w` spelled `[A-Za-z0-9_]`), a resolver with no `claimsReference` claims nothing, and an unlisted name (custom `registerFrameworkResolver`) claims everything — a conservative passthrough, never a wrong verdict. A config that omits `frameworkNames` keeps the old claim-everything behavior. The `no_candidates` and gated-import arms still defer: framework `resolve()` output is not claims-gated, and a ≥0.9 framework hit can still displace the kernel's winner.
+
+Same corpus run (`codegraph index`, `SYNTH_TIMINGS=1 RESOLVE_PROFILE=1`, kernel-on):
+
+| Measure | Before (#46) | After |
+|---|---|---|
+| Kernel-handled refs (of 5.86M) | 3,247,661 (55.4%) | **4,803,308 (82.3%)** |
+| Passthrough to TS | 2,616,843 | 1,036,196 |
+| Edges / failed refs | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 (identical) |
+| Resolution phase, total | 260.8–280.2 s (n=3) | 278.3 s |
+| — settle stage | 22.4–25.0 s | 33.7 s (more refs settled natively, ~6µs each) |
+| TS-path `fail:calls` across workers | ~1.9 M | ~20 k |
+
+Reading: verdict-identical output — the only refs whose handling changed were `!pre_pass && !claimed`, which the TS prefilter already dropped (non-JS refs fall to `matchJsStoreBindingCall`, which is null for them; JS store-bind candidates still passthrough earlier). Wall-clock is unchanged inside the run range: the moved refs were already the cheapest TS misses, and the phase floor is persist (~63s) + synthesis (~103s post-#46) + loop overhead, not per-ref verdict cost. The value is coverage — 82% of the loop now resolves where native wins compound — plus a quieter TS path (the `fail:calls` dispatch mass is gone). Remaining passthroughs are dominated by `function_ref` (~700k, an excluded kind with its own dedicated pipeline), `no_candidates` punts, gated imports, and JS store-bind files.
+
 ## 6. Agent measurements and remaining gaps
 
 - The post-parser-swap [agent baseline](../benchmarks/binding-model-agent-baseline-2026-09-12.md) has 36 runs against 1.6.0 and frozen `86fc9dbc`. Flask and Gin used fewer tools; Vite did not show a time improvement and still required reads.

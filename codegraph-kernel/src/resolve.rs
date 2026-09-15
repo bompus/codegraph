@@ -56,6 +56,84 @@ fn is_migrated_language(lang: &str) -> bool {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Framework `claimsReference` predicates (src/resolution/frameworks/*.ts).
+// Each is a pure name-shape function — no context — so the kernel can
+// evaluate the prefilter's last arm natively instead of deferring every
+// prefilter miss to TypeScript whenever ANY framework is detected. JS `\w`
+// is ASCII without /u, so the ports spell it `[A-Za-z0-9_]`. Registered
+// resolvers without a claimsReference claim nothing; an unlisted name
+// (a custom registerFrameworkResolver) claims everything — a conservative
+// passthrough, never a wrong verdict.
+// ---------------------------------------------------------------------------
+
+static DRUPAL_CLAIM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*::?[A-Za-z0-9_]+$").unwrap());
+static EXPO_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|\.)(?:push|replace|navigate|dismissTo)$|^[a-z][A-Za-z]*(?:Push|Replace|Navigate)$")
+        .unwrap()
+});
+static LARAVEL_CLAIM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*Controller@[A-Za-z0-9_]+$").unwrap());
+static NEXT_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|\.)(?:push|replace|prefetch)$|^(?:redirect|permanentRedirect)$|^(?:NextResponse|Response)\.redirect$").unwrap()
+});
+static PLAY_CLAIM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$").unwrap());
+static RR_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:history|navigate|router)\.(?:push|replace|navigate)$|^(?:navigate|redirect)$")
+        .unwrap()
+});
+static RAILS_CLAIM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_/]+#[A-Za-z0-9_]+$").unwrap());
+static TANSTACK_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:navigate|redirect)$|^(?:router|Route)\.navigate$").unwrap()
+});
+static TERRA_CLAIM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^module\.[^.:\s]+:(?:file$|var\.|output\.|remote-output\.)").unwrap()
+});
+static VUE_NAV_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\$?router\.(?:push|replace)$|^navigateTo$").unwrap());
+
+/// `f.claimsReference(name)` for the resolver registered as `framework`
+/// (`f.name`), or the conservative claim for names the kernel does not know.
+fn framework_claims_reference(framework: &str, name: &str) -> bool {
+    match framework {
+        "cics" => name.starts_with("cics-transid:"),
+        "django" => name == "_iterable_class" || name.ends_with(".urls"),
+        "drupal" => {
+            name.starts_with("hook_") || name.contains('\\') || DRUPAL_CLAIM_RE.is_match(name)
+        }
+        "expo-router" => EXPO_NAV_RE.is_match(name),
+        "laravel" => LARAVEL_CLAIM_RE.is_match(name),
+        "nextjs" => NEXT_NAV_RE.is_match(name),
+        "play" => PLAY_CLAIM_RE.is_match(name),
+        // react-native-bridge's claimsReference returns false — JS-visible
+        // method names reach the resolver through the name-exists arm.
+        "react-native-bridge" => false,
+        "react-router" => RR_NAV_RE.is_match(name),
+        "rails" => RAILS_CLAIM_RE.is_match(name),
+        "spring" => name.ends_with(":prefix"),
+        "sveltekit-router" => matches!(name, "goto" | "redirect"),
+        "swift-objc-bridge" => name.contains(':'),
+        "tanstack-router" => TANSTACK_NAV_RE.is_match(name),
+        "terraform" => TERRA_CLAIM_RE.is_match(name),
+        "vue-router" => VUE_NAV_RE.is_match(name),
+        "aspnet" | "astro" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
+        | "go" | "goframe" | "nestjs" | "react" | "rust" | "svelte" | "swiftui" | "uikit"
+        | "vapor" | "vue" => false,
+        _ => true,
+    }
+}
+
+/// Diagnostic/differential probe: `f.claimsReference(name)` for the resolver
+/// registered as `framework` — the same table `framework_claims` iterates,
+/// including the conservative claim for names the kernel does not know.
+#[napi]
+pub fn framework_claims_name(framework: String, name: String) -> bool {
+    framework_claims_reference(&framework, &name)
+}
+
 /// LANGUAGE_FAMILY (name-matcher.ts).
 fn language_family(lang: &str) -> Option<&'static str> {
     match lang {
@@ -545,6 +623,11 @@ pub struct KernelResolverConfig {
     /// When true the TS orchestrator still runs framework resolvers; the
     /// kernel then reports its candidate list instead of a bare verdict.
     pub frameworks_active: bool,
+    /// Names (`f.name`) of the detected framework resolvers, for the
+    /// kernel's `claimsReference` evaluation. `None` means "not supplied"
+    /// — the kernel then treats every prefilter miss as claimed, matching
+    /// the old `frameworks_active`-only behavior.
+    pub framework_names: Option<Vec<String>>,
     /// Max distinct-name count for the fuzzy matcher (queries.fuzzyMatchCeiling).
     pub ambiguous_name_ceiling: Option<u32>,
 }
@@ -689,6 +772,7 @@ pub struct KernelResolver {
     cpp_include_dirs: Vec<String>,
     node_builtins: HashSet<String>,
     frameworks_active: bool,
+    framework_names: Option<Vec<String>>,
     ambiguous_ceiling: i64,
 
     known_names: HashSet<String>,
@@ -757,6 +841,7 @@ impl KernelResolver {
             cpp_include_dirs,
             node_builtins: config.node_builtin_specifiers.into_iter().collect(),
             frameworks_active: config.frameworks_active,
+            framework_names: config.framework_names,
             ambiguous_ceiling: config.ambiguous_name_ceiling.unwrap_or(500) as i64,
             known_names: HashSet::new(),
             known_files: HashSet::new(),
@@ -1583,6 +1668,20 @@ impl KernelResolver {
     fn matches_any_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
         let imports = self.import_mappings(&r.file_path)?;
         Ok(imports.iter().any(|i| i.local_name == r.reference_name))
+    }
+
+    /// `frameworks.some(f => f.claimsReference?.(name))` — the prefilter's
+    /// fourth arm, evaluated over the detected resolver names. A config
+    /// without `framework_names` predates the refinement: every miss is
+    /// conservatively claimed (the old `frameworks_active` behavior).
+    fn framework_claims(&self, name: &str) -> bool {
+        if !self.frameworks_active {
+            return false;
+        }
+        match &self.framework_names {
+            None => true,
+            Some(names) => names.iter().any(|f| framework_claims_reference(f, name)),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -3042,12 +3141,12 @@ impl KernelResolver {
             return Ok(ResolveOutcome::passthrough());
         }
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
-        // names; `frameworks.claimsReference` cannot be evaluated here — when
-        // frameworks are active a prefilter miss falls back to the TS path.
+        // names; the claimsReference arm is evaluated natively — a claimed
+        // name still reaches the framework resolvers through the TS path.
         let pre_pass =
             self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?;
         if !pre_pass {
-            return Ok(if self.frameworks_active {
+            return Ok(if self.framework_claims(&r.reference_name) {
                 ResolveOutcome::passthrough()
             } else {
                 ResolveOutcome::unresolved()
