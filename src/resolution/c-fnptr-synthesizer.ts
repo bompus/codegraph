@@ -89,7 +89,7 @@ import { memoryBudgetBytes } from './memory-budget';
 import { LRUCache } from './lru-cache';
 import { stripCommentsForRegex } from './strip-comments';
 import { getKernel } from '../extraction/kernel/loader';
-import type { CfnptrFactsOut, CfnptrFileIn } from '../extraction/kernel/loader';
+import type { CfnptrFactsOut, CfnptrFileIn, CfnptrPathIn } from '../extraction/kernel/loader';
 
 const C_CPP_EXT = /\.(c|h|cc|cpp|cxx|hpp|hh|hxx|cppm|ipp|inl|tcc)$/i;
 const FN_KINDS = new Set(['function', 'method']);
@@ -646,6 +646,11 @@ export async function cFnPointerDispatchEdges(
       : getKernel();
   const nativeSweep =
     kernel && typeof kernel.cfnptrScanFiles === 'function' ? kernel.cfnptrScanFiles.bind(kernel) : null;
+  // Path-driven sweep: the kernel reads each file itself and threads the
+  // batch, so the corpus text never crosses the boundary and the scan scales
+  // with cores. Same facts contract — mergeNativeFacts is shared.
+  const nativePaths =
+    kernel && typeof kernel.cfnptrScanPaths === 'function' ? kernel.cfnptrScanPaths.bind(kernel) : null;
 
   const mergeNativeFacts = (file: string, out: CfnptrFactsOut): void => {
     for (const t of out.fnPtrTypedefs) fnPtrTypedefs.add(intern(t));
@@ -683,7 +688,38 @@ export async function cFnPointerDispatchEdges(
   };
 
   let tPass = Date.now();
-  if (nativeSweep) {
+  if (nativePaths) {
+    // Bulk-prefetch every struct/union extent in one kind-scan — the per-file
+    // `getNodesInFile` calls this replaces were ~84k individual queries on the
+    // kernel corpus (~14s). Struct extents are all the sweep needs; per-file
+    // ordering inside a file is irrelevant (facts are keyed by node id).
+    const extentsByFile = new Map<string, CfnptrPathIn['structs']>();
+    for (const kind of ['struct', 'union'] as const) {
+      for (const st of (ctx.iterateNodesByKind?.(kind) ?? ctx.getNodesByKind(kind))) {
+        if (!C_CPP_EXT.test(st.filePath)) continue;
+        let arr = extentsByFile.get(st.filePath);
+        if (!arr) { arr = []; extentsByFile.set(st.filePath, arr); }
+        // sliceLinesPre semantics ride along: falsy startLine never parses,
+        // and `endLine ?? startLine` matches the per-file branch exactly.
+        arr.push({ id: st.id, startLine: st.startLine ?? 0, endLine: st.endLine ?? st.startLine ?? 0 });
+      }
+    }
+    const root = ctx.getProjectRoot();
+    const BATCH = 512;
+    let batch: { file: string; input: CfnptrPathIn }[] = [];
+    const flush = (): void => {
+      if (batch.length === 0) return;
+      const outs = nativePaths(batch.map((b) => b.input));
+      for (let bi = 0; bi < batch.length; bi++) mergeNativeFacts(batch[bi]!.file, outs[bi]!);
+      batch = [];
+    };
+    for (const file of files) {
+      await tick();
+      batch.push({ file, input: { path: path.join(root, file), structs: extentsByFile.get(file) ?? [] } });
+      if (batch.length >= BATCH) flush();
+    }
+    flush();
+  } else if (nativeSweep) {
     // Batch of 16 = the tick/onFraction cadence, so yielding and progress
     // reporting keep their shape while the boundary crossing amortizes.
     const BATCH = 16;

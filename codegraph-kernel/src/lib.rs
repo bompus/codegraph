@@ -213,6 +213,15 @@ pub struct CfnptrFileIn {
 }
 
 #[napi(object)]
+pub struct CfnptrPathIn {
+    /// Absolute file path — the kernel reads the text itself (utf-8-lossy, the
+    /// same bytes JS `readFileSync(path, 'utf-8')` produces) instead of taking
+    /// the whole corpus across the boundary.
+    pub path: String,
+    pub structs: Vec<CfnptrStructIn>,
+}
+
+#[napi(object)]
 pub struct CfnptrField {
     pub name: String,
     pub index: u32,
@@ -247,6 +256,56 @@ pub struct CfnptrFacts {
     pub includes: Vec<String>,
 }
 
+fn facts_to_out(facts: cfnptr::FileFacts) -> CfnptrFacts {
+    CfnptrFacts {
+        fn_ptr_typedefs: facts.fn_ptr_typedefs,
+        fn_type_typedefs: facts.fn_type_typedefs,
+        structs: facts
+            .structs
+            .into_iter()
+            .map(|s| CfnptrStructOut {
+                id: s.id,
+                parsed: s.parsed,
+                fields: s
+                    .fields
+                    .into_iter()
+                    .map(|fl| CfnptrField { name: fl.name, index: fl.index, ptr: fl.ptr, ty: fl.ty })
+                    .collect(),
+            })
+            .collect(),
+        inline_ptr: facts.inline_ptr,
+        inline_types: facts.inline_types,
+        inline_tags: facts.inline_tags,
+        init_tokens: facts.init_tokens,
+        array_elems: facts.array_elems,
+        alias_names: facts.alias_names,
+        d_pairs: facts.d_pairs,
+        dispatch_fields: facts.dispatch_fields,
+        array_dispatch_names: facts.array_dispatch_names,
+        includes: facts.includes,
+    }
+}
+
+/// Empty facts — an unreadable file (or a scan panic) merges to nothing, the
+/// same as the JS sweep's `if (!rawText) continue`.
+fn empty_cfnptr_facts() -> CfnptrFacts {
+    CfnptrFacts {
+        fn_ptr_typedefs: Vec::new(),
+        fn_type_typedefs: Vec::new(),
+        structs: Vec::new(),
+        inline_ptr: false,
+        inline_types: Vec::new(),
+        inline_tags: Vec::new(),
+        init_tokens: Vec::new(),
+        array_elems: Vec::new(),
+        alias_names: Vec::new(),
+        d_pairs: Vec::new(),
+        dispatch_fields: Vec::new(),
+        array_dispatch_names: Vec::new(),
+        includes: Vec::new(),
+    }
+}
+
 /// Batched cFnPtr extraction sweep (task #5 step 2): one call scans a batch
 /// of files and returns their collected facts, amortizing the NAPI boundary.
 /// Feature-detected by the TS loader — absent on older binaries, where the
@@ -261,36 +320,59 @@ pub fn cfnptr_scan_files(files: Vec<CfnptrFileIn>) -> Vec<CfnptrFacts> {
                 .into_iter()
                 .map(|s| cfnptr::StructExtent { id: s.id, start_line: s.start_line, end_line: s.end_line })
                 .collect();
-            let facts = cfnptr::scan_file(&f.text, &structs);
-            CfnptrFacts {
-                fn_ptr_typedefs: facts.fn_ptr_typedefs,
-                fn_type_typedefs: facts.fn_type_typedefs,
-                structs: facts
-                    .structs
-                    .into_iter()
-                    .map(|s| CfnptrStructOut {
-                        id: s.id,
-                        parsed: s.parsed,
-                        fields: s
-                            .fields
-                            .into_iter()
-                            .map(|fl| CfnptrField { name: fl.name, index: fl.index, ptr: fl.ptr, ty: fl.ty })
-                            .collect(),
-                    })
-                    .collect(),
-                inline_ptr: facts.inline_ptr,
-                inline_types: facts.inline_types,
-                inline_tags: facts.inline_tags,
-                init_tokens: facts.init_tokens,
-                array_elems: facts.array_elems,
-                alias_names: facts.alias_names,
-                d_pairs: facts.d_pairs,
-                dispatch_fields: facts.dispatch_fields,
-                array_dispatch_names: facts.array_dispatch_names,
-                includes: facts.includes,
-            }
+            facts_to_out(cfnptr::scan_file(&f.text, &structs))
         })
         .collect()
+}
+
+/// Path-driven variant of `cfnptr_scan_files`: the kernel reads each file
+/// itself and fans the batch across scoped threads — the sweep's per-file
+/// work (read + strip + regex scans) is independent, so the batch scales with
+/// cores instead of riding one worker thread. Output stays 1:1 with input
+/// order: an unreadable file or a per-file panic yields empty facts, and a
+/// chunk thread's own failure pads its outputs the same way.
+#[napi]
+pub fn cfnptr_scan_paths(files: Vec<CfnptrPathIn>) -> Vec<CfnptrFacts> {
+    fn scan_one(f: &CfnptrPathIn) -> CfnptrFacts {
+        let text = match std::fs::read(&f.path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => return empty_cfnptr_facts(),
+        };
+        let structs: Vec<cfnptr::StructExtent> = f
+            .structs
+            .iter()
+            .map(|s| cfnptr::StructExtent { id: s.id.clone(), start_line: s.start_line, end_line: s.end_line })
+            .collect();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cfnptr::scan_file(&text, &structs))) {
+            Ok(facts) => facts_to_out(facts),
+            Err(_) => empty_cfnptr_facts(),
+        }
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16)
+        .min(files.len().max(1));
+    if threads <= 1 {
+        return files.iter().map(scan_one).collect();
+    }
+    let chunk_len = files.len().div_ceil(threads);
+    let chunks: Vec<&[CfnptrPathIn]> = files.chunks(chunk_len).collect();
+    let mut parts: Vec<Vec<CfnptrFacts>> = Vec::with_capacity(chunks.len());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| s.spawn(move || chunk.iter().map(scan_one).collect::<Vec<_>>()))
+            .collect();
+        for (i, h) in handles.into_iter().enumerate() {
+            match h.join() {
+                Ok(v) => parts.push(v),
+                Err(_) => parts.push(chunks[i].iter().map(|_| empty_cfnptr_facts()).collect()),
+            }
+        }
+    });
+    parts.into_iter().flatten().collect()
 }
 
 /// Debug/differential hook: the native `stripCommentsForRegex(text, 'c')`.
