@@ -3001,6 +3001,27 @@ impl KernelResolver {
             && !r.file_path.is_empty()
     }
 
+    /// Necessary condition for matchJsStoreBindingCall (name-matcher.ts):
+    /// both store-binding arms bind the ref's own name through `const` — a
+    /// destructure (`const {a} = X.getState()`) or a selector alias
+    /// (`const a = useStore(s => s.a)`). Absent that shape the matcher cannot
+    /// fire, so the kernel may adjudicate the ref itself. The whole file is
+    /// scanned (the destructure can span lines); false positives only cost a
+    /// TS fallback, never a wrong verdict.
+    fn file_could_store_bind(&mut self, r: &ResolveRefIn) -> Result<bool> {
+        if r.reference_kind != "calls" || !is_js_family(&r.language) {
+            return Ok(false);
+        }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let text = lines.join("\n");
+        let name = regex::escape(&r.reference_name);
+        let re = Regex::new(&format!(
+            "\\bconst\\s*(?:\\{{[^{{}}]*\\b{}\\b|{}\\b)", name, name
+        ))
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(re.is_match(&text))
+    }
+
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
         if !Self::ref_is_eligible(r) {
             return Ok(ResolveOutcome::passthrough());
@@ -3012,6 +3033,13 @@ impl KernelResolver {
         //   (dead) → viaImport → name-match → post-checks → first-max.
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
+        }
+        // The store-binding matcher stays in TS (source-reading): it can fire
+        // on a prefilter miss AND short-circuits matchByExactName's candidate
+        // list, so a JS bare call whose file const-binds its name must
+        // passthrough wherever it would otherwise settle.
+        if self.is_bare_js_call(r)? && self.file_could_store_bind(r)? {
+            return Ok(ResolveOutcome::passthrough());
         }
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
         // names; `frameworks.claimsReference` cannot be evaluated here — when
