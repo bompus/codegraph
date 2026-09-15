@@ -140,6 +140,10 @@ export interface KernelResolverConfig {
   cppIncludeDirs?: string[];
   nodeBuiltinSpecifiers: string[];
   frameworksActive: boolean;
+  /** Names (`f.name`) of detected framework resolvers — lets the kernel
+   *  evaluate `claimsReference` natively. Omit to keep the conservative
+   *  "every prefilter miss is claimed" behavior. */
+  frameworkNames?: string[];
   ambiguousNameCeiling?: number;
 }
 

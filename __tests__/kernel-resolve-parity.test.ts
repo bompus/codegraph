@@ -19,6 +19,7 @@ import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
 import { getKernel } from '../src/extraction/kernel/loader';
+import { getAllFrameworkResolvers } from '../src/resolution/frameworks';
 
 const KERNEL_PATH = path.join(
   __dirname, '..', 'codegraph-kernel', 'prebuilds', `${process.platform}-${process.arch}`, 'codegraph-kernel.node',
@@ -170,5 +171,79 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const names = new Set(failed.map((r) => r.reference_name));
     expect(names.has('console.log')).toBe(true);
     expect(names.has('Date')).toBe(true);
+  });
+
+  it('replicates every registered resolver\'s claimsReference predicate', async () => {
+    const kernel = getKernel();
+    expect(kernel?.frameworkClaimsName).toBeDefined();
+    const names = [
+      // bare names the NAV/verb predicates can claim
+      'navigate', 'redirect', 'goto', 'push', 'replace', 'prefetch', 'navigateTo',
+      'dismissTo', 'permanentRedirect', 'xPush', 'fooNavigate', 'hook_init',
+      '_iterable_class', 'fooController@bar', 'helper', 'useState', 'mypush',
+      // qualified shapes only some predicates reach
+      'foo::bar', 'foo:bar', 'history.push', 'router.navigate', 'Route.navigate',
+      'module.vpc:output.id', 'module.x:file', 'App\\Ctrl', 'a.b', 'x#y',
+      'cics-transid:AB12', 'name:prefix', 'x.urls', 'NextResponse.redirect',
+      'this.foo', 'foo.push',
+      // edge shapes — near-misses and the empty string
+      '', 'push2', 'navigates', 'goto2', 'hook_', 'Controller@', '@bar',
+    ];
+    for (const resolver of getAllFrameworkResolvers()) {
+      for (const name of names) {
+        const expected = resolver.claimsReference?.(name) ?? false;
+        expect(
+          kernel!.frameworkClaimsName!(resolver.name, name),
+          `${resolver.name}.claimsReference(${JSON.stringify(name)})`,
+        ).toBe(expected);
+      }
+    }
+    // An unregistered name (custom registerFrameworkResolver) claims
+    // conservatively — a passthrough is always safe.
+    expect(kernel!.frameworkClaimsName!('not-a-framework', 'helper')).toBe(true);
+  });
+
+  it('settles unclaimed prefilter misses natively under active frameworks', async () => {
+    const kernel = getKernel();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-kresolve-'));
+    for (const [rel, content] of Object.entries(FIXTURE)) {
+      fs.mkdirSync(path.dirname(path.join(tempDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, rel), content);
+    }
+    cg = await CodeGraph.init(tempDir, { index: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (cg as any).db.db as import('node:sqlite').DatabaseSync;
+    const runFn = cg.getNodesByKind('function').find((n) => n.name === 'run')!.id;
+    db.prepare(
+      "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, file_path, language, status) VALUES (?,?,?,?,?,?,?,'pending')",
+    ).run(runFn, 'neverDeclared', 'calls', 5, 2, 'src/main.ts', 'typescript');
+    db.prepare(
+      "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, file_path, language, status) VALUES (?,?,?,?,?,?,?,'pending')",
+    ).run(runFn, 'navigate', 'calls', 6, 2, 'src/main.ts', 'typescript');
+
+    const config = {
+      dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
+      projectRoot: tempDir,
+      cppIncludeDirs: [],
+      nodeBuiltinSpecifiers: [...builtinModules],
+      frameworksActive: true,
+    };
+    const readAndSettle = (extra: Record<string, unknown>) => {
+      const resolver = new kernel!.KernelResolver!({ ...config, ...extra });
+      const batch = resolver.readPendingBatch(0, 200, false);
+      const out = new Map(
+        resolver.resolveChunk(batch).map((o, i) => [batch[i]!.referenceName, o.status]),
+      );
+      resolver.close();
+      return out;
+    };
+
+    // express claims nothing — an unclaimed miss settles as a terminal
+    // unresolved instead of riding the full TS dispatch.
+    expect(readAndSettle({ frameworkNames: ['express'] }).get('neverDeclared')).toBe('unresolved');
+    // react-router's NAV_CALL claims `navigate` — it must still passthrough.
+    expect(readAndSettle({ frameworkNames: ['react-router'] }).get('navigate')).toBe('passthrough');
+    // A config without frameworkNames keeps the legacy claim-everything gate.
+    expect(readAndSettle({}).get('neverDeclared')).toBe('passthrough');
   });
 });

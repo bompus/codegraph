@@ -1058,6 +1058,7 @@ export class ReferenceResolver {
         cppIncludeDirs: this.context.getCppIncludeDirs?.() ?? [],
         nodeBuiltinSpecifiers: [...builtinModules],
         frameworksActive: this.frameworks.length > 0,
+        frameworkNames: this.frameworks.map((f) => f.name),
         ambiguousNameCeiling: resolveAmbiguousNameCeiling(),
       });
     } catch (err) {
