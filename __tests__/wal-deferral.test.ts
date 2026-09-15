@@ -321,6 +321,10 @@ describe('sync WAL deferral end-to-end (#1248)', () => {
       .spyOn(WalCheckpointValve.prototype, 'backpressure')
       .mockReturnValue(null);
 
+    // Kernel-off: while a kernel conn shares the live -shm the batch loop
+    // stops the valve and never calls backpressure — the hook only exists
+    // for kernel-less runs.
+    process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
     try {
       fs.writeFileSync(
         path.join(tmpDir, 'src', 'mod0.ts'),
@@ -337,6 +341,7 @@ describe('sync WAL deferral end-to-end (#1248)', () => {
       expect(recovered.filesAdded + recovered.filesModified + recovered.filesRemoved).toBe(0);
       expect(backpressure).toHaveBeenCalled();
     } finally {
+      delete process.env.CODEGRAPH_KERNEL_RESOLVE;
       backpressure.mockRestore();
       await cg.close();
     }
@@ -351,20 +356,37 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
   // 22GB WAL on a 4.6GB DB. These pin that the batch loop (a) calls the hook
   // at the pool-idle boundary and (b) actually parks on a returned promise.
 
+  // Kernel-off: while a kernel conn shares the live -shm the batch loop
+  // stops the valve and never calls this hook — an off-thread node:sqlite
+  // checkpoint can race the bundled SQLite build's wal-index state, so the
+  // hook exists only for kernel-less runs. The fake valve satisfies the
+  // resolver's pause/resume surface.
+  const fakeValve = (backpressure: () => Promise<void> | null) => ({
+    stop() {},
+    start() {},
+    drain: async () => {},
+    backpressure,
+  });
+
   it('calls the backpressure hook once per settled batch', async () => {
     writeFixtureProject();
     const cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
     await seedPendingRefs(cg);
 
-    let calls = 0;
-    const result = await cg.resolveReferencesBatched(undefined, undefined, () => {
-      calls++;
-      return null; // under the hard cap — loop must proceed without waiting
-    });
-    expect(result.stats.total).toBeGreaterThan(0);
-    expect(calls).toBeGreaterThanOrEqual(1);
-    await cg.close();
+    process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
+    try {
+      let calls = 0;
+      const result = await cg.resolveReferencesBatched(undefined, undefined, fakeValve(() => {
+        calls++;
+        return null; // under the hard cap — loop must proceed without waiting
+      }));
+      expect(result.stats.total).toBeGreaterThan(0);
+      expect(calls).toBeGreaterThanOrEqual(1);
+    } finally {
+      delete process.env.CODEGRAPH_KERNEL_RESOLVE;
+      await cg.close();
+    }
   });
 
   it('parks the batch loop on a backpressure promise until it resolves', async () => {
@@ -376,12 +398,13 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     let hookHit = false;
+    process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
     const done = cg
-      .resolveReferencesBatched(undefined, undefined, () => {
+      .resolveReferencesBatched(undefined, undefined, fakeValve(() => {
         if (hookHit) return null; // park only on the first boundary
         hookHit = true;
         return gate;
-      })
+      }))
       .then(() => true);
 
     // Give the loop ample turns: it must reach the hook and then be parked.
@@ -392,6 +415,7 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
 
     release();
     expect(await done).toBe(true);
+    delete process.env.CODEGRAPH_KERNEL_RESOLVE;
     await cg.close();
   });
 });

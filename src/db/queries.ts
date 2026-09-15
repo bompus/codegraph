@@ -289,6 +289,7 @@ export class QueryBuilder {
     getUnresolvedBatchAfter?: SqliteStatement;
     getUnresolvedPrerequisitesAfter?: SqliteStatement;
     getUnresolvedDependentsAfter?: SqliteStatement;
+    getDatabasePath?: SqliteStatement;
     deleteRefsByRowIdsFull?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
@@ -3296,6 +3297,20 @@ export class QueryBuilder {
       rowId: row.id,
       failureReason: row.failure_reason ?? undefined,
     }));
+  }
+
+  /**
+   * The on-disk path of the `main` database, or null for in-memory/URI
+   * connections. The kernel resolver opens its own read-only connection to
+   * the same file (resolution-binding-model-plan §4).
+   */
+  getDatabasePath(): string | null {
+    if (!this.stmts.getDatabasePath) {
+      this.stmts.getDatabasePath = this.db.prepare('PRAGMA database_list');
+    }
+    const rows = this.stmts.getDatabasePath.all() as Array<{ name: string; file: string }>;
+    const main = rows.find((r) => r.name === 'main');
+    return main?.file ? main.file : null;
   }
 
   /**

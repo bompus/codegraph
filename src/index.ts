@@ -645,9 +645,15 @@ export class CodeGraph {
                 total: totalPasses,
               });
             },
-            walValve ? () => walValve!.backpressure() : undefined
+            walValve
           );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] resolution: ${Date.now() - tResolve}ms`);
+
+          // The deferred passes below can lazily re-open a kernel conn —
+          // rusqlite's wal-index locks can't see node:sqlite's, so the
+          // off-thread checkpointer must be quiesced while any kernel conn
+          // could act. Idempotent with the maintenance stop below.
+          if (walValve) { walValve.stop(); await walValve.drain(); }
 
           // Second pass: chained calls whose method lives on a supertype the
           // receiver conforms to (protocol-extension / inherited / default-
@@ -744,6 +750,11 @@ export class CodeGraph {
         // (SQLite replays the WAL on the next open) and the follow-up write
         // that folds it is the known cost of a failed run.
         if (walValve) { walValve.stop(); await walValve.drain(); }
+        // Deterministic kernel-conn teardown while the valve is stopped and
+        // the pool is gone — a GC-timed rusqlite close could otherwise fire
+        // mid-shm-I/O in a LATER run (cross-build wal-index locks can't see
+        // each other → SIGBUS / overwritten WAL frames on the linux corpus).
+        this.resolver.closeKernel();
         if (deferWal || restoreAutocheckpoint) {
           try { this.db.setWalAutocheckpoint(priorAutocheckpoint); } catch { /* connection may be closing */ }
         }
@@ -937,7 +948,7 @@ export class CodeGraph {
                   total: totalPasses,
                 });
               },
-              backpressure
+              walValve
             );
           }
         }
@@ -1004,11 +1015,15 @@ export class CodeGraph {
                 total: totalPasses,
               });
             },
-            backpressure
+            walValve
           );
         }
 
         if (filesChanged || orphanCount > 0) {
+          // The deferred passes can lazily re-open a kernel conn — rusqlite's
+          // wal-index locks can't see node:sqlite's, so quiesce the
+          // off-thread checkpointer first. Idempotent with the finally's.
+          if (walValve) { walValve.stop(); await walValve.drain(); }
           // Second pass: chained calls whose method lives on a supertype the
           // receiver conforms to (protocol-extension / inherited). Needs the
           // implements/extends edges built above (#750).
@@ -1062,6 +1077,9 @@ export class CodeGraph {
         // WAL on the success path; on the error path SQLite replays it on
         // the next open).
         if (walValve) { walValve.stop(); await walValve.drain(); }
+        // Same kernel-conn teardown as indexAll's finally — never let a live
+        // rusqlite conn's GC-timed close outlive the valve's quiesce window.
+        this.resolver.closeKernel();
         if (deferWal) {
           try { this.db.setWalAutocheckpoint(priorAutocheckpoint); } catch { /* connection may be closing */ }
         }
@@ -1326,12 +1344,16 @@ export class CodeGraph {
   async resolveReferencesBatched(
     onProgress?: (current: number, total: number) => void,
     onSynthesisProgress?: (done: number, total: number) => void,
-    // The WAL valve's writer-side backstop, threaded into the batch loop's
-    // pool-idle boundaries. Without it the valve's only lever during
-    // resolution is timer-driven passive checkpoints, which the pool's
-    // continuous reads keep perpetually partial — the WAL then accretes the
-    // whole phase's write volume (22GB on a 4.6GB DB at kernel scale).
-    backpressure?: () => Promise<void> | null
+    // The WAL checkpoint valve — threaded into the batch loop for two jobs:
+    // its writer-side backstop runs at pool-idle boundaries (without it the
+    // valve's only lever during resolution is timer-driven passive
+    // checkpoints, which the pool's continuous reads keep perpetually
+    // partial — the WAL then accretes the whole phase's write volume, 22GB
+    // on a 4.6GB DB at kernel scale), and the resolver PAUSES it while a
+    // kernel conn is live on the db (the rusqlite build's wal-index locks
+    // can't see node:sqlite's — an off-thread checkpoint could rewrite the
+    // -shm header under a writer commit). Structural so tests can fake it.
+    walValve?: { stop(): void; start(): void; drain(): Promise<void>; backpressure(): Promise<void> | null } | null
   ): Promise<ResolutionResult> {
     return this.resolver.resolveAndPersistBatched(onProgress, undefined, onSynthesisProgress, {
       dbPath: this.db.getPath(),
@@ -1348,7 +1370,16 @@ export class CodeGraph {
         begin: () => this.db.beginBulkRefLoad(),
         end: () => this.db.endBulkRefLoad(),
       },
-      backpressure,
+      backpressure: walValve ? () => walValve.backpressure() : undefined,
+      walValve,
+      // Full fold for the worker-kernel snapshot copy: off-thread (a multi-GB
+      // backfill must not stall the #850 watchdog), true only when every WAL
+      // frame reached the dbfile — a partial fold would hand workers a stale
+      // graph, so the resolver declines to snapshot instead.
+      foldWalForSnapshot: async () => {
+        const r = await this.db.checkpointWalTruncate();
+        return !!r && r.busy === 0 && r.log === r.checkpointed;
+      },
     });
   }
 

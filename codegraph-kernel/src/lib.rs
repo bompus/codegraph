@@ -111,6 +111,7 @@ mod langs;
 mod lua;
 mod markdown;
 mod php;
+mod resolve;
 mod rlang;
 mod ruby;
 mod rustlang;

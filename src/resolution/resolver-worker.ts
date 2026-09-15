@@ -38,7 +38,7 @@ let queries: QueryBuilder | null = null;
 let resolver: ReferenceResolver | null = null;
 
 type InMessage =
-  | { type: 'open'; dbPath: string; projectRoot: string }
+  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null }
   | { type: 'recycle'; id: number }
   | { type: 'resolve'; id: number; refs: UnresolvedReference[] }
   | { type: 'synth'; id: number; pass: string }
@@ -60,6 +60,19 @@ port.on('message', (msg: InMessage) => {
         queries = new QueryBuilder(db);
         resolver = new ReferenceResolver(msg.projectRoot, queries);
         resolver.initialize();
+        // Phase 4: this worker's own KernelResolver over the pool's
+        // checkpointed SNAPSHOT copy — never the live file. The kernel links
+        // a second SQLite build whose intra-process wal-index locks can't
+        // see node:sqlite's, so a rusqlite conn on the real -shm can rebuild
+        // the wal-index under a writer commit (the linux-corpus undo bug:
+        // whole cleanup transactions overwritten). The snapshot is a private
+        // inode over extraction-static tables, which is all resolveChunk
+        // reads. `null` disables the kernel here — the lazy init in
+        // resolveListForAdmission must then never fall back to the live
+        // path, which initKernelResolver(null) guarantees.
+        resolver.initKernelResolver(
+          msg.kernelDbPath && msg.kernelDbPath !== msg.dbPath ? msg.kernelDbPath : null
+        );
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] worker open: db=${tDb - tOpen}ms init=${Date.now() - tDb}ms`);
         port.postMessage({ type: 'ready' });
         break;

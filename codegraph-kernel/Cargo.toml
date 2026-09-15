@@ -15,6 +15,10 @@ napi-derive = "3"
 tree-sitter = "0.25"
 sha2 = "0.10"
 regex = "1"
+# Bundled libsqlite3: the resolver's read stage must see the exact WAL
+# semantics the writer (node:sqlite) produces, not whatever system
+# libsqlite3 happens to be installed (resolve.rs, Phase 4).
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
 # Grammars — MUST stay revision-matched with the wasm grammars the fallback
 # path loads (tree-sitter-wasms npm package / src/extraction/wasm/). The
