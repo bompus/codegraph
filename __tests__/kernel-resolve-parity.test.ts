@@ -48,7 +48,13 @@ const FIXTURE: Record<string, string> = {
     '  console.log(d, v);',
     '}',
   ].join('\n'),
-  'tool.py': 'def pyhelper():\n    return 1\n',
+  'src/other.ts': 'export function unrelated() { return 0; }\n',
+  // Two same-named definitions in one file: the same-file overload arm.
+  'src/dup.c': 'void dup(void) {}\nvoid dup(void) {}\nvoid registrar(void) {}\n',
+  'src/K.java': 'class K { void mymethod() {} }\nclass J { void user() {} }\n',
+  // C++ is bareFnOnly: a bare identifier there is never a method value.
+  'src/w.cpp': 'struct W { void m() {} };\nvoid wuser() {}\n',
+  'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
   'main.py': 'from tool import pyhelper\n\ndef go():\n    pyhelper()\n',
 };
 
@@ -201,6 +207,94 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // An unregistered name (custom registerFrameworkResolver) claims
     // conservatively — a passthrough is always safe.
     expect(kernel!.frameworkClaimsName!('not-a-framework', 'helper')).toBe(true);
+  });
+
+  it('resolves bare function_ref refs on the dedicated native arm', async () => {
+    const kernel = getKernel();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-kresolve-'));
+    for (const [rel, content] of Object.entries(FIXTURE)) {
+      fs.mkdirSync(path.dirname(path.join(tempDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, rel), content);
+    }
+    cg = await CodeGraph.init(tempDir, { index: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (cg as any).db.db as import('node:sqlite').DatabaseSync;
+    const byName = (name: string, kind = 'function') =>
+      cg!.getNodesByKind(kind).filter((n) => n.name === name);
+    const nodeId = (name: string, file: string, kind = 'function') =>
+      byName(name, kind).find((n) => n.filePath.endsWith(file))!.id;
+    const ins = db.prepare(
+      "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, file_path, language, status) VALUES (?,?,?,?,?,?,?,'pending')",
+    );
+    const seed = (from: string, name: string, file: string, lang: string) =>
+      ins.run(from, name, 'function_ref', 1, 0, file, lang);
+
+    const runFn = nodeId('run', 'main.ts');
+    const goFn = nodeId('go', 'main.py');
+    seed(nodeId('unrelated', 'other.ts'), 'helper', 'src/other.ts', 'typescript');
+    seed(runFn, 'helper', 'src/main.ts', 'typescript');
+    seed(runFn, 'VERSION', 'src/main.ts', 'typescript');
+    seed(nodeId('registrar', 'dup.c'), 'dup', 'src/dup.c', 'c');
+    seed(nodeId('user', 'K.java', 'method'), 'mymethod', 'src/K.java', 'java');
+    seed(nodeId('wuser', 'w.cpp'), 'm', 'src/w.cpp', 'cpp');
+    seed(goFn, 'Widget', 'main.py', 'python');
+    seed(goFn, 'pyhelper', 'main.py', 'python');
+    seed(runFn, 'this.cb', 'src/main.ts', 'typescript');
+    seed(nodeId('wuser', 'w.cpp'), 'W::m', 'src/w.cpp', 'cpp');
+    seed(runFn, 'neverDeclared', 'src/main.ts', 'typescript');
+
+    const resolver = new kernel!.KernelResolver!({
+      dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
+      projectRoot: tempDir,
+      aliases: {
+        baseUrl: '.',
+        patterns: [{ prefix: '@lib/', suffix: '', hasWildcard: true, replacements: ['src/*'] }],
+      },
+      cppIncludeDirs: [],
+      nodeBuiltinSpecifiers: [...builtinModules],
+      frameworksActive: false,
+    });
+    const batch = resolver.readPendingBatch(0, 200, false);
+    const outcomes = resolver.resolveChunk(batch);
+    const idx = new Map(
+      batch.map((r, i) => [`${r.referenceName}@${r.referenceKind}@${r.filePath}`, i]),
+    );
+    const at = (name: string, file: string) =>
+      outcomes[idx.get(`${name}@function_ref@${file}`)!]!;
+
+    // Cross-file unique match → 'function-ref' at 0.8 (no import in other.ts).
+    const cross = at('helper', 'src/other.ts');
+    expect(cross.status).toBe('resolved');
+    expect(cross.resolvedBy).toBe('function-ref');
+    expect(cross.confidence).toBe(0.8);
+    expect(cross.targetNodeId).toBe(nodeId('helper', 'util.ts'));
+    // The import binding wins first — 'import' at 0.9, matching the TS spine.
+    const viaImport = at('helper', 'src/main.ts');
+    expect(viaImport.status).toBe('resolved');
+    expect(viaImport.resolvedBy).toBe('import');
+    // An import resolving to a non-callable is kind-gated out and discarded —
+    // the name matcher then has no function/method candidates either.
+    expect(at('VERSION', 'src/main.ts').status).toBe('unresolved');
+    // Same-file overloads: earliest definition, 0.9.
+    const dup = at('dup', 'src/dup.c');
+    expect(dup.status).toBe('resolved');
+    expect(dup.confidence).toBe(0.9);
+    expect(dup.targetNodeId).toBe(byName('dup').sort((a, b) => a.startLine - b.startLine)[0]!.id);
+    // Java is not bareFnOnly — a bare name may be a method value.
+    expect(at('mymethod', 'src/K.java').status).toBe('resolved');
+    // C++ is bareFnOnly — the only 'm' is a method, so no candidate.
+    expect(at('m', 'src/w.cpp').status).toBe('unresolved');
+    // Python bareClassOk — a class is a value.
+    const widget = at('Widget', 'main.py');
+    expect(widget.status).toBe('resolved');
+    expect(widget.targetNodeId).toBe(nodeId('Widget', 'tool.py', 'class'));
+    // Imported callback → 'import'.
+    expect(at('pyhelper', 'main.py').resolvedBy).toBe('import');
+    // Non-bare shapes stay behind for the TS arms.
+    expect(at('this.cb', 'src/main.ts').status).toBe('passthrough');
+    expect(at('W::m', 'src/w.cpp').status).toBe('passthrough');
+    // No node, no import — terminal miss.
+    expect(at('neverDeclared', 'src/main.ts').status).toBe('unresolved');
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {

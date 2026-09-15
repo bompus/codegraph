@@ -10,12 +10,13 @@
 //! stage — one verdict per ref, admitted by TypeScript in input order.
 //!
 //! Eligibility (kernel v1): `referenceName` carries none of the separators a
-//! skipped strategy keys on (`.`, `:`, `/`, `\`, `#`, `$`, `(`, `)`), the
+//! skipped strategy keys on (`.`, `:`, `/`, `\`, `#`, `$`, `(`, `)`) and the
 //! language emits binding rows (BINDINGS_LANGUAGES in
-//! src/extraction/kernel/index.ts), and the kind is not `function_ref`
-//! (its dedicated pipeline never runs fuzzy/exact). Everything else —
-//! receivers, chains, include paths, qualified names — returns
-//! `passthrough` and the TypeScript path resolves it unchanged.
+//! src/extraction/kernel/index.ts). Bare `function_ref` refs resolve
+//! natively on their dedicated arm; `this.`/`Cls::m` shapes carry a
+//! separator and stay behind. Everything else — receivers, chains, include
+//! paths, qualified names — returns `passthrough` and the TypeScript path
+//! resolves it unchanged.
 //!
 //! Determinism is part of the contract: every query reproduces its
 //! TypeScript ORDER BY verbatim because `findBestMatch` is first-max, and
@@ -3095,7 +3096,6 @@ impl KernelResolver {
 
     fn ref_is_eligible(r: &ResolveRefIn) -> bool {
         is_migrated_language(&r.language)
-            && r.reference_kind != "function_ref"
             && Self::name_is_bare(&r.reference_name)
             && !r.file_path.is_empty()
     }
@@ -3121,6 +3121,131 @@ impl KernelResolver {
         Ok(re.is_match(&text))
     }
 
+    /// The `function_ref` block of resolveOneInner (index.ts). TS order:
+    /// prefilter → this.-member arm (non-bare, unreachable here) →
+    /// resolveViaImport with a target-kind gate → matchFunctionRef. A
+    /// prefilter miss routes to matchJsStoreBindingCall, which is
+    /// `calls`-gated — dead for function_ref — and frameworks never run on
+    /// this path, so the miss is terminal either way.
+    fn resolve_function_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+        let pre_pass =
+            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?;
+        if !pre_pass {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        // An import hit resolves only when its target is a callable value —
+        // function/method, or a Python class (bareClassOk). A gated-out
+        // import is discarded, not pooled, before the name matcher runs.
+        let import_cand = self.resolve_via_import(r)?;
+        let import_result = self.gate_language(import_cand, r);
+        if let Some(c) = import_result {
+            if c.node.kind == "function"
+                || c.node.kind == "method"
+                || (r.language == "python" && c.node.kind == "class")
+            {
+                return self.finish(r, c, None, true);
+            }
+        }
+        let name_cand = self.match_function_ref_bare(r)?;
+        match self.gate_language(name_cand, r) {
+            Some(c) => self.finish(r, c, None, true),
+            None => Ok(ResolveOutcome::unresolved()),
+        }
+    }
+
+    /// matchFunctionRef, bare arm (name-matcher.ts): name-exact
+    /// function/method nodes in the ref's language family — plus Python
+    /// classes — excluding the origin node; JS/TS/ArkTS/C++/Python/PHP match
+    /// functions only (a bare identifier there is never a method value).
+    /// Same-file wins by earliest line; cross-file is unique-or-drop.
+    fn match_function_ref_bare(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let bare_fn_only = matches!(
+            r.language.as_str(),
+            "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "cpp" | "python" | "php"
+        );
+        let bare_class_ok = r.language == "python";
+        let mut candidates: Vec<Rc<KNode>> = self
+            .nodes_by_name(&r.reference_name)?
+            .iter()
+            .filter(|n| {
+                (n.kind == "function"
+                    || (!bare_fn_only && n.kind == "method")
+                    || (bare_class_ok && n.kind == "class"))
+                    && same_language_family(&n.language, &r.language)
+                    && n.id != r.from_node_id
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        // Swift implicit-self: a bare identifier names a method only of the
+        // enclosing type; same-named methods elsewhere are parameter
+        // collisions. Free functions are unaffected; top-level code has no
+        // implicit self, so method targets drop entirely there.
+        if r.language == "swift" && candidates.iter().any(|n| n.kind == "method") {
+            let class_prefix = match self.node_by_id(&r.from_node_id)? {
+                Some(from) => match from.qualified_name.rfind("::") {
+                    Some(sep) if sep > 0 => Some(from.qualified_name[..sep].to_string()),
+                    _ => None,
+                },
+                None => None,
+            };
+            candidates.retain(|n| {
+                if n.kind != "method" {
+                    return true;
+                }
+                let Some(cp) = &class_prefix else { return false };
+                match n.qualified_name.rfind("::") {
+                    Some(msep) if msep > 0 => {
+                        let mp = &n.qualified_name[..msep];
+                        mp == cp.as_str()
+                            || mp.ends_with(&format!("::{cp}"))
+                            || cp.ends_with(&format!("::{mp}"))
+                    }
+                    _ => false,
+                }
+            });
+            if candidates.is_empty() {
+                return Ok(None);
+            }
+        }
+        // Same-file definition wins; same-name overloads in one file are the
+        // same conceptual symbol — first by position for determinism
+        // (min_by_key keeps the first minimum, matching TS's `<=` reduce).
+        let same_file: Vec<Rc<KNode>> = candidates
+            .iter()
+            .filter(|n| n.file_path == r.file_path)
+            .cloned()
+            .collect();
+        if !same_file.is_empty() {
+            // Swift: several same-named METHODS in one file are an overload
+            // family — a bare identifier is a same-named parameter, not a
+            // method value. A single method still resolves.
+            if r.language == "swift"
+                && same_file.len() > 1
+                && same_file.iter().all(|n| n.kind == "method")
+            {
+                return Ok(None);
+            }
+            let target = same_file.iter().min_by_key(|n| n.start_line).unwrap().clone();
+            return Ok(Some(KCand {
+                node: target,
+                confidence: if same_file.len() == 1 { 0.95 } else { 0.9 },
+                resolved_by: "function-ref",
+            }));
+        }
+        // Cross-file: only an unambiguous match resolves.
+        if candidates.len() == 1 {
+            return Ok(Some(KCand {
+                node: candidates[0].clone(),
+                confidence: 0.8,
+                resolved_by: "function-ref",
+            }));
+        }
+        Ok(None)
+    }
+
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
         if !Self::ref_is_eligible(r) {
             return Ok(ResolveOutcome::passthrough());
@@ -3139,6 +3264,14 @@ impl KernelResolver {
         // passthrough wherever it would otherwise settle.
         if self.is_bare_js_call(r)? && self.file_could_store_bind(r)? {
             return Ok(ResolveOutcome::passthrough());
+        }
+        // `function_ref` (#756) has a dedicated, strictly-gated TS path that
+        // never reaches frameworks or the fuzzy matchers — resolve it here
+        // the same way (import, then the name-matcher's bare arm). The
+        // `Cls::member` and `this.member` shapes are non-bare and stay on
+        // the TS side via the eligibility gate.
+        if r.reference_kind == "function_ref" {
+            return self.resolve_function_ref(r);
         }
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
         // names; the claimsReference arm is evaluated natively — a claimed
