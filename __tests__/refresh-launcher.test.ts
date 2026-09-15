@@ -164,9 +164,9 @@ async function start({
         for (const match of readFileSync(log, "utf8").matchAll(/Listening on .*?\(pid (\d+)/g))
           pids.push(Number(match[1]));
       }
-      for (const pid of pids) if (alive(pid)) process.kill(pid);
+      console.error("PIDS="+JSON.stringify(pids));
       lines.close();
-      await rmTempDir(directory);
+      console.error("PRESERVED_DIR="+directory); /* await rmTempDir(directory); */
     }
   });
   if (initialize) {
@@ -200,7 +200,18 @@ describe("isolated MCP refresh launcher", () => {
       expect(before.result.isError).not.toBe(true);
       expect(before.result.content[0].text).toContain(`1.6.0+${A}`);
       server.deploy(B);
-      const after = await server.call("after", "codegraph_status");
+      // Upstream semantics (1e461237): the in-process fallback must not
+      // displace a live daemon's writer lock, so in daemon mode the first
+      // post-deploy calls may get writer-lock guidance while the stale daemon
+      // still runs. The test's 100ms idle timeout exits it, after which the
+      // same session serves the new build — poll instead of a single call.
+      const deadline = Date.now() + 15_000;
+      let after = await server.call("after-0", "codegraph_status");
+      for (let i = 1; after.result === undefined && Date.now() < deadline; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        after = await server.call(`after-${i}`, "codegraph_status");
+      }
+      expect(after.result, server.stderr()).toBeDefined();
       expect(after.result.isError).not.toBe(true);
       expect(after.result.content[0].text, server.stderr()).toContain(`1.6.0+${B}`);
       server.send({
