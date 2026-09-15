@@ -32,7 +32,8 @@ import { inferIterationReceiver, inferGuardedReceiver } from './receiver-iterati
  * `CODEGRAPH_AMBIGUOUS_NAME_CEILING`.
  */
 const DEFAULT_AMBIGUOUS_NAME_CEILING = 500;
-function resolveAmbiguousNameCeiling(): number {
+/** Exported so the kernel resolver can be configured with the same ceiling. */
+export function resolveAmbiguousNameCeiling(): number {
   const raw = process.env.CODEGRAPH_AMBIGUOUS_NAME_CEILING;
   if (!raw) return DEFAULT_AMBIGUOUS_NAME_CEILING;
   const parsed = Number.parseInt(raw, 10);

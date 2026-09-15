@@ -115,7 +115,13 @@ export class ResolverPool {
    * otherwise. `CODEGRAPH_RESOLVE_WORKERS` overrides the computed size
    * (0 disables the pool; values are capped at 16).
    */
-  static tryCreate(dbPath: string, projectRoot: string): ResolverPool | null {
+  /**
+   * The decline checks of {@link tryCreate} without construction — kill
+   * switch, compiled worker presence, and host sizing. Callers that pay a
+   * one-time setup cost for the pool (the kernel-reader snapshot copy in
+   * resolveAndPersistBatched) can preflight before spending it.
+   */
+  static preflight(dbPath: string): number | null {
     if (process.env.CODEGRAPH_NO_PARALLEL_RESOLVE === '1') return null;
     const workerScript = path.join(__dirname, 'resolver-worker.js');
     if (!fs.existsSync(workerScript)) return null;
@@ -138,15 +144,21 @@ export class ResolverPool {
         `[pool-timing] pool ${size === null ? 'disabled' : `size=${size}`} (ap=${ap} budget=${Math.round(budget / 1024 / 1024)}MB db=${Math.round(dbSizeBytes / 1024 / 1024)}MB)`
       );
     }
+    return size;
+  }
+
+  static tryCreate(dbPath: string, projectRoot: string, kernelDbPath: string | null = null): ResolverPool | null {
+    const size = ResolverPool.preflight(dbPath);
     if (size === null) return null;
+    const workerScript = path.join(__dirname, 'resolver-worker.js');
     try {
-      return new ResolverPool(workerScript, dbPath, projectRoot, size);
+      return new ResolverPool(workerScript, dbPath, projectRoot, size, kernelDbPath);
     } catch {
       return null;
     }
   }
 
-  private constructor(workerScript: string, dbPath: string, projectRoot: string, size: number) {
+  private constructor(workerScript: string, dbPath: string, projectRoot: string, size: number, kernelDbPath: string | null) {
     for (let i = 0; i < size; i++) {
       const worker = new Worker(workerScript);
       let readyResolve!: () => void;
@@ -205,7 +217,7 @@ export class ResolverPool {
           readyReject(this.failed!);
         }
       });
-      worker.postMessage({ type: 'open', dbPath, projectRoot });
+      worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath });
       this.workers.push(pw);
     }
   }

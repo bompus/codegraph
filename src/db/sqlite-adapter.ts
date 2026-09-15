@@ -87,6 +87,11 @@ class NodeSqliteAdapter implements SqliteDatabase {
   }
 
   exec(sql: string): void {
+    if (process.env.CODEGRAPH_RESOLVE_DEBUG && /^\s*(BEGIN|COMMIT|ROLLBACK|END|SAVEPOINT|RELEASE|VACUUM|PRAGMA\s+journal_mode)/i.test(sql)) {
+      try {
+        require('node:fs').appendFileSync('/tmp/resolve-tx.txt', `EXEC ${sql.trim().slice(0, 120)} t=${Date.now()}\n`);
+      } catch { /* debug only */ }
+    }
     this._db.exec(sql);
   }
 
@@ -108,6 +113,14 @@ class NodeSqliteAdapter implements SqliteDatabase {
   }
 
   transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T {
+    const dbgTx = !!process.env.CODEGRAPH_RESOLVE_DEBUG;
+    const logTx = dbgTx
+      ? (ev: string) => {
+          try {
+            require('node:fs').appendFileSync('/tmp/resolve-tx.txt', `${ev} depth=${this._txDepth} t=${Date.now()}\n`);
+          } catch { /* debug only */ }
+        }
+      : null;
     return (...args: any[]) => {
       // Nested call (a transaction()-wrapped helper invoked from inside another
       // transaction): run the body directly inside the enclosing transaction.
@@ -122,14 +135,17 @@ class NodeSqliteAdapter implements SqliteDatabase {
           this._txDepth--;
         }
       }
+      logTx?.('BEGIN');
       this._db.exec('BEGIN');
       this._txDepth = 1;
       try {
         const result = fn(...args);
+        logTx?.('COMMIT');
         this._db.exec('COMMIT');
         return result;
       } catch (error) {
         try {
+          logTx?.('ROLLBACK');
           this._db.exec('ROLLBACK');
         } catch {
           // SQLite may already have rolled back; preserve the original failure.

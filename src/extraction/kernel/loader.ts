@@ -94,12 +94,105 @@ export interface KernelTreeNames {
   names: Buffer;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4 kernel resolver — native read+settle over bindings/nodes/
+// unresolved_refs (resolution-binding-model-plan.md §4).
+// ---------------------------------------------------------------------------
+
+export interface KernelKv {
+  key: string;
+  value: string;
+}
+
+export interface KernelAliasPatternIn {
+  prefix: string;
+  suffix: string;
+  hasWildcard: boolean;
+  replacements: string[];
+}
+
+export interface KernelAliasMapIn {
+  baseUrl?: string;
+  patterns: KernelAliasPatternIn[];
+}
+
+export interface KernelWorkspaceIn {
+  sourceEntries: KernelKv[];
+  byName: KernelKv[];
+  entryByName?: KernelKv[];
+  localLinkNames?: string[];
+}
+
+export interface KernelResolverConfig {
+  dbPath: string;
+  projectRoot: string;
+  aliases?: KernelAliasMapIn;
+  workspaces?: KernelWorkspaceIn;
+  goModulePath?: string;
+  cppIncludeDirs?: string[];
+  nodeBuiltinSpecifiers: string[];
+  frameworksActive: boolean;
+  ambiguousNameCeiling?: number;
+}
+
+/** One pending unresolved_refs row, kernel-read. */
+export interface ResolveRefIn {
+  rowId?: number;
+  fromNodeId: string;
+  referenceName: string;
+  referenceKind: string;
+  line: number;
+  column: number;
+  /** Raw candidates JSON as stored — callers that need it parse it. */
+  candidates?: string;
+  filePath: string;
+  language: string;
+  failureReason?: string;
+}
+
+export interface KernelCandidateOut {
+  targetNodeId: string;
+  confidence: number;
+  resolvedBy: string;
+}
+
+/**
+ * One verdict per input ref. `status`:
+ *   resolved    — verdict (gates + alias forwarding applied)
+ *   unresolved  — terminal miss
+ *   passthrough — kernel declined; run the full TS pipeline
+ * `candidates` is populated only when frameworks are active and the kernel
+ * produced a non-final verdict — the raw [import?, name?] list for the TS
+ * first-max merge with framework candidates.
+ */
+export interface ResolveOutcome {
+  status: 'resolved' | 'unresolved' | 'passthrough' | string;
+  targetNodeId?: string;
+  confidence?: number;
+  resolvedBy?: string;
+  isFinal: boolean;
+  candidates?: KernelCandidateOut[];
+}
+
+export interface KernelResolverLike {
+  readPendingBatch(afterRowId: number, limit: number, prerequisites: boolean): ResolveRefIn[];
+  resolveChunk(refs: ResolveRefIn[]): ResolveOutcome[];
+  /** Deterministic conn teardown — must run while no other-build conn can do
+   *  shm work (before pool workers spawn / after they die). Without it the
+   *  rusqlite conn closes at GC time, whose shm teardown races node:sqlite
+   *  conns (cross-build wal-index locks can't see each other). */
+  close(): void;
+}
+
 export interface KernelModule {
   extractFile(filePath: string, content: string, language: string): KernelBuffers;
   /** Binding rows only, from the AST, for a TS/JS-family or ArkTS file the
    *  generic extractor extracts (resolution-binding-model-plan.md §2.4).
    *  OPTIONAL: absent on older binaries; the caller then emits no rows. */
   bindingsFile?(filePath: string, content: string, language: string): KernelBuffers;
+  /** Native batch resolver over persisted bindings (Phase 4). OPTIONAL:
+   *  absent on older binaries — the resolution loop keeps its TS path. */
+  KernelResolver?: new (config: KernelResolverConfig) => KernelResolverLike;
   /** Parse-tree service for read-time consumers (Phase 3). OPTIONAL: absent
    *  on older binaries — kernel/tree.ts feature-detects and the consumers
    *  keep the wasm parser. */
