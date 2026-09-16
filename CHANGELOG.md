@@ -201,12 +201,17 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Local JavaScript and TypeScript calls stay connected through linked packages and imports configured by a nested `baseUrl` (#1715).
 
 - Reading indexed files on Windows no longer produces false edit warnings when NTFS last-access updates are enabled. Thanks @JJordan0C. (#1451, #1472)
+- Rust calls on `self` now stay with the enclosing type instead of linking to an unrelated type’s same-named method. Thanks @L4XB. (#1861)
+
+- Turning telemetry off now resets its identity and stops running processes from recording, sending, or restoring unsent data. (#1869)
+
 - Calls between JavaScript, JSX and TypeScript files keep their callers and callback flows.
 - Zustand actions keep their callers when read through typed stores, destructured from store state, or selected by a hook.
 - Steps diagrams retain database operations made through external client chains without inventing internal dependencies.
 - Direct React Native bridge calls retain their native implementations and cross-platform relationships.
 - Dart extension-type getters remain searchable when using the WebAssembly parser.
 
+- Calling a built-in method on an awaited value no longer records a call into an unrelated class that happens to declare a method of the same name, and a variable bound to an awaited call now resolves methods on the type that call returns. Thanks @maxmilian. (#1840)
 - Spring mappings now include every declared path combination and resolve constants declared in the same file, while unresolved paths no longer appear as false root routes. (#1461)
 - `codegraph callers`, `codegraph callees` and `codegraph impact` now resolve qualified names, group results and JSON edges by definition, and accept `--file` to narrow ambiguous names; thanks @ferrine. (#1512, #1656)
 - `codegraph callers`, `codegraph callees` and `codegraph impact` (CLI and MCP) now report missing names with did-you-mean suggestions instead of another symbol's results, and exact matches with no callers stay empty; thanks @uvmplus. (#1473, #1481)
