@@ -2646,18 +2646,64 @@ export function matchBoundReceiverCall(
   const declaresValue = new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=`).test(lines?.[binding.line - 1] ?? '');
   const declaration = declaresValue ? lines?.slice(binding.line - 1, binding.line + 2).join('\n') : undefined;
   const signature = value?.signature ?? declaration?.match(new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*(=[\\s\\S]+)`))?.[1];
-  const factory = /^=\s*(await\s+)?([\w$]+)\s*(?:<[^>]+>)?\s*\(/.exec(signature ?? '');
-  if (!factory) return null;
+  const init = signature ?? '';
   const site = { ...ref, line: binding.line };
-  const factoryBinding = innermostBinding(context.getBindings(ref.filePath), factory[2]!, binding.line);
-  const calleeId = factoryBinding?.kind === 'import'
-    ? resolveViaImport({ ...site, referenceName: factory[2]! }, context)?.targetNodeId
-    : factoryBinding?.nodeId;
-  const callee = calleeId ? context.getNodeById?.(calleeId) : undefined;
+  // The callee whose result the receiver binds must END the initializer — a
+  // `.member`/`(...)`/`[...]`/`?.` tail means the binding holds the chain's
+  // result, not this callee's return type (#1840).
+  const parensEnd = (from: number): number => {
+    let depth = 1;
+    let i = from;
+    for (; i < init.length && depth; i++) {
+      if (init[i] === '(') depth++;
+      else if (init[i] === ')') depth--;
+    }
+    return depth ? -1 : i;
+  };
+  const endsInitializer = (callEnd: number): boolean => {
+    if (callEnd < 0) return false;
+    const tail = init.slice(callEnd);
+    return tail === '' || /^[ \t]*(?:;|\r?\n(?![ \t]*[.(\[?]))/.test(tail);
+  };
+  const awaited = /^=\s*await\b/.test(init);
+  let calleeName: string | undefined;
+  let ownerName: string | undefined;
+  const factory = /^=\s*(await\s+)?([\w$]+)\s*(?:<[^>]+>)?\s*\(/.exec(init);
+  if (factory && endsInitializer(parensEnd(factory.index! + factory[0].length))) {
+    calleeName = factory[2]!;
+  } else {
+    // `new Cls(...).factory(...)` — a member-factory call whose result binds the
+    // receiver. The callee is `Cls::factory`, not the constructed `Cls`.
+    const ctor = /^=\s*(?:await\s+)?new\s+([\w$]+)\s*(?:<[^>]+>)?\s*\(/.exec(init);
+    const ctorEnd = ctor ? parensEnd(ctor.index! + ctor[0].length) : -1;
+    const member = ctorEnd >= 0 ? /^\s*\.\s*([\w$]+)\s*(?:<[^>]+>)?\s*\(/.exec(init.slice(ctorEnd)) : null;
+    if (ctor && member && endsInitializer(parensEnd(ctorEnd + member[0].length))) {
+      ownerName = ctor[1]!;
+      calleeName = member[1]!;
+    }
+  }
+  if (!calleeName) return null;
+  let callee: Node | undefined;
+  if (ownerName) {
+    const ownerBinding = innermostBinding(context.getBindings(ref.filePath), ownerName, binding.line);
+    const ownerId = ownerBinding?.kind === 'import'
+      ? resolveViaImport({ ...site, referenceName: ownerName, referenceKind: 'references' }, context)?.targetNodeId
+      : ownerBinding?.nodeId;
+    const owner = ownerId ? context.getNodeById?.(ownerId) : undefined;
+    if (!owner || !['class', 'interface', 'component'].includes(owner.kind)) return null;
+    callee = context.getNodesByQualifiedName(`${owner.qualifiedName}::${calleeName}`)
+      .find(n => n.kind === 'method' && n.filePath === owner.filePath);
+  } else {
+    const factoryBinding = innermostBinding(context.getBindings(ref.filePath), calleeName, binding.line);
+    const calleeId = factoryBinding?.kind === 'import'
+      ? resolveViaImport({ ...site, referenceName: calleeName }, context)?.targetNodeId
+      : factoryBinding?.nodeId;
+    callee = calleeId ? context.getNodeById?.(calleeId) ?? undefined : undefined;
+  }
   if (!callee) return null;
   const returnType = callee.returnType ?? callee.signature?.match(/\)\s*:\s*([\w$]+(?:<[\w$]+>)?)\s*$/)?.[1];
   if (!returnType) return null;
-  const type = factory[1] ? returnType.replace(/^Promise<(.+)>$/, '$1') : returnType;
+  const type = awaited ? returnType.replace(/^Promise<(.+)>$/, '$1') : returnType;
   const hit = matchBoundTypeMember(type, method!, { ...site, filePath: callee.filePath, line: callee.startLine }, context);
   return hit ? { ...hit, original: ref } : null;
 }
