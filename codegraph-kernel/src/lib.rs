@@ -383,6 +383,265 @@ pub fn cfnptr_strip_c(text: String) -> String {
     String::from_utf8_lossy(&cfnptr::strip_c(text.as_bytes())).into_owned()
 }
 
+// ---- cFnPtr stage C env extraction + stages D/E link ----
+
+#[napi(object)]
+pub struct CfnptrFnMacro {
+    pub name: String,
+    pub params: Vec<String>,
+    pub expansion: String,
+}
+
+#[napi(object)]
+pub struct CfnptrObjMacro {
+    pub name: String,
+    pub value: String,
+}
+
+/// One file's `buildEnv` inputs — see `cfnptr::file_env`.
+#[napi(object)]
+pub struct CfnptrFileEnv {
+    pub fn_macros: Vec<CfnptrFnMacro>,
+    pub obj_macros: Vec<CfnptrObjMacro>,
+    pub defined: Vec<String>,
+    /// Raw `#include "…"` captures — extension filtering and path resolution
+    /// stay TS-side (filesystem access).
+    pub includes: Vec<String>,
+    /// The comment-stripped text — the JS `src(file)` result. The TS side
+    /// pushes it into `srcCache` so stage C's `processUnit` doesn't pay a
+    /// second read+strip (the old `fileFnMacros`→`src()` warmed that cache).
+    pub stripped: String,
+}
+
+/// Path-driven per-file env extraction for stage C's `buildEnv`, internally
+/// threaded like `cfnptr_scan_paths` — output is index-aligned with input,
+/// `null` per unreadable path (the caller then falls back to `ctx.readFile`,
+/// so a virtual FS still resolves). OPTIONAL: absent on older binaries, where
+/// the synthesizer keeps its lazy LRU-cached extractor path.
+#[napi]
+pub fn cfnptr_file_envs(paths: Vec<String>) -> Vec<Option<CfnptrFileEnv>> {
+    fn one(path: &String) -> Option<CfnptrFileEnv> {
+        let text = String::from_utf8_lossy(&std::fs::read(path).ok()?).into_owned();
+        let e = cfnptr::file_env(&text);
+        Some(CfnptrFileEnv {
+            fn_macros: e
+                .fn_macros
+                .into_iter()
+                .map(|m| CfnptrFnMacro { name: m.name, params: m.params, expansion: m.expansion })
+                .collect(),
+            obj_macros: e
+                .obj_macros
+                .into_iter()
+                .map(|(name, value)| CfnptrObjMacro { name, value })
+                .collect(),
+            defined: e.defined,
+            includes: e.includes,
+            stripped: e.stripped,
+        })
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16)
+        .min(paths.len().max(1));
+    if threads <= 1 {
+        return paths.iter().map(one).collect();
+    }
+    let chunk_len = paths.len().div_ceil(threads);
+    let chunks: Vec<&[String]> = paths.chunks(chunk_len).collect();
+    let mut parts: Vec<Vec<Option<CfnptrFileEnv>>> = Vec::with_capacity(chunks.len());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|c| s.spawn(move || c.iter().map(one).collect::<Vec<_>>()))
+            .collect();
+        for h in handles {
+            parts.push(h.join().unwrap_or_default());
+        }
+    });
+    parts.into_iter().flatten().collect()
+}
+
+/// `{name, type, isFnPtr}` — the FieldInfo members stages D/E consult; `type`
+/// arrives null for fn-pointer fields (the TS side stores `''` there).
+#[napi(object)]
+pub struct CfnptrLinkField {
+    pub name: String,
+    #[napi(js_name = "type")]
+    pub ty: Option<String>,
+    pub is_fn_ptr: bool,
+}
+
+#[napi(object)]
+pub struct CfnptrLinkFn {
+    pub id: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[napi(object)]
+pub struct CfnptrLinkFile {
+    /// Project-relative path (the node filePath — `registeredAt` uses it).
+    pub rel: String,
+    /// Absolute path the kernel reads.
+    pub abs: String,
+    /// Stage-D survivor flag (facts pre-gate).
+    pub prop: bool,
+    /// Stage-E survivor flag.
+    pub dispatch: bool,
+    /// The file's function/method extents, in `getNodesInFile` order.
+    pub fns: Vec<CfnptrLinkFn>,
+}
+
+#[napi(object)]
+pub struct CfnptrFieldStructs {
+    pub field: String,
+    pub structs: Vec<String>,
+}
+
+#[napi(object)]
+pub struct CfnptrLayout {
+    pub name: String,
+    pub fields: Vec<CfnptrLinkField>,
+}
+
+#[napi(object)]
+pub struct CfnptrLayoutVariants {
+    pub name: String,
+    pub variants: Vec<Vec<CfnptrLinkField>>,
+}
+
+#[napi(object)]
+pub struct CfnptrVarType {
+    pub var: String,
+    #[napi(js_name = "type")]
+    pub ty: String,
+}
+
+#[napi(object)]
+pub struct CfnptrRegEntry {
+    pub key: String,
+    pub ids: Vec<String>,
+}
+
+#[napi(object)]
+pub struct CfnptrArrEntry {
+    pub file: String,
+    pub ids: Vec<String>,
+}
+
+#[napi(object)]
+pub struct CfnptrArrReg {
+    pub name: String,
+    pub entries: Vec<CfnptrArrEntry>,
+}
+
+/// The registration tables verbatim — see `cfnptr::LinkTables`.
+#[napi(object)]
+pub struct CfnptrLinkTables {
+    pub field_to_structs: Vec<CfnptrFieldStructs>,
+    pub struct_layout: Vec<CfnptrLayout>,
+    pub all_struct_fields: Vec<CfnptrLayoutVariants>,
+    pub global_var_type: Vec<CfnptrVarType>,
+    pub reg: Vec<CfnptrRegEntry>,
+    pub array_reg: Vec<CfnptrArrReg>,
+}
+
+#[napi(object)]
+pub struct CfnptrLinkEdge {
+    pub source: String,
+    pub target: String,
+    pub line: u32,
+    pub via: String,
+    pub registered_at: String,
+}
+
+#[napi(object)]
+pub struct CfnptrLinkOut {
+    pub edges: Vec<CfnptrLinkEdge>,
+}
+
+/// Stages D+E of the fn-pointer synthesis — field←field propagation to a
+/// fixpoint, then dispatch-site edges — internally threaded, file-order
+/// deterministic. OPTIONAL: absent on older binaries.
+#[napi]
+pub fn cfnptr_link(files: Vec<CfnptrLinkFile>, tables: CfnptrLinkTables) -> CfnptrLinkOut {
+    let files: Vec<cfnptr::LinkFile> = files
+        .into_iter()
+        .map(|f| cfnptr::LinkFile {
+            rel: f.rel,
+            abs: f.abs,
+            prop: f.prop,
+            dispatch: f.dispatch,
+            fns: f
+                .fns
+                .into_iter()
+                .map(|n| cfnptr::LinkFn {
+                    id: n.id,
+                    start_line: n.start_line as i64,
+                    end_line: n.end_line as i64,
+                })
+                .collect(),
+        })
+        .collect();
+    let tables = cfnptr::LinkTables {
+        field_to_structs: tables
+            .field_to_structs
+            .into_iter()
+            .map(|e| (e.field, e.structs))
+            .collect(),
+        struct_layout: tables
+            .struct_layout
+            .into_iter()
+            .map(|e| (e.name, e.fields.into_iter().map(field_in).collect()))
+            .collect(),
+        all_struct_fields: tables
+            .all_struct_fields
+            .into_iter()
+            .map(|e| {
+                (
+                    e.name,
+                    e.variants
+                        .into_iter()
+                        .map(|v| v.into_iter().map(field_in).collect())
+                        .collect(),
+                )
+            })
+            .collect(),
+        global_var_type: tables.global_var_type.into_iter().map(|e| (e.var, e.ty)).collect(),
+        reg: tables.reg.into_iter().map(|e| (e.key, e.ids)).collect(),
+        array_reg: tables
+            .array_reg
+            .into_iter()
+            .map(|e| {
+                (
+                    e.name,
+                    e.entries
+                        .into_iter()
+                        .map(|en| cfnptr::LinkArrEntry { file: en.file, ids: en.ids })
+                        .collect(),
+                )
+            })
+            .collect(),
+    };
+    CfnptrLinkOut {
+        edges: cfnptr::cfnptr_link(&files, &tables)
+            .into_iter()
+            .map(|e| CfnptrLinkEdge {
+                source: e.source,
+                target: e.target,
+                line: e.line as u32,
+                via: e.via,
+                registered_at: e.registered_at,
+            })
+            .collect(),
+    }
+}
+
+fn field_in(f: CfnptrLinkField) -> cfnptr::LinkField {
+    cfnptr::LinkField { name: f.name, ftype: f.ty, is_fn_ptr: f.is_fn_ptr }
+}
+
 /// Binding rows only, from the AST, for a TS/JS-family or ArkTS file the
 /// generic extractor extracts (resolution-binding-model-plan.md §2.4). The
 /// pre-walks are iterative, so this never defers.

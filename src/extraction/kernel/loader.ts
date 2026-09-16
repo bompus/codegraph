@@ -89,6 +89,55 @@ export interface CfnptrFactsOut {
   includes: string[];
 }
 
+/** Per-file `buildEnv` inputs from the native stage-C env extraction —
+ *  mirror of Rust `CfnptrFileEnv`. `includes` are the raw `#include "…"`
+ *  captures; extension filtering and path resolution stay caller-side.
+ *  `stripped` is the JS `src(file)` result — push it into `srcCache` so
+ *  `processUnit` doesn't re-read+strip (the old `src()`-backed extractors
+ *  warmed that cache as a side effect). */
+export interface CfnptrFileEnvOut {
+  fnMacros: { name: string; params: string[]; expansion: string }[];
+  objMacros: { name: string; value: string }[];
+  defined: string[];
+  includes: string[];
+  stripped: string;
+}
+
+/** `{name, type, isFnPtr}` — the FieldInfo members stages D/E consult; `type`
+ *  stays absent for fn-pointer fields (napi `Option` rejects explicit null). */
+export interface CfnptrLinkFieldIn {
+  name: string;
+  type?: string;
+  isFnPtr: boolean;
+}
+
+export interface CfnptrLinkFileIn {
+  /** Project-relative path (the node filePath — `registeredAt` uses it). */
+  rel: string;
+  /** Absolute path the kernel reads. */
+  abs: string;
+  /** Stage-D survivor flag (facts pre-gate). */
+  prop: boolean;
+  /** Stage-E survivor flag. */
+  dispatch: boolean;
+  /** The file's function/method extents, in `getNodesInFile` order. */
+  fns: { id: string; startLine: number; endLine: number }[];
+}
+
+/** The registration tables verbatim — mirror of Rust `CfnptrLinkTables`. */
+export interface CfnptrLinkTablesIn {
+  fieldToStructs: { field: string; structs: string[] }[];
+  structLayout: { name: string; fields: CfnptrLinkFieldIn[] }[];
+  allStructFields: { name: string; variants: CfnptrLinkFieldIn[][] }[];
+  globalVarType: { var: string; type: string }[];
+  reg: { key: string; ids: string[] }[];
+  arrayReg: { name: string; entries: { file: string; ids: string[] }[] }[];
+}
+
+export interface CfnptrLinkOut {
+  edges: { source: string; target: string; line: number; via: string; registeredAt: string }[];
+}
+
 /** Whole-CST buffers (codegraph-kernel/src/tree.rs); decoded by kernel/tree.ts. */
 export interface KernelTreeBuffers {
   meta: Buffer;
@@ -221,6 +270,14 @@ export interface KernelModule {
   cfnptrScanPaths?(files: CfnptrPathIn[]): CfnptrFactsOut[];
   /** Native `stripCommentsForRegex(text, 'c')` — differential-oracle hook. */
   cfnptrStripC?(text: string): string;
+  /** Path-driven per-file env extraction for stage C's `buildEnv`, internally
+   *  threaded — output is index-aligned with input. OPTIONAL: absent on older
+   *  binaries — the synthesizer keeps its lazy LRU-cached extractor path. */
+  cfnptrFileEnvs?(paths: string[]): (CfnptrFileEnvOut | null)[];
+  /** Stages D+E of the fn-pointer synthesis — field←field propagation to a
+   *  fixpoint, then dispatch-site edges — internally threaded, file-order
+   *  deterministic. OPTIONAL: absent on older binaries. */
+  cfnptrLink?(files: CfnptrLinkFileIn[], tables: CfnptrLinkTablesIn): CfnptrLinkOut;
 }
 
 const debugEnabled = () => process.env.CODEGRAPH_KERNEL_DEBUG === '1';
