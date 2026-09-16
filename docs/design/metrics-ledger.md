@@ -227,3 +227,16 @@ Same standalone probe on the live corpus DB, before = `54e969a4` with only the n
 | Edges | 283,931 | 283,931 (kernel-on ≡ kernel-off under a fixed edge-set hash) |
 
 Reading: cumulative the pass is 124.5 s → 40.8 s (−67%) since §5.5's serial baseline, with the last JS source touches gone. Stage C's serial include-walk stays in TypeScript by design (first-wins ordering over a virtual-capable FS); its cost is now mostly the conditionally-evaluated include rescans. `CODEGRAPH_KERNEL_CFNPTR=0` and kernels lacking the entry points keep the verbatim JS loops.
+
+End-to-end confirmation (`codegraph index` on the same corpus at `34a1c20c`, `SYNTH_TIMINGS=1 RESOLVE_PROFILE=1`, `nice -n 10`, n=1, host idle):
+
+| Measure | Kernel-off (#44) | Kernel-on #44 | Kernel-on head |
+|---|---|---|---|
+| Resolution phase, total | 243.0–264.8 s (n=2) | 260.8–280.2 s (n=3) | **171.4 s** |
+| — callback-synthesis | 136.9 s | 139.7 s | **59.0 s** (cFnPtr pass 48.0 s in-run) |
+| — batch loop stages | ~80–86 s | ~95–103 s | ~94.5 s (implied) |
+| — ref/edge index recreate | 23.9 s | 23.4 s | 17.9 s |
+| Kernel-handled refs | 0 | 3,247,661 (55.4%) | 5,366,728 (91.5%) |
+| Edges / failed refs | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 (identical) |
+
+This is the round where native ports moved wall-clock, not just verdicts: kernel-on has flipped from ~4–7% slower than kernel-off (§5.4) to **~30–35% faster** (171.4 s vs the 243–265 s kernel-off range), driven entirely by the synthesis cuts — the batch loop is unchanged and now dominates the phase at ~94.5 s (of which main-thread persist ~63 s is the largest remaining single item). The cFnPtr pass runs slower inside the full index than standalone (48.0 s vs 40.8 s; stage A 19.4 s vs 14.8 s) — expected, it shares the host with the parse loop's aftermath and pool teardown.
