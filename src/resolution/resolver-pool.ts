@@ -29,7 +29,13 @@ export interface ChunkResult {
   deferredChain: UnresolvedRef[];
   deferredThisMember: UnresolvedRef[];
   byMethod: Record<string, number>;
-  kernel?: { handled: number; passthrough: number };
+  kernel?: {
+    handled: number;
+    passthrough: number;
+    reasons?: Record<string, number>;
+    frameworkMerge?: number;
+    frameworkMergeWithCands?: number;
+  };
 }
 
 interface PoolWorker {
@@ -279,6 +285,15 @@ export class ResolverPool {
         out.kernel ??= { handled: 0, passthrough: 0 };
         out.kernel.handled += c.kernel.handled;
         out.kernel.passthrough += c.kernel.passthrough;
+        if (c.kernel.reasons) {
+          out.kernel.reasons ??= {};
+          for (const [k, v] of Object.entries(c.kernel.reasons)) {
+            out.kernel.reasons[k] = (out.kernel.reasons[k] ?? 0) + v;
+          }
+        }
+        out.kernel.frameworkMerge = (out.kernel.frameworkMerge ?? 0) + (c.kernel.frameworkMerge ?? 0);
+        out.kernel.frameworkMergeWithCands =
+          (out.kernel.frameworkMergeWithCands ?? 0) + (c.kernel.frameworkMergeWithCands ?? 0);
       }
     }
     return out;

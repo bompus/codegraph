@@ -1871,14 +1871,26 @@ export class ReferenceResolver {
     deferredChain: UnresolvedRef[];
     deferredThisMember: UnresolvedRef[];
     byMethod: Record<string, number>;
-    kernel?: { handled: number; passthrough: number };
+    kernel?: {
+      handled: number;
+      passthrough: number;
+      reasons?: Record<string, number>;
+      frameworkMerge?: number;
+      frameworkMergeWithCands?: number;
+    };
   } {
     this.warmCaches();
     this.advanceSupertypeGeneration();
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
     const byMethod: Record<string, number> = {};
-    const kernelStats = { handled: 0, passthrough: 0 };
+    const kernelStats = {
+      handled: 0,
+      passthrough: 0,
+      reasons: {} as Record<string, number>,
+      frameworkMerge: 0,
+      frameworkMergeWithCands: 0,
+    };
 
     // Phase 4 (worker variant): each pool worker holds a KernelResolver over
     // its own read-only connection, so the binding-backed bare-name slice
@@ -1917,8 +1929,21 @@ export class ReferenceResolver {
             rowId: raw.rowId,
           };
           const outcome = outcomes[i]!;
-          if (outcome.status === 'passthrough') kernelStats.passthrough++;
-          else kernelStats.handled++;
+          if (outcome.status === 'passthrough') {
+            kernelStats.passthrough++;
+            const reason = outcome.reason ?? 'unknown';
+            kernelStats.reasons[reason] = (kernelStats.reasons[reason] ?? 0) + 1;
+          } else {
+            kernelStats.handled++;
+            // unresolved + a kernel candidate list = the no_candidates marker;
+            // settleKernelOutcome still runs the framework merge over it.
+            // candidates=[] merges can only produce framework candidates —
+            // candidates=[…] is a real first-max over kernel + framework hits.
+            if (outcome.candidates && this.frameworks.length > 0) {
+              if (outcome.candidates.length === 0) kernelStats.frameworkMerge++;
+              else kernelStats.frameworkMergeWithCands++;
+            }
+          }
           const result = outcome.status === 'passthrough'
             ? this.resolveOneTimed(ref)
             : this.settleKernelOutcome(ref, outcome);
@@ -2116,7 +2141,15 @@ export class ReferenceResolver {
       resolved: 0,
       unresolved: 0,
       byMethod: {} as Record<string, number>,
-      kernel: undefined as { handled: number; passthrough: number } | undefined,
+      kernel: undefined as
+        | {
+            handled: number;
+            passthrough: number;
+            reasons?: Record<string, number>;
+            frameworkMerge?: number;
+            frameworkMergeWithCands?: number;
+          }
+        | undefined,
     };
 
     // Parallel pool, started immediately but never awaited up front: early
@@ -2305,9 +2338,20 @@ export class ReferenceResolver {
         // edge row ids (hence dump order) follow resolved[] order.
         const resolvedSlots: (ResolvedRef | null)[] = new Array(batch.refs.length).fill(null);
         const unresolvedSlots: (UnresolvedRef | null)[] = new Array(batch.refs.length).fill(null);
+        const kernelReasons: Record<string, number> = {};
+        let kernelFrameworkMerge = 0;
+        let kernelFrameworkMergeWithCands = 0;
         for (let i = 0; i < inFlight.kernelRefs.length; i++) {
           const outcome = inFlight.outcomes[i]!;
-          if (outcome.status === 'passthrough') continue; // settled via ptBatch below
+          if (outcome.status === 'passthrough') {
+            const reason = outcome.reason ?? 'unknown';
+            kernelReasons[reason] = (kernelReasons[reason] ?? 0) + 1;
+            continue; // settled via ptBatch below
+          }
+          if (outcome.candidates && this.frameworks.length > 0) {
+            if (outcome.candidates.length === 0) kernelFrameworkMerge++;
+            else kernelFrameworkMergeWithCands++;
+          }
           const ref = this.kernelRowToRef(inFlight.kernelRefs[i]!);
           const result = this.settleKernelOutcome(ref, outcome);
           if (kernelShadow) {
@@ -2388,7 +2432,13 @@ export class ReferenceResolver {
             resolved: resolved.length,
             unresolved: unresolved.length,
             byMethod,
-            kernel: { handled: inFlight.kernelRefs.length - inFlight.ptIdx.length, passthrough: inFlight.ptIdx.length },
+            kernel: {
+              handled: inFlight.kernelRefs.length - inFlight.ptIdx.length,
+              passthrough: inFlight.ptIdx.length,
+              reasons: kernelReasons,
+              frameworkMerge: kernelFrameworkMerge,
+              frameworkMergeWithCands: kernelFrameworkMergeWithCands,
+            },
           },
         };
       }
@@ -2687,6 +2737,17 @@ export class ReferenceResolver {
         aggregateStats.kernel ??= { handled: 0, passthrough: 0 };
         aggregateStats.kernel.handled += result.stats.kernel.handled;
         aggregateStats.kernel.passthrough += result.stats.kernel.passthrough;
+        if (result.stats.kernel.reasons) {
+          aggregateStats.kernel.reasons ??= {};
+          for (const [k, v] of Object.entries(result.stats.kernel.reasons)) {
+            aggregateStats.kernel.reasons[k] = (aggregateStats.kernel.reasons[k] ?? 0) + v;
+          }
+        }
+        aggregateStats.kernel.frameworkMerge =
+          (aggregateStats.kernel.frameworkMerge ?? 0) + (result.stats.kernel.frameworkMerge ?? 0);
+        aggregateStats.kernel.frameworkMergeWithCands =
+          (aggregateStats.kernel.frameworkMergeWithCands ?? 0) +
+          (result.stats.kernel.frameworkMergeWithCands ?? 0);
       }
 
       processed += batch.refs.length;
@@ -2812,9 +2873,21 @@ export class ReferenceResolver {
       console.error(`[kernel-shadow] ${shadowChecked} kernel-handled refs checked, ${shadowDivergent} divergent`);
     }
     if (aggregateStats.kernel && process.env.CODEGRAPH_RESOLVE_PROFILE) {
-      const { handled, passthrough } = aggregateStats.kernel;
+      const { handled, passthrough, reasons, frameworkMerge, frameworkMergeWithCands } = aggregateStats.kernel;
       const pct = handled + passthrough > 0 ? ((100 * handled) / (handled + passthrough)).toFixed(1) : '0';
       console.error(`[resolve-profile] kernel: handled=${handled} passthrough=${passthrough} (${pct}% native)`);
+      if (reasons && Object.keys(reasons).length > 0) {
+        const rs = Object.entries(reasons)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ');
+        console.error(`[resolve-profile] kernel passthrough reasons: ${rs}`);
+      }
+      if (frameworkMerge || frameworkMergeWithCands) {
+        console.error(
+          `[resolve-profile] kernel framework-merge refs: no_candidates=${frameworkMerge ?? 0} with_candidates=${frameworkMergeWithCands ?? 0}`
+        );
+      }
     }
     if (loopProf) {
       const parts = Object.entries(loopProf).map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}s`).join(' ');

@@ -233,6 +233,9 @@ export interface ResolveOutcome {
   resolvedBy?: string;
   isFinal: boolean;
   candidates?: KernelCandidateOut[];
+  /** Passthrough only: the gate that declined (diagnostics; absent on older
+   *  binaries — tally those under 'unknown'). */
+  reason?: string;
 }
 
 export interface KernelResolverLike {

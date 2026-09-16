@@ -208,7 +208,7 @@ Same corpus run (`codegraph index`, `SYNTH_TIMINGS=1 RESOLVE_PROFILE=1`, kernel-
 | — settle stage | 33.7 s | 27.4 s |
 | TS-path `function_ref` across workers | ~700 k | ~490 (the non-bare `this.`/`Cls::m` shapes) |
 
-Reading: the last excluded kind is native — 91.5% of the resolution loop now settles without a TS round-trip, verdict-identical (edges and failed refs byte-for-byte at the corpus level; the parity test pins every arm including the kind-gated import discard). Wall-clock again moves only within noise: the moved refs were cheap misses, and the floor remains persist + synthesis. Remaining passthroughs (~500k) are `no_candidates` punts, gated imports, JS store-bind files, and the non-bare function_ref shapes.
+Reading: the last excluded kind is native — 91.5% of the resolution loop now settles without a TS round-trip, verdict-identical (edges and failed refs byte-for-byte at the corpus level; the parity test pins every arm including the kind-gated import discard). Wall-clock again moves only within noise: the moved refs were cheap misses, and the floor remains persist + synthesis. Remaining passthroughs (~500k) were guessed at here as `no_candidates` punts, gated imports, JS store-bind files, and non-bare function_ref shapes — §5.13's instrumented breakdown corrects this: `no_candidates` is a handled-status marker, and the true split is non-bare names (~89%) + non-migrated languages (~11%).
 
 ### 5.8 cFnPtr stage-C env + D/E link port (#49)
 
@@ -240,25 +240,6 @@ End-to-end confirmation (`codegraph index` on the same corpus at `34a1c20c`, `SY
 | Edges / failed refs | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 (identical) |
 
 This is the round where native ports moved wall-clock, not just verdicts: kernel-on has flipped from ~4–7% slower than kernel-off (§5.4) to **~30–35% faster** (171.4 s vs the 243–265 s kernel-off range), driven entirely by the synthesis cuts — the batch loop is unchanged and now dominates the phase at ~94.5 s (of which main-thread persist ~63 s is the largest remaining single item). The cFnPtr pass runs slower inside the full index than standalone (48.0 s vs 40.8 s; stage A 19.4 s vs 14.8 s) — expected, it shares the host with the parse loop's aftermath and pool teardown.
-
-### 5.9 Phase 4 §7a-target check — 8-core-constrained full index (2026-09-16)
-
-`taskset -c 0-7` on the 15c host (pools size via affinity-honest `availableParallelism`), node v26.9.0, kernel-on (default), linux corpus, benchmark-protocol idle checks, n=1. Caveat: memory unconstrained (47 GB host vs §7a's 7 GB envelope) — reads optimistic vs the true 8c target class.
-
-| Measure | Value |
-|---|---|
-| wall clock | **292.6 s (4:53)** — §7a's <10min-on-8c target met at ~2× headroom |
-| parse-loop | 72.8 s (store 56.3 s — post-dbbf7afc) |
-| parse-index-rebuild / fts | 30.0 s / 5.3 s |
-| ref/edge index recreate | 5.4 / 13.1 s |
-| resolution phase | **167.0 s** (vs the §7a-era ~575 s superphase — 3.4×) |
-| — loop-stages | read 9.3 / settle 7.0 / backpressure 6.6 / createEdges 9.9 / insertEdges 33.3 / deletes 4.1 / marks 4.2 |
-| — callback-synthesis | 61.1 s (cFnPtr A=21.0 C=21.3 D=5.5) |
-| kernel native share | 91.4% (5,366,983 handled / 502,521 passthrough) |
-| edges / nodes | 6,412,563 / 2,082,872 — identical to all post-merge arms |
-| MaxRSS / minor faults | 18.2 GB / 1.34 M |
-
-Phase 4 exit read: `settle` and `read` run natively (91.4% share; the mid-loop batch `read` stays on node:sqlite by the −shm isolation rule — `readPendingBatch` exists but the main-thread kernel conn is closed while the pool is engaged), and kernel-on is now faster than kernel-off (§5.8 end-to-end). Cross-runtime note: node-on-8c (292.6 s) beats bun-on-15c (316.6–356.0 s) on this build; node faults 1.34 M vs bun ~19 M — mimalloc page-churn remains the runtime asymmetry (#42942).
 
 ### 5.9 Fresh-init write path (`dbbf7afc`)
 
@@ -338,3 +319,32 @@ Suite compat (`bun --bun x vitest run` — plain `bun x vitest` honors vitest's 
 - `process.env` writes don't reach native environ (kernel's `CODEGRAPH_VALUE_REFS` getenv gate) → oven-sh/bun#42891; the one test is `skipIf(process.versions.bun)`.
 - `require.resolve` falls back to bun's global install cache / auto-install → oven-sh/bun#42893 (documented behavior; npm-shim tests pass `--no-install` to the child under Bun — a bare `node` spawn would still hit bun's node→bun PATH shim).
 - `spawn` can't take a child's stdout stream as `stdio[0]` → oven-sh/bun#25498; the ppid-watchdog tree runs under real node via a bun-shim-filtered PATH lookup.
+
+### 5.13 Phase 4 §7a-target check + instrumented passthrough taxonomy (2026-09-16)
+
+Two `taskset -c 0-7` runs on the 15c host (pools size via affinity-honest `availableParallelism`), node v26.9.0, kernel-on (default), linux corpus, benchmark-protocol idle checks, n=1 each. Caveat: memory unconstrained (47 GB host vs §7a's 7 GB envelope) — reads optimistic vs the true 8c target class.
+
+| Measure | Run 1 | Run 2 (instrumented) |
+|---|---|---|
+| wall clock | **292.6 s (4:53)** | 293.3 s (4:53) |
+| resolution phase | 167.0 s | 162.3 s |
+| kernel handled / passthrough | 5,366,983 / 502,521 (91.4% native) | 5,366,728 / 497,776 (91.5%) — the ±5k admission wobble §5.10 notes |
+| edges / nodes | 6,412,563 / 2,082,872 | identical |
+
+§7a's <10min-on-8c target is met at ~2× headroom. `settle` and `read` run natively (the mid-loop batch `read` stays on node:sqlite by the −shm isolation rule — `readPendingBatch` exists but the main-thread kernel conn is closed while the pool is engaged), and kernel-on is faster than kernel-off end-to-end (§5.8). Cross-runtime note: node-on-8c beats bun-on-15c (316.6–356.0 s) on this build; node faults 1.34 M vs bun ~19 M — mimalloc page-churn remains the runtime asymmetry (#42942).
+
+**Passthrough taxonomy** (kernel now reports a `reason` per punt; §5.7's guess was wrong — `no_candidates` is a handled-status `unresolved`+`candidates:[]` marker, not a passthrough):
+
+| Reason | Count | Share of passthroughs | What it is |
+|---|---|---|---|
+| `ineligible:name` | 445,067 / 440,335 | ~88.5% | Non-bare names (`.`, `::`, etc.) — the member-access pipeline |
+| `ineligible:lang` | 57,454 / 57,441 | 11.4% | Non-migrated languages — mostly Rust (28.3k failed; 496 .rs files), plus objc/ruby/markdown |
+| `store-bind`, `claimed`, `gated-import`, `ineligible:path` | 0 | 0% | None fired on this corpus |
+
+Assessment — none of the tail is cheap coverage:
+
+- **`ineligible:name` is load-bearing, not waste.** ~64k of the 445k failed; the other ~381k produced real member edges through the TS matchers (`matchDottedCallChain`/`matchMethodCall`/bound-receiver arms). Porting them is the member-resolution pipeline — Phase-5 scope. The only kernel-adjudicable slice is the prefilter-miss subset of the failed 64k (TS prefilter-miss is terminal for non-bare names — `matchJsStoreBindingCall` can't fire on a name with separators), ≤1.3% of the loop — not worth the segment-splitting prefilter port.
+- **`ineligible:lang` (Rust) needs extractor work first**: the bindings table has 0 rust rows — `rustlang::extract` emits no `use`/`fn` bindings, so the kernel's import-join machinery has nothing to bind. Migrating rust = bindings emission + resolver audit, not a flag flip.
+- **The `frameworkMerge` dispatches are real merges.** 3,232,822 handled refs carried a candidate list into `settleKernelOutcome`'s framework loop (split: no_candidates=140,232 / with_candidates=3,092,341). Skipping the `candidates=[]` subset is not verdict-safe under detected frameworks whose `resolve()` isn't claims-bounded — express (detected on this corpus) resolves middleware/controller/service name patterns independent of `claimsReference`, and `gateFrameworkLanguage` never gates `calls`. A safe skip needs an opt-in `resolve()` contract flag + per-resolver audit; deferred.
+
+Phase 4 exit read: the kernel handles the entire bare-name migrated-language slice (91.4% of the loop, verdict-identical across every check); the remaining passthroughs are the deliberately-deferred member pipeline plus languages whose extractors don't emit bindings yet. §7a CPU target met. Coverage is at its design boundary — further native share is Phase 5 (member access), not Phase 4 tail.

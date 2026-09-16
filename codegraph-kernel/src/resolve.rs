@@ -661,7 +661,8 @@ pub struct KernelCandidateOut {
 ///                     marks the import early-win; under frameworks it can
 ///                     still be displaced by a ≥0.9 framework hit.
 ///   - `unresolved`  — terminal miss (do not let TS "rescue" it).
-///   - `passthrough` — kernel declined; run the full TS pipeline.
+///   - `passthrough` — kernel declined; run the full TS pipeline. `reason`
+///                     names the gate that punted (diagnostics only).
 /// `candidates` is populated only when `frameworksActive` and the kernel
 /// produced a non-final verdict — the raw [import?, name?] list for the TS
 /// first-max merge.
@@ -673,10 +674,11 @@ pub struct ResolveOutcome {
     pub resolved_by: Option<String>,
     pub is_final: bool,
     pub candidates: Option<Vec<KernelCandidateOut>>,
+    pub reason: Option<String>,
 }
 
 impl ResolveOutcome {
-    fn passthrough() -> Self {
+    fn passthrough(reason: &'static str) -> Self {
         ResolveOutcome {
             status: "passthrough".into(),
             target_node_id: None,
@@ -684,6 +686,7 @@ impl ResolveOutcome {
             resolved_by: None,
             is_final: false,
             candidates: None,
+            reason: Some(reason.into()),
         }
     }
     fn unresolved() -> Self {
@@ -694,6 +697,7 @@ impl ResolveOutcome {
             resolved_by: None,
             is_final: false,
             candidates: None,
+            reason: None,
         }
     }
     /// Frameworks are active and the kernel found no name/import candidate —
@@ -712,6 +716,7 @@ impl ResolveOutcome {
             resolved_by: Some(by.to_string()),
             is_final,
             candidates: cands,
+            reason: None,
         }
     }
 }
@@ -3094,12 +3099,6 @@ impl KernelResolver {
                 .any(|(i, c)| matches!(c, '.' | ':' | '/' | '\\' | '#' | '(' | ')') || (c == '$' && i > 0))
     }
 
-    fn ref_is_eligible(r: &ResolveRefIn) -> bool {
-        is_migrated_language(&r.language)
-            && Self::name_is_bare(&r.reference_name)
-            && !r.file_path.is_empty()
-    }
-
     /// Necessary condition for matchJsStoreBindingCall (name-matcher.ts):
     /// both store-binding arms bind the ref's own name through `const` — a
     /// destructure (`const {a} = X.getState()`) or a selector alias
@@ -3247,8 +3246,15 @@ impl KernelResolver {
     }
 
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
-        if !Self::ref_is_eligible(r) {
-            return Ok(ResolveOutcome::passthrough());
+        // ref_is_eligible, split so the passthrough reason names the gate.
+        if !is_migrated_language(&r.language) {
+            return Ok(ResolveOutcome::passthrough("ineligible:lang"));
+        }
+        if !Self::name_is_bare(&r.reference_name) {
+            return Ok(ResolveOutcome::passthrough("ineligible:name"));
+        }
+        if r.file_path.is_empty() {
+            return Ok(ResolveOutcome::passthrough("ineligible:path"));
         }
 
         // resolveOneInner, bare slice:
@@ -3263,7 +3269,7 @@ impl KernelResolver {
         // list, so a JS bare call whose file const-binds its name must
         // passthrough wherever it would otherwise settle.
         if self.is_bare_js_call(r)? && self.file_could_store_bind(r)? {
-            return Ok(ResolveOutcome::passthrough());
+            return Ok(ResolveOutcome::passthrough("store-bind"));
         }
         // `function_ref` (#756) has a dedicated, strictly-gated TS path that
         // never reaches frameworks or the fuzzy matchers — resolve it here
@@ -3280,7 +3286,7 @@ impl KernelResolver {
             self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?;
         if !pre_pass {
             return Ok(if self.framework_claims(&r.reference_name) {
-                ResolveOutcome::passthrough()
+                ResolveOutcome::passthrough("claimed")
             } else {
                 ResolveOutcome::unresolved()
             });
@@ -3311,7 +3317,7 @@ impl KernelResolver {
                     // pre-empted the import entirely. Only the full TS spine
                     // can distinguish; hand it back when frameworks are live.
                     return Ok(if self.frameworks_active {
-                        ResolveOutcome::passthrough()
+                        ResolveOutcome::passthrough("gated-import")
                     } else {
                         ResolveOutcome::unresolved()
                     });

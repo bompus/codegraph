@@ -84,7 +84,19 @@ export interface ResolutionResult {
     unresolved: number;
     byMethod: Record<string, number>;
     /** Kernel-path accounting: refs settled natively vs handed back to TS */
-    kernel?: { handled: number; passthrough: number };
+    kernel?: {
+      handled: number;
+      passthrough: number;
+      /** Passthrough outcomes by kernel-reported gate (diagnostics). */
+      reasons?: Record<string, number>;
+      /** Handled outcomes that still ran the TS framework merge with an
+       *  EMPTY kernel candidate list (the no_candidates marker — the merge
+       *  can only produce framework candidates). */
+      frameworkMerge?: number;
+      /** Handled outcomes that ran the framework merge WITH kernel
+       *  candidates present — a real first-max, not a dead dispatch. */
+      frameworkMergeWithCands?: number;
+    };
   };
 }
 
