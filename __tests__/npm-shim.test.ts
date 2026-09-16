@@ -70,7 +70,16 @@ function writeHostPpidLauncher(binDir: string): void {
 // while it runs (spawnSync would block this event loop and deadlock).
 function runShim(pkgDir: string, args: string[], env: Record<string, string>) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [path.join(pkgDir, 'npm-shim.js'), ...args], {
+    // Under Bun pass --no-install: bun's auto-install resolution falls back
+    // to its global install cache when no node_modules exists on the path
+    // (documented feature, oven-sh/bun#42893), which would resolve the
+    // platform package these tests intentionally leave uninstalled. Also:
+    // spawning plain `node` doesn't help — bun puts a node→bun shim at the
+    // front of PATH for bun-driven processes.
+    const child = spawn(process.execPath, [
+      ...(process.versions.bun ? ['--no-install'] : []),
+      path.join(pkgDir, 'npm-shim.js'), ...args,
+    ], {
       env: { ...process.env, ...env },
     });
     let stdout = '', stderr = '';

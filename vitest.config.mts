@@ -11,6 +11,10 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['__tests__/**/*.test.ts'],
+    // Bun's os.homedir() ignores runtime HOME mutation; the setup file
+    // restores Node semantics for suites that redirect HOME for isolation.
+    // Inherited by the engine project only — the ui project stands alone.
+    setupFiles: ['__tests__/bun-homedir.setup.ts'],
     env: {
       /**
        * The suite spawns real CLI/MCP processes; without this they would write

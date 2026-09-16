@@ -291,3 +291,25 @@ Coverage: `__tests__/batched-supertype-ordering.test.ts` pins the cross-batch in
 4. **Driver swap** (hypothesis bun:sqlite > better-sqlite3 > node:sqlite): measured all three on the identical 500k-edge workload — bs3 ~1400ms, bun ~1500ms, node:sqlite ~1330–1810ms, within ~10–15%. An isolated per-call arm (500k inserts into an in-memory TEMP table) found node:sqlite ≈ bun:sqlite at ~0.5µs/row with better-sqlite3 ~1.8x slower — modern node:sqlite is already at the binding floor; the published bun:sqlite wins are FFI-latency micro-benches. The wall is inside SQLite's engine (B-tree insert + UNIQUE identity probe + WAL), shared identically by all three.
 
 Reading: ~5µs/edge in-loop vs ~2.6µs/edge on a fully-cached copy; the gap is I/O and concurrency, not removable per-row CPU. `insertEdges` ≈ 33s is close to the floor for 6.4M indexed WAL inserts on this host; further cuts would need fewer bytes/rows or a different storage scheme, not check-removal or driver swaps. The remaining loop floor: `createEdges` ~10s, `read` ~10s, `settle` ~7s, `deletes+marks` ~9s, plus `parse-index-rebuild` ~28s and the synthesis internals.
+
+### 5.12 Dual-runtime (Node vs Bun) — index parity + suite compat
+
+`codegraph index --force` on the linux corpus under both runtimes (`bun` 1.4.2 / `node` v26.8.2, `SYNTH_TIMINGS=1`, `nice -n 10`, sequential on a verified-idle host: swap 0, dual-side load checked, orphan sweep, no agent activity during either arm):
+
+| Measure | node | bun |
+|---|---|---|
+| total wall | 351.8s | 365.7s (+3.8%) |
+| parse-loop | 141,183ms | 148,300ms (+5.0%) |
+| parse-index-rebuild | 23,901ms | 29,049ms (+21.5%) |
+| callback-synthesis | 59,479ms | 50,037ms (−15.8%) |
+| resolution phase | 170,489ms | 170,247ms (~tie) |
+| edges / nodes | 6,412,714 / 2,082,872 | **identical** |
+| peak RSS (main proc) | 17.58 GB | 15.04 GB (−14%) |
+
+Reading: byte-identical graph output; Bun nets ~4% slower wall (losses concentrated in the parse loop and SQLite index rebuilds, partly offset by a faster callback-synthesis) at 14% lower peak RSS. Reported upstream as oven-sh/bun#42924 per the Bun-slower-is-a-bug policy.
+
+Suite compat (`bun --bun x vitest run` — plain `bun x vitest` honors vitest's node shebang and silently runs Node): baseline was 88/4,963 failing, ~86 of them a single root cause — Bun's `os.homedir()` snapshots $HOME at spawn and ignores runtime `process.env.HOME` mutation (oven-sh/bun#29244; fixed upstream by #42599). Handled test-side via `__tests__/bun-homedir.setup.ts` (`mock.module` + require-exports patch — Bun's builtin ESM namespace is a frozen snapshot and `mock.module` doesn't reach `require()` callers, so both paths are patched). Remaining divergences, each reported upstream:
+
+- `process.env` writes don't reach native environ (kernel's `CODEGRAPH_VALUE_REFS` getenv gate) → oven-sh/bun#42891; the one test is `skipIf(process.versions.bun)`.
+- `require.resolve` falls back to bun's global install cache / auto-install → oven-sh/bun#42893 (documented behavior; npm-shim tests pass `--no-install` to the child under Bun — a bare `node` spawn would still hit bun's node→bun PATH shim).
+- `spawn` can't take a child's stdout stream as `stdio[0]` → oven-sh/bun#25498; the ppid-watchdog tree runs under real node via a bun-shim-filtered PATH lookup.

@@ -24,6 +24,7 @@ npm run dev             # tsc --watch
 npm run clean           # rm -rf dist
 
 npm test                # vitest run (all)
+npm run test:bun        # vitest under Bun (must be `bun --bun x vitest run` — plain `bun x` honors vitest's node shebang and silently runs Node)
 npm run test:watch
 npm run test:eval       # only __tests__/evaluation/
 npm run eval            # build then run __tests__/evaluation/runner.ts via tsx
@@ -34,6 +35,8 @@ npm run cli             # build then run the local dist binary
 npx vitest run __tests__/installer-targets.test.ts
 npx vitest run __tests__/extraction.test.ts -t "TypeScript"
 ```
+
+Under Bun the suite runs green via `__tests__/bun-homedir.setup.ts` (an `os.homedir` shim for oven-sh/bun#29244) plus three test-file adaptations linked to their upstream issues (#42891, #42893, #25498).
 
 `copy-assets` (called from `build`) copies `src/db/schema.sql` into `dist/`. **Any new SQL asset must be copied or it won't ship.**
 

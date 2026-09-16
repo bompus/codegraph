@@ -705,7 +705,10 @@ describe('value-reference edges', () => {
     expect(valueRefReaders(cg, 'TIMEOUT')).toEqual([]);
   });
 
-  it('emits nothing when CODEGRAPH_VALUE_REFS=0', async () => {
+  // Skipped under Bun: process.env mutations don't propagate to the native
+  // environ there (oven-sh/bun#42891), so the kernel's std::env::var check
+  // never sees CODEGRAPH_VALUE_REFS=0 set mid-process.
+  it.skipIf(!!process.versions.bun)('emits nothing when CODEGRAPH_VALUE_REFS=0', async () => {
     const prev = process.env.CODEGRAPH_VALUE_REFS;
     process.env.CODEGRAPH_VALUE_REFS = '0';
     try {

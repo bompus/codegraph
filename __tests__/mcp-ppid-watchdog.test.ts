@@ -23,12 +23,35 @@
  * relies on are POSIX-specific.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, execSync, ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
+
+// Under Bun the wrapper tree must run under real node: it passes the
+// stdin-holder's stdout pipe as codegraph's stdio[0], and Bun's spawn can't
+// accept a stream.Readable as a stdio fd yet (oven-sh/bun#25498). Bun injects
+// a node→bun shim at the front of PATH for bun-driven processes, so plain
+// `node` still resolves to bun — strip bun's shim dirs before the lookup.
+// The watchdog behavior under test is runtime-agnostic JS, so node is a
+// faithful stand-in.
+const RUNNER: string | null = (() => {
+  if (!process.versions.bun) return process.execPath;
+  const cleanPath = (process.env.PATH || '')
+    .split(path.delimiter)
+    .filter((p) => !/bun/i.test(p))
+    .join(path.delimiter);
+  try {
+    const found = execSync('command -v node', { env: { PATH: cleanPath }, shell: '/bin/sh' })
+      .toString()
+      .trim();
+    return found || null;
+  } catch {
+    return null;
+  }
+})();
 
 function isAlive(pid: number): boolean {
   try {
@@ -51,7 +74,7 @@ function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
   });
 }
 
-describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => {
+describe.skipIf(process.platform === 'win32' || RUNNER === null)('MCP PPID watchdog (#277)', () => {
   let wrapper: ChildProcessWithoutNullStreams | null = null;
   let childPid: number | null = null;
   let stdinHolderPid: number | null = null;
@@ -118,7 +141,7 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
       }, 800);
       setInterval(() => {}, 60000);
     `;
-    wrapper = spawn(process.execPath, ['-e', wrapperSrc], {
+    wrapper = spawn(RUNNER!, ['-e', wrapperSrc], {
       stdio: ['pipe', 'pipe', 'pipe'],
       // All descendants inherit an isolated project. An editor's live writer
       // lock in the repository must not terminate the child before the watchdog.

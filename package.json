@@ -32,6 +32,7 @@
     "cli": "npm run build && node dist/bin/codegraph.js",
     "pretest": "npm run check:agent-docs && node scripts/ensure-kernel.mjs",
     "test": "vitest run",
+    "test:bun": "bun --bun x vitest run",
     "test:watch": "vitest",
     "test:eval": "vitest run __tests__/evaluation/",
     "eval": "npm run build && npx tsx __tests__/evaluation/runner.ts",
