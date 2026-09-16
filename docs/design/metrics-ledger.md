@@ -259,3 +259,24 @@ Same corpus run (`codegraph index`, `SYNTH_TIMINGS=1`, `nice -n 10`, n=1, host i
 | edges / failed / bindings / literals | 6,412,714 / 2,052,370 / 5,228,395 / 295,521 | identical |
 
 Reading: the biggest remaining index-time items are now the resolution batch loop (~94.5 s, of which main-thread persist ~63 s) and `parse-index-rebuild` (28.3 s — now 17 single-scan index builds). The store-worker still pays per-file transactions and JS row materialization; both are smaller than the index-maintenance floor that was removed here.
+
+### 5.10 Resolution loop — edge persist overlap (`a8476619`)
+
+§5.9 named the batch loop the largest remaining item; its serialized piece was `insertEdges` between settle and the next fan-out. The dubbo-validated barrier turned out to cover only supertype edges: the ONLY mid-loop live-conn edge reads are `getOutgoingEdges(id, ['extends','implements'])` supertype walks (workers' TS conns read the live db read-only; the kernel reads a static snapshot). `contains` is extraction-sourced; synthesizers run post-loop; the pending-ref prefetch already ran pre-persist; deletes/marks already overlapped post-fan-out.
+
+The fix partitions each batch's resolved refs by effective edge kind (`r.edgeKind ?? referenceKind` ∈ {extends, implements}): supertype edges insert eagerly before `beginBatch` — 44,034 of 6.41M corpus edges — and every other kind's `createEdges`+`insertEdges` moves after fan-out into the already-overlapped window. Dedup can't shift winners (identity index keys on kind) and crash order is preserved (edges still land before their refs' deletes).
+
+Same corpus run (`codegraph index --force`, `SYNTH_TIMINGS=1 RESOLVE_PROFILE=1`, `nice -n 10`, n=1):
+
+| Measure | Before (`2dd89cfe`) | After |
+|---|---|---|
+| resolution phase | 171.4 s | **154.6 s (−9.8%)** |
+| — loop-stages `settle` (main's await) | 19.2 s | **6.7 s** — worker resolve now hides inside the persist window |
+| — `insertEdges` busy (eager + overlapped) | 30.5 s | 32.9 s (same work, mostly overlapped) |
+| — `createEdges` busy | 8.5 s | 9.6 s (two passes over the partition) |
+| — read / backpressure / deletes / marks | 9.4 / 5.9 / 4.3 / 4.2 s | 8.6 / 6.5 / 4.1 / 4.1 s |
+| callback-synthesis | 59.0 s | 52.4 s (noise — untouched) |
+| edges / failed / cFnPtr fn-pointer-dispatch | 6,412,714 / 2,052,370 / 283,931 | **identical** |
+| native share | 91.5% | 91.4% (same verdicts; ±5k ref-count wobble) |
+
+Coverage: `__tests__/batched-supertype-ordering.test.ts` pins the cross-batch invariant (a call resolvable only via an earlier batch's committed extends edge) and the partition's completeness; the concurrent-visibility half is what this corpus gate proves. Remaining floor: `insertEdges` busy-time itself (~33s of B-tree probes + marshal on the main conn — shrinking it needs a different lever, not more overlap), `settle` 6.7s, `createEdges` 9.6s.
