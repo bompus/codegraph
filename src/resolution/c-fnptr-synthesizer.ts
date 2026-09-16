@@ -89,7 +89,7 @@ import { memoryBudgetBytes } from './memory-budget';
 import { LRUCache } from './lru-cache';
 import { stripCommentsForRegex } from './strip-comments';
 import { getKernel } from '../extraction/kernel/loader';
-import type { CfnptrFactsOut, CfnptrFileIn, CfnptrPathIn } from '../extraction/kernel/loader';
+import type { CfnptrFactsOut, CfnptrFileIn, CfnptrLinkFileIn, CfnptrPathIn } from '../extraction/kernel/loader';
 
 const C_CPP_EXT = /\.(c|h|cc|cpp|cxx|hpp|hh|hxx|cppm|ipp|inl|tcc)$/i;
 const FN_KINDS = new Set(['function', 'method']);
@@ -447,7 +447,7 @@ export async function cFnPointerDispatchEdges(
   // A = extraction sweep, B = struct-layout linking, C = registration,
   // D = propagation, E = dispatch.
   const prof = process.env.CODEGRAPH_SYNTH_TIMINGS
-    ? { A: 0, B: 0, C: 0, D: 0, E: 0, readMs: 0, readN: 0, stripMs: 0, stripN: 0, nodesMs: 0, nodesN: 0 }
+    ? { A: 0, B: 0, C: 0, D: 0, E: 0, readMs: 0, readN: 0, stripMs: 0, stripN: 0, nodesMs: 0, nodesN: 0, cEnvMs: 0, cUnitMs: 0, cIncMs: 0 }
     : null;
 
   // Within-pass progress: this is the pass that parks the "Linking dynamic
@@ -621,6 +621,8 @@ export async function cFnPointerDispatchEdges(
   const localIncludesOf = (file: string): string[] => {
     const f = factsByFile.get(file);
     if (f) return f.includes;
+    const ne = nativeEnvFor(file);
+    if (ne) return ne.incs;
     let out = includeCache.get(file);
     if (out) return out;
     out = scanIncludes(file);
@@ -651,6 +653,57 @@ export async function cFnPointerDispatchEdges(
   // with cores. Same facts contract — mergeNativeFacts is shared.
   const nativePaths =
     kernel && typeof kernel.cfnptrScanPaths === 'function' ? kernel.cfnptrScanPaths.bind(kernel) : null;
+  // Stage C env extraction (buildEnv's per-file pieces) and stages D+E
+  // (propagation + dispatch linking). Both OPTIONAL — older binaries lack
+  // them and the loops below keep their JS implementations verbatim.
+  const nativeEnvs =
+    kernel && typeof kernel.cfnptrFileEnvs === 'function' ? kernel.cfnptrFileEnvs.bind(kernel) : null;
+  const nativeLink =
+    kernel && typeof kernel.cfnptrLink === 'function' ? kernel.cfnptrLink.bind(kernel) : null;
+  const root = ctx.getProjectRoot();
+
+  // Per-file macro env pieces, natively extracted on demand. The caches stay
+  // LRU-bounded exactly like the JS path's (the kernel tree's ~6.1M `#define`s
+  // rule out retaining every file's tables) — a miss just pays a native
+  // read+strip+parse instead of a JS one.
+  interface NativeEnv {
+    fn: Map<string, MacroDef>;
+    obj: Map<string, string>;
+    def: Set<string>;
+    incs: string[];
+  }
+  const envCache = new LRUCache<string, NativeEnv | null>(512);
+  const nativeEnvFor = (file: string): NativeEnv | null => {
+    let e = envCache.get(file);
+    if (e !== undefined) return e;
+    e = null;
+    if (nativeEnvs) {
+      const r = nativeEnvs([path.join(root, file)])[0];
+      if (r != null) {
+        const incs: string[] = [];
+        for (const cap of r.includes) {
+          if (!INCLUDABLE_EXT.test(cap)) continue;
+          const t = resolveInclude(file, cap);
+          if (t) incs.push(intern(t));
+        }
+        e = {
+          fn: new Map(r.fnMacros.map((m) => [m.name, { params: m.params, expansion: m.expansion }])),
+          obj: new Map(r.objMacros.map((m) => [m.name, m.value])),
+          def: new Set(r.defined),
+          incs,
+        };
+        // The extraction already produced the stripped text — hand it to
+        // `srcCache` so `src(file)` (stage C's processUnit / include rescans)
+        // doesn't pay a second read+strip. This restores the side-effect
+        // warming the JS extractors gave: they ran through `src()` themselves.
+        srcCache.set(file, r.stripped);
+      }
+      // r === null: unreadable on disk — stay null so the JS path below (and
+      // `src()`/`ctx.readFile`, possibly a virtual FS) still gets the file.
+    }
+    envCache.set(file, e);
+    return e;
+  };
 
   const mergeNativeFacts = (file: string, out: CfnptrFactsOut): void => {
     for (const t of out.fnPtrTypedefs) fnPtrTypedefs.add(intern(t));
@@ -704,7 +757,6 @@ export async function cFnPointerDispatchEdges(
         arr.push({ id: st.id, startLine: st.startLine ?? 0, endLine: st.endLine ?? st.startLine ?? 0 });
       }
     }
-    const root = ctx.getProjectRoot();
     const BATCH = 512;
     let batch: { file: string; input: CfnptrPathIn }[] = [];
     const flush = (): void => {
@@ -1030,19 +1082,19 @@ export async function cFnPointerDispatchEdges(
   const fnMacroCache = new LRUCache<string, Map<string, MacroDef>>(256);
   const fileFnMacros = (file: string): Map<string, MacroDef> => {
     let m = fnMacroCache.get(file);
-    if (!m) { m = parseFunctionMacros(src(file) ?? ''); fnMacroCache.set(file, m); }
+    if (!m) { m = nativeEnvFor(file)?.fn ?? parseFunctionMacros(src(file) ?? ''); fnMacroCache.set(file, m); }
     return m;
   };
   const objMacroCache = new LRUCache<string, Map<string, string>>(256);
   const fileObjMacros = (file: string): Map<string, string> => {
     let m = objMacroCache.get(file);
-    if (!m) { m = parseObjectMacros(src(file) ?? ''); objMacroCache.set(file, m); }
+    if (!m) { m = nativeEnvFor(file)?.obj ?? parseObjectMacros(src(file) ?? ''); objMacroCache.set(file, m); }
     return m;
   };
   const definedCache = new LRUCache<string, Set<string>>(256);
   const fileDefinedNames = (file: string): Set<string> => {
     let d = definedCache.get(file);
-    if (!d) { d = parseDefinedNames(src(file) ?? ''); definedCache.set(file, d); }
+    if (!d) { d = nativeEnvFor(file)?.def ?? parseDefinedNames(src(file) ?? ''); definedCache.set(file, d); }
     return d;
   };
 
@@ -1211,11 +1263,16 @@ export async function cFnPointerDispatchEdges(
     const env = new Map<string, MacroDef>();
     const objEnv = new Map<string, string>();
     const defined = new Set<string>();
+    const tEnv = prof ? Date.now() : 0;
     buildEnv(file, 2, new Set(), env, objEnv, defined);
+    if (prof) prof.cEnvMs += Date.now() - tEnv;
     if (survives) {
+      const tU = prof ? Date.now() : 0;
       const s = src(file);
       if (s) processUnit({ text: s, file, env, objEnv });
+      if (prof) prof.cUnitMs += Date.now() - tU;
     }
+    const tInc = prof ? Date.now() : 0;
     for (const target of facts.includes) {
       if (seenInclude.has(`${file}>${target}`)) continue;
       const incSrc = src(target);
@@ -1239,6 +1296,7 @@ export async function cFnPointerDispatchEdges(
       for (const [k, v] of parseObjectMacros(text)) incObjEnv.set(k, v);
       processUnit({ text, file: target, env: incEnv, objEnv: incObjEnv });
     }
+    if (prof) prof.cIncMs += Date.now() - tInc;
   }
   if (prof) { prof.C = Date.now() - tPass; tPass = Date.now(); }
 
@@ -1298,6 +1356,68 @@ export async function cFnPointerDispatchEdges(
     return t;
   };
 
+  const edges: Edge[] = [];
+  if (nativeLink) {
+    // Native stages D+E: the kernel reads each survivor file itself, runs the
+    // field←field propagation scan, merges pairs into `reg` to the fixpoint,
+    // then emits dispatch edges — threaded across files, output in `files`
+    // order. The tables cross the boundary once; the JS loops below stay as
+    // the fallback for kernels without `cfnptrLink`.
+    const linkFiles: CfnptrLinkFileIn[] = [];
+    for (const file of files) {
+      await tick();
+      const facts = factsByFile.get(file);
+      if (!facts) continue;
+      const prop =
+        facts.dPairs?.some((p) => {
+          const i = p.indexOf('\0');
+          return fieldToStructs.has(p.slice(0, i)) && fieldToStructs.has(p.slice(i + 1));
+        }) ?? false;
+      const dispatch =
+        (facts.dispatchFields?.some((f) => fieldToStructs.has(f)) ?? false) ||
+        (arrayReg.size > 0 && (facts.arrayDispatchNames?.some((n) => arrayReg.has(n)) ?? false));
+      if (!prop && !dispatch) continue;
+      const fns: CfnptrLinkFileIn['fns'] = [];
+      for (const fn of ctx.getNodesInFile(file)) {
+        if (!FN_KINDS.has(fn.kind)) continue;
+        fns.push({ id: fn.id, startLine: fn.startLine ?? 0, endLine: fn.endLine ?? fn.startLine ?? 0 });
+      }
+      if (fns.length === 0) continue;
+      linkFiles.push({ rel: file, abs: path.join(root, file), prop, dispatch, fns });
+    }
+    // `type` crosses as `undefined`, not `null` — the kernel's `Option<String>`
+    // field treats an absent/undefined key as None but rejects explicit null.
+    const linkField = (f: FieldInfo) => ({ name: f.name, type: f.type || undefined, isFnPtr: f.isFnPtr });
+    const out = nativeLink(linkFiles, {
+      fieldToStructs: [...fieldToStructs].map(([field, structs]) => ({ field, structs: [...structs] })),
+      structLayout: [...structLayout].map(([name, fields]) => ({ name, fields: fields.map(linkField) })),
+      allStructFields: [...allStructFields].map(([name, variants]) => ({
+        name,
+        variants: variants.map((v) => v.map(linkField)),
+      })),
+      globalVarType: [...globalVarType].map(([v, ty]) => ({ var: v, type: ty })),
+      reg: [...reg].map(([key, ids]) => ({ key, ids: [...ids] })),
+      arrayReg: [...arrayReg].map(([name, entries]) => ({
+        name,
+        entries: entries.map((e) => ({ file: e.file, ids: [...e.ids] })),
+      })),
+    });
+    for (const e of out.edges) {
+      edges.push({
+        source: e.source,
+        target: e.target,
+        kind: 'calls',
+        line: e.line,
+        provenance: 'heuristic',
+        metadata: {
+          synthesizedBy: 'fn-pointer-dispatch',
+          via: e.via,
+          registeredAt: e.registeredAt,
+        },
+      });
+    }
+    if (prof) { prof.D = Date.now() - tPass; prof.E = 0; tPass = Date.now(); }
+  } else {
   // ---- Stage D: field←field propagation (`a->f = b->g`) ----
   // Collected as (targetStruct.field ← sourceStruct.field) pairs, then merged to
   // a fixpoint so a hook slot inherits a registry field's handlers.
@@ -1365,7 +1485,6 @@ export async function cFnPointerDispatchEdges(
   // field, or some subscripted name is a registered fn-pointer array — the loop
   // body's own first gates (`owners` / `entries`), which a skipped file's
   // matches would all fail before touching `seen`/`added`/`edges`.
-  const edges: Edge[] = [];
   const seen = new Set<string>();
   for (const file of files) {
     await tick();
@@ -1476,10 +1595,11 @@ export async function cFnPointerDispatchEdges(
     }
     }
   }
+  }
   if (prof) {
-    prof.E = Date.now() - tPass;
+    if (!nativeLink) prof.E = Date.now() - tPass;
     console.error(
-      `[synth-timing] cFnPtr sub: A=${prof.A}ms B=${prof.B}ms C=${prof.C}ms D=${prof.D}ms E=${prof.E}ms | read n=${prof.readN} ${prof.readMs}ms strip n=${prof.stripN} ${prof.stripMs}ms nodesInFile n=${prof.nodesN} ${prof.nodesMs}ms`
+      `[synth-timing] cFnPtr sub: A=${prof.A}ms B=${prof.B}ms C=${prof.C}ms (env=${prof.cEnvMs} unit=${prof.cUnitMs} inc=${prof.cIncMs}) D=${prof.D}ms E=${prof.E}ms | read n=${prof.readN} ${prof.readMs}ms strip n=${prof.stripN} ${prof.stripMs}ms nodesInFile n=${prof.nodesN} ${prof.nodesMs}ms`
     );
   }
   return edges;
