@@ -262,6 +262,12 @@ export class DatabaseConnection {
     'idx_unresolved_failed_tail',
     'idx_files_language',
     'idx_files_modified_at',
+    // literals/bindings are written per-bundle inside the same window and read
+    // only after it (explore literals; resolution bindings) — millions of rows
+    // each maintaining these per-insert.
+    'idx_literals_file',
+    'idx_bindings_file',
+    'idx_bindings_name',
   ] as const;
 
   /**

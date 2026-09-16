@@ -87,11 +87,17 @@ port.on('message', (msg: InMessage) => {
         // Mirrors db/index.ts configureConnection, with the same fast-init
         // durability trade the main connection applies for fresh builds.
         db.pragma('busy_timeout = 5000');
-        db.pragma('foreign_keys = ON');
         if (msg.fastInit) {
           db.pragma('journal_mode = MEMORY');
           db.pragma('synchronous = OFF');
+          // Every edge/ref insert otherwise pays a parent-key probe on nodes —
+          // ~19M B-tree lookups on the linux corpus. The bundle's own
+          // finalizeStoreBundle endpoint filter already guarantees referential
+          // integrity, and no deletes run in this window so ON DELETE CASCADE
+          // cannot fire. Kept ON on the non-fastInit path.
+          db.pragma('foreign_keys = OFF');
         } else {
+          db.pragma('foreign_keys = ON');
           db.pragma('synchronous = NORMAL');
         }
         db.pragma('cache_size = -64000');
