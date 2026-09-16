@@ -209,3 +209,21 @@ Same corpus run (`codegraph index`, `SYNTH_TIMINGS=1 RESOLVE_PROFILE=1`, kernel-
 | TS-path `function_ref` across workers | ~700 k | ~490 (the non-bare `this.`/`Cls::m` shapes) |
 
 Reading: the last excluded kind is native — 91.5% of the resolution loop now settles without a TS round-trip, verdict-identical (edges and failed refs byte-for-byte at the corpus level; the parity test pins every arm including the kind-gated import discard). Wall-clock again moves only within noise: the moved refs were cheap misses, and the floor remains persist + synthesis. Remaining passthroughs (~500k) are `no_candidates` punts, gated imports, JS store-bind files, and the non-bare function_ref shapes.
+
+### 5.8 cFnPtr stage-C env + D/E link port (#49)
+
+§5.5's remaining floor — the serial C preprocessor registration (env-build + `processUnit` + include rescans) and the D/E body scans — moved into the kernel via two entry points. `cfnptr_file_envs` returns each file's macro-env pieces plus its stripped text in one native read+strip+parse (the LRU-bounded caches and lazy fill stay; `stripped` feeds `srcCache` so `processUnit` doesn't re-strip — the old `src()`-backed extractors warmed it for free; unreadable paths return null → the JS path/`ctx.readFile` still gets virtual files). `cfnptr_link` runs stage D's `field←field` scan, the 3-pass `reg` fixpoint, and stage E dispatch emission threaded across files with input-order output; hand-rolled byte machines replicate the JS regexes including `^`/`$` anchors over all four JS line terminators.
+
+Same standalone probe on the live corpus DB, before = `54e969a4` with only the new calls disabled (stage A native in both arms — apples-to-apples):
+
+| Stage | Before | After (#49) |
+|---|---|---|
+| A — extraction sweep | 15.1 s | 14.8 s |
+| B — struct layouts | 0.7 s | 0.7 s |
+| C — registration | 28.9 s (env 16.2 / unit 6.2 / inc 6.2) | **20.9 s** (env 8.2 / unit 5.5 / inc 6.9) |
+| D+E — propagation + dispatch | 9.3 + 14.0 s | **4.4 s** |
+| **Pass total** | **67.9 s** | **40.8 s (−40%)** |
+| JS readFile/strip calls in pass | ~all survivors | **0 / 0** |
+| Edges | 283,931 | 283,931 (kernel-on ≡ kernel-off under a fixed edge-set hash) |
+
+Reading: cumulative the pass is 124.5 s → 40.8 s (−67%) since §5.5's serial baseline, with the last JS source touches gone. Stage C's serial include-walk stays in TypeScript by design (first-wins ordering over a virtual-capable FS); its cost is now mostly the conditionally-evaluated include rescans. `CODEGRAPH_KERNEL_CFNPTR=0` and kernels lacking the entry points keep the verbatim JS loops.
