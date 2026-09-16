@@ -2588,28 +2588,52 @@ export class ReferenceResolver {
       const PERSIST_CHUNK = 1000;
       const tPersist = Date.now();
 
-      // Persist edges BEFORE fanning out the next batch: later batches read
-      // this batch's edges — resolveMethodOnType walks supertype chains over
-      // `extends`/`implements` edges that earlier batches resolved, so a
-      // receiver typed as a subclass only reaches a method declared on its
-      // base class if those edges are visible. (Validated on dubbo: fanning
-      // out first downgraded exactly those supertype-method resolutions from
-      // the 0.9 typed-receiver path to the 0.65 word-overlap fallback.)
+      // Persist SUPERTYPE edges before fanning out the next batch: later
+      // batches read this batch's edges — resolveMethodOnType walks
+      // supertype chains over `extends`/`implements` edges that earlier
+      // batches resolved, so a receiver typed as a subclass only reaches a
+      // method declared on its base class if those edges are visible.
+      // (Validated on dubbo: fanning out first downgraded exactly those
+      // supertype-method resolutions from the 0.9 typed-receiver path to the
+      // 0.65 word-overlap fallback.) Every OTHER edge kind has no mid-loop
+      // reader — the only loop-time edge lookups are supertype/`contains`
+      // walks, and `contains` edges all come from extraction — so they
+      // persist AFTER fan-out, overlapped with the next batch's resolution
+      // like the ref cleanup below. The extends→implements promotion in
+      // createEdges stays inside the supertype set, so partitioning on the
+      // ref's effective edge kind is exact; the identity index keys on kind
+      // too, so dedup can't collide across the partition.
       tLp = Date.now();
-      const edges = this.createEdges(result.resolved);
+      const supertypeRefs: ResolvedRef[] = [];
+      const otherRefs: ResolvedRef[] = [];
+      for (const r of result.resolved) {
+        const k = r.edgeKind ?? r.original.referenceKind;
+        (k === 'extends' || k === 'implements' ? supertypeRefs : otherRefs).push(r);
+      }
+      const supertypeEdges = this.createEdges(supertypeRefs);
       lp('createEdges', tLp);
       tLp = Date.now();
-      for (let i = 0; i < edges.length; i += PERSIST_CHUNK) {
-        this.queries.insertEdges(edges.slice(i, i + PERSIST_CHUNK));
+      for (let i = 0; i < supertypeEdges.length; i += PERSIST_CHUNK) {
+        this.queries.insertEdges(supertypeEdges.slice(i, i + PERSIST_CHUNK));
         await maybeYield();
       }
       lp('insertEdges', tLp);
 
-      // NOW fan the next batch out — workers see exactly the edge state the
-      // sequential baseline would (every batch ≤ this one committed), while
-      // the main thread spends the REST of the persist (ref deletes + failed
-      // parking below) overlapped with their resolution — the double-buffer.
+      // NOW fan the next batch out — workers see the supertype edge state
+      // the sequential baseline would, while the main thread spends the
+      // REST of the persist (all other edges + ref deletes + failed parking
+      // below) overlapped with their resolution — the double-buffer.
       const nextInFlight = nextBatch.refs.length > 0 ? beginBatch(nextBatch) : null;
+
+      tLp = Date.now();
+      const otherEdges = this.createEdges(otherRefs);
+      lp('createEdges', tLp);
+      tLp = Date.now();
+      for (let i = 0; i < otherEdges.length; i += PERSIST_CHUNK) {
+        this.queries.insertEdges(otherEdges.slice(i, i + PERSIST_CHUNK));
+        await maybeYield();
+      }
+      lp('insertEdges', tLp);
 
       // Clean up resolved refs so they don't appear in the next batch —
       // by row id, so a same-key sibling ref in a LATER batch (same caller
