@@ -241,6 +241,25 @@ End-to-end confirmation (`codegraph index` on the same corpus at `34a1c20c`, `SY
 
 This is the round where native ports moved wall-clock, not just verdicts: kernel-on has flipped from ~4–7% slower than kernel-off (§5.4) to **~30–35% faster** (171.4 s vs the 243–265 s kernel-off range), driven entirely by the synthesis cuts — the batch loop is unchanged and now dominates the phase at ~94.5 s (of which main-thread persist ~63 s is the largest remaining single item). The cFnPtr pass runs slower inside the full index than standalone (48.0 s vs 40.8 s; stage A 19.4 s vs 14.8 s) — expected, it shares the host with the parse loop's aftermath and pool teardown.
 
+### 5.9 Phase 4 §7a-target check — 8-core-constrained full index (2026-09-16)
+
+`taskset -c 0-7` on the 15c host (pools size via affinity-honest `availableParallelism`), node v26.9.0, kernel-on (default), linux corpus, benchmark-protocol idle checks, n=1. Caveat: memory unconstrained (47 GB host vs §7a's 7 GB envelope) — reads optimistic vs the true 8c target class.
+
+| Measure | Value |
+|---|---|
+| wall clock | **292.6 s (4:53)** — §7a's <10min-on-8c target met at ~2× headroom |
+| parse-loop | 72.8 s (store 56.3 s — post-dbbf7afc) |
+| parse-index-rebuild / fts | 30.0 s / 5.3 s |
+| ref/edge index recreate | 5.4 / 13.1 s |
+| resolution phase | **167.0 s** (vs the §7a-era ~575 s superphase — 3.4×) |
+| — loop-stages | read 9.3 / settle 7.0 / backpressure 6.6 / createEdges 9.9 / insertEdges 33.3 / deletes 4.1 / marks 4.2 |
+| — callback-synthesis | 61.1 s (cFnPtr A=21.0 C=21.3 D=5.5) |
+| kernel native share | 91.4% (5,366,983 handled / 502,521 passthrough) |
+| edges / nodes | 6,412,563 / 2,082,872 — identical to all post-merge arms |
+| MaxRSS / minor faults | 18.2 GB / 1.34 M |
+
+Phase 4 exit read: `settle` and `read` run natively (91.4% share; the mid-loop batch `read` stays on node:sqlite by the −shm isolation rule — `readPendingBatch` exists but the main-thread kernel conn is closed while the pool is engaged), and kernel-on is now faster than kernel-off (§5.8 end-to-end). Cross-runtime note: node-on-8c (292.6 s) beats bun-on-15c (316.6–356.0 s) on this build; node faults 1.34 M vs bun ~19 M — mimalloc page-churn remains the runtime asymmetry (#42942).
+
 ### 5.9 Fresh-init write path (`dbbf7afc`)
 
 The parse-loop's `store` stage was the largest single line in a fresh index. Two changes, both scoped to the fresh-DB bulk window:
