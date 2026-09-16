@@ -240,3 +240,22 @@ End-to-end confirmation (`codegraph index` on the same corpus at `34a1c20c`, `SY
 | Edges / failed refs | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 | 6,412,714 / 2,052,370 (identical) |
 
 This is the round where native ports moved wall-clock, not just verdicts: kernel-on has flipped from ~4–7% slower than kernel-off (§5.4) to **~30–35% faster** (171.4 s vs the 243–265 s kernel-off range), driven entirely by the synthesis cuts — the batch loop is unchanged and now dominates the phase at ~94.5 s (of which main-thread persist ~63 s is the largest remaining single item). The cFnPtr pass runs slower inside the full index than standalone (48.0 s vs 40.8 s; stage A 19.4 s vs 14.8 s) — expected, it shares the host with the parse loop's aftermath and pool teardown.
+
+### 5.9 Fresh-init write path (`dbbf7afc`)
+
+The parse-loop's `store` stage was the largest single line in a fresh index. Two changes, both scoped to the fresh-DB bulk window:
+
+- `foreign_keys = OFF` under fastInit in the store worker: every edge and unresolved_refs insert paid a parent-key probe on `nodes` (~19M B-tree lookups on this corpus). `finalizeStoreBundle`'s endpoint filter already guarantees the constraint; no deletes run in the window so `ON DELETE CASCADE` cannot fire. Unchanged (ON) on the non-fastInit path.
+- `idx_literals_file`, `idx_bindings_file`, `idx_bindings_name` added to `BULK_PARSE_INDEX_NAMES`: 5.2M bindings + 0.3M literals rows were maintaining three indexes per insert; nothing reads those tables mid-window. Rebuild cost is one table scan each in `endBulkParseLoad`.
+
+Same corpus run (`codegraph index`, `SYNTH_TIMINGS=1`, `nice -n 10`, n=1, host idle):
+
+| Measure | Before | After |
+|---|---|---|
+| store-worker busy (`store=`) | 122.7 s | **56.5 s (−54%)** |
+| parse-loop phase | 138.2 s | **72.5 s** |
+| parse-index-rebuild | 24.6 s | 28.3 s (three more rebuilds) |
+| resolution phase | 171.4 s | 176.0 s (noise — untouched path) |
+| edges / failed / bindings / literals | 6,412,714 / 2,052,370 / 5,228,395 / 295,521 | identical |
+
+Reading: the biggest remaining index-time items are now the resolution batch loop (~94.5 s, of which main-thread persist ~63 s) and `parse-index-rebuild` (28.3 s — now 17 single-scan index builds). The store-worker still pays per-file transactions and JS row materialization; both are smaller than the index-maintenance floor that was removed here.
