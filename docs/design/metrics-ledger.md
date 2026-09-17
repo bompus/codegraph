@@ -348,3 +348,28 @@ Assessment — none of the tail is cheap coverage:
 - **The `frameworkMerge` dispatches are real merges.** 3,232,822 handled refs carried a candidate list into `settleKernelOutcome`'s framework loop (split: no_candidates=140,232 / with_candidates=3,092,341). Skipping the `candidates=[]` subset is not verdict-safe under detected frameworks whose `resolve()` isn't claims-bounded — express (detected on this corpus) resolves middleware/controller/service name patterns independent of `claimsReference`, and `gateFrameworkLanguage` never gates `calls`. A safe skip needs an opt-in `resolve()` contract flag + per-resolver audit; deferred.
 
 Phase 4 exit read: the kernel handles the entire bare-name migrated-language slice (91.4% of the loop, verdict-identical across every check); the remaining passthroughs are the deliberately-deferred member pipeline plus languages whose extractors don't emit bindings yet. §7a CPU target met. Coverage is at its design boundary — further native share is Phase 5 (member access), not Phase 4 tail.
+
+### 5.14 Phase 5 step 1 — member-arm hit-rate instrumentation, corrected tail attribution (2026-09-17)
+
+One `taskset -c 0-7` run on the 15c host, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2` (per-ref nm/stage rows, so wall time is not comparable to §5.13 timing arms — this run exists to count, not to measure): wall 6:15.44, MaxRSS 16.8 GB. Kernel: handled 5,366,728 / passthrough 497,776 (91.5%); `ineligible:name`=440,335, `ineligible:lang`=57,441. Output identical: 2,082,872 nodes / 6,412,563 edges. Log: `bench/20260917-node-8c-kernelon-memberarms.log`.
+
+Instrumentation added (TS-only, diagnostic, verdict-neutral): `kernelReason` propagated onto passthrough refs and suffixed onto every `stage:`/`nm:`/outcome profile key, so each row is attributable to its kernel gate; new `nm:` tags on the previously-untagged member arms (`br:methodcall`/`br:import`/`br:factory`, `mc-infer-local(-btm/-rmot)`, `mc-infer-cpp(-btm)`, `mc-guarded`, `mc-iteration`, `mc-class`/`mc-capital`/`mc-byname`, `mc-phpprop`, `mc-rustself`, `mc-rustfield`, `mc-javafield`, store-accessor chain, deferredChain:*/deferredThisMember drains). `matchDeferredThisMember()` extracted from the drain loop for per-ref labeling. Parity suite + resolution tests green (260 tests, 5 files).
+
+**`ineligible:name` attribution** (440,335 refs — §5.13's "~381k member edges" attribution was wrong; the measured split):
+
+| resolvedBy | n | Producer arm |
+|---|---|---|
+| `import` | 327,899 | `resolveViaImport` — overwhelmingly the C/C++ `#include` branch (sibling-dir lookup → `resolveCppIncludePath` -I scan → file node), 405,592 of 413,976 `imports` edges are C |
+| `file-path` | 60,261 | `matchByFilePath` — basename→file-node lookup on path-shaped names |
+| `qualified-name` | 3,477 | `matchByQualifiedName` |
+| `instance-method` | 1,223 | **the member matchers proper**: boundReceiver 778 + matchMethodCall 436 + ~9 |
+| `exact-match` / `function-ref` | 88 / 29 | bare-name leftovers inside nameMatch |
+| unresolved | 47,358 | `fail:calls` 46,378 + `fail:imports` 685 + extends/function_ref/references 295 |
+
+By ref kind: `imports` refs are 391,782 of the bucket (89%) and resolve 99.8% of the time; `calls` refs are 48,217 (11%) and resolve only ~2,062 (4.3% — boundReceiver 1,311, viaImport 218, nameMatch 528, instance-method share above). The member-call pipeline the Phase-5 handoff scoped (~3k lines of `name-matcher.ts`) produces **~1.2k edges** on this corpus; ~46k member-syntax calls refs fail outright.
+
+**Member-arm hit/miss detail** (calls refs, `ineligible:name`): br:methodcall 778/24,542, mc-infer-local-btm 693/~25k attempted, mc-infer-cpp 242, mc-class 65, mc-byname 418, mc-guarded /25,309 miss, mc-iteration /23,880 miss, mc-class /25,184 miss, mc-infer-local 1,319 hit /25,108 miss. Deferred drains nearly inert: deferredChain:scopedChain 547 miss + rmot-supers 263 miss (all rust `::`), zero deferredThisMember rows — the deferred-ref channel Phase 5 flagged as a prerequisite is unneeded by the dominant leg.
+
+**`ineligible:lang` (57,441)**: ~28,966 resolved (exact-match 17,205, instance-method 5,730 — rust `self.*`/objc member arms, qualified-name 3,549, import 1,113, fuzzy 1,025), ~28,475 failed. Member matchers carry ~7k hits here but all for non-migrated languages — that workstream is extractor/bindings migration, not Phase 5.
+
+**Port-order conclusion (measured)**: the dominant `ineligible:name` leg is C/C++ include-path resolution — ~388k edges (98.8% of the bucket's resolutions) through a ~150-line pure-DB surface (`resolveViaImport`'s c/cpp branch + `resolveCppIncludePath` + `matchByFilePath`; needs file-node-by-basename lookup, `fileExists`, include-dir list, path normalization — all already kernel-shaped, no source reads, no deferred channel). Porting it would lift native share ~7 points (91.5% → ~98%) in one leg. The member matchers are a ~3k-line port for ~1.2k edges on this corpus — still Phase 5, but demoted behind the include leg. Corpus caveat: linux is C-dominated, so member-call density is atypically low; on a JVM/TS corpus the member arms would weight higher — but per measured hits the include leg is unambiguously first.

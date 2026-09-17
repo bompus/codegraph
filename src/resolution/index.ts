@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos, resolveAmbiguousNameCeiling } from './name-matcher';
+import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, nmTimed, clearNameMatcherMemos, resolveAmbiguousNameCeiling } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -754,6 +754,7 @@ export class ReferenceResolver {
       filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
       language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
       rowId: ref.rowId,
+      kernelReason: ref.kernelReason,
     }));
 
     const total = refs.length;
@@ -1159,7 +1160,9 @@ export class ReferenceResolver {
 
   private resolveOneInner(ref: UnresolvedRef): ResolvedRef | null {
     // Skip built-in/external references
+    const tBuiltin = this.profileStages ? process.hrtime.bigint() : 0n;
     if (this.isBuiltInOrExternal(ref)) {
+      if (this.profileStages) this.stageAdd('builtinDrop', ref, true, tBuiltin);
       return null;
     }
 
@@ -1177,7 +1180,10 @@ export class ReferenceResolver {
       (ref.referenceKind === 'extends' || ref.referenceKind === 'implements') &&
       (ref.referenceName.includes('.') || ref.referenceName.includes('/'))
     ) {
-      return this.resolveCfmlComponentPath(ref);
+      const tCfml = this.profileStages ? process.hrtime.bigint() : 0n;
+      const cfmlResult = this.resolveCfmlComponentPath(ref);
+      if (this.profileStages) this.stageAdd('cfmlPath', ref, cfmlResult !== null, tCfml);
+      return cfmlResult;
     }
 
     // Fast pre-filter: skip if no symbol with this name exists anywhere
@@ -1206,7 +1212,10 @@ export class ReferenceResolver {
       this.frameworks.some((f) => f.claimsReference?.(ref.referenceName));
     if (this.profileStages) this.stageAdd('preFilter', ref, preFilterPass, tPre);
     if (!preFilterPass) {
-      return this.gateLanguage(matchJsStoreBindingCall(ref, this.context), ref);
+      const tStore = this.profileStages ? process.hrtime.bigint() : 0n;
+      const storeResult = this.gateLanguage(matchJsStoreBindingCall(ref, this.context), ref);
+      if (this.profileStages) this.stageAdd('storeBinding', ref, storeResult !== null, tStore);
+      return storeResult;
     }
 
     // Function-as-value refs (#756) get a dedicated, strictly-gated path:
@@ -1218,7 +1227,10 @@ export class ReferenceResolver {
       // `this.<member>` values (TS/JS) resolve ONLY against the enclosing
       // class's own members — never a same-named symbol elsewhere.
       if (ref.referenceName.startsWith('this.')) {
-        return this.gateLanguage(this.resolveThisMemberFnRef(ref), ref);
+        const tTm = this.profileStages ? process.hrtime.bigint() : 0n;
+        const thisMemberResult = this.gateLanguage(this.resolveThisMemberFnRef(ref), ref);
+        if (this.profileStages) this.stageAdd('thisMemberFnRef', ref, thisMemberResult !== null, tTm);
+        return thisMemberResult;
       }
       const viaImport = this.gateLanguage(resolveViaImport(ref, this.context), ref);
       if (viaImport) {
@@ -1252,15 +1264,22 @@ export class ReferenceResolver {
     // `CatalogBrand` resolving to `BlazorShared.Models::CatalogBrand` (the DTO,
     // which the `.razor` `@using`s) rather than the same-named domain entity.
     if (ref.language === 'razor') {
+      const tRazor = this.profileStages ? process.hrtime.bigint() : 0n;
       const razorResult = this.resolveRazorUsing(ref);
+      if (this.profileStages) this.stageAdd('razorUsing', ref, razorResult !== null, tRazor);
       if (razorResult) return razorResult;
     }
 
     // An explicit PHP class import owns its static calls, including an
     // unavailable method. Do not let same-name fallbacks change the receiver
     // to an unrelated Service/Repository type (#1545).
+    const tPhp = this.profileStages ? process.hrtime.bigint() : 0n;
     const phpStaticImport = resolvePhpImportedStaticCall(ref, this.context);
-    if (phpStaticImport !== undefined) return this.gateLanguage(phpStaticImport, ref);
+    if (phpStaticImport !== undefined) {
+      const gatedPhp = this.gateLanguage(phpStaticImport, ref);
+      if (this.profileStages) this.stageAdd('phpStatic', ref, gatedPhp !== null, tPhp);
+      return gatedPhp;
+    }
 
     const candidates: ResolvedRef[] = [];
 
@@ -1287,15 +1306,22 @@ export class ReferenceResolver {
     // with `holder: Holder`) proves its target, and an untyped one is
     // refused here rather than name-guessed. Only what proof cannot serve
     // reaches the untyped-chain guard below.
+    const tBr = this.profileStages ? process.hrtime.bigint() : 0n;
     const receiverResult = matchBoundReceiverCall(ref, this.context);
     if (receiverResult !== undefined) {
+      // hit = produced a candidate; miss = claimed the ref but refused it
+      // (unprovable bound receiver — terminal for this ref).
+      if (this.profileStages) this.stageAdd('boundReceiver', ref, receiverResult !== null, tBr);
       const valid = this.gateLanguage(receiverResult, ref);
       if (valid) candidates.push(valid);
       return candidates.length ? candidates.reduce((best, curr) => curr.confidence > best.confidence ? curr : best) : null;
     }
     // A retained untyped chain supplies effect/call-site evidence only. In
     // particular, importing its root does not make the root its call target.
-    if (isUnresolvedJsMemberCall(ref)) return null;
+    if (isUnresolvedJsMemberCall(ref)) {
+      if (this.profileStages) this.stageAdd('jsMemberTerminal', ref, true, tBr);
+      return null;
+    }
 
     // Strategy 2: Try import-based resolution
     // A TS/JS/Python call-receiver chain (`useStore.getState().reset`, #1683)
@@ -1380,6 +1406,7 @@ export class ReferenceResolver {
         CHAIN_LANGUAGES.has(ref.language) &&
         CHAIN_SHAPE.test(ref.referenceName)
       ) {
+        if (this.profileStages) this.stageAdd('deferChain', ref, true, tName);
         this.deferReference(ref, this.deferredChainRefs);
       } else if (
         // PHP `$this->prop->method()` (encoded `this->prop.method`): its method
@@ -1389,6 +1416,7 @@ export class ReferenceResolver {
         ref.language === 'php' &&
         PHP_PROP_SHAPE.test(ref.referenceName)
       ) {
+        if (this.profileStages) this.stageAdd('deferChain', ref, true, tName);
         this.deferReference(ref, this.deferredChainRefs);
       }
       return null;
@@ -1721,16 +1749,26 @@ export class ReferenceResolver {
       // inference + resolveMethodOnType conformance walk); `::`-receiver
       // languages (Rust) split on `::` (matchScopedCallChain); other
       // dotted-receiver languages on `.` (matchDottedCallChain).
-      const chainMatch = (ref.language === 'php' && PHP_PROP_SHAPE.test(ref.referenceName))
-        ? matchMethodCall(ref, this.context)
+      const chainStage = (ref.language === 'php' && PHP_PROP_SHAPE.test(ref.referenceName))
+        ? 'deferredChain:methodCall'
         : SCOPED_CHAIN_LANGUAGES.has(ref.language)
-        ? matchScopedCallChain(ref, this.context)
-        : matchDottedCallChain(ref, this.context);
+        ? 'deferredChain:scopedChain'
+        : 'deferredChain:dottedChain';
+      const chainMatch = nmTimed(chainStage, ref, () =>
+        chainStage === 'deferredChain:methodCall'
+          ? matchMethodCall(ref, this.context)
+          : chainStage === 'deferredChain:scopedChain'
+          ? matchScopedCallChain(ref, this.context)
+          : matchDottedCallChain(ref, this.context));
       const match = this.gateLanguage(chainMatch, ref);
       if (match) resolved.push(match);
       await maybeYield();
     }
-    return this.persistDeferredReferences(deferred, resolved);
+    const created = await this.persistDeferredReferences(deferred, resolved);
+    // Runs after resolveAndPersistBatched's 'main' dump — emit this pass's own
+    // nm rows under their own label (the table clears on each dump).
+    dumpNameMatcherProfile('deferredChain');
+    return created;
   }
 
   /**
@@ -1767,6 +1805,7 @@ export class ReferenceResolver {
         filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
         language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
         rowId: raw.rowId,
+        kernelReason: raw.kernelReason,
       };
       const result = this.resolveOneTimed(ref);
       if (result) {
@@ -1824,7 +1863,7 @@ export class ReferenceResolver {
   private stageAdd(stage: string, ref: UnresolvedRef, hit: boolean, t0: bigint): void {
     if (!this.resolveProfile) return;
     const dt = process.hrtime.bigint() - t0;
-    const key = `stage:${stage}|${ref.referenceKind}|${hit ? 'hit' : 'miss'}`;
+    const key = `stage:${stage}|${ref.referenceKind}|${hit ? 'hit' : 'miss'}${ref.kernelReason ? `|${ref.kernelReason}` : ''}`;
     const slot = this.resolveProfile.get(key);
     if (slot) {
       slot.n++;
@@ -1839,7 +1878,7 @@ export class ReferenceResolver {
     const t0 = process.hrtime.bigint();
     const result = this.resolveOne(ref);
     const dt = process.hrtime.bigint() - t0;
-    const key = result ? result.resolvedBy : `fail:${ref.referenceKind}`;
+    const key = `${result ? result.resolvedBy : `fail:${ref.referenceKind}`}${ref.kernelReason ? `|${ref.kernelReason}` : ''}`;
     const slot = this.resolveProfile.get(key);
     if (slot) {
       slot.n++;
@@ -1933,6 +1972,7 @@ export class ReferenceResolver {
             kernelStats.passthrough++;
             const reason = outcome.reason ?? 'unknown';
             kernelStats.reasons[reason] = (kernelStats.reasons[reason] ?? 0) + 1;
+            ref.kernelReason = reason;
           } else {
             kernelStats.handled++;
             // unresolved + a kernel candidate list = the no_candidates marker;
@@ -1984,6 +2024,7 @@ export class ReferenceResolver {
         filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
         language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
         rowId: raw.rowId,
+        kernelReason: raw.kernelReason,
       };
       const result = this.resolveOneTimed(ref);
       if (result) {
@@ -2290,7 +2331,10 @@ export class ReferenceResolver {
           for (let i = 0; i < outcomes.length; i++) {
             if (outcomes[i]?.status === 'passthrough') {
               ptIdx.push(i);
-              ptBatch.push(batch.refs[i]!);
+              // Stamp the decline gate on the row so the sequential fallback
+              // (resolveBatchYielding) carries it into the profile keys; the
+              // pool path re-derives it from its own resolveChunk outcome.
+              ptBatch.push({ ...batch.refs[i]!, kernelReason: outcomes[i]!.reason ?? 'unknown' });
             }
           }
           if (ptBatch.length > 0 && pool && poolReady && ResolverPool.worthParallel(ptBatch.length)) {
@@ -2355,7 +2399,7 @@ export class ReferenceResolver {
           const ref = this.kernelRowToRef(inFlight.kernelRefs[i]!);
           const result = this.settleKernelOutcome(ref, outcome);
           if (kernelShadow) {
-            const tsResult = this.resolveOne({ ...ref });
+            const tsResult = this.resolveOne({ ...ref, kernelReason: 'shadow' });
             shadowChecked++;
             if ((tsResult?.targetNodeId ?? null) !== (result?.targetNodeId ?? null)) {
               shadowDivergent++;
@@ -3238,87 +3282,100 @@ export class ReferenceResolver {
     const resolved: ResolvedRef[] = [];
     for (const ref of deferred) {
       await maybeYield();
-      const member = ref.referenceName.slice('this.'.length);
-      const fromNode = this.queries.getNodeById(ref.fromNodeId);
-      if (!fromNode || !member) continue;
-      // Class-body-level hooks (Ruby) attribute to the CLASS node itself.
-      let className: string;
-      if (SUPERTYPE_BEARING_KINDS.has(fromNode.kind) || fromNode.kind === 'module') {
-        className = fromNode.name;
-      } else {
-        const sep = fromNode.qualifiedName.lastIndexOf('::');
-        if (sep <= 0) continue;
-        const classPrefix = fromNode.qualifiedName.slice(0, sep);
-        className = classPrefix.includes('::')
-          ? classPrefix.slice(classPrefix.lastIndexOf('::') + 2)
-          : classPrefix;
-      }
+      const match = nmTimed('deferredThisMember', ref, () => this.matchDeferredThisMember(ref));
+      if (match) resolved.push(match);
+    }
+    const created = await this.persistDeferredReferences(deferred, resolved);
+    // Runs after resolveAndPersistBatched's 'main' dump — emit this pass's own
+    // nm rows under their own label (the table clears on each dump).
+    dumpNameMatcherProfile('deferredThisMember');
+    return created;
+  }
 
-      // NODE-anchored BFS up the supertype graph: start from the class node
-      // in the ref's own file (never a same-named class elsewhere — rails has
-      // a dozen `Engine`s), follow implements/extends EDGES to supertype
-      // NODES, and look members up through `contains` edges. No name-based
-      // unions anywhere — a name-keyed getSupertypes('Engine') merged every
-      // Engine's parents and produced a cross-class wrong edge on rails.
-      let frontierNodes = this.context
+  /**
+   * The per-ref body of resolveDeferredThisMemberRefs: walk the enclosing
+   * class's supertypes (transitively, depth-capped) and resolve `this.<member>`
+   * on the nearest one that declares it.
+   */
+  private matchDeferredThisMember(ref: UnresolvedRef): ResolvedRef | null {
+    const member = ref.referenceName.slice('this.'.length);
+    const fromNode = this.queries.getNodeById(ref.fromNodeId);
+    if (!fromNode || !member) return null;
+    // Class-body-level hooks (Ruby) attribute to the CLASS node itself.
+    let className: string;
+    if (SUPERTYPE_BEARING_KINDS.has(fromNode.kind) || fromNode.kind === 'module') {
+      className = fromNode.name;
+    } else {
+      const sep = fromNode.qualifiedName.lastIndexOf('::');
+      if (sep <= 0) return null;
+      const classPrefix = fromNode.qualifiedName.slice(0, sep);
+      className = classPrefix.includes('::')
+        ? classPrefix.slice(classPrefix.lastIndexOf('::') + 2)
+        : classPrefix;
+    }
+
+    // NODE-anchored BFS up the supertype graph: start from the class node
+    // in the ref's own file (never a same-named class elsewhere — rails has
+    // a dozen `Engine`s), follow implements/extends EDGES to supertype
+    // NODES, and look members up through `contains` edges. No name-based
+    // unions anywhere — a name-keyed getSupertypes('Engine') merged every
+    // Engine's parents and produced a cross-class wrong edge on rails.
+    let frontierNodes = this.context
+      .getNodesByName(className)
+      .filter(
+        (n) =>
+          SUPERTYPE_BEARING_KINDS.has(n.kind) &&
+          n.filePath === ref.filePath
+      );
+    if (frontierNodes.length === 0) {
+      // The class itself may be declared in another file (partial/reopened
+      // classes); fall back to same-family nodes of that name.
+      frontierNodes = this.context
         .getNodesByName(className)
         .filter(
           (n) =>
             SUPERTYPE_BEARING_KINDS.has(n.kind) &&
-            n.filePath === ref.filePath
+            sameLanguageFamily(n.language, ref.language)
         );
-      if (frontierNodes.length === 0) {
-        // The class itself may be declared in another file (partial/reopened
-        // classes); fall back to same-family nodes of that name.
-        frontierNodes = this.context
-          .getNodesByName(className)
-          .filter(
-            (n) =>
-              SUPERTYPE_BEARING_KINDS.has(n.kind) &&
-              sameLanguageFamily(n.language, ref.language)
-          );
-      }
-      const seenNodes = new Set<string>(frontierNodes.map((n) => n.id));
-      let target: Node | null = null;
-      for (let depth = 0; depth < 5 && frontierNodes.length > 0 && !target; depth++) {
-        const next: Node[] = [];
-        for (const typeNode of frontierNodes) {
-          for (const edge of this.queries.getOutgoingEdges(typeNode.id, ['implements', 'extends'])) {
-            const superNode = this.queries.getNodeById(edge.target);
-            if (!superNode || seenNodes.has(superNode.id)) continue;
-            seenNodes.add(superNode.id);
-            if (!SUPERTYPE_BEARING_KINDS.has(superNode.kind)) continue;
-            // Member lookup anchored on the supertype's contains edges.
-            for (const c of this.queries.getOutgoingEdges(superNode.id, ['contains'])) {
-              const m = this.queries.getNodeById(c.target);
-              if (
-                m &&
-                m.name === member &&
-                (m.kind === 'function' || m.kind === 'method') &&
-                sameLanguageFamily(m.language, ref.language)
-              ) {
-                target = m;
-                break;
-              }
+    }
+    const seenNodes = new Set<string>(frontierNodes.map((n) => n.id));
+    let target: Node | null = null;
+    for (let depth = 0; depth < 5 && frontierNodes.length > 0 && !target; depth++) {
+      const next: Node[] = [];
+      for (const typeNode of frontierNodes) {
+        for (const edge of this.queries.getOutgoingEdges(typeNode.id, ['implements', 'extends'])) {
+          const superNode = this.queries.getNodeById(edge.target);
+          if (!superNode || seenNodes.has(superNode.id)) continue;
+          seenNodes.add(superNode.id);
+          if (!SUPERTYPE_BEARING_KINDS.has(superNode.kind)) continue;
+          // Member lookup anchored on the supertype's contains edges.
+          for (const c of this.queries.getOutgoingEdges(superNode.id, ['contains'])) {
+            const m = this.queries.getNodeById(c.target);
+            if (
+              m &&
+              m.name === member &&
+              (m.kind === 'function' || m.kind === 'method') &&
+              sameLanguageFamily(m.language, ref.language)
+            ) {
+              target = m;
+              break;
             }
-            if (target) break;
-            next.push(superNode);
           }
           if (target) break;
+          next.push(superNode);
         }
-        frontierNodes = next;
+        if (target) break;
       }
-
-      if (target) {
-        resolved.push({
-          original: ref,
-          targetNodeId: target.id,
-          confidence: 0.85,
-          resolvedBy: 'function-ref',
-        });
-      }
+      frontierNodes = next;
     }
-    return this.persistDeferredReferences(deferred, resolved);
+
+    if (!target) return null;
+    return {
+      original: ref,
+      targetNodeId: target.id,
+      confidence: 0.85,
+      resolvedBy: 'function-ref',
+    };
   }
 
   /**
