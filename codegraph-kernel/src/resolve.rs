@@ -101,6 +101,25 @@ static FILE_PATH_EXT_RE: LazyLock<Regex> =
 /// hasAnyPossibleMatch's bare-filename tail check (`\.[A-Za-z0-9]+$`).
 static EXT_TAIL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\.[A-Za-z0-9]+$").unwrap());
+/// isBindingReceiverCall's name shape — `^.+\.[\w$]+$` (JS `\w` is ASCII).
+static BOUND_RECEIVER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^.+\.[A-Za-z0-9_$]+$").unwrap());
+/// isBindingReceiverCall's excluded receiver roots — `^(this|self|super|cls)(\.|$)`.
+static BOUND_ROOT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:this|self|super|cls)(?:\.|$)").unwrap());
+/// isUnresolvedJsMemberCall's retained chain — `^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*){2,}$`.
+static JS_MEMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){2,}$").unwrap()
+});
+/// isUnresolvedJsMemberCall's excluded roots — `^(?:this|window)\.`.
+static JS_MEMBER_ROOT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:this|window)\.").unwrap());
+/// CHAIN_SHAPE (index.ts) — `^(.+)\(\)\.(\w+)$`: a call-receiver chain.
+static CHAIN_SHAPE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^.+\(\)\.[A-Za-z0-9_]+$").unwrap());
+/// resolvePhpImportedStaticCall's receiver shape — `^(\w+)\.(\w+)$`.
+static PHP_STATIC_CALL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$").unwrap());
 
 /// `f.claimsReference(name)` for the resolver registered as `framework`
 /// (`f.name`), or the conservative claim for names the kernel does not know.
@@ -179,6 +198,60 @@ fn is_esm_import_language(lang: &str) -> bool {
         lang,
         "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "svelte" | "vue" | "astro"
     )
+}
+
+/// isBindingReceiverCall (name-matcher.ts): a `calls` ref in a binding-
+/// carrying language shaped `receiver.method`, excluding `()`-chains and
+/// the self/this/super/cls receiver roots.
+fn is_binding_receiver_call(r: &ResolveRefIn) -> bool {
+    r.reference_kind == "calls"
+        && (is_esm_family(&r.language)
+            || matches!(
+                r.language.as_str(),
+                "python" | "go" | "java" | "kotlin" | "php" | "c" | "cpp"
+            ))
+        && BOUND_RECEIVER_RE.is_match(&r.reference_name)
+        && !r.reference_name.contains("()")
+        && !BOUND_ROOT_RE.is_match(&r.reference_name)
+}
+
+/// isUnresolvedJsMemberCall (name-matcher.ts): an untyped 2+-level member
+/// chain in a JS-family calls ref — terminal null, never name-matched.
+fn is_unresolved_js_member_call(r: &ResolveRefIn) -> bool {
+    r.reference_kind == "calls"
+        && matches!(
+            r.language.as_str(),
+            "typescript" | "tsx" | "javascript" | "jsx"
+        )
+        && !JS_MEMBER_ROOT_RE.is_match(&r.reference_name)
+        && JS_MEMBER_RE.is_match(&r.reference_name)
+}
+
+/// preferCallSiteFile (name-matcher.ts): same-file candidates first,
+/// preserving order; a no-op under <2 candidates or no same-file member.
+fn prefer_call_site_file(nodes: Vec<Rc<KNode>>, call_site_file: &str) -> Vec<Rc<KNode>> {
+    if nodes.len() < 2 || !nodes.iter().any(|n| n.file_path == call_site_file) {
+        return nodes;
+    }
+    let (mut same, other): (Vec<Rc<KNode>>, Vec<Rc<KNode>>) = nodes
+        .into_iter()
+        .partition(|n| n.file_path == call_site_file);
+    same.extend(other);
+    same
+}
+
+/// STATIC_MEMBER_CONTAINERS (import-resolver.ts).
+fn is_static_member_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class" | "struct" | "union" | "interface" | "enum" | "trait" | "protocol"
+    )
+}
+
+/// OBJECT_LITERAL_LANGUAGES (name-matcher.ts): object literals declare
+/// callable members.
+fn is_object_literal_language(lang: &str) -> bool {
+    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts")
 }
 
 /// SUPERTYPE_TARGET_KINDS (resolution/types.ts).
@@ -846,6 +919,24 @@ struct KCand {
     node: Rc<KNode>,
     confidence: f64,
     resolved_by: &'static str,
+}
+
+/// Tri-state for the non-bare import slice: a mid-arm source read (alias /
+/// imported-instance inference) is not a miss — the ref must go back through
+/// the TS spine, which re-derives everything natively evaluated so far.
+enum ViaImport {
+    Hit(KCand),
+    Miss,
+    Punt(&'static str),
+}
+
+/// matchBoundReceiverCall's claim contract: `undefined` (unclaimed) is
+/// filtered by the `is_binding_receiver_call` gate before this is consulted,
+/// so a claimed ref is always Hit/Refused/Punt — terminal either way.
+enum BoundClaim {
+    Hit(KCand),
+    Refused,
+    Punt(&'static str),
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,8 +1759,22 @@ static PYTHON_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(
     .collect()
 });
 
-// GO_STDLIB_PACKAGES (index.ts isBuiltInOrExternal `pkg.member` arm) is not
-// ported: that arm needs a '.' in the name, which kernel eligibility excludes.
+// GO_STDLIB_PACKAGES (index.ts isBuiltInOrExternal `pkg.member` arm) — live
+// for non-bare names (`pkg.Member` where pkg is a stdlib import).
+static GO_STDLIB_PACKAGES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "fmt", "os", "io", "net", "http", "log", "math", "sort", "sync", "time", "path",
+        "bytes", "strings", "strconv", "errors", "context", "json", "xml", "csv", "html",
+        "template", "regexp", "reflect", "runtime", "testing", "flag", "bufio", "crypto",
+        "encoding", "filepath", "hash", "mime", "rand", "signal", "sql", "syscall",
+        "unicode", "unsafe", "atomic", "binary", "debug", "exec", "heap", "ring",
+        "scanner", "tar", "zip", "gzip", "zlib", "tls", "url", "user", "pprof", "trace",
+        "ast", "build", "parser", "printer", "token", "types", "cgo", "plugin", "race",
+        "ioutil", "utilruntime", "utilwait", "utilnet",
+    ]
+    .into_iter()
+    .collect()
+});
 
 static GO_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
@@ -1778,14 +1883,24 @@ impl KernelResolver {
             // when nothing declares it.
             return !self.known_names.contains(name);
         }
-        // Go: `!isBindingReceiverCall` is implied — a bare name never carries
-        // a receiver — so the bare arm applies. The `pkg.member` stdlib arm
-        // needs a '.', dead here.
-        if r.language == "go" && GO_BUILT_INS.contains(name) {
-            return true;
+        // Go: stdlib package member access (`fmt.Println`) is external — but
+        // only when the ref is not a binding-receiver call: a bound receiver
+        // owns `pkg.member` names (isBindingReceiverCall, index.ts).
+        if r.language == "go" && !is_binding_receiver_call(r) {
+            if let Some(dot) = name.find('.') {
+                if dot > 0 && GO_STDLIB_PACKAGES.contains(&name[..dot]) {
+                    return true;
+                }
+            }
+            if GO_BUILT_INS.contains(name) {
+                return true;
+            }
         }
         if r.language == "c" || r.language == "cpp" {
-            // `std::` prefix needs ':' — dead for bare names.
+            // `std::` prefix — never a user-defined qualified name.
+            if name.starts_with("std::") {
+                return true;
+            }
             if C_BUILT_INS.contains(name) || CPP_BUILT_INS.contains(name) {
                 return !self.has_any_possible_match(name);
             }
@@ -2425,13 +2540,21 @@ impl KernelResolver {
         }
         let ext = if r.language == "kotlin" { ".kt" } else { ".java" };
         for imp in imports {
-            // `matchesQualified` (name startsWith localName+'.') is dead for a
-            // bare name — only `matchesBare` remains.
-            if imp.local_name != r.reference_name {
+            let matches_bare = imp.local_name == r.reference_name;
+            let matches_qualified = r
+                .reference_name
+                .starts_with(&format!("{}.", imp.local_name));
+            if !matches_bare && !matches_qualified {
                 continue;
             }
+            let member_name = if matches_bare {
+                imp.local_name.clone()
+            } else {
+                Self::js_slice(&r.reference_name, Self::utf16_len(&imp.local_name) + 1)
+                    .to_string()
+            };
             let fqn_path = format!("{}{}", imp.source.replace('.', "/"), ext);
-            let candidates = self.nodes_by_name(&imp.local_name)?;
+            let candidates = self.nodes_by_name(&member_name)?;
             for node in candidates.iter() {
                 if node.language != r.language {
                     continue;
@@ -2442,20 +2565,23 @@ impl KernelResolver {
                 }
             }
             // `import static com.example.Foo.bar;` — the FQN tail is the
-            // member, the part before is the owner class.
-            if let Some(dot) = imp.source.rfind('.') {
-                if dot > 0 {
-                    let owner_path =
-                        format!("{}{}", imp.source[..dot].replace('.', "/"), ext);
-                    for node in candidates.iter() {
-                        if node.language != r.language {
-                            continue;
-                        }
-                        let fp = node.file_path.replace('\\', "/");
-                        if fp.ends_with(&owner_path)
-                            || fp.ends_with(&format!("/{}", owner_path))
-                        {
-                            return Ok(Some(Rc::new(node.clone())));
+            // member, the part before is the owner class. Bare matches only —
+            // a qualified ref already named the member above.
+            if matches_bare {
+                if let Some(dot) = imp.source.rfind('.') {
+                    if dot > 0 {
+                        let owner_path =
+                            format!("{}{}", imp.source[..dot].replace('.', "/"), ext);
+                        for node in candidates.iter() {
+                            if node.language != r.language {
+                                continue;
+                            }
+                            let fp = node.file_path.replace('\\', "/");
+                            if fp.ends_with(&owner_path)
+                                || fp.ends_with(&format!("/{}", owner_path))
+                            {
+                                return Ok(Some(Rc::new(node.clone())));
+                            }
                         }
                     }
                 }
@@ -2855,7 +2981,11 @@ impl KernelResolver {
         if r.reference_kind != "calls" || !is_js_family(&r.language) {
             return Ok(false);
         }
-        // `!name.includes('.')` — implied by bare eligibility.
+        // `!name.includes('.')` — dead on the bare path, live for non-bare
+        // callers (a `Foo::bar` calls ref carries no '.').
+        if r.reference_name.contains('.') {
+            return Ok(false);
+        }
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
         let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(false) };
         let at = Self::js_slice(line, r.column as usize);
@@ -3454,6 +3584,839 @@ impl KernelResolver {
     }
 
     // -----------------------------------------------------------------------
+    // Non-bare migrated refs — resolveOneInner's member slice (§5.16).
+    // Ported arms: builtin/external, prefilter, phpStatic, boundReceiver's
+    // DB sub-arms (br:import + claim refusals), viaImport's member descent
+    // (static member + object literal), filePath, qualifiedName. Arms that
+    // read source (receiver-type inference, object-literal alias/instance
+    // member, store bindings) or defer (chains, this.members) punt so the TS
+    // spine reproduces them exactly.
+    // -----------------------------------------------------------------------
+
+    /// The `$`-receiver guard both phpStatic and boundReceiver share:
+    /// `getFileLines(file)?.[line-1]?.slice(column).startsWith('$')`.
+    fn ref_line_starts_with_dollar(&mut self, r: &ResolveRefIn) -> bool {
+        let Some(lines) = self.read_file(&r.file_path) else {
+            return false;
+        };
+        let Some(line) = (r.line - 1)
+            .try_into()
+            .ok()
+            .and_then(|i: usize| lines.get(i))
+        else {
+            return false;
+        };
+        Self::js_slice(line, r.column.max(0) as usize).starts_with('$')
+    }
+
+    /// resolvePhpImportedStaticCall (import-resolver.ts): `Alias.method()`
+    /// where `Alias` is a PHP class import — resolves to the imported class's
+    /// qualified member. Returns None when the arm does not claim the ref;
+    /// Some carries the terminal outcome (this arm precedes frameworks).
+    fn resolve_php_imported_static(&mut self, r: &ResolveRefIn) -> Result<Option<ResolveOutcome>> {
+        if r.language != "php" || r.reference_kind != "calls" {
+            return Ok(None);
+        }
+        let Some(call) = PHP_STATIC_CALL_RE.captures(&r.reference_name) else {
+            return Ok(None);
+        };
+        let receiver = call.get(1).unwrap().as_str();
+        let member = call.get(2).unwrap().as_str();
+        let imports = self.import_mappings(&r.file_path)?;
+        let Some(imp) = imports.iter().find(|i| i.local_name == receiver) else {
+            return Ok(None);
+        };
+        let imp_source = imp.source.clone();
+        if self.ref_line_starts_with_dollar(r) {
+            return Ok(None);
+        }
+        let fqn = imp_source.trim_start_matches('\\');
+        let type_name = match fqn.rfind('\\') {
+            Some(sep) => format!("{}::{}", &fqn[..sep], &fqn[sep + 1..]),
+            None => fqn.to_string(),
+        };
+        let owners: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(&type_name)?
+            .iter()
+            .filter(|n| n.language == "php" && is_static_member_container(&n.kind))
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        // Claimed: a single owner is required; ambiguity or absence is a
+        // terminal refusal, never a name-match fallthrough.
+        if owners.len() != 1 {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        }
+        let owner = owners[0].clone();
+        let member_qn = format!("{}::{}", owner.qualified_name, member);
+        let methods: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(&member_qn)?
+            .iter()
+            .filter(|n| {
+                n.language == "php" && n.kind == "method" && n.file_path == owner.file_path
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if methods.len() != 1 {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        }
+        let gated = self.gate_language(
+            Some(KCand {
+                node: methods[0].clone(),
+                confidence: 0.95,
+                resolved_by: "import",
+            }),
+            r,
+        );
+        let Some(cand) = gated else {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        };
+        // gateTargetKind is a no-op for `calls` refs (imports/inheritance arms
+        // only); the alias forward applies inside finish.
+        self.finish(r, cand, None, true).map(Some)
+    }
+
+    /// matchBoundReceiverCall (name-matcher.ts) — the DB-backed sub-arms.
+    /// Caller guarantees `is_binding_receiver_call(r)`, so the arm always
+    /// claims the ref: Hit/Refused are terminal; Punt hands the ref back
+    /// when the TypeScript arm would read source.
+    fn bound_receiver_claim(&mut self, r: &ResolveRefIn) -> Result<BoundClaim> {
+        // `^(.+)\.([\w$]+)$` is guaranteed by the gate — split at the LAST dot.
+        let dot = r.reference_name.rfind('.').unwrap();
+        let receiver = &r.reference_name[..dot];
+        let method = &r.reference_name[dot + 1..];
+        let root = receiver.split('.').next().unwrap_or(receiver);
+        let bindings = self.bindings(&r.file_path)?;
+        let binding = Self::innermost_binding(&bindings, root, Some(r.line));
+
+        if !is_esm_family(&r.language) {
+            // `binding?.kind === 'import' && !phpVariable` → br:import;
+            // anything else is matchMethodCall receiver inference (source).
+            let php_variable =
+                r.language == "php" && self.ref_line_starts_with_dollar(r);
+            if binding.is_some_and(|b| b.kind == "import") && !php_variable {
+                // java/kotlin bound-type resolution needs `typeParameters` —
+                // unported; the source-reading arm owns those refs.
+                if r.language == "java" || r.language == "kotlin" {
+                    return Ok(BoundClaim::Punt("br-source"));
+                }
+                return Ok(match self.resolve_via_import_member(r)? {
+                    ViaImport::Hit(c) => {
+                        if matches!(
+                            c.node.kind.as_str(),
+                            "function" | "method" | "class" | "component"
+                        ) {
+                            BoundClaim::Hit(c)
+                        } else {
+                            BoundClaim::Refused
+                        }
+                    }
+                    ViaImport::Miss => BoundClaim::Refused,
+                    ViaImport::Punt(reason) => BoundClaim::Punt(reason),
+                });
+            }
+            return Ok(BoundClaim::Punt("br-source"));
+        }
+
+        if binding.is_some_and(|b| b.kind == "import") {
+            // The import resolver descends one member — a deeper receiver
+            // must not mistake the first member for the call.
+            if receiver.contains('.') {
+                return Ok(BoundClaim::Refused);
+            }
+            return Ok(match self.resolve_via_import_member(r)? {
+                ViaImport::Hit(c) => {
+                    if matches!(
+                        c.node.kind.as_str(),
+                        "function" | "method" | "class" | "component"
+                    ) || ((c.node.kind == "constant" || c.node.kind == "variable")
+                        && method == "getState")
+                    {
+                        BoundClaim::Hit(c)
+                    } else {
+                        BoundClaim::Refused
+                    }
+                }
+                ViaImport::Miss => BoundClaim::Refused,
+                ViaImport::Punt(reason) => BoundClaim::Punt(reason),
+            });
+        }
+        if binding.is_none() {
+            return Ok(BoundClaim::Refused);
+        }
+        if receiver.contains('.') {
+            // `a.b.c` with 2-part receiver → fieldinfer (source); deeper is
+            // refused outright.
+            return Ok(if receiver.split('.').count() != 2 {
+                BoundClaim::Refused
+            } else {
+                BoundClaim::Punt("br-source")
+            });
+        }
+        // receiver == root: matchMethodCall then factory/value inference —
+        // all source-reading.
+        Ok(BoundClaim::Punt("br-source"))
+    }
+
+    /// resolveViaImport's non-bare slice (import-resolver.ts): the go/java/
+    /// python language arms plus the `localName.member` descent. The c/cpp
+    /// include arm lives in resolve_c_include_import_ref; module-file is
+    /// dot-gated inside its own function.
+    fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Result<ViaImport> {
+        let imports = self.import_mappings(&r.file_path)?;
+        if imports.is_empty() && self.read_file(&r.file_path).is_none() {
+            return Ok(ViaImport::Miss);
+        }
+
+        if r.language == "go" {
+            if let Some(c) = self.resolve_go_cross_package(r, &imports)? {
+                return Ok(ViaImport::Hit(c));
+            }
+        }
+        if r.language == "java" || r.language == "kotlin" {
+            if let Some(node) = self.resolve_java_imported_reference(r, &imports)? {
+                return Ok(ViaImport::Hit(KCand {
+                    node,
+                    confidence: 0.9,
+                    resolved_by: "import",
+                }));
+            }
+        }
+        if r.language == "python" {
+            if let Some(c) = self.resolve_python_module_member(r, &imports)? {
+                return Ok(ViaImport::Hit(c));
+            }
+            if let Some(c) = self.resolve_python_absolute_module(r)? {
+                return Ok(ViaImport::Hit(c));
+            }
+        }
+        if matches!(
+            r.language.as_str(),
+            "python" | "typescript" | "tsx" | "javascript" | "jsx" | "arkts"
+        ) {
+            if let Some(node) = self.resolve_module_import_to_file(r, &imports)? {
+                return Ok(ViaImport::Hit(KCand {
+                    node,
+                    confidence: 0.9,
+                    resolved_by: "import",
+                }));
+            }
+        }
+
+        for imp in imports.iter() {
+            let is_member = r
+                .reference_name
+                .starts_with(&format!("{}.", imp.local_name));
+            if imp.local_name != r.reference_name && !is_member {
+                continue;
+            }
+            let mut resolved_path =
+                self.resolve_import_path(&imp.source, &r.file_path, &r.language)?;
+            if resolved_path.is_none() && r.language == "python" {
+                resolved_path = self
+                    .find_python_module_file(&imp.source, &r.file_path)?
+                    .map(|n| n.file_path.clone());
+            }
+            let Some(resolved_path) = resolved_path else { continue };
+            let want = ExportWant {
+                is_default: imp.is_default,
+                is_namespace: imp.is_namespace,
+                exported_name: if imp.is_default {
+                    "default".to_string()
+                } else {
+                    imp.exported_name.clone()
+                },
+                // JS String.replace(string) removes the FIRST occurrence
+                // anywhere — replacen(.., 1) matches, including the no-match
+                // case that leaves the whole name as the member.
+                member_name: if imp.is_namespace {
+                    Some(r.reference_name.replacen(
+                        &format!("{}.", imp.local_name),
+                        "",
+                        1,
+                    ))
+                } else {
+                    None
+                },
+            };
+            let mut visited = HashSet::new();
+            let Some(target) = self.find_exported_symbol(
+                &resolved_path,
+                &want,
+                &r.language,
+                &mut visited,
+                0,
+            )?
+            else {
+                continue;
+            };
+            if !imp.is_namespace && is_member {
+                if let Some(member_node) = self.resolve_static_member(&target, r, &imp.local_name)? {
+                    return Ok(ViaImport::Hit(KCand {
+                        node: member_node,
+                        confidence: 0.9,
+                        resolved_by: "import",
+                    }));
+                }
+                if target.kind == "constant" || target.kind == "variable" {
+                    // `if (member)` — an empty first segment skips the
+                    // literal/alias arms entirely in TS.
+                    let member0 = Self::js_slice(
+                        &r.reference_name,
+                        Self::utf16_len(&imp.local_name) + 1,
+                    )
+                    .split('.')
+                    .next()
+                    .unwrap_or("");
+                    if !member0.is_empty() {
+                        if let Some(lit) =
+                            self.resolve_object_literal_member(&target, member0, r)?
+                        {
+                            return Ok(ViaImport::Hit(lit));
+                        }
+                        // resolveObjectLiteralAlias + resolveImportedInstanceMember
+                        // read the exporting file — unported.
+                        return Ok(ViaImport::Punt("via-src"));
+                    }
+                }
+                // resolveImportedInstanceMember returns null for non-const/var
+                // targets before reading anything — for them the decline rule
+                // is the only remaining arm.
+                if r.reference_kind == "calls"
+                    && (target.kind == "function" || target.kind == "method")
+                {
+                    return Ok(ViaImport::Miss);
+                }
+            }
+            return Ok(ViaImport::Hit(KCand {
+                node: target,
+                confidence: 0.9,
+                resolved_by: "import",
+            }));
+        }
+        Ok(ViaImport::Miss)
+    }
+
+    /// resolveGoCrossPackageReference (import-resolver.ts): `pkg.Member` via
+    /// an in-module import — the package directory owns the member.
+    fn resolve_go_cross_package(
+        &mut self,
+        r: &ResolveRefIn,
+        imports: &[KImport],
+    ) -> Result<Option<KCand>> {
+        let Some(mod_path) = self.go_module_path.clone() else {
+            return Ok(None);
+        };
+        let Some(dot) = r.reference_name.find('.') else {
+            return Ok(None);
+        };
+        if dot == 0 {
+            return Ok(None);
+        }
+        let receiver = &r.reference_name[..dot];
+        let member_name = &r.reference_name[dot + 1..];
+        if member_name.is_empty() {
+            return Ok(None);
+        }
+        for imp in imports.iter() {
+            if imp.local_name != receiver {
+                continue;
+            }
+            if imp.source != mod_path && !imp.source.starts_with(&format!("{}/", mod_path)) {
+                continue;
+            }
+            let pkg_dir = if imp.source == mod_path {
+                String::new()
+            } else {
+                imp.source[mod_path.len() + 1..].to_string()
+            };
+            for node in self.nodes_by_name(member_name)?.iter() {
+                if node.language != "go" || !node.is_exported {
+                    continue;
+                }
+                let fp = node.file_path.replace('\\', "/");
+                let file_dir = fp.rfind('/').map(|i| &fp[..i]).unwrap_or("");
+                if file_dir == pkg_dir {
+                    return Ok(Some(KCand {
+                        node: Rc::new(node.clone()),
+                        confidence: 0.9,
+                        resolved_by: "import",
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// resolvePythonModuleMember (import-resolver.ts): `mod.func` after
+    /// `import mod` / `from pkg import mod` — the receiver is a submodule.
+    fn resolve_python_module_member(
+        &mut self,
+        r: &ResolveRefIn,
+        imports: &[KImport],
+    ) -> Result<Option<KCand>> {
+        let Some(dot_idx) = r.reference_name.find('.') else {
+            return Ok(None);
+        };
+        if dot_idx == 0 {
+            return Ok(None);
+        }
+        let receiver = &r.reference_name[..dot_idx];
+        let members: Vec<&str> = r.reference_name[dot_idx + 1..].split('.').collect();
+        if members.first().is_none_or(|m| m.is_empty()) {
+            return Ok(None);
+        }
+
+        for imp in imports.iter() {
+            if imp.local_name != receiver {
+                continue;
+            }
+            // `from pkg import mod as alias` — join with the EXPORTED name.
+            let module_name = if imp.exported_name == "*" {
+                imp.local_name.clone()
+            } else {
+                imp.exported_name.clone()
+            };
+            let module_path = if imp.is_namespace {
+                imp.source.clone()
+            } else if imp.source.ends_with('.') {
+                format!("{}{}", imp.source, module_name)
+            } else {
+                format!("{}.{}", imp.source, module_name)
+            };
+            let mut remaining: Vec<&str> = members.clone();
+            if imp.is_namespace && imp.source.starts_with(&format!("{}.", receiver)) {
+                // JS slice counts UTF-16 units — receiver may not be ASCII.
+                let suffix: Vec<&str> =
+                    Self::js_slice(&imp.source, Self::utf16_len(receiver) + 1)
+                        .split('.')
+                        .collect();
+                if !suffix.iter().enumerate().all(|(i, s)| remaining.get(i) == Some(s)) {
+                    continue;
+                }
+                remaining = remaining[suffix.len()..].to_vec();
+            }
+            if remaining.len() != 1 {
+                continue;
+            }
+            let member = remaining[0];
+            let mut resolved_path =
+                self.resolve_import_path(&module_path, &r.file_path, &r.language)?;
+            if resolved_path.is_none() {
+                resolved_path = self
+                    .find_python_module_file(&module_path, &r.file_path)?
+                    .map(|n| n.file_path.clone());
+            }
+            let Some(resolved_path) = resolved_path else { continue };
+            if resolved_path == r.file_path {
+                continue;
+            }
+            let nodes = self.nodes_in_file(&resolved_path)?;
+            let target = nodes.iter().find(|n| {
+                n.name == member
+                    && matches!(
+                        n.kind.as_str(),
+                        "function" | "class" | "variable" | "constant"
+                    )
+            });
+            if let Some(target) = target {
+                return Ok(Some(KCand {
+                    node: Rc::new(target.clone()),
+                    confidence: 0.85,
+                    resolved_by: "import",
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// resolvePythonAbsoluteModule (import-resolver.ts): a dotted `imports`
+    /// ref is the full module path — resolve to its file node.
+    fn resolve_python_absolute_module(
+        &mut self,
+        r: &ResolveRefIn,
+    ) -> Result<Option<KCand>> {
+        if r.reference_kind != "imports" || !r.reference_name.contains('.') {
+            return Ok(None);
+        }
+        Ok(self
+            .find_python_module_file(&r.reference_name, &r.file_path)?
+            .map(|node| KCand {
+                node,
+                confidence: 0.9,
+                resolved_by: "import",
+            }))
+    }
+
+    /// resolveStaticMember (import-resolver.ts): `Container.member` on a
+    /// named class import — the `Container::member` qualifiedName inside the
+    /// container's own file.
+    fn resolve_static_member(
+        &mut self,
+        container: &KNode,
+        r: &ResolveRefIn,
+        local_name: &str,
+    ) -> Result<Option<Rc<KNode>>> {
+        if !is_static_member_container(&container.kind) {
+            return Ok(None);
+        }
+        let member = Self::js_slice(&r.reference_name, Self::utf16_len(local_name) + 1)
+            .split('.')
+            .next()
+            .unwrap_or("");
+        if member.is_empty() {
+            return Ok(None);
+        }
+        let member_qn = format!("{}::{}", container.qualified_name, member);
+        let candidates: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(&member_qn)?
+            .iter()
+            .filter(|n| n.file_path == container.file_path)
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if r.reference_kind == "calls" {
+            if let Some(callable) = candidates
+                .iter()
+                .find(|n| n.kind == "method" || n.kind == "function")
+            {
+                return Ok(Some(callable.clone()));
+            }
+        }
+        Ok(Some(candidates[0].clone()))
+    }
+
+    /// resolveObjectLiteralMember (name-matcher.ts): an imported object
+    /// literal used as a namespace — find the member by containment.
+    fn resolve_object_literal_member(
+        &mut self,
+        container: &KNode,
+        member: &str,
+        r: &ResolveRefIn,
+    ) -> Result<Option<KCand>> {
+        if container.kind != "constant" && container.kind != "variable" {
+            return Ok(None);
+        }
+        if !is_object_literal_language(&container.language) {
+            return Ok(None);
+        }
+        if !same_language_family(&container.language, &r.language) {
+            return Ok(None);
+        }
+        let in_file = self.nodes_in_file(&container.file_path)?;
+        let callable =
+            |n: &KNode| n.kind == "function" || n.kind == "method";
+        let accepts = |n: &KNode| {
+            if r.reference_kind == "calls" {
+                callable(n)
+            } else {
+                callable(n)
+                    || n.kind == "property"
+                    || n.kind == "variable"
+                    || n.kind == "constant"
+            }
+        };
+        // rangeWithin / sameRange (name-matcher.ts).
+        let range_within = |inner: &KNode, outer: &KNode| {
+            !(inner.start_line < outer.start_line
+                || inner.end_line > outer.end_line
+                || (inner.start_line == outer.start_line
+                    && inner.start_column < outer.start_column)
+                || (inner.end_line == outer.end_line && inner.end_column > outer.end_column))
+        };
+        let same_range = |a: &KNode, b: &KNode| {
+            a.start_line == b.start_line
+                && a.start_column == b.start_column
+                && a.end_line == b.end_line
+                && a.end_column == b.end_column
+        };
+        let inside: Vec<Rc<KNode>> = in_file
+            .iter()
+            .filter(|n| n.id != container.id && range_within(n, container))
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        let mut candidates: Vec<Rc<KNode>> = inside
+            .iter()
+            .filter(|n| n.name == member && accepts(n))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        // Drop members nested inside another callable's body in the literal.
+        let bodies: Vec<&Rc<KNode>> = inside.iter().filter(|n| callable(n)).collect();
+        candidates.retain(|c| {
+            !bodies
+                .iter()
+                .any(|b| b.id != c.id && !same_range(b, c) && range_within(c, b))
+        });
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        candidates.sort_by(|a, b| {
+            let ca = if callable(a) { 0 } else { 1 };
+            let cb = if callable(b) { 0 } else { 1 };
+            ca.cmp(&cb)
+                .then(a.start_line.cmp(&b.start_line))
+                .then(a.start_column.cmp(&b.start_column))
+        });
+        Ok(Some(KCand {
+            node: candidates[0].clone(),
+            confidence: 0.9,
+            resolved_by: "import",
+        }))
+    }
+
+    /// matchByQualifiedName (name-matcher.ts) — exact `qualifiedName` lookup,
+    /// then the last-segment suffix match. Erlang's arity arms are dead (not
+    /// a migrated language).
+    fn match_by_qualified_name(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        if !r.reference_name.contains("::") && !r.reference_name.contains('.') {
+            return Ok(None);
+        }
+        // A `calls` ref never resolves to a yaml/properties config key (#1180).
+        let keep_for_ref = |nodes: &[KNode]| -> Vec<Rc<KNode>> {
+            nodes
+                .iter()
+                .filter(|n| {
+                    r.reference_kind != "calls"
+                        || !(n.kind == "constant"
+                            && (n.language == "yaml" || n.language == "properties"))
+                })
+                .map(|n| Rc::new(n.clone()))
+                .collect()
+        };
+
+        let candidates = keep_for_ref(self.nodes_by_qualified_name(&r.reference_name)?.as_slice());
+        if candidates.len() == 1 {
+            return Ok(Some(KCand {
+                node: candidates[0].clone(),
+                confidence: 0.95,
+                resolved_by: "qualified-name",
+            }));
+        }
+        if candidates.len() > 1 {
+            let ordered = prefer_call_site_file(candidates, &r.file_path);
+            if ordered[0].file_path == r.file_path {
+                return Ok(Some(KCand {
+                    node: ordered[0].clone(),
+                    confidence: 0.95,
+                    resolved_by: "qualified-name",
+                }));
+            }
+        }
+
+        // Partial match — the last `:`/`.` segment, then the suffix filter.
+        let last_name = r
+            .reference_name
+            .rsplit([':', '.'])
+            .next()
+            .unwrap_or("");
+        if !last_name.is_empty() {
+            let partial = keep_for_ref(self.nodes_by_name(last_name)?.as_slice())
+                .into_iter()
+                .filter(|n| n.qualified_name.ends_with(&r.reference_name))
+                .collect();
+            let chosen = prefer_call_site_file(partial, &r.file_path);
+            if let Some(first) = chosen.into_iter().next() {
+                return Ok(Some(KCand {
+                    node: first,
+                    confidence: 0.85,
+                    resolved_by: "qualified-name",
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// resolveOneInner for non-bare refs in migrated languages. Ported arms
+    /// run in TS order; every unported arm punts so the TS spine re-derives
+    /// the outcome. A bound-receiver claim is terminal — a refusal never
+    /// falls through to name matching.
+    fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+        if self.is_built_in_or_external(r) {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        // Prefilter — `existenceName` strips arkts' leading '.';
+        // matchJsStoreBindingCall needs a dot-free name, so a non-bare
+        // `Foo::bar` can still reach it — punt when the source check applies.
+        let existence = if r.language == "arkts" && r.reference_name.starts_with('.') {
+            &r.reference_name[1..]
+        } else {
+            &r.reference_name
+        };
+        let pre_pass = self.has_any_possible_match(existence)
+            || self.matches_any_import(r)?
+            || self.framework_claims(&r.reference_name);
+        if !pre_pass {
+            if self.is_bare_js_call(r)? {
+                return Ok(ResolveOutcome::passthrough("store-bind"));
+            }
+            return Ok(ResolveOutcome::unresolved());
+        }
+
+        // `function_ref`'s dedicated matcher is unported — it resolves ONLY
+        // through matchFunctionRef, never the fallthrough below.
+        if r.reference_kind == "function_ref" {
+            return Ok(ResolveOutcome::passthrough("member-tail"));
+        }
+        // resolveJvmImport (java/kotlin `imports` refs) reads decorators —
+        // an unselected column; the arm stays in TS.
+        if r.reference_kind == "imports"
+            && (r.language == "java" || r.language == "kotlin")
+        {
+            return Ok(ResolveOutcome::passthrough("jvm"));
+        }
+        // PHP `imports` refs take the include-path arm inside resolveViaImport
+        // (unported — include-path file resolution) — punt the whole kind.
+        if r.language == "php" && r.reference_kind == "imports" {
+            return Ok(ResolveOutcome::passthrough("php-inc"));
+        }
+        // resolvePhpImportedStaticCall — terminal before frameworks.
+        if let Some(outcome) = self.resolve_php_imported_static(r)? {
+            return Ok(outcome);
+        }
+        // matchBoundReceiverCall — claimed refs are terminal either way.
+        if is_binding_receiver_call(r) {
+            match self.bound_receiver_claim(r)? {
+                BoundClaim::Punt(reason) => {
+                    return Ok(ResolveOutcome::passthrough(reason));
+                }
+                BoundClaim::Refused => {
+                    return Ok(if self.frameworks_active {
+                        ResolveOutcome::no_candidates()
+                    } else {
+                        ResolveOutcome::unresolved()
+                    });
+                }
+                BoundClaim::Hit(c) => {
+                    let gated = self.gate_language(Some(c), r);
+                    return match gated {
+                        Some(cand) => {
+                            let Some(winner) = self.gate_target_kind(cand, r)? else {
+                                return Ok(if self.frameworks_active {
+                                    ResolveOutcome::no_candidates()
+                                } else {
+                                    ResolveOutcome::unresolved()
+                                });
+                            };
+                            if self.frameworks_active {
+                                // Framework <0.9 candidates merge first-max;
+                                // a ≥0.9 framework hit would have pre-empted.
+                                let reported = vec![KernelCandidateOut {
+                                    target_node_id: winner.node.id.clone(),
+                                    confidence: winner.confidence,
+                                    resolved_by: winner.resolved_by.to_string(),
+                                }];
+                                self.finish(r, winner, Some(reported), false)
+                            } else {
+                                self.finish(r, winner, None, true)
+                            }
+                        }
+                        None => Ok(if self.frameworks_active {
+                            ResolveOutcome::no_candidates()
+                        } else {
+                            ResolveOutcome::unresolved()
+                        }),
+                    };
+                }
+            }
+        }
+        // isUnresolvedJsMemberCall — terminal null; framework candidates are
+        // discarded by the TS `return null` as well.
+        if is_unresolved_js_member_call(r) {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        // The chain guard routes `x().y` calls through matchReference only —
+        // the chain matchers there (storeAccessorChain et al.) are unported.
+        if r.reference_kind == "calls"
+            && CHAIN_SHAPE_RE.is_match(&r.reference_name)
+            && matches!(
+                r.language.as_str(),
+                "typescript" | "javascript" | "tsx" | "jsx" | "python"
+            )
+        {
+            return Ok(ResolveOutcome::passthrough("chain"));
+        }
+
+        let mut cands: Vec<KCand> = Vec::new();
+        match self.resolve_via_import_member(r)? {
+            ViaImport::Punt(reason) => {
+                return Ok(ResolveOutcome::passthrough(reason));
+            }
+            ViaImport::Miss => {}
+            ViaImport::Hit(c) => {
+                if let Some(c) = self.gate_language(Some(c), r) {
+                    if c.confidence >= 0.9 {
+                        let Some(winner) = self.gate_target_kind(c, r)? else {
+                            return Ok(if self.frameworks_active {
+                                ResolveOutcome::passthrough("gated-import")
+                            } else {
+                                ResolveOutcome::unresolved()
+                            });
+                        };
+                        return self.finish(r, winner, None, true);
+                    }
+                    cands.push(c);
+                }
+            }
+        }
+        // isPhpIncludePathRef / cobol / nix / terraform terminal-merge arm:
+        // php imports punt above; the rest are unmigrated languages.
+
+        // matchReference's leading arkts arm — `.attr` names resolve ONLY to
+        // decorator-marked helpers, never the name-match fallthrough.
+        if r.language == "arkts" && r.reference_name.starts_with('.') {
+            return Ok(ResolveOutcome::passthrough("arkts-dot"));
+        }
+        // matchReference's ported arms, in order: filePath, qualifiedName.
+        // Everything after (cppChain/scopedChain/dottedChain/storeAccessor/
+        // methodCall/exactName/fuzzy, then deferred drains) stays in TS.
+        let name_cand = match self.match_by_file_path(r)? {
+            Some(c) => Some(c),
+            None => self.match_by_qualified_name(r)?,
+        };
+        let name_result = self.gate_language(name_cand, r);
+        if let Some(c) = name_result {
+            if self.is_visible_across_files(&c.node, r)? {
+                cands.push(c);
+            }
+        }
+        if cands.is_empty() {
+            // nameMatch's remaining arms may still hit — the ref goes back.
+            return Ok(ResolveOutcome::passthrough("member-tail"));
+        }
+        let reported = self.frameworks_active.then(|| {
+            cands
+                .iter()
+                .map(|c| KernelCandidateOut {
+                    target_node_id: c.node.id.clone(),
+                    confidence: c.confidence,
+                    resolved_by: c.resolved_by.to_string(),
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut bi = 0usize;
+        for i in 1..cands.len() {
+            if cands[i].confidence > cands[bi].confidence {
+                bi = i;
+            }
+        }
+        let winner = cands.remove(bi);
+        let winner = match self.gate_target_kind(winner, r)? {
+            Some(w) => w,
+            None => {
+                return Ok(ResolveOutcome {
+                    candidates: reported,
+                    ..ResolveOutcome::unresolved()
+                });
+            }
+        };
+        self.finish(r, winner, reported, false)
+    }
+
+    // -----------------------------------------------------------------------
     // Gates (index.ts) + alias forwarding (alias-binding.ts)
     // -----------------------------------------------------------------------
 
@@ -3498,16 +4461,41 @@ impl KernelResolver {
         Ok(Some(cand))
     }
 
-    /// aliasTargetName + resolveAliasBinding (alias-binding.ts), memberName
-    /// fixed to null (bare names carry no member segment).
-    fn resolve_alias_binding(&mut self, alias_node: &KNode) -> Result<Option<Rc<KNode>>> {
+    /// aliasTargetName + resolveAliasBinding (alias-binding.ts). `member_name`
+    /// is the ref's last `.` segment (null for bare/`::`-only names): a
+    /// member access through an object-literal alias resolves the keyed or
+    /// shorthand property binding (`{ member: fn }` / `{ member }`).
+    fn resolve_alias_binding(
+        &mut self,
+        alias_node: &KNode,
+        member_name: Option<&str>,
+    ) -> Result<Option<Rc<KNode>>> {
         if !is_alias_binding_kind(&alias_node.kind) {
             return Ok(None);
         }
         let sig = alias_node.signature.as_deref().unwrap_or("").trim();
-        let target_name = BARE_ALIAS_RE
-            .captures(sig)
-            .map(|c| c.get(1).unwrap().as_str().to_string());
+        let target_name = match member_name {
+            Some(m) if !m.is_empty() => {
+                let key = regex::escape(m);
+                let explicit = self
+                    .cached_regex(&format!(
+                        r"[{{,]\s*{}\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,}}]",
+                        key
+                    ))?
+                    .captures(sig)
+                    .map(|c| c.get(1).unwrap().as_str().to_string());
+                match explicit {
+                    Some(t) => Some(t),
+                    None => self
+                        .cached_regex(&format!(r"[{{,]\s*({})\s*[,}}]", key))?
+                        .captures(sig)
+                        .map(|c| c.get(1).unwrap().as_str().to_string()),
+                }
+            }
+            _ => BARE_ALIAS_RE
+                .captures(sig)
+                .map(|c| c.get(1).unwrap().as_str().to_string()),
+        };
         let Some(target_name) = target_name else { return Ok(None) };
         if target_name == alias_node.name {
             return Ok(None);
@@ -3709,7 +4697,10 @@ impl KernelResolver {
             if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
                 return self.resolve_c_include_import_ref(r);
             }
-            return Ok(ResolveOutcome::passthrough("ineligible:name"));
+            // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
+            // import member descent, filePath and qualifiedName — the rest
+            // of the member matchers punt back to the TS spine.
+            return self.resolve_nonbare_ref(r);
         }
         if r.file_path.is_empty() {
             return Ok(ResolveOutcome::passthrough("ineligible:path"));
@@ -3852,8 +4843,14 @@ impl KernelResolver {
     ) -> Result<ResolveOutcome> {
         let mut winner = winner;
         if r.reference_kind == "calls" {
-            // memberName is null for a bare name (no '.').
-            if let Some(forwarded) = self.resolve_alias_binding(&winner.node)? {
+            // memberName = the last `.` segment — `Cls::member` and bare
+            // names carry none (no '.' → bare arm); `a.b::c` yields `b::c`,
+            // matching lastIndexOf('.') + slice.
+            let member_name = r
+                .reference_name
+                .rfind('.')
+                .map(|i| &r.reference_name[i + 1..]);
+            if let Some(forwarded) = self.resolve_alias_binding(&winner.node, member_name)? {
                 if forwarded.id != winner.node.id {
                     winner = KCand {
                         node: forwarded,
