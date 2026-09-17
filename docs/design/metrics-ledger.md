@@ -392,3 +392,25 @@ Same host/arm shape as §5.14 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux 
 **What was ported** (`codegraph-kernel/src/resolve.rs`, +455): a dedicated arm for `(c|cpp, 'imports', non-bare)` ahead of the `name_is_bare` rejection, replicating the TS `resolveOneInner` ordering restricted to the slice — builtin → prefilter → viaImport → filePath — with the nameMatch tail (qualifiedName/cppChain/methodCall/exactName/fuzzy) deliberately left in TS behind `member-tail`. The include machinery (`resolveViaImport`'s c/cpp branch, `resolveCppIncludePath`, `fileExists`, include-dir list) was already in-kernel from an earlier phase but unreachable for non-bare names. Supporting ports: full `hasAnyPossibleMatch` (receiver/member segments around `.`/`::`/`:`/`$`, path tail, `localName.` import-prefix arm) and `matchByFilePath` (+`splitAnchor`/`splitFileSymbol`/`findSymbolInReferencedFile`/`findAnchoredMarkdownSection`/`pickClosestFileNode`/`normalizeMarkdownAnchor`/`decodeURIComponent`). Parity-test fixture extended with C includes (sibling, subdir, basename-only suffix hit, missing, stdlib) asserting `import`@0.92 / `file-path`@0.85 / `member-tail` passthrough verdicts natively.
 
 **Remaining `ineligible:name` (49,180)**: calls-kind member syntax (boundReceiver/methodCall shapes — the deferred member-matcher port) plus the member-tail punts above. The 46k fail:calls majority never produced edges anyway; the measured member-matcher prize stays ~1.2k edges (§5.14). Next Phase-5 candidates by measured weight: `member-tail` misses (3.7k, cheap — extend the arm to fail them natively once the member arms they could hit are enumerated) and the `ineligible:lang` member arms (blocked on extractor/bindings migration, not Phase 5).
+
+### 5.16 Phase 5 step 3 — member-access stage 1: boundReceiver DB sub-arms + qualifiedName native (2026-09-17)
+
+Same host/arm shape as §5.15 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; settle 9.9→7.9s, insertEdges 41.6→36.6s). Log: `bench/20260917-node-8c-kernelon-memberarms.log`; baseline DB preserved at `codegraph-corpora/baselines/linux-9f528109.db`.
+
+| Metric | §5.15 baseline | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,734,189 | 5,775,030 | +40,841 |
+| kernel passthrough | 110,315 | 89,474 | −20,841 |
+| **native share** | 98.1% | **98.5%** | +0.4 pts |
+| `ineligible:name` | 49,180 | **0** | eliminated |
+| `ineligible:lang` | 57,441 | 57,441 | 0 (untouched) |
+| `br-source` (new punt) | — | 25,320 | source-reading receiver inference delegated to TS |
+| `member-tail` | 3,694 | 5,753 | now the whole unported nameMatch tail |
+| `chain` (new punt) | — | 951 | `x().y` calls → matchReference-only arm |
+| `via-src` (new punt) | — | 9 | objectLiteralAlias/instanceMember source reads |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all identical to baseline; edge multiset md5 `a1cd4791…`, node multiset `57f6fb95…`, and the full unresolved_refs multiset including `failure_reason` `a80221ea…` match byte-for-byte (md5s differ from §5.15's — this run's serialization includes line/col and ref rows).
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, ~+1,070): `resolve_nonbare_ref` — `resolveOneInner`'s non-bare slice in TS order: builtin → prefilter → function_ref/jvm/php-imports punts → `resolvePhpImportedStaticCall` (terminal) → `matchBoundReceiverCall` (claim-and-decide: `br:import` for import-bound receivers + the ESM refusals — deep receiver / unbound root — are terminal natively; `br:methodcall`/`br:fieldinfer`/`br:factory` and java/kotlin boundtype punt `br-source`) → `isUnresolvedJsMemberCall` terminal → `x().y` chain punt → `resolveViaImport` member descent (go `pkg.F`, java/kotlin qualified imports, python module-member + absolute-module, `localName.member` descent: staticMember/objectLiteralMember; objectLiteralAlias/instanceMember punt `via-src`) → arkts `.`-prefix punt → filePath → `matchByQualifiedName` (exact @0.95 + call-site-file preference + last-segment suffix @0.85) → `member-tail` punt. Alias forward extended with `memberName` (`{member: fn}` shorthand/keyed bindings). `settleKernelOutcome` (index.ts) now runs `applyResolveTail` on kernel-null verdicts — `unknown-receiver` stamping on boundReceiver refusals was unreachable before this arm existed.
+
+**Attribution check**: `br:methodcall` hit 778 + `via-src` hit 9 downstream in TS — the source-reading arms are correctly delegated, not lost. `member-tail`→`qualified-name` rows (~3k) are deferred refs (this-member/chain conformance pass) — the deferred channel owns them by design.

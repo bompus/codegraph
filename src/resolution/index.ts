@@ -1128,8 +1128,17 @@ export class ReferenceResolver {
     // claiming the REACT_HOOKS builtin `useState`). An exhausted ref that
     // should still see frameworks arrives with `candidates: []` (the kernel's
     // no_candidates marker), which falls through to the merge below.
-    if (outcome.status === 'unresolved' && !outcome.candidates) return verdict;
-    if (this.frameworks.length === 0) return verdict;
+    // The tail still runs: bound-receiver refusals stamp failureReason.
+    if (outcome.status === 'unresolved' && !outcome.candidates) {
+      return this.applyResolveTail(verdict, ref);
+    }
+    if (this.frameworks.length === 0) {
+      // A kernel verdict already passed gateTargetKind + the alias forward
+      // inside finish — re-running the tail on it would double-forward alias
+      // chains. Only a null verdict needs the tail's unknown-receiver stamp.
+      if (verdict) return verdict;
+      return this.applyResolveTail(null, ref);
+    }
     const candidates: ResolvedRef[] = [];
     for (const framework of this.frameworks) {
       const result = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
@@ -1153,7 +1162,7 @@ export class ReferenceResolver {
         resolvedBy: kc.resolvedBy as ResolvedRef['resolvedBy'],
       });
     }
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) return this.applyResolveTail(null, ref);
     const winner = candidates.reduce((best, curr) => (curr.confidence > best.confidence ? curr : best));
     return this.applyResolveTail(this.gateTargetKind(winner, ref), ref);
   }

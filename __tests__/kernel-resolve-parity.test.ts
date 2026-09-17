@@ -35,10 +35,22 @@ const FIXTURE: Record<string, string> = {
     "export const VERSION = '1';",
   ].join('\n'),
   'src/barrel.ts': "export { helper as renamed } from './util';",
+  // Phase 5 member arms: a class import whose members resolve through
+  // br:import → resolveViaImport member descent (staticMember for `create`),
+  // a const carrying an object literal (objectLiteralMember for `getState`),
+  // and an unbound receiver the boundReceiver arm refuses terminally.
+  'src/svc.ts': [
+    'export class Service {',
+    '  static create() { return new Service(); }',
+    '  run() { return 1; }',
+    '}',
+    'export const api = { getState() { return {}; }, call() { return 1; } };',
+  ].join('\n'),
   'src/main.ts': [
     "import { helper, VERSION } from './util';",
     "import { renamed } from './barrel';",
     "import { helper as aliased } from '@lib/util';",
+    "import { Service, api } from './svc';",
     'export function run() {',
     '  helper();',
     '  renamed();',
@@ -46,6 +58,9 @@ const FIXTURE: Record<string, string> = {
     '  const v = VERSION;',
     '  const d = new Date();',
     '  console.log(d, v);',
+    '  Service.create();',
+    '  api.getState();',
+    '  unbound.doThing();',
     '}',
   ].join('\n'),
   'src/other.ts': 'export function unrelated() { return 0; }\n',
@@ -64,9 +79,11 @@ const FIXTURE: Record<string, string> = {
   ].join('\n'),
   'src/K.java': 'class K { void mymethod() {} }\nclass J { void user() {} }\n',
   // C++ is bareFnOnly: a bare identifier there is never a method value.
-  'src/w.cpp': 'struct W { void m() {} };\nvoid wuser() {}\n',
+  // `Outer::Sub::m` gives the qualified-name partial arm a suffix target.
+  'src/w.cpp': 'struct W { static void m() {} };\nstruct Outer { struct Sub { static void m() {} }; };\nvoid wuser() { W::m(); }\n',
   'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
-  'main.py': 'from tool import pyhelper\n\ndef go():\n    pyhelper()\n',
+  // `import tool` + `tool.pyhelper()` exercises the python module-member arm.
+  'main.py': 'import tool\nfrom tool import pyhelper\n\ndef go():\n    pyhelper()\n    tool.pyhelper()\n',
 };
 
 let tempDir: string | null = null;
@@ -157,8 +174,11 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const helper = outcomes[byName.get('helper@calls')!]!;
     expect(helper.status).toBe('resolved');
     expect(helper.targetNodeId).toBe(cg.getNodesByKind('function').find((n) => n.name === 'helper')!.id);
-    // console.log is receiver-shaped — the kernel declines it for the TS pipeline.
-    expect(outcomes[byName.get('console.log@calls')!]!.status).toBe('passthrough');
+    // console.log is receiver-shaped but nothing declares/imports `console`
+    // or `log` — the prefilter misses and the store-binding arm is dead for
+    // dotted names, so the kernel verdicts terminal unresolved (TS's
+    // applyResolveTail stamps unknown-receiver the same way).
+    expect(outcomes[byName.get('console.log@calls')!]!.status).toBe('unresolved');
     // Date is a JS builtin — terminal unresolved, never a fabricated edge.
     expect(outcomes[byName.get('Date@instantiates')!]!.status).toBe('unresolved');
     // pyhelper resolves through its Python import binding.
@@ -237,8 +257,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const ins = db.prepare(
       "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, file_path, language, status) VALUES (?,?,?,?,?,?,?,'pending')",
     );
-    const seed = (from: string, name: string, file: string, lang: string, kind = 'function_ref') =>
-      ins.run(from, name, kind, 1, 0, file, lang);
+    const seed = (from: string, name: string, file: string, lang: string, kind = 'function_ref', line = 1) =>
+      ins.run(from, name, kind, line, 0, file, lang);
 
     const runFn = nodeId('run', 'main.ts');
     const goFn = nodeId('go', 'main.py');
@@ -261,6 +281,17 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(cUser, 'missing/none.h', 'src/user.c', 'c', 'imports');
     seed(cUser, 'stdio.h', 'src/user.c', 'c', 'imports');
     seed(nodeId('wuser', 'w.cpp'), 'hdr/util.h', 'src/w.cpp', 'cpp', 'imports');
+    // Phase 5 member arms — calls-kind refs through the native spine. Lines
+    // sit inside run()/go() so the import bindings' scopes cover them.
+    seed(runFn, 'Service.create', 'src/main.ts', 'typescript', 'calls', 10);
+    seed(runFn, 'api.getState', 'src/main.ts', 'typescript', 'calls', 11);
+    seed(runFn, 'Service.deep.create', 'src/main.ts', 'typescript', 'calls', 12);
+    seed(runFn, 'unbound.doThing', 'src/main.ts', 'typescript', 'calls', 13);
+    seed(goFn, 'tool.pyhelper', 'main.py', 'python', 'calls', 5);
+    seed(goFn, 'tool.missing', 'main.py', 'python', 'calls', 6);
+    seed(nodeId('wuser', 'w.cpp'), 'W::m', 'src/w.cpp', 'cpp', 'calls');
+    seed(nodeId('wuser', 'w.cpp'), 'Sub::m', 'src/w.cpp', 'cpp', 'calls');
+    seed(nodeId('wuser', 'w.cpp'), 'W::nope', 'src/w.cpp', 'cpp', 'calls');
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -318,8 +349,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(widget.targetNodeId).toBe(nodeId('Widget', 'tool.py', 'class'));
     // Imported callback → 'import'.
     expect(at('pyhelper', 'main.py').resolvedBy).toBe('import');
-    // Non-bare shapes stay behind for the TS arms.
-    expect(at('this.cb', 'src/main.ts').status).toBe('passthrough');
+    // Non-bare shapes with no declared segment die at the prefilter — the
+    // store-binding arm is dead for dotted names, so TS fails it identically.
+    expect(at('this.cb', 'src/main.ts').status).toBe('unresolved');
     expect(at('W::m', 'src/w.cpp').status).toBe('passthrough');
     // No node, no import — terminal miss.
     expect(at('neverDeclared', 'src/main.ts').status).toBe('unresolved');
@@ -349,6 +381,52 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // A stdlib header: isExternalImport sits inside resolveImportPath, so the
     // arm reaches the member-tail punt and TS fails it — same verdict.
     expect(atPre('stdio.h', 'src/user.c').status).toBe('passthrough');
+
+    // ---- Phase 5 member arms (non-bare `calls` refs) ----
+    // br:import — `Service.create` descends the import binding's member:
+    // findExportedSymbol(Service class) → staticMember → `Service::create`.
+    const svcCreate = at('Service.create', 'src/main.ts', 'calls');
+    expect(svcCreate.status).toBe('resolved');
+    expect(svcCreate.resolvedBy).toBe('import');
+    expect(svcCreate.confidence).toBe(0.9);
+    expect(svcCreate.targetNodeId).toBe(
+      byName('create', 'method').find((n) => n.qualifiedName === 'Service::create')!.id,
+    );
+    // `api.getState` — objectLiteralMember inside the const's extent.
+    const apiGet = at('api.getState', 'src/main.ts', 'calls');
+    expect(apiGet.status).toBe('resolved');
+    expect(apiGet.resolvedBy).toBe('import');
+    // A deeper receiver on an import binding is refused — never name-guessed.
+    expect(at('Service.deep.create', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // No binding at all → the same terminal refusal.
+    expect(at('unbound.doThing', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // Python module-member: `tool.pyhelper` → tool.py's pyhelper @0.85.
+    const toolPy = at('tool.pyhelper', 'main.py', 'calls');
+    expect(toolPy.status).toBe('resolved');
+    expect(toolPy.resolvedBy).toBe('import');
+    expect(toolPy.confidence).toBe(0.85);
+    expect(toolPy.targetNodeId).toBe(nodeId('pyhelper', 'tool.py'));
+    // A member miss on the module → refused, not name-matched.
+    expect(at('tool.missing', 'main.py', 'calls').status).toBe('unresolved');
+    // qualifiedName: exact `W::m` @0.95; `Sub::m` partial-matches the
+    // `Outer::Sub::m` qualified name at 0.85.
+    const wm = at('W::m', 'src/w.cpp', 'calls');
+    expect(wm.status).toBe('resolved');
+    expect(wm.resolvedBy).toBe('qualified-name');
+    expect(wm.confidence).toBe(0.95);
+    expect(wm.targetNodeId).toBe(
+      byName('m', 'method').find((n) => n.qualifiedName === 'W::m')!.id,
+    );
+    const subM = at('Sub::m', 'src/w.cpp', 'calls');
+    expect(subM.status).toBe('resolved');
+    expect(subM.resolvedBy).toBe('qualified-name');
+    expect(subM.confidence).toBe(0.85);
+    expect(subM.targetNodeId).toBe(
+      byName('m', 'method').find((n) => n.qualifiedName === 'Outer::Sub::m')!.id,
+    );
+    // `W::nope` passes the prefilter (`W` is a known segment) but misses every
+    // ported arm — the member tail goes back to TS.
+    expect(at('W::nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {
