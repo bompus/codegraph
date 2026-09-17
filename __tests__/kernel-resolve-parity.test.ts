@@ -51,6 +51,17 @@ const FIXTURE: Record<string, string> = {
   'src/other.ts': 'export function unrelated() { return 0; }\n',
   // Two same-named definitions in one file: the same-file overload arm.
   'src/dup.c': 'void dup(void) {}\nvoid dup(void) {}\nvoid registrar(void) {}\n',
+  // C include-path refs (the Phase-5 non-bare `imports` arm): sibling hit,
+  // subdir hit, in-repo miss, and a stdlib header that must stay failed.
+  'src/hdr/util.h': 'int shared_util(int x);\n',
+  'src/local.h': 'int local_fn(void);\n',
+  'src/user.c': [
+    '#include "local.h"',
+    '#include "hdr/util.h"',
+    '#include "missing/none.h"',
+    '#include <stdio.h>',
+    'int caller(void) { return local_fn() + shared_util(1); }',
+  ].join('\n'),
   'src/K.java': 'class K { void mymethod() {} }\nclass J { void user() {} }\n',
   // C++ is bareFnOnly: a bare identifier there is never a method value.
   'src/w.cpp': 'struct W { void m() {} };\nvoid wuser() {}\n',
@@ -226,8 +237,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const ins = db.prepare(
       "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, file_path, language, status) VALUES (?,?,?,?,?,?,?,'pending')",
     );
-    const seed = (from: string, name: string, file: string, lang: string) =>
-      ins.run(from, name, 'function_ref', 1, 0, file, lang);
+    const seed = (from: string, name: string, file: string, lang: string, kind = 'function_ref') =>
+      ins.run(from, name, kind, 1, 0, file, lang);
 
     const runFn = nodeId('run', 'main.ts');
     const goFn = nodeId('go', 'main.py');
@@ -242,6 +253,14 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(runFn, 'this.cb', 'src/main.ts', 'typescript');
     seed(nodeId('wuser', 'w.cpp'), 'W::m', 'src/w.cpp', 'cpp');
     seed(runFn, 'neverDeclared', 'src/main.ts', 'typescript');
+    // Phase 5 non-bare c/cpp `imports` arm — the #include-path slice.
+    const cUser = nodeId('caller', 'user.c');
+    seed(cUser, 'local.h', 'src/user.c', 'c', 'imports');
+    seed(cUser, 'hdr/util.h', 'src/user.c', 'c', 'imports');
+    seed(cUser, 'util.h', 'src/user.c', 'c', 'imports');
+    seed(cUser, 'missing/none.h', 'src/user.c', 'c', 'imports');
+    seed(cUser, 'stdio.h', 'src/user.c', 'c', 'imports');
+    seed(nodeId('wuser', 'w.cpp'), 'hdr/util.h', 'src/w.cpp', 'cpp', 'imports');
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -259,8 +278,17 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const idx = new Map(
       batch.map((r, i) => [`${r.referenceName}@${r.referenceKind}@${r.filePath}`, i]),
     );
-    const at = (name: string, file: string) =>
-      outcomes[idx.get(`${name}@function_ref@${file}`)!]!;
+    const at = (name: string, file: string, kind = 'function_ref') =>
+      outcomes[idx.get(`${name}@${kind}@${file}`)!]!;
+    // `imports` refs are prerequisite-kind rows — the orchestrator reads them
+    // in the first pass (`prerequisites: true`).
+    const preBatch = resolver.readPendingBatch(0, 200, true);
+    const preOutcomes = resolver.resolveChunk(preBatch);
+    const preIdx = new Map(
+      preBatch.map((r, i) => [`${r.referenceName}@${r.referenceKind}@${r.filePath}`, i]),
+    );
+    const atPre = (name: string, file: string) =>
+      preOutcomes[preIdx.get(`${name}@imports@${file}`)!]!;
 
     // Cross-file unique match → 'function-ref' at 0.8 (no import in other.ts).
     const cross = at('helper', 'src/other.ts');
@@ -295,6 +323,32 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('W::m', 'src/w.cpp').status).toBe('passthrough');
     // No node, no import — terminal miss.
     expect(at('neverDeclared', 'src/main.ts').status).toBe('unresolved');
+    // Quoted include with a same-dir sibling → 'import' at 0.92.
+    const localInc = atPre('local.h', 'src/user.c');
+    expect(localInc.status).toBe('resolved');
+    expect(localInc.resolvedBy).toBe('import');
+    expect(localInc.confidence).toBe(0.92);
+    expect(localInc.targetNodeId).toBe(nodeId('local.h', 'src/local.h', 'file'));
+    // Subdir sibling and the cpp variant take the same arm.
+    const hdrInc = atPre('hdr/util.h', 'src/user.c');
+    expect(hdrInc.status).toBe('resolved');
+    expect(hdrInc.resolvedBy).toBe('import');
+    expect(hdrInc.targetNodeId).toBe(nodeId('util.h', 'src/hdr/util.h', 'file'));
+    const cppInc = atPre('hdr/util.h', 'src/w.cpp');
+    expect(cppInc.status).toBe('resolved');
+    expect(cppInc.resolvedBy).toBe('import');
+    expect(cppInc.targetNodeId).toBe(hdrInc.targetNodeId);
+    // No sibling and no include dirs → matchByFilePath suffix hit at 0.85.
+    const pathInc = atPre('util.h', 'src/user.c');
+    expect(pathInc.status).toBe('resolved');
+    expect(pathInc.resolvedBy).toBe('file-path');
+    expect(pathInc.confidence).toBe(0.85);
+    expect(pathInc.targetNodeId).toBe(hdrInc.targetNodeId);
+    // A genuinely missing include stays behind for the TS member tail.
+    expect(atPre('missing/none.h', 'src/user.c').status).toBe('passthrough');
+    // A stdlib header: isExternalImport sits inside resolveImportPath, so the
+    // arm reaches the member-tail punt and TS fails it — same verdict.
+    expect(atPre('stdio.h', 'src/user.c').status).toBe('passthrough');
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {
