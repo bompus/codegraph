@@ -2597,37 +2597,43 @@ export function matchBoundReceiverCall(
     const phpVariable = ref.language === 'php' && context.getFileLines?.(ref.filePath)?.[ref.line - 1]?.slice(ref.column).startsWith('$');
     if (binding?.kind === 'import' && !phpVariable) {
       if ((ref.language === 'java' || ref.language === 'kotlin') && resolveBoundType(root, ref, context)) {
-        return receiver === root ? matchBoundTypeMember(root, method!, ref, context) : null;
+        return receiver === root
+          ? nmTimedT('br:boundtype', ref, () => matchBoundTypeMember(root, method!, ref, context))
+          : null;
       }
-      const hit = resolveViaImport(ref, context);
-      const target = hit && context.getNodeById?.(hit.targetNodeId);
-      return target && ['function', 'method', 'class', 'component'].includes(target.kind) ? hit : null;
+      return nmTimedT('br:import', ref, () => {
+        const hit = resolveViaImport(ref, context);
+        const target = hit && context.getNodeById?.(hit.targetNodeId);
+        return target && ['function', 'method', 'class', 'component'].includes(target.kind) ? hit : null;
+      });
     }
-    return matchMethodCall(ref, context, true);
+    return nmTimedT('br:methodcall', ref, () => matchMethodCall(ref, context, true));
   }
   if (binding?.kind === 'import') {
     // The import resolver descends one member. A deeper receiver must not
     // mistake that first member for the final call (service.child.run).
     if (receiver!.includes('.')) return null;
-    const hit = resolveViaImport(ref, context);
-    const target = hit && context.getNodeById?.(hit.targetNodeId);
-    if (!target) return null;
-    if (['function', 'method', 'class', 'component'].includes(target.kind)) return hit;
-    // A store accessor call references its holder as well as its action:
-    // `current.getState()` links to the store const behind the import, even
-    // through a re-export alias. Any other value-held member stays
-    // unresolved rather than targeting the receiver constant — an opaque
-    // holder is not its called member (#1573).
-    if ((target.kind === 'constant' || target.kind === 'variable') && method === 'getState') return hit;
-    return null;
+    return nmTimedT('br:import', ref, () => {
+      const hit = resolveViaImport(ref, context);
+      const target = hit && context.getNodeById?.(hit.targetNodeId);
+      if (!target) return null;
+      if (['function', 'method', 'class', 'component'].includes(target.kind)) return hit;
+      // A store accessor call references its holder as well as its action:
+      // `current.getState()` links to the store const behind the import, even
+      // through a re-export alias. Any other value-held member stays
+      // unresolved rather than targeting the receiver constant — an opaque
+      // holder is not its called member (#1573).
+      if ((target.kind === 'constant' || target.kind === 'variable') && method === 'getState') return hit;
+      return null;
+    });
   }
   if (!binding) return null;
   if (receiver!.includes('.')) {
     const parts = receiver!.split('.');
     if (parts.length !== 2) return null;
-    const type = inferLocalReceiverType(root, {
+    const type = nmTimedT('br:fieldinfer', ref, () => inferLocalReceiverType(root, {
       ...ref, line: binding.line, fromNodeId: binding.nodeId ?? ref.fromNodeId,
-    }, context, true);
+    }, context, true));
     if (!type) return null;
     const typeBinding = innermostBinding(context.getBindings(ref.filePath), type.split('.')[0]!, binding.line);
     const ownerId = typeBinding?.kind === 'import'
@@ -2635,9 +2641,9 @@ export function matchBoundReceiverCall(
       : typeBinding?.nodeId;
     const owner = ownerId && context.getNodeById?.(ownerId);
     return owner && ['class', 'interface', 'component', 'type_alias'].includes(owner.kind)
-      ? matchTsFieldCall(owner.name, parts[1]!, method!, ref, context, owner) : null;
+      ? nmTimedT('br:fieldchain', ref, () => matchTsFieldCall(owner.name, parts[1]!, method!, ref, context, owner)) : null;
   }
-  const direct = matchMethodCall(ref, context, true);
+  const direct = nmTimedT('br:methodcall', ref, () => matchMethodCall(ref, context, true));
   if (direct) return direct;
   if (binding.kind === 'param') return null;
   const value = binding.nodeId ? context.getNodeById?.(binding.nodeId) : undefined;
@@ -2704,7 +2710,8 @@ export function matchBoundReceiverCall(
   const returnType = callee.returnType ?? callee.signature?.match(/\)\s*:\s*([\w$]+(?:<[\w$]+>)?)\s*$/)?.[1];
   if (!returnType) return null;
   const type = awaited ? returnType.replace(/^Promise<(.+)>$/, '$1') : returnType;
-  const hit = matchBoundTypeMember(type, method!, { ...site, filePath: callee.filePath, line: callee.startLine }, context);
+  const hit = nmTimedT('br:factory', ref, () =>
+    matchBoundTypeMember(type, method!, { ...site, filePath: callee.filePath, line: callee.startLine }, context));
   return hit ? { ...hit, original: ref } : null;
 }
 
@@ -2891,18 +2898,20 @@ export function matchMethodCall(
     ? ref.referenceName.match(/^(this->\w+)\.(\w+)$/)
     : null;
   if (phpThisPropMatch) {
-    const [, receiver, phpMethodName] = phpThisPropMatch;
-    const inferredType = inferLocalReceiverType(receiver!, ref, context);
-    if (!inferredType) return null;
-    return resolveMethodOnType(
-      inferredType,
-      phpMethodName!,
-      ref,
-      context,
-      0.9,
-      'instance-method',
-      importedFqnOf(inferredType, ref, context),
-    );
+    return nmTimedT('mc-phpprop', ref, (): ResolvedRef | null => {
+      const [, receiver, phpMethodName] = phpThisPropMatch;
+      const inferredType = inferLocalReceiverType(receiver!, ref, context);
+      if (!inferredType) return null;
+      return resolveMethodOnType(
+        inferredType,
+        phpMethodName!,
+        ref,
+        context,
+        0.9,
+        'instance-method',
+        importedFqnOf(inferredType, ref, context),
+      );
+    });
   }
 
   const match = dotMatch || colonMatch || luaColonMatch || rDollarMatch;
@@ -2925,41 +2934,51 @@ export function matchMethodCall(
   // exists on the inferred type, so a mis-inference produces no edge.
   if (inferableReceiver) {
     if (requireReceiverEvidence) {
-      const narrowed = inferGuardedReceiver(objectOrClass!, ref, context);
-      if (narrowed) return matchBoundTypeMember(narrowed, methodName!, ref, context);
+      const narrowed = nmTimedT('mc-guarded', ref, () => inferGuardedReceiver(objectOrClass!, ref, context));
+      if (narrowed) {
+        return nmTimedT('mc-guarded-btm', ref, () => matchBoundTypeMember(narrowed, methodName!, ref, context));
+      }
     }
-    let inferredType = nmTimedT('mc-infer', ref, () =>
+    // typeSource names the inferrer whose output reaches the terminal match —
+    // the terminal rows (`…-rmot`/`…-btm`) carry it so hit rates split by
+    // inferrer, not just by arm.
+    const inferStage = ref.language === 'cpp' ? 'mc-infer-cpp' : 'mc-infer-local';
+    let inferredType = nmTimedT(inferStage, ref, () =>
       ref.language === 'cpp'
         ? inferCppReceiverType(objectOrClass!, ref, context, 0, requireReceiverEvidence)
         : inferLocalReceiverType(objectOrClass!, binding && binding.kind !== 'import'
           ? { ...ref, line: binding.line, fromNodeId: binding.nodeId ?? ref.fromNodeId }
           : ref, context, requireReceiverEvidence));
+    let typeSource: string | null = inferredType ? inferStage : null;
     if (!inferredType && requireReceiverEvidence && ref.language === 'go') {
-      const factory = matchGoFactoryReceiver(objectOrClass!, methodName!, ref, context);
+      const factory = nmTimedT('mc-gofactory', ref, () => matchGoFactoryReceiver(objectOrClass!, methodName!, ref, context));
       if (factory) return factory;
     }
     if (!inferredType && requireReceiverEvidence) {
-      const iteration = inferIterationReceiver(objectOrClass!, ref, context,
+      const iteration = nmTimedT('mc-iteration', ref, () => inferIterationReceiver(objectOrClass!, ref, context,
         (name, site) => inferLocalReceiverType(name, site, context, true),
         (type, site) => resolveBoundType(type, site, context),
         (name, site) => {
           const hit = matchBoundReceiverCall({ ...site, referenceName: name }, context);
           return hit ? context.getNodeById?.(hit.targetNodeId) ?? undefined : undefined;
-        });
+        }));
       if (iteration) {
-        const hit = matchBoundTypeMember(iteration.type, methodName!, iteration.site, context);
+        const hit = nmTimedT('mc-iteration-btm', ref, () =>
+          matchBoundTypeMember(iteration.type, methodName!, iteration.site, context));
         return hit ? { ...hit, original: ref } : null;
       }
     }
     const awaited = !inferredType && ESM_FAMILY.has(ref.language)
-      ? inferEsmAwaitedCallType(objectOrClass!, ref, context) : null;
+      ? nmTimedT('mc-await', ref, () => inferEsmAwaitedCallType(objectOrClass!, ref, context)) : null;
     if (awaited) {
       if (!awaited.name || TS_PRIMITIVE_TYPES.has(awaited.name)) return null;
       inferredType = awaited.name;
+      typeSource = 'mc-await';
     }
     if (inferredType) {
       if (requireReceiverEvidence) {
-        const hit = matchBoundTypeMember(inferredType, methodName!, { ...ref, line: binding?.line ?? ref.line }, context);
+        const hit = nmTimedT(`${typeSource ?? 'mc-infer'}-btm`, ref, () =>
+          matchBoundTypeMember(inferredType, methodName!, { ...ref, line: binding?.line ?? ref.line }, context));
         return hit ? { ...hit, original: ref } : null;
       }
       // Java/Kotlin: when two classes share the simple name, the file's import
@@ -2970,7 +2989,7 @@ export function matchMethodCall(
               .getImportMappings(ref.filePath, ref.language)
               .find((i) => i.localName === inferredType)?.source
           : undefined;
-      const typedMatch = nmTimedT('mc-rmot', ref, () => resolveMethodOnType(
+      const typedMatch = nmTimedT(`${typeSource ?? 'mc-infer'}-rmot`, ref, () => resolveMethodOnType(
         inferredType,
         methodName!,
         awaited ? { ...ref, filePath: awaited.filePath } : ref,
@@ -3016,7 +3035,7 @@ export function matchMethodCall(
   // method. Chained Go receivers were never emitted before #1276, so there
   // is no prior recall to preserve on the fallback path.
   if (ref.language === 'go' && dotMatch && objectOrClass!.includes('.')) {
-    return matchGoFieldChainCall(objectOrClass!, methodName!, ref, context);
+    return nmTimedT('mc-gofield', ref, () => matchGoFieldChainCall(objectOrClass!, methodName!, ref, context));
   }
 
   // Rust call through a field of the enclosing type — `self.inner.run()`,
@@ -3028,7 +3047,8 @@ export function matchMethodCall(
   // contain — whenever the field's type was external or merely shared a
   // method name with something nearby.
   if (ref.language === 'rust' && dotMatch && objectOrClass!.startsWith('self.')) {
-    return matchRustSelfFieldCall(objectOrClass!.slice('self.'.length), methodName!, ref, context);
+    return nmTimedT('mc-rustfield', ref, () =>
+      matchRustSelfFieldCall(objectOrClass!.slice('self.'.length), methodName!, ref, context));
   }
 
   // Rust call on the enclosing type itself — `self.reset()`, emitted as
@@ -3039,7 +3059,7 @@ export function matchMethodCall(
   // `self.reset()` resolved to a same-named method on an unrelated type
   // whenever that type's method happened to sit nearer the call site.
   if (ref.language === 'rust' && dotMatch && objectOrClass === 'self') {
-    return matchRustSelfCall(methodName!, ref, context);
+    return nmTimedT('mc-rustself', ref, () => matchRustSelfCall(methodName!, ref, context));
   }
 
   // TS/JS call through a field of the enclosing class — `this.mailer.send()`,
@@ -3054,7 +3074,8 @@ export function matchMethodCall(
     dotMatch &&
     objectOrClass!.startsWith('this.')
   ) {
-    return matchTsThisFieldCall(objectOrClass!.slice('this.'.length), methodName!, ref, context);
+    return nmTimedT('mc-thisfield', ref, () =>
+      matchTsThisFieldCall(objectOrClass!.slice('this.'.length), methodName!, ref, context));
   }
 
   // Java/Kotlin: receiver may be a field whose name doesn't match the type by
@@ -3063,14 +3084,14 @@ export function matchMethodCall(
   // the method on that type. Covers Spring `@Resource`/`@Autowired` field
   // injection where the field type is the concrete bean class.
   if ((ref.language === 'java' || ref.language === 'kotlin') && dotMatch) {
-    const inferredType = inferJavaFieldReceiverType(objectOrClass!, ref, context);
+    const inferredType = nmTimedT('mc-javafield', ref, () => inferJavaFieldReceiverType(objectOrClass!, ref, context));
     if (inferredType) {
       // When two classes share the same simple name, the caller file's
       // import is the only signal that names WHICH one — pass the
       // imported FQN so resolveMethodOnType can disambiguate (#314).
       const imports = context.getImportMappings(ref.filePath, ref.language);
       const importedFqn = imports.find((i) => i.localName === inferredType)?.source;
-      const typedMatch = nmTimedT('mc-rmot', ref, () => resolveMethodOnType(
+      const typedMatch = nmTimedT('mc-javafield-rmot', ref, () => resolveMethodOnType(
         inferredType,
         methodName!,
         ref,
@@ -4099,12 +4120,20 @@ const ARKUI_ATTRIBUTE_DECORATORS = new Set(['Extend', 'Styles', 'AnimatableExten
 const NM_PROFILE: Map<string, { n: number; ns: bigint }> | null =
   process.env.CODEGRAPH_RESOLVE_PROFILE === '2' ? new Map() : null;
 
+/**
+ * Kernel-passthrough refs carry their decline gate on `kernelReason`; append it
+ * so member-arm hit rates split by reason (Phase 5 cares about ineligible:name).
+ */
+function nmKey(stage: string, ref: UnresolvedRef, hit: boolean): string {
+  return `nm:${stage}|${ref.referenceKind}|${hit ? 'hit' : 'miss'}${ref.kernelReason ? `|${ref.kernelReason}` : ''}`;
+}
+
 function nmTimedT<T>(stage: string, ref: UnresolvedRef, fn: () => T): T {
   if (!NM_PROFILE) return fn();
   const t0 = process.hrtime.bigint();
   const r = fn();
   const dt = process.hrtime.bigint() - t0;
-  const key = `nm:${stage}|${ref.referenceKind}|${r ? 'hit' : 'miss'}`;
+  const key = nmKey(stage, ref, !!r);
   const slot = NM_PROFILE.get(key);
   if (slot) {
     slot.n++;
@@ -4115,11 +4144,16 @@ function nmTimedT<T>(stage: string, ref: UnresolvedRef, fn: () => T): T {
   return r;
 }
 
-function nmTimed(stage: string, ref: UnresolvedRef, fn: () => ResolvedRef | null): ResolvedRef | null {
+/** Exported for the deferred post-passes in index.ts (they call matchers directly). */
+export function nmTimed(stage: string, ref: UnresolvedRef, fn: () => ResolvedRef | null): ResolvedRef | null {
   return nmTimedT(stage, ref, fn);
 }
 
-/** Dump this thread's matchReference sub-stage table to stderr (no-op unless =2). */
+/**
+ * Dump this thread's matchReference sub-stage table to stderr (no-op unless =2).
+ * Clears after printing so later passes (the deferred drains) dump only their
+ * own rows under their own label.
+ */
 export function dumpNameMatcherProfile(label: string): void {
   if (!NM_PROFILE || NM_PROFILE.size === 0) return;
   const rows = [...NM_PROFILE.entries()]
@@ -4130,6 +4164,7 @@ export function dumpNameMatcherProfile(label: string): void {
       `[resolve-profile] ${label} ${r.k}: n=${r.n} total=${(r.ms / 1000).toFixed(1)}s avg=${((r.ms * 1000) / Math.max(1, r.n)).toFixed(0)}µs`
     );
   }
+  NM_PROFILE.clear();
 }
 
 export function matchReference(
@@ -4246,7 +4281,7 @@ export function matchReference(
     }
   }
 
-  const receiverResult = matchBoundReceiverCall(ref, context);
+  const receiverResult = nmTimedT('boundReceiver', ref, () => matchBoundReceiverCall(ref, context));
   if (receiverResult !== undefined) return receiverResult;
   if (isUnresolvedJsMemberCall(ref)) return null;
 

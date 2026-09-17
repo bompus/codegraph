@@ -31,6 +31,9 @@ export interface UnresolvedRef {
   /** `unresolved_refs.id` when loaded from the database — post-pass cleanup
    * targets exactly this row instead of every same-key sibling (#1269). */
   rowId?: number;
+  /** Kernel passthrough gate that deferred this ref to the TS pipeline —
+   * diagnostics only (CODEGRAPH_RESOLVE_PROFILE row suffix); never persisted. */
+  kernelReason?: string;
 }
 
 /**
