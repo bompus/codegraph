@@ -95,6 +95,12 @@ static TERRA_CLAIM_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static VUE_NAV_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\$?router\.(?:push|replace)$|^navigateTo$").unwrap());
+/// matchByFilePath's shape gate — `\.ext` (1–4 chars) or `.markdown` tail.
+static FILE_PATH_EXT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:\.[A-Za-z][A-Za-z0-9]{0,3}|\.markdown)$").unwrap());
+/// hasAnyPossibleMatch's bare-filename tail check (`\.[A-Za-z0-9]+$`).
+static EXT_TAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.[A-Za-z0-9]+$").unwrap());
 
 /// `f.claimsReference(name)` for the resolver registered as `framework`
 /// (`f.name`), or the conservative claim for names the kernel does not know.
@@ -571,6 +577,117 @@ fn is_within_dir(root_abs: &str, target_abs: &str) -> bool {
 fn lexical_path_within_root(root_abs: &str, rel: &str) -> bool {
     let resolved = pos_resolve(root_abs, rel);
     is_within_dir(root_abs, &resolved)
+}
+
+/// `receiver.charAt(0).toUpperCase() + receiver.slice(1)` — JS full case
+/// mapping on the first char (to_uppercase may widen, e.g. ß→SS, as does JS).
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// splitAnchor (name-matcher.ts): `path#anchor` → (path, anchor?).
+fn split_anchor(name: &str) -> (&str, Option<&str>) {
+    match name.find('#') {
+        Some(i) => (&name[..i], Some(&name[i + 1..])),
+        None => (name, None),
+    }
+}
+
+/// splitFileSymbol (name-matcher.ts): `path::symbol` → (path, symbol?).
+fn split_file_symbol(name: &str) -> (&str, Option<&str>) {
+    match name.find("::") {
+        Some(i) => (&name[..i], Some(&name[i + 2..])),
+        None => (name, None),
+    }
+}
+
+/// decodeURIComponent — %XX sequences → UTF-8 bytes; `+` stays literal.
+/// JS throws on malformed input and the caller keeps the original, so a bad
+/// escape or non-UTF-8 payload returns the input verbatim.
+fn uri_component_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return s.to_string();
+            }
+            let pair = (bytes[i + 1] as char).to_digit(16).zip((bytes[i + 2] as char).to_digit(16));
+            let Some((hi, lo)) = pair else {
+                return s.to_string();
+            };
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// normalizeMarkdownAnchor (name-matcher.ts): decode → lowercase → strip
+/// `<…>` tag spans → keep letters/numbers/space/dash → trim → `-`-join.
+/// `char::is_alphanumeric` approximates `[\p{L}\p{N}]` (it also keeps marks —
+/// unreachable in practice behind the file-path arm).
+fn normalize_markdown_anchor(anchor: &str) -> String {
+    let lowered = uri_component_decode(anchor).to_lowercase();
+    // /<[^>]+>/g: drop `<` through the next `>`; an unclosed `<` survives.
+    let mut no_tags = String::with_capacity(lowered.len());
+    let mut rest = lowered.as_str();
+    while let Some(open) = rest.find('<') {
+        no_tags.push_str(&rest[..open]);
+        match rest[open..].find('>') {
+            Some(close) => rest = &rest[open + close + 1..],
+            None => {
+                no_tags.push('<');
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    no_tags.push_str(rest);
+    let filtered: String = no_tags
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '-')
+        .collect();
+    // split_whitespace skips edge whitespace — the JS `.trim()` is subsumed.
+    let collapsed = filtered.split_whitespace().collect::<Vec<_>>().join("-");
+    if collapsed.is_empty() {
+        "section".to_string()
+    } else {
+        collapsed
+    }
+}
+
+/// pickClosestFileNode (name-matcher.ts): same-dir candidates first, then
+/// strict-`>` argmax of path proximity + a same-language-family bonus.
+fn pick_closest_file_node(candidates: &[Rc<KNode>], r: &ResolveRefIn) -> Rc<KNode> {
+    let ref_dir = pos_dirname(&r.file_path);
+    let same_dir: Vec<Rc<KNode>> = candidates
+        .iter()
+        .filter(|c| pos_dirname(&c.file_path) == ref_dir)
+        .cloned()
+        .collect();
+    let pool: &[Rc<KNode>] = if same_dir.is_empty() { candidates } else { &same_dir };
+    let mut best = pool[0].clone();
+    let mut best_score = i64::MIN;
+    for c in pool {
+        let score = KernelResolver::compute_path_proximity(&r.file_path, &c.file_path)
+            + if same_language_family(&c.language, &r.language) { 5 } else { 0 };
+        if score > best_score {
+            best_score = score;
+            best = c.clone();
+        }
+    }
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -1679,15 +1796,96 @@ impl KernelResolver {
     /// hasAnyPossibleMatch reduced to the bare-name form: every separator-
     /// dependent arm (dot/colon/slash/`$`/path) is dead by definition of
     /// `is_bare_name`, leaving the direct known-name check.
+    /// hasAnyPossibleMatch (index.ts) — the full check: direct name, then the
+    /// receiver/member segments around `.`/`::`/`:`/`$`, then the path tail.
+    /// Every separator branch is dead for bare names (the previous callers'
+    /// slice); the non-bare c/cpp imports arm needs them.
     fn has_any_possible_match(&self, name: &str) -> bool {
-        self.known_names.contains(name)
+        let path_name = name.replace('\\', "/");
+        let path_name = path_name.split('#').next().unwrap_or("");
+        if self.known_names.contains(name) {
+            return true;
+        }
+        if path_name != name && self.known_names.contains(path_name) {
+            return true;
+        }
+        if let Some(dot_idx) = name.find('.') {
+            if dot_idx > 0 {
+                let (receiver, member) = (&name[..dot_idx], &name[dot_idx + 1..]);
+                if self.known_names.contains(receiver) || self.known_names.contains(member) {
+                    return true;
+                }
+                let capitalized = capitalize_first(receiver);
+                if self.known_names.contains(capitalized.as_str()) {
+                    return true;
+                }
+                if let Some(last_dot) = name.rfind('.') {
+                    if last_dot > dot_idx {
+                        let tail = &name[last_dot + 1..];
+                        if !tail.is_empty() && self.known_names.contains(tail) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(colon_idx) = name.find("::") {
+            if colon_idx > 0 {
+                let (receiver, member) = (&name[..colon_idx], &name[colon_idx + 2..]);
+                if self.known_names.contains(receiver) || self.known_names.contains(member) {
+                    return true;
+                }
+                if let Some(last_colon) = name.rfind("::") {
+                    if last_colon > colon_idx {
+                        let tail = &name[last_colon + 2..];
+                        if !tail.is_empty() && self.known_names.contains(tail) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        for sep in [':', '$'] {
+            if sep == ':' && name.contains("::") {
+                continue;
+            }
+            if let Some(sep_idx) = name.find(sep) {
+                if sep_idx > 0 {
+                    let (receiver, member) = (&name[..sep_idx], &name[sep_idx + 1..]);
+                    if self.known_names.contains(member) || self.known_names.contains(receiver) {
+                        return true;
+                    }
+                    let capitalized = capitalize_first(receiver);
+                    if self.known_names.contains(capitalized.as_str()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if let Some(slash_idx) = path_name.rfind('/') {
+            if slash_idx > 0 && self.known_names.contains(&path_name[slash_idx + 1..]) {
+                return true;
+            }
+        }
+        if !path_name.contains('/')
+            && EXT_TAIL_RE.is_match(path_name)
+            && self.known_names.contains(path_name)
+        {
+            return true;
+        }
+        false
     }
 
-    /// matchesAnyImport — bare names can only satisfy the `localName ===
-    /// name` arm.
+    /// matchesAnyImport — `localName === name` or the `localName.` prefix arm
+    /// (the latter is dead for bare names).
     fn matches_any_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
         let imports = self.import_mappings(&r.file_path)?;
-        Ok(imports.iter().any(|i| i.local_name == r.reference_name))
+        Ok(imports.iter().any(|i| {
+            i.local_name == r.reference_name
+                || r.reference_name
+                    .strip_prefix(&i.local_name)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        }))
     }
 
     /// `frameworks.some(f => f.claimsReference?.(name))` — the prefilter's
@@ -3012,6 +3210,250 @@ impl KernelResolver {
     }
 
     // -----------------------------------------------------------------------
+    // Non-bare c/cpp `imports` refs — the #include-path slice (resolveOneInner
+    // restricted). Measured on the linux corpus this leg resolves ~388k of
+    // the ~393k ineligible:name edges; everything it can't prove punts to the
+    // full TS spine rather than guessing.
+    // -----------------------------------------------------------------------
+
+    /// The resolveOneInner ordering for `(c|cpp, 'imports', non-bare)`:
+    /// builtin → prefilter → frameworks → boundReceiver → viaImport →
+    /// nameMatch. For this slice jvmImport/razor/phpStatic are
+    /// language-gated dead, boundReceiver is calls-gated dead, the chain
+    /// guards need calls + `().`, and viaImport's first branch IS the c/cpp
+    /// include arm (≥0.9 or nothing — its <0.9 candidate path can't fire).
+    /// The nameMatch tail (qualifiedName → cppChain → methodCall →
+    /// exactName → fuzzy) stays in TS: a `member-tail` passthrough
+    /// reproduces the full-spine verdict exactly.
+    fn resolve_c_include_import_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+        if self.is_built_in_or_external(r) {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        let pre_pass = self.has_any_possible_match(&r.reference_name)
+            || self.matches_any_import(r)?
+            || self.framework_claims(&r.reference_name);
+        if !pre_pass {
+            // The prefilter-miss fallback is matchJsStoreBindingCall — gated
+            // to JS calls — so a c/cpp ref dies here exactly as in TS.
+            return Ok(ResolveOutcome::unresolved());
+        }
+        let import_hit = self.resolve_via_import(r)?;
+        let import_hit = self.gate_language(import_hit, r);
+        if let Some(c) = import_hit {
+            let winner = match self.gate_target_kind(c, r)? {
+                Some(w) => w,
+                None => {
+                    // A gated-out ≥0.9 import can still lose to a ≥0.9
+                    // framework hit — only the full TS spine distinguishes.
+                    return Ok(if self.frameworks_active {
+                        ResolveOutcome::passthrough("gated-import")
+                    } else {
+                        ResolveOutcome::unresolved()
+                    });
+                }
+            };
+            return self.finish(r, winner, None, true);
+        }
+        let file_hit = self.match_by_file_path(r)?;
+        let Some(c) = self.gate_language(file_hit, r) else {
+            return Ok(ResolveOutcome::passthrough("member-tail"));
+        };
+        // The nameMatch result takes the cross-file visibility post-check; a
+        // rejection leaves the later arms live in TS, so punt — never verdict.
+        if !self.is_visible_across_files(&c.node, r)? {
+            return Ok(ResolveOutcome::passthrough("member-tail"));
+        }
+        let Some(winner) = self.gate_target_kind(c, r)? else {
+            return Ok(ResolveOutcome::passthrough("member-tail"));
+        };
+        // A file-path hit is a nameMatch candidate — it never early-returns
+        // in TS, it first-maxes against framework candidates. Under active
+        // frameworks report it for the merge instead of verdicting.
+        if self.frameworks_active {
+            let reported = vec![KernelCandidateOut {
+                target_node_id: winner.node.id.clone(),
+                confidence: winner.confidence,
+                resolved_by: winner.resolved_by.to_string(),
+            }];
+            return self.finish(r, winner, Some(reported), false);
+        }
+        self.finish(r, winner, None, false)
+    }
+
+    /// matchByFilePath (name-matcher.ts): path-shaped (`a/b.h`) or
+    /// extension-bearing bare (`Foo.h`) names → `file` nodes.
+    fn match_by_file_path(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let normalized = r.reference_name.replace('\\', "/");
+        let (path_and_symbol, anchor) = split_anchor(&normalized);
+        let (path_wo_anchor, symbol_name) = split_file_symbol(path_and_symbol);
+        if !path_wo_anchor.contains('/') && !FILE_PATH_EXT_RE.is_match(path_wo_anchor) {
+            return Ok(None);
+        }
+        let file_name = pos_basename(path_wo_anchor);
+        if file_name.is_empty() {
+            return Ok(None);
+        }
+        let file_nodes: Vec<Rc<KNode>> = self
+            .nodes_by_name(file_name)?
+            .iter()
+            .filter(|n| n.kind == "file")
+            .cloned()
+            .map(Rc::new)
+            .collect();
+        if file_nodes.is_empty() {
+            return Ok(None);
+        }
+        if let Some(symbol_name) = symbol_name.filter(|s| !s.is_empty()) {
+            if let Some(symbol) =
+                self.find_symbol_in_referenced_file(path_wo_anchor, symbol_name, &file_nodes)?
+            {
+                return Ok(Some(KCand {
+                    node: symbol,
+                    confidence: 0.99,
+                    resolved_by: "file-path",
+                }));
+            }
+        }
+        if let Some(anchor) = anchor.filter(|a| !a.is_empty()) {
+            if let Some(anchored) =
+                self.find_anchored_markdown_section(path_wo_anchor, anchor, &file_nodes)?
+            {
+                return Ok(Some(KCand {
+                    node: anchored,
+                    confidence: 0.98,
+                    resolved_by: "file-path",
+                }));
+            }
+        }
+        if let Some(exact) = file_nodes
+            .iter()
+            .find(|n| n.qualified_name == path_wo_anchor || n.file_path == path_wo_anchor)
+        {
+            return Ok(Some(KCand {
+                node: exact.clone(),
+                confidence: 0.95,
+                resolved_by: "file-path",
+            }));
+        }
+        let suffix_matches: Vec<Rc<KNode>> = file_nodes
+            .iter()
+            .filter(|n| {
+                n.qualified_name.ends_with(path_wo_anchor) || n.file_path.ends_with(path_wo_anchor)
+            })
+            .cloned()
+            .collect();
+        if !suffix_matches.is_empty() {
+            return Ok(Some(KCand {
+                node: pick_closest_file_node(&suffix_matches, r),
+                confidence: 0.85,
+                resolved_by: "file-path",
+            }));
+        }
+        if file_nodes.len() == 1 {
+            return Ok(Some(KCand {
+                node: file_nodes[0].clone(),
+                confidence: 0.7,
+                resolved_by: "file-path",
+            }));
+        }
+        Ok(None)
+    }
+
+    /// findSymbolInReferencedFile (name-matcher.ts): `path::symbol` — search
+    /// the path-matched files (or the lone candidate) for the symbol.
+    fn find_symbol_in_referenced_file(
+        &mut self,
+        path_wo_anchor: &str,
+        symbol_name: &str,
+        file_nodes: &[Rc<KNode>],
+    ) -> Result<Option<Rc<KNode>>> {
+        let candidate_files: Vec<Rc<KNode>> = file_nodes
+            .iter()
+            .filter(|n| {
+                n.qualified_name == path_wo_anchor
+                    || n.file_path == path_wo_anchor
+                    || n.qualified_name.ends_with(path_wo_anchor)
+                    || n.file_path.ends_with(path_wo_anchor)
+            })
+            .cloned()
+            .collect();
+        let search: &[Rc<KNode>] = if !candidate_files.is_empty() {
+            &candidate_files
+        } else if file_nodes.len() == 1 {
+            file_nodes
+        } else {
+            &[]
+        };
+        for file_node in search {
+            let nodes = self.nodes_in_file(&file_node.file_path)?;
+            let normalized_symbol = symbol_name.replace('/', ".");
+            let file_prefix = format!("{}::{}", file_node.file_path, normalized_symbol);
+            let colon_tail = format!("::{}", normalized_symbol);
+            let dot_tail = format!(".{}", normalized_symbol);
+            if let Some(exact) = nodes.iter().find(|n| {
+                n.name == normalized_symbol
+                    || n.qualified_name == file_prefix
+                    || n.qualified_name.ends_with(&colon_tail)
+                    || n.qualified_name.ends_with(&dot_tail)
+            }) {
+                return Ok(Some(Rc::new(exact.clone())));
+            }
+            let last_part = normalized_symbol.split(['.', ':']).next_back().unwrap_or("");
+            if last_part.is_empty() {
+                continue;
+            }
+            if let Some(by_last) = nodes.iter().find(|n| {
+                n.name == last_part
+                    && matches!(
+                        n.kind.as_str(),
+                        "function" | "method" | "class" | "module" | "constant" | "variable"
+                    )
+            }) {
+                return Ok(Some(Rc::new(by_last.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    /// findAnchoredMarkdownSection (name-matcher.ts): `path#anchor` → the
+    /// markdown section module node.
+    fn find_anchored_markdown_section(
+        &mut self,
+        path_wo_anchor: &str,
+        anchor: &str,
+        file_nodes: &[Rc<KNode>],
+    ) -> Result<Option<Rc<KNode>>> {
+        let normalized_anchor = normalize_markdown_anchor(anchor);
+        for file_node in file_nodes.iter().filter(|n| {
+            n.qualified_name == path_wo_anchor
+                || n.file_path == path_wo_anchor
+                || n.qualified_name.ends_with(path_wo_anchor)
+                || n.file_path.ends_with(path_wo_anchor)
+        }) {
+            let section_qn = format!("{}#{}", file_node.file_path, normalized_anchor);
+            if let Some(exact) = self
+                .nodes_by_qualified_name(&section_qn)?
+                .iter()
+                .find(|n| n.kind == "module" && n.language == "markdown")
+            {
+                return Ok(Some(Rc::new(exact.clone())));
+            }
+            if let Some(section) = self
+                .nodes_in_file(&file_node.file_path)?
+                .iter()
+                .find(|n| {
+                    n.kind == "module"
+                        && n.language == "markdown"
+                        && n.qualified_name == section_qn
+                })
+            {
+                return Ok(Some(Rc::new(section.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    // -----------------------------------------------------------------------
     // Gates (index.ts) + alias forwarding (alias-binding.ts)
     // -----------------------------------------------------------------------
 
@@ -3262,6 +3704,11 @@ impl KernelResolver {
             return Ok(ResolveOutcome::passthrough("ineligible:lang"));
         }
         if !Self::name_is_bare(&r.reference_name) {
+            // The measured-dominant slice of the non-bare tail (§5.14):
+            // C/C++ `#include` path refs resolve through their own arm.
+            if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
+                return self.resolve_c_include_import_ref(r);
+            }
             return Ok(ResolveOutcome::passthrough("ineligible:name"));
         }
         if r.file_path.is_empty() {

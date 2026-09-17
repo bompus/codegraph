@@ -373,3 +373,22 @@ By ref kind: `imports` refs are 391,782 of the bucket (89%) and resolve 99.8% of
 **`ineligible:lang` (57,441)**: ~28,966 resolved (exact-match 17,205, instance-method 5,730 — rust `self.*`/objc member arms, qualified-name 3,549, import 1,113, fuzzy 1,025), ~28,475 failed. Member matchers carry ~7k hits here but all for non-migrated languages — that workstream is extractor/bindings migration, not Phase 5.
 
 **Port-order conclusion (measured)**: the dominant `ineligible:name` leg is C/C++ include-path resolution — ~388k edges (98.8% of the bucket's resolutions) through a ~150-line pure-DB surface (`resolveViaImport`'s c/cpp branch + `resolveCppIncludePath` + `matchByFilePath`; needs file-node-by-basename lookup, `fileExists`, include-dir list, path normalization — all already kernel-shaped, no source reads, no deferred channel). Porting it would lift native share ~7 points (91.5% → ~98%) in one leg. The member matchers are a ~3k-line port for ~1.2k edges on this corpus — still Phase 5, but demoted behind the include leg. Corpus caveat: linux is C-dominated, so member-call density is atypically low; on a JVM/TS corpus the member arms would weight higher — but per measured hits the include leg is unambiguously first.
+
+### 5.15 Phase 5 step 2 — C/C++ include-path leg native, byte-identical output (2026-09-17)
+
+Same host/arm shape as §5.14 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; wall 1m 24s vs §5.14's profiled 1m 30s — settle 12.1→9.9s, insertEdges 52.4→41.6s). Log: `bench/20260917-node-8c-kernelon-includearm.log`; baseline DB preserved at `codegraph-corpora/baselines/linux-cf8b2607.db`.
+
+| Metric | §5.14 baseline | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,366,728 | 5,734,189 | +367,461 |
+| kernel passthrough | 497,776 | 110,315 | −387,461 |
+| **native share** | 91.5% | **98.1%** | +6.6 pts |
+| `ineligible:name` | 440,335 | 49,180 | −391,155 |
+| `ineligible:lang` | 57,441 | 57,441 | 0 (untouched) |
+| `member-tail` (new punt reason) | — | 3,694 | arm-internal punts to the TS spine |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all identical to baseline, and the full edge multiset (`source,target,kind,line,col,metadata` ordered) md5 `b9e532c2…` and node multiset md5 `139f79c9…` match byte-for-byte. Zero verdict drift: every ref the arm can't prove punts `member-tail`/`gated-import` into the full TS spine.
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, +455): a dedicated arm for `(c|cpp, 'imports', non-bare)` ahead of the `name_is_bare` rejection, replicating the TS `resolveOneInner` ordering restricted to the slice — builtin → prefilter → viaImport → filePath — with the nameMatch tail (qualifiedName/cppChain/methodCall/exactName/fuzzy) deliberately left in TS behind `member-tail`. The include machinery (`resolveViaImport`'s c/cpp branch, `resolveCppIncludePath`, `fileExists`, include-dir list) was already in-kernel from an earlier phase but unreachable for non-bare names. Supporting ports: full `hasAnyPossibleMatch` (receiver/member segments around `.`/`::`/`:`/`$`, path tail, `localName.` import-prefix arm) and `matchByFilePath` (+`splitAnchor`/`splitFileSymbol`/`findSymbolInReferencedFile`/`findAnchoredMarkdownSection`/`pickClosestFileNode`/`normalizeMarkdownAnchor`/`decodeURIComponent`). Parity-test fixture extended with C includes (sibling, subdir, basename-only suffix hit, missing, stdlib) asserting `import`@0.92 / `file-path`@0.85 / `member-tail` passthrough verdicts natively.
+
+**Remaining `ineligible:name` (49,180)**: calls-kind member syntax (boundReceiver/methodCall shapes — the deferred member-matcher port) plus the member-tail punts above. The 46k fail:calls majority never produced edges anyway; the measured member-matcher prize stays ~1.2k edges (§5.14). Next Phase-5 candidates by measured weight: `member-tail` misses (3.7k, cheap — extend the arm to fail them natively once the member arms they could hit are enumerated) and the `ineligible:lang` member arms (blocked on extractor/bindings migration, not Phase 5).
