@@ -10,9 +10,19 @@ codegraph version on a chosen real-world repo. Drives the harness in
 `scripts/agent-eval/`.
 
 ## Prerequisites
-- `node`, `git`, a logged-in `claude` CLI (macOS/Linux).
+- `node`, `git`, a logged-in agent CLI (Claude Code today — see Runners).
 - `tmux` 3+ for the interactive harness only.
 - Run from the codegraph repo root.
+
+## Runners
+
+Headless is the portable arm; the tmux arm drives the Claude TUI specifically.
+
+- Claude Code: `claude -p` with stream-json — native; `parse-run.mjs` / `parse-session.mjs` are built for its formats.
+- opencode: `opencode run --format json` — proven in other panels; needs its own stream parser (follow-up).
+- Cursor: `cursor-agent -p` — proven; avoid `--mode plan` (swallows print output), pass `--trust` headless.
+- Devin: `devin -p` is help-asserted but unverified here.
+- `AskUserQuestion` below means the host's question tool (name varies by host).
 
 ## Workflow
 
@@ -49,7 +59,7 @@ the answer to a MODE token:
 - "Both" → `all` — headless + interactive (4 runs).
 
 **Step 5 — run.** Launch in the background (sets the version, clones if missing,
-wipes + re-indexes, runs the chosen arms — several minutes):
+wipes + re-indexes, runs the chosen arms — several minutes, paid runs):
 ```bash
 scripts/agent-eval/audit.sh <VERSION> <repo-name> <repo-url> "<question>" <MODE>
 ```
