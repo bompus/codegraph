@@ -1,0 +1,5 @@
+# ast-grep project config for the kernel crate — invariants clippy cannot
+# express (see rules/). Run via `npm run check:kernel-rules` from the repo
+# root, which also runs under `pretest`.
+ruleDirs:
+  - rules

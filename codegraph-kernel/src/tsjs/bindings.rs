@@ -104,9 +104,11 @@ impl<'t> Walker<'t> {
                     }
                 }
             }
-            if is_function_type(kind) || kind == "method_definition" || kind == "catch_clause" {
-                child_scope = Some(self.line_range(node));
-            } else if is_scope_block(node) && scope.is_none() {
+            if is_function_type(kind)
+                || kind == "method_definition"
+                || kind == "catch_clause"
+                || (is_scope_block(node) && scope.is_none())
+            {
                 child_scope = Some(self.line_range(node));
             } else if kind == "variable_declarator" && scope.is_none() {
                 if let Some(name_node) = node.child_by_field_name("name") {

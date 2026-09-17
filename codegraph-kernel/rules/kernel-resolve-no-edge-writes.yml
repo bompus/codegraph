@@ -1,0 +1,21 @@
+id: kernel-resolve-no-edge-writes
+language: Rust
+severity: error
+message: >-
+  resolve.rs must not write edges/unresolved_refs — kernel resolution is
+  read-only; persistence happens TS-side on snapshot-isolated connections
+  (the -shm isolation contract).
+files:
+  - src/resolve.rs
+rule:
+  any:
+    - kind: string_literal
+      regex: >-
+        (INSERT|REPLACE)\s+(OR\s+\w+\s+)?INTO\s+(edges|unresolved_refs)
+        |UPDATE\s+(edges|unresolved_refs)
+        |DELETE\s+FROM\s+(edges|unresolved_refs)
+    - kind: raw_string_literal
+      regex: >-
+        (INSERT|REPLACE)\s+(OR\s+\w+\s+)?INTO\s+(edges|unresolved_refs)
+        |UPDATE\s+(edges|unresolved_refs)
+        |DELETE\s+FROM\s+(edges|unresolved_refs)

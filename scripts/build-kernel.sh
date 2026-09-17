@@ -63,6 +63,15 @@ if [ -n "$TARGET" ]; then
   cargo build --release --target "$TARGET"
   OUTDIR="$CRATE/target/$TARGET/release"
 else
+  # Lint gate: lib.rs denies clippy::all, so clippy must run where code is
+  # written — a host build without it lets denied lints accumulate silently.
+  # Cross-builds reuse this source and are covered by the host gate.
+  rustup component add clippy >/dev/null 2>&1 || true
+  if cargo clippy --version >/dev/null 2>&1; then
+    cargo clippy --release --lib -- -D warnings
+  else
+    echo "[kernel] warning: clippy unavailable; lint gate skipped" >&2
+  fi
   cargo build --release
   OUTDIR="$CRATE/target/release"
 fi

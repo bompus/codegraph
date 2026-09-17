@@ -800,6 +800,7 @@ pub struct KernelResolver {
     rust_trait_memo: HashMap<String, bool>,
     root_import_memo: HashMap<String, bool>,
     file_cache: FileCache,
+    regex_cache: HashMap<String, Rc<Regex>>,
 }
 
 #[napi]
@@ -867,6 +868,7 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
             file_cache: FileCache::new(1024),
+            regex_cache: HashMap::new(),
         };
         r.warm_caches()?;
         Ok(r)
@@ -1167,6 +1169,18 @@ impl KernelResolver {
             });
         self.file_cache.put(rel.to_string(), v.clone());
         v
+    }
+
+    /// Compile-once-per-pattern regexes — the bare-call and store-bind
+    /// matchers build name-parameterized patterns per ref, and identical
+    /// names recur across thousands of refs.
+    fn cached_regex(&mut self, pattern: &str) -> Result<Rc<Regex>> {
+        if let Some(re) = self.regex_cache.get(pattern) {
+            return Ok(re.clone());
+        }
+        let re = Rc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
+        self.regex_cache.insert(pattern.to_string(), re.clone());
+        Ok(re)
     }
 
     // -----------------------------------------------------------------------
@@ -1876,10 +1890,10 @@ impl KernelResolver {
         }
         let mut best: Option<(&str, &str)> = None;
         for (name, dir) in &ws.by_name {
-            if import_path == name.as_str() || import_path.starts_with(&format!("{}/", name)) {
-                if best.is_none_or(|(b, _)| name.len() > b.len()) {
-                    best = Some((name, dir));
-                }
+            if (import_path == name.as_str() || import_path.starts_with(&format!("{}/", name)))
+                && best.is_none_or(|(b, _)| name.len() > b.len())
+            {
+                best = Some((name, dir));
             }
         }
         let (name, dir) = best?;
@@ -2649,8 +2663,7 @@ impl KernelResolver {
         let at = Self::js_slice(line, r.column as usize);
         // `new RegExp('^' + nameEsc + '\\s*[(<]')` — nameEsc is the JS regex
         // escape, which `regex::escape` reproduces for our charset.
-        let call_re = Regex::new(&format!("^{}\\s*[(<]", regex::escape(&r.reference_name)))
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let call_re = self.cached_regex(&format!("^{}\\s*[(<]", regex::escape(&r.reference_name)))?;
         if !call_re.is_match(at) {
             return Ok(false);
         }
@@ -2674,11 +2687,10 @@ impl KernelResolver {
         let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(None) };
         let from = (r.column as usize).min(Self::utf16_len(line));
         let hay = Self::js_slice(line, from);
-        let re = Regex::new(&format!(
+        let re = self.cached_regex(&format!(
             "(^|[^A-Za-z0-9_]){}\\s*\\(",
             regex::escape(&r.reference_name)
-        ))
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+        ))?;
         let Some(m) = re.captures(hay) else { return Ok(None) };
         // m.index / m[1].length are UTF-16 units in TS; convert the haystack
         // byte offsets back to units before re-anchoring on `line`.
@@ -3113,10 +3125,9 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
         let text = lines.join("\n");
         let name = regex::escape(&r.reference_name);
-        let re = Regex::new(&format!(
+        let re = self.cached_regex(&format!(
             "\\bconst\\s*(?:\\{{[^{{}}]*\\b{}\\b|{}\\b)", name, name
-        ))
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+        ))?;
         Ok(re.is_match(&text))
     }
 
@@ -3367,7 +3378,6 @@ impl KernelResolver {
                 bi = i;
             }
         }
-        let mut cands = cands;
         let winner = cands.remove(bi);
         let winner = match self.gate_target_kind(winner, r)? {
             Some(w) => w,

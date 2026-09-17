@@ -1358,6 +1358,7 @@ impl<'t> Walker<'t> {
         // (node, scope, scope is a function body): the walk mints nodeless
         // locals only inside a function body; a class body's declarations
         // are fields or nothing.
+        #[allow(clippy::type_complexity)]
         let mut stack: Vec<(Node<'t>, Option<(u32, u32)>, bool)> = vec![(root, None, false)];
         while let Some((node, scope, in_fn)) = stack.pop() {
             let kind = node.kind();
@@ -1515,6 +1516,7 @@ impl<'t> Walker<'t> {
         Some(self.tables.node_lines(top.row))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
         let name_ref = self.arena.put(name);
         let (target_spec, target_name) = match target {
@@ -2416,7 +2418,7 @@ fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
 fn include_local_name(path: &str) -> String {
     let base = path.rsplit('/').next().unwrap_or(path);
     let stem = match base.rsplit_once('.') {
-        Some((stem, ext)) if matches!(ext, "h" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "cxx" | "cc" | "cpp") => stem,
+        Some((stem, "h" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "cxx" | "cc" | "cpp")) => stem,
         _ => base,
     };
     if stem.is_empty() { path.to_string() } else { stem.to_string() }

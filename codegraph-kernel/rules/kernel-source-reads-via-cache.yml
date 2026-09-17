@@ -1,0 +1,20 @@
+id: kernel-source-reads-via-cache
+language: Rust
+severity: error
+message: >-
+  Source reads must go through read_file()/FileCache — a raw
+  std::fs::read_to_string bypasses the per-file line cache every other
+  check shares.
+files:
+  - src/resolve.rs
+rule:
+  all:
+    - pattern: std::fs::read_to_string($$$)
+    - not:
+        inside:
+          kind: function_item
+          stopBy: end
+          has:
+            field: name
+            kind: identifier
+            regex: ^read_file$

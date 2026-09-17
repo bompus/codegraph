@@ -1167,6 +1167,7 @@ impl<'t> Walker<'t> {
         Some(self.tables.node_lines(top.row))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
         let name_ref = self.arena.put(name);
         let (target_spec, target_name) = match target {
@@ -1415,7 +1416,7 @@ impl<'t> Walker<'t> {
         ) {
             let text = self.text(recv);
             if capitalized_re().is_match(text) {
-                self.push_ref_at(owner, &text.to_string(), edge_kind_index("references").unwrap(), recv);
+                self.push_ref_at(owner, text, edge_kind_index("references").unwrap(), recv);
             }
         }
     }
@@ -1475,14 +1476,14 @@ impl<'t> Walker<'t> {
             "name" => {
                 let name = self.text(node);
                 if !name.is_empty() && !is_php_pseudo_type(name) {
-                    self.push_ref_at(from_row, &name.to_string(), edge_kind_index("references").unwrap(), node);
+                    self.push_ref_at(from_row, name, edge_kind_index("references").unwrap(), node);
                 }
             }
             "qualified_name" => {
                 let text = self.text(node);
                 let last = text.rsplit('\\').next().unwrap_or("");
                 if !last.is_empty() && !is_php_pseudo_type(last) {
-                    self.push_ref_at(from_row, &last.to_string(), edge_kind_index("references").unwrap(), node);
+                    self.push_ref_at(from_row, last, edge_kind_index("references").unwrap(), node);
                 }
             }
             _ => {

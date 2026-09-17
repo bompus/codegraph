@@ -1,0 +1,12 @@
+id: kernel-no-adhoc-name-regex
+language: Rust
+severity: error
+message: >-
+  Regex::new(&format!(...)) compiles a name-parameterized regex on every
+  call — route it through KernelResolver::cached_regex, which memoizes on
+  the pattern text.
+files:
+  - src/resolve.rs
+rule:
+  kind: call_expression
+  regex: 'Regex::new\s*\(\s*&?\s*format!'

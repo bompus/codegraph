@@ -39,6 +39,7 @@
 //!   reads a `value` field; rust's field is `type`).
 //! - An `attribute_item` between a doc comment and its item breaks the
 //!   docstring sibling chain (`#[derive(..)]` kills the docstring).
+//!
 //! Files with parse errors defer to wasm.
 
 use crate::buffers::{
@@ -1399,7 +1400,7 @@ impl<'t> Walker<'t> {
         // field) and let_declaration (the shadow source: `pattern` field; a
         // tuple pattern bumps every named child).
         let mut decl_counts: HashMap<&str, u32> = HashMap::new();
-        let mut bump = |decl_counts: &mut HashMap<&'t str, u32>, name_node: Option<Node<'t>>, src: &'t str, targets: &HashMap<String, u32>| {
+        let bump = |decl_counts: &mut HashMap<&'t str, u32>, name_node: Option<Node<'t>>, src: &'t str, targets: &HashMap<String, u32>| {
             if let Some(n) = name_node {
                 if matches!(n.kind(), "identifier" | "simple_identifier") {
                     let nm = &src[n.byte_range()];

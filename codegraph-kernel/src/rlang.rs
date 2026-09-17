@@ -523,11 +523,11 @@ impl<'t> Walker<'t> {
             let arg_name_text = self.text(arg_name);
             // R6 `inherit = Parent` / S4 `contains = "Parent"` — a falsy
             // resolution (`inherit = pkg::Parent`, empty string) emits nothing.
-            if (arg_name_text == "inherit" || arg_name_text == "contains") && value.is_some() {
-                if let Some(parent) = self.literal_or_identifier(value) {
+            if let Some(v) = value.filter(|_| arg_name_text == "inherit" || arg_name_text == "contains") {
+                if let Some(parent) = self.literal_or_identifier(Some(v)) {
                     if !parent.is_empty() {
                         let parent = parent.to_string();
-                        self.push_ref_at(class_row, &parent, "extends", value.unwrap());
+                        self.push_ref_at(class_row, &parent, "extends", v);
                     }
                 }
                 continue;

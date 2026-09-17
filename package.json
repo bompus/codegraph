@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "check:agent-docs": "node scripts/check-agent-docs.mjs",
+    "check:kernel-rules": "ast-grep scan -c codegraph-kernel/sgconfig.yaml",
     "prebuild": "npm run check:agent-docs",
     "build": "tsc && npm run copy-assets && npm run build:ui && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\"",
     "build:ui": "cd ui && npm run build && cd .. && node scripts/check-ui-build.mjs",
@@ -30,7 +31,7 @@
     "dev": "tsc --watch",
     "build:kernel": "bash scripts/build-kernel.sh",
     "cli": "npm run build && node dist/bin/codegraph.js",
-    "pretest": "npm run check:agent-docs && node scripts/ensure-kernel.mjs",
+    "pretest": "npm run check:agent-docs && npm run check:kernel-rules && node scripts/ensure-kernel.mjs",
     "test": "vitest run",
     "test:bun": "bun --bun x vitest run",
     "test:watch": "vitest",
@@ -57,6 +58,7 @@
     "sisteransi": "^1.0.5"
   },
   "devDependencies": {
+    "@ast-grep/cli": "^0.45.3",
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.19.30",

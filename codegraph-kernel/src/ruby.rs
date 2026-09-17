@@ -800,7 +800,7 @@ impl<'t> Walker<'t> {
 
         let Some(receiver) = node.child_by_field_name("receiver") else {
             // Bare `foo(...)` — just the method name.
-            self.push_ref(caller, &method_name.to_string(), calls_kind, line, col);
+            self.push_ref(caller, method_name, calls_kind, line, col);
             return;
         };
         let receiver_name = self.text(receiver);
@@ -816,7 +816,7 @@ impl<'t> Walker<'t> {
             if class_name.as_bytes().first().map(|b| b.is_ascii_uppercase()).unwrap_or(false) {
                 self.push_ref(
                     caller,
-                    &class_name.to_string(),
+                    class_name,
                     edge_kind_index("instantiates").unwrap(),
                     line,
                     col,
@@ -841,7 +841,7 @@ impl<'t> Walker<'t> {
         if !skip && receiver.kind() == "constant" {
             self.push_ref_at(
                 caller,
-                &receiver_name.to_string(),
+                receiver_name,
                 edge_kind_index("references").unwrap(),
                 receiver,
             );

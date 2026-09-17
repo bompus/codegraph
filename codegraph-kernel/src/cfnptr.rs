@@ -92,7 +92,7 @@ const C_TYPE_KEYWORDS: [&[u8]; 17] = [
 ];
 
 fn is_type_keyword(w: &[u8]) -> bool {
-    C_TYPE_KEYWORDS.iter().any(|k| *k == w)
+    C_TYPE_KEYWORDS.contains(&w)
 }
 
 const MODIFIERS: [&[u8]; 5] = [b"static", b"const", b"extern", b"register", b"volatile"];
@@ -165,16 +165,12 @@ fn find_bytes(s: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     let mut i = from;
     while i + needle.len() <= s.len() {
         // memchr on the first byte keeps this fast on 20KB+ files.
-        match s[i..s.len() - needle.len() + 1].iter().position(|&b| b == needle[0]) {
-            None => return None,
-            Some(off) => {
-                i += off;
-                if &s[i..i + needle.len()] == needle {
-                    return Some(i);
-                }
-                i += 1;
-            }
+        let off = s[i..s.len() - needle.len() + 1].iter().position(|&b| b == needle[0])?;
+        i += off;
+        if &s[i..i + needle.len()] == needle {
+            return Some(i);
         }
+        i += 1;
     }
     None
 }
@@ -277,10 +273,10 @@ fn emit_blank(out: &mut Vec<u8>, region: &[u8]) {
             i += 1;
             continue;
         }
-        let len = if b < 0x80 {
+        // b < 0xC0 covers ASCII and a continuation byte at region start
+        // (invalid UTF-8) — both count singly.
+        let len = if b < 0xC0 {
             1
-        } else if b < 0xC0 {
-            1 // continuation byte at region start — invalid UTF-8; count singly
         } else if b < 0xE0 {
             2
         } else if b < 0xF0 {
@@ -1734,7 +1730,7 @@ fn var_type_in<'t>(body: &[u8], v: &[u8], tabs: &'t Tabs<'t>) -> Option<String> 
 /// the `->`/`.` separators. The chain text is regex-built (words, subscripts,
 /// separators, whitespace only), so collecting `\w+` runs outside `[…]` spans
 /// yields exactly the filtered segments.
-fn chain_segs<'b>(chain: &'b [u8]) -> Vec<&'b [u8]> {
+fn chain_segs(chain: &[u8]) -> Vec<&[u8]> {
     let mut segs = Vec::new();
     let mut i = 0usize;
     while i < chain.len() {

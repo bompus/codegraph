@@ -606,7 +606,7 @@ impl<'t> Walker<'t> {
                 if local.is_empty() {
                     continue;
                 }
-                self.push_ref_at(parent, &local.to_string(), imports_kind, name_node);
+                self.push_ref_at(parent, local, imports_kind, name_node);
                 let imported = if child.kind() == "aliased_import" {
                     child.child_by_field_name("name").map(|n| self.text(n).to_string()).unwrap_or_else(|| raw.to_string())
                 } else {
@@ -775,6 +775,7 @@ impl<'t> Walker<'t> {
         Some(self.tables.node_lines(top.row))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
         let name_ref = self.arena.put(name);
         let (target_spec, target_name) = match target {

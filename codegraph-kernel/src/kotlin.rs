@@ -1340,6 +1340,7 @@ impl<'t> Walker<'t> {
         // (node, scope, scope is a function body): the walk mints nodeless
         // locals for a `val` only inside a function body; a class-level `val`
         // is a field node, and an `init { }` body mints nothing.
+        #[allow(clippy::type_complexity)]
         let mut stack: Vec<(Node<'t>, Option<(u32, u32)>, bool)> = vec![(root, None, false)];
         while let Some((node, scope, in_fn)) = stack.pop() {
             let kind = node.kind();
@@ -1416,6 +1417,7 @@ impl<'t> Walker<'t> {
         Some(self.tables.node_lines(top.row))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
         let name_ref = self.arena.put(name);
         let (target_spec, target_name) = match target {
@@ -1625,7 +1627,7 @@ impl<'t> Walker<'t> {
         ) {
             let text = self.text(recv);
             if capitalized_re().is_match(text) {
-                self.push_ref_at(owner, &text.to_string(), edge_kind_index("references").unwrap(), recv);
+                self.push_ref_at(owner, text, edge_kind_index("references").unwrap(), recv);
             }
         }
     }
