@@ -36,7 +36,7 @@ import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { crossTierEdges } from './tier-synthesizer';
-import { enclosingFn, makeLineAt } from './synth-utils';
+import { enclosingFn, enclosingValue, makeLineAt } from './synth-utils';
 import { resolveImportPath } from './import-resolver';
 import { isDistinctiveIdentifier } from '../search/query-utils';
 
@@ -3047,6 +3047,184 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
   return edges;
 }
 
+// ── NgRx effects dispatch (Angular/TypeScript) ──────────────────────────────
+// NgRx decouples a `store.dispatch(action)` call site from the effect that reacts to it,
+// linked by the ACTION: an effect subscribes to the action stream via `ofType(...)` and a
+// component/service dispatches that action onto the store:
+//   // user.effects.ts — the handler side (three registration shapes)
+//   loadUsers$ = createEffect(() => this.actions$.pipe(ofType(UsersActions.loadUsers), …));
+//   @Effect() legacy$ = this.actions$.pipe(ofType(LoadUsers), …);
+//   export const func$ = createEffect((a$ = inject(Actions)) => a$.pipe(ofType(refresh), …));
+//   // users.component.ts — the dispatch side (usually a DIFFERENT file)
+//   this.store.dispatch(UsersActions.loadUsers());   // or dispatch(new LoadUsers())
+// Bridge it: link the enclosing method at each `*.store.dispatch(x)` site → every effect
+// that ofType-subscribes to x's action. Both sides normalize to the same key space — the
+// action creator's LAST dot-segment (`UsersActions.loadUsers` → `loadUsers`) or the legacy
+// action CLASS name (`new LoadUsers()` → `LoadUsers`). Precision gates: the dispatch
+// receiver must match /store/i (drops `dispatchEvent` and other `.dispatch(` protocols —
+// bare `dispatch(` never matches since a receiver is required), and the dispatched action
+// must have a registered ofType handler. `{dispatch:false}` effects still register — they
+// are ofType subscribers. `concatLatestFrom`/`withLatestFrom` store.select reads and NgRx
+// Signal Store (`signalStore`/`rxMethod`) are out of scope. `EffectsModule.forRoot`/
+// `provideEffects` registration lists are unnecessary — the ofType scan finds effect
+// definitions directly.
+const NGRX_OFTYPE_RE = /ofType\s*\(([^)]*)\)/g;
+const NGRX_CREATE_EFFECT_RE = /\bcreateEffect\s*\(/;
+const NGRX_EFFECT_ANNO_RE = /@Effect\b/;
+const NGRX_DISPATCH_RE = /([\w$.]*)\s*\.\s*dispatch\s*\(\s*(new\s+(\w+)|([\w$.]+)\s*\(|(\w+))/g;
+const NGRX_RECEIVER_RE = /store/i;
+const NGRX_TS_EXT = /\.tsx?$/;
+const NGRX_JS_EXT = /\.(?:tsx?|jsx?|mjs|cjs)$/;
+const NGRX_FANOUT_CAP = 80;
+const NGRX_ANNO_LOOKBACK = 3; // lines above a member's startLine a `@Effect` decorator may sit
+
+/** Normalize an ofType arg or dispatch callee to its action key: the LAST dot-segment
+ *  (`TaskSharedActions.restoreTask` → `restoreTask`, `loadUsers` → `loadUsers`). String-typed
+ *  ofType args (`ofType('[Users] Load')`) are skipped — a dispatch site can never produce
+ *  that key. Returns null for anything that isn't a plain dotted identifier. */
+function ngrxActionKey(expr: string): string | null {
+  const t = expr.trim();
+  if (!t || /^['"`]/.test(t)) return null;
+  const last = t.split('.').pop()!.trim();
+  return /^[A-Za-z_$][\w$]*$/.test(last) ? last : null;
+}
+
+/** The action dispatched at a `store.dispatch(arg)` site when `arg` is a bare identifier:
+ *  resolved within the enclosing method — a `… arg = someCreator(…)` / `… arg = new X(…)`
+ *  assignment (wins), or a parameter/local annotated `arg: X`. Returns null when the
+ *  action can't be seen. Adapted from resolveMediatrArgType for TS syntax. */
+function resolveNgrxDispatchArg(arg: string, lines: string[], methodStart: number, dispatchLine: number): string | null {
+  if (!/^[A-Za-z_$][\w$]*$/.test(arg)) return null;
+  const assignRe = new RegExp(`\\b${arg}\\b\\s*=\\s*(?:new\\s+)?([A-Za-z_$][\\w$.]*)\\s*\\(`);
+  const declRe = new RegExp(`\\b${arg}\\b\\s*:\\s*([A-Za-z_$][\\w$.]*)`);
+  let declType: string | null = null;
+  for (let i = Math.max(0, methodStart - 1); i < dispatchLine && i < lines.length; i++) {
+    const ln = lines[i] ?? '';
+    const a = assignRe.exec(ln);
+    if (a) return ngrxActionKey(a[1]!); // an explicit `arg = creator()` / `arg = new X()` wins
+    if (!declType) {
+      const d = declRe.exec(ln);
+      if (d) declType = d[1]!; // an `arg: SomeAction` annotation — remember, but keep scanning for an assignment
+    }
+  }
+  return declType ? ngrxActionKey(declType) : null; // `arg: Ns.Action` normalizes to `Action` too
+}
+
+async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  let scannedFiles = 0;
+  // Pass 1 — action key → effect nodes, scanning only .ts files that mention effects.
+  // `.ts` files containing `.dispatch(` are recorded here so pass 2 re-reads just those
+  // (plus any non-.ts JS-family dispatch file) instead of every file again — the spring
+  // publisherFiles pattern.
+  const effectsByAction = new Map<string, Node[]>();
+  const tsDispatchFiles: string[] = [];
+  const register = (key: string | null, node: Node): void => {
+    if (!key) return;
+    let arr = effectsByAction.get(key);
+    if (!arr) { arr = []; effectsByAction.set(key, arr); }
+    arr.push(node);
+  };
+  const registerOfTypes = (src: string, node: Node): void => {
+    NGRX_OFTYPE_RE.lastIndex = 0;
+    let om: RegExpExecArray | null;
+    while ((om = NGRX_OFTYPE_RE.exec(src))) {
+      for (const arg of om[1]!.split(',')) register(ngrxActionKey(arg), node);
+    }
+  };
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!NGRX_TS_EXT.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content) continue;
+    if (content.includes('.dispatch(')) tsDispatchFiles.push(file);
+    if (!content.includes('@ngrx/effects') && !content.includes('ofType(') && !content.includes('createEffect(')) continue;
+    const lines = content.split('\n');
+    const safe = stripCommentsForRegex(content, 'typescript');
+    for (const node of ctx.getNodesInFile(file)) {
+      if (node.kind === 'constant') {
+        // Functional effect: `export const x$ = createEffect((a$ = inject(Actions)) => …)`.
+        // The initializer (captured in `signature`) gates reading the body — the
+        // redux-thunk precedent.
+        if (!node.signature || !NGRX_CREATE_EFFECT_RE.test(node.signature)) continue;
+        const span = sliceLines(safe, node.startLine, node.endLine);
+        if (span) registerOfTypes(span, node);
+        continue;
+      }
+      if (node.kind !== 'method' && node.kind !== 'property') continue;
+      // Class-field `x$ = createEffect(() => …)` extracts as `method` (the call arg holds
+      // an arrow fn); legacy `@Effect() x$ = actions$.pipe(ofType(…))` is a `property`
+      // (its pipe args are call expressions, not direct arrows).
+      const span = sliceLines(safe, node.startLine, node.endLine);
+      if (!span) continue;
+      let isEffect = NGRX_CREATE_EFFECT_RE.test(span) || NGRX_EFFECT_ANNO_RE.test(span);
+      if (!isEffect) {
+        // The decorator can sit on lines just above the member's startLine.
+        for (let i = node.startLine - 2; i >= 0 && i >= node.startLine - 1 - NGRX_ANNO_LOOKBACK; i--) {
+          const t = (lines[i] ?? '').trim();
+          if (NGRX_EFFECT_ANNO_RE.test(t)) isEffect = true;
+          if (!t.startsWith('@')) break; // past the decorator block → stop
+        }
+      }
+      if (!isEffect) continue;
+      registerOfTypes(span, node);
+    }
+  }
+  if (!effectsByAction.size) return [];
+
+  // Non-.ts JS-family dispatch files weren't read in pass 1 — find them now (rare:
+  // NgRx is a TypeScript ecosystem, but a mixed repo may dispatch from .js).
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (NGRX_TS_EXT.test(file) || !NGRX_JS_EXT.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (content && content.includes('.dispatch(')) tsDispatchFiles.push(file);
+  }
+
+  // Pass 2 — link each `*.store.dispatch(x)` site → every effect ofType-subscribed to x.
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const file of tsDispatchFiles) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('.dispatch(')) continue;
+    const safe = stripCommentsForRegex(content, 'typescript');
+    const safeLines = safe.split('\n');
+    const lineAt = makeLineAt(safe, 1);
+    const nodesInFile = ctx.getNodesInFile(file);
+    NGRX_DISPATCH_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    let added = 0;
+    while ((m = NGRX_DISPATCH_RE.exec(safe)) && added < NGRX_FANOUT_CAP) {
+      if (!NGRX_RECEIVER_RE.test(m[1]!)) continue; // not a store (dispatchEvent, dispatcher, …)
+      const line = lineAt(m.index);
+      // enclosingFn covers methods/functions/components (incl. class-field effects);
+      // enclosingValue reaches a dispatch written inside a functional-effect constant.
+      const disp = enclosingFn(nodesInFile, line) ?? enclosingValue(nodesInFile, line);
+      if (!disp) continue;
+      const key = m[3] ? m[3]! : m[4] ? ngrxActionKey(m[4]!) : resolveNgrxDispatchArg(m[5]!, safeLines, disp.startLine, line);
+      if (!key) continue;
+      const targets = effectsByAction.get(key);
+      if (!targets) continue;
+      for (const target of targets) {
+        if (target.id === disp.id) continue;
+        const dedupKey = `${disp.id}>${target.id}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          line,
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'ngrx-dispatch', via: key, registeredAt: target.id },
+        });
+        added++;
+      }
+    }
+  }
+  return edges;
+}
+
 // ── Sidekiq job dispatch (Ruby) ───────────────────────────────────────────────
 // Sidekiq decouples a job's enqueue site from the worker's `perform`, linked by the WORKER
 // CLASS NAME:
@@ -3674,6 +3852,7 @@ async function laravelEventEdges(ctx: ResolutionContext, onYield: MaybeYield): P
  * generated-hook → endpoint + Pinia useStore().action() + Vuex string dispatch +
  * Celery task .delay()/.apply_async() → task body + Spring publishEvent → @EventListener +
  * MediatR Send/Publish → IRequestHandler/INotificationHandler +
+ * NgRx store.dispatch → ofType effect +
  * Sidekiq Worker.perform_async → #perform + Laravel event(new X) → listener handle).
  * Returns the count added. Never throws into indexing — callers wrap in try/catch.
  */
@@ -3769,6 +3948,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'celeryEdges', gate: (has) => has('python'), run: (_q, c, y) => celeryDispatchEdges(c, y) },
   { name: 'springEdges', gate: (has) => has('java'), run: (_q, c, y) => springEventEdges(c, y) },
   { name: 'mediatrEdges', gate: (has) => has('csharp'), run: (_q, c, y) => mediatrDispatchEdges(c, y) },
+  { name: 'ngrxEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => ngrxEffectEdges(c, y) },
   { name: 'sidekiqEdges', gate: (has) => has('ruby'), run: (_q, c, y) => sidekiqDispatchEdges(c, y) },
   {
     name: 'erlangBehaviourEdges',
