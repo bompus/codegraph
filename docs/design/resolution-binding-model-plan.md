@@ -335,28 +335,32 @@ Legs (each a separate landed PR; metrics-ledger §5.14–§5.21):
 4. **Unbound method calls** (`match_method_call_free` — the `requireReceiverEvidence=false` half of `matchMethodCall`: receiver inference → rmot, ESM builtin/primitive bail, `this.field`, javafield, object-literal, strategies 1–3) (Leg C).
 5. **Scoped `function_ref`** (`match_function_ref_scoped` — `Cls::member` member-pointer refs) plus the non-bare `resolveViaImport` member-descent step of the function_ref block (Leg D).
 
-**Final state** (Linux corpus, `d19ab145` merge base): **99.0% native** — 5,803,170 kernel-handled, 61,334 passthroughs. Native share at Phase 4 exit was 91.4%.
+**Final state** (Linux corpus, `d19ab145` merge base, after Phase 5b leg R2): **99.5% native** — 5,821,013 kernel-handled, 28,491 passthroughs. Native share at Phase 4 exit was 91.4%.
 
 **What stays in TypeScript, permanently** (all punt-attributed; TS rerun reproduces the identical verdict):
 
 | Bucket | n | Why it stays |
 |---|---|---|
-| `ineligible:lang` | 57,441 | unmigrated languages — 99.4% Rust in the failed share; fixing it is a Rust-resolution workstream (eligibility + self/field/trait/use bindings), not a resolver arm |
-| `member-tail` | 2,028 | genuine misses + `matchByExactName` (88 TS-side hits — source reads and multi-signal scoring) and non-`::` `function_ref` shapes |
+| `member-tail` | 24,763 | Rust dot-bearing receivers (post-R2; TS owns `self.`-field/trait inference — ~6,400 TS-side hits) + genuine misses + `matchByExactName` (88 TS-side hits — source reads and multi-signal scoring) and non-`::` `function_ref` shapes |
+| `rust-inh` | 1,633 | Rust `implements`/`extends` — TS's stdlib-rooted-`use` locality gate is unported (450 TS-side hits via rerun) |
 | `chain` | 951 | ts/js/py `().` storeAccessorChain — `resolveStoreAction` reads source (JS); python arm is near-zero yield |
 | `btm-supers` / `rmot-supers` | 726 / 179 | supertype walks traverse *resolved* `implements`/`extends` edges populated mid-loop by the conformance pass — the pre-resolution snapshot cannot see them |
+| `ineligible:lang` | 230 | objc/ruby/markdown/etc — unmigrated tail after the R2 flip (was 57,441, 99.4% Rust) |
 | `via-src` | 9 | objectLiteralAlias/instanceMember source reads |
 | `mc-*` / `gofactory` inner punts | (inside above) | evidence-gated or source-bound sub-arms — punted conservatively upstream of the ported code |
 
 **Timing note** — the migration bought coverage, not speed: the only clean post-Phase-5 run is 316.4s wall vs Phase 4's clean 292.6s (~8%, n=1 variance); native arms do real work on refs that used to punt early. The wall floor is persist + callback synthesis, unchanged since §5.11's measurement.
 
-**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain, and (at Phase-5 close) Rust resolution — leg R1 of the Rust workstream has since landed in §Phase 5b below. Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
+**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain, and the Rust receiver/inheritance arms in §Phase 5b below (legs R1–R2 landed). Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
 
-### Phase 5b: Rust resolution — surgical arms without bindings (leg R1 landed 2026-09-18)
+### Phase 5b: Rust resolution (legs R1–R2 landed 2026-09-18)
 
-Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits nodes/refs but no binding rows — so the eligibility gate punts every Rust ref to TS. Most of `resolveViaImport`'s Rust behavior does not need bindings, though: `resolveRustPathReference` maps `A::B::C` module prefixes to files and finds the leaf symbol — pure snapshot work. Leg R1 ported it ahead of the eligibility punt for pure-`::` non-`function_ref` names (1,310 native hits; `import|ineligible:lang` TS-side recoveries 1,113 → 0; corpus byte-identical — ledger §5.23).
+Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits nodes/refs but no binding rows — but the audit showed ~29k Rust refs resolve TS-side through generic arms **without bindings** (empty on both sides), so bindings emission turned out *not* to be the gate. Two legs landed:
 
-The full Rust workstream, in dependency order: `bindings` emission for `use`/items/locals/params in `rustlang.rs` (Phase-3-equivalent, golden-gated) → the `BINDINGS_LANGUAGES` + `is_migrated_language` flip → Rust receiver arms (`self.x`, `Self::x`, enclosing impl) and trait-method dispatch (`x.clone` → `Clone` impl) → `impl Trait for T` `implements` edges. Generics, external crates, and macro-synthesized names stay unresolvable by design.
+- **R1** — `resolveViaImport → resolveRustPathReference` ported ahead of the eligibility punt for pure-`::` non-`function_ref` names (1,310 native hits; `import|ineligible:lang` recoveries 1,113 → 0; corpus byte-identical — §5.23).
+- **R2** — `is_migrated_language` flip: Rust enters the native pipeline. `ineligible:lang` 56,131 → 230, native share 99.0% → **99.5%** (§5.24). The `::` path arm runs above the gate with miss-fall-through (qualified-name arm mirrors `matchReference`'s continuation). Two fabrication gates keep the flip verdict-safe: dot-bearing names punt `member-tail` (TS owns rust `self.`-receiver inference — auto-deref/container decline), and `implements`/`extends` punt `rust-inh` (TS's stdlib-rooted-`use` locality gate is unported).
+
+**Deliberately still TS-side** (attributed punts): `self.x`/`x.y` receivers (5,245 `instance-method` TS-side hits — enclosing-impl + field-type inference), `impl Trait for T` (`rust-inh` — 450 legit hits via TS rerun), trait-method dispatch, `a::b.c` receiver shapes. Generics, external crates, and macro-synthesized names stay unresolvable by design. Emitting `bindings` rows for Rust is now an *enhancement* decision (new resolutions → changed graph), not a migration leg.
 
 ## 4. What is removed
 

@@ -37,8 +37,10 @@ use std::sync::LazyLock;
 // import-resolver}.ts.
 // ---------------------------------------------------------------------------
 
-/// BINDINGS_LANGUAGES (src/extraction/kernel/index.ts): languages whose
-/// extractors emit `bindings` rows.
+/// Kernel pipeline eligibility. Mirrors BINDINGS_LANGUAGES
+/// (src/extraction/kernel/index.ts) plus `rust`, which resolves
+/// bindings-free in TS identically to the kernel (empty bindings
+/// both sides); TS `use`-path handling is ported ahead of the gate.
 fn is_migrated_language(lang: &str) -> bool {
     matches!(
         lang,
@@ -54,6 +56,7 @@ fn is_migrated_language(lang: &str) -> bool {
             | "php"
             | "c"
             | "cpp"
+            | "rust"
     )
 }
 
@@ -7550,9 +7553,12 @@ impl KernelResolver {
     /// between the prefilter and viaImport is language- or shape-gated
     /// dead for them. A `::`-AND-`.` name (a receiver-shaped `a::b.c`)
     /// stays on the TS side — the claim can own it there.
-    fn resolve_rust_path_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+    /// `None` = the module-path arm missed; the caller hands migrated rust
+    /// to the normal pipeline (qualified-name/exact arms mirror TS's
+    /// matchReference continuation) and non-migrated rust back to TS.
+    fn resolve_rust_path_ref(&mut self, r: &ResolveRefIn) -> Result<Option<ResolveOutcome>> {
         if self.is_built_in_or_external(r) {
-            return Ok(ResolveOutcome::unresolved());
+            return Ok(Some(ResolveOutcome::unresolved()));
         }
         let pre_pass = self.has_any_possible_match(&r.reference_name)
             || self.matches_any_import(r)?
@@ -7560,25 +7566,23 @@ impl KernelResolver {
         if !pre_pass {
             // matchJsStoreBindingCall is JS-gated — dead for rust — so a
             // prefilter miss is terminal unresolved in TS.
-            return Ok(ResolveOutcome::unresolved());
+            return Ok(Some(ResolveOutcome::unresolved()));
         }
         // resolveViaImport early-nulls when imports are empty AND the file
         // is unreadable — for rust (no bindings rows) that's every missing
         // file, which then falls to matchReference's unported arms.
         if self.read_file(&r.file_path).is_none() {
-            return Ok(ResolveOutcome::passthrough("ineligible:lang"));
+            return Ok(Some(ResolveOutcome::passthrough("ineligible:lang")));
         }
         match self.match_rust_path_reference(r)? {
             // A gated candidate is discarded to terminal unresolved — the
             // spine returns the import hit verbatim at ≥0.9, and this arm
             // always carries 0.9.
             Some(c) => match self.gate_language(Some(c), r) {
-                Some(c) => self.finish(r, c, None, true),
-                None => Ok(ResolveOutcome::unresolved()),
+                Some(c) => self.finish(r, c, None, true).map(Some),
+                None => Ok(Some(ResolveOutcome::unresolved())),
             },
-            // Miss → TS continues to matchReference's unported arms; hand
-            // the ref back under its own bucket reason.
-            None => Ok(ResolveOutcome::passthrough("ineligible:lang")),
+            None => Ok(None),
         }
     }
 
@@ -7716,23 +7720,43 @@ impl KernelResolver {
     }
 
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+        // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
+        // resolves them through resolveViaImport's module-file arm, which
+        // needs no bindings rows — run it ahead of the eligibility gate.
+        // A miss falls through for migrated rust (qualified-name/exact arms
+        // mirror matchReference's continuation) and punts otherwise.
+        // Dot-bearing `::` names stay punted (the boundReceiver claim can
+        // own a `a::b.c` receiver in TS), and `function_ref` keeps its own
+        // block — a module-path hit on a non-callable leaf is DISCARDED
+        // there, not returned.
+        if r.language == "rust"
+            && r.reference_kind != "function_ref"
+            && r.reference_name.contains("::")
+            && !r.reference_name.contains('.')
+        {
+            match self.resolve_rust_path_ref(r)? {
+                Some(o) => return Ok(o),
+                None if is_migrated_language(&r.language) => {}
+                None => return Ok(ResolveOutcome::passthrough("ineligible:lang")),
+            }
+        }
         // ref_is_eligible, split so the passthrough reason names the gate.
         if !is_migrated_language(&r.language) {
-            // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
-            // resolves them through resolveViaImport's module-file arm,
-            // which needs no bindings rows — port it natively ahead of the
-            // eligibility punt. Dot-bearing `::` names stay punted (the
-            // boundReceiver claim can own a `a::b.c` receiver in TS), and
-            // `function_ref` keeps its own block — a module-path hit on a
-            // non-callable leaf is DISCARDED there, not returned.
-            if r.language == "rust"
-                && r.reference_kind != "function_ref"
-                && r.reference_name.contains("::")
-                && !r.reference_name.contains('.')
-            {
-                return self.resolve_rust_path_ref(r);
-            }
             return Ok(ResolveOutcome::passthrough("ineligible:lang"));
+        }
+        // Rust dotted names (`self.x`, `x.y`) are receiver-shaped — TS owns
+        // rust's self-field inference, auto-deref/container decline, and
+        // trait dispatch; none are ported. `::` names reached the arm above;
+        // what remains here for rust is bare or dot-bearing.
+        if r.language == "rust" && r.reference_name.contains('.') {
+            return Ok(ResolveOutcome::passthrough("member-tail"));
+        }
+        // Rust inheritance refs (`impl Trait for T`): TS's target-kind gate
+        // drops targets bound to out-of-repo `use` paths (stdlib roots) —
+        // that locality rule is unported, so name-matching a same-named
+        // local would fabricate an edge TS deliberately declines.
+        if r.language == "rust" && matches!(r.reference_kind.as_str(), "implements" | "extends") {
+            return Ok(ResolveOutcome::passthrough("rust-inh"));
         }
         if !Self::name_is_bare(&r.reference_name) {
             // The measured-dominant slice of the non-bare tail (§5.14):

@@ -577,3 +577,31 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 **Fixture coverage** (parity test, `src/lib.rs` crate root + `sub.rs`/`deep/{mod,inner,sib}.rs`/`user.rs`): `crate::`/`self::`/`super::`/bare anchors → `import` @0.9; `<seg>/mod.rs` multi-segment; `ext::module::leaf_fn` external-crate punt; `Widget::new` struct-not-module punt; `crate::sub::missing` prefilter → `unresolved`; `a::b.c` stays punted. 6/6 parity + 223/223 resolution + 4,996/4,996 suite green; clippy `-D warnings`; ast-grep clean.
 
 **Remaining Rust workstream** (scoping, not landed): `use`-path import rows via `bindings` emission (Phase-3-equivalent in `rustlang.rs`), the `BINDINGS_LANGUAGES`/`is_migrated_language` flip (unlocks the generic arms), `self.`/`Self::` receiver arms (enclosing impl type), trait-method dispatch (`v0.clone` → `Clone` impl), `impl Trait for T` `implements` refs. Generics (`Self`/`T`/`V`), external crates (`core::`/`serde::`), and macro-synthesized names stay unresolvable by design.
+
+### 5.24 Rust leg R2 — eligibility flip: rust enters the native pipeline (2026-09-18)
+
+Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; ~6:02 wall, MaxRSS 16.9GB). Log: `bench/20260918-node-8c-kernelon-rustflip.log`; post-leg snapshot `baselines/linux-d19ab145-rustflip.db`.
+
+| Metric | §5.23 (Leg R1) | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,814,457 | 5,821,013 | +6,556 (native hits + pass-event recounts) |
+| kernel passthrough | 60,047 | **28,491** | **−31,556** |
+| `ineligible:lang` | 56,131 | **230** | −55,901 (rust refs now pipeline-native or re-attributed) |
+| `member-tail` | 2,051 | 24,763 | +22,712 (rust dot-bearing receiver shapes land here by design) |
+| `rust-inh` | — | 1,633 | new bucket: rust `implements`/`extends` punts |
+| `chain` / `btm-supers` / `rmot-supers` / `via-src` | 951 / 726 / 179 / 9 | 951 / 726 / 179 / 9 | unchanged |
+| **native share** | 99.0% | **99.5%** | +0.5 pts |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to every baseline since §5.17 (`c7417d57…` / `67c47a1d…` / `470e3903…`).
+
+**What changed** (`codegraph-kernel/src/resolve.rs`): `is_migrated_language` now includes `rust` — the audit showed ~29k rust refs resolve TS-side through generic arms **without bindings rows** (empty both sides), so the flip alone is byte-identical-safe. The `::` path arm hoisted above the gate: a module-path *miss* now falls through to the normal pipeline (qualified-name arm mirrors TS's `matchReference` continuation — `Widget::new` resolves natively) instead of punting outright; built-in/prefilter misses stay terminal, unreadable files stay punts.
+
+**Two fabrication gates discovered and added** (each caught by a test-suite decline pin):
+- **Dot-bearing names → `member-tail` punt.** `self.inner.take()` where `inner: Option<Inner>` must NOT resolve `Inner::take` (Option doesn't auto-deref) — TS's rust `self.`-receiver arm (enclosing impl → field type → auto-deref/container decline) is unported; without the gate the free arm's strat3 unique-method path fabricated the edge. `x.y`, `self.x`, `a::b.c` all stay TS-side.
+- **`implements`/`extends` → `rust-inh` punt.** `impl Error for MapperError` with `use std::error::Error` must FAIL — the supertype is bound to a stdlib-rooted `use` path (out-of-repo); TS's inheritance locality gate drops it, and name-matching the local `type Error = String` would fabricate the edge. The gate is unported; 450 legit trait impls still resolve via TS rerun.
+
+**Residual TS-side recoveries** (post-flip): `instance-method|member-tail` 5,245 (rust receiver calls — TS's self-field/trait arms), `qualified-name|member-tail` 1,155, `exact-match|rust-inh` 450, `exact-match|member-tail` 88 (permanent `matchByExactName`), `exact-match|ineligible:lang` 52 (objc/ruby tail).
+
+**Gates**: 6/6 parity (updated `Widget::new` resolved pin + `a::b.c` member-tail punt), 223/223 resolution, 12/12 reference-target-kind, 4,996/4,996 suite, clippy `-D warnings`, ast-grep clean.
+
+**Remaining Rust workstream** (scoping, not landed): `self.`/`Self::` receiver arms (enclosing-impl + field-type inference — the 5,245 `instance-method` punts), trait-method dispatch (`v0.clone` → `Clone`), the `rust-inh` locality gate (stdlib-rooted `use` → out-of-repo supertype), `use`-path bindings emission for genuinely *new* resolutions (enhancement, not migration — emitting bindings would change TS's graph too). Generics/external crates/macro names stay unresolvable by design.
