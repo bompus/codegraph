@@ -518,3 +518,29 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 | `mc-await`, `mc-guarded`, `mc-iteration`, `gofactory`, `mc-tfield-ambig` | (inside above) | evidence-gated or source-bound arms — punted conservatively, TS rerun produces identical verdicts |
 
 **Clean timing** (the one uninstrumented post-Phase-5 run — `taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `SYNTH_TIMINGS=1` only, no `RESOLVE_PROFILE`; n=1, host idle): wall **5:16.39 (316.4s) / 15.8GB MaxRSS**; resolution phase 188.0s, callback-synthesis 68.9s, parse-loop 75.2s. Log: `bench/20260918-node-8c-kernelon-memberfree-clean.log`. Against §5.13's clean Phase-4 arms (total 292.6s; resolution 154.6–171.4s; synthesis 59.0s; parse 72.5s) the wall is ~8% slower — inside run-to-run variance at n=1, and directionally expected: the new native arms do real work (source scans, rmot, file reads) on refs that used to punt early, buying coverage (91.4%→99.0% native) rather than speed. The floor is unchanged — main-thread persist + synthesis, exactly as §5.11 recorded.
+
+### 5.21 Phase 5 step 8 — scoped function_ref arm native + residual audits: Phase 5 closes (2026-09-18)
+
+Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; ~5:07 wall — no MaxRSS wrapper this run). Log: `bench/20260918-node-8c-kernelon-funcref.log`; post-leg snapshot `baselines/linux-d19ab145-funcref.db`.
+
+| Metric | §5.20 (Leg C) | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,808,105 | 5,803,170 | −4,935 pass-event count (deferral timing — same artifact class as §5.19's +13; verdicts identical, see the gate below) |
+| kernel passthrough | 61,399 | 61,334 | −65 |
+| `member-tail` | 2,080 | **2,028** | −52 (29 native `::` member-pointer hits + ~23 pass-event recounts) |
+| `ineligible:lang` | 57,454 | 57,441 | −13 pass-event artifact |
+| `chain` / `btm-supers` / `rmot-supers` / `via-src` | 951 / 726 / 179 / 9 | identical | 0 |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to every baseline since §5.17 (`c7417d57…` / `67c47a1d…` / `470e3903…`). TS-side resolutions of `member-tail`-punted refs: `function-ref` **29 → 0** (every `::` member-pointer recovery now native), `exact-match` 88 unchanged (permanent, see below), `instance-method` still 0.
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, ~+78): `match_function_ref_scoped` — matchFunctionRef's `::` member-pointer arm, the only non-bare shape it resolves (`Cls::member`: member-name lookup → function/method + same-language-family + origin-excluded + qualifiedName-equality-or-`::`-suffix filters → same-file pool by earliest line @0.9, cross-file unique-or-drop). `resolve_nonbare_ref`'s function_ref gate now mirrors TS's block order: `resolve_via_import_member` with the callable-target gate (`a.b` function_refs still claim through member-descent imports) → scoped arm → `member-tail` punt. `this.` function_refs fall through to the punt — `resolveThisMemberFnRef` stays TS-side and the punt is verdict-safe.
+
+**Residual audits (the closeout investigations)**:
+
+- **`ineligible:lang` (57,441)** — 99.4% of the failed share is **Rust** (28,301; objc 160, ruby 10, markdown 9); ~29k more resolve TS-side (exact-match 17,205 / instance-method 5,730 / qualified-name 3,549 / import 1,113 / fuzzy 1,025 / function-ref 339). Porting it is a Rust-resolution workstream — migrated-language eligibility + self/field/trait/use binding logic — not a resolver arm. Confirmed out of scope.
+- **Supertype walks (`btm-supers` 726 + `rmot-supers` 179)** — confirmed **permanent**. TS's `getSupertypes` walks *resolved* `implements`/`extends` edges "empty in the first resolution pass, populated in the conformance pass" (index.ts) — the kernel's pre-resolution snapshot cannot see them, and walking unresolved refs would re-implement resolution inside the walk plus replicate pass ordering. Far outside the byte-identity risk envelope.
+- **`matchByExactName` (88 TS-side hits)** — confirmed **permanent**: `isLexicallyReachable`/`isSealedModule`/`isLocallyBoundJsName`/`isBoundToBareImport`/`applyCppCallSiteForm`/`findBestMatch`/`computePathProximity`/`isCrossFileReachable` — source reads plus multi-signal scoring for 88 hits.
+
+**Fixture coverage** (parity test): `W::m` (w.cpp) → scoped arm @0.9 `function-ref`; `Pool::missing` → member-tail punt → passthrough; `api.call` (function_ref, main.ts) → member-descent import @0.9. 6/6 parity + 223/223 resolution + 4,996/4,996 full suite green; ast-grep kernel rules clean; clippy `-D warnings`.
+
+**Phase 5 closes here.** Every remaining punt is attributed and justified above or in §5.20's table; the only unported matcher with meaningful yield is Rust resolution, a different workstream.
