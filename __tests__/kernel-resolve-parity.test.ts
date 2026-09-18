@@ -785,13 +785,17 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     );
     // External crate — both anchors miss → ineligible:lang punt.
     expect(at('ext::module::leaf_fn', 'src/lib.rs', 'calls').status).toBe('passthrough');
-    // `Widget` is a struct, not a module — arm miss → punt (TS's
-    // qualifiedName arm owns the same ref downstream).
-    expect(at('Widget::new', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // `Widget` is a struct, not a module — path-arm miss falls through to
+    // the qualified-name arm, matching TS's downstream resolution.
+    const widgetNew = at('Widget::new', 'src/lib.rs', 'calls');
+    expect(widgetNew.status).toBe('resolved');
+    expect(widgetNew.resolvedBy).toBe('qualified-name');
+    expect(widgetNew.targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
     // Leaf unknown → prefilter miss → terminal unresolved (store-binding is
     // JS-gated dead for rust).
     expect(at('crate::sub::missing', 'src/lib.rs', 'calls').status).toBe('unresolved');
-    // `::`+`.` names stay punted — boundReceiver-claim territory.
+    // `::`+`.` names are receiver-shaped — dot-gated punt back to TS
+    // (rust's self-field/trait receiver arms are unported).
     expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('passthrough');
   });
 
