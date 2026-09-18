@@ -366,11 +366,11 @@ Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits n
 
 **What remains, in entirety** (state post-R5, 2026-09-18):
 
-1. **`Self::` associated items** — `Self::new`/`Self::Variant` shapes inside impl blocks; unassessed, likely small (enclosing-impl type is already derivable — same machinery as `match_rust_self_call`'s owner).
+1. **`Self::` associated items** — ASSESSED 2026-09-18 (post-R5 probe): zero migration surface. TS has no dedicated `Self::` arm — `Self::m` falls through the `::` path arm to the name strategies, and the kernel reproduces that verdict-for-verdict (corpus: 292 refs — 115 resolve via strat `instance-method` @0.7/0.65 already native + byte-identical, 177 fail identically). The failures are mostly associated *items* (`Self::Variant`, `Self::Backend::*`, consts) — resolving them needs `Self`→enclosing-impl binding, which produces verdicts TS doesn't make → enhancement, not migration, bounded at ≤177 refs.
 2. **Permanent punts** (no further migration yield): trait dispatch via `getSupertypes` + `btm-supers`/`rmot-supers` (mid-loop impl edges — §5.21), `chain`/`via-src`/`matchByExactName` (source reads), `ineligible:lang` tail (objc/ruby/markdown — audited §5.24, all correct failures).
 3. **Rust bindings emission** (`rustlang.rs` → `bindings` rows) — an *enhancement*, not a migration leg: emitting bindings changes TS's own graph, so byte-identity is impossible by construction. Needs the enhancement protocol (dual-corpus A/B + review of every new edge class), not the migration gate.
-4. **Adjacent enhancement candidates** (different axis — node-set changes): C `ops->read` fn-ptr field calls (~12k refs, §5.22 — needs field nodes + C receiver inference); `unknown-receiver` genuine misses (local-var data-flow — a different problem entirely).
-5. **Product frontier** (non-resolver): dynamic-dispatch synthesis — reactive/reconciler runtimes (`ReactiveExtensionClient`, MediatR, Vue Proxy) per AGENTS.md. This is where effort moves the product metric — the resolver migration's recoverable surface is now exhausted (every remaining punt is permanent or unassessed-small).
+4. **Adjacent enhancement candidates** (different axis — node-set changes): C `ops->read` fn-ptr field calls (~12k refs, §5.22 — needs field nodes + C receiver inference); `unknown-receiver` genuine misses (local-var data-flow — a different problem entirely); `Self`→enclosing-impl binding (item 1 — ≤177 refs).
+5. **Product frontier** (non-resolver): dynamic-dispatch synthesis — reactive/reconciler runtimes (`ReactiveExtensionClient`, MediatR, Vue Proxy) per AGENTS.md. This is where effort moves the product metric — the resolver migration's surface is now fully assessed (every remaining item is permanent punt or enhancement-territory).
 
 ## 4. What is removed
 
