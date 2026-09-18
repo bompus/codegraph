@@ -82,7 +82,23 @@ const FIXTURE: Record<string, string> = {
     '#include <stdio.h>',
     'int caller(void) { return local_fn() + shared_util(1); }',
   ].join('\n'),
-  'src/K.java': 'class K { void mymethod() {} }\nclass J { private K k = new K(); void user() { k.mymethod(); } }\n',
+  'src/K.java': [
+    'class K { void mymethod() {} }',
+    'class J { private K k = new K(); void user() { k.mymethod(); } }',
+    // dottedChain: `J2.getK().mymethod` — the inner factory's declared return
+    // type K is the receiver's type.
+    'class J2 { static K getK() { return new K(); } void user2() { J2.getK().mymethod(); } }',
+  ].join('\n'),
+  // scopedChain: `Registry::make().name` — `: self` marks the factory's own
+  // class as the receiver's type.
+  'src/reg.php': [
+    '<?php',
+    'class Registry {',
+    '    public static function make(): self { return new self(); }',
+    '    public function name() { return "x"; }',
+    '}',
+    'function reguser() { Registry::make()->name(); }',
+  ].join('\n'),
   // Stage-2 member inference: `svc := NewService()` exercises the Go factory
   // arm (callee return type → owner → member); `o.in.Do()` the two-hop field
   // chain (param type → field type → method).
@@ -106,7 +122,15 @@ const FIXTURE: Record<string, string> = {
   ].join('\n'),
   // C++ is bareFnOnly: a bare identifier there is never a method value.
   // `Outer::Sub::m` gives the qualified-name partial arm a suffix target.
-  'src/w.cpp': 'struct W { static void m() {} };\nstruct Outer { struct Sub { static void m() {} }; };\nvoid wuser() { W::m(); }\n',
+  // `Pool::instance().drain` exercises cppChain — the `::` callee's recorded
+  // return type is the receiver's type.
+  'src/w.cpp': [
+    'struct W { static void m() {} };',
+    'struct Outer { struct Sub { static void m() {} }; };',
+    'void wuser() { W::m(); }',
+    'struct Pool { static Pool* instance() { static Pool p; return &p; } void drain() {} };',
+    'void pooluser() { Pool::instance()->drain(); }',
+  ].join('\n'),
   'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
   // `import tool` + `tool.pyhelper()` exercises the python module-member arm.
   'main.py': 'import tool\nfrom tool import pyhelper\n\ndef go():\n    pyhelper()\n    tool.pyhelper()\n',
@@ -333,6 +357,14 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const goRun = nodeId('run', 'main.go');
     seed(goRun, 'svc.Run', 'main.go', 'go', 'calls', 15);
     seed(nodeId('use', 'main.go'), 'o.in.Do', 'main.go', 'go', 'calls', 12);
+    // Chain arms — `<inner>().<method>` refs whose receiver's type is the
+    // inner call's declared return type.
+    seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().drain', 'src/w.cpp', 'cpp', 'calls', 5);
+    seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().nope', 'src/w.cpp', 'cpp', 'calls', 5);
+    seed(nodeId('reguser', 'reg.php'), 'Registry::make().name', 'src/reg.php', 'php', 'calls', 6);
+    seed(goRun, 'NewService().Run', 'main.go', 'go', 'calls', 16);
+    seed(goRun, 'nosuch().Run', 'main.go', 'go', 'calls', 17);
+    seed(nodeId('user2', 'K.java', 'method'), 'J2.getK().mymethod', 'src/K.java', 'java', 'calls', 3);
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -516,6 +548,45 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(goChain.status).toBe('resolved');
     expect(goChain.resolvedBy).toBe('instance-method');
     expect(goChain.confidence).toBe(0.85);
+
+    // ---- Chain arms — `<inner>().<method>` receiver-type chains ----
+    // cppChain: `Pool::instance` returns `Pool` (ptr stripped at extraction)
+    // → `Pool::drain` @0.85.
+    const cppChain = at('Pool::instance().drain', 'src/w.cpp', 'calls');
+    expect(cppChain.status).toBe('resolved');
+    expect(cppChain.resolvedBy).toBe('instance-method');
+    expect(cppChain.confidence).toBe(0.85);
+    expect(cppChain.targetNodeId).toBe(
+      byName('drain', 'method').find((n) => n.qualifiedName === 'Pool::drain')!.id,
+    );
+    // `Pool::instance().nope` — the owner resolves but no `Pool::nope`
+    // exists; rmot's supertype walk reads live edges, so the kernel punts.
+    expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
+    // scopedChain: `Registry::make` returns `self` → the factory's own class
+    // → `Registry::name` @0.85.
+    const phpChain = at('Registry::make().name', 'src/reg.php', 'calls');
+    expect(phpChain.status).toBe('resolved');
+    expect(phpChain.resolvedBy).toBe('instance-method');
+    expect(phpChain.confidence).toBe(0.85);
+    expect(phpChain.targetNodeId).toBe(
+      byName('name', 'method').find((n) => n.qualifiedName === 'Registry::name')!.id,
+    );
+    // dottedChain (go): bare `NewService()` returns `Service` → `Service::Run`.
+    const goDot = at('NewService().Run', 'main.go', 'calls');
+    expect(goDot.status).toBe('resolved');
+    expect(goDot.resolvedBy).toBe('instance-method');
+    expect(goDot.confidence).toBe(0.85);
+    // dottedChain go bare-fallback (exactName/fuzzy on the method) is
+    // unported — the member-tail punt hands it to TS.
+    expect(at('nosuch().Run', 'main.go', 'calls').status).toBe('passthrough');
+    // dottedChain (java): `J2.getK` returns `K` → `K::mymethod`.
+    const javaDot = at('J2.getK().mymethod', 'src/K.java', 'calls');
+    expect(javaDot.status).toBe('resolved');
+    expect(javaDot.resolvedBy).toBe('instance-method');
+    expect(javaDot.confidence).toBe(0.85);
+    expect(javaDot.targetNodeId).toBe(
+      byName('mymethod', 'method').find((n) => n.qualifiedName === 'K::mymethod')!.id,
+    );
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {
