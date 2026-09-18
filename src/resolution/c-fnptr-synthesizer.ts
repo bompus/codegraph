@@ -13,8 +13,9 @@
  *
  * This bridges it, keyed by **(struct type, fn-pointer field)**:
  *   • registrations — a function bound to `S.field` via a positional
- *     initializer (matched by field index), a designated `.field = fn`, or a
- *     direct `x.field = fn` / `x->field = fn` assignment;
+ *     initializer (matched by field index) or a designated `.field = fn`.
+ *     (A bare `x.field = fn` statement registration is a deferred gap —
+ *     `FIELD_ASSIGN_RE` only sees `a->f = b->g` propagation, not bare-fn RHS);
  *   • dispatch — `recv->field(…)` / `recv.field(…)` where `recv` resolves to a
  *     value of struct type `S` (from the enclosing function's params / locals,
  *     or by walking a chained/array receiver `c->cmd->proc` across field types),
