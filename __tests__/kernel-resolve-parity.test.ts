@@ -41,7 +41,7 @@ const FIXTURE: Record<string, string> = {
   // and an unbound receiver the boundReceiver arm refuses terminally.
   'src/svc.ts': [
     'export class Service {',
-    '  static create() { return new Service(); }',
+    '  static create(): Service { return new Service(); }',
     '  run() { return 1; }',
     '}',
     'export const api = { getState() { return {}; }, call() { return 1; } };',
@@ -61,6 +61,11 @@ const FIXTURE: Record<string, string> = {
     '  Service.create();',
     '  api.getState();',
     '  unbound.doThing();',
+    '  const svc = new Service();',
+    '  svc.run();',
+    '  const made = Service.create();',
+    '  made.run();',
+    '  svc.call();',
     '}',
   ].join('\n'),
   'src/other.ts': 'export function unrelated() { return 0; }\n',
@@ -77,7 +82,28 @@ const FIXTURE: Record<string, string> = {
     '#include <stdio.h>',
     'int caller(void) { return local_fn() + shared_util(1); }',
   ].join('\n'),
-  'src/K.java': 'class K { void mymethod() {} }\nclass J { void user() {} }\n',
+  'src/K.java': 'class K { void mymethod() {} }\nclass J { private K k = new K(); void user() { k.mymethod(); } }\n',
+  // Stage-2 member inference: `svc := NewService()` exercises the Go factory
+  // arm (callee return type → owner → member); `o.in.Do()` the two-hop field
+  // chain (param type → field type → method).
+  'main.go': [
+    'package main',
+    '',
+    'type Service struct{}',
+    '',
+    'func NewService() *Service { return &Service{} }',
+    'func (s *Service) Run() {}',
+    '',
+    'type Inner struct{}',
+    'func (i *Inner) Do() {}',
+    'type Outer struct{ in *Inner }',
+    '',
+    'func use(o *Outer) { o.in.Do() }',
+    'func run() {',
+    '\tsvc := NewService()',
+    '\tsvc.Run()',
+    '}',
+  ].join('\n'),
   // C++ is bareFnOnly: a bare identifier there is never a method value.
   // `Outer::Sub::m` gives the qualified-name partial arm a suffix target.
   'src/w.cpp': 'struct W { static void m() {} };\nstruct Outer { struct Sub { static void m() {} }; };\nvoid wuser() { W::m(); }\n',
@@ -292,6 +318,21 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('wuser', 'w.cpp'), 'W::m', 'src/w.cpp', 'cpp', 'calls');
     seed(nodeId('wuser', 'w.cpp'), 'Sub::m', 'src/w.cpp', 'cpp', 'calls');
     seed(nodeId('wuser', 'w.cpp'), 'W::nope', 'src/w.cpp', 'cpp', 'calls');
+    // Stage 2 — source-backed member inference. `svc = new Service()` hits
+    // mc-infer → bound-type-method; `made = Service.create()` falls through
+    // inference to the ESM factory tail (which bails on the NULL return_type
+    // like TS); `svc.call` passes the prefilter (`call` is a known node) then
+    // misses the member on the inferred owner — the btm supers path reads
+    // live edges, so the kernel punts to TS.
+    seed(runFn, 'svc.run', 'src/main.ts', 'typescript', 'calls', 16);
+    seed(runFn, 'made.run', 'src/main.ts', 'typescript', 'calls', 18);
+    seed(runFn, 'svc.call', 'src/main.ts', 'typescript', 'calls', 19);
+    // Java field receiver — `private K k = new K()` inside class J.
+    seed(nodeId('user', 'K.java', 'method'), 'k.mymethod', 'src/K.java', 'java', 'calls', 2);
+    // Go factory receiver + two-hop field chain.
+    const goRun = nodeId('run', 'main.go');
+    seed(goRun, 'svc.Run', 'main.go', 'go', 'calls', 15);
+    seed(nodeId('use', 'main.go'), 'o.in.Do', 'main.go', 'go', 'calls', 12);
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -427,6 +468,43 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `W::nope` passes the prefilter (`W` is a known segment) but misses every
     // ported arm — the member tail goes back to TS.
     expect(at('W::nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
+
+    // ---- Stage 2 — source-backed member inference ----
+    // mc-infer-local → matchBoundTypeMember: `svc = new Service()` then
+    // `svc.run()` → `Service::run` @0.9.
+    const svcRun = at('svc.run', 'src/main.ts', 'calls');
+    expect(svcRun.status).toBe('resolved');
+    expect(svcRun.resolvedBy).toBe('instance-method');
+    expect(svcRun.confidence).toBe(0.9);
+    expect(svcRun.targetNodeId).toBe(
+      byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
+    );
+    // br:factory — `made = Service.create()` ends in a factory call, but the
+    // TS extractor leaves `return_type` NULL (the `: Service` lives only in
+    // `signature`), so the tail bails exactly like TS and the ref stays
+    // unresolved.
+    expect(at('made.run', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // `svc.call` infers Service then misses `Service::call` — the supertype
+    // walk reads live edges, so the kernel punts for TS to decide.
+    expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('passthrough');
+    // Java field receiver — `private K k = new K()` infers K → `K::mymethod`.
+    const km = at('k.mymethod', 'src/K.java', 'calls');
+    expect(km.status).toBe('resolved');
+    expect(km.resolvedBy).toBe('instance-method');
+    expect(km.targetNodeId).toBe(
+      byName('mymethod', 'method').find((n) => n.qualifiedName === 'K::mymethod')!.id,
+    );
+    // Go factory — `svc := NewService()` → callee return type `*Service` →
+    // matchBoundTypeMember on `Service::Run` @0.9.
+    const goSvc = at('svc.Run', 'main.go', 'calls');
+    expect(goSvc.status).toBe('resolved');
+    expect(goSvc.resolvedBy).toBe('instance-method');
+    expect(goSvc.confidence).toBe(0.9);
+    // Go two-hop field chain — `o *Outer` → `in *Inner` → `Inner::Do`.
+    const goChain = at('o.in.Do', 'main.go', 'calls');
+    expect(goChain.status).toBe('resolved');
+    expect(goChain.resolvedBy).toBe('instance-method');
+    expect(goChain.confidence).toBe(0.85);
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {

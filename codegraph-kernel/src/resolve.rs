@@ -254,6 +254,92 @@ fn is_object_literal_language(lang: &str) -> bool {
     matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts")
 }
 
+/// JS `line.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '')` applied to a
+/// single line: cut at the first `//`, then drop `/* … */` spans; an
+/// unterminated `/*` survives verbatim (the replace simply has no match).
+fn strip_line_comments(line: &str) -> String {
+    let cut = line.find("//").map(|i| &line[..i]).unwrap_or(line);
+    let mut out = String::with_capacity(cut.len());
+    let mut rest = cut;
+    while let Some(start) = rest.find("/*") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find("*/") {
+            Some(rel) => rest = &rest[start + 2 + rel + 2..],
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// buildLocalReceiverTypePatterns for the migrated set (name-matcher.ts).
+/// Each entry is (pattern, guard): guard 1 reproduces the TS annotation
+/// pattern's `(?![\w.$]|\s*(?:<[^>]*>)?\s*[\[|&])` lookahead in
+/// infer_match_line; the go param-type lookahead `(?=\s*[,)]|\s*$)` is folded
+/// into its pattern as a consuming suffix (equivalent — the capture cannot
+/// absorb `[,)]`/EOL, and shrinking it can never satisfy the suffix either).
+/// Languages outside the switch (c, cpp, unmigrated) get no patterns, same
+/// as the TS `default: return []`.
+fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
+    let pats: Vec<(&str, u8)> = match language {
+        "typescript" | "javascript" | "tsx" | "jsx" | "arkts" => vec![
+            (r"\bR\b\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", 0),
+            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.$]*)", 1),
+        ],
+        "python" => vec![
+            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r#"\bR\b\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, 0),
+            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+        ],
+        "java" => vec![
+            (r"\bR\b\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
+            (r"\b([A-Z][A-Za-z0-9_.]*)\s+R\b\s*[=;,:)]", 0),
+        ],
+        "kotlin" => vec![
+            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+        ],
+        "go" => vec![
+            (
+                r"\bR\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
+                0,
+            ),
+            (r"\bR\b\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{", 0),
+            (r"\bvar\s+R\s+\*?([A-Za-z_][A-Za-z0-9_.]*)", 0),
+            (r"\bR\s+\*?([A-Z][A-Za-z0-9_.]*)", 0),
+        ],
+        "php" => vec![
+            (r"\$?R\b\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", 0),
+            (r"\b([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R\b", 0),
+        ],
+        _ => vec![],
+    };
+    pats.into_iter()
+        .map(|(p, g)| (p.replace('R', r), g))
+        .collect()
+}
+
+/// buildPhpPropertyTypePatterns — only property-shaped declarations qualify
+/// for `$this->prop` receivers (typed/promoted property, `new` assignment).
+fn php_property_type_patterns(r: &str) -> Vec<(String, u8)> {
+    vec![
+        (
+            format!(
+                r"\b(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\${}\b",
+                r
+            ),
+            0,
+        ),
+        (
+            format!(r"\$this->{}\b\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", r),
+            0,
+        ),
+    ]
+}
+
 /// SUPERTYPE_TARGET_KINDS (resolution/types.ts).
 fn is_supertype_target_kind(kind: &str) -> bool {
     matches!(
@@ -461,10 +547,17 @@ struct KNode {
     signature: Option<String>,
     visibility: Option<String>,
     is_exported: bool,
+    return_type: Option<String>,
+    /// JSON `string[]` (queries.ts safeJsonParse) — None when absent/malformed.
+    type_parameters: Option<Vec<String>>,
+    /// JSON `string[]` like type_parameters — Kotlin `expect`/`actual` etc.
+    decorators: Option<Vec<String>>,
 }
 
 impl KNode {
     fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let raw_tps: Option<String> = row.get("type_parameters")?;
+        let raw_decs: Option<String> = row.get("decorators")?;
         Ok(KNode {
             id: row.get("id")?,
             kind: row.get("kind")?,
@@ -479,8 +572,71 @@ impl KNode {
             signature: row.get("signature")?,
             visibility: row.get("visibility")?,
             is_exported: row.get::<_, i64>("is_exported")? != 0,
+            return_type: row.get("return_type")?,
+            type_parameters: raw_tps.as_deref().and_then(parse_json_string_array),
+            decorators: raw_decs.as_deref().and_then(parse_json_string_array),
         })
     }
+}
+
+/// safeJsonParse for the `["a","b"]` shape type_parameters is stored as —
+/// returns None on anything that is not a flat array of JSON strings.
+fn parse_json_string_array(raw: &str) -> Option<Vec<String>> {
+    let inner = raw.trim().strip_prefix('[')?.strip_suffix(']')?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut rest = inner;
+    loop {
+        rest = rest.trim_start();
+        let s = rest.strip_prefix('"')?;
+        let mut val = String::new();
+        let mut chars = s.char_indices();
+        let mut escaped = false;
+        let mut end = 0usize;
+        let mut closed = false;
+        while let Some((i, c)) = chars.next() {
+            if escaped {
+                val.push(match c {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    'b' => '\u{8}',
+                    'f' => '\u{c}',
+                    'u' => {
+                        let mut code = 0u32;
+                        for _ in 0..4 {
+                            let (_, h) = chars.next()?;
+                            code = code * 16 + h.to_digit(16)?;
+                        }
+                        char::from_u32(code)?
+                    }
+                    other => other,
+                });
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                end = i;
+                closed = true;
+                break;
+            } else {
+                val.push(c);
+            }
+        }
+        if !closed || escaped {
+            return None;
+        }
+        rest = &s[end + 1..];
+        out.push(val);
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        rest = rest.strip_prefix(',')?;
+    }
+    Some(out)
 }
 
 #[derive(Clone, Debug)]
@@ -939,6 +1095,67 @@ enum BoundClaim {
     Punt(&'static str),
 }
 
+/// Tri-state inside the ported matchMethodCall helpers: a positive match, a
+/// provable `null` (the caller maps it to continue/refuse exactly like TS), or
+/// a punt when the next step needs state the snapshot can't see — live
+/// supertype edges, tree-sitter parsing, or an unported arm.
+enum McRes {
+    Hit(KCand),
+    Null,
+    Punt(&'static str),
+}
+
+/// resolveBoundType outcome: the resolved owner node, a provable no-owner, or
+/// a punt when a reachable sub-arm is unported (e.g. the JVM FQN fallback
+/// needs a qualified-name lookup the enclosing call can't reach — kept for
+/// symmetry; resolveJvmImport is ported so this is currently unused-defensive).
+enum BtRes {
+    Owner(Rc<KNode>),
+    Null,
+    Punt(&'static str),
+}
+
+/// NON_TYPE_RECEIVER_TOKENS (name-matcher.ts) — loose captures that are never
+/// a user-defined type.
+static NON_TYPE_RECEIVER_TOKENS: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| {
+        [
+            "this", "self", "super", "new", "return", "await", "yield", "typeof",
+            "null", "nil", "None", "true", "false", "True", "False", "undefined",
+        ]
+        .into_iter()
+        .collect()
+    });
+
+/// GO_BUILTIN_FIELD_TYPES (name-matcher.ts) — Go field types that never name
+/// a project type in the 2-hop field-chain matcher.
+static GO_BUILTIN_FIELD_TYPES: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| {
+        [
+            "string", "bool", "byte", "rune", "error", "any", "int", "int8",
+            "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
+            "uint64", "uintptr", "float32", "float64", "complex64",
+            "complex128", "chan", "map", "func", "struct", "interface",
+        ]
+        .into_iter()
+        .collect()
+    });
+
+/// CPP_NON_TYPE_TOKENS (name-matcher.ts) — C++ keywords/control-flow tokens
+/// that can appear right before a receiver and must never type it.
+static CPP_NON_TYPE_TOKENS: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| {
+        [
+            "return", "if", "else", "for", "while", "do", "switch", "case",
+            "default", "break", "continue", "goto", "throw", "new", "delete",
+            "co_await", "co_yield", "co_return", "static_cast", "const_cast",
+            "dynamic_cast", "reinterpret_cast", "sizeof", "alignof", "typeid",
+            "and", "or", "not", "xor",
+        ]
+        .into_iter()
+        .collect()
+    });
+
 // ---------------------------------------------------------------------------
 // Tiny LRU for file contents (queries.fileCache equivalent).
 // ---------------------------------------------------------------------------
@@ -1192,7 +1409,8 @@ impl KernelResolver {
 
 const NODE_COLS: &str = "id, kind, name, qualified_name, file_path, language, \
                          start_line, end_line, start_column, end_column, \
-                         signature, visibility, is_exported";
+                         signature, visibility, is_exported, return_type, \
+                         type_parameters, decorators";
 
 impl KernelResolver {
     /// The live connection — errors once close() has run. Statements borrow
@@ -3675,10 +3893,1773 @@ impl KernelResolver {
         self.finish(r, cand, None, true).map(Some)
     }
 
-    /// matchBoundReceiverCall (name-matcher.ts) — the DB-backed sub-arms.
-    /// Caller guarantees `is_binding_receiver_call(r)`, so the arm always
-    /// claims the ref: Hit/Refused are terminal; Punt hands the ref back
-    /// when the TypeScript arm would read source.
+    // -----------------------------------------------------------------------
+    // Stage-2 member-access arms — matchMethodCall(requireReceiverEvidence)
+    // and its source-backed inference helpers (name-matcher.ts). Every helper
+    // returns McRes: Hit for a proven edge, Null for a provable TS `null`, and
+    // Punt when the next step needs state the snapshot can't see — live
+    // supertype edges (getSupertypes/getSupertypeNodes), tree-sitter parsing
+    // (inferGuardedReceiver / inferIterationReceiver), or unported arms.
+    // -----------------------------------------------------------------------
+
+    fn ref_clone(r: &ResolveRefIn) -> ResolveRefIn {
+        ResolveRefIn {
+            row_id: r.row_id,
+            from_node_id: r.from_node_id.clone(),
+            reference_name: r.reference_name.clone(),
+            reference_kind: r.reference_kind.clone(),
+            line: r.line,
+            column: r.column,
+            candidates: r.candidates.clone(),
+            file_path: r.file_path.clone(),
+            language: r.language.clone(),
+            failure_reason: r.failure_reason.clone(),
+        }
+    }
+
+    fn mc_to_claim(res: McRes) -> BoundClaim {
+        match res {
+            McRes::Hit(c) => BoundClaim::Hit(c),
+            McRes::Null => BoundClaim::Refused,
+            McRes::Punt(p) => BoundClaim::Punt(p),
+        }
+    }
+
+    /// enclosingScopeStartLine — 1-based start line of the tightest
+    /// function/method node enclosing `line` in `file_path`.
+    fn enclosing_scope_start_line(
+        &mut self,
+        file_path: &str,
+        language: &str,
+        line: i64,
+    ) -> Result<i64> {
+        let mut start = 1i64;
+        for n in self.nodes_in_file(file_path)?.iter() {
+            if n.kind != "function" && n.kind != "method" {
+                continue;
+            }
+            if n.language != language {
+                continue;
+            }
+            if n.start_line <= line && n.end_line >= line && n.start_line >= start {
+                start = n.start_line;
+            }
+        }
+        Ok(start)
+    }
+
+    /// normalizeInferredTypeName — strip generics + `&`/`*`, take the last
+    /// `.`/`:`-separated segment, reject non-type tokens.
+    fn normalize_inferred_type_name(&mut self, raw: &str) -> Result<Option<String>> {
+        let generics = self.cached_regex("<[^>]*>")?;
+        let cleaned = generics.replace_all(raw, "");
+        let cleaned: String = cleaned
+            .chars()
+            .filter(|c| *c != '&' && *c != '*')
+            .collect::<String>()
+            .trim()
+            .to_string();
+        let Some(seg) = cleaned
+            .split(['.', ':'])
+            .rfind(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        if NON_TYPE_RECEIVER_TOKENS.contains(seg) {
+            return Ok(None);
+        }
+        Ok(Some(seg.to_string()))
+    }
+
+    /// First per-pattern match for one source line — mirrors `matchLine` in
+    /// inferLocalReceiverType: per pattern only the first match position is
+    /// considered (non-global `.match`), then the captured type must survive
+    /// normalizeInferredTypeName. `guard == 1` reproduces the TS annotation
+    /// pattern's negative lookahead `(?![\w.$]|\s*(?:<[^>]*>)?\s*[\[|&])`; a
+    /// shrunk capture can't satisfy it (the released char is itself `[\w.$]`),
+    /// so checking the greedy capture's tail at each start position is exact.
+    fn infer_match_line(
+        &mut self,
+        line: &str,
+        pats: &[(String, u8)],
+        preserve: bool,
+    ) -> Result<Option<String>> {
+        if Self::utf16_len(line) > 10_000 {
+            return Ok(None);
+        }
+        for (pat, guard) in pats {
+            let re = self.cached_regex(pat)?;
+            for caps in re.captures_iter(line) {
+                let Some(m1) = caps.get(1) else { break };
+                if m1.as_str().is_empty() {
+                    break;
+                }
+                if *guard == 1 {
+                    let rest = &line[caps.get(0).unwrap().end()..];
+                    if rest.chars().next().is_some_and(|c| {
+                        c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '$'
+                    }) {
+                        continue;
+                    }
+                    let tail = self.cached_regex(r"^\s*(?:<[^>]*>)?\s*[\[|&]")?;
+                    if tail.is_match(rest) {
+                        continue;
+                    }
+                }
+                match self.normalize_inferred_type_name(m1.as_str())? {
+                    Some(t) => {
+                        return Ok(Some(if preserve {
+                            m1.as_str().to_string()
+                        } else {
+                            t
+                        }));
+                    }
+                    None => break,
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// inferLocalReceiverType (name-matcher.ts) — backward declaration scan
+    /// bounded by the enclosing scope. The TS incremental-scan memo is a pure
+    /// optimization: it returns the highest matching line in [start..call],
+    /// identical to the plain backward scan reproduced here.
+    fn infer_local_receiver_type(
+        &mut self,
+        receiver: &str,
+        site: &ResolveRefIn,
+        preserve: bool,
+    ) -> Result<Option<String>> {
+        // CFML scope prefixes are dead — cfml/cfscript aren't claim-eligible.
+        let mut scan_receiver = receiver.to_string();
+        let mut component_scoped = false;
+        let mut php_property = false;
+        if site.language == "php" {
+            let re = self.cached_regex("^this->(.+)$")?;
+            if let Some(m) = re.captures(&scan_receiver) {
+                scan_receiver = m[1].to_string();
+                component_scoped = true;
+                php_property = true;
+            }
+        }
+        let escaped = regex::escape(&scan_receiver);
+        let pats = if php_property {
+            php_property_type_patterns(&escaped)
+        } else {
+            local_receiver_type_patterns(&site.language, &escaped)
+        };
+        if pats.is_empty() {
+            return Ok(None);
+        }
+        let Some(lines) = self.read_file(&site.file_path) else {
+            return Ok(None);
+        };
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let call_idx = (site.line - 1).clamp(0, lines.len() as i64 - 1) as usize;
+        let start_idx = if component_scoped {
+            0usize
+        } else {
+            let scope = self.enclosing_scope_start_line(
+                &site.file_path,
+                &site.language,
+                site.line,
+            )?;
+            call_idx.min((scope - 1).max(0) as usize)
+        };
+        for i in (start_idx..=call_idx).rev() {
+            if let Some(t) = self.infer_match_line(&lines[i], &pats, preserve)? {
+                return Ok(Some(t));
+            }
+        }
+        if component_scoped {
+            for line in lines.iter().skip(call_idx + 1) {
+                if let Some(t) = self.infer_match_line(line, &pats, preserve)? {
+                    return Ok(Some(t));
+                }
+            }
+        }
+        if php_property {
+            return self.infer_php_assigned_property_type(&escaped, &lines, call_idx);
+        }
+        Ok(None)
+    }
+
+    /// inferPhpAssignedPropertyType — `$this->prop = $var` second-chance
+    /// typing through the assigned variable's own declaration.
+    fn infer_php_assigned_property_type(
+        &mut self,
+        escaped_prop: &str,
+        lines: &[String],
+        call_idx: usize,
+    ) -> Result<Option<String>> {
+        let assign_re = self.cached_regex(&format!(
+            r"\$this->{}\b\s*=\s*\$([A-Za-z0-9_]+)\b",
+            escaped_prop
+        ))?;
+        let func_re = self.cached_regex(r"\bfunction\b")?;
+        let mut assign_idx: Option<usize> = None;
+        let mut var_name: Option<String> = None;
+        for i in (0..=call_idx).rev() {
+            let line = &lines[i];
+            if line.is_empty() || Self::utf16_len(line) > 10_000 {
+                continue;
+            }
+            if let Some(m) = assign_re.captures(line) {
+                assign_idx = Some(i);
+                var_name = Some(m[1].to_string());
+                break;
+            }
+        }
+        if var_name.is_none() {
+            for (i, line) in lines.iter().enumerate().skip(call_idx + 1) {
+                if line.is_empty() || Self::utf16_len(line) > 10_000 {
+                    continue;
+                }
+                if let Some(m) = assign_re.captures(line) {
+                    assign_idx = Some(i);
+                    var_name = Some(m[1].to_string());
+                    break;
+                }
+            }
+        }
+        let (Some(ai), Some(vn)) = (assign_idx, var_name) else {
+            return Ok(None);
+        };
+        let pats = local_receiver_type_patterns("php", &regex::escape(&vn));
+        for i in (0..=ai).rev() {
+            let line = &lines[i];
+            if !line.is_empty() && Self::utf16_len(line) <= 10_000 {
+                if let Some(t) = self.infer_match_line(line, &pats, false)? {
+                    return Ok(Some(t));
+                }
+            }
+            if !line.is_empty() && func_re.is_match(line) {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    /// normalizeCppTypeName — strip cv-qualifiers/keywords, refs, generics;
+    /// take the last `::` segment (or the qualified name when preserving).
+    fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Result<Option<String>> {
+        let kw = self
+            .cached_regex(r"\b(?:const|volatile|mutable|typename|class|struct)\b")?
+            .replace_all(raw, " ");
+        let no_ref = self.cached_regex(r"[&*]+")?.replace_all(&kw, " ");
+        let no_gen = self.cached_regex(r"<[^>]*>")?.replace_all(&no_ref, " ");
+        let normalized = no_gen.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+        let parts: Vec<&str> = normalized.split("::").filter(|s| !s.is_empty()).collect();
+        let Some(last) = parts.last() else { return Ok(None) };
+        if CPP_NON_TYPE_TOKENS.contains(last) {
+            return Ok(None);
+        }
+        Ok(Some(if preserve {
+            parts.join("::")
+        } else {
+            last.to_string()
+        }))
+    }
+
+    fn cpp_last_segment(name: &str) -> String {
+        let parts: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
+        parts.last().map(|s| s.to_string()).unwrap_or_else(|| name.to_string())
+    }
+
+    /// buildDeclaratorRegex — `Type receiver` requiring a declarator
+    /// terminator. The JS lookahead `(?=[;=,)\[{(]|$)` is post-checked on the
+    /// remainder: the greedy `\s*` tail can't shrink into a passing position.
+    fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Result<Option<String>> {
+        let re = self.cached_regex(&format!(
+            r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*\b{}\b\s*",
+            escaped_receiver
+        ))?;
+        for caps in re.captures_iter(line) {
+            let Some(m0) = caps.get(0) else { continue };
+            let rest = &line[m0.end()..];
+            let ok = match rest.chars().next() {
+                None => true,
+                Some(c) => matches!(c, ';' | '=' | ',' | ')' | '[' | '{' | '('),
+            };
+            if ok {
+                if let Some(m1) = caps.get(1) {
+                    return Ok(Some(m1.as_str().to_string()));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// inferCppReceiverType — backward declarator scan, `auto` deduction via
+    /// the initializer, then same-named header fallback (.h/.hpp/.hxx).
+    fn infer_cpp_receiver_type(
+        &mut self,
+        receiver: &str,
+        r: &ResolveRefIn,
+        depth: u32,
+        preserve: bool,
+    ) -> Result<Option<String>> {
+        let Some(lines) = self.read_file(&r.file_path) else {
+            return Ok(None);
+        };
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let call_idx = (r.line - 1).clamp(0, lines.len() as i64 - 1) as usize;
+        let escaped = regex::escape(receiver);
+        let receiver_re = self.cached_regex(&format!(r"\b{}\b", escaped))?;
+        for i in (0..=call_idx).rev() {
+            let line = &lines[i];
+            if line.is_empty() || !receiver_re.is_match(line) {
+                continue;
+            }
+            if let Some(decl) = self.cpp_declarator_match(line, &escaped)? {
+                match self.normalize_cpp_type_name(&decl, preserve)? {
+                    Some(t) if t == "auto" || t.ends_with("::auto") => {
+                        if let Some(init) =
+                            self.infer_cpp_auto_initializer_type(line, receiver, r, depth)?
+                        {
+                            return Ok(Some(init));
+                        }
+                        // An undeduced `auto` local shadows earlier decls.
+                        return Ok(None);
+                    }
+                    Some(t) => return Ok(Some(t)),
+                    None => {}
+                }
+            }
+        }
+        let ext_re = self.cached_regex(r"(?i)\.(?:c|cc|cpp|cxx)$")?;
+        let mut header_candidates: Vec<String> = Vec::new();
+        for ext in [".h", ".hpp", ".hxx"] {
+            let candidate = ext_re.replace(&r.file_path, ext).to_string();
+            if !header_candidates.contains(&candidate) && candidate != r.file_path {
+                header_candidates.push(candidate);
+            }
+        }
+        for header in header_candidates {
+            if !self.file_exists(&header) {
+                continue;
+            }
+            let Some(header_lines) = self.read_file(&header) else {
+                continue;
+            };
+            for line in header_lines.iter() {
+                if !receiver_re.is_match(line) {
+                    continue;
+                }
+                let Some(decl) = self.cpp_declarator_match(line, &escaped)? else {
+                    continue;
+                };
+                if let Some(t) = self.normalize_cpp_type_name(&decl, preserve)? {
+                    if t != "auto" {
+                        return Ok(Some(t));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// inferCppAutoInitializerType — `auto x = <init>;` deduction.
+    fn infer_cpp_auto_initializer_type(
+        &mut self,
+        line: &str,
+        receiver: &str,
+        r: &ResolveRefIn,
+        depth: u32,
+    ) -> Result<Option<String>> {
+        let m = self
+            .cached_regex(&format!(r"\b{}\b\s*=\s*([^;]+)", regex::escape(receiver)))?
+            .captures(line)
+            .and_then(|c| c.get(1).map(|g| g.as_str().trim().to_string()));
+        let Some(init) = m else { return Ok(None) };
+        let neu = self.cached_regex(r"^new\s+([A-Za-z_][A-Za-z0-9_:]*)")?;
+        if let Some(n) = neu.captures(&init) {
+            return Ok(Some(Self::cpp_last_segment(&n[1])));
+        }
+        let call = self
+            .cached_regex(r"^([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^>;]*>)?)\s*\(")?;
+        if let Some(c) = call.captures(&init) {
+            let collapsed: String = c[1].split_whitespace().collect();
+            return self.resolve_cpp_call_result_type(&collapsed, r, depth + 1);
+        }
+        Ok(None)
+    }
+
+    /// resolveCppCallResultType — make_unique/make_shared, single-level
+    /// member call, callee returnType, direct construction.
+    fn resolve_cpp_call_result_type(
+        &mut self,
+        inner: &str,
+        r: &ResolveRefIn,
+        depth: u32,
+    ) -> Result<Option<String>> {
+        if depth > 3 {
+            return Ok(None);
+        }
+        let expr = inner.trim();
+        let make = self
+            .cached_regex(r"(?:^|::)(?:make_unique|make_shared)\s*<\s*([A-Za-z_][A-Za-z0-9_]*)")?;
+        if let Some(m) = make.captures(expr) {
+            return Ok(Some(m[1].to_string()));
+        }
+        if let Some(dot) = expr.rfind('.') {
+            if dot > 0 {
+                let recv = &expr[..dot];
+                let method = &expr[dot + 1..];
+                if recv.contains('.') || recv.contains('(') || recv.contains("::") {
+                    return Ok(None);
+                }
+                let Some(recv_type) =
+                    self.infer_cpp_receiver_type(recv, r, depth + 1, false)?
+                else {
+                    return Ok(None);
+                };
+                return self.lookup_callee_return_type(&format!("{}::{}", recv_type, method), r);
+            }
+        }
+        if let Some(ret) = self.lookup_callee_return_type(expr, r)? {
+            return Ok(Some(ret));
+        }
+        if self.cpp_class_exists(expr, r)? {
+            return Ok(Some(Self::cpp_last_segment(expr)));
+        }
+        Ok(None)
+    }
+
+    /// lookupCalleeReturnType — the indexed `return_type` of `Cls::method` or
+    /// a free function, language-filtered.
+    fn lookup_callee_return_type(
+        &mut self,
+        callee: &str,
+        r: &ResolveRefIn,
+    ) -> Result<Option<String>> {
+        let (method, cls) = if callee.contains("::") {
+            let parts: Vec<&str> = callee.split("::").filter(|s| !s.is_empty()).collect();
+            let m = parts.last().copied().unwrap_or(callee);
+            let joined = parts[..parts.len() - 1].join("::");
+            // `if (cls)` — '' is falsy, so `::x` falls to the function path.
+            (m.to_string(), if joined.is_empty() { None } else { Some(joined) })
+        } else {
+            (callee.to_string(), None)
+        };
+        let candidates: Vec<KNode> = self
+            .nodes_by_name(&method)?
+            .iter()
+            .filter(|n| {
+                (n.kind == "method" || n.kind == "function")
+                    && n.language == r.language
+                    && n.return_type.as_deref().is_some_and(|t| !t.is_empty())
+            })
+            .cloned()
+            .collect();
+        if let Some(cls) = cls {
+            let want = format!("{}::{}", cls, method);
+            let hit = candidates.iter().find(|n| {
+                n.qualified_name == want
+                    || n.qualified_name.ends_with(&format!("::{}", want))
+                    || want.ends_with(&format!("::{}", n.qualified_name))
+            });
+            return Ok(hit.and_then(|n| n.return_type.clone()));
+        }
+        Ok(candidates
+            .iter()
+            .find(|n| n.kind == "function")
+            .and_then(|n| n.return_type.clone()))
+    }
+
+    /// cppClassExists — an aggregate type with this last `::` segment exists.
+    fn cpp_class_exists(&mut self, name: &str, r: &ResolveRefIn) -> Result<bool> {
+        let last = Self::cpp_last_segment(name);
+        Ok(self.nodes_by_name(&last)?.iter().any(|n| {
+            matches!(n.kind.as_str(), "class" | "struct" | "union") && n.language == r.language
+        }))
+    }
+
+    /// importedFqnOf — the import mapping whose localName is the type.
+    fn imported_fqn_of(&mut self, type_name: &str, r: &ResolveRefIn) -> Result<Option<String>> {
+        Ok(self
+            .import_mappings(&r.file_path)?
+            .iter()
+            .find(|i| i.local_name == type_name)
+            .map(|i| i.source.clone()))
+    }
+
+    /// resolveJvmImport (import-resolver.ts) — `imports`-kind java/kotlin FQN
+    /// to a qualified-name node, KMP `expect` preferred on ties.
+    fn resolve_jvm_import(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        if r.reference_kind != "imports" {
+            return Ok(None);
+        }
+        if r.language != "java" && r.language != "kotlin" {
+            return Ok(None);
+        }
+        let fqn = &r.reference_name;
+        let Some(dot) = fqn.rfind('.') else { return Ok(None) };
+        if dot == 0 {
+            return Ok(None);
+        }
+        let (pkg, sym) = (&fqn[..dot], &fqn[dot + 1..]);
+        if sym == "*" {
+            return Ok(None);
+        }
+        let candidates = self.nodes_by_qualified_name(&format!("{}::{}", pkg, sym))?;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let best = if candidates.len() == 1 {
+            Rc::new(candidates[0].clone())
+        } else {
+            Self::pick_closest_jvm_candidate(&candidates, &r.file_path)
+        };
+        Ok(Some(KCand {
+            node: best,
+            confidence: 0.95,
+            resolved_by: "import",
+        }))
+    }
+
+    /// pickClosestJvmCandidate — shared-directory-prefix proximity, Kotlin
+    /// Multiplatform `expect` preferred on a tie.
+    fn pick_closest_jvm_candidate(candidates: &[KNode], from_path: &str) -> Rc<KNode> {
+        let from_dirs: Vec<&str> = from_path.split('/').collect();
+        let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
+        let shared = |p: &str| -> usize {
+            let d: Vec<&str> = p.split('/').collect();
+            let d = &d[..d.len().saturating_sub(1)];
+            let mut n = 0;
+            while n < from_dirs.len() && n < d.len() && from_dirs[n] == d[n] {
+                n += 1;
+            }
+            n
+        };
+        let is_expect = |n: &KNode| {
+            n.decorators
+                .as_ref()
+                .is_some_and(|ds| ds.iter().any(|d| d == "expect"))
+        };
+        let mut best = &candidates[0];
+        let mut best_prox = shared(&best.file_path);
+        for c in &candidates[1..] {
+            let prox = shared(&c.file_path);
+            if prox > best_prox || (prox == best_prox && is_expect(c) && !is_expect(best)) {
+                best = c;
+                best_prox = prox;
+            }
+        }
+        Rc::new(best.clone())
+    }
+
+    /// resolveBoundType — the declared type's owner node: Java type-parameter
+    /// bounds first, then its lexical binding, then (non-ESM) the visible
+    /// unique candidate. Punt propagates from viaImport's source arms.
+    fn resolve_bound_type(
+        &mut self,
+        ty: &str,
+        r: &ResolveRefIn,
+        depth: u32,
+    ) -> Result<BtRes> {
+        if depth > 4 {
+            return Ok(BtRes::Null);
+        }
+        if r.language == "java" {
+            let in_file = self.nodes_in_file(&r.file_path)?;
+            let mut scopes: Vec<&KNode> = in_file
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "class" | "interface" | "method")
+                        && n.start_line <= r.line
+                        && n.end_line >= r.line
+                        && (n.start_line != r.line || n.start_column <= r.column)
+                        && (n.end_line != r.line || n.end_column >= r.column)
+                })
+                .collect();
+            scopes.sort_by(|a, b| {
+                (a.end_line - a.start_line)
+                    .cmp(&(b.end_line - b.start_line))
+                    .then(b.start_column.cmp(&a.start_column))
+            });
+            let bound_re =
+                self.cached_regex(r"^[A-Za-z0-9_]+\s+extends\s+([A-Za-z0-9_.]+)$")?;
+            for scope in scopes {
+                let decl = scope.type_parameters.as_ref().and_then(|tps| {
+                    tps.iter().find(|p| {
+                        // split(/\s+/)[0] — leading whitespace yields ''.
+                        p.split(|c: char| c.is_whitespace()).next() == Some(ty)
+                    })
+                });
+                let Some(declaration) = decl else { continue };
+                // An unbounded or self declaration shadows any outer bound.
+                return match bound_re.captures(declaration) {
+                    Some(m) if &m[1] != ty => {
+                        let mut site = Self::ref_clone(r);
+                        site.line = scope.start_line;
+                        site.column = scope.start_column;
+                        self.resolve_bound_type(&m[1], &site, depth + 1)
+                    }
+                    _ => Ok(BtRes::Null),
+                };
+            }
+        }
+        let bindings = self.bindings(&r.file_path)?;
+        let binding = Self::innermost_binding(
+            &bindings,
+            ty.split('.').next().unwrap_or(ty),
+            Some(r.line),
+        );
+        let mut owner_id: Option<String> = None;
+        if let Some(b) = binding {
+            if b.kind == "import" {
+                let mut ref2 = Self::ref_clone(r);
+                ref2.reference_name = ty.to_string();
+                ref2.reference_kind = "references".to_string();
+                let hit = if ty.contains('.') {
+                    match self.resolve_via_import_member(&ref2)? {
+                        ViaImport::Hit(c) => Some(c),
+                        ViaImport::Miss => None,
+                        ViaImport::Punt(p) => return Ok(BtRes::Punt(p)),
+                    }
+                } else {
+                    self.resolve_via_import(&ref2)?
+                };
+                owner_id = hit.map(|c| c.node.id.clone());
+                if owner_id.is_none() {
+                    let mut ref3 = Self::ref_clone(r);
+                    ref3.reference_name =
+                        b.target_spec.clone().unwrap_or_else(|| ty.to_string());
+                    ref3.reference_kind = "imports".to_string();
+                    if let Some(c) = self.resolve_jvm_import(&ref3)? {
+                        owner_id = Some(c.node.id.clone());
+                    }
+                }
+            } else {
+                owner_id = b.node_id.clone();
+            }
+        }
+        let mut owner: Option<Rc<KNode>> = match &owner_id {
+            Some(id) => self.node_by_id(id)?,
+            None => None,
+        };
+        if binding.is_some_and(|b| b.kind == "import") && r.language == "php" {
+            if let Some(spec) = binding.and_then(|b| b.target_spec.clone()) {
+                let stripped = spec.strip_prefix('\\').unwrap_or(&spec);
+                let qualified = match stripped.rfind('\\') {
+                    Some(pos) if pos + 1 < stripped.len() => {
+                        format!("{}::{}", &stripped[..pos], &stripped[pos + 1..])
+                    }
+                    _ => stripped.to_string(),
+                };
+                let owners: Vec<KNode> = self
+                    .nodes_by_qualified_name(&qualified)?
+                    .iter()
+                    .filter(|n| {
+                        n.language == "php"
+                            && matches!(n.kind.as_str(), "class" | "interface" | "trait")
+                    })
+                    .cloned()
+                    .collect();
+                owner = if owners.len() == 1 {
+                    Some(Rc::new(owners[0].clone()))
+                } else {
+                    None
+                };
+            }
+        }
+        if binding.is_none() && !is_esm_family(&r.language) {
+            let raw = if ty.contains("::") {
+                self.nodes_by_qualified_name(ty)?
+            } else {
+                self.nodes_by_name(ty)?
+            };
+            let mut candidates: Vec<Rc<KNode>> = Vec::new();
+            for n in raw.iter() {
+                if !matches!(
+                    n.kind.as_str(),
+                    "class" | "struct" | "interface" | "component" | "type_alias" | "union"
+                ) || n.language != r.language {
+                    continue;
+                }
+                if !self.is_visible_across_files(n, r)? {
+                    continue;
+                }
+                candidates.push(Rc::new(n.clone()));
+            }
+            let local: Vec<Rc<KNode>> = candidates
+                .iter()
+                .filter(|n| n.file_path == r.file_path)
+                .cloned()
+                .collect();
+            let namespace = self
+                .nodes_in_file(&r.file_path)?
+                .iter()
+                .find(|n| n.kind == "namespace")
+                .map(|n| n.qualified_name.clone());
+            let mut packages: Vec<String> = Vec::new();
+            if r.language == "java" || r.language == "kotlin" {
+                packages = self
+                    .import_mappings(&r.file_path)?
+                    .iter()
+                    .filter(|i| i.is_namespace && i.source.ends_with(".*"))
+                    .map(|i| i.source[..i.source.len() - 2].to_string())
+                    .collect();
+                if let Some(ns) = &namespace {
+                    packages.insert(0, ns.clone());
+                }
+            }
+            let package_candidates: Vec<Rc<KNode>> = candidates
+                .into_iter()
+                .filter(|n| {
+                    if r.language == "python" {
+                        return false;
+                    }
+                    if r.language == "go" {
+                        return pos_dirname(&n.file_path) == pos_dirname(&r.file_path);
+                    }
+                    if r.language == "php" {
+                        return n.qualified_name
+                            == match &namespace {
+                                Some(ns) => format!("{}::{}", ns, ty),
+                                None => ty.to_string(),
+                            };
+                    }
+                    if r.language == "java" || r.language == "kotlin" {
+                        if namespace.is_none() && n.qualified_name == ty {
+                            return true;
+                        }
+                        return packages
+                            .iter()
+                            .any(|pkg| n.qualified_name == format!("{}::{}", pkg, ty));
+                    }
+                    true
+                })
+                .collect();
+            let visible = if !local.is_empty() {
+                local
+            } else {
+                package_candidates
+            };
+            if visible.len() == 1 {
+                owner = Some(visible[0].clone());
+            }
+        }
+        match owner {
+            Some(o)
+                if matches!(
+                    o.kind.as_str(),
+                    "class" | "struct" | "interface" | "component" | "type_alias" | "union"
+                ) =>
+            {
+                Ok(BtRes::Owner(o))
+            }
+            _ => Ok(BtRes::Null),
+        }
+    }
+
+    /// matchBoundTypeMember — owner's own `QName::method` member. A miss is a
+    /// PUNT, not a refusal: TS next walks live supertype edges the snapshot
+    /// can't see, so the TS spine must re-derive the miss.
+    fn match_bound_type_member(
+        &mut self,
+        ty: &str,
+        method: &str,
+        site: &ResolveRefIn,
+    ) -> Result<McRes> {
+        let owner = match self.resolve_bound_type(ty, site, 0)? {
+            BtRes::Owner(o) => o,
+            BtRes::Null => return Ok(McRes::Null),
+            BtRes::Punt(p) => return Ok(McRes::Punt(p)),
+        };
+        let members: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method))?
+            .iter()
+            .filter(|n| {
+                n.kind == "method"
+                    && same_language_family(&n.language, &site.language)
+                    && (n.file_path == owner.file_path
+                        || (site.language == "go"
+                            && pos_dirname(&n.file_path) == pos_dirname(&owner.file_path))
+                        || site.language == "cpp")
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        let member = if members.len() == 1 {
+            members.into_iter().next()
+        } else {
+            members
+                .into_iter()
+                .find(|n| n.file_path == owner.file_path)
+        };
+        match member {
+            Some(m) => Ok(McRes::Hit(KCand {
+                node: m,
+                confidence: 0.9,
+                resolved_by: "instance-method",
+            })),
+            None => Ok(McRes::Punt("btm-supers")),
+        }
+    }
+
+    /// resolveMethodOnType — `typeName::methodName` qualified-name suffix
+    /// match with preferred-FQN and call-site disambiguation. Zero direct
+    /// matches is a PUNT: TS falls into the live-edge supertype walk.
+    fn resolve_method_on_type(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+        preferred_fqn: Option<&str>,
+    ) -> Result<McRes> {
+        let want = format!("{}::{}", type_name, method);
+        let matches: Vec<Rc<KNode>> = self
+            .nodes_by_name(method)?
+            .iter()
+            .filter(|m| {
+                m.kind == "method"
+                    && same_language_family(&m.language, &r.language)
+                    && (m.qualified_name == want
+                        || m.qualified_name.ends_with(&format!("::{}", want)))
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if matches.is_empty() {
+            return Ok(McRes::Punt("rmot-supers"));
+        }
+        if matches.len() > 1 {
+            if let Some(fqn) = preferred_fqn {
+                let ext = if r.language == "kotlin" { ".kt" } else { ".java" };
+                let fqn_path = format!("{}{}", fqn.replace('.', "/"), ext);
+                if let Some(chosen) = matches.iter().find(|m| {
+                    let fp = m.file_path.replace('\\', "/");
+                    fp.ends_with(&fqn_path) || fp.ends_with(&format!("/{}", fqn_path))
+                }) {
+                    return Ok(McRes::Hit(KCand {
+                        node: chosen.clone(),
+                        confidence,
+                        resolved_by,
+                    }));
+                }
+            }
+        }
+        let ordered = prefer_call_site_file(matches, &r.file_path);
+        Ok(McRes::Hit(KCand {
+            node: ordered[0].clone(),
+            confidence,
+            resolved_by,
+        }))
+    }
+
+    /// inferJavaFieldReceiverType — the declared type of a `field` node in
+    /// the class enclosing the call (`signature` = "<Type> <name>").
+    fn infer_java_field_receiver_type(
+        &mut self,
+        receiver: &str,
+        r: &ResolveRefIn,
+    ) -> Result<Option<String>> {
+        let in_file = self.nodes_in_file(&r.file_path)?;
+        if in_file.is_empty() {
+            return Ok(None);
+        }
+        let mut enclosing: Option<&KNode> = None;
+        for n in in_file.iter() {
+            if n.kind != "class" && n.kind != "interface" {
+                continue;
+            }
+            if n.language != r.language {
+                continue;
+            }
+            if n.start_line <= r.line
+                && n.end_line >= r.line
+                && enclosing.is_none_or(|e| n.start_line >= e.start_line)
+            {
+                enclosing = Some(n);
+            }
+        }
+        let Some(enclosing) = enclosing else { return Ok(None) };
+        let Some(field) = in_file.iter().find(|n| {
+            n.kind == "field"
+                && n.name == receiver
+                && n.language == r.language
+                && n.start_line >= enclosing.start_line
+                && n.end_line <= enclosing.end_line
+        }) else {
+            return Ok(None);
+        };
+        let Some(sig) = field.signature.as_deref() else {
+            return Ok(None);
+        };
+        // slice(0, lastIndexOf(name)) — a -1 index drops the last UTF-16 unit.
+        let before = match sig.rfind(&field.name) {
+            Some(i) => &sig[..i],
+            None => Self::js_prefix(sig, Self::utf16_len(sig).saturating_sub(1)),
+        };
+        let type_raw = before.trim();
+        if type_raw.is_empty() {
+            return Ok(None);
+        }
+        let no_generics = self.cached_regex(r"<[^>]*>")?.replace_all(type_raw, "");
+        let no_array = self
+            .cached_regex(r"\[\s*\]")?
+            .replace_all(&no_generics, "")
+            .to_string();
+        let no_varargs = self.cached_regex(r"\.\.\.$")?.replace(&no_array, "");
+        let Some(last) = no_varargs
+            .split(|c: char| c == '.' || c.is_whitespace())
+            .rfind(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        if !last.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            return Ok(None);
+        }
+        Ok(Some(last.to_string()))
+    }
+
+    /// matchGoFactoryReceiver — a Go receiver bound to a declared/param value
+    /// or to the first result of a same-line `:=` factory call.
+    fn match_go_factory_receiver(
+        &mut self,
+        receiver: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        let mut site = Self::ref_clone(r);
+        let bindings = self.bindings(&r.file_path)?;
+        let mut binding = Self::innermost_binding(&bindings, receiver, Some(r.line)).cloned();
+        if binding.is_none() {
+            let mut values: Vec<Rc<KNode>> = Vec::new();
+            for n in self.nodes_by_name(receiver)?.iter() {
+                if n.language != "go"
+                    || !matches!(n.kind.as_str(), "variable" | "constant")
+                    || pos_dirname(&n.file_path) != pos_dirname(&r.file_path)
+                {
+                    continue;
+                }
+                let decls = self.bindings(&n.file_path)?;
+                if decls
+                    .iter()
+                    .any(|row| row.node_id.as_deref() == Some(n.id.as_str()) && row.kind == "decl")
+                {
+                    values.push(Rc::new(n.clone()));
+                }
+            }
+            if values.len() != 1 {
+                return Ok(McRes::Null);
+            }
+            let value = values[0].clone();
+            site.file_path = value.file_path.clone();
+            site.line = value.start_line;
+            let site_bindings = self.bindings(&site.file_path)?;
+            binding =
+                Self::innermost_binding(&site_bindings, receiver, Some(site.line)).cloned();
+        }
+        let Some(binding) = binding else { return Ok(McRes::Null) };
+        let declaration = self
+            .read_file(&site.file_path)
+            .and_then(|ls| ls.get((binding.line - 1) as usize).cloned())
+            .unwrap_or_default();
+        let escaped = regex::escape(receiver);
+        let value = match &binding.node_id {
+            Some(id) => self.node_by_id(id)?,
+            None => None,
+        };
+        let ty = if binding.kind == "param" {
+            self.cached_regex(&format!(
+                r"\b{}\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)",
+                escaped
+            ))?
+            .captures(&declaration)
+            .and_then(|c| c.get(1).map(|g| g.as_str().to_string()))
+        } else {
+            let sig_ty = match value.as_ref().and_then(|v| v.signature.as_deref()) {
+                Some(sig) => self
+                    .cached_regex(r"^=\s*&?([A-Za-z0-9_.]+)\s*\{")?
+                    .captures(sig)
+                    .and_then(|c| c.get(1).map(|g| g.as_str().to_string())),
+                None => None,
+            };
+            match sig_ty {
+                Some(t) => Some(t),
+                None => self
+                    .cached_regex(&format!(r"\b{}\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", escaped))?
+                    .captures(&declaration)
+                    .and_then(|c| c.get(1).map(|g| g.as_str().to_string())),
+            }
+        };
+        if let Some(ty) = ty {
+            let mut bsite = Self::ref_clone(&site);
+            bsite.line = binding.line;
+            return Ok(match self.match_bound_type_member(&ty, method, &bsite)? {
+                McRes::Hit(c) => McRes::Hit(c),
+                McRes::Null => McRes::Null,
+                McRes::Punt(p) => McRes::Punt(p),
+            });
+        }
+        if binding.kind == "param" {
+            return Ok(McRes::Null);
+        }
+        let assign_re = self.cached_regex(
+            r"\b([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(",
+        )?;
+        let site_bindings = self.bindings(&site.file_path)?;
+        for caps in assign_re.captures_iter(&declaration) {
+            let names: Vec<String> = caps[1]
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            if names.first().map(|n| n != receiver).unwrap_or(true) {
+                continue;
+            }
+            let name = caps[2].to_string();
+            let mut factory_site = Self::ref_clone(&site);
+            factory_site.line = binding.line;
+            factory_site.reference_name = name.clone();
+            let factory_binding = Self::innermost_binding(
+                &site_bindings,
+                name.split('.').next().unwrap_or(&name),
+                Some(binding.line),
+            )
+            .cloned();
+            let mut callee: Option<Rc<KNode>> = None;
+            match &factory_binding {
+                Some(b) if b.kind == "import" => {
+                    let via = if name.contains('.') {
+                        match self.resolve_via_import_member(&factory_site)? {
+                            ViaImport::Hit(c) => Some(c),
+                            ViaImport::Miss => None,
+                            ViaImport::Punt(p) => return Ok(McRes::Punt(p)),
+                        }
+                    } else {
+                        self.resolve_via_import(&factory_site)?
+                    };
+                    if let Some(c) = via {
+                        callee = self.node_by_id(&c.node.id)?;
+                    }
+                }
+                Some(b) => {
+                    if let Some(id) = &b.node_id {
+                        callee = self.node_by_id(id)?;
+                    }
+                }
+                None => {
+                    if !name.contains('.') {
+                        let cands: Vec<Rc<KNode>> = self
+                            .nodes_by_name(&name)?
+                            .iter()
+                            .filter(|n| {
+                                n.language == "go"
+                                    && n.kind == "function"
+                                    && pos_dirname(&n.file_path)
+                                        == pos_dirname(&site.file_path)
+                            })
+                            .map(|n| Rc::new(n.clone()))
+                            .collect();
+                        if cands.len() == 1 {
+                            callee = Some(cands[0].clone());
+                        }
+                    }
+                }
+            }
+            let ret_shape = self.cached_regex(r"^\*?[A-Za-z0-9_.]+$")?;
+            let valid = callee.as_ref().is_some_and(|c| {
+                c.kind == "function"
+                    && c.return_type
+                        .as_deref()
+                        .is_some_and(|t| ret_shape.is_match(t))
+            });
+            if !valid {
+                return Ok(McRes::Null);
+            }
+            let callee = callee.unwrap();
+            let ret = callee.return_type.clone().unwrap();
+            let stripped = ret.strip_prefix('*').unwrap_or(&ret);
+            let mut tsite = Self::ref_clone(r);
+            tsite.file_path = callee.file_path.clone();
+            tsite.line = callee.start_line;
+            return Ok(match self.match_bound_type_member(stripped, method, &tsite)? {
+                McRes::Hit(c) => McRes::Hit(c),
+                McRes::Null => McRes::Null,
+                McRes::Punt(p) => McRes::Punt(p),
+            });
+        }
+        Ok(McRes::Null)
+    }
+
+    /// matchGoFieldChainCall — Go 2-hop `base.field.Method`: base's type from
+    /// the enclosing scope, field's declared type from the struct's own lines.
+    fn match_go_field_chain_call(
+        &mut self,
+        chain: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        let segs: Vec<&str> = chain.split('.').collect();
+        if segs.len() != 2 || segs[0].is_empty() || segs[1].is_empty() {
+            return Ok(McRes::Null);
+        }
+        let (base, field) = (segs[0], segs[1]);
+        let Some(base_type) = self.infer_local_receiver_type(base, r, false)? else {
+            return Ok(McRes::Null);
+        };
+        let field_re = self.cached_regex(&format!(
+            r"\b{}\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)",
+            regex::escape(field)
+        ))?;
+        let structs: Vec<Rc<KNode>> = prefer_call_site_file(
+            self.nodes_by_name(&base_type)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "struct" | "class") && n.language == "go"
+                })
+                .map(|n| Rc::new(n.clone()))
+                .collect(),
+            &r.file_path,
+        );
+        for s in structs {
+            let Some(source) = self.read_file(&s.file_path) else {
+                continue;
+            };
+            let start = (s.start_line - 1).max(0) as usize;
+            let end = (s.end_line as usize).min(source.len());
+            for raw in &source[start..end] {
+                let line = strip_line_comments(raw);
+                let Some(m) = field_re.captures(&line) else {
+                    continue;
+                };
+                let raw_type = m[1].to_string();
+                if raw_type.contains('.') {
+                    let pkg = raw_type.split('.').next().unwrap_or("");
+                    let in_module = match self.go_module_path.clone() {
+                        Some(mod_path) => self
+                            .import_mappings(&s.file_path)?
+                            .iter()
+                            .find(|i| i.local_name == pkg)
+                            .is_some_and(|imp| {
+                                imp.source == mod_path
+                                    || imp.source.starts_with(&format!("{}/", mod_path))
+                            }),
+                        None => false,
+                    };
+                    if !in_module {
+                        continue;
+                    }
+                }
+                let Some(field_type) = raw_type.split('.').next_back() else {
+                    continue;
+                };
+                if !field_type
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    || GO_BUILTIN_FIELD_TYPES.contains(field_type)
+                {
+                    continue;
+                }
+                match self.resolve_method_on_type(
+                    field_type,
+                    method,
+                    r,
+                    0.85,
+                    "instance-method",
+                    None,
+                )? {
+                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
+                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
+                    McRes::Null => {}
+                }
+            }
+        }
+        Ok(McRes::Null)
+    }
+
+    /// matchTsFieldCall restricted to the boundOwner path (br:fieldchain) —
+    /// the unbound owners-by-name branch only runs for `this.`-rooted refs,
+    /// which isBindingReceiverCall excludes before this arm.
+    fn match_ts_field_call_bound(
+        &mut self,
+        owner: &KNode,
+        field: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        let field_esc = regex::escape(field);
+        let pats: Vec<(String, bool)> = vec![
+            (
+                format!(
+                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    field_esc
+                ),
+                true,
+            ),
+            (
+                format!(
+                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    field_esc
+                ),
+                false,
+            ),
+            (
+                format!(
+                    r"\b{}\b\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    field_esc
+                ),
+                false,
+            ),
+        ];
+        let Some(source) = self.read_file(&owner.file_path) else {
+            return Ok(McRes::Null);
+        };
+        let tail_re = self.cached_regex(r"^[\s]*(?:<[^>]*>)?\s*[\[|&]")?;
+        let start = (owner.start_line - 1).max(0) as usize;
+        let end = (owner.end_line as usize).min(source.len());
+        for raw in &source[start..end] {
+            let line = strip_line_comments(raw);
+            for (pat, value_type) in &pats {
+                let re = self.cached_regex(pat)?;
+                let Some(caps) = re.captures(&line) else {
+                    continue;
+                };
+                let Some(m1) = caps.get(1) else { continue };
+                if m1.as_str().is_empty() {
+                    continue;
+                }
+                if tail_re.is_match(&line[caps.get(0).unwrap().end()..]) {
+                    return Ok(McRes::Null);
+                }
+                if *value_type {
+                    let cls_bindings = self.bindings(&owner.file_path)?;
+                    let row = Self::innermost_binding(
+                        &cls_bindings,
+                        m1.as_str(),
+                        Some(owner.start_line),
+                    )
+                    .cloned();
+                    let holder_id = match &row {
+                        Some(b) if b.kind == "import" => {
+                            let mut ref2 = Self::ref_clone(r);
+                            ref2.file_path = owner.file_path.clone();
+                            ref2.line = owner.start_line;
+                            ref2.reference_name = m1.as_str().to_string();
+                            ref2.reference_kind = "references".to_string();
+                            match self.resolve_via_import_member(&ref2)? {
+                                ViaImport::Hit(c) => Some(c.node.id.clone()),
+                                ViaImport::Miss => None,
+                                ViaImport::Punt(p) => return Ok(McRes::Punt(p)),
+                            }
+                        }
+                        Some(b) => b.node_id.clone(),
+                        None => None,
+                    };
+                    let holder = match &holder_id {
+                        Some(id) => self.node_by_id(id)?,
+                        None => None,
+                    };
+                    return Ok(match holder {
+                        Some(h) => match self.resolve_object_literal_member(
+                            &h,
+                            method,
+                            r,
+                            0.85,
+                            "instance-method",
+                        )? {
+                            Some(c) => McRes::Hit(c),
+                            None => McRes::Null,
+                        },
+                        None => McRes::Null,
+                    });
+                }
+                let type_name = m1.as_str().split('.').next_back().unwrap_or("");
+                if !type_name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                {
+                    return Ok(McRes::Null);
+                }
+                let mut bsite = Self::ref_clone(r);
+                bsite.file_path = owner.file_path.clone();
+                bsite.line = owner.start_line;
+                return Ok(match self.match_bound_type_member(
+                    m1.as_str(),
+                    method,
+                    &bsite,
+                )? {
+                    McRes::Hit(c) => McRes::Hit(c),
+                    McRes::Null => McRes::Null,
+                    McRes::Punt(p) => McRes::Punt(p),
+                });
+            }
+        }
+        Ok(McRes::Null)
+    }
+
+    /// The br:factory tail of matchBoundReceiverCall's ESM arm — receiver's
+    /// initializer ends in a call/new-factory expression whose return type
+    /// carries the method.
+    fn esm_factory_tail(
+        &mut self,
+        binding: &KBinding,
+        root: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        let value = match &binding.node_id {
+            Some(id) => self.node_by_id(id)?,
+            None => None,
+        };
+        let escaped = regex::escape(root);
+        let lines = self.read_file(&r.file_path);
+        let declares_re = self.cached_regex(&format!(
+            r"\b(?:const|let|var)\s+{}\s*=",
+            escaped
+        ))?;
+        let declares_value = lines
+            .as_ref()
+            .and_then(|ls| ls.get((binding.line - 1) as usize))
+            .is_some_and(|l| declares_re.is_match(l));
+        let declaration = if declares_value {
+            lines.as_ref().map(|ls| {
+                let lo = (binding.line - 1).max(0) as usize;
+                let hi = ((binding.line + 2) as usize).min(ls.len());
+                ls[lo..hi].join("\n")
+            })
+        } else {
+            None
+        };
+        let signature = match value.as_ref().and_then(|v| v.signature.clone()) {
+            Some(s) => Some(s),
+            None => {
+                let sig_re = self.cached_regex(&format!(
+                    r"\b(?:const|let|var)\s+{}\s*(=[\s\S]+)",
+                    escaped
+                ))?;
+                declaration
+                    .as_deref()
+                    .and_then(|d| sig_re.captures(d).map(|c| c[1].to_string()))
+            }
+        };
+        let init = signature.unwrap_or_default();
+        // parensEnd — UTF-16 unit index one past the ')' that closes the '('
+        // at `from - 1`, or -1 when it never closes (JS string indexing).
+        let parens_end = |s: &str, from: usize| -> i64 {
+            let mut depth = 1i64;
+            let mut i = from;
+            let mut units = 0usize;
+            for ch in s.chars() {
+                let start = units;
+                units += ch.len_utf16();
+                if start < from || depth == 0 {
+                    continue;
+                }
+                if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth -= 1;
+                }
+                i = units;
+            }
+            if depth != 0 {
+                -1
+            } else {
+                i as i64
+            }
+        };
+        // ^[ \t]*(?:;|\r?\n(?![ \t]*[.(\[?])) — the lookahead is emulated:
+        // `;` always ends the initializer; a newline does unless a chained
+        // `.`/`(`/`[`/`?` follows its leading whitespace.
+        let ends_initializer = |init_s: &str, call_end: i64| -> bool {
+            if call_end < 0 {
+                return false;
+            }
+            let tail = Self::js_slice(init_s, call_end as usize);
+            if tail.is_empty() {
+                return true;
+            }
+            let t = tail.trim_start_matches([' ', '\t']);
+            if t.starts_with(';') {
+                return true;
+            }
+            if let Some(rest) = t.strip_prefix("\r\n").or_else(|| t.strip_prefix('\n')) {
+                return !rest
+                    .trim_start_matches([' ', '\t'])
+                    .chars()
+                    .next()
+                    .is_some_and(|c| matches!(c, '.' | '(' | '[' | '?'));
+            }
+            false
+        };
+        let awaited_re = self.cached_regex(r"^=\s*await\b")?;
+        let awaited = awaited_re.is_match(&init);
+        let mut callee_name: Option<String> = None;
+        let mut owner_name: Option<String> = None;
+        let factory_re =
+            self.cached_regex(r"^=\s*(await\s+)?([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(")?;
+        if let Some(fm) = factory_re.captures(&init) {
+            let end = parens_end(&init, Self::utf16_len(&init[..fm.get(0).unwrap().end()]));
+            if ends_initializer(&init, end) {
+                callee_name = fm.get(2).map(|g| g.as_str().to_string());
+            }
+        }
+        if callee_name.is_none() {
+            let ctor_re = self.cached_regex(
+                r"^=\s*(?:await\s+)?new\s+([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(",
+            )?;
+            if let Some(cm) = ctor_re.captures(&init) {
+                let ctor_end =
+                    parens_end(&init, Self::utf16_len(&init[..cm.get(0).unwrap().end()]));
+                if ctor_end >= 0 {
+                    let member_re = self.cached_regex(
+                        r"^\s*\.\s*([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(",
+                    )?;
+                    let tail = Self::js_slice(&init, ctor_end as usize);
+                    if let Some(mm) = member_re.captures(tail) {
+                        let m_end = parens_end(
+                            &init,
+                            ctor_end as usize
+                                + Self::utf16_len(&tail[..mm.get(0).unwrap().end()]),
+                        );
+                        if ends_initializer(&init, m_end) {
+                            owner_name = cm.get(1).map(|g| g.as_str().to_string());
+                            callee_name = mm.get(1).map(|g| g.as_str().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let Some(callee_name) = callee_name else {
+            return Ok(McRes::Null);
+        };
+        let bindings = self.bindings(&r.file_path)?;
+        let callee: Option<Rc<KNode>> = if let Some(owner_name) = owner_name {
+            let owner_binding =
+                Self::innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
+            let owner_id = match &owner_binding {
+                Some(b) if b.kind == "import" => {
+                    let mut ref2 = Self::ref_clone(r);
+                    ref2.line = binding.line;
+                    ref2.reference_name = owner_name.clone();
+                    ref2.reference_kind = "references".to_string();
+                    match self.resolve_via_import(&ref2)? {
+                        Some(c) => Some(c.node.id.clone()),
+                        None => None,
+                    }
+                }
+                Some(b) => b.node_id.clone(),
+                None => None,
+            };
+            let owner = match &owner_id {
+                Some(id) => self.node_by_id(id)?,
+                None => None,
+            };
+            let Some(owner) = owner else { return Ok(McRes::Null) };
+            if !matches!(owner.kind.as_str(), "class" | "interface" | "component") {
+                return Ok(McRes::Null);
+            }
+            self.nodes_by_qualified_name(&format!(
+                "{}::{}",
+                owner.qualified_name, callee_name
+            ))?
+            .iter()
+            .find(|n| n.kind == "method" && n.file_path == owner.file_path)
+            .map(|n| Rc::new(n.clone()))
+        } else {
+            let factory_binding =
+                Self::innermost_binding(&bindings, &callee_name, Some(binding.line))
+                    .cloned();
+            let callee_id = match &factory_binding {
+                Some(b) if b.kind == "import" => {
+                    let mut ref2 = Self::ref_clone(r);
+                    ref2.line = binding.line;
+                    ref2.reference_name = callee_name.clone();
+                    match self.resolve_via_import(&ref2)? {
+                        Some(c) => Some(c.node.id.clone()),
+                        None => None,
+                    }
+                }
+                Some(b) => b.node_id.clone(),
+                None => None,
+            };
+            match &callee_id {
+                Some(id) => self.node_by_id(id)?,
+                None => None,
+            }
+        };
+        let Some(callee) = callee else { return Ok(McRes::Null) };
+        let ret_re = self
+            .cached_regex(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$")?;
+        let return_type = callee.return_type.clone().or_else(|| {
+            callee
+                .signature
+                .as_deref()
+                .and_then(|s| ret_re.captures(s).map(|c| c[1].to_string()))
+        });
+        // `!returnType` — an empty annotation/returnType fails the same way.
+        let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
+            return Ok(McRes::Null);
+        };
+        let promise_re = self.cached_regex(r"^Promise<(.+)>$")?;
+        let ty = if awaited {
+            promise_re
+                .replace(&return_type, "$1")
+                .to_string()
+        } else {
+            return_type
+        };
+        let mut site = Self::ref_clone(r);
+        site.file_path = callee.file_path.clone();
+        site.line = callee.start_line;
+        Ok(match self.match_bound_type_member(&ty, method, &site)? {
+            McRes::Hit(c) => McRes::Hit(c),
+            McRes::Null => McRes::Null,
+            McRes::Punt(p) => McRes::Punt(p),
+        })
+    }
+
+    /// Cheap raw-source gate for inferEsmAwaitedCallType — the awaited arm can
+    /// only engage when the file binds `receiver` in an `= await x(` shape.
+    /// True → punt (the arm needs sanitized scope parsing); false → provable
+    /// null, continue natively.
+    fn mc_await_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Result<bool> {
+        let Some(lines) = self.read_file(&r.file_path) else {
+            return Ok(false);
+        };
+        let re = self.cached_regex(&format!(
+            r"\b(?:const|let|var)\s+{}\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(",
+            regex::escape(receiver)
+        ))?;
+        Ok(lines.iter().any(|l| re.is_match(l)))
+    }
+
+    /// Cheap gate for inferIterationReceiver — kotlin/go only, fires only
+    /// when its declaration preconditions can hold; tree-sitter stays in TS.
+    fn mc_iteration_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Result<bool> {
+        if r.language != "kotlin" && r.language != "go" {
+            return Ok(false);
+        }
+        let bindings = self.bindings(&r.file_path)?;
+        let mut best: Option<&KBinding> = None;
+        for b in bindings.iter() {
+            if b.name != receiver || b.scope_start > r.line || b.scope_end < r.line {
+                continue;
+            }
+            if best.is_none_or(|x| b.scope_end - b.scope_start < x.scope_end - x.scope_start) {
+                best = Some(b);
+            }
+        }
+        let declaration = match best {
+            Some(b) => self
+                .read_file(&r.file_path)
+                .and_then(|ls| ls.get((b.line - 1) as usize).cloned()),
+            None => None,
+        };
+        if r.language == "go" {
+            // `!declaration?.includes('range')` → null → provable miss.
+            return Ok(declaration.is_some_and(|d| d.contains("range")));
+        }
+        // kotlin: `receiver !== 'it' && !declaration?.includes('->')` → null.
+        Ok(receiver == "it" || declaration.is_some_and(|d| d.contains("->")))
+    }
+
+    /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
+    /// boundReceiver evidence slice. Punt points: php instanceof guards,
+    /// go/kotlin iteration constructs, ESM awaited inference, and every
+    /// member-miss that would walk live supertype edges.
+    fn match_method_call(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        // PHP `$this->prop->method()` — exclusive declared-type path.
+        if r.language == "php" {
+            let re = self.cached_regex(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$")?;
+            if let Some(m) = re.captures(&r.reference_name) {
+                let receiver = m[1].to_string();
+                let php_method = m[2].to_string();
+                let Some(inferred) =
+                    self.infer_local_receiver_type(&receiver, r, false)?
+                else {
+                    return Ok(McRes::Null);
+                };
+                let fqn = self.imported_fqn_of(&inferred, r)?;
+                return self.resolve_method_on_type(
+                    &inferred,
+                    &php_method,
+                    r,
+                    0.9,
+                    "instance-method",
+                    fqn.as_deref(),
+                );
+            }
+        }
+
+        let dot_re = self
+            .cached_regex(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$")?;
+        let mut dot_match = dot_re.captures(&r.reference_name);
+        if dot_match.is_none() && r.language == "cpp" {
+            let op_re = self.cached_regex(
+                r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$",
+            )?;
+            dot_match = op_re.captures(&r.reference_name);
+        }
+        let colon_re = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?;
+        let colon_match = colon_re.captures(&r.reference_name);
+        // lua `:`/r `$` shapes are unmigrated-language only — dead here.
+        let matched = dot_match.as_ref().or(colon_match.as_ref());
+        let Some(m) = matched else {
+            return Ok(McRes::Null);
+        };
+        let object_or_class = m[1].to_string();
+        let method_name = m[2].to_string();
+        let inferable = dot_match.is_some();
+
+        let bindings = self.bindings(&r.file_path)?;
+        let binding =
+            Self::innermost_binding(&bindings, &object_or_class, Some(r.line)).cloned();
+
+        if inferable {
+            // inferGuardedReceiver is php-only and needs a tree parse — punt
+            // when its cheap precondition can hold, else provable null.
+            if r.language == "php" {
+                let guarded = self
+                    .read_file(&r.file_path)
+                    .is_some_and(|ls| ls.iter().any(|l| l.contains("instanceof")));
+                if guarded {
+                    return Ok(McRes::Punt("mc-guarded"));
+                }
+            }
+            let mut site = Self::ref_clone(r);
+            if let Some(b) = &binding {
+                if b.kind != "import" {
+                    site.line = b.line;
+                    if let Some(nid) = &b.node_id {
+                        site.from_node_id = nid.clone();
+                    }
+                }
+            }
+            // TS passes requireReceiverEvidence (=true) as preserveQualifiedName
+            // to both inferrers here — qualified names stay intact.
+            let mut inferred = if r.language == "cpp" {
+                self.infer_cpp_receiver_type(&object_or_class, r, 0, true)?
+            } else {
+                self.infer_local_receiver_type(&object_or_class, &site, true)?
+            };
+            if inferred.is_none() && r.language == "go" {
+                match self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
+                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
+                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
+                    McRes::Null => {}
+                }
+            }
+            if inferred.is_none() {
+                if self.mc_iteration_gate(&object_or_class, r)? {
+                    return Ok(McRes::Punt("mc-iteration"));
+                }
+                if is_esm_family(&r.language)
+                    && self.mc_await_gate(&object_or_class, r)?
+                {
+                    return Ok(McRes::Punt("mc-await"));
+                }
+            }
+            if let Some(t) = inferred.take() {
+                let mut bsite = Self::ref_clone(r);
+                if let Some(b) = &binding {
+                    bsite.line = b.line;
+                }
+                return Ok(match self.match_bound_type_member(&t, &method_name, &bsite)? {
+                    McRes::Hit(c) => McRes::Hit(c),
+                    McRes::Null => McRes::Null,
+                    McRes::Punt(p) => McRes::Punt(p),
+                });
+            }
+        }
+
+        // Go 2-hop field chain — exclusive branch.
+        if r.language == "go" && dot_match.is_some() && object_or_class.contains('.') {
+            return self.match_go_field_chain_call(&object_or_class, &method_name, r);
+        }
+        // rust field/self arms: rust is unmigrated — dead.
+        // this.field arms: `this.` receivers are excluded by the claim gate —
+        // dead inside boundReceiver.
+
+        if (r.language == "java" || r.language == "kotlin") && dot_match.is_some() {
+            if let Some(inferred) =
+                self.infer_java_field_receiver_type(&object_or_class, r)?
+            {
+                let fqn = self.imported_fqn_of(&inferred, r)?;
+                match self.resolve_method_on_type(
+                    &inferred,
+                    &method_name,
+                    r,
+                    0.9,
+                    "instance-method",
+                    fqn.as_deref(),
+                )? {
+                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
+                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
+                    McRes::Null => {}
+                }
+            }
+        }
+
+        // mc-literal — OBJECT_LITERAL_LANGUAGES is the ESM set.
+        if dot_match.is_some()
+            && !object_or_class.contains('.')
+            && is_object_literal_language(&r.language)
+        {
+            let holders: Vec<Rc<KNode>> = prefer_call_site_file(
+                self.nodes_by_name(&object_or_class)?
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.kind.as_str(), "constant" | "variable")
+                            && n.file_path == r.file_path
+                    })
+                    .map(|n| Rc::new(n.clone()))
+                    .collect(),
+                &r.file_path,
+            );
+            for holder in holders {
+                // `binding?.nodeId !== holder.id` — an absent binding or
+                // node_id skips every holder, exactly like TS.
+                let bound_id = binding.as_ref().and_then(|b| b.node_id.as_deref());
+                if bound_id != Some(holder.id.as_str()) {
+                    continue;
+                }
+                if let Some(hit) = self.resolve_object_literal_member(
+                    &holder,
+                    &method_name,
+                    r,
+                    0.85,
+                    "instance-method",
+                )? {
+                    return Ok(McRes::Hit(hit));
+                }
+            }
+        }
+
+        // Strategy 1 — under requireReceiverEvidence the first candidate
+        // passing the binding filter returns matchBoundTypeMember(receiver).
+        let class_candidates = prefer_call_site_file(
+            self.nodes_by_name(&object_or_class)?
+                .iter()
+                .map(|n| Rc::new(n.clone()))
+                .collect(),
+            &r.file_path,
+        );
+        for c in &class_candidates {
+            if let Some(b) = &binding {
+                if b.node_id.as_deref() != Some(c.id.as_str()) {
+                    continue;
+                }
+            }
+            return self.match_bound_type_member(&object_or_class, &method_name, r);
+        }
+        Ok(McRes::Null)
+    }
+
     fn bound_receiver_claim(&mut self, r: &ResolveRefIn) -> Result<BoundClaim> {
         // `^(.+)\.([\w$]+)$` is guaranteed by the gate — split at the LAST dot.
         let dot = r.reference_name.rfind('.').unwrap();
@@ -3686,18 +5667,31 @@ impl KernelResolver {
         let method = &r.reference_name[dot + 1..];
         let root = receiver.split('.').next().unwrap_or(receiver);
         let bindings = self.bindings(&r.file_path)?;
-        let binding = Self::innermost_binding(&bindings, root, Some(r.line));
+        let binding = Self::innermost_binding(&bindings, root, Some(r.line)).cloned();
 
         if !is_esm_family(&r.language) {
             // `binding?.kind === 'import' && !phpVariable` → br:import;
             // anything else is matchMethodCall receiver inference (source).
             let php_variable =
                 r.language == "php" && self.ref_line_starts_with_dollar(r);
-            if binding.is_some_and(|b| b.kind == "import") && !php_variable {
-                // java/kotlin bound-type resolution needs `typeParameters` —
-                // unported; the source-reading arm owns those refs.
+            if binding.as_ref().is_some_and(|b| b.kind == "import") && !php_variable {
+                // java/kotlin bound-type resolution runs before the import
+                // descent: an owner means btm owns the ref (or refuses a
+                // deeper receiver); a miss falls through to br:import.
                 if r.language == "java" || r.language == "kotlin" {
-                    return Ok(BoundClaim::Punt("br-source"));
+                    match self.resolve_bound_type(root, r, 0)? {
+                        BtRes::Owner(_) => {
+                            return Ok(if receiver == root {
+                                Self::mc_to_claim(
+                                    self.match_bound_type_member(root, method, r)?,
+                                )
+                            } else {
+                                BoundClaim::Refused
+                            });
+                        }
+                        BtRes::Null => {}
+                        BtRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
+                    }
                 }
                 return Ok(match self.resolve_via_import_member(r)? {
                     ViaImport::Hit(c) => {
@@ -3714,10 +5708,10 @@ impl KernelResolver {
                     ViaImport::Punt(reason) => BoundClaim::Punt(reason),
                 });
             }
-            return Ok(BoundClaim::Punt("br-source"));
+            return Ok(Self::mc_to_claim(self.match_method_call(r)?));
         }
 
-        if binding.is_some_and(|b| b.kind == "import") {
+        if binding.as_ref().is_some_and(|b| b.kind == "import") {
             // The import resolver descends one member — a deeper receiver
             // must not mistake the first member for the call.
             if receiver.contains('.') {
@@ -3740,21 +5734,80 @@ impl KernelResolver {
                 ViaImport::Punt(reason) => BoundClaim::Punt(reason),
             });
         }
-        if binding.is_none() {
+        let Some(binding) = binding else {
             return Ok(BoundClaim::Refused);
-        }
+        };
         if receiver.contains('.') {
-            // `a.b.c` with 2-part receiver → fieldinfer (source); deeper is
-            // refused outright.
-            return Ok(if receiver.split('.').count() != 2 {
-                BoundClaim::Refused
-            } else {
-                BoundClaim::Punt("br-source")
+            let parts: Vec<&str> = receiver.split('.').collect();
+            if parts.len() != 2 {
+                return Ok(BoundClaim::Refused);
+            }
+            // br:fieldinfer — root's declared type anchored at the binding
+            // site (preserve qualified names), then the field on that owner.
+            let mut site = Self::ref_clone(r);
+            site.line = binding.line;
+            if let Some(nid) = &binding.node_id {
+                site.from_node_id = nid.clone();
+            }
+            let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else {
+                return Ok(BoundClaim::Refused);
+            };
+            let type_binding = Self::innermost_binding(
+                &bindings,
+                ty.split('.').next().unwrap_or(&ty),
+                Some(binding.line),
+            )
+            .cloned();
+            let owner_id = match &type_binding {
+                Some(b) if b.kind == "import" => {
+                    // `{ ...ref, referenceName: type, 'references' }` — the
+                    // ORIGINAL ref, not the anchored site.
+                    let mut ref2 = Self::ref_clone(r);
+                    ref2.reference_name = ty.clone();
+                    ref2.reference_kind = "references".to_string();
+                    let via = if ty.contains('.') {
+                        match self.resolve_via_import_member(&ref2)? {
+                            ViaImport::Hit(c) => Some(c),
+                            ViaImport::Miss => None,
+                            ViaImport::Punt(p) => return Ok(BoundClaim::Punt(p)),
+                        }
+                    } else {
+                        self.resolve_via_import(&ref2)?
+                    };
+                    via.map(|c| c.node.id.clone())
+                }
+                Some(b) => b.node_id.clone(),
+                None => None,
+            };
+            let owner = match &owner_id {
+                Some(id) => self.node_by_id(id)?,
+                None => None,
+            };
+            return Ok(match owner {
+                Some(o)
+                    if matches!(
+                        o.kind.as_str(),
+                        "class" | "interface" | "component" | "type_alias"
+                    ) =>
+                {
+                    Self::mc_to_claim(
+                        self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?,
+                    )
+                }
+                _ => BoundClaim::Refused,
             });
         }
-        // receiver == root: matchMethodCall then factory/value inference —
-        // all source-reading.
-        Ok(BoundClaim::Punt("br-source"))
+        match self.match_method_call(r)? {
+            McRes::Hit(c) => return Ok(BoundClaim::Hit(c)),
+            McRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
+            McRes::Null => {}
+        }
+        if binding.kind == "param" {
+            return Ok(BoundClaim::Refused);
+        }
+        Ok(Self::mc_to_claim(
+            self.esm_factory_tail(&binding, root, method, r)?,
+        ))
     }
 
     /// resolveViaImport's non-bare slice (import-resolver.ts): the go/java/
@@ -3868,8 +5921,8 @@ impl KernelResolver {
                     .next()
                     .unwrap_or("");
                     if !member0.is_empty() {
-                        if let Some(lit) =
-                            self.resolve_object_literal_member(&target, member0, r)?
+                        if let Some(lit) = self
+                            .resolve_object_literal_member(&target, member0, r, 0.9, "import")?
                         {
                             return Ok(ViaImport::Hit(lit));
                         }
@@ -4094,6 +6147,8 @@ impl KernelResolver {
         container: &KNode,
         member: &str,
         r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
     ) -> Result<Option<KCand>> {
         if container.kind != "constant" && container.kind != "variable" {
             return Ok(None);
@@ -4163,8 +6218,8 @@ impl KernelResolver {
         });
         Ok(Some(KCand {
             node: candidates[0].clone(),
-            confidence: 0.9,
-            resolved_by: "import",
+            confidence,
+            resolved_by,
         }))
     }
 

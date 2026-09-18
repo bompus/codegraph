@@ -414,3 +414,35 @@ Same host/arm shape as §5.15 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux 
 **What was ported** (`codegraph-kernel/src/resolve.rs`, ~+1,070): `resolve_nonbare_ref` — `resolveOneInner`'s non-bare slice in TS order: builtin → prefilter → function_ref/jvm/php-imports punts → `resolvePhpImportedStaticCall` (terminal) → `matchBoundReceiverCall` (claim-and-decide: `br:import` for import-bound receivers + the ESM refusals — deep receiver / unbound root — are terminal natively; `br:methodcall`/`br:fieldinfer`/`br:factory` and java/kotlin boundtype punt `br-source`) → `isUnresolvedJsMemberCall` terminal → `x().y` chain punt → `resolveViaImport` member descent (go `pkg.F`, java/kotlin qualified imports, python module-member + absolute-module, `localName.member` descent: staticMember/objectLiteralMember; objectLiteralAlias/instanceMember punt `via-src`) → arkts `.`-prefix punt → filePath → `matchByQualifiedName` (exact @0.95 + call-site-file preference + last-segment suffix @0.85) → `member-tail` punt. Alias forward extended with `memberName` (`{member: fn}` shorthand/keyed bindings). `settleKernelOutcome` (index.ts) now runs `applyResolveTail` on kernel-null verdicts — `unknown-receiver` stamping on boundReceiver refusals was unreachable before this arm existed.
 
 **Attribution check**: `br:methodcall` hit 778 + `via-src` hit 9 downstream in TS — the source-reading arms are correctly delegated, not lost. `member-tail`→`qualified-name` rows (~3k) are deferred refs (this-member/chain conformance pass) — the deferred channel owns them by design.
+
+### 5.17 Phase 5 step 4 — member-access stage 2: source-backed receiver inference native (2026-09-17)
+
+Same host/arm shape as §5.16 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; loop-stages settle 7.9→9.4s, insertEdges 36.6→60.5s — the vitest suite ran concurrently during the resolve leg, so these aren't clean timing reads). Log: `bench/20260917-node-8c-kernelon-sourceinfer.log`.
+
+| Metric | §5.16 baseline | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,775,030 | 5,794,627 | +19,597 |
+| kernel passthrough | 89,474 | 64,877 | −24,597 |
+| **native share** | 98.5% | **98.9%** | +0.4 pts |
+| `ineligible:lang` | 57,441 | 57,441 | 0 (untouched) |
+| `br-source` | 25,320 | **0** | eliminated — the whole source-backed slice is native or attributed-punt |
+| `member-tail` | 5,753 | 5,750 | ~0 (the remaining unported nameMatch tail) |
+| `chain` | 951 | 951 | 0 |
+| `via-src` | 9 | 9 | 0 |
+| `btm-supers` (new punt) | — | 726 | member-miss on a resolved owner — TS walks live supertype edges the snapshot can't see |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — counts identical to `baselines/linux-9f528109.db`, and the edge / node / unresolved_refs (incl. `failure_reason`) multisets compare byte-identical (sha256 `c7417d57…` / `67c47a1d…` / `470e3903…` — different serialization than §5.16's md5s, same content).
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, ~+2,260 net; `__tests__/kernel-resolve-parity.test.ts` +82):
+
+- **Schema**: `KNode` gained `return_type`, `type_parameters`, `decorators` (both JSON → `Vec<String>` via a small `parse_json_string_array`); `NODE_COLS` extended.
+- **Inference**: `infer_local_receiver_type` + `local_receiver_type_patterns` for all migrated languages (anchored scope-bounded backward scan, `enclosing_scope_start_line`, `normalize_inferred_type_name`, JS-faithful lookahead guard), `infer_cpp_receiver_type` (declarator/`auto`/call-result/header fallback), `php_property_type_patterns` + assigned-property second-chance, `infer_java_field_receiver_type`, `match_ts_field_call_bound` (ESM `br:fieldinfer` owner-scan).
+- **Terminals**: `resolve_bound_type` (java type-parameter scopes, import binding → viaImport + jvm fallback, php qualified owner, `!binding && !ESM` same-file/package candidates, owner-kind gate), `match_bound_type_member` (`QName::method` member filter; miss → `btm-supers` punt — TS's supertype BFS reads live edges), `resolve_method_on_type` (preferred-FQN + call-site-file disambiguation; miss → `rmot-supers` punt).
+- **Matchers**: `match_go_factory_receiver` (param/typed-decl → btm; `:=` first-result-only → callee `return_type` → btm at callee's def site), `match_go_field_chain_call` (two-hop `base.field.Method`, in-module + builtin-field-type guards), `esm_factory_tail` (`br:factory` — UTF-16-correct initializer parse, await gate, `new Owner()` + `factory()` callee forms, `Promise<T>` unwrap on awaited only, `!returnType` bail).
+- **Punt gates** for tree-dependent inferrers: `mc-guarded` (php `instanceof`), `mc-iteration` (go `range` / kotlin `it`/`->`), `mc-await` (ESM `const x = await` declarations).
+- **`bound_receiver_claim` rewired**: java/kotlin import bindings run `resolve_bound_type` first (owner → btm or deeper-receiver refusal; miss → `br:import` descent); non-ESM local/phpVariable receivers → `match_method_call`; ESM local receivers → 2-part `br:fieldinfer` → `match_method_call` → param refusal → `br:factory` tail. `matchMethodCall` arm order preserved exactly (guarded-gate → infer → gofactory → iteration → await → btm terminal → gofield → javafield → mc-literal → strat1 → receiver-evidence refusal).
+- **Fidelity details**: `requireReceiverEvidence` passed as `preserveQualifiedName` to both inferrers; `binding?.nodeId !== holder.id` object-literal evidence rule (absent binding skips all holders); `{...ref, line: binding?.line}` btm site anchoring; JS `split(/\s+/)[0]` leading-whitespace semantics on type parameters; empty-class-name falsy check; UTF-16 receiver slicing throughout.
+
+**Fixture coverage** (parity test): `svc.run` infer→btm @0.9, `svc.call` prefilter-pass → btm miss → `btm-supers` punt → passthrough, `made.run` factory tail null (`return_type` unpopulated for TS — identical bail), `k.mymethod` java field/param infer @0.9, `svc.Run` gofactory callee-return-type → btm @0.9, `o.in.Do` gofield two-hop @0.85.
+
+**Where the 25,320 `br-source` refs went**: ~24.6k now verdict natively (the measured ~1.2k member edges reproduce in-kernel — byte-identical edge multiset); 726 punt `btm-supers` (member-miss on a proven owner — conservative delegation, not a coverage gap). Remaining member punts: `member-tail` 5,750 (nameMatch tail: methodCall/exactName/fuzzy on non-bindingReceiver shapes), `chain` 951, `via-src` 9 — all deferred-conformance or source-alias territory by design.
