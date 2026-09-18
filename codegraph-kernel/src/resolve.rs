@@ -264,6 +264,34 @@ fn is_object_literal_language(lang: &str) -> bool {
     matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts")
 }
 
+/// splitCamelCase — receiver/class word split for matchMethodCall's
+/// name-similarity scoring. `permissionEngine` → ["permission","Engine"];
+/// `HTTPServer` → ["HTTP","Server"]; words of length ≤ 1 are dropped.
+/// Single pass: a break goes before a capital that follows a lowercase, or
+/// that starts a Capital+lowercase word inside a capital run — the same
+/// boundaries the two sequential JS replaces produce.
+fn split_camel_case(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut spaced = String::with_capacity(s.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && c.is_ascii_uppercase() {
+            let prev_lower = chars[i - 1].is_ascii_lowercase();
+            let acronym_tail = chars[i - 1].is_ascii_uppercase()
+                && i + 1 < chars.len()
+                && chars[i + 1].is_ascii_lowercase();
+            if prev_lower || acronym_tail {
+                spaced.push(' ');
+            }
+        }
+        spaced.push(c);
+    }
+    spaced
+        .split(|c: char| c.is_whitespace() || matches!(c, '.' | '_' | ':' | '/' | '\\'))
+        .filter(|w| w.encode_utf16().count() > 1)
+        .map(str::to_string)
+        .collect()
+}
+
 /// JS `line.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '')` applied to a
 /// single line: cut at the first `//`, then drop `/* … */` spans; an
 /// unterminated `/*` survives verbatim (the replace simply has no match).
@@ -1956,6 +1984,19 @@ static JS_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .collect()
 });
 
+/// TypeScript primitive type names — js-builtins.ts's TS_PRIMITIVE_TYPES.
+/// Distinct from JS_BUILT_INS on purpose: a primitive receiver joins the
+/// builtins at the same bail points (an inferred `string` must not fall
+/// through to a project method named `split`).
+static TS_PRIMITIVE_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "string", "number", "boolean", "bigint", "symbol", "void", "undefined", "null",
+        "never", "unknown", "any", "object",
+    ]
+    .into_iter()
+    .collect()
+});
+
 static REACT_HOOKS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         "useState", "useEffect", "useContext", "useReducer", "useCallback", "useMemo", "useRef",
@@ -3612,12 +3653,22 @@ impl KernelResolver {
             };
             return self.finish(r, winner, None, true);
         }
-        // matchReference's name arms in TS order: filePath, then qualifiedName
+        // matchReference's name arms in TS order: filePath, qualifiedName
         // on a file-path miss (`#include <sys/ioctl.h>` names its own import
-        // node's qualified name — filePath can't see it, qualifiedName can).
+        // node's qualified name — filePath can't see it, qualifiedName can),
+        // then methodCall's unbound arm (an `a.h` name is a dot-shape
+        // receiver). The chain arms can't fire — include names never carry
+        // `()` — so they are skipped; exactName/fuzzy stay in TS.
         let name_cand = match self.match_by_file_path(r)? {
             Some(c) => Some(c),
-            None => self.match_by_qualified_name(r)?,
+            None => match self.match_by_qualified_name(r)? {
+                Some(c) => Some(c),
+                None => match self.match_method_call_free(r)? {
+                    McRes::Hit(c) => Some(c),
+                    McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
+                    McRes::Null => None,
+                },
+            },
         };
         let Some(c) = self.gate_language(name_cand, r) else {
             return Ok(ResolveOutcome::passthrough("member-tail"));
@@ -5339,6 +5390,207 @@ impl KernelResolver {
         Ok(McRes::Null)
     }
 
+    /// matchTsThisFieldCall — the `this.field.method` entry point of
+    /// matchMethodCall's requireReceiverEvidence=false arm. The owner is the
+    /// enclosing class written on the calling method's qualified name, so it
+    /// is not a guess — same exclusive discipline as the go/rust field arms.
+    fn match_ts_this_field_call(
+        &mut self,
+        field: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        if field.is_empty() || field.contains('.') {
+            return Ok(McRes::Null);
+        }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(McRes::Null);
+        };
+        let Some(sep) = caller.qualified_name.rfind("::") else {
+            return Ok(McRes::Null);
+        };
+        if sep == 0 {
+            return Ok(McRes::Null); // not inside a class
+        }
+        let owner = caller.qualified_name[..sep]
+            .split("::")
+            .last()
+            .unwrap_or("");
+        if owner.is_empty() {
+            return Ok(McRes::Null);
+        }
+        self.match_ts_field_call_free(owner, field, method, r)
+    }
+
+    /// matchTsFieldCall without boundOwner — the unbound variant used by the
+    /// member-tail arm. Owners are named classes/components visible to the
+    /// call site (call-site file first); the declared-type tail resolves
+    /// through rmot, never btm. A `typeof` field still routes through the
+    /// object-literal member scan, but by plain name lookup + same-family
+    /// filter rather than the binding row the bound variant uses.
+    fn match_ts_field_call_free(
+        &mut self,
+        owner: &str,
+        field: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        let owners = prefer_call_site_file(
+            self.nodes_by_name(owner)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "class" | "component")
+                        && same_language_family(&n.language, &r.language)
+                })
+                .map(|n| Rc::new(n.clone()))
+                .collect(),
+            &r.file_path,
+        );
+        let field_esc = regex::escape(field);
+        let pats: Vec<(String, bool)> = vec![
+            (
+                format!(
+                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    field_esc
+                ),
+                true,
+            ),
+            (
+                format!(
+                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    field_esc
+                ),
+                false,
+            ),
+            (
+                format!(
+                    r"\b{}\b\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    field_esc
+                ),
+                false,
+            ),
+        ];
+        for cls in &owners {
+            let Some(source) = self.read_file(&cls.file_path) else {
+                continue;
+            };
+            let start = (cls.start_line - 1).max(0) as usize;
+            let end = (cls.end_line as usize).min(source.len());
+            for raw in &source[start..end] {
+                let line = strip_line_comments(raw);
+                for (pat, value_type) in &pats {
+                    let re = self.cached_regex(pat)?;
+                    let Some(caps) = re.captures(&line) else {
+                        continue;
+                    };
+                    let Some(m1) = caps.get(1) else { continue };
+                    if m1.as_str().is_empty() {
+                        continue;
+                    }
+                    // No tail_re check — that guard is `boundOwner &&` in TS.
+                    if *value_type {
+                        // `field: typeof Ns` — the namespace value's members
+                        // are bare-named functions inside a const/variable.
+                        let holder_name =
+                            m1.as_str().split('.').next_back().unwrap_or("");
+                        let holders = prefer_call_site_file(
+                            self.nodes_by_name(holder_name)?
+                                .iter()
+                                .filter(|n| {
+                                    matches!(n.kind.as_str(), "constant" | "variable")
+                                        && same_language_family(&n.language, &r.language)
+                                })
+                                .map(|n| Rc::new(n.clone()))
+                                .collect(),
+                            &r.file_path,
+                        );
+                        for holder in &holders {
+                            if let Some(hit) = self.resolve_object_literal_member(
+                                holder,
+                                method,
+                                r,
+                                0.85,
+                                "instance-method",
+                            )? {
+                                return Ok(McRes::Hit(hit));
+                            }
+                        }
+                        return Ok(McRes::Null);
+                    }
+                    // `ns.Mailer` → `Mailer`; a primitive or builtin names no
+                    // project type.
+                    let type_name = m1.as_str().split('.').next_back().unwrap_or("");
+                    if !type_name
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_uppercase())
+                    {
+                        return Ok(McRes::Null);
+                    }
+                    // Two apps in one repo may each declare the type. Among
+                    // its declarations of the method prefer the one closest
+                    // to the call site's directory — never index order.
+                    let declared: Vec<Rc<KNode>> = self
+                        .nodes_by_name(method)?
+                        .iter()
+                        .filter(|n| {
+                            n.kind == "method"
+                                && same_language_family(&n.language, &r.language)
+                                && (n.qualified_name == format!("{type_name}::{method}")
+                                    || n.qualified_name
+                                        .ends_with(&format!("::{type_name}::{method}")))
+                        })
+                        .map(|n| Rc::new(n.clone()))
+                        .collect();
+                    if declared.len() > 1 {
+                        let call_dirs: Vec<&str> = {
+                            let mut v: Vec<&str> = r.file_path.split('/').collect();
+                            v.pop();
+                            v
+                        };
+                        let shared = |fp: &str| -> usize {
+                            let mut dirs: Vec<&str> = fp.split('/').collect();
+                            dirs.pop();
+                            let mut i = 0;
+                            while i < dirs.len()
+                                && i < call_dirs.len()
+                                && dirs[i] == call_dirs[i]
+                            {
+                                i += 1;
+                            }
+                            i
+                        };
+                        let max_shared =
+                            declared.iter().map(|n| shared(&n.file_path)).max().unwrap_or(0);
+                        let nearest: Vec<&Rc<KNode>> = declared
+                            .iter()
+                            .filter(|n| shared(&n.file_path) == max_shared)
+                            .collect();
+                        if nearest.len() > 1 {
+                            // TS tiebreaks by localeCompare, which this port
+                            // cannot model exactly — let the TS spine pick.
+                            return Ok(McRes::Punt("mc-tfield-ambig"));
+                        }
+                        return Ok(McRes::Hit(KCand {
+                            node: nearest[0].clone(),
+                            confidence: 0.85,
+                            resolved_by: "instance-method",
+                        }));
+                    }
+                    return self.resolve_method_on_type(
+                        type_name,
+                        method,
+                        r,
+                        0.85,
+                        "instance-method",
+                        None,
+                    );
+                }
+            }
+        }
+        Ok(McRes::Null)
+    }
+
     /// The br:factory tail of matchBoundReceiverCall's ESM arm — receiver's
     /// initializer ends in a call/new-factory expression whose return type
     /// carries the method.
@@ -5794,6 +6046,315 @@ impl KernelResolver {
                 }
             }
             return self.match_bound_type_member(&object_or_class, &method_name, r);
+        }
+        Ok(McRes::Null)
+    }
+
+    /// matchMethodCall(ref, context, requireReceiverEvidence=false) — the
+    /// member-tail arm of matchReference, reached by refs the boundReceiver
+    /// claim never took (`this.`/`self.` roots, non-call kinds, deep
+    /// receivers). Same pattern prelude and unconditional sub-arms as the
+    /// bound path; the evidence-gated arms (mc-guarded, gofactory, iteration,
+    /// the btm terminal) never run here — inferred types terminal-match via
+    /// rmot, and the name-similarity strategies close the arm.
+    fn match_method_call_free(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        // PHP `$this->prop.method` — exclusive declared-type path,
+        // unconditional in both modes.
+        if r.language == "php" {
+            let re = self.cached_regex(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$")?;
+            if let Some(m) = re.captures(&r.reference_name) {
+                let receiver = m[1].to_string();
+                let php_method = m[2].to_string();
+                let Some(inferred) =
+                    self.infer_local_receiver_type(&receiver, r, false)?
+                else {
+                    return Ok(McRes::Null);
+                };
+                let fqn = self.imported_fqn_of(&inferred, r)?;
+                return self.resolve_method_on_type(
+                    &inferred,
+                    &php_method,
+                    r,
+                    0.9,
+                    "instance-method",
+                    fqn.as_deref(),
+                );
+            }
+        }
+
+        let dot_re = self
+            .cached_regex(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$")?;
+        let mut dot_match = dot_re.captures(&r.reference_name);
+        if dot_match.is_none() && r.language == "cpp" {
+            let op_re = self.cached_regex(
+                r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$",
+            )?;
+            dot_match = op_re.captures(&r.reference_name);
+        }
+        let colon_re = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?;
+        let colon_match = colon_re.captures(&r.reference_name);
+        // lua `:`/r `$` shapes are unmigrated-language only — dead here.
+        let matched = dot_match.as_ref().or(colon_match.as_ref());
+        let Some(m) = matched else {
+            return Ok(McRes::Null);
+        };
+        let object_or_class = m[1].to_string();
+        let method_name = m[2].to_string();
+        let inferable = dot_match.is_some();
+
+        if inferable {
+            // No binding anchor under requireReceiverEvidence=false — the
+            // inferrers run at the ref's own site with qualified names
+            // normalized (preserveQualifiedName=false).
+            let inferred = if r.language == "cpp" {
+                self.infer_cpp_receiver_type(&object_or_class, r, 0, false)?
+            } else {
+                self.infer_local_receiver_type(&object_or_class, r, false)?
+            };
+            // mc-guarded/gofactory/iteration are evidence-gated in TS and
+            // never run here; mc-await still does.
+            if inferred.is_none()
+                && is_esm_family(&r.language)
+                && self.mc_await_gate(&object_or_class, r)?
+            {
+                return Ok(McRes::Punt("mc-await"));
+            }
+            if let Some(t) = inferred {
+                // Java/Kotlin: the file's import pins WHICH same-named class.
+                let fqn = if r.language == "java" || r.language == "kotlin" {
+                    self.imported_fqn_of(&t, r)?
+                } else {
+                    None
+                };
+                match self.resolve_method_on_type(
+                    &t,
+                    &method_name,
+                    r,
+                    0.9,
+                    "instance-method",
+                    fqn.as_deref(),
+                )? {
+                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
+                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
+                    McRes::Null => {
+                        // A known builtin/primitive receiver is external when
+                        // it has no project method — TS returns null here
+                        // rather than letting Strategy 3 guess an unrelated
+                        // `get`/`split`/`has`.
+                        if is_esm_family(&r.language)
+                            && (JS_BUILT_INS.contains(t.as_str())
+                                || TS_PRIMITIVE_TYPES.contains(t.as_str()))
+                        {
+                            return Ok(McRes::Null);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Go 2-hop field chain — EXCLUSIVE for chained Go receivers.
+        if r.language == "go" && dot_match.is_some() && object_or_class.contains('.') {
+            return self.match_go_field_chain_call(&object_or_class, &method_name, r);
+        }
+        // rust self/field arms — unmigrated language, dead here.
+
+        // TS/JS `this.field.method` — EXCLUSIVE; the field's declared type
+        // off the enclosing class, validated by rmot, or nothing.
+        if matches!(r.language.as_str(), "typescript" | "javascript" | "tsx" | "jsx")
+            && dot_match.is_some()
+            && object_or_class.starts_with("this.")
+        {
+            return self.match_ts_this_field_call(
+                &object_or_class["this.".len()..],
+                &method_name,
+                r,
+            );
+        }
+
+        // Java/Kotlin field receiver inference — non-exclusive (a miss still
+        // reaches the name strategies, exactly like TS).
+        if (r.language == "java" || r.language == "kotlin") && dot_match.is_some() {
+            if let Some(inferred) =
+                self.infer_java_field_receiver_type(&object_or_class, r)?
+            {
+                let fqn = self.imported_fqn_of(&inferred, r)?;
+                match self.resolve_method_on_type(
+                    &inferred,
+                    &method_name,
+                    r,
+                    0.9,
+                    "instance-method",
+                    fqn.as_deref(),
+                )? {
+                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
+                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
+                    McRes::Null => {}
+                }
+            }
+        }
+
+        // Object-literal namespace receiver — same-file const/variable
+        // holders; under requireReceiverEvidence=false there is no binding
+        // filter — every holder gets its object-literal member scan.
+        if dot_match.is_some()
+            && !object_or_class.contains('.')
+            && is_object_literal_language(&r.language)
+        {
+            let holders = prefer_call_site_file(
+                self.nodes_by_name(&object_or_class)?
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.kind.as_str(), "constant" | "variable")
+                            && n.file_path == r.file_path
+                    })
+                    .map(|n| Rc::new(n.clone()))
+                    .collect(),
+                &r.file_path,
+            );
+            for holder in &holders {
+                if let Some(hit) = self.resolve_object_literal_member(
+                    holder,
+                    &method_name,
+                    r,
+                    0.85,
+                    "instance-method",
+                )? {
+                    return Ok(McRes::Hit(hit));
+                }
+            }
+        }
+
+        // Strategy 1 — direct class-name match, call site's file first.
+        let class_candidates = prefer_call_site_file(
+            self.nodes_by_name(&object_or_class)?
+                .iter()
+                .map(|n| Rc::new(n.clone()))
+                .collect(),
+            &r.file_path,
+        );
+        for c in &class_candidates {
+            if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") {
+                continue;
+            }
+            if c.language != r.language {
+                continue;
+            }
+            let in_file = self.nodes_in_file(&c.file_path)?;
+            if let Some(mn) = in_file.iter().find(|n| {
+                n.kind == "method"
+                    && n.name == method_name
+                    && n.qualified_name.contains(c.name.as_str())
+            }) {
+                return Ok(McRes::Hit(KCand {
+                    node: Rc::new(mn.clone()),
+                    confidence: 0.85,
+                    resolved_by: "qualified-name",
+                }));
+            }
+        }
+
+        // Strategy 2 — capitalized receiver (`permissionEngine` →
+        // `PermissionEngine`) against the same class scan.
+        let mut cap_bytes = object_or_class.clone().into_bytes();
+        if let Some(b) = cap_bytes.first_mut() {
+            *b = b.to_ascii_uppercase();
+        }
+        let capitalized = String::from_utf8(cap_bytes).unwrap_or_default();
+        if capitalized != object_or_class {
+            let fuzzy_candidates = prefer_call_site_file(
+                self.nodes_by_name(&capitalized)?
+                    .iter()
+                    .map(|n| Rc::new(n.clone()))
+                    .collect(),
+                &r.file_path,
+            );
+            for c in &fuzzy_candidates {
+                if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") {
+                    continue;
+                }
+                if c.language != r.language {
+                    continue;
+                }
+                let in_file = self.nodes_in_file(&c.file_path)?;
+                if let Some(mn) = in_file.iter().find(|n| {
+                    n.kind == "method"
+                        && n.name == method_name
+                        && n.qualified_name.contains(c.name.as_str())
+                }) {
+                    return Ok(McRes::Hit(KCand {
+                        node: Rc::new(mn.clone()),
+                        confidence: 0.8,
+                        resolved_by: "instance-method",
+                    }));
+                }
+            }
+        }
+
+        // Strategy 3 — methods by name across the codebase, scored by
+        // receiver-word overlap with the containing class name.
+        if !method_name.is_empty() {
+            let method_candidates = self.nodes_by_name(&method_name)?;
+            // Ubiquitous-method ceiling: bail before the O(K) work.
+            if method_candidates.len() as i64 > self.ambiguous_ceiling {
+                return Ok(McRes::Null);
+            }
+            let methods: Vec<Rc<KNode>> = method_candidates
+                .iter()
+                .filter(|n| n.kind == "method" && n.name == method_name)
+                .map(|n| Rc::new(n.clone()))
+                .collect();
+            let same_lang: Vec<Rc<KNode>> = methods
+                .iter()
+                .filter(|m| m.language == r.language)
+                .cloned()
+                .collect();
+            let target = if !same_lang.is_empty() {
+                &same_lang
+            } else {
+                &methods
+            };
+            if target.len() == 1 && target[0].language == r.language {
+                return Ok(McRes::Hit(KCand {
+                    node: target[0].clone(),
+                    confidence: 0.7,
+                    resolved_by: "instance-method",
+                }));
+            }
+            if target.len() > 1 {
+                let receiver_words = split_camel_case(&object_or_class);
+                // Same-file candidates first, so a score tie resolves to the
+                // call site's own file (`score > bestScore` keeps first seen).
+                let ordered = prefer_call_site_file(target.clone(), &r.file_path);
+                let mut best: Option<Rc<KNode>> = None;
+                let mut best_score = 0i64;
+                for m in &ordered {
+                    let class_words = split_camel_case(&m.qualified_name);
+                    let mut score = receiver_words
+                        .iter()
+                        .filter(|w| {
+                            class_words
+                                .iter()
+                                .any(|cw| cw.eq_ignore_ascii_case(w))
+                        })
+                        .count() as i64;
+                    if m.language == r.language {
+                        score += 1;
+                    }
+                    if score > best_score {
+                        best_score = score;
+                        best = Some(m.clone());
+                    }
+                }
+                if let Some(bm) = best {
+                    if best_score >= 2 {
+                        return Ok(McRes::Hit(KCand {
+                            node: bm,
+                            confidence: 0.65,
+                            resolved_by: "instance-method",
+                        }));
+                    }
+                }
+            }
         }
         Ok(McRes::Null)
     }
@@ -6564,17 +7125,22 @@ impl KernelResolver {
             return Ok(ResolveOutcome::passthrough("arkts-dot"));
         }
         // matchReference's ported arms, in order: filePath, qualifiedName,
-        // then the per-language chain arm (cppChain/scopedChain/dottedChain).
-        // Everything after (storeAccessor/methodCall/exactName/fuzzy, then
-        // deferred drains) stays in TS behind the member-tail punt.
+        // the per-language chain arm (cppChain/scopedChain/dottedChain), then
+        // methodCall's requireReceiverEvidence=false arm. Everything after
+        // (exactName/fuzzy, then deferred drains) stays in TS behind the
+        // member-tail punt.
         let name_cand = match self.match_by_file_path(r)? {
             Some(c) => Some(c),
             None => match self.match_by_qualified_name(r)? {
                 Some(c) => Some(c),
                 None => match self.match_call_chain(r)? {
                     McRes::Hit(c) => Some(c),
-                    McRes::Null => None,
                     McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
+                    McRes::Null => match self.match_method_call_free(r)? {
+                        McRes::Hit(c) => Some(c),
+                        McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
+                        McRes::Null => None,
+                    },
                 },
             },
         };
