@@ -164,6 +164,20 @@ const FIXTURE: Record<string, string> = {
   'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
   // `import tool` + `tool.pyhelper()` exercises the python module-member arm.
   'main.py': 'import tool\nfrom tool import pyhelper\n\ndef go():\n    pyhelper()\n    tool.pyhelper()\n',
+  // Rust module-path refs — pure `::` names take the native
+  // resolveRustPathReference arm ahead of the ineligible:lang punt. `lib.rs`
+  // marks the crate root; `deep/mod.rs` exercises the `<seg>/mod.rs` form;
+  // `Widget` is a struct (not a module) so `Widget::new` misses the arm.
+  'src/lib.rs': 'fn libuser() {}\n',
+  'src/sub.rs': [
+    'pub fn leaf_fn() {}',
+    'pub struct Widget;',
+    'impl Widget { pub fn new() {} }',
+  ].join('\n'),
+  'src/deep/mod.rs': 'pub mod inner;\npub mod sib;\n',
+  'src/deep/inner.rs': 'pub fn deep_fn() {}\nfn deepuser() {}\n',
+  'src/deep/sib.rs': 'pub fn sib_fn() {}\n',
+  'src/user.rs': 'fn user() {}\n',
 };
 
 let tempDir: string | null = null;
@@ -417,6 +431,25 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(wuserFn, 'W::m', 'src/w.cpp', 'cpp', 'function_ref', 6);
     seed(wuserFn, 'Pool::missing', 'src/w.cpp', 'cpp', 'function_ref', 6);
     seed(runFn, 'api.call', 'src/main.ts', 'typescript', 'function_ref', 10);
+    // Rust `::` module-path refs — pure colon names take the native
+    // resolveRustPathReference arm ahead of the ineligible:lang punt:
+    // crate/self/super anchors, bare paths (self-relative then crate), and
+    // the <seg>/mod.rs module form.
+    const libuserFn = nodeId('libuser', 'lib.rs');
+    const rustUserFn = nodeId('user', 'user.rs');
+    const deepuserFn = nodeId('deepuser', 'inner.rs');
+    seed(libuserFn, 'crate::sub::leaf_fn', 'src/lib.rs', 'rust', 'calls', 2);
+    seed(libuserFn, 'self::sub::leaf_fn', 'src/lib.rs', 'rust', 'calls', 3);
+    seed(libuserFn, 'crate::deep::inner::deep_fn', 'src/lib.rs', 'rust', 'calls', 4);
+    seed(rustUserFn, 'sub::leaf_fn', 'src/user.rs', 'rust', 'calls', 2);
+    seed(rustUserFn, 'crate::sub::leaf_fn', 'src/user.rs', 'rust', 'calls', 3);
+    seed(deepuserFn, 'super::sib::sib_fn', 'src/deep/inner.rs', 'rust', 'calls', 2);
+    seed(libuserFn, 'ext::module::leaf_fn', 'src/lib.rs', 'rust', 'calls', 5);
+    seed(libuserFn, 'Widget::new', 'src/lib.rs', 'rust', 'calls', 6);
+    seed(libuserFn, 'crate::sub::missing', 'src/lib.rs', 'rust', 'calls', 7);
+    // `::` AND `.` — the boundReceiver claim can own an `a::b.c` receiver in
+    // TS, so the arm leaves it punted.
+    seed(libuserFn, 'a::b.c', 'src/lib.rs', 'rust', 'calls', 8);
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -722,6 +755,44 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(frImport.status).toBe('resolved');
     expect(frImport.resolvedBy).toBe('import');
     expect(frImport.confidence).toBe(0.9);
+
+    // ---- Rust `::` module-path refs (ineligible-language arm) ----
+    // `crate::sub::leaf_fn` — crate anchor → src/sub.rs → leaf_fn @0.9.
+    const crateHit = at('crate::sub::leaf_fn', 'src/lib.rs', 'calls');
+    expect(crateHit.status).toBe('resolved');
+    expect(crateHit.resolvedBy).toBe('import');
+    expect(crateHit.confidence).toBe(0.9);
+    expect(crateHit.targetNodeId).toBe(nodeId('leaf_fn', 'sub.rs'));
+    // `self::` — lib.rs owns src/ as its module dir → same target.
+    expect(at('self::sub::leaf_fn', 'src/lib.rs', 'calls').targetNodeId).toBe(
+      nodeId('leaf_fn', 'sub.rs'),
+    );
+    // Bare path — self-relative misses (src/user/sub.rs) → crate-relative hit.
+    expect(at('sub::leaf_fn', 'src/user.rs', 'calls').targetNodeId).toBe(
+      nodeId('leaf_fn', 'sub.rs'),
+    );
+    expect(at('crate::sub::leaf_fn', 'src/user.rs', 'calls').targetNodeId).toBe(
+      nodeId('leaf_fn', 'sub.rs'),
+    );
+    // Multi-segment — `deep` maps to deep/mod.rs, `inner` to deep/inner.rs.
+    const deepHit = at('crate::deep::inner::deep_fn', 'src/lib.rs', 'calls');
+    expect(deepHit.status).toBe('resolved');
+    expect(deepHit.targetNodeId).toBe(nodeId('deep_fn', 'inner.rs'));
+    // `super::` — inner.rs's module dir is src/deep/inner; one super →
+    // src/deep → sib.rs → sib_fn.
+    expect(at('super::sib::sib_fn', 'src/deep/inner.rs', 'calls').targetNodeId).toBe(
+      nodeId('sib_fn', 'sib.rs'),
+    );
+    // External crate — both anchors miss → ineligible:lang punt.
+    expect(at('ext::module::leaf_fn', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // `Widget` is a struct, not a module — arm miss → punt (TS's
+    // qualifiedName arm owns the same ref downstream).
+    expect(at('Widget::new', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // Leaf unknown → prefilter miss → terminal unresolved (store-binding is
+    // JS-gated dead for rust).
+    expect(at('crate::sub::missing', 'src/lib.rs', 'calls').status).toBe('unresolved');
+    // `::`+`.` names stay punted — boundReceiver-claim territory.
+    expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('passthrough');
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {

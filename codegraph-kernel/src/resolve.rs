@@ -799,6 +799,22 @@ fn pos_normalize(p: &str) -> String {
     }
 }
 
+/// rustSelfModuleDir (import-resolver.ts): the directory under which the
+/// current file's module declares its SUBMODULES — `mod.rs`/`lib.rs`/
+/// `main.rs` own their directory; `foo.rs`'s submodules live in `foo/`.
+fn rust_self_module_dir(from_file: &str) -> String {
+    let base = pos_basename(from_file);
+    let dir = pos_dirname(from_file);
+    if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
+        return dir.to_string();
+    }
+    pos_normalize(&format!(
+        "{}/{}",
+        dir,
+        base.strip_suffix(".rs").unwrap_or(base)
+    ))
+}
+
 /// path.resolve(dir, p): join + normalize; absolute `p` wins.
 fn pos_resolve(dir: &str, p: &str) -> String {
     if p.starts_with('/') {
@@ -7527,9 +7543,195 @@ impl KernelResolver {
         }))
     }
 
+    /// The Rust slice of resolveOneInner for pure `::` path refs
+    /// (`crate::m::Item`, `self::sub::f`, `super::x::y`, `a::b::c`). TS
+    /// reaches resolveViaImport → resolveRustPathReference on these; the
+    /// boundReceiver claim can't fire on a dot-free name, and every gate
+    /// between the prefilter and viaImport is language- or shape-gated
+    /// dead for them. A `::`-AND-`.` name (a receiver-shaped `a::b.c`)
+    /// stays on the TS side — the claim can own it there.
+    fn resolve_rust_path_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+        if self.is_built_in_or_external(r) {
+            return Ok(ResolveOutcome::unresolved());
+        }
+        let pre_pass = self.has_any_possible_match(&r.reference_name)
+            || self.matches_any_import(r)?
+            || self.framework_claims(&r.reference_name);
+        if !pre_pass {
+            // matchJsStoreBindingCall is JS-gated — dead for rust — so a
+            // prefilter miss is terminal unresolved in TS.
+            return Ok(ResolveOutcome::unresolved());
+        }
+        // resolveViaImport early-nulls when imports are empty AND the file
+        // is unreadable — for rust (no bindings rows) that's every missing
+        // file, which then falls to matchReference's unported arms.
+        if self.read_file(&r.file_path).is_none() {
+            return Ok(ResolveOutcome::passthrough("ineligible:lang"));
+        }
+        match self.match_rust_path_reference(r)? {
+            // A gated candidate is discarded to terminal unresolved — the
+            // spine returns the import hit verbatim at ≥0.9, and this arm
+            // always carries 0.9.
+            Some(c) => match self.gate_language(Some(c), r) {
+                Some(c) => self.finish(r, c, None, true),
+                None => Ok(ResolveOutcome::unresolved()),
+            },
+            // Miss → TS continues to matchReference's unported arms; hand
+            // the ref back under its own bucket reason.
+            None => Ok(ResolveOutcome::passthrough("ineligible:lang")),
+        }
+    }
+
+    /// resolveRustPathReference (import-resolver.ts): split `A::B::C` into
+    /// module prefix `A::B` + leaf `C`, map the prefix to a file, find the
+    /// leaf symbol in it. `import` @0.9 — the analog of
+    /// resolvePythonModuleMember for Rust module paths.
+    fn match_rust_path_reference(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let segments: Vec<&str> = r
+            .reference_name
+            .split("::")
+            .filter(|s| !s.is_empty())
+            .collect();
+        if segments.len() < 2 {
+            return Ok(None);
+        }
+        let leaf = segments[segments.len() - 1];
+        let Some(file) = self.resolve_rust_module_file(&segments[..segments.len() - 1], &r.file_path)?
+        else {
+            return Ok(None);
+        };
+        if file == r.file_path {
+            return Ok(None);
+        }
+        let file_nodes = self.nodes_in_file(&file)?;
+        let target = file_nodes.iter().find(|n| {
+            n.name == leaf
+                && matches!(
+                    n.kind.as_str(),
+                    "function"
+                        | "struct"
+                        | "union"
+                        | "enum"
+                        | "trait"
+                        | "type_alias"
+                        | "constant"
+                        | "method"
+                        | "class"
+                        | "interface"
+                )
+        });
+        Ok(target.map(|n| KCand {
+            node: Rc::new(n.clone()),
+            confidence: 0.9,
+            resolved_by: "import",
+        }))
+    }
+
+    /// resolveRustModuleFile (import-resolver.ts): map module segments to
+    /// `<seg>.rs` or `<seg>/mod.rs` files. Anchors on `crate`/`self`/`super`;
+    /// a bare path tries self-relative (2018 expression position) then
+    /// crate-relative (2015 crate-root items). External crates miss both.
+    fn resolve_rust_module_file(
+        &self,
+        segments: &[&str],
+        from_file: &str,
+    ) -> Result<Option<String>> {
+        if segments.is_empty() {
+            return Ok(None);
+        }
+        let first = segments[0];
+        if first == "crate" {
+            return Ok(self.rust_resolve_under(
+                self.rust_crate_root_dir(from_file),
+                &segments[1..],
+            ));
+        }
+        if first == "self" {
+            return Ok(self.rust_resolve_under(
+                Some(rust_self_module_dir(from_file)),
+                &segments[1..],
+            ));
+        }
+        if first == "super" {
+            let mut supers = 0usize;
+            while segments.get(supers) == Some(&"super") {
+                supers += 1;
+            }
+            let mut dir = Some(rust_self_module_dir(from_file));
+            for _ in 0..supers {
+                dir = dir.map(|d| pos_dirname(&d).to_string());
+            }
+            return Ok(self.rust_resolve_under(dir, &segments[supers..]));
+        }
+        Ok(self
+            .rust_resolve_under(Some(rust_self_module_dir(from_file)), segments)
+            .or_else(|| {
+                self.rust_resolve_under(self.rust_crate_root_dir(from_file), segments)
+            }))
+    }
+
+    /// The `resolveUnder` closure inside resolveRustModuleFile: walk module
+    /// segments down from `start_dir`, each mapping to `<seg>.rs` or
+    /// `<seg>/mod.rs`; `self`/`crate`/`super` mid-path are skipped (leading
+    /// `super`s are consumed by the anchor dispatch). Returns the leaf
+    /// module's file.
+    fn rust_resolve_under(&self, start_dir: Option<String>, rest: &[&str]) -> Option<String> {
+        let mut dir = start_dir?;
+        let mut target: Option<String> = None;
+        for seg in rest {
+            if *seg == "self" || *seg == "crate" || *seg == "super" {
+                continue;
+            }
+            let as_file = pos_normalize(&format!("{}/{}.rs", dir, seg));
+            let as_mod = pos_normalize(&format!("{}/{}/mod.rs", dir, seg));
+            if self.file_exists(&as_file) {
+                target = Some(as_file);
+            } else if self.file_exists(&as_mod) {
+                target = Some(as_mod);
+            } else {
+                return None;
+            }
+            dir = pos_normalize(&format!("{}/{}", dir, seg));
+        }
+        target
+    }
+
+    /// rustCrateRootDir (import-resolver.ts): the directory holding
+    /// `lib.rs`/`main.rs`, walking up from the ref's file (≤64 levels).
+    fn rust_crate_root_dir(&self, from_file: &str) -> Option<String> {
+        let mut dir = pos_dirname(from_file).to_string();
+        for _ in 0..64 {
+            if self.file_exists(&pos_normalize(&format!("{}/lib.rs", dir)))
+                || self.file_exists(&pos_normalize(&format!("{}/main.rs", dir)))
+            {
+                return Some(dir);
+            }
+            let parent = pos_dirname(&dir);
+            if parent == dir {
+                return None;
+            }
+            dir = parent.to_string();
+        }
+        None
+    }
+
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
         // ref_is_eligible, split so the passthrough reason names the gate.
         if !is_migrated_language(&r.language) {
+            // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
+            // resolves them through resolveViaImport's module-file arm,
+            // which needs no bindings rows — port it natively ahead of the
+            // eligibility punt. Dot-bearing `::` names stay punted (the
+            // boundReceiver claim can own a `a::b.c` receiver in TS), and
+            // `function_ref` keeps its own block — a module-path hit on a
+            // non-callable leaf is DISCARDED there, not returned.
+            if r.language == "rust"
+                && r.reference_kind != "function_ref"
+                && r.reference_name.contains("::")
+                && !r.reference_name.contains('.')
+            {
+                return self.resolve_rust_path_ref(r);
+            }
             return Ok(ResolveOutcome::passthrough("ineligible:lang"));
         }
         if !Self::name_is_bare(&r.reference_name) {

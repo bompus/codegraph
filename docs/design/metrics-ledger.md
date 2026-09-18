@@ -544,3 +544,36 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 **Fixture coverage** (parity test): `W::m` (w.cpp) → scoped arm @0.9 `function-ref`; `Pool::missing` → member-tail punt → passthrough; `api.call` (function_ref, main.ts) → member-descent import @0.9. 6/6 parity + 223/223 resolution + 4,996/4,996 full suite green; ast-grep kernel rules clean; clippy `-D warnings`.
 
 **Phase 5 closes here.** Every remaining punt is attributed and justified above or in §5.20's table; the only unported matcher with meaningful yield is Rust resolution, a different workstream.
+
+### 5.22 Genuine-miss audit — the `unknown-receiver` bucket (2026-09-18)
+
+Refs that fail in **both** engines — not migration debt, actual unresolved names. `unresolved_refs` on the Leg-D snapshot (`baselines/linux-d19ab145-funcref.db`): `unknown-receiver` = 33,945 dotted-name failures (c 20,415 / python 13,214 / cpp 316) plus ~4k NULL-reason dotted (rust 8,829 / python 1,950 / c 987 / c imports 711).
+
+**Taxonomy** (member-tail existence check — does the dotted member exist as ANY node in the corpus):
+
+| Class | Share | Verdict |
+|---|---|---|
+| Member absent from the graph — external modules (python `os.path`/`re`/`sys`/`libevdev`/`gdb`), C function-pointer struct fields (`btcoexist.btc_get`, `rtc.read`), macro-synthesized names | 11,738/20,415 c refs (57%), 5,040/13,214 py refs (38%) — 75% of distinct c tails, 55% of py tails have **zero nodes** | **Correctly unresolved** — no target exists to point at |
+| Receiver-type inference limits — local-var receivers (`priv`, `sk`, `buff.append`, `m.group`) whose types need intra-function data-flow | the remaining ~16k | **Out of scope** — recovery needs real type inference, a different axis |
+| C ops-struct calls (`ops->read`) | subset of the above | recoverable only with function-pointer field nodes + C receiver inference — an enhancement that *changes the node set*, not a byte-identical leg |
+
+**Conclusion**: no quick wins. The bucket is dominated by legitimately-unresolvable names — `unknown-receiver` doing its job. The one technically-recoverable class (C ops-structs) is an extraction+inference workstream, not a resolver arm.
+
+### 5.23 Rust leg R1 — `::` module-path arm native ahead of the eligibility punt (2026-09-18)
+
+Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; ~6:01 wall). Log: `bench/20260918-node-8c-kernelon-rustpath.log`; post-leg snapshot `baselines/linux-d19ab145-rustpath.db`.
+
+| Metric | §5.21 (Leg D) | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,803,170 | 5,814,457 | +11,287 (native hits + pass-event recounts) |
+| kernel passthrough | 61,334 | 60,047 | −1,287 |
+| `ineligible:lang` | 57,441 | **56,131** | −1,310 (the native `::` path-arm hits) |
+| `member-tail` / `chain` / `btm-supers` / `rmot-supers` / `via-src` | 2,028 / 951 / 726 / 179 / 9 | 2,051 / 951 / 726 / 179 / 9 | +23 pass-event recounts |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to every baseline since §5.17 (`c7417d57…` / `67c47a1d…` / `470e3903…`). TS-side `import|ineligible:lang` recoveries: **1,113 → 0** — every Rust module-path recovery now native.
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, ~+190): `resolve_rust_path_ref` + `match_rust_path_reference` + `resolve_rust_module_file` + `rust_resolve_under` + `rust_crate_root_dir` + `rust_self_module_dir` — TS's `resolveViaImport → resolveRustPathReference` slice, run **before** the `ineligible:lang` punt for `language=='rust'` pure-`::` names: split `A::B::C` into module prefix + leaf; map the prefix to a file (`crate` → crate-root `lib.rs`/`main.rs` walk ≤64; `self` → self-module-dir — `mod.rs`/`lib.rs`/`main.rs` own their dir, `foo.rs` → `foo/`; leading `super`s walk up; bare → self-relative then crate-relative); each segment → `<seg>.rs` or `<seg>/mod.rs` via `file_exists`; leaf → kind-gated node in that file (`function|struct|union|enum|trait|type_alias|constant|method|class|interface`) → `import` @0.9. **Fidelity gates**: `function_ref` excluded (TS's block discards non-callable path hits — punt covers it); `::`+`.` names excluded (boundReceiver-claim territory); unreadable file → punt (TS's `imports.empty && !readFile` early-null falls to matchReference); prefilter miss → terminal `unresolved` (store-binding is JS-dead for rust). Mid-path `self`/`crate`/`super` skip semantics, `a::::b` collapse, and self-file exclusion all match verbatim.
+
+**Fixture coverage** (parity test, `src/lib.rs` crate root + `sub.rs`/`deep/{mod,inner,sib}.rs`/`user.rs`): `crate::`/`self::`/`super::`/bare anchors → `import` @0.9; `<seg>/mod.rs` multi-segment; `ext::module::leaf_fn` external-crate punt; `Widget::new` struct-not-module punt; `crate::sub::missing` prefilter → `unresolved`; `a::b.c` stays punted. 6/6 parity + 223/223 resolution + 4,996/4,996 suite green; clippy `-D warnings`; ast-grep clean.
+
+**Remaining Rust workstream** (scoping, not landed): `use`-path import rows via `bindings` emission (Phase-3-equivalent in `rustlang.rs`), the `BINDINGS_LANGUAGES`/`is_migrated_language` flip (unlocks the generic arms), `self.`/`Self::` receiver arms (enclosing impl type), trait-method dispatch (`v0.clone` → `Clone` impl), `impl Trait for T` `implements` refs. Generics (`Self`/`T`/`V`), external crates (`core::`/`serde::`), and macro-synthesized names stay unresolvable by design.
