@@ -350,7 +350,13 @@ Legs (each a separate landed PR; metrics-ledger §5.14–§5.21):
 
 **Timing note** — the migration bought coverage, not speed: the only clean post-Phase-5 run is 316.4s wall vs Phase 4's clean 292.6s (~8%, n=1 variance); native arms do real work on refs that used to punt early. The wall floor is persist + callback synthesis, unchanged since §5.11's measurement.
 
-**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain, and all of Rust resolution. Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
+**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain, and (at Phase-5 close) Rust resolution — leg R1 of the Rust workstream has since landed in §Phase 5b below. Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
+
+### Phase 5b: Rust resolution — surgical arms without bindings (leg R1 landed 2026-09-18)
+
+Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits nodes/refs but no binding rows — so the eligibility gate punts every Rust ref to TS. Most of `resolveViaImport`'s Rust behavior does not need bindings, though: `resolveRustPathReference` maps `A::B::C` module prefixes to files and finds the leaf symbol — pure snapshot work. Leg R1 ported it ahead of the eligibility punt for pure-`::` non-`function_ref` names (1,310 native hits; `import|ineligible:lang` TS-side recoveries 1,113 → 0; corpus byte-identical — ledger §5.23).
+
+The full Rust workstream, in dependency order: `bindings` emission for `use`/items/locals/params in `rustlang.rs` (Phase-3-equivalent, golden-gated) → the `BINDINGS_LANGUAGES` + `is_migrated_language` flip → Rust receiver arms (`self.x`, `Self::x`, enclosing impl) and trait-method dispatch (`x.clone` → `Clone` impl) → `impl Trait for T` `implements` edges. Generics, external crates, and macro-synthesized names stay unresolvable by design.
 
 ## 4. What is removed
 
