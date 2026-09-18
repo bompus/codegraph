@@ -323,6 +323,35 @@ Fix — the rule is "no rusqlite conn shares the live `-shm` while any other thr
 - **The WAL valve is quiesced while a kernel conn is live on the real `-shm`** — its off-thread checkpoint workers are the remaining cross-build shm writers. `journal_size_limit` still bounds the WAL during that window (inline, same-thread). The valve resumes on kernel close, and deferred post-passes get the same quiesce in `index.ts`.
 - **Kernel conns must close deterministically, never at GC time** (`KernelResolver.close()` — `conn: Option<Connection>`, `take()` on call). The first snapshot-only cut still SIGBUS'd once in five linux runs: a dropped-but-unclosed main-thread conn's destructor fired mid-run — GC timing — and its shm teardown raced worker conns. Ordering rule: `close()` runs only while the valve is stopped and no worker has attached (before the snapshot fold, before `tryCreate`, or after `pool.destroy()`); index/sync `finally` blocks call `resolver.closeKernel()` so no conn outlives a run into the next one's armed valve. The batch-loop `backpressure` hook and the index-recreate fold are also gated on no-live-kernel — `WalCheckpointValve.stop()` clears only the timer; explicit `backpressure()`/`foldNow()` calls still do off-thread shm work.
 
+### Phase 5: move the non-bare resolution arms into the kernel — DONE 2026-09-18
+
+Phase 4 ported the bare-identifier slice. Phase 5 ported the member-access spine — every non-bare arm that is a pure join over snapshot tables — keeping TS as the fallback for source-reading and mid-loop-dynamic behavior. Hard gate throughout: byte-identical nodes/edges/unresolved_refs on the Linux corpus (multisets `c7417d57…` / `67c47a1d…` / `470e3903…` held across every leg) plus the kernel/TS parity fixture (`__tests__/kernel-resolve-parity.test.ts`).
+
+Legs (each a separate landed PR; metrics-ledger §5.14–§5.21):
+
+1. **Attribution first** — `CODEGRAPH_RESOLVE_PROFILE=2` per-ref punt reasons, so every intentional TS fallback is measurable.
+2. **Qualified-name suffix matching** (`match_by_qualified_name`) and the C/C++ `#include` qualified-name fallback (Leg A).
+3. **Call-receiver chains** (`match_call_chain`: cpp `x().m` via call-result-type, php/rust `Cls::factory().m`, 9-language dotted factories) (Leg B).
+4. **Unbound method calls** (`match_method_call_free` — the `requireReceiverEvidence=false` half of `matchMethodCall`: receiver inference → rmot, ESM builtin/primitive bail, `this.field`, javafield, object-literal, strategies 1–3) (Leg C).
+5. **Scoped `function_ref`** (`match_function_ref_scoped` — `Cls::member` member-pointer refs) plus the non-bare `resolveViaImport` member-descent step of the function_ref block (Leg D).
+
+**Final state** (Linux corpus, `d19ab145` merge base): **99.0% native** — 5,803,170 kernel-handled, 61,334 passthroughs. Native share at Phase 4 exit was 91.4%.
+
+**What stays in TypeScript, permanently** (all punt-attributed; TS rerun reproduces the identical verdict):
+
+| Bucket | n | Why it stays |
+|---|---|---|
+| `ineligible:lang` | 57,441 | unmigrated languages — 99.4% Rust in the failed share; fixing it is a Rust-resolution workstream (eligibility + self/field/trait/use bindings), not a resolver arm |
+| `member-tail` | 2,028 | genuine misses + `matchByExactName` (88 TS-side hits — source reads and multi-signal scoring) and non-`::` `function_ref` shapes |
+| `chain` | 951 | ts/js/py `().` storeAccessorChain — `resolveStoreAction` reads source (JS); python arm is near-zero yield |
+| `btm-supers` / `rmot-supers` | 726 / 179 | supertype walks traverse *resolved* `implements`/`extends` edges populated mid-loop by the conformance pass — the pre-resolution snapshot cannot see them |
+| `via-src` | 9 | objectLiteralAlias/instanceMember source reads |
+| `mc-*` / `gofactory` inner punts | (inside above) | evidence-gated or source-bound sub-arms — punted conservatively upstream of the ported code |
+
+**Timing note** — the migration bought coverage, not speed: the only clean post-Phase-5 run is 316.4s wall vs Phase 4's clean 292.6s (~8%, n=1 variance); native arms do real work on refs that used to punt early. The wall floor is persist + callback synthesis, unchanged since §5.11's measurement.
+
+**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain, and all of Rust resolution. Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
+
 ## 4. What is removed
 
 | Item | Location |

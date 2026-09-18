@@ -7010,9 +7010,39 @@ impl KernelResolver {
             return Ok(ResolveOutcome::unresolved());
         }
 
-        // `function_ref`'s dedicated matcher is unported — it resolves ONLY
-        // through matchFunctionRef, never the fallthrough below.
+        // `function_ref` refs resolve ONLY through matchFunctionRef, never
+        // the fallthrough below — TS's function_ref block for non-bare
+        // names, in order: viaImport (a `.` member-descent can still claim
+        // an `a.b` function_ref), then the `::` member-pointer arm (the
+        // only non-bare shape matchFunctionRef resolves; `.`/`this.` forms
+        // always miss in it). A miss punts back to that same block.
         if r.reference_kind == "function_ref" {
+            match self.resolve_via_import_member(r)? {
+                ViaImport::Punt(reason) => {
+                    return Ok(ResolveOutcome::passthrough(reason));
+                }
+                ViaImport::Miss => {}
+                ViaImport::Hit(c) => {
+                    // An import resolving to a non-callable is discarded —
+                    // the scoped arm still runs, exactly like the bare path.
+                    if let Some(c) = self.gate_language(Some(c), r) {
+                        if c.node.kind == "function"
+                            || c.node.kind == "method"
+                            || (r.language == "python" && c.node.kind == "class")
+                        {
+                            return self.finish(r, c, None, true);
+                        }
+                    }
+                }
+            }
+            if let Some(c) = self.match_function_ref_scoped(r)? {
+                // Frameworks never run on this path — a gated candidate is
+                // discarded to terminal unresolved, exactly like the bare arm.
+                return match self.gate_language(Some(c), r) {
+                    Some(c) => self.finish(r, c, None, true),
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
             return Ok(ResolveOutcome::passthrough("member-tail"));
         }
         // resolveJvmImport (java/kotlin `imports` refs) reads decorators —
@@ -7451,6 +7481,50 @@ impl KernelResolver {
             }));
         }
         Ok(None)
+    }
+
+    /// matchFunctionRef's `::` member-pointer arm (name-matcher.ts): an
+    /// explicit `Cls::member` shape (`&Widget::on_click` emitted as
+    /// `Widget::on_click`) resolves the member ON THAT SCOPE — exempt from
+    /// bareFnOnly, origin excluded, qualified-name equality or `::`-suffix.
+    /// Same-file pool wins by earliest line @0.9; cross-file unique-or-drop.
+    fn match_function_ref_scoped(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let Some(sep) = r.reference_name.rfind("::") else {
+            return Ok(None);
+        };
+        let member = &r.reference_name[sep + 2..];
+        let suffix = format!("::{}", r.reference_name);
+        let scoped: Vec<Rc<KNode>> = self
+            .nodes_by_name(member)?
+            .iter()
+            .filter(|n| {
+                matches!(n.kind.as_str(), "function" | "method")
+                    && same_language_family(&n.language, &r.language)
+                    && n.id != r.from_node_id
+                    && (n.qualified_name == r.reference_name
+                        || n.qualified_name.ends_with(&suffix))
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if scoped.is_empty() {
+            return Ok(None);
+        }
+        let same_file: Vec<Rc<KNode>> = scoped
+            .iter()
+            .filter(|n| n.file_path == r.file_path)
+            .cloned()
+            .collect();
+        if same_file.is_empty() && scoped.len() > 1 {
+            return Ok(None);
+        }
+        let pool = if same_file.is_empty() { scoped } else { same_file };
+        // `<=` reduce keeps the first minimum — min_by_key does the same.
+        let target = pool.iter().min_by_key(|n| n.start_line).unwrap().clone();
+        Ok(Some(KCand {
+            node: target,
+            confidence: 0.9,
+            resolved_by: "function-ref",
+        }))
     }
 
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {

@@ -410,6 +410,13 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(use4Fn, 'mystery.frobnicate', 'src/notify.ts', 'typescript', 'references', 16);
     seed(use4Fn, 'arr.split', 'src/notify.ts', 'typescript', 'references', 16);
     seed(nodeId('top', 'notify.ts'), 'adat2.run', 'src/notify.ts', 'typescript', 'references', 18);
+    // Non-bare function_ref: TS's block runs viaImport (member-descent can
+    // claim `a.b`) then the `::` member-pointer arm — the only non-bare
+    // shape matchFunctionRef resolves.
+    const wuserFn = nodeId('wuser', 'w.cpp');
+    seed(wuserFn, 'W::m', 'src/w.cpp', 'cpp', 'function_ref', 6);
+    seed(wuserFn, 'Pool::missing', 'src/w.cpp', 'cpp', 'function_ref', 6);
+    seed(runFn, 'api.call', 'src/main.ts', 'typescript', 'function_ref', 10);
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -470,7 +477,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // Non-bare shapes with no declared segment die at the prefilter — the
     // store-binding arm is dead for dotted names, so TS fails it identically.
     expect(at('this.cb', 'src/main.ts').status).toBe('unresolved');
-    expect(at('W::m', 'src/w.cpp').status).toBe('passthrough');
+    // `W::m` — the `::` member-pointer arm resolves it natively (pinned in
+    // detail below with the rest of the non-bare function_ref block).
+    expect(at('W::m', 'src/w.cpp').status).toBe('resolved');
     // No node, no import — terminal miss.
     expect(at('neverDeclared', 'src/main.ts').status).toBe('unresolved');
     // Quoted include with a same-dir sibling → 'import' at 0.92.
@@ -694,6 +703,25 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // rmot miss returns null in TS rather than letting Strategy 3 guess the
     // unrelated `Service::split` (the bait — @0.7 if the bail is missing).
     expect(at('arr.split', 'src/notify.ts', 'references').status).toBe('passthrough');
+
+    // ---- Non-bare function_ref (`::` member-pointer arm) ----
+    // `W::m` — the only scoped match (`Outer::Sub::m` fails the `::W::m`
+    // suffix) → same-file earliest-line @0.9.
+    const scopedFr = at('W::m', 'src/w.cpp', 'function_ref');
+    expect(scopedFr.status).toBe('resolved');
+    expect(scopedFr.resolvedBy).toBe('function-ref');
+    expect(scopedFr.confidence).toBe(0.9);
+    expect(scopedFr.targetNodeId).toBe(
+      byName('m', 'method').find((n) => n.qualifiedName === 'W::m')!.id,
+    );
+    // `Pool::missing` — no `missing` member anywhere → member-tail punt.
+    expect(at('Pool::missing', 'src/w.cpp', 'function_ref').status).toBe('passthrough');
+    // `api.call` — viaImport's member-descent claims it before the scoped
+    // arm: import `api` → svc's `api` const → `call` member @0.9.
+    const frImport = at('api.call', 'src/main.ts', 'function_ref');
+    expect(frImport.status).toBe('resolved');
+    expect(frImport.resolvedBy).toBe('import');
+    expect(frImport.confidence).toBe(0.9);
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {
