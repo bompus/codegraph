@@ -90,15 +90,22 @@ describe('scanDynamicDispatch', () => {
     expect(m[0]!.keyIsType).toBe(true);
   });
 
-  it('detects runtime-keyed emit but not literal-keyed emit', () => {
+  it('detects runtime-keyed emit and announces literal-keyed emit with its key', () => {
     const runtime = `notify(name, data) {\n  this.emitter.emit(name, data);\n}`;
     const m = scanDynamicDispatch(runtime, 'typescript', 1);
     expect(m).toHaveLength(1);
     expect(m[0]!.form).toBe('var-key-dispatch');
 
-    // Literal keys are the edge synthesizer's territory — not a boundary.
+    // Intent change: a literal key at a dispatch site is now announced WITH
+    // the key. The event-bus synthesizer still connects matching literal
+    // emit→handler pairs statically, so this scanner only ever sees a
+    // literal-keyed site on a flow that FAILED to connect — where an honest
+    // keyed announcement beats silence.
     const literal = `notify(data) {\n  this.emitter.emit('saved', data);\n}`;
-    expect(scanDynamicDispatch(literal, 'typescript', 1)).toHaveLength(0);
+    const lm = scanDynamicDispatch(literal, 'typescript', 1);
+    expect(lm).toHaveLength(1);
+    expect(lm[0]!.form).toBe('literal-key-dispatch');
+    expect(lm[0]!.key).toBe('saved');
   });
 
   it('dedupes repeated same-form/same-key sites and counts the extras', () => {
@@ -120,6 +127,237 @@ describe('scanDynamicDispatch', () => {
     expect(m.length).toBeGreaterThanOrEqual(1);
     expect(m[0]!.form).toBe('reflection');
     expect(m[0]!.key).toBe('handlePing');
+  });
+
+  // --- async-dispatch ------------------------------------------------------
+
+  it('detects async dispatch and extracts the callback identifier as key', () => {
+    const body = `function schedule(p) {\n  setTimeout(handleTick, 100);\n  return p.then(processNext);\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(2);
+    expect(m.every((x) => x.form === 'async-dispatch')).toBe(true);
+    expect(m[0]!.key).toBe('handleTick');
+    expect(m[1]!.key).toBe('processNext');
+  });
+
+  it('announces async dispatch with no key for anonymous callbacks', () => {
+    const body = `function schedule() {\n  setTimeout(() => tick(), 0);\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('async-dispatch');
+    expect(m[0]!.key).toBeUndefined();
+  });
+
+  it('does not fire async-dispatch on .then with an arrow-function arg', () => {
+    const body = `function load(p) {\n  return p.then((v) => v + 1);\n}`;
+    expect(scanDynamicDispatch(body, 'typescript', 1)).toHaveLength(0);
+  });
+
+  it('detects a go routine with the callee name as key', () => {
+    const body = `func serve() {\n\tgo worker.Run()\n}`;
+    const m = scanDynamicDispatch(body, 'go', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('async-dispatch');
+    expect(m[0]!.key).toBe('Run');
+  });
+
+  it('detects a python Thread target kwarg as the key', () => {
+    const body = `def start(self):\n    t = Thread(target=self.worker)\n    t.start()`;
+    const m = scanDynamicDispatch(body, 'python', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('async-dispatch');
+    expect(m[0]!.key).toBe('worker');
+  });
+
+  it('detects executor submit but yields new-X args to typed-bus', () => {
+    const body = `void run(Runnable task) {\n  executor.submit(task);\n  executor.execute(new MyJob());\n}`;
+    const m = scanDynamicDispatch(body, 'java', 1);
+    expect(m).toHaveLength(2);
+    // Sites emit in FORMS-table order, not source order — typed-bus is earlier.
+    expect(m[0]!.form).toBe('typed-bus');
+    expect(m[0]!.key).toBe('MyJob');
+    expect(m[1]!.form).toBe('async-dispatch');
+    expect(m[1]!.key).toBe('task');
+  });
+
+  // --- service-locator -----------------------------------------------------
+
+  it('detects a service-locator lookup with a typeof() type key', () => {
+    const body = `public void Configure() {\n  var svc = provider.GetService(typeof(FooService));\n}`;
+    const m = scanDynamicDispatch(body, 'csharp', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('service-locator');
+    expect(m[0]!.key).toBe('FooService');
+    expect(m[0]!.keyIsType).toBe(true);
+  });
+
+  it('detects a container getBean with a .class type key', () => {
+    const body = `void wire() {\n  beanFactory.getBean(OrderService.class);\n}`;
+    const m = scanDynamicDispatch(body, 'java', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('service-locator');
+    expect(m[0]!.key).toBe('OrderService');
+    expect(m[0]!.keyIsType).toBe(true);
+  });
+
+  it('detects a generic resolve<T> as a type key', () => {
+    const body = `function boot() {\n  const h = container.resolve<FooHandler>();\n  return h;\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('service-locator');
+    expect(m[0]!.key).toBe('FooHandler');
+    expect(m[0]!.keyIsType).toBe(true);
+  });
+
+  it('detects a string-keyed locator lookup with a plain key', () => {
+    const body = `def build(self):\n    return self.services.get('payment.gateway')`;
+    const m = scanDynamicDispatch(body, 'python', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('service-locator');
+    expect(m[0]!.key).toBe('payment.gateway');
+    expect(m[0]!.keyIsType).toBeUndefined();
+  });
+
+  it('does not fire service-locator on a non-container receiver', () => {
+    const body = `def fetch(self):\n    return self.cache.get('payment.gateway')`;
+    expect(scanDynamicDispatch(body, 'python', 1)).toHaveLength(0);
+  });
+
+  // --- literal-key-dispatch -------------------------------------------------
+
+  it('detects redux-style dispatch({type: ...}) with the action type as key', () => {
+    const body = `function checkout() {\n  store.dispatch({ type: 'cart/submit', payload: 1 });\n}`;
+    // '/' is outside the key charset — the site is announced without a key.
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('literal-key-dispatch');
+
+    const keyed = `function checkout() {\n  store.dispatch({ type: 'submitCart' });\n}`;
+    const km = scanDynamicDispatch(keyed, 'typescript', 1);
+    expect(km[0]!.key).toBe('submitCart');
+  });
+
+  it('detects a wordpress hook dispatch with the hook name as key', () => {
+    const body = `function save($id) {\n  do_action('save_post', $id);\n}`;
+    const m = scanDynamicDispatch(body, 'php', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('literal-key-dispatch');
+    expect(m[0]!.key).toBe('save_post');
+  });
+
+  it('detects dispatchEvent(new CustomEvent("literal"))', () => {
+    const body = `function done() {\n  this.dispatchEvent(new CustomEvent('saved', { detail: 1 }));\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('literal-key-dispatch');
+    expect(m[0]!.key).toBe('saved');
+  });
+
+  // --- ipc-channel ----------------------------------------------------------
+
+  it('detects an electron ipcMain handler with the channel as key', () => {
+    const body = `function wire() {\n  ipcMain.handle('get-config', handleGetConfig);\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('ipc-channel');
+    expect(m[0]!.key).toBe('get-config');
+  });
+
+  it('detects worker messaging sites; a Worker script path is not a key', () => {
+    const body = `function spawn() {\n  const w = new Worker('worker.ts');\n  w.onmessage = handleMsg;\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    // Both sites share form `ipc-channel` with no key → dedupe folds the
+    // second into moreSites.
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('ipc-channel');
+    expect(m[0]!.key).toBeUndefined();
+    expect(m[0]!.moreSites).toBe(1);
+  });
+
+  // --- delegate-invoke ------------------------------------------------------
+
+  it('detects a c# event subscription with the handler as key', () => {
+    const body = `public void Wire() {\n  button.Click += OnClicked;\n}`;
+    const m = scanDynamicDispatch(body, 'csharp', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('delegate-invoke');
+    expect(m[0]!.key).toBe('OnClicked');
+  });
+
+  it('detects a c# delegate Invoke with the event name as key', () => {
+    const body = `public void Fire() {\n  this.Click.Invoke(args);\n}`;
+    const m = scanDynamicDispatch(body, 'csharp', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('delegate-invoke');
+    expect(m[0]!.key).toBe('Click');
+  });
+
+  // --- reactive-chain --------------------------------------------------------
+
+  it('detects an rxjs subscribe chain (announce-only, no key)', () => {
+    const body = `function bind() {\n  this.obs$.pipe(map(f)).subscribe(g);\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('reactive-chain');
+    expect(m[0]!.key).toBeUndefined();
+    expect(m[0]!.moreSites).toBe(1); // .pipe( and .subscribe( share form|key
+  });
+
+  it('detects MobX autorun / reactor subscribe per language', () => {
+    const js = scanDynamicDispatch(`function f() {\n  autorun(() => track());\n}`, 'typescript', 1);
+    expect(js[0]!.form).toBe('reactive-chain');
+    const java = scanDynamicDispatch(`void f() {\n  flux.subscribeOn(Schedulers.boundedElastic()).subscribe(r);\n}`, 'java', 1);
+    expect(java[0]!.form).toBe('reactive-chain');
+    const cs = scanDynamicDispatch(`void f() {\n  observable.Subscribe(handler);\n}`, 'csharp', 1);
+    expect(cs[0]!.form).toBe('reactive-chain');
+  });
+
+  // --- extensions to existing forms -----------------------------------------
+
+  it('detects a ruby define_method and const_get (type key)', () => {
+    const body = `def self.install\n  define_method(:save_all) { |x| x }\nend`;
+    const m = scanDynamicDispatch(body, 'ruby', 1);
+    expect(m[0]!.form).toBe('ruby-send');
+    expect(m[0]!.key).toBe('save_all');
+
+    const cg = scanDynamicDispatch(`def lookup\n  const_get("FooHandler")\nend`, 'ruby', 1);
+    expect(cg[0]!.form).toBe('ruby-send');
+    expect(cg[0]!.key).toBe('FooHandler');
+    expect(cg[0]!.keyIsType).toBe(true);
+  });
+
+  it('detects php expression-method and __call dispatch', () => {
+    const body = `function run($m) {\n  $this->{$m}();\n  $proxy->__call('x');\n}`;
+    const m = scanDynamicDispatch(body, 'php', 1);
+    expect(m.length).toBeGreaterThanOrEqual(1);
+    expect(m.every((x) => x.form === 'php-dynamic')).toBe(true);
+  });
+
+  it('detects ServiceLoader.load with a .class type key', () => {
+    const body = `void load() {\n  ServiceLoader.load(Plugin.class);\n}`;
+    const m = scanDynamicDispatch(body, 'java', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('reflection');
+    expect(m[0]!.key).toBe('Plugin');
+    expect(m[0]!.keyIsType).toBe(true);
+  });
+
+  it('detects an emitter.on registration with a runtime key', () => {
+    const body = `function bind(name, fn) {\n  emitter.on(name, fn);\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('var-key-dispatch');
+    // subscribe stays with reactive-chain — var-key-dispatch must not claim it
+    const sub = `function bind(fn) {\n  emitter.subscribe(fn);\n}`;
+    expect(scanDynamicDispatch(sub, 'typescript', 1)[0]!.form).toBe('reactive-chain');
+  });
+
+  it('detects the new typed-bus verbs', () => {
+    const body = `public void Go() {\n  bus.Submit(new RebuildIndex());\n}`;
+    const m = scanDynamicDispatch(body, 'csharp', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('typed-bus');
+    expect(m[0]!.key).toBe('RebuildIndex');
   });
 });
 
