@@ -645,7 +645,7 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 | **native share** | 99.6% | **99.6%** | |
 | wall / maxRSS | 5:29 / 15.9GB | 5:49 / 16.6GB | |
 
-¹ The `handled`+`passthrough` counter sum shifted by exactly 5,000 (−5,000 vs §5.25) — a telemetry accounting artifact of where refs get counted in the kernel pipeline, not a real ref delta. Proof is the gate below: all three output multisets are byte-identical.
+¹ The `handled`+`passthrough` counter sum shifted by exactly 5,000 (−5,000 vs §5.25) — attributed: the counters only cover `pool`/`kernel`-mode batches; `seq` batches (pre-pool-boot and below the parallel threshold) go uncounted. This run logged 25,579 seq refs (5 × 5,000 during the ~9.7s pool boot + the 579 tail, zero `batch kernel` lines — the lazy main-thread resolver never engaged); §5.25's run had 20,579. The delta is one batch's worth of scheduling, not a ref delta — seq resolves through the identical TS path. Proof is the gate below: all three output multisets are byte-identical.
 
 **Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to every baseline since §5.17 (`c7417d57…` / `67c47a1d…` / `470e3903…`). Snapshot `baselines/linux-d19ab145-rustlocal.db`.
 
