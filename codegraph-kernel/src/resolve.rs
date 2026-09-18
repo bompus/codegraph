@@ -487,6 +487,18 @@ fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
             (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
             (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
         ],
+        "rust" => vec![
+            // let r [mut] [: T] = [&][mut] Type::new()/Type{}/Type — a `let`
+            // binding with an optional annotation; the capture is the
+            // initializer's type, not the annotation's.
+            (
+                r"\blet\s+(?:mut\s+)?R\b(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+                0,
+            ),
+            // r : [&][mut] Type — a `let r: T` binding OR a typed parameter
+            // (`fn f(r: &T)`, closure `|r: T|`) — the same shape (#1125).
+            (r"\bR\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)", 0),
+        ],
         "go" => vec![
             (
                 r"\bR\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
@@ -8062,14 +8074,19 @@ impl KernelResolver {
             if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
                 return self.resolve_c_include_import_ref(r);
             }
-            // Rust dotted receivers: only `self.`-rooted calls have ported
-            // arms (rustfield/rustself). Other `x.y` receivers ride TS's
-            // source-reading inferLocalReceiverType (`let ctx: Ctx`) — the
-            // strat arms reach the same target at 0.7/0.8 where TS's
-            // inference gives 0.9, fabricating metadata (§5.25).
+            // Rust dotted receivers: `calls` names without `::`/`()` ride the
+            // ported pipeline — inferLocalReceiverType (`let ctx: Ctx`) is
+            // native for rust now, and the self.-arms/strategies that follow
+            // reproduce TS's tail (§5.25's confidence-drift class is exactly
+            // what the inference arm resolves natively). `a::b.c`/`x::y().z`
+            // (::+.), `x().y`, and non-call `x.y`/`self.x` stay punted — TS
+            // verdicts by delegation.
             if r.language == "rust"
                 && r.reference_name.contains('.')
-                && !(r.reference_kind == "calls" && r.reference_name.starts_with("self."))
+                && !(r.reference_kind == "calls"
+                    && (r.reference_name.starts_with("self.")
+                        || (!r.reference_name.contains("::")
+                            && !r.reference_name.contains("()"))))
             {
                 return Ok(ResolveOutcome::passthrough("member-tail"));
             }

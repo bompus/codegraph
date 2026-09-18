@@ -335,32 +335,42 @@ Legs (each a separate landed PR; metrics-ledger §5.14–§5.21):
 4. **Unbound method calls** (`match_method_call_free` — the `requireReceiverEvidence=false` half of `matchMethodCall`: receiver inference → rmot, ESM builtin/primitive bail, `this.field`, javafield, object-literal, strategies 1–3) (Leg C).
 5. **Scoped `function_ref`** (`match_function_ref_scoped` — `Cls::member` member-pointer refs) plus the non-bare `resolveViaImport` member-descent step of the function_ref block (Leg D).
 
-**Final state** (Linux corpus, `d19ab145` merge base, after Phase 5b legs R3+R4): **99.6% native** — 5,839,053 kernel-handled, 25,451 passthroughs. Native share at Phase 4 exit was 91.4%.
+**Final state** (Linux corpus, `d19ab145` merge base, after Phase 5b leg R5): **99.6% native** — 5,836,551 kernel-handled, 22,953 passthroughs. Native share at Phase 4 exit was 91.4%.
 
 **What stays in TypeScript, permanently** (all punt-attributed; TS rerun reproduces the identical verdict):
 
 | Bucket | n | Why it stays |
 |---|---|---|
-| `member-tail` | 22,829 | Rust non-self `x.y` receivers (post-R3; TS's `inferLocalReceiverType` source inference is unported — ~4,900 TS-side hits) + genuine misses + `matchByExactName` (88 TS-side hits — source reads and multi-signal scoring) and non-`::` `function_ref` shapes |
+| `member-tail` | 16,641 | Rust `x.y` receivers carrying `::`/`()` or non-call kind (post-R5; the inferable `calls` class went native) + genuine misses + `matchByExactName` (88 TS-side hits — source reads and multi-signal scoring) and non-`::` `function_ref` shapes |
 | `chain` | 951 | ts/js/py `().` storeAccessorChain — `resolveStoreAction` reads source (JS); python arm is near-zero yield |
-| `btm-supers` / `rmot-supers` | 726 / 706 | supertype walks traverse *resolved* `implements`/`extends` edges populated mid-loop by the conformance pass — the pre-resolution snapshot cannot see them (rmot grew: rust self-field arms now reach the supers-walk punt) |
+| `btm-supers` / `rmot-supers` | 726 / 4,396 | supertype walks traverse *resolved* `implements`/`extends` edges populated mid-loop by the conformance pass — the pre-resolution snapshot cannot see them (rmot grew again: R5's admitted `x.y` receivers reach the supers-walk punt) |
 | `ineligible:lang` | 230 | objc/ruby/markdown/etc — unmigrated tail after the R2 flip (was 57,441, 99.4% Rust) |
 | `via-src` | 9 | objectLiteralAlias/instanceMember source reads |
 | `mc-*` / `gofactory` inner punts | (inside above) | evidence-gated or source-bound sub-arms — punted conservatively upstream of the ported code |
 
 **Timing note** — the migration bought coverage, not speed: the only clean post-Phase-5 run is 316.4s wall vs Phase 4's clean 292.6s (~8%, n=1 variance); native arms do real work on refs that used to punt early. The wall floor is persist + callback synthesis, unchanged since §5.11's measurement.
 
-**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain, and the Rust `x.y` local-var receiver inference in §Phase 5b below (legs R1–R4 landed). Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
+**Deliberately not ported**: `resolveThisMemberFnRef` (`this.` function_refs — class-scope walk), `matchByExactName`, supertype walks, storeAccessorChain. Each is reachable only through an attributed punt; the kernel never fabricates an edge the TS path wouldn't produce.
 
-### Phase 5b: Rust resolution (legs R1–R4 landed 2026-09-18)
+### Phase 5b: Rust resolution (legs R1–R5 landed 2026-09-18)
 
-Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits nodes/refs but no binding rows — but the audit showed ~29k Rust refs resolve TS-side through generic arms **without bindings** (empty on both sides), so bindings emission turned out *not* to be the gate. Four legs landed:
+Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits nodes/refs but no binding rows — but the audit showed ~29k Rust refs resolve TS-side through generic arms **without bindings** (empty on both sides), so bindings emission turned out *not* to be the gate. Five legs landed:
 
 - **R1** — `resolveViaImport → resolveRustPathReference` ported ahead of the eligibility punt for pure-`::` non-`function_ref` names (1,310 native hits; `import|ineligible:lang` recoveries 1,113 → 0; corpus byte-identical — §5.23).
 - **R2** — `is_migrated_language` flip: Rust enters the native pipeline. `ineligible:lang` 56,131 → 230, native share 99.0% → **99.5%** (§5.24). The `::` path arm runs above the gate with miss-fall-through (qualified-name arm mirrors `matchReference`'s continuation).
 - **R3+R4** — `self.` receiver arms + inheritance locality (`§5.25`): `match_rust_self_call` (owner = enclosing impl off the caller's qname) and `match_rust_self_field_call` (field type regexed off the owner struct's decl lines, normalized through a ported `rustFieldTypeName` — `&`/`mut`/`Box`/`Rc`/`Arc`/`dyn`/`impl`/generics stripped, containers declined, exclusive-null on inference failure) wired at the exact TS slot; `is_bound_to_out_of_repo_import` gained the rust branch (ported `collectRustUseBindings` + stdlib roots + `resolveRustModuleFile`), taking the `rust-inh` bucket to **0**. `member-tail` −1,934, handled +18,040 → **99.6%**. **Divergence caught**: removing the dot-gate entirely let strat arms resolve `x.y` receivers at 0.7/0.8 where TS's unported `inferLocalReceiverType` gives 0.9 — same target, fabricated metadata; the gate now punts dotted rust refs unless they're `self.`-rooted calls.
 
-**Deliberately still TS-side** (attributed punts): `x.y` local-var receivers (~4,900 `instance-method` TS-side hits — `inferLocalReceiverType` reads source decls; an R5 candidate), trait-method dispatch through `getSupertypes` (permanent — mid-loop impl edges), `a::b.c`/`self.x` non-call shapes, `Self::` associated items. Generics, external crates, and macro-synthesized names stay unresolvable by design. Emitting `bindings` rows for Rust is an *enhancement* decision (new resolutions → changed graph), not a migration leg.
+- **R5** — `x.y` local receiver inference (`§5.26`): the `"rust"` arm of `local_receiver_type_patterns` (two patterns verbatim from `name-matcher.ts:2056-2063` — `let r [mut] [: T] = [&][mut] Type` and `r : [&][mut] Type` covering bindings *and* typed params/closures) plus the member-tail gate relaxed to admit `calls`-kind dotted refs without `::`/`()`. The inferrer itself — scope-bounded backward scan, raw-line matching, normalization → `resolveMethodOnType` @0.9 — was already ported and invoked at the exact TS slot; the missing pieces were the pattern arm and the gate. ~4,776 `x.y` calls edges + their failures moved native; `member-tail` −6,188, `rmot-supers` +3,690, corpus byte-identical.
+
+**Deliberately still TS-side** (attributed punts): trait-method dispatch through `getSupertypes` (permanent — mid-loop impl edges), `a::b.c`/`x::y().z` (`::`+`.`) and `x().y` chain shapes, non-call `x.y`/`self.x` receivers, `Self::` associated items. Generics, external crates, and macro-synthesized names stay unresolvable by design. Emitting `bindings` rows for Rust is an *enhancement* decision (new resolutions → changed graph), not a migration leg.
+
+**What remains, in entirety** (state post-R5, 2026-09-18):
+
+1. **`Self::` associated items** — `Self::new`/`Self::Variant` shapes inside impl blocks; unassessed, likely small (enclosing-impl type is already derivable — same machinery as `match_rust_self_call`'s owner).
+2. **Permanent punts** (no further migration yield): trait dispatch via `getSupertypes` + `btm-supers`/`rmot-supers` (mid-loop impl edges — §5.21), `chain`/`via-src`/`matchByExactName` (source reads), `ineligible:lang` tail (objc/ruby/markdown — audited §5.24, all correct failures).
+3. **Rust bindings emission** (`rustlang.rs` → `bindings` rows) — an *enhancement*, not a migration leg: emitting bindings changes TS's own graph, so byte-identity is impossible by construction. Needs the enhancement protocol (dual-corpus A/B + review of every new edge class), not the migration gate.
+4. **Adjacent enhancement candidates** (different axis — node-set changes): C `ops->read` fn-ptr field calls (~12k refs, §5.22 — needs field nodes + C receiver inference); `unknown-receiver` genuine misses (local-var data-flow — a different problem entirely).
+5. **Product frontier** (non-resolver): dynamic-dispatch synthesis — reactive/reconciler runtimes (`ReactiveExtensionClient`, MediatR, Vue Proxy) per AGENTS.md. This is where effort moves the product metric — the resolver migration's recoverable surface is now exhausted (every remaining punt is permanent or unassessed-small).
 
 ## 4. What is removed
 

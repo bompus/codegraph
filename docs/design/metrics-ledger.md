@@ -632,3 +632,30 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 **Gates**: 6/6 parity (new pins: `self.new` → `Widget::new` @0.9 qualified-name, `self.inner.new` → @0.85 instance-method, `self.unknown.new` decline→member-tail, `Error`/`Local` implements locality via prerequisite batch), 223/223 resolution, 12/12 target-kind, 4,996/4,996 suite, clippy `-D warnings` (lib target), ast-grep clean.
 
 **Remaining Rust surface**: `x.y` local-var receiver inference (`inferLocalReceiverType` port — source-reading decl inference; the 413-edge class this leg re-punted), trait dispatch through `getSupertypes` (permanent — §5.21), `Self::` associated items, bindings emission (enhancement, not migration).
+
+### 5.26 Rust leg R5 — `x.y` local receiver inference native (2026-09-18)
+
+| Metric | R3+R4 (`d999a847`) | This leg | Delta |
+|---|---:|---:|---:|
+| kernel handled | 5,839,053 | **5,836,551** | −2,502¹ |
+| kernel passthrough | 25,451 | **22,953** | −2,498¹ |
+| `member-tail` | 22,829 | 16,641 | −6,188 (admitted `x.y` calls now resolve natively or punt deeper) |
+| `rmot-supers` | 706 | 4,396 | +3,690 — admitted receivers reach `resolveMethodOnType`'s supers-walk punt |
+| `chain` / `btm-supers` / `ineligible:lang` / `via-src` | 951 / 726 / 230 / 9 | 951 / 726 / 230 / 9 | unchanged |
+| **native share** | 99.6% | **99.6%** | |
+| wall / maxRSS | 5:29 / 15.9GB | 5:49 / 16.6GB | |
+
+¹ The `handled`+`passthrough` counter sum shifted by exactly 5,000 (−5,000 vs §5.25) — a telemetry accounting artifact of where refs get counted in the kernel pipeline, not a real ref delta. Proof is the gate below: all three output multisets are byte-identical.
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to every baseline since §5.17 (`c7417d57…` / `67c47a1d…` / `470e3903…`). Snapshot `baselines/linux-d19ab145-rustlocal.db`.
+
+**What changed** (`codegraph-kernel/src/resolve.rs`):
+
+- **`local_receiver_type_patterns` gained the `"rust"` arm** — the two patterns from `name-matcher.ts:2056-2063`, verbatim: `let r [mut] [: T] = [&][mut] Type` (declaration, capture = initializer/annotation type) and `r : [&][mut] Type` (binding *or* typed parameter — `fn f(r: &T)`, closure `|r: T|`). The whole inferrer — scope-bounded backward scan off `enclosing_scope_start_line`, raw-line matching, `utf16_len` guards, `normalize_inferred_type_name` — was already ported and already invoked for rust inside `match_method_call_free` at the exact TS slot; it returned `None` only because the pattern table fell through to `_ => vec![]`.
+- **Member-tail gate relaxed** — rust `calls` refs containing `.` now flow through the native pipeline when they are `self.`-rooted (unchanged) or carry no `::`/`()` (new). `a::b.c`/`x::y().z` (`::`+`.`), `x().y`, and non-call `x.y`/`self.x` stay punted — TS verdicts by delegation. The gate is strictly additive over §5.25's: every admission it made before it still makes.
+
+**Byte-identity lesson re-verified** (the §5.25 class): `let w = Widget::new()` (spaced `=`) is an inference *miss* in TS too — the pattern's `=` must immediately follow the optional `:T` group — so it resolves via the strat arms at 0.7, and the ported pipeline reproduces that exactly. Measured corpus yield the probe predicted (~4,776 `x.y` calls edges TS-side: 827 @0.9 rmot + 3,949 strat @0.65/0.7/0.8) all lands native now; the 24 `x::y().z` @0.85 scopedChain edges remain punted by the `::` exclusion, byte-identical by delegation.
+
+**Gates**: 6/6 parity (new pins: `v.new`/`p.new`/`ctx.run` → rmot @0.9 instance-method; `w.again`/`w.new`/`z.again`/`w.inner.again` → strat unique-method @0.7 including the spaced-`=` miss and the cross-function scope bound; `z.nomethod` → prefilter-terminal `unresolved`; `Widget::new().again`/`make().run` → member-tail punt, also exercised through real extraction in the byte-compare leg), 223/223 resolution, 12/12 target-kind, 4,996/4,996 suite, clippy `-D warnings` (lib target), ast-grep clean.
+
+**Remaining Rust surface**: `Self::` associated items (unassessed, small), trait dispatch through `getSupertypes` (permanent — §5.21), non-call `x.y`/`self.x` and `::`/`()` chain shapes (attributed punts), bindings emission (enhancement, not migration).

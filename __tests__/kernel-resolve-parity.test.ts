@@ -181,6 +181,26 @@ const FIXTURE: Record<string, string> = {
     '    pub fn go(&self) { self.inner.new(); }',
     '    pub fn miss(&self) { self.unknown.new(); }',
     '}',
+    // `x.y` local receiver inference (R5): `: T` annotations (let or
+    // param) type the receiver for rmot. `let w = Widget::new()` (spaced
+    // `=`) is an inference MISS even in TS — the pattern's `=` must
+    // follow the optional `:T` group — so it falls to the strat arms
+    // (unique-method @0.7) exactly like undeclared receivers.
+    'pub struct Ctx;',
+    'impl Ctx {',
+    '    pub fn run(&self) {}',
+    '}',
+    'pub fn useit() {',
+    '    let w = Widget::new();',
+    '    w.again();',
+    '    let mut v: Widget = Widget::new();',
+    '    v.new();',
+    '    w.inner.again();',
+    '}',
+    'pub fn with_param(p: &Widget) { p.new(); }',
+    'pub fn worker() { let ctx: Ctx = Ctx; ctx.run(); }',
+    'pub fn unbound() { w.new(); z.again(); z.nomethod(); }',
+    'pub fn chains() { Widget::new().again(); make().run(); }',
   ].join('\n'),
   // Rust inheritance locality — `Error` is bound to a stdlib-rooted `use`,
   // so the same-named local type_alias must NOT adopt the implements ref.
@@ -473,6 +493,28 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('again', 'sub.rs', 'method'), 'self.new', 'src/sub.rs', 'rust', 'calls', 5);
     seed(nodeId('go', 'sub.rs', 'method'), 'self.inner.new', 'src/sub.rs', 'rust', 'calls', 7);
     seed(nodeId('miss', 'sub.rs', 'method'), 'self.unknown.new', 'src/sub.rs', 'rust', 'calls', 8);
+    // Rust `x.y` local receiver inference (R5) — `let v: Widget`, a
+    // typed param `p: &Widget`, and `ctx: Ctx` (the §5.25 shape) feed
+    // inferLocalReceiverType → rmot @0.9. `let w = Widget::new()` (spaced
+    // `=`), `w.new` scope-bounded out of `useit` into `unbound`, and the
+    // undeclared `w.inner`/`z` receivers all miss → the unique-method
+    // strat arm @0.7, exactly like TS. `z.nomethod` misses both.
+    const useitFn = nodeId('useit', 'sub.rs');
+    seed(useitFn, 'w.again', 'src/sub.rs', 'rust', 'calls', 18);
+    seed(useitFn, 'v.new', 'src/sub.rs', 'rust', 'calls', 20);
+    seed(useitFn, 'w.inner.again', 'src/sub.rs', 'rust', 'calls', 21);
+    seed(nodeId('with_param', 'sub.rs'), 'p.new', 'src/sub.rs', 'rust', 'calls', 23);
+    seed(nodeId('worker', 'sub.rs'), 'ctx.run', 'src/sub.rs', 'rust', 'calls', 24);
+    const unboundFn = nodeId('unbound', 'sub.rs');
+    seed(unboundFn, 'w.new', 'src/sub.rs', 'rust', 'calls', 25);
+    seed(unboundFn, 'z.again', 'src/sub.rs', 'rust', 'calls', 25);
+    seed(unboundFn, 'z.nomethod', 'src/sub.rs', 'rust', 'calls', 25);
+    // Gate exclusions — `::`+`.` (boundReceiver/scopedChain territory)
+    // and `()` chain shapes stay punted to the TS spine. The `chains` fn
+    // also exercises them through real extraction (byte-compare leg).
+    const chainsFn = nodeId('chains', 'sub.rs');
+    seed(chainsFn, 'Widget::new().again', 'src/sub.rs', 'rust', 'calls', 26);
+    seed(chainsFn, 'make().run', 'src/sub.rs', 'rust', 'calls', 26);
     // Rust inheritance refs — the stdlib-bound `Error` must not adopt the
     // local type_alias; the in-repo `Local` trait resolves.
     const mapperId = nodeId('MapperError', 'inh.rs', 'enum');
@@ -840,6 +882,41 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `self.unknown.m` — field not declared on Holder → exclusive
     // decline (member-tail punt; TS produces the same failed verdict).
     expect(at('self.unknown.new', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // `x.y` local receiver inference (R5). `let mut v: Widget`, a typed
+    // param `p: &Widget`, and `ctx: Ctx` (the exact §5.25 drift shape)
+    // donate their annotation → rmot @0.9 instance-method.
+    expect(at('v.new', 'src/sub.rs', 'calls').targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
+    expect(at('p.new', 'src/sub.rs', 'calls').targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
+    const ctxRun = at('ctx.run', 'src/sub.rs', 'calls');
+    expect(ctxRun.status).toBe('resolved');
+    expect(ctxRun.resolvedBy).toBe('instance-method');
+    expect(ctxRun.confidence).toBe(0.9);
+    expect(ctxRun.targetNodeId).toBe(nodeId('run', 'sub.rs', 'method'));
+    // Inference misses land on the strat arms exactly like TS: `new` and
+    // `again` are unique rust methods → strat3 single-candidate @0.7.
+    // `let w = Widget::new()` is a miss in TS too — the pattern needs `=`
+    // right after the optional `:T` group, so only `w=T`/`w: T` donate.
+    // `w.new` in `unbound` is scope-bounded out — w's decl is in `useit`.
+    for (const [n, want] of [
+      ['w.again', 'again'],
+      ['w.new', 'new'],
+      ['z.again', 'again'],
+      ['w.inner.again', 'again'],
+    ] as const) {
+      const h = at(n, 'src/sub.rs', 'calls');
+      expect(h.status).toBe('resolved');
+      expect(h.resolvedBy).toBe('instance-method');
+      expect(h.confidence).toBe(0.7);
+      expect(h.targetNodeId).toBe(nodeId(want, 'sub.rs', 'method'));
+    }
+    // `z.nomethod` — inference and strat both miss, and no `nomethod`
+    // node exists anywhere → prefilter terminal unresolved (native
+    // verdict, same as TS — not a punt).
+    expect(at('z.nomethod', 'src/sub.rs', 'calls').status).toBe('unresolved');
+    // Gate exclusions: `::`+`.` and `()` shapes stay punted to the TS
+    // spine (boundReceiver/scopedChain territory, unchanged by R5).
+    expect(at('Widget::new().again', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    expect(at('make().run', 'src/sub.rs', 'calls').status).toBe('passthrough');
     // `impl Error for X` bound to `use std::error::Error` — the locality
     // gate drops the same-named local type_alias → stays failed.
     // (implements refs are prerequisite-kind rows.)
