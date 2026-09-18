@@ -43,6 +43,7 @@ const FIXTURE: Record<string, string> = {
     'export class Service {',
     '  static create(): Service { return new Service(); }',
     '  run() { return 1; }',
+    '  split(s: string): string { return s; }',
     '}',
     'export const api = { getState() { return {}; }, call() { return 1; } };',
   ].join('\n'),
@@ -130,6 +131,35 @@ const FIXTURE: Record<string, string> = {
     'void wuser() { W::m(); }',
     'struct Pool { static Pool* instance() { static Pool p; return &p; } void drain() {} };',
     'void pooluser() { Pool::instance()->drain(); }',
+  ].join('\n'),
+  // Unbound member-call arms (matchMethodCall requireReceiverEvidence=false):
+  // `this.mailer` skips the claim gate (`this.` root) → mc-thisfield → the
+  // field's declared type off the enclosing class → rmot. The remaining arms
+  // are pinned through `references`-kind seeds (kind-gated out of the claim,
+  // still reaching matchReference's methodCall arm in TS) or through names
+  // with no binding at all.
+  'src/notify.ts': [
+    "import { Service } from './svc';",
+    'export class Mailer { send(): void {} }',
+    'export class Notifier {',
+    '  private mailer: Mailer = new Mailer();',
+    '  ping(): void { this.mailer.send(); }',
+    '}',
+    'export const api2 = { localcall() { return 2; } };',
+    'export class Engine { start(): void {} }',
+    'export class Alpha { handle(): void {} }',
+    'export class Beta { handle(): void {} }',
+    'export class Sigma { frobnicate(): void {} }',
+    'export function use4(): void {',
+    '  const svc4 = new Service();',
+    '  svc4.run();',
+    '  const arr = new Array<string>();',
+    "  arr.split('');",
+    '}',
+    'export async function top(): Promise<void> {',
+    '  const adat2 = await unknownFactory();',
+    '  adat2.run();',
+    '}',
   ].join('\n'),
   'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
   // `import tool` + `tool.pyhelper()` exercises the python module-member arm.
@@ -365,6 +395,21 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(goRun, 'NewService().Run', 'main.go', 'go', 'calls', 16);
     seed(goRun, 'nosuch().Run', 'main.go', 'go', 'calls', 17);
     seed(nodeId('user2', 'K.java', 'method'), 'J2.getK().mymethod', 'src/K.java', 'java', 'calls', 3);
+    // Unbound member-call arm (requireReceiverEvidence=false). `this.` roots
+    // skip the claim gate entirely; `references`-kind refs are kind-gated out
+    // of it. A calls-kind `x.y` name with no binding is claimed-and-refused
+    // terminally in TS (never reaching methodCall) — the strat arms are
+    // pinned through `references` seeds, the only shapes that reach them.
+    seed(nodeId('ping', 'notify.ts', 'method'), 'this.mailer.send', 'src/notify.ts', 'typescript', 'calls', 5);
+    const use4Fn = nodeId('use4', 'notify.ts');
+    seed(use4Fn, 'svc4.run', 'src/notify.ts', 'typescript', 'references', 14);
+    seed(use4Fn, 'api2.localcall', 'src/notify.ts', 'typescript', 'references', 16);
+    seed(use4Fn, 'Engine.start', 'src/notify.ts', 'typescript', 'references', 16);
+    seed(use4Fn, 'engine.start', 'src/notify.ts', 'typescript', 'references', 16);
+    seed(use4Fn, 'betaThing.handle', 'src/notify.ts', 'typescript', 'references', 16);
+    seed(use4Fn, 'mystery.frobnicate', 'src/notify.ts', 'typescript', 'references', 16);
+    seed(use4Fn, 'arr.split', 'src/notify.ts', 'typescript', 'references', 16);
+    seed(nodeId('top', 'notify.ts'), 'adat2.run', 'src/notify.ts', 'typescript', 'references', 18);
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -587,6 +632,68 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(javaDot.targetNodeId).toBe(
       byName('mymethod', 'method').find((n) => n.qualifiedName === 'K::mymethod')!.id,
     );
+
+    // ---- Unbound member-call arm (requireReceiverEvidence=false) ----
+    // mc-thisfield: `this.mailer.send` skips the claim (`this.` root) → the
+    // field's declared `Mailer` type off class Notifier → `Mailer::send` @0.85.
+    const thisField = at('this.mailer.send', 'src/notify.ts', 'calls');
+    expect(thisField.status).toBe('resolved');
+    expect(thisField.resolvedBy).toBe('instance-method');
+    expect(thisField.confidence).toBe(0.85);
+    expect(thisField.targetNodeId).toBe(
+      byName('send', 'method').find((n) => n.qualifiedName === 'Mailer::send')!.id,
+    );
+    // Unbound infer → rmot: `const svc4 = new Service()` → `Service::run` @0.9
+    // (references-kind keeps the ref out of the bound claim but inside
+    // matchReference's methodCall arm, exactly like TS).
+    const freeInfer = at('svc4.run', 'src/notify.ts', 'references');
+    expect(freeInfer.status).toBe('resolved');
+    expect(freeInfer.resolvedBy).toBe('instance-method');
+    expect(freeInfer.confidence).toBe(0.9);
+    expect(freeInfer.targetNodeId).toBe(
+      byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
+    );
+    // mc-literal unbound: every same-file const/variable holder gets the
+    // object-literal member scan (no binding filter) → `api2.localcall` @0.85.
+    const freeLit = at('api2.localcall', 'src/notify.ts', 'references');
+    expect(freeLit.status).toBe('resolved');
+    expect(freeLit.resolvedBy).toBe('instance-method');
+    expect(freeLit.confidence).toBe(0.85);
+    // strat1 — `Engine` names the class; `Engine::start` found by file scan.
+    const strat1 = at('Engine.start', 'src/notify.ts', 'references');
+    expect(strat1.status).toBe('resolved');
+    expect(strat1.resolvedBy).toBe('qualified-name');
+    expect(strat1.confidence).toBe(0.85);
+    expect(strat1.targetNodeId).toBe(
+      byName('start', 'method').find((n) => n.qualifiedName === 'Engine::start')!.id,
+    );
+    // strat2 — capitalized receiver `engine` → `Engine` class scan @0.8.
+    const strat2 = at('engine.start', 'src/notify.ts', 'references');
+    expect(strat2.status).toBe('resolved');
+    expect(strat2.resolvedBy).toBe('instance-method');
+    expect(strat2.confidence).toBe(0.8);
+    // strat3 single — the only `frobnicate` method wins outright @0.7.
+    const strat3a = at('mystery.frobnicate', 'src/notify.ts', 'references');
+    expect(strat3a.status).toBe('resolved');
+    expect(strat3a.resolvedBy).toBe('instance-method');
+    expect(strat3a.confidence).toBe(0.7);
+    // strat3 overlap — `betaThing` shares a word with `Beta` → `Beta::handle`
+    // @0.65 (receiver-word overlap 1 + same-language bonus 1 ≥ 2).
+    const strat3b = at('betaThing.handle', 'src/notify.ts', 'references');
+    expect(strat3b.status).toBe('resolved');
+    expect(strat3b.resolvedBy).toBe('instance-method');
+    expect(strat3b.confidence).toBe(0.65);
+    expect(strat3b.targetNodeId).toBe(
+      byName('handle', 'method').find((n) => n.qualifiedName === 'Beta::handle')!.id,
+    );
+    // mc-await — `const adat2 = await unknownFactory()` may narrow the
+    // receiver through inferEsmAwaitedCallType, which the snapshot doesn't
+    // run — the gate punts rather than guesses.
+    expect(at('adat2.run', 'src/notify.ts', 'references').status).toBe('passthrough');
+    // builtin bail — `arr` infers to `Array` (a JS_BUILT_INS member), whose
+    // rmot miss returns null in TS rather than letting Strategy 3 guess the
+    // unrelated `Service::split` (the bait — @0.7 if the bail is missing).
+    expect(at('arr.split', 'src/notify.ts', 'references').status).toBe('passthrough');
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {

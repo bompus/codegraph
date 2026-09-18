@@ -485,3 +485,36 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 **What was ported** (`codegraph-kernel/src/resolve.rs`, ~+140): `match_call_chain` — matchReference's per-language chain dispatch, inserted between `match_by_qualified_name` and the `member-tail` punt exactly where TS runs it (sequential early-return arms, not pooled): `match_cpp_call_chain` (c/cpp — `<inner>().<method>` via `resolve_cpp_call_result_type` → rmot @0.85 `instance-method`), `match_scoped_call_chain` (php/rust — `Cls::factory().m`, `::` required, `self` marker → factory class), `match_dotted_call_chain` (the 9-language dot list — Go bare-inner `New().M` via callee return_type, CONSTRUCTS_VIA_BARE_CALL ctor receiver, `Cls.factory().m` via `Cls::factory` return type, objc/pascal convention arms verbatim though unreachable). All compose stage-2 helpers (`resolve_cpp_call_result_type`, `lookup_callee_return_type`, `imported_fqn_of`, `resolve_method_on_type`). **Punt fidelity**: Go's bare-fallback (`matchByExactName ?? matchFuzzy`) is unported → `member-tail` punt; rmot misses → `rmot-supers` punt; either way TS's rerun produces the identical verdict. ts/js/py `().` refs still punt `chain` at the earlier guard — storeAccessorChain's JS arm is source-bound and its python arm is near-zero yield.
 
 **Fixture coverage** (parity test +45 lines): `Pool::instance().drain` → `Pool::drain` @0.85; `Pool::instance().nope` → `rmot-supers` punt → passthrough; `Registry::make().name` → `self`→factory-class → `Registry::name` @0.85; `NewService().Run` → go bare-inner @0.85; `nosuch().Run` → member-tail punt → passthrough; `J2.getK().mymethod` → java dotted factory @0.85. 6/6 parity + 223/223 resolution tests green; ast-grep kernel rules clean.
+
+### 5.20 Phase 5 step 7 — unbound method-call arm native: matchMethodCall requireReceiverEvidence=false (2026-09-18)
+
+Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; 5:25.31 wall / 16.0GB MaxRSS). Log: `bench/20260918-node-8c-kernelon-memberfree.log`; post-leg snapshot `baselines/linux-d19ab145-memberfree.db`.
+
+| Metric | §5.19 (Leg B) | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,807,635 | 5,808,105 | +470 |
+| kernel passthrough | 61,869 | 61,399 | −470 |
+| `member-tail` | 2,664 | **2,080** | −584 |
+| `rmot-supers` (re-attributed) | 65 | 179 | +114 — free-arm rmot misses; TS's live supertype walk still owns them |
+| `chain` / `btm-supers` / `via-src` | 951 / 726 / 9 | identical | 0 |
+| `ineligible:lang` | 57,454 | 57,454 | 0 |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to the Leg-B baseline (`c7417d57…` / `67c47a1d…` / `470e3903…`). TS-side resolutions of `member-tail`-punted refs: `instance-method` **436 → 0** (every prior recovery now native), `exact-match` 88 and `function-ref` 29 unchanged (unported source-bound matchers — permanent punts). The −584 member-tail delta splits into 470 native hits + 114 re-attributed `rmot-supers` punts.
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, ~+330): `match_method_call_free` — the `requireReceiverEvidence=false` half of `matchMethodCall`, reached only by refs the boundReceiver claim never takes (`this.`/`self.`/`super.`/`cls.` roots, non-`calls` kinds, `()`-chain names after the chain arms miss). Wired at both `member-tail` dispatch sites (the main `name_cand` chain after `match_call_chain`, and the c-include arm after `match_by_qualified_name`), preserving TS's sequential early-return order: PHP `$this->prop` exclusive → dot/colon prelude (cpp `operator` fallback) → infer → rmot @0.9 (java/kotlin `importedFqn`) → `mc-await` punt → ESM builtin/primitive bail (`TS_PRIMITIVE_TYPES`, 12 entries — kills Strategy-3 guesses on `new Array()`/`string` receivers) → gofield exclusive (deep receivers) → `this.field` exclusive → `match_ts_this_field_call` (innermost enclosing type; typeof → object-literal holders @0.85 or terminal null; `^[A-Z]` type gate; >1 declared → directory-nearest @0.85, `localeCompare` tie → `mc-tfield-ambig` punt; else rmot @0.85) → javafield non-exclusive → mc-literal (all holders, no binding filter — TS's check is evidence-gated) → strat1 kind+lang @0.85 `qualified-name` → strat2 capitalized @0.8 → strat3 ceiling + same-lang + unique@0.7 / overlap+lang@0.65. New helpers: `match_ts_this_field_call`, `match_ts_field_call_free`, `split_camel_case`, `TS_PRIMITIVE_TYPES`.
+
+**Fixture coverage** (parity test, `src/notify.ts` + `src/svc.ts::split` bait): `this.mailer.send` → thisfield → `Mailer::send` @0.85; `svc4.run` (references) → infer → `Service::run` @0.9; `api2.localcall` → object-literal @0.85; `Engine.start` → strat1 @0.85 `qualified-name`; `engine.start` → strat2 `Engine` @0.8; `mystery.frobnicate` → strat3 unique @0.7; `betaThing.handle` → strat3 word-overlap `Beta` @0.65; `adat2.run` → `mc-await` punt; `arr.split` (`new Array<string>()`) → builtin bail → punt (the `Service::split` bait would claim @0.7 if the bail were missing). Two fixture corrections encoded real dispatch semantics: calls-kind unbound `x.y` is claimed-and-refused terminally (strat arms pin through `references` seeds), and function-local receivers aren't `known_names` (prefilter resolves them `unresolved` — the bail pin needs the member segment known). 6/6 parity + 223/223 resolution + 4,996/4,996 full suite green; ast-grep kernel rules clean.
+
+**Permanent-punt ledger** (why each remaining bucket stays in TS):
+
+| Punt reason | n | Why it stays |
+|---|---|---|
+| `ineligible:lang` | 57,454 | unmigrated languages (mostly Rust) — needs extractor bindings, not resolver arms |
+| `member-tail` | 2,080 | genuine misses (~1,963) + `exact-match` 88 + `function-ref` 29 TS-side hits — `isLocallyBoundJsName`/`applyCppCallSiteForm`/the dedicated function_ref matcher are source-bound |
+| `chain` | 951 | ts/js/py `().` store-accessor arm — `resolveStoreAction` is source-bound (JS); python arm is near-zero yield |
+| `btm-supers` | 726 | boundReceiver's live supertype BFS — no snapshot equivalent |
+| `rmot-supers` | 179 | rmot's supertype walk — same |
+| `via-src` | 9 | objectLiteralAlias/instanceMember source reads |
+| `mc-await`, `mc-guarded`, `mc-iteration`, `gofactory`, `mc-tfield-ambig` | (inside above) | evidence-gated or source-bound arms — punted conservatively, TS rerun produces identical verdicts |
+
+**Clean timing** (the one uninstrumented post-Phase-5 run — `taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `SYNTH_TIMINGS=1` only, no `RESOLVE_PROFILE`; n=1, host idle): wall **5:16.39 (316.4s) / 15.8GB MaxRSS**; resolution phase 188.0s, callback-synthesis 68.9s, parse-loop 75.2s. Log: `bench/20260918-node-8c-kernelon-memberfree-clean.log`. Against §5.13's clean Phase-4 arms (total 292.6s; resolution 154.6–171.4s; synthesis 59.0s; parse 72.5s) the wall is ~8% slower — inside run-to-run variance at n=1, and directionally expected: the new native arms do real work (source scans, rmot, file reads) on refs that used to punt early, buying coverage (91.4%→99.0% native) rather than speed. The floor is unchanged — main-thread persist + synthesis, exactly as §5.11 recorded.
