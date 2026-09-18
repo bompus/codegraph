@@ -446,3 +446,22 @@ Same host/arm shape as §5.16 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux 
 **Fixture coverage** (parity test): `svc.run` infer→btm @0.9, `svc.call` prefilter-pass → btm miss → `btm-supers` punt → passthrough, `made.run` factory tail null (`return_type` unpopulated for TS — identical bail), `k.mymethod` java field/param infer @0.9, `svc.Run` gofactory callee-return-type → btm @0.9, `o.in.Do` gofield two-hop @0.85.
 
 **Where the 25,320 `br-source` refs went**: ~24.6k now verdict natively (the measured ~1.2k member edges reproduce in-kernel — byte-identical edge multiset); 726 punt `btm-supers` (member-miss on a proven owner — conservative delegation, not a coverage gap). Remaining member punts: `member-tail` 5,750 (nameMatch tail: methodCall/exactName/fuzzy on non-bindingReceiver shapes), `chain` 951, `via-src` 9 — all deferred-conformance or source-alias territory by design.
+
+### 5.18 Phase 5 step 5 — upstream-merge audit + C/C++ include-arm qualifiedName leg (2026-09-18)
+
+**Merge audit** (`d19ab145` = upstream merge into `fork/consolidated`): upstream's resolution refactor (`8dcc52d3` retained qualified chains in kernel extraction, `889c3a9d` typed-call/store-binding arms, `b909ef2b` TS-extractor mirror — all under `4297b8e2`, landed 2026-09-16 via `e5952c45`) **predates** stage-1/2, so the kernel arms were written against the refactored spine. `d19ab145` itself changed only `README.md`. Zero drift: `resolve_nonbare_ref` order, `is_unresolved_js_member_call`, the `store-bind` punt, and `same_language_family` all already mirror current TS.
+
+**Re-baseline** (`taskset -c 0-7`, node v26.9.0, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`): kernel-on 6:03.67 / 16.1GB MaxRSS; kernel-off 4:40.16 / 11.9GB. Byte-identical across arms — nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521; multisets match §5.17's sha256s exactly (`c7417d57…` / `67c47a1d…` / `470e3903…`), i.e. the upstream merge produced **zero** corpus-output delta. Preserved at `baselines/linux-d19ab145.db`. Logs: `bench/20260918-node-8c-kernel{on,off}-rebaseline.log`.
+
+**Re-attribution** (kernel-on vs kernel-off, punts re-run in TS): `ineligible:lang` 57,441 / `member-tail` 5,753 / `chain` 951 / `btm-supers` 726 / `via-src` 9. Inside `member-tail`: TS-side `qualified-name` **3,047** — C/C++ include refs (`math.h`, `sys/ioctl.h`, …) that resolve to indexed `import`/`file` nodes by qualified name; `instance-method` 473; `exact-match` 88; ~2,145 genuine misses. `chain` 951: all TS-side misses on this corpus. `btm-supers` 726: 67 resolve via live-supertype BFS — confirmed permanent punts.
+
+**Leg A — the qualified-name gap**: `resolve_c_include_import_ref` ran `resolve_via_import → match_by_file_path → member-tail punt`, skipping `match_by_qualified_name` entirely, while TS's `matchReference` runs filePath→qualifiedName in order. Fix (~10 lines): filePath-miss → `match_by_qualified_name` before the member-tail punt — the matcher is kind-agnostic and every downstream gate (`gate_language`, `is_visible_across_files`, `gate_target_kind`, framework merge) applies identically.
+
+| Metric | Re-baseline | Leg A | Δ |
+|---|---|---|---|
+| kernel handled | 5,799,624 | 5,802,671 | +3,047 |
+| kernel passthrough | 64,880 | 61,833 | −3,047 |
+| `member-tail` | 5,753 | **2,706** | −3,047 (the qualifiedName hits, exactly) |
+| `chain` / `btm-supers` / `via-src` / `ineligible:lang` | 951 / 726 / 9 / 57,441 | unchanged | 0 |
+
+**Output identity (the gate)**: Leg A run 5:05.02 / 16.6GB MaxRSS (`bench/20260918-node-8c-kernelon-lega.log`) — nodes/edges/failed-refs counts and all three multisets **byte-identical** to the re-baseline (`c7417d57…` / `67c47a1d…` / `470e3903…`). The 3,047 edges moved from TS-resolved to kernel-resolved with zero graph delta. Post-leg snapshot at `baselines/linux-d19ab145-lega.db`. Parity fixture updated (`missing/none.h`, `stdio.h` → `qualified-name` @0.95 on their own import nodes); 6/6 parity + 223/223 resolution tests green, ast-grep kernel rules clean.
