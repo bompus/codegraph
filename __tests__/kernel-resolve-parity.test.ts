@@ -172,7 +172,25 @@ const FIXTURE: Record<string, string> = {
   'src/sub.rs': [
     'pub fn leaf_fn() {}',
     'pub struct Widget;',
-    'impl Widget { pub fn new() {} }',
+    'impl Widget {',
+    '    pub fn new() {}',
+    '    pub fn again(&self) { self.new(); }',
+    '}',
+    'pub struct Holder { inner: Widget }',
+    'impl Holder {',
+    '    pub fn go(&self) { self.inner.new(); }',
+    '    pub fn miss(&self) { self.unknown.new(); }',
+    '}',
+  ].join('\n'),
+  // Rust inheritance locality — `Error` is bound to a stdlib-rooted `use`,
+  // so the same-named local type_alias must NOT adopt the implements ref.
+  'src/inh.rs': [
+    'use std::error::Error;',
+    'pub type Error = String;',
+    'pub enum MapperError { Missing }',
+    'impl Error for MapperError {}',
+    'pub trait Local {}',
+    'impl Local for MapperError {}',
   ].join('\n'),
   'src/deep/mod.rs': 'pub mod inner;\npub mod sib;\n',
   'src/deep/inner.rs': 'pub fn deep_fn() {}\nfn deepuser() {}\n',
@@ -450,6 +468,16 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `::` AND `.` — the boundReceiver claim can own an `a::b.c` receiver in
     // TS, so the arm leaves it punted.
     seed(libuserFn, 'a::b.c', 'src/lib.rs', 'rust', 'calls', 8);
+    // Rust `self.` receiver arms — `self.m` (enclosing impl via caller
+    // qname), `self.f.m` (field type off the struct decl), and a decline.
+    seed(nodeId('again', 'sub.rs', 'method'), 'self.new', 'src/sub.rs', 'rust', 'calls', 5);
+    seed(nodeId('go', 'sub.rs', 'method'), 'self.inner.new', 'src/sub.rs', 'rust', 'calls', 7);
+    seed(nodeId('miss', 'sub.rs', 'method'), 'self.unknown.new', 'src/sub.rs', 'rust', 'calls', 8);
+    // Rust inheritance refs — the stdlib-bound `Error` must not adopt the
+    // local type_alias; the in-repo `Local` trait resolves.
+    const mapperId = nodeId('MapperError', 'inh.rs', 'enum');
+    seed(mapperId, 'Error', 'src/inh.rs', 'rust', 'implements', 4);
+    seed(mapperId, 'Local', 'src/inh.rs', 'rust', 'implements', 6);
 
     const resolver = new kernel!.KernelResolver!({
       dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
@@ -476,8 +504,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const preIdx = new Map(
       preBatch.map((r, i) => [`${r.referenceName}@${r.referenceKind}@${r.filePath}`, i]),
     );
-    const atPre = (name: string, file: string) =>
-      preOutcomes[preIdx.get(`${name}@imports@${file}`)!]!;
+    const atPre = (name: string, file: string, kind = 'imports') =>
+      preOutcomes[preIdx.get(`${name}@${kind}@${file}`)!]!;
 
     // Cross-file unique match → 'function-ref' at 0.8 (no import in other.ts).
     const cross = at('helper', 'src/other.ts');
@@ -795,8 +823,31 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // JS-gated dead for rust).
     expect(at('crate::sub::missing', 'src/lib.rs', 'calls').status).toBe('unresolved');
     // `::`+`.` names are receiver-shaped — dot-gated punt back to TS
-    // (rust's self-field/trait receiver arms are unported).
+    // (rust's non-self receiver inference is source-reading, unported).
     expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // `self.m` → match_rust_self_call — enclosing impl type via caller qname.
+    const selfNew = at('self.new', 'src/sub.rs', 'calls');
+    expect(selfNew.status).toBe('resolved');
+    expect(selfNew.resolvedBy).toBe('qualified-name');
+    expect(selfNew.confidence).toBe(0.9);
+    expect(selfNew.targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
+    // `self.f.m` → match_rust_self_field_call — field type off the struct decl.
+    const fieldNew = at('self.inner.new', 'src/sub.rs', 'calls');
+    expect(fieldNew.status).toBe('resolved');
+    expect(fieldNew.resolvedBy).toBe('instance-method');
+    expect(fieldNew.confidence).toBe(0.85);
+    expect(fieldNew.targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
+    // `self.unknown.m` — field not declared on Holder → exclusive
+    // decline (member-tail punt; TS produces the same failed verdict).
+    expect(at('self.unknown.new', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // `impl Error for X` bound to `use std::error::Error` — the locality
+    // gate drops the same-named local type_alias → stays failed.
+    // (implements refs are prerequisite-kind rows.)
+    expect(atPre('Error', 'src/inh.rs', 'implements').status).toBe('unresolved');
+    // In-repo trait impl → resolved via the bare-name path.
+    const localInh = atPre('Local', 'src/inh.rs', 'implements');
+    expect(localInh.status).toBe('resolved');
+    expect(localInh.targetNodeId).toBe(nodeId('Local', 'inh.rs', 'trait'));
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {

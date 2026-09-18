@@ -605,3 +605,30 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 **Gates**: 6/6 parity (updated `Widget::new` resolved pin + `a::b.c` member-tail punt), 223/223 resolution, 12/12 reference-target-kind, 4,996/4,996 suite, clippy `-D warnings`, ast-grep clean.
 
 **Remaining Rust workstream** (scoping, not landed): `self.`/`Self::` receiver arms (enclosing-impl + field-type inference — the 5,245 `instance-method` punts), trait-method dispatch (`v0.clone` → `Clone`), the `rust-inh` locality gate (stdlib-rooted `use` → out-of-repo supertype), `use`-path bindings emission for genuinely *new* resolutions (enhancement, not migration — emitting bindings would change TS's graph too). Generics/external crates/macro names stay unresolvable by design.
+
+### 5.25 Rust legs R3+R4 — `self.` receiver arms + inheritance locality gate native (2026-09-18)
+
+| Metric | R2 (`b20c59dc`) | R3+R4 | Delta |
+|---|---:|---:|---:|
+| kernel handled | 5,821,013 | **5,839,053** | +18,040 |
+| kernel passthrough | 28,491 | **25,451** | −3,040 |
+| `member-tail` | 24,763 | 22,829 | −1,934 (`self.` receiver hits now native) |
+| `rust-inh` | 1,633 | **0** | bucket eliminated — locality gate owns the verdicts |
+| `rmot-supers` | 179 | 706 | +527 — self-field arms reach `resolveMethodOnType`'s supers-walk punt |
+| `chain` / `btm-supers` / `ineligible:lang` / `via-src` | 951 / 726 / 230 / 9 | 951 / 726 / 230 / 9 | unchanged |
+| **native share** | 99.5% | **99.6%** | |
+| wall / maxRSS | 6:02 / 16.9GB | 5:29 / 15.9GB | |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to every baseline since §5.17 (`c7417d57…` / `67c47a1d…` / `470e3903…`). Snapshot `baselines/linux-d19ab145-rustrx.db`.
+
+**What changed** (`codegraph-kernel/src/resolve.rs`):
+- **`match_rust_self_call`** — `self.m`: owner = enclosing impl type off the caller's `qualified_name` prefix; resolves only `Owner::m` methods (no same-name decoys); `qualified-name` @0.9.
+- **`match_rust_self_field_call`** — `self.f.m`: finds the owner struct, reads its declaration lines (bounded file-line cache — same mechanism as `isRustTraitImplMethod`), regexes `f: <type>` out of them, normalizes through a ported `rustFieldTypeName` (strips `&`/`mut`/lifetimes, `Box`/`Rc`/`Arc`, `dyn`/`impl`, generics, trait bounds; rejects primitives/external/single-letter), then `resolveMethodOnType` @0.85 `instance-method`. Exclusive: inference failure returns null — never falls to bare-name strategies (the Option-autoderef decline pins stay honored). Supers-walk misses punt `rmot-supers`.
+- **`is_bound_to_out_of_repo_import` rust branch** — ported `collectRustUseBindings` (nested-brace `use` expansion, `as` aliases, glob skip) + `RUST_STDLIB_ROOTS` + the already-ported `resolveRustModuleFile`. `impl Error for MapperError` bound to `use std::error::Error` is dropped as out-of-repo instead of adopting the local `type Error = String`; in-repo traits resolve. The whole `rust-inh` punt bucket went native.
+- Wired into the free method-call arm at the exact TS slot (gofield → rustfield → rustself → thisfield).
+
+**Divergence caught by the gate**: the first R3+R4 run had the dot-gate removed entirely (reasoning: non-self `x.y` had "no rust-specific TS arm"). Byte-compare **failed** — 413 edges, all `calls`, all identical source/target/kind, differing only in `confidence`: kernel strat arms produced 0.7/0.8 where TS produced 0.9. Root cause: `inferLocalReceiverType` (`let ctx: Ctx` source inference) is **not** language-gated — it runs for rust in TS's `matchMethodCall` prelude and feeds `resolveMethodOnType` @0.9. Same target, fabricated metadata = still a byte-identity failure. Fix: the member-tail gate now punts rust refs containing `.` unless they're `self.`-rooted calls. `x.y` local-var inference is a separate leg (R5); the ported `self.` arms had **zero** diverged edges.
+
+**Gates**: 6/6 parity (new pins: `self.new` → `Widget::new` @0.9 qualified-name, `self.inner.new` → @0.85 instance-method, `self.unknown.new` decline→member-tail, `Error`/`Local` implements locality via prerequisite batch), 223/223 resolution, 12/12 target-kind, 4,996/4,996 suite, clippy `-D warnings` (lib target), ast-grep clean.
+
+**Remaining Rust surface**: `x.y` local-var receiver inference (`inferLocalReceiverType` port — source-reading decl inference; the 413-edge class this leg re-punted), trait dispatch through `getSupertypes` (permanent — §5.21), `Self::` associated items, bindings emission (enhancement, not migration).

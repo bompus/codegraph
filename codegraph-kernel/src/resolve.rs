@@ -134,6 +134,150 @@ static CONSTRUCTS_VIA_BARE_CALL: LazyLock<HashSet<&'static str>> =
 static PHP_STATIC_CALL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$").unwrap());
 
+/// RUST_NON_PROJECT_FIELD_TYPES (name-matcher.ts): primitives and prelude
+/// types — a field of one never names a project type.
+static RUST_NON_PROJECT_FIELD_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "bool", "char", "str", "String", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16",
+        "u32", "u64", "u128", "usize", "f32", "f64", "Self", "self",
+    ]
+    .into_iter()
+    .collect()
+});
+/// Per-line comment stripper for rust decl scans — `//.*$` and `/\*.*?\*/`.
+static RUST_LINE_COMMENTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"//.*$|/\*.*?\*/").unwrap());
+/// RUST_STDLIB_ROOTS (import-resolver.ts): `use` roots that by definition
+/// ship outside the repository.
+static RUST_STDLIB_ROOTS: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| ["std", "core", "alloc", "proc_macro"].into_iter().collect());
+/// collectRustUseBindings' `use` statement matcher —
+/// `(^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);`.
+static RUST_USE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);").unwrap()
+});
+/// `use` alias tail — `^(.*?)\s+as\s+([A-Za-z_]\w*)$`.
+static RUST_USE_ALIAS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.*?)\s+as\s+([A-Za-z_]\w*)$").unwrap());
+
+/// rustFieldTypeName (name-matcher.ts): reduce a field's declared type text
+/// to the simple name a method call auto-derefs to. Unwraps only the layers
+/// Rust's method-call auto-deref looks through (`&`, `Box`, `Rc`, `Arc`);
+/// `Option`/`Vec`/etc. keep their own name and resolve to nothing. Generic
+/// params, primitives, tuples, raw pointers, fn types → None.
+fn rust_field_type_name(raw: &str) -> Option<String> {
+    let mut t = raw.trim().to_string();
+    loop {
+        let before = t.clone();
+        static REF_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^&\s*(?:'\w+\s+)?(?:mut\s+)?").unwrap());
+        static PTR_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^(?:Box|Rc|Arc)\s*<\s*").unwrap());
+        static DYN_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^(?:dyn|impl)\s+").unwrap());
+        t = REF_RE.replace(&t, "").into_owned();
+        t = PTR_RE.replace(&t, "").into_owned();
+        t = DYN_RE.replace(&t, "").into_owned();
+        if t == before {
+            break;
+        }
+    }
+    // Drop generic args, closing `>`s of unwrapped pointers, and trait-object
+    // bounds (`dyn Source + Send`); keep the last path segment.
+    static TRIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[<>+].*$").unwrap());
+    let t = TRIM_RE.replace(&t, "").trim().to_string();
+    let seg = t.split("::").filter(|s| !s.is_empty()).last()?;
+    static IDENT_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap());
+    static GENERIC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]$").unwrap());
+    if !IDENT_RE.is_match(seg)
+        || RUST_NON_PROJECT_FIELD_TYPES.contains(seg)
+        || GENERIC_RE.is_match(seg)
+    {
+        return None;
+    }
+    Some(seg.to_string())
+}
+
+/// collectRustUseBindings (import-resolver.ts): `use` statements →
+/// local-name → path map. `a::{b::{C, D}, E}` flattens one `{...}` level at
+/// a time; `x as y` aliases; globs (`*`) are skipped.
+fn collect_rust_use_bindings(content: &str) -> std::collections::HashMap<String, String> {
+    fn expand(spec: &str) -> Vec<String> {
+        let Some(open) = spec.find('{') else {
+            return vec![spec.trim().to_string()];
+        };
+        let prefix = &spec[..open];
+        let mut depth = 0i32;
+        let mut close = -1i64;
+        for (i, ch) in spec.char_indices().skip_while(|(i, _)| *i < open) {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    close = i as i64;
+                    break;
+                }
+            }
+        }
+        if close < 0 {
+            return vec![];
+        }
+        let close = close as usize;
+        let suffix = &spec[close + 1..];
+        let inner = &spec[open + 1..close];
+        let mut parts = Vec::new();
+        let mut depth2 = 0i32;
+        let mut start = 0usize;
+        for (i, ch) in inner.char_indices().chain(std::iter::once((inner.len(), '\0'))) {
+            if ch == '{' {
+                depth2 += 1;
+            } else if ch == '}' {
+                depth2 -= 1;
+            }
+            if i == inner.len() || (ch == ',' && depth2 == 0) {
+                let seg = inner[start..i].trim();
+                if !seg.is_empty() {
+                    parts.push(seg.to_string());
+                }
+                start = i + 1;
+            }
+        }
+        parts
+            .into_iter()
+            .flat_map(|p| expand(&format!("{}{}{}", prefix, p, suffix)))
+            .collect()
+    }
+
+    let mut out = std::collections::HashMap::new();
+    static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    for m in RUST_USE_RE.captures_iter(content) {
+        let spec = WS_RE.replace_all(&m[1], " ");
+        for flat in expand(&spec) {
+            let alias = RUST_USE_ALIAS_RE.captures(&flat);
+            let raw_path = alias
+                .as_ref()
+                .map(|a| a[1].trim())
+                .unwrap_or_else(|| flat.trim());
+            if raw_path.is_empty() || raw_path.ends_with('*') {
+                continue;
+            }
+            let segments: Vec<&str> = raw_path
+                .split("::")
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let Some(leaf) = segments.last() else {
+                continue;
+            };
+            let local = alias.as_ref().map(|a| a[2].to_string()).unwrap_or_else(|| leaf.to_string());
+            out.insert(local, segments.join("::"));
+        }
+    }
+    out
+}
+
 /// `f.claimsReference(name)` for the resolver registered as `framework`
 /// (`f.name`), or the conservative claim for names the kernel does not know.
 fn framework_claims_reference(framework: &str, name: &str) -> bool {
@@ -3001,6 +3145,32 @@ impl KernelResolver {
     /// isBoundToOutOfRepoImport (import-resolver.ts): for a bare name in a
     /// migrated language only the ESM arm can fire.
     fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
+        // Qualified refs resolve by path, not through a bare import binding.
+        if r.reference_name.contains("::") || r.reference_name.contains('.') {
+            return Ok(false);
+        }
+        // Rust: a `use` path rooted at a stdlib crate ships outside the repo
+        // by definition. Deliberately NOT "the module path doesn't resolve":
+        // `pub use other_crate::{ports}` re-exports have no file to walk yet
+        // are in-repo — a 2015-edition crate-relative path that walks to a
+        // real file shadows a stdlib root and stays local.
+        if r.language == "rust" {
+            let Some(content) = self.read_file(&r.file_path) else {
+                return Ok(false);
+            };
+            let bindings = collect_rust_use_bindings(&content.join("\n"));
+            let Some(use_path) = bindings.get(&r.reference_name) else {
+                return Ok(false);
+            };
+            let segments: Vec<&str> = use_path.split("::").collect();
+            if segments.len() < 2 || !RUST_STDLIB_ROOTS.contains(segments[0]) {
+                return Ok(false);
+            }
+            return Ok(
+                self.resolve_rust_module_file(&segments[..segments.len() - 1], &r.file_path)?
+                    .is_none(),
+            );
+        }
         if !is_esm_import_language(&r.language) {
             return Ok(false);
         }
@@ -5409,6 +5579,134 @@ impl KernelResolver {
         Ok(McRes::Null)
     }
 
+    /// matchRustSelfCall (name-matcher.ts): `self.method()` — the method on
+    /// the type the call sits inside. The owner is the calling method's
+    /// qualified-name prefix; a free fn has no `self`. Exactly one candidate
+    /// must belong to that owner — two same-named methods on the same type
+    /// is the fabrication this declines instead of.
+    fn match_rust_self_call(&mut self, method: &str, r: &ResolveRefIn) -> Result<McRes> {
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(McRes::Null);
+        };
+        let Some(sep) = caller.qualified_name.rfind("::") else {
+            return Ok(McRes::Null);
+        };
+        if sep == 0 {
+            return Ok(McRes::Null);
+        }
+        let owner = &caller.qualified_name[..sep];
+        let want = format!("{}::{}", owner, method);
+        let mut owned: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(&want)?
+            .iter()
+            .filter(|n| {
+                n.kind == "method" && n.language == "rust" && n.qualified_name == want
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        // Rust qualified names omit module paths — two modules can declare
+        // the same `Target`. Require one owner declaration in the caller's
+        // file and the method there too; a unique owner still permits impl
+        // blocks split across files.
+        let owners: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(owner)?
+            .iter()
+            .filter(|n| {
+                n.language == "rust"
+                    && matches!(
+                        n.kind.as_str(),
+                        "struct" | "enum" | "union" | "trait" | "class"
+                    )
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if owners.len() > 1 {
+            if owners.iter().filter(|n| n.file_path == caller.file_path).count() != 1 {
+                return Ok(McRes::Null);
+            }
+            owned.retain(|n| n.file_path == caller.file_path);
+        }
+        if owned.len() != 1 {
+            return Ok(McRes::Null);
+        }
+        Ok(McRes::Hit(KCand {
+            node: owned[0].clone(),
+            confidence: 0.9,
+            resolved_by: "qualified-name",
+        }))
+    }
+
+    /// matchRustSelfFieldCall (name-matcher.ts): `self.<field>.<method>()`,
+    /// exclusive for `self.<field>` receivers — the field's declared type
+    /// off the owner struct's OWN declaration lines (comment-stripped,
+    /// line by line), validated by rmot, or nothing. Rust struct fields are
+    /// not graph nodes; the declaration text is the only place the type
+    /// lives.
+    fn match_rust_self_field_call(
+        &mut self,
+        field: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Result<McRes> {
+        if field.is_empty() || field.contains('.') {
+            return Ok(McRes::Null);
+        }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(McRes::Null);
+        };
+        let Some(sep) = caller.qualified_name.rfind("::") else {
+            return Ok(McRes::Null);
+        };
+        if sep == 0 {
+            return Ok(McRes::Null);
+        }
+        let Some(owner) = caller.qualified_name[..sep].split("::").last() else {
+            return Ok(McRes::Null);
+        };
+        let owners = prefer_call_site_file(
+            self.nodes_by_name(owner)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "struct" | "union" | "class")
+                        && n.language == "rust"
+                })
+                .map(|n| Rc::new(n.clone()))
+                .collect(),
+            &r.file_path,
+        );
+        let field_re = self.cached_regex(&format!(
+            r"\b{}\s*:\s*([^,{{}}]+)",
+            regex::escape(field)
+        ))?;
+        for s in owners {
+            let Some(source) = self.read_file(&s.file_path) else {
+                continue;
+            };
+            let start = (s.start_line - 1).max(0) as usize;
+            let end = (s.end_line as usize).min(source.len());
+            for raw in &source[start..end] {
+                let line = RUST_LINE_COMMENTS.replace_all(raw, "");
+                let Some(m) = field_re.captures(&line) else {
+                    continue;
+                };
+                // The field is declared here; whether or not its type names a
+                // project symbol, this owner is the answer — terminal.
+                let Some(field_type) = rust_field_type_name(&m[1]) else {
+                    return Ok(McRes::Null);
+                };
+                return self.resolve_method_on_type(
+                    &field_type,
+                    method,
+                    r,
+                    0.85,
+                    "instance-method",
+                    None,
+                );
+            }
+        }
+        Ok(McRes::Null)
+    }
+
     /// matchTsThisFieldCall — the `this.field.method` entry point of
     /// matchMethodCall's requireReceiverEvidence=false arm. The owner is the
     /// enclosing class written on the calling method's qualified name, so it
@@ -6175,7 +6473,21 @@ impl KernelResolver {
         if r.language == "go" && dot_match.is_some() && object_or_class.contains('.') {
             return self.match_go_field_chain_call(&object_or_class, &method_name, r);
         }
-        // rust self/field arms — unmigrated language, dead here.
+        // Rust `self.<field>.<method>` — EXCLUSIVE: validated field-type
+        // inference or nothing (a null is the ref's verdict, not a fall-
+        // through — the bare-name strategies fabricate this shape).
+        if r.language == "rust" && dot_match.is_some() && object_or_class.starts_with("self.") {
+            return self.match_rust_self_field_call(
+                &object_or_class["self.".len()..],
+                &method_name,
+                r,
+            );
+        }
+        // Rust `self.<method>` — EXCLUSIVE for the same reason: the owner
+        // is the enclosing impl type on the caller's qualified name.
+        if r.language == "rust" && dot_match.is_some() && object_or_class == "self" {
+            return self.match_rust_self_call(&method_name, r);
+        }
 
         // TS/JS `this.field.method` — EXCLUSIVE; the field's declared type
         // off the enclosing class, validated by rmot, or nothing.
@@ -7744,25 +8056,22 @@ impl KernelResolver {
         if !is_migrated_language(&r.language) {
             return Ok(ResolveOutcome::passthrough("ineligible:lang"));
         }
-        // Rust dotted names (`self.x`, `x.y`) are receiver-shaped — TS owns
-        // rust's self-field inference, auto-deref/container decline, and
-        // trait dispatch; none are ported. `::` names reached the arm above;
-        // what remains here for rust is bare or dot-bearing.
-        if r.language == "rust" && r.reference_name.contains('.') {
-            return Ok(ResolveOutcome::passthrough("member-tail"));
-        }
-        // Rust inheritance refs (`impl Trait for T`): TS's target-kind gate
-        // drops targets bound to out-of-repo `use` paths (stdlib roots) —
-        // that locality rule is unported, so name-matching a same-named
-        // local would fabricate an edge TS deliberately declines.
-        if r.language == "rust" && matches!(r.reference_kind.as_str(), "implements" | "extends") {
-            return Ok(ResolveOutcome::passthrough("rust-inh"));
-        }
         if !Self::name_is_bare(&r.reference_name) {
             // The measured-dominant slice of the non-bare tail (§5.14):
             // C/C++ `#include` path refs resolve through their own arm.
             if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
                 return self.resolve_c_include_import_ref(r);
+            }
+            // Rust dotted receivers: only `self.`-rooted calls have ported
+            // arms (rustfield/rustself). Other `x.y` receivers ride TS's
+            // source-reading inferLocalReceiverType (`let ctx: Ctx`) — the
+            // strat arms reach the same target at 0.7/0.8 where TS's
+            // inference gives 0.9, fabricating metadata (§5.25).
+            if r.language == "rust"
+                && r.reference_name.contains('.')
+                && !(r.reference_kind == "calls" && r.reference_name.starts_with("self."))
+            {
+                return Ok(ResolveOutcome::passthrough("member-tail"));
             }
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
             // import member descent, filePath and qualifiedName — the rest
