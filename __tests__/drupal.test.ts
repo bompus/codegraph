@@ -11,6 +11,7 @@ import * as path from 'path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { CodeGraph } from '../src';
 import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
+import { generateNodeId } from '../src/extraction/tree-sitter-helpers';
 import { drupalResolver } from '../src/resolution/frameworks/drupal';
 import type { ResolutionContext } from '../src/resolution/types';
 
@@ -387,6 +388,313 @@ function mymodule_form_alter(&$form, $form_state, $form_id) {}
 });
 
 // ---------------------------------------------------------------------------
+// extract() — Drupal 11 #[Hook] attribute detection
+// ---------------------------------------------------------------------------
+
+describe('drupalResolver.extract — #[Hook] attribute detection', () => {
+  const HOOK_FILE = 'web/modules/custom/my_module/src/Hook/MyHooks.php';
+
+  it('emits a hook ref from a method-level #[Hook] attribute', () => {
+    const src = `<?php
+namespace Drupal\\my_module\\Hook;
+
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class MyHooks {
+  #[Hook('user_cancel')]
+  public function userCancel(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_user_cancel');
+    expect(ref).toBeDefined();
+    expect(ref!.referenceKind).toBe('references');
+    // The method node starts at its first `#[` line (line 7), not `function`.
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'method', 'userCancel', 7),
+    );
+  });
+
+  it('pinpoints the method named by a class-level method: arg', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+#[Hook('user_login', method: 'onLogin')]
+class LoginHooks {
+  public function onLogin(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_user_login');
+    expect(ref).toBeDefined();
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'method', 'onLogin', 6),
+    );
+  });
+
+  it('pinpoints __invoke for a class-level attribute with no method arg', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+#[Hook('user_logout')]
+class LogoutHooks {
+  public function __invoke(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_user_logout');
+    expect(ref).toBeDefined();
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'method', '__invoke', 6),
+    );
+  });
+
+  it('falls back to the class node when no impl method is determinable', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+#[Hook('theme')]
+class ThemeHook {
+  public function helper(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_theme');
+    expect(ref).toBeDefined();
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'class', 'ThemeHook', 4),
+    );
+  });
+
+  it('emits one ref per #[Hook] on repeatable attributes', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class C {
+  #[Hook('form_alter')]
+  #[Hook('form_FORM_ID_alter')]
+  public function alter(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const names = references.map((r) => r.referenceName);
+    expect(names).toContain('hook_form_alter');
+    expect(names).toContain('hook_form_FORM_ID_alter');
+    expect(references).toHaveLength(2);
+    // Both hang off the same method node — the block starts at the FIRST `#[`.
+    const methodId = generateNodeId(HOOK_FILE, 'method', 'alter', 5);
+    expect(references.every((r) => r.fromNodeId === methodId)).toBe(true);
+  });
+
+  it('finds Hook inside a comma-separated attribute group', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class C {
+  #[SomeOther, Hook('node_presave'), Another('x')]
+  public function presave(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_node_presave');
+    expect(ref).toBeDefined();
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'method', 'presave', 5),
+    );
+  });
+
+  it('accepts the fully-qualified \\Drupal\\Core\\Hook\\Attribute\\Hook name', () => {
+    const src = `<?php
+class C {
+  #[\\Drupal\\Core\\Hook\\Attribute\\Hook('user_login')]
+  public function m(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_user_login');
+    expect(ref).toBeDefined();
+  });
+
+  it('reads the hook name from the hook: named arg', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class C {
+  #[Hook(hook: 'user_presave')]
+  public function named(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_user_presave');
+    expect(ref).toBeDefined();
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'method', 'named', 5),
+    );
+  });
+
+  it('handles multi-line argument lists', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+#[Hook(
+  'entity_insert',
+)]
+class InsertHooks {
+  public function __invoke(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_entity_insert');
+    expect(ref).toBeDefined();
+    expect(ref!.fromNodeId).toBe(
+      generateNodeId(HOOK_FILE, 'method', '__invoke', 8),
+    );
+  });
+
+  it('does not match Hook-lookalike attributes', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\LegacyHook;
+use Drupal\\Core\\Hook\\Attribute\\RemoveHook;
+use Drupal\\Core\\Hook\\Attribute\\ReorderHook;
+
+class C {
+  #[LegacyHook('user_cancel')]
+  public function a(): void {}
+
+  #[RemoveHook('user_cancel')]
+  public function b(): void {}
+
+  #[ReorderHook('user_cancel')]
+  public function c(): void {}
+
+  #[\\Drupal\\hux\\Attribute\\Hook('user_cancel')]
+  public function d(): void {}
+
+  #[Drupal\\hux\\Attribute\\Hook('user_cancel')]
+  public function e(): void {}
+
+  public function plain(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    expect(references).toHaveLength(0);
+  });
+
+  it('does not treat bare Hook as core when hux imports the name', () => {
+    const src = `<?php
+use Drupal\\hux\\Attribute\\Hook;
+
+class C {
+  #[Hook('user_cancel')]
+  public function a(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    expect(references).toHaveLength(0);
+  });
+
+  it('resolves bare Hook through an alias of the core import', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook as CoreHook;
+
+class C {
+  #[CoreHook('node_insert')]
+  public function ins(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    const ref = references.find((r) => r.referenceName === 'hook_node_insert');
+    expect(ref).toBeDefined();
+  });
+
+  it('ignores attribute-shaped text in comments and strings', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+// #[Hook('fake_one')]
+/* #[Hook('fake_two')] */
+$s = '#[Hook("fake_three")]';
+$doc = <<<EOT
+#[Hook('fake_four')]
+EOT;
+
+class C {
+  #[Hook('real_hook')]
+  public function a(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    expect(references.map((r) => r.referenceName)).toEqual(['hook_real_hook']);
+  });
+
+  it('ignores #[Hook] on promoted constructor params', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class C {
+  public function __construct(
+    #[Hook('param_hook')]
+    protected Foo $foo,
+  ) {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    expect(references).toHaveLength(0);
+  });
+
+  it('skips non-literal hook names', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class C {
+  #[Hook(self::HOOK_NAME)]
+  public function constArg(): void {}
+}
+`;
+    const { references } = drupalResolver.extract!(HOOK_FILE, src);
+    expect(references).toHaveLength(0);
+  });
+
+  it('emits a function-kind ref for an attributed procedural function, deduped', () => {
+    const src = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+#[Hook('cron')]
+function mymodule_cron() {}
+`;
+    const file = 'web/modules/custom/mymodule/mymodule.module';
+    const { references } = drupalResolver.extract!(file, src);
+    const refs = references.filter((r) => r.referenceName === 'hook_cron');
+    // Strategy B name-matching would also fire on `mymodule_cron` — the
+    // attribute ref must win (and not duplicate) on the `#[`-line node id.
+    expect(refs).toHaveLength(1);
+    expect(refs[0]!.fromNodeId).toBe(
+      generateNodeId(file, 'function', 'mymodule_cron', 4),
+    );
+  });
+
+  it('keeps docblock matching when an attribute sits before the function', () => {
+    const src = `<?php
+/**
+ * Implements hook_user_cancel().
+ */
+#[\\Drupal\\Core\\Hook\\Attribute\\LegacyHook('user_cancel')]
+function mymodule_user_cancel() {}
+`;
+    const file = 'web/modules/custom/mymodule/mymodule.module';
+    const { references } = drupalResolver.extract!(file, src);
+    const refs = references.filter(
+      (r) => r.referenceName === 'hook_user_cancel',
+    );
+    expect(refs).toHaveLength(1);
+    // Node id uses the `#[` line — the kernel starts the decl there.
+    expect(refs[0]!.fromNodeId).toBe(
+      generateNodeId(file, 'function', 'mymodule_user_cancel', 5),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolve()
 // ---------------------------------------------------------------------------
 
@@ -525,6 +833,167 @@ describe('drupalResolver.resolve', () => {
     const resolved = drupalResolver.resolve(ref, ctx);
     expect(resolved).not.toBeNull();
     expect(resolved!.targetNodeId).toBe('method:nojs1');
+  });
+
+  it('resolves hook_X to a #[Hook]-attributed method under src/Hook/', () => {
+    const hookFile = 'web/modules/custom/my_module/src/Hook/MyHooks.php';
+    const hookSrc = `<?php
+namespace Drupal\\my_module\\Hook;
+
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class MyHooks {
+  #[Hook('user_cancel')]
+  public function userCancel(): void {}
+}
+`;
+    const methodNode = {
+      id: 'method:hook1',
+      kind: 'method' as const,
+      name: 'userCancel',
+      qualifiedName: 'MyHooks::userCancel',
+      filePath: hookFile,
+      language: 'php' as const,
+      startLine: 7,
+      endLine: 9,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+    const classNode = {
+      id: 'class:hook2',
+      kind: 'class' as const,
+      name: 'MyHooks',
+      qualifiedName: 'MyHooks',
+      filePath: hookFile,
+      language: 'php' as const,
+      startLine: 6,
+      endLine: 10,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+    const ctx = makeContext({
+      getNodesInFile: (f) => (f === hookFile ? [classNode, methodNode] : []),
+      getNodesByKind: () => [], // no procedural *_user_cancel function
+      getAllFiles: () => [hookFile, 'web/modules/custom/my_module/my_module.module'],
+      readFile: (f) => (f === hookFile ? hookSrc : null),
+    });
+    const ref = {
+      fromNodeId: 'method:src',
+      referenceName: 'hook_user_cancel',
+      referenceKind: 'references' as const,
+      line: 7,
+      column: 0,
+      filePath: hookFile,
+      language: 'php' as const,
+    };
+    const resolved = drupalResolver.resolve(ref, ctx);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.targetNodeId).toBe('method:hook1');
+    expect(resolved!.confidence).toBe(0.75);
+    expect(resolved!.resolvedBy).toBe('framework');
+  });
+
+  it('resolves hook_X to a class-level attribute impl via method: arg', () => {
+    const hookFile = 'web/modules/custom/my_module/src/Hook/Login.php';
+    const hookSrc = `<?php
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+#[Hook('user_login', method: 'onLogin')]
+class LoginHooks {
+  public function onLogin(): void {}
+}
+`;
+    const methodNode = {
+      id: 'method:login1',
+      kind: 'method' as const,
+      name: 'onLogin',
+      qualifiedName: 'LoginHooks::onLogin',
+      filePath: hookFile,
+      language: 'php' as const,
+      startLine: 5,
+      endLine: 6,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+    const classNode = {
+      id: 'class:login2',
+      kind: 'class' as const,
+      name: 'LoginHooks',
+      qualifiedName: 'LoginHooks',
+      filePath: hookFile,
+      language: 'php' as const,
+      startLine: 4,
+      endLine: 7,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+    const ctx = makeContext({
+      getNodesInFile: (f) => (f === hookFile ? [classNode, methodNode] : []),
+      getNodesByKind: () => [],
+      getAllFiles: () => [hookFile],
+      readFile: (f) => (f === hookFile ? hookSrc : null),
+    });
+    const ref = {
+      fromNodeId: 'method:src',
+      referenceName: 'hook_user_login',
+      referenceKind: 'references' as const,
+      line: 4,
+      column: 0,
+      filePath: hookFile,
+      language: 'php' as const,
+    };
+    const resolved = drupalResolver.resolve(ref, ctx);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.targetNodeId).toBe('method:login1');
+  });
+
+  it('prefers a procedural *_X function over attribute impls when both exist', () => {
+    const funcNode = {
+      id: 'function:proc1',
+      kind: 'function' as const,
+      name: 'mymodule_user_cancel',
+      qualifiedName: 'mymodule_user_cancel',
+      filePath: 'web/modules/custom/mymodule/mymodule.module',
+      language: 'php' as const,
+      startLine: 3,
+      endLine: 8,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+    const ctx = makeContext({
+      getNodesByKind: (kind) => (kind === 'function' ? [funcNode] : []),
+      getAllFiles: () => [],
+    });
+    const ref = {
+      fromNodeId: 'function:other',
+      referenceName: 'hook_user_cancel',
+      referenceKind: 'references' as const,
+      line: 1,
+      column: 0,
+      filePath: 'x.module',
+      language: 'php' as const,
+    };
+    const resolved = drupalResolver.resolve(ref, ctx);
+    expect(resolved!.targetNodeId).toBe('function:proc1');
+  });
+
+  it('returns null for hook_X when no procedural or attribute impl exists', () => {
+    const ctx = makeContext({ getNodesByKind: () => [], getAllFiles: () => [] });
+    const ref = {
+      fromNodeId: 'x',
+      referenceName: 'hook_nonexistent_hook',
+      referenceKind: 'references' as const,
+      line: 1,
+      column: 0,
+      filePath: 'x.module',
+      language: 'php' as const,
+    };
+    expect(drupalResolver.resolve(ref, ctx)).toBeNull();
   });
 });
 
