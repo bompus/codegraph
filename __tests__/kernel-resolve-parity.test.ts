@@ -417,11 +417,22 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(pathInc.resolvedBy).toBe('file-path');
     expect(pathInc.confidence).toBe(0.85);
     expect(pathInc.targetNodeId).toBe(hdrInc.targetNodeId);
-    // A genuinely missing include stays behind for the TS member tail.
-    expect(atPre('missing/none.h', 'src/user.c').status).toBe('passthrough');
+    // A genuinely missing include can't resolve to a file — but its name IS
+    // the qualified name of its own import node, so the qualifiedName arm
+    // (matchReference's filePath→qualifiedName order, now mirrored in the
+    // kernel's include arm) resolves it there at 0.95.
+    const noneInc = atPre('missing/none.h', 'src/user.c');
+    expect(noneInc.status).toBe('resolved');
+    expect(noneInc.resolvedBy).toBe('qualified-name');
+    expect(noneInc.confidence).toBe(0.95);
+    expect(noneInc.targetNodeId).toBe(nodeId('missing/none.h', 'user.c', 'import'));
     // A stdlib header: isExternalImport sits inside resolveImportPath, so the
-    // arm reaches the member-tail punt and TS fails it — same verdict.
-    expect(atPre('stdio.h', 'src/user.c').status).toBe('passthrough');
+    // viaImport arm misses — qualifiedName then binds the ref to the `stdio.h`
+    // import node, exactly as TS does.
+    const stdioInc = atPre('stdio.h', 'src/user.c');
+    expect(stdioInc.status).toBe('resolved');
+    expect(stdioInc.resolvedBy).toBe('qualified-name');
+    expect(stdioInc.targetNodeId).toBe(nodeId('stdio.h', 'user.c', 'import'));
 
     // ---- Phase 5 member arms (non-bare `calls` refs) ----
     // br:import — `Service.create` descends the import binding's member:

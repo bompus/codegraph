@@ -3602,8 +3602,14 @@ impl KernelResolver {
             };
             return self.finish(r, winner, None, true);
         }
-        let file_hit = self.match_by_file_path(r)?;
-        let Some(c) = self.gate_language(file_hit, r) else {
+        // matchReference's name arms in TS order: filePath, then qualifiedName
+        // on a file-path miss (`#include <sys/ioctl.h>` names its own import
+        // node's qualified name — filePath can't see it, qualifiedName can).
+        let name_cand = match self.match_by_file_path(r)? {
+            Some(c) => Some(c),
+            None => self.match_by_qualified_name(r)?,
+        };
+        let Some(c) = self.gate_language(name_cand, r) else {
             return Ok(ResolveOutcome::passthrough("member-tail"));
         };
         // The nameMatch result takes the cross-file visibility post-check; a
