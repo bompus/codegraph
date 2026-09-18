@@ -465,3 +465,23 @@ Same host/arm shape as §5.16 (`taskset -c 0-7`, node v26.9.0, kernel-on, linux 
 | `chain` / `btm-supers` / `via-src` / `ineligible:lang` | 951 / 726 / 9 / 57,441 | unchanged | 0 |
 
 **Output identity (the gate)**: Leg A run 5:05.02 / 16.6GB MaxRSS (`bench/20260918-node-8c-kernelon-lega.log`) — nodes/edges/failed-refs counts and all three multisets **byte-identical** to the re-baseline (`c7417d57…` / `67c47a1d…` / `470e3903…`). The 3,047 edges moved from TS-resolved to kernel-resolved with zero graph delta. Post-leg snapshot at `baselines/linux-d19ab145-lega.db`. Parity fixture updated (`missing/none.h`, `stdio.h` → `qualified-name` @0.95 on their own import nodes); 6/6 parity + 223/223 resolution tests green, ast-grep kernel rules clean.
+
+### 5.19 Phase 5 step 6 — chain arms native: cppChain / scopedChain / dottedChain (2026-09-18)
+
+Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `CODEGRAPH_RESOLVE_PROFILE=2`; 5:47.74 wall / 15.6GB MaxRSS — first attempt OOM-killed against a transient ~12GB co-tenant, rerun clean on an idle host). Log: `bench/20260918-node-8c-kernelon-chains-2.log`; post-leg snapshot `baselines/linux-d19ab145-chains.db`.
+
+| Metric | §5.18 (Leg A) | This leg | Δ |
+|---|---|---|---|
+| kernel handled | 5,802,671 | 5,807,635 | +4,964 |
+| kernel passthrough | 61,833 | 61,869 | +36 (pass-event count, not verdicts) |
+| `member-tail` | 2,706 | **2,664** | −42 (native chain hits) |
+| `rmot-supers` (re-attributed) | — | 65 | chain-arm rmot misses — TS's live supertype walk still owns them |
+| `chain` | 951 | 951 | 0 — the ts/js/py `().` guard is unchanged (storeAccessorChain stays TS) |
+| `btm-supers` / `via-src` | 726 / 9 | 726 / 9 | 0 |
+| `ineligible:lang` | 57,441 | 57,454 | +13 pass-count artifact — output byte-identical |
+
+**Output identity (the gate)**: nodes 2,082,872 / edges 6,412,563 / failed refs 2,052,521 — all three multisets **byte-identical** to the Leg-A baseline (`c7417d57…` / `67c47a1d…` / `470e3903…`). The passthrough-sum deltas (+36 total, +13 ineligible) are per-pass event counts — deferral timing shifted when chain refs resolved natively in pass 1 instead of riding the TS deferred drain; every verdict is unchanged.
+
+**What was ported** (`codegraph-kernel/src/resolve.rs`, ~+140): `match_call_chain` — matchReference's per-language chain dispatch, inserted between `match_by_qualified_name` and the `member-tail` punt exactly where TS runs it (sequential early-return arms, not pooled): `match_cpp_call_chain` (c/cpp — `<inner>().<method>` via `resolve_cpp_call_result_type` → rmot @0.85 `instance-method`), `match_scoped_call_chain` (php/rust — `Cls::factory().m`, `::` required, `self` marker → factory class), `match_dotted_call_chain` (the 9-language dot list — Go bare-inner `New().M` via callee return_type, CONSTRUCTS_VIA_BARE_CALL ctor receiver, `Cls.factory().m` via `Cls::factory` return type, objc/pascal convention arms verbatim though unreachable). All compose stage-2 helpers (`resolve_cpp_call_result_type`, `lookup_callee_return_type`, `imported_fqn_of`, `resolve_method_on_type`). **Punt fidelity**: Go's bare-fallback (`matchByExactName ?? matchFuzzy`) is unported → `member-tail` punt; rmot misses → `rmot-supers` punt; either way TS's rerun produces the identical verdict. ts/js/py `().` refs still punt `chain` at the earlier guard — storeAccessorChain's JS arm is source-bound and its python arm is near-zero yield.
+
+**Fixture coverage** (parity test +45 lines): `Pool::instance().drain` → `Pool::drain` @0.85; `Pool::instance().nope` → `rmot-supers` punt → passthrough; `Registry::make().name` → `self`→factory-class → `Registry::name` @0.85; `NewService().Run` → go bare-inner @0.85; `nosuch().Run` → member-tail punt → passthrough; `J2.getK().mymethod` → java dotted factory @0.85. 6/6 parity + 223/223 resolution tests green; ast-grep kernel rules clean.

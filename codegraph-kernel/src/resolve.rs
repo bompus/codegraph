@@ -117,6 +117,16 @@ static JS_MEMBER_ROOT_RE: LazyLock<Regex> =
 /// CHAIN_SHAPE (index.ts) — `^(.+)\(\)\.(\w+)$`: a call-receiver chain.
 static CHAIN_SHAPE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^.+\(\)\.[A-Za-z0-9_]+$").unwrap());
+/// The chain arms' `<inner>().<method>` capture — `^(.+)\(\)\.(\w+)$`
+/// with TS's ASCII `\w`.
+static CALL_CHAIN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+)\(\)\.([A-Za-z0-9_]+)$").unwrap());
+/// CONSTRUCTS_VIA_BARE_CALL (name-matcher.ts) — languages where an
+/// unprefixed capitalized `Foo(args)` constructs the class.
+static CONSTRUCTS_VIA_BARE_CALL: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| {
+        ["kotlin", "swift", "scala", "dart", "pascal"].into_iter().collect()
+    });
 /// resolvePhpImportedStaticCall's receiver shape — `^(\w+)\.(\w+)$`.
 static PHP_STATIC_CALL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$").unwrap());
@@ -4398,6 +4408,128 @@ impl KernelResolver {
             .map(|i| i.source.clone()))
     }
 
+    /// matchReference's chain arms in TS dispatch order — at most one runs
+    /// per language: cppChain (c/cpp), scopedChain (php/rust), dottedChain
+    /// (the dot-notation list). A provable `null` lets the member-tail punt
+    /// reproduce the unported TS tail exactly.
+    fn match_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        match r.language.as_str() {
+            "c" | "cpp" => self.match_cpp_call_chain(r),
+            "php" | "rust" => self.match_scoped_call_chain(r),
+            "java" | "kotlin" | "csharp" | "swift" | "go" | "scala" | "dart" | "objc"
+            | "pascal" => self.match_dotted_call_chain(r),
+            _ => Ok(McRes::Null),
+        }
+    }
+
+    /// matchCppCallChain — `<inner>().<method>` where the inner call's
+    /// return type is the receiver's type (#645); resolveMethodOnType
+    /// validates, so a wrong inference yields no edge.
+    fn match_cpp_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        let Some(m) = CALL_CHAIN_RE.captures(&r.reference_name) else {
+            return Ok(McRes::Null);
+        };
+        let inner = m.get(1).unwrap().as_str();
+        let method = m.get(2).unwrap().as_str();
+        let Some(cls) = self.resolve_cpp_call_result_type(inner, r, 0)? else {
+            return Ok(McRes::Null);
+        };
+        self.resolve_method_on_type(&cls, method, r, 0.85, "instance-method", None)
+    }
+
+    /// matchScopedCallChain — `Cls::factory().method` static-factory chains
+    /// (PHP `Cls::for($x)->m()`, Rust `Foo::new().bar()`); a `self` return
+    /// marker resolves to the factory's own class (#608).
+    fn match_scoped_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        let Some(m) = CALL_CHAIN_RE.captures(&r.reference_name) else {
+            return Ok(McRes::Null);
+        };
+        let inner = m.get(1).unwrap().as_str();
+        let method = m.get(2).unwrap().as_str();
+        if !inner.contains("::") {
+            return Ok(McRes::Null);
+        }
+        let factory_class = &inner[..inner.rfind("::").unwrap()];
+        let Some(ret) = self.lookup_callee_return_type(inner, r)? else {
+            return Ok(McRes::Null);
+        };
+        let resolved = if ret == "self" { factory_class } else { ret.as_str() };
+        self.resolve_method_on_type(resolved, method, r, 0.85, "instance-method", None)
+    }
+
+    /// matchDottedCallChain — `Foo.getInstance().bar` factory/fluent chains,
+    /// Go's bare `New().Method`, and the objc/pascal convention arms
+    /// (#645/#608). The Go bare-name fallback (exactName/fuzzy) is unported —
+    /// the member-tail punt reproduces it.
+    fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        let Some(m) = CALL_CHAIN_RE.captures(&r.reference_name) else {
+            return Ok(McRes::Null);
+        };
+        let inner = m.get(1).unwrap().as_str();
+        let method = m.get(2).unwrap().as_str();
+        // TS `lastIndexOf('.') <= 0` — no dot, or a leading one.
+        let last_dot = inner.rfind('.');
+        if last_dot.is_none() || last_dot == Some(0) {
+            if r.language == "go" {
+                if let Some(ret) = self.lookup_callee_return_type(inner, r)? {
+                    let fqn = self.imported_fqn_of(&ret, r)?;
+                    return self.resolve_method_on_type(
+                        &ret,
+                        method,
+                        r,
+                        0.85,
+                        "instance-method",
+                        fqn.as_deref(),
+                    );
+                }
+                return Ok(McRes::Punt("member-tail"));
+            }
+            if !CONSTRUCTS_VIA_BARE_CALL.contains(r.language.as_str())
+                || !inner.as_bytes()[0].is_ascii_uppercase()
+            {
+                return Ok(McRes::Null);
+            }
+            let fqn = self.imported_fqn_of(inner, r)?;
+            return self.resolve_method_on_type(
+                inner,
+                method,
+                r,
+                0.85,
+                "instance-method",
+                fqn.as_deref(),
+            );
+        }
+        let last_dot = last_dot.unwrap();
+        let factory_class = inner[..last_dot].split('.').next_back().unwrap();
+        let factory_method = &inner[last_dot + 1..];
+        if factory_class.is_empty() || factory_method.is_empty() {
+            return Ok(McRes::Null);
+        }
+        let want = format!("{}::{}", factory_class, factory_method);
+        let Some(ret) = self.lookup_callee_return_type(&want, r)? else {
+            // objc `[X alloc]` / pascal `TFoo.Create` conventions — the
+            // receiver's type is the class itself. Both unmigrated today
+            // (unreachable); ported verbatim for fidelity.
+            let first = factory_class.as_bytes()[0];
+            if (r.language == "objc" && first.is_ascii_uppercase())
+                || (r.language == "pascal" && matches!(first, b'T' | b'I'))
+            {
+                let fqn = self.imported_fqn_of(factory_class, r)?;
+                return self.resolve_method_on_type(
+                    factory_class,
+                    method,
+                    r,
+                    0.8,
+                    "instance-method",
+                    fqn.as_deref(),
+                );
+            }
+            return Ok(McRes::Null);
+        };
+        let fqn = self.imported_fqn_of(&ret, r)?;
+        self.resolve_method_on_type(&ret, method, r, 0.85, "instance-method", fqn.as_deref())
+    }
+
     /// resolveJvmImport (import-resolver.ts) — `imports`-kind java/kotlin FQN
     /// to a qualified-name node, KMP `expect` preferred on ties.
     fn resolve_jvm_import(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
@@ -6431,12 +6563,20 @@ impl KernelResolver {
         if r.language == "arkts" && r.reference_name.starts_with('.') {
             return Ok(ResolveOutcome::passthrough("arkts-dot"));
         }
-        // matchReference's ported arms, in order: filePath, qualifiedName.
-        // Everything after (cppChain/scopedChain/dottedChain/storeAccessor/
-        // methodCall/exactName/fuzzy, then deferred drains) stays in TS.
+        // matchReference's ported arms, in order: filePath, qualifiedName,
+        // then the per-language chain arm (cppChain/scopedChain/dottedChain).
+        // Everything after (storeAccessor/methodCall/exactName/fuzzy, then
+        // deferred drains) stays in TS behind the member-tail punt.
         let name_cand = match self.match_by_file_path(r)? {
             Some(c) => Some(c),
-            None => self.match_by_qualified_name(r)?,
+            None => match self.match_by_qualified_name(r)? {
+                Some(c) => Some(c),
+                None => match self.match_call_chain(r)? {
+                    McRes::Hit(c) => Some(c),
+                    McRes::Null => None,
+                    McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
+                },
+            },
         };
         let name_result = self.gate_language(name_cand, r);
         if let Some(c) = name_result {
