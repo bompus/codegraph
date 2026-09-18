@@ -145,10 +145,9 @@ For each shape, before marking ✅:
 
 ## Immediate next actions
 
-- [ ] **Validate redux-thunk for real (workstream 1):** clone a small + medium
-      `createAsyncThunk`-using app (grep-confirmed), re-index, repeat the protocol.
-      Promote `redux-thunk` 🟡→✅ or fix the overfit. *(None of the 4 already-cloned
-      eval repos contain `createAsyncThunk`.)*
+- [x] **Validate redux-thunk for real (workstream 1):** ✅ **DONE (2026-06-20)** —
+      shipped table records precise edges on uwave-web (5), session-desktop (2),
+      trezor (211); control shapeshift = 0. See the shipped row.
 - [x] **Decide trezor end (workstream 3):** ✅ **RESOLVED (2026-06-21) — SHELVED as single-lineage / likely-overfit.**
       The same-file object-literal half shipped as `object-registry` (xrengine/Prebid/warp-drive). The
       remaining **cross-file barrel-namespace** half (`import * as M from './api'` → `M[runtimeKey]` →
