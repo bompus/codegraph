@@ -3212,7 +3212,9 @@ export class ToolHandler {
    * Dynamic-boundary surfacing (#687): when the flow among the agent's named
    * symbols does not fully connect, scan the disconnected symbols' bodies for
    * dynamic-dispatch sites (computed member calls, getattr, reflection, typed
-   * message buses, runtime-keyed emits) and ANNOUNCE the boundary — the exact
+   * message buses, keyed/runtime-keyed emits, async handoffs, service-locator
+   * lookups, IPC channels, delegate invokes, reactive chains) and ANNOUNCE
+   * the boundary — the exact
    * site, the form, and (when a key is statically visible) candidate targets —
    * instead of guessing edges. The answer to "how does A reach B" when no
    * static path exists IS the dispatch site: that's where the flow continues

@@ -222,7 +222,7 @@ export function shortlistBoundaryCandidates(
 
   const cap = key.charAt(0).toUpperCase() + key.slice(1);
   const probes = keyIsType
-    ? [`${key}Handler`, key]
+    ? [`${key}Handler`, key, `${key}Impl`, `${key}Service`, `Default${key}`]
     : [key, `on${cap}`, `handle${cap}`, `${key}Handler`, `handle_${key}`];
   for (const probe of probes) {
     try {
