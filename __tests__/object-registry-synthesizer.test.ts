@@ -269,4 +269,73 @@ export function weird(key: string) {
     // `[key]` access produces no registry edges at all.
     expect(rows.length).toBe(0);
   });
+
+  it('bridges assign-then-call — `const v = reg[k]; v(…)` fans out like `reg[k](…)`', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'handlers.ts'),
+      `export function printHelpDocs() { return 'h'; }
+export function printAbout() { return 'a'; }
+export function executeReleaseNoteGeneration() { return 'r'; }
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'index.ts'),
+      `import { printHelpDocs, printAbout, executeReleaseNoteGeneration } from './handlers';
+
+const COMMANDS = {
+  help: printHelpDocs,
+  about: printAbout,
+  release_notes: executeReleaseNoteGeneration,
+};
+
+export async function main(cmdString: string) {
+  const cmd = COMMANDS[cmdString];   // assign-then-call (warp-drive shape)
+  await cmd(['--verbose']);
+}
+
+export async function execSub(arg: string) {
+  const command = COMMANDS['help'];  // literal-key RHS — single precise edge
+  if (command) {
+    await command(arg);
+  }
+}
+
+export function shadowed(k: string, cmd: () => void) {
+  cmd();                              // cmd here is the PARAM, not the alias —
+}                                     // different function, must not bridge
+
+export function memberTail(k: string) {
+  const v = COMMANDS[k].load;         // reg[k].member IS the pre-existing
+  return v();                          // chained-dispatch shape (section 3) —
+}                                      // it fans out independently of v()
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const rows = db
+      .prepare(
+        `SELECT s.name source_name, t.name target_name, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'object-registry'
+         ORDER BY source_name, target_name`
+      )
+      .all();
+    cg.close?.();
+
+    expect(rows.map((r: any) => `${r.source_name}>${r.target_name}`)).toEqual([
+      // Literal-key RHS → precisely the 'help' entry.
+      'execSub>printHelpDocs',
+      // Dynamic key → fan-out to all three handlers, source = the calling fn.
+      'main>executeReleaseNoteGeneration',
+      'main>printAbout',
+      'main>printHelpDocs',
+      // `COMMANDS[k].load` — the pre-existing chained-access dispatch arm
+      // (unchanged by this work), source = memberTail.
+      'memberTail>executeReleaseNoteGeneration',
+      'memberTail>printAbout',
+      'memberTail>printHelpDocs',
+    ]);
+  });
 });
