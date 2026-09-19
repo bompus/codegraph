@@ -3037,8 +3037,9 @@ const CELERY_ALIAS_DECORATOR_RE = /^@\s*([A-Za-z_]\w*)\b/;
 const CELERY_IMPORT_RE = /(?:^|\n)\s*(?:from\s+[\w.]*celery[\w.]*\s+import\b|import\s+[\w.]*celery[\w.]*)/;
 // `from <mod> import a, b as c` — captures the module and the item list.
 const CELERY_FROM_IMPORT_RE = /^[ \t]*from\s+([\w.]+)\s+import\s+([^#\n]+)/gm;
-// `alias = <dotted>.task` / `= shared_task` (no call — the alias IS the decorator).
-const CELERY_DECORATOR_ALIAS_RE = /^[ \t]*([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*(?:shared_task|task)\s*(?:#.*)?$/gm;
+// `alias = <dotted>.task` / `= shared_task` (no call — the alias IS the decorator;
+// an empty `()` is the decorator-factory form — `t = app.task()` then `@t`).
+const CELERY_DECORATOR_ALIAS_RE = /^[ \t]*([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*(?:shared_task|task)\s*(?:\(\s*\))?\s*(?:#.*)?$/gm;
 // `x = <dotted>.task(fn)` / `x = shared_task(fn)` — a task OBJECT bound to a fn.
 const CELERY_TASK_BIND_RE = /^[ \t]*([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*(?:shared_task|task)\s*\(\s*([A-Za-z_]\w*)\s*[,)]/gm;
 // `x = SomeClass(` — a module-level instance binding (a `Task` subclass instance).
@@ -3347,11 +3348,11 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
 // identifier whose type is inferred within the enclosing method (shared with
 // MediatR's arg resolver: a `X arg` param/local decl or an `arg = new X(…)`
 // assignment wins; untyped/ambiguous args yield nothing).
-const SPRING_PUBLISH_RE = /\.publishEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*|[A-Za-z_]\w*)/g;
+const SPRING_PUBLISH_RE = /\.publishEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*(?=[\s(])|[A-Za-z_]\w*(?=[\s,)]))/g;
 // `registerEvent(<arg>)` — Spring Data's `AbstractAggregateRoot.registerEvent`
 // domain-event hook (published on save). Gated on the file referencing
 // `AbstractAggregateRoot`, so a same-named helper in a non-DDD file is skipped.
-const SPRING_REGISTER_RE = /\bregisterEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*|[A-Za-z_]\w*)/g;
+const SPRING_REGISTER_RE = /\bregisterEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*(?=[\s(])|[A-Za-z_]\w*(?=[\s,)]))/g;
 // `@DomainEvents` — a method whose RETURNED `new XEvent(…)` objects are
 // published on save (the sibling of `registerEvent` in the same backlog item).
 const SPRING_DOMAIN_EVENTS_ANNO_RE = /@DomainEvents\b/;
@@ -3430,26 +3431,6 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
   // Only the publisher files recorded in pass 1 are (re-)read.
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  let added = 0;
-  const emit = (disp: Node, type: string, line: number, file: string): void => {
-    const targets = listeners.get(type);
-    if (!targets || !targets.length) return;
-    for (const target of targets) {
-      if (target.id === disp.id || added >= SPRING_FANOUT_CAP) continue;
-      const key = `${disp.id}>${target.id}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      edges.push({
-        source: disp.id,
-        target: target.id,
-        kind: 'calls',
-        line,
-        provenance: 'heuristic',
-        metadata: { synthesizedBy: 'spring-event', via: type, registeredAt: `${file}:${line}` },
-      });
-      added++;
-    }
-  };
   for (const file of publisherFiles) {
     if ((++scannedFiles & 15) === 0) await onYield();
     const content = ctx.readFile(file);
@@ -3458,6 +3439,26 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     const safeLines = safe.split('\n');
     const nodesInFile = ctx.getNodesInFile(file);
     let m: RegExpExecArray | null;
+    let added = 0; // per-file fan-out cap (same convention as the other passes)
+    const emit = (disp: Node, type: string, line: number): void => {
+      const targets = listeners.get(type);
+      if (!targets || !targets.length) return;
+      for (const target of targets) {
+        if (target.id === disp.id || added >= SPRING_FANOUT_CAP) continue;
+        const key = `${disp.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          line,
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'spring-event', via: type, registeredAt: `${file}:${line}` },
+        });
+        added++;
+      }
+    };
     // The event type of a call-site arg: inline `new X(…)` directly, else the
     // identifier resolved within the enclosing method (decl/param/`= new X`),
     // the same narrow inference MediatR uses. Untyped args yield nothing.
@@ -3470,7 +3471,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
         const disp = enclosingFn(nodesInFile, line);
         if (!disp) continue;
         const type = argType(m[1]!, disp, line);
-        if (type) emit(disp, type, line, file);
+        if (type) emit(disp, type, line);
       }
     }
     // `registerEvent(…)` — AbstractAggregateRoot's domain-event hook; gated on
@@ -3483,7 +3484,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
         const disp = enclosingFn(nodesInFile, line);
         if (!disp) continue;
         const type = argType(m[1]!, disp, line);
-        if (type) emit(disp, type, line, file);
+        if (type) emit(disp, type, line);
       }
     }
     // `@DomainEvents` — the method's RETURNED `new XEvent(…)` objects are
@@ -3504,7 +3505,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
         SPRING_NEW_TYPE_RE.lastIndex = 0;
         while ((m = SPRING_NEW_TYPE_RE.exec(body)) && added < SPRING_FANOUT_CAP) {
           const line = node.startLine + body.slice(0, m.index).split('\n').length - 1;
-          emit(node, m[1]!, line, file);
+          emit(node, m[1]!, line);
         }
       }
     }
@@ -4009,6 +4010,36 @@ const ERLANG_EXT = /\.(?:erl|hrl)$/;
 const ERLANG_DISPATCH_RE = /(^|[^?\w@'])([A-Z][A-Za-z0-9_@]*):([a-z][A-Za-z0-9_@]*)\(/g;
 const ERLANG_CALLBACK_DECL_RE = /(^|\n)\s*-callback\s+('[^'\n]+'|[a-z][A-Za-z0-9_@]*)\s*\(/g;
 const ERLANG_BEHAVIOUR_FANOUT_CAP = 24;
+// ── gen_server registered-name dispatch ─────────────────────────────────────
+// `gen_server:call(Name, Req)`/`cast` dispatch by REGISTERED NAME, not by
+// module reference: the server registered `Name`→pid at
+// `gen_server:start*({local|global, Name}, Mod, …)`, and the dominant style
+// registers under the module's own name (the `atom == module name`
+// convention, often written `?MODULE`). The target callback is fixed by OTP:
+// `call`/`multi_call` → `handle_call/3`, `cast`/`abcast` → `handle_cast/2`.
+// Precision gates: the resolved module must declare `-behaviour(gen_server)`
+// (or `-behavior`) AND define+export the callback; a name registered by two
+// different modules, or one that resolves to nothing in-repo, stays silent.
+// `-behaviour(gen_server)`/`(-behavior)` — the OTP gen_server implementer gate.
+const ERLANG_GENSERVER_BEHAVIOUR_RE = /(^|\n)\s*-behaviou?r\s*\(\s*(?:'gen_server'|gen_server)\s*\)/;
+// Registration: `gen_server:start|start_link|start_monitor({local|global,
+// Name}, Mod, …)` — binds the registered Name to the callback module (`?MODULE`
+// resolves to the file's own module).
+const ERLANG_GENSERVER_REG_RE =
+  /\bgen_server\s*:\s*start(?:_link|_monitor)?\s*\(\s*\{\s*(?:local|global)\s*,\s*(?:'([^'\n]+)'|(\?MODULE|[a-z][A-Za-z0-9_@]*))\s*\}\s*,\s*(\?MODULE|'[^'\n]+'|[a-z][A-Za-z0-9_@]*)/g;
+// Dispatch: `gen_server:call|cast|abcast|multi_call(Ref, …)` where Ref is a
+// bare/quoted atom, `?MODULE`, or `{local|global, Name}` (the `{via,…}` form
+// routes through a registry module — statically opaque, deliberately not
+// matched). A Capitalized first arg is a variable — unresolvable, skipped.
+const ERLANG_GENSERVER_CALL_RE =
+  /\bgen_server\s*:\s*(call|cast|abcast|multi_call)\s*\(\s*(\?MODULE|\{\s*(?:local|global)\s*,\s*(?:'[^'\n]+'|\?MODULE|[a-z][A-Za-z0-9_@]*)\s*\}|'[^'\n]+'|[a-z][A-Za-z0-9_@]*)/g;
+const ERLANG_GENSERVER_FILE_CAP = 80;
+
+/** Arity suffix of an Erlang function qualifiedName (`mod::fn/2` → 2, #1610). */
+function erlangQnArity(qn: string): number {
+  const m = /\/(\d{1,3})$/.exec(qn);
+  return m ? Number(m[1]) : -1;
+}
 
 /**
  * Argument count of the call/declaration whose `(` sits at `openIdx` —
@@ -4279,7 +4310,109 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
       callbackNames.add(name);
     }
   }
-  if (declaringBehaviours.size === 0) return [];
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+
+  // ── gen_server registered-name dispatch ─────────────────────────────────
+  // Independent of the -callback machinery: a gen_server module usually has NO
+  // `-callback` decls of its own (they live in OTP, out-of-repo), so this pass
+  // must run before the behaviour early-return below. Two sweeps: (A) index
+  // `gen_server:start*({local|global, Name}, Mod, …)` registrations and the
+  // modules declaring `-behaviour(gen_server)`; (B) link each
+  // `gen_server:call|cast(Name, …)` site → the server's `handle_call/3` /
+  // `handle_cast/2`.
+  const genServerModules = new Map<string, Node>(); // module name → namespace node
+  const registeredNames = new Map<string, Set<string>>(); // regName → module names
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!ERLANG_EXT.test(file)) continue;
+    const mod = moduleByFile.get(file);
+    if (!mod) continue; // a module-less .hrl can't be a gen_server
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('gen_server')) continue;
+    const safe = stripCommentsForRegex(content, 'erlang');
+    if (ERLANG_GENSERVER_BEHAVIOUR_RE.test(safe)) genServerModules.set(mod.name, mod);
+    ERLANG_GENSERVER_REG_RE.lastIndex = 0;
+    let rm: RegExpExecArray | null;
+    while ((rm = ERLANG_GENSERVER_REG_RE.exec(safe))) {
+      const regName = rm[1] ?? (rm[2] === '?MODULE' ? mod.name : rm[2]!);
+      const rawMod = rm[3]!;
+      const modName = rawMod === '?MODULE' ? mod.name : rawMod.replace(/^'|'$/g, '');
+      let set = registeredNames.get(regName);
+      if (!set) { set = new Set(); registeredNames.set(regName, set); }
+      set.add(modName);
+    }
+  }
+  if (genServerModules.size || registeredNames.size) {
+    for (const file of ctx.getAllFiles()) {
+      if ((++scannedFiles & 15) === 0) await onYield();
+      if (!ERLANG_EXT.test(file)) continue;
+      const content = ctx.readFile(file);
+      if (!content || !content.includes('gen_server:')) continue;
+      const safe = stripCommentsForRegex(content, 'erlang');
+      const nodesInFile = ctx.getNodesInFile(file);
+      const lineAt = makeLineAt(safe, 1);
+      const ownMod = moduleByFile.get(file);
+      ERLANG_GENSERVER_CALL_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      let added = 0;
+      while ((m = ERLANG_GENSERVER_CALL_RE.exec(safe)) && added < ERLANG_GENSERVER_FILE_CAP) {
+        const verb = m[1]!;
+        const rawRef = m[2]!;
+        // Resolve the ref to a NAME: `?MODULE` → this file's module,
+        // `{local|global, N}` → N, else the bare/quoted atom itself.
+        let name: string | null = null;
+        if (rawRef === '?MODULE') name = ownMod?.name ?? null;
+        else if (rawRef.startsWith('{')) {
+          const inner = /\{\s*(?:local|global)\s*,\s*(?:'([^'\n]+)'|(\?MODULE|[a-z][A-Za-z0-9_@]*))\s*\}/.exec(rawRef);
+          if (!inner) continue; // `{via,…}` — registry-module form, opaque
+          name = inner[1] ?? (inner[2] === '?MODULE' ? ownMod?.name ?? null : inner[2]!);
+        } else name = rawRef.replace(/^'|'$/g, '');
+        if (!name) continue;
+        // A registered name wins over the module-name convention (it IS the
+        // runtime binding); a name registered by two modules is ambiguous —
+        // bail rather than guess.
+        const regs = registeredNames.get(name);
+        if (regs && regs.size > 1) continue;
+        const modName = regs && regs.size === 1 ? [...regs][0]! : name;
+        const mod = genServerModules.get(modName);
+        if (!mod) continue;
+        const cb = verb === 'call' || verb === 'multi_call' ? 'handle_call' : 'handle_cast';
+        const arity = verb === 'call' || verb === 'multi_call' ? 3 : 2;
+        const target = ctx
+          .getNodesInFile(mod.filePath)
+          .find(
+            (n) =>
+              n.kind === 'function' &&
+              n.name === cb &&
+              erlangQnArity(n.qualifiedName) === arity &&
+              n.isExported !== false,
+          );
+        if (!target) continue;
+        const line = lineAt(m.index);
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp) continue;
+        const key = `${disp.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          line,
+          provenance: 'heuristic',
+          metadata: {
+            synthesizedBy: 'erlang-gen-server',
+            via: `${mod.name}:${cb}/${arity}`,
+            registeredAt: `${file}:${line}`,
+          },
+        });
+        added++;
+      }
+    }
+  }
+
+  if (declaringBehaviours.size === 0) return edges;
 
   // Implementer target lookup, lazy per (behaviour, fn, arity): implementers
   // come from the `implements` edges extraction resolved, and the target is
@@ -4287,10 +4420,6 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
   // function qualifiedNames carry arity (`mod::fn/2`, #1610), so the arity the
   // dispatch site used selects among same-named definitions.
   const targetCache = new Map<string, Node[]>();
-  const qnArity = (qn: string): number => {
-    const m = /\/(\d{1,3})$/.exec(qn);
-    return m ? Number(m[1]) : -1;
-  };
   const targetsOf = (behaviour: Node, fn: string, arity: number): Node[] => {
     const cacheKey = `${behaviour.id}#${fn}/${arity}`;
     let targets = targetCache.get(cacheKey);
@@ -4305,7 +4434,7 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
           (n) =>
             n.kind === 'function' &&
             n.name === fn &&
-            qnArity(n.qualifiedName) === arity &&
+            erlangQnArity(n.qualifiedName) === arity &&
             n.isExported !== false,
         );
       if (fnNode) targets.push(fnNode);
@@ -4316,8 +4445,6 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
 
   // Pass 2 — dispatch sites. Only files containing a var-module call shape are
   // scanned in full.
-  const edges: Edge[] = [];
-  const seen = new Set<string>();
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!ERLANG_EXT.test(file)) continue;
@@ -4386,12 +4513,15 @@ const LISTEN_CLASS_RE = /(?:([A-Za-z_\\][\w\\]*)::class|'([^']+)'|"([^"]+)")/g;
 // `Event::listen(X::class, function (…) {…})` — the class-literal first arg is
 // the event anchor; the closure may be untyped (`Event::listen` is the facade
 // form — `Events::listen`/helper-arg variants are deliberately not matched).
-const LARAVEL_LISTEN_KEYED_RE = /\bEvent::listen\s*\(\s*([A-Za-z_\\][\w\\]*)::class\s*,\s*function\b/g;
-// `Event::listen(…, function (X $e) {…})` — a closure listener whose TYPED
-// first param is the event anchor (the closure-as-only-arg form, and a
-// string-keyed first arg alike). Closures aren't extracted as nodes, so the
-// enclosing method is the listener target.
-const LARAVEL_LISTEN_CLOSURE_RE = /\bEvent::listen\s*\([^)]*?\bfunction\s*\(\s*(\??[A-Za-z_\\][\w\\|]*)\s+&?\s*(?:\.\.\.\s*)?\$/g;
+const LARAVEL_LISTEN_KEYED_RE = /\bEvent::listen\s*\(\s*([A-Za-z_\\][\w\\]*)::class\s*,\s*(?:static\s+)?(?:function|fn)\b/g;
+// `Event::listen(function (X $e) {…})` — the closure-as-only-arg form (also
+// the `fn (X $e) =>` arrow): the event anchor is the closure's TYPED first
+// param, union-split like laravelHandleEventTypes. A string-keyed first arg
+// (`Event::listen('a.b', fn(X $e))`) is deliberately NOT matched — `event(new X)`
+// dispatches by class name, never by a custom string, so that edge could never
+// fire. Closures aren't extracted as nodes, so the enclosing method stands in
+// as the listener target.
+const LARAVEL_LISTEN_CLOSURE_RE = /\bEvent::listen\s*\(\s*(?:static\s+)?(?:function|fn)\s*\(\s*(\??[A-Za-z_\\][\w\\|]*)\s+&?\s*(?:\.\.\.\s*)?\$/g;
 
 /** Short class name from a PHP reference: `\App\Events\Foo` / `App\Events::Foo` → `Foo`. */
 function phpSimpleName(s: string): string {
@@ -4472,6 +4602,35 @@ async function laravelEventEdges(ctx: ResolutionContext, onYield: MaybeYield): P
             const cls = ctx.getNodesByName(ln).find((n) => n.kind === 'class' && handleOf(n));
             if (cls) add(event, handleOf(cls)!);
           }
+        }
+      }
+    }
+
+    // (C) `Event::listen` closure registrations — the listener is a closure,
+    // which extraction doesn't node-ify, so the enclosing METHOD stands in as
+    // the listener target (an `Event::listen` outside any method — e.g. a
+    // routes file — attributes nothing). Two shapes: class-keyed
+    // (`Event::listen(X::class, fn)` — anchor is the class literal) and
+    // inferred (`Event::listen(fn(X $e) => …)` — anchor is the typed first
+    // param). `Events::listen`, `$events->listen`, string-callable listeners,
+    // and string-keyed closures stay out of scope (see the regex comments).
+    if (content.includes('Event::listen')) {
+      const safe = stripCommentsForRegex(content, 'php');
+      const nodesInFile = ctx.getNodesInFile(file);
+      const lineAt = makeLineAt(safe, 1);
+      let lm: RegExpExecArray | null;
+      LARAVEL_LISTEN_KEYED_RE.lastIndex = 0;
+      while ((lm = LARAVEL_LISTEN_KEYED_RE.exec(safe))) {
+        const enclosing = enclosingFn(nodesInFile, lineAt(lm.index));
+        if (enclosing) add(phpSimpleName(lm[1]!), enclosing);
+      }
+      LARAVEL_LISTEN_CLOSURE_RE.lastIndex = 0;
+      while ((lm = LARAVEL_LISTEN_CLOSURE_RE.exec(safe))) {
+        const enclosing = enclosingFn(nodesInFile, lineAt(lm.index));
+        if (!enclosing) continue;
+        for (const t of lm[1]!.replace(/^\?/, '').split('|')) {
+          const ev = phpSimpleName(t);
+          if (/^[A-Z]\w*$/.test(ev)) add(ev, enclosing);
         }
       }
     }
