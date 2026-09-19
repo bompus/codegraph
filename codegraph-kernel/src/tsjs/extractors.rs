@@ -367,12 +367,19 @@ impl<'t> Walker<'t> {
             let value = child.child_by_field_name("value");
 
             // Destructured patterns are skipped — except RTK Query generated
-            // hooks (`export const { useGetXQuery } = api`).
+            // hooks (`export const { useGetXQuery } = api`), and exported
+            // bindings destructured off a factory call (`export const {
+            // selectRouteData } = getRouterSelectors()`).
             if matches!(name_node.kind(), "object_pattern" | "array_pattern") {
                 if name_node.kind() == "object_pattern"
                     && value.map(|v| v.kind() == "identifier").unwrap_or(false)
                 {
                     self.extract_rtk_hook_bindings(name_node, is_exported);
+                } else if name_node.kind() == "object_pattern"
+                    && is_exported
+                    && value.map(|v| v.kind() == "call_expression").unwrap_or(false)
+                {
+                    self.extract_factory_binding_nodes(name_node, value.unwrap(), kind, is_exported);
                 }
                 continue;
             }
@@ -526,6 +533,65 @@ impl<'t> Walker<'t> {
                 Extra {
                     is_exported: Some(is_exported),
                     signature: Some("= RTK Query generated hook".to_string()),
+                    ..Extra::default()
+                },
+            );
+        }
+    }
+
+    /// Exported bindings destructured off a factory call —
+    /// `export const { a, b: c } = factory()` mints a node per binding so
+    /// consumers importing the name resolve it (ngrx `getRouterSelectors`,
+    /// logger factories). The signature records the callee
+    /// (`= getRouterSelectors(…)`) so factory-family gates (ngrx selector
+    /// factories, RTK) can classify the product. Handles shorthand (`{ a }`)
+    /// and renamed (`{ a: b }` → `b`) bindings; nested/rest patterns are
+    /// skipped. Caller gates: object pattern + exported + call-expression RHS.
+    fn extract_factory_binding_nodes(
+        &mut self,
+        pattern: Node<'t>,
+        value_node: Node<'t>,
+        kind: &'static str,
+        is_exported: bool,
+    ) {
+        let callee = value_node
+            .child_by_field_name("function")
+            .or_else(|| value_node.named_child(0));
+        let callee_text: String = callee
+            .map(|c| self.text(c).chars().take(60).collect())
+            .unwrap_or_default();
+        let signature = format!("= {}(…)", callee_text);
+        for i in 0..pattern.named_child_count() {
+            let Some(binding) = pattern.named_child(i) else {
+                continue;
+            };
+            let name: Option<String> = match binding.kind() {
+                "shorthand_property_identifier_pattern" => Some(self.text(binding).to_string()),
+                "pair_pattern" => binding
+                    .child_by_field_name("value")
+                    .filter(|v| v.kind() == "identifier")
+                    .map(|v| self.text(v).to_string()),
+                _ => None,
+            };
+            let Some(name) = name else { continue };
+            let mut chars = name.chars();
+            let valid = chars
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+                .unwrap_or(false)
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+            if !valid {
+                continue;
+            }
+            self.create_node(
+                kind,
+                &name,
+                binding,
+                Extra {
+                    is_exported: Some(is_exported),
+                    signature: Some(signature.clone()),
                     ..Extra::default()
                 },
             );

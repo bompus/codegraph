@@ -2699,6 +2699,39 @@ export class TreeSitterExtractor {
     }
   }
 
+  /**
+   * Exported bindings destructured off a factory call —
+   * `export const { selectRouteData } = getRouterSelectors()` mints a node per
+   * binding so consumers importing the name resolve it. The signature records
+   * the callee (`= getRouterSelectors()`) so factory-family gates (ngrx
+   * selector factories, RTK) can classify the product. Handles shorthand
+   * (`{ a }`) and renamed (`{ a: b }` → `b`) bindings; nested/rest patterns are
+   * skipped. Caller gates: object pattern + exported + call-expression RHS.
+   */
+  private extractFactoryBindingNodes(
+    pattern: SyntaxNode,
+    valueNode: SyntaxNode,
+    kind: NodeKind,
+    isExported: boolean,
+  ): void {
+    const callee = getChildByField(valueNode, 'function') ?? valueNode.namedChild(0);
+    const calleeText = callee ? getNodeText(callee, this.source).slice(0, 60) : '';
+    const signature = `= ${calleeText}(…)`;
+    for (let i = 0; i < pattern.namedChildCount; i++) {
+      const binding = pattern.namedChild(i);
+      if (!binding) continue;
+      let name: string | null = null;
+      if (binding.type === 'shorthand_property_identifier_pattern') {
+        name = getNodeText(binding, this.source);
+      } else if (binding?.type === 'pair_pattern') {
+        const v = getChildByField(binding, 'value');
+        if (v?.type === 'identifier') name = getNodeText(v, this.source);
+      }
+      if (!name || !/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      this.createNode(kind, name, binding, { isExported, signature });
+    }
+  }
+
   /** Cheap per-file heuristic: the file carries ≥2 distinct Vue-store signals
    *  (defineStore/createStore/Vuex, or the actions/mutations/getters/namespaced
    *  vocabulary). Gates the non-exported `const actions = {…}` Vuex-module form so
@@ -2869,6 +2902,14 @@ export class TreeSitterExtractor {
             if (nameNode.type === 'object_pattern' || nameNode.type === 'array_pattern') {
               if (nameNode.type === 'object_pattern' && valueNode?.type === 'identifier') {
                 this.extractRtkHookBindings(nameNode, isExported);
+              } else if (
+                nameNode.type === 'object_pattern' && isExported &&
+                valueNode?.type === 'call_expression'
+              ) {
+                // `export const { a, b: c } = factory()` — exported bindings off a
+                // factory call are real public symbols (ngrx `getRouterSelectors`,
+                // logger factories); unexported destructures stay skipped.
+                this.extractFactoryBindingNodes(nameNode, valueNode, kind, isExported);
               }
               continue;
             }
