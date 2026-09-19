@@ -226,6 +226,95 @@ class SongService {
     expect(edges.some((r: any) => r.via === 'OwnerTest')).toBe(false);
   });
 
+  it('bridges Dispatchable job dispatch — static trait, facade, and helper forms → handle', async () => {
+    // koel's shape: jobs extend an abstract QueuedJob that carries the trait.
+    write('app/Jobs/QueuedJob.php', `<?php
+namespace App\\Jobs;
+abstract class QueuedJob {
+  use \\Illuminate\\Foundation\\Bus\\Dispatchable;
+  use \\Illuminate\\Queue\\InteractsWithQueue;
+}
+`);
+    write('app/Jobs/DeleteSongFilesJob.php', `<?php
+namespace App\\Jobs;
+class DeleteSongFilesJob extends QueuedJob {
+  public function __construct(private array $files) {}
+  public function handle(\\App\\Services\\SongStorage $storage): void {}
+}
+`);
+    write('app/Jobs/ScrobbleJob.php', `<?php
+namespace App\\Jobs;
+class ScrobbleJob extends QueuedJob {
+  public function handle(\\App\\Services\\ScrobbleService $s): void {}
+}
+`);
+    // firefly's shape: the job carries `use Dispatchable` itself.
+    write('app/Jobs/SendWebhookMessage.php', `<?php
+namespace App\\Jobs;
+use Illuminate\\Foundation\\Bus\\Dispatchable;
+class SendWebhookMessage {
+  use Dispatchable;
+  public function __construct(private $message) {}
+  public function handle(): void {}
+}
+`);
+    // A plain class with a handle() but NO Dispatchable — never a job.
+    write('app/Services/PlainService.php', `<?php
+namespace App\\Services;
+class PlainService {
+  public function handle(): void {}
+}
+`);
+    write('app/Http/Controllers/UploadController.php', `<?php
+namespace App\\Http\\Controllers;
+use App\\Jobs\\DeleteSongFilesJob;
+use App\\Jobs\\ScrobbleJob;
+use App\\Jobs\\SendWebhookMessage;
+use App\\Services\\PlainService;
+use Illuminate\\Support\\Facades\\Dispatcher;
+
+class UploadController {
+  public function upload($files) {
+    Dispatcher::dispatch(new DeleteSongFilesJob($files));   // facade form → DeleteSongFilesJob::handle
+  }
+  public function scrobble($user, $song, $ts) {
+    dispatch(new ScrobbleJob($user, $song, $ts));            // helper form → ScrobbleJob::handle
+  }
+  public function notify($message) {
+    SendWebhookMessage::dispatch($message)->afterResponse(); // static trait form → its handle
+  }
+  public function declines($x) {
+    dispatch(new PlainService());                            // no Dispatchable → no edge
+    PlainService::dispatch($x);                              // static on a non-job → no edge
+    $x->dispatch();                                          // instance call → not matched
+  }
+}
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path tf, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'laravel-job'`
+      )
+      .all();
+
+    const targets = (src: string) => edges.filter((r: any) => r.source === src).map((r: any) => r.via);
+    // Facade, helper, and static-trait forms each land on the job's handle.
+    expect(targets('upload')).toEqual(['DeleteSongFilesJob']);
+    expect(targets('scrobble')).toEqual(['ScrobbleJob']);
+    expect(targets('notify')).toEqual(['SendWebhookMessage']);
+    expect(edges.every((r: any) => r.target === 'handle')).toBe(true);
+    // PRECISION: no Dispatchable → no edge, for every form.
+    expect(edges.some((r: any) => r.source === 'declines')).toBe(false);
+
+    cg.close?.();
+  });
+
   it('produces no edges in a PHP project with no Laravel events (clean control)', async () => {
     write('src/Client.php', `<?php
 namespace Acme;
