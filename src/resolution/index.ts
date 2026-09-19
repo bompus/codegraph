@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, nmTimed, clearNameMatcherMemos, resolveAmbiguousNameCeiling } from './name-matcher';
+import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, nmTimed, clearNameMatcherMemos, resolveAmbiguousNameCeiling, matchRustBareSelf } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -1193,6 +1193,17 @@ export class ReferenceResolver {
       const cfmlResult = this.resolveCfmlComponentPath(ref);
       if (this.profileStages) this.stageAdd('cfmlPath', ref, cfmlResult !== null, tCfml);
       return cfmlResult;
+    }
+
+    // Rust bare `Self` — a references/instantiates/calls ref naming the
+    // enclosing impl's type. Binds to the concrete owner off the caller's
+    // qualified name; a trait-kind owner is the abstract implementor and
+    // declines. Advisory: a miss keeps the ref's normal bare-name verdict.
+    if (ref.language === 'rust' && ref.referenceName === 'Self') {
+      const tSelf = this.profileStages ? process.hrtime.bigint() : 0n;
+      const selfResult = this.gateLanguage(matchRustBareSelf(ref, this.context), ref);
+      if (this.profileStages) this.stageAdd('rustBareSelf', ref, selfResult !== null, tSelf);
+      if (selfResult) return selfResult;
     }
 
     // Fast pre-filter: skip if no symbol with this name exists anywhere

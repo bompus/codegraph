@@ -156,3 +156,42 @@ it('declines Self::f().tail when the return type or tail is unresolvable', async
   // `.tail` declines (Option is not an in-graph owner; `nope` receiver misses).
   expect(calls).toEqual(['Target::opt', 'Target::opt']);
 });
+
+it('binds bare Self refs to the enclosing impl type', async () => {
+  await index({
+    'lib.rs':
+      'pub struct Target { v: u8 }\nimpl Target {\n' +
+      '  pub fn new() -> Self { Self { v: 0 } }\n' +
+      '  pub fn run(&self) -> Self { Self { v: 1 } }\n}',
+  });
+  const caller = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::run');
+  const edges = cg!.getOutgoingEdges(caller!.id)
+    .map(e => `${e.kind}:${cg!.getNode(e.target)!.qualifiedName}`);
+  // `Self {}` construction + `-> Self` position both bind to `Target`.
+  expect(edges.filter(e => e.endsWith(':Target')).length).toBeGreaterThanOrEqual(1);
+});
+
+it('binds bare Self in a trait impl to the impl type, not the trait', async () => {
+  await index({
+    'lib.rs':
+      'pub struct Target;\npub trait Tr { fn make() -> Self; }\n' +
+      'impl Tr for Target { fn make() -> Self { Self } }\n' +
+      'impl Target { pub fn run(&self) { Self::make(); } }',
+  });
+  const maker = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::make');
+  const edges = cg!.getOutgoingEdges(maker!.id)
+    .map(e => `${e.kind}:${cg!.getNode(e.target)!.qualifiedName}`);
+  expect(edges.filter(e => e.endsWith(':Target')).length).toBeGreaterThanOrEqual(1);
+  expect(edges.some(e => e.endsWith(':Tr'))).toBe(false);
+});
+
+it('declines bare Self in trait default bodies (abstract implementor)', async () => {
+  await index({
+    'lib.rs':
+      'pub trait Tr { fn make() -> Self; fn default(&self) { let _x: Option<Self> = None; } }\n' +
+      'pub struct Target;\nimpl Target { pub fn run(&self) {} }',
+  });
+  const dflt = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Tr::default');
+  const edges = dflt ? cg!.getOutgoingEdges(dflt.id) : [];
+  expect(edges.filter(e => e.kind === 'references' && cg!.getNode(e.target)!.qualifiedName === 'Tr')).toEqual([]);
+});

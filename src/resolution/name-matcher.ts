@@ -3550,6 +3550,41 @@ function matchRustSelfPath(
 }
 
 /**
+ * A bare `Self` ref names the enclosing type — `Self { .. }` constructions,
+ * `-> Self` positions and `Self(..)` calls all mean the caller
+ * qualified-name's owner. Only a concrete owner binds (struct/enum/union/
+ * class): inside a `trait` body `Self` is the abstract implementor and
+ * declines. A type-level caller (`struct S { next: Option<Self> }`) binds
+ * to itself. Same file-pin disambiguation as the member arms.
+ */
+export function matchRustBareSelf(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  const caller = context.getNodeById?.(ref.fromNodeId);
+  if (!caller?.qualifiedName) return null;
+  const typeKinds = ['struct', 'enum', 'union', 'class'];
+  const sep = caller.qualifiedName.lastIndexOf('::');
+  let owner: string;
+  if (sep > 0) owner = caller.qualifiedName.slice(0, sep);
+  else if (typeKinds.includes(caller.kind)) owner = caller.qualifiedName;
+  else return null;
+
+  let owners = context
+    .getNodesByQualifiedName(owner)
+    .filter((n) => n.language === 'rust' && typeKinds.includes(n.kind) && n.qualifiedName === owner);
+  if (owners.length > 1) owners = owners.filter((n) => n.filePath === caller.filePath);
+  if (owners.length !== 1) return null;
+
+  return {
+    original: ref,
+    targetNodeId: owners[0]!.id,
+    confidence: 0.9,
+    resolvedBy: 'qualified-name',
+  };
+}
+
+/**
  * The `owner::leaf` qualified-name lookup shared by `Self::item` and the
  * `Self::f().tail` chain: rust qualified names omit module paths, so two
  * same-named owners need the caller's file to pin one (matchRustSelfCall's

@@ -5785,6 +5785,49 @@ impl KernelResolver {
         Ok(Some(owned[0].clone()))
     }
 
+    /// matchRustBareSelf (name-matcher.ts): a bare `Self` ref names the
+    /// enclosing type — `Self { .. }` constructions, `-> Self` positions
+    /// and `Self(..)` calls all mean the caller qualified-name's owner.
+    /// Only a concrete owner binds (struct/enum/union/class): inside a
+    /// `trait` body `Self` is the abstract implementor and declines. A
+    /// type-level caller (`struct S { next: Option<Self> }`) binds to
+    /// itself. Same file-pin disambiguation as the member arms.
+    fn match_rust_bare_self(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(None);
+        };
+        const TYPE_KINDS: &[&str] = &["struct", "enum", "union", "class"];
+        let sep = caller.qualified_name.rfind("::");
+        let owner: &str = match sep {
+            Some(0) | None if TYPE_KINDS.contains(&caller.kind.as_str()) => {
+                &caller.qualified_name
+            }
+            Some(0) | None => return Ok(None),
+            Some(s) => &caller.qualified_name[..s],
+        };
+        let mut owners: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(owner)?
+            .iter()
+            .filter(|n| {
+                n.language == "rust"
+                    && TYPE_KINDS.contains(&n.kind.as_str())
+                    && n.qualified_name == owner
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if owners.len() > 1 {
+            owners.retain(|n| n.file_path == caller.file_path);
+        }
+        if owners.len() != 1 {
+            return Ok(None);
+        }
+        Ok(Some(KCand {
+            node: owners[0].clone(),
+            confidence: 0.9,
+            resolved_by: "qualified-name",
+        }))
+    }
+
     /// rustAssocTypeBinding (name-matcher.ts): the concrete type an
     /// associated-type name binds to inside the caller's enclosing `impl`
     /// block — `Self::Assoc` in `impl Tr for T` means that impl's
@@ -8383,6 +8426,16 @@ impl KernelResolver {
         // the TS side via the eligibility gate.
         if r.reference_kind == "function_ref" {
             return self.resolve_function_ref(r);
+        }
+        // Rust bare `Self` — a references/instantiates/calls ref naming the
+        // enclosing impl's type. Binds to the concrete owner off the
+        // caller's qualified name; a trait-kind owner is the abstract
+        // implementor and declines. Advisory: a miss keeps the ref's normal
+        // bare-name verdict.
+        if r.language == "rust" && r.reference_name == "Self" {
+            if let Some(c) = self.match_rust_bare_self(r)? {
+                return self.finish(r, c, None, true);
+            }
         }
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
         // names; the claimsReference arm is evaluated natively — a claimed
