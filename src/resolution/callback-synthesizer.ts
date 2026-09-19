@@ -3200,13 +3200,22 @@ async function vuexDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): P
 // to a Python function carrying a celery task decorator (read from the source lines above its
 // `def`, since the def's own startLine excludes the decorator). A `.delay()` on a non-task
 // object resolves to no task node → no edge, so a Celery-free repo yields 0. Same-file /
-// unique-candidate disambiguation like vuex. (Canvas forms — `group(t).delay()`, `t.s()`/`.si()`
-// — have no single identifier before `.delay`/`.apply_async`, so they're skipped, not mis-bridged.)
+// unique-candidate disambiguation like vuex.
 // The receiver chain before `.delay`/`.apply_async` — `task`, `mod.task`, or
 // `pkg.mod.task` (the last segment is the task name; a resolvable module prefix
 // scopes the lookup to that module). Canvas forms (`group(t).delay()`,
-// `t.s().delay()`) still can't match — `(`/`]` break the chain.
+// `t.s().delay()`) can't match — `(`/`]` break the chain — but the SIGNATURE
+// constructor itself is a dispatch-binding site: `task.s(…)`/`task.si(…)`
+// (aliases `.signature(…)`/`.subtask(…)`) binds the task wherever it appears —
+// `link=[t.si(x)]`, `body=t.s(…)`, `chord(h).on_error(cb.s(…))`, or a
+// list-comprehension element later fed to `chain(*sigs)`/`group(sigs)`. The
+// container call adds nothing those sites don't already produce (same
+// enclosing fn → dedup), so matching `.s`/`.si` covers the canvas surface.
 const CELERY_DISPATCH_RE = /\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
+const CELERY_SIG_RE = /\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*(?:s|si|signature|subtask)\s*\(/g;
+// File quick-gate hint for the signature forms (the dispatch gate below uses
+// cheap substring checks; these four share no common substring).
+const CELERY_SIG_HINT_RE = /\.(?:s|si|signature|subtask)\(/;
 // `recv.send_task('dotted.name')` — celery's string-name dispatch. Any receiver
 // (`app.send_task`, `current_app.send_task`); the file-celery-import gate and the
 // registered-name match keep non-celery `send_task`s out.
@@ -3531,7 +3540,14 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!CELERY_PY_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!content.includes('.delay(') && !content.includes('.apply_async(') && !content.includes('.send_task('))) continue;
+    if (
+      !content ||
+      (!content.includes('.delay(') &&
+        !content.includes('.apply_async(') &&
+        !content.includes('.send_task(') &&
+        !CELERY_SIG_HINT_RE.test(content))
+    )
+      continue;
     const safe = stripCommentsForRegex(content, 'python');
     const nodesInFile = ctx.getNodesInFile(file);
     const lineAt = makeLineAt(safe, 1);
@@ -3582,6 +3598,33 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
         line,
         provenance: 'heuristic',
         metadata: { synthesizedBy: 'celery-dispatch', via: taskName, registeredAt: `${file}:${line}` },
+      });
+      added++;
+    }
+    // Canvas signature construction — `task.s(…)`/`task.si(…)`/`.signature(…)`/
+    // `.subtask(…)` binds a task for deferred dispatch inside group/chain/chord
+    // args, `link=[t.si(x)]`, `body=t.s(…)`, `on_error(cb.s(…))`, or list
+    // elements later fed to `chain(*sigs)`/`group(sigs)`. Same resolve() +
+    // dedup as `.delay()` — the container's own `.delay()` produces nothing
+    // these sites don't already (same enclosing fn → same edge pair).
+    CELERY_SIG_RE.lastIndex = 0;
+    while ((m = CELERY_SIG_RE.exec(safe)) && added < CELERY_FANOUT_CAP) {
+      const recv = m[1]!.replace(/\s+/g, '');
+      const line = lineAt(m.index);
+      const disp = enclosingFn(nodesInFile, line);
+      if (!disp) continue;
+      const target = resolve(recv, file);
+      if (!target || target.id === disp.id) continue;
+      const key = `${disp.id}>${target.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: target.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'celery-dispatch', via: recv.slice(recv.lastIndexOf('.') + 1), registeredAt: `${file}:${line}` },
       });
       added++;
     }
