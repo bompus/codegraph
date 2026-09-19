@@ -5259,6 +5259,180 @@ async function laravelEventEdges(ctx: ResolutionContext, onYield: MaybeYield): P
   return edges;
 }
 
+// ── Laravel queued jobs (PHP) ─────────────────────────────────────────────────
+// A Dispatchable job is dispatched through the trait's static entry, a bus
+// facade, or the global helper — each returns a PendingDispatch whose real
+// target is the job's `handle`:
+//   SendWebhookMessage::dispatch($message)->afterResponse();   // firefly-iii
+//   Dispatcher::dispatch(new DeleteSongFilesJob($files));      // koel facade
+//   dispatch(new GenerateAlbumThumbnailJob($album));           // helper
+// The gate: the dispatched class must be Dispatchable — its own `use
+// Dispatchable` trait line, or a superclass's (koel's `QueuedJob` base),
+// chain-walked with a cycle guard. `event(new X)` and `$listen` are the event
+// synth's shapes; a non-Dispatchable class dispatched through any form here
+// declines. `->dispatch(`, `::dispatchSync/dispatchAfterResponse/dispatchIf/
+// dispatchUnless` are the same PendingDispatch mechanism; `dispatch(new X)`
+// helper requires the `new`-ed arg since a bare helper has no receiver class.
+const LARAVEL_JOB_STATIC_RE = /\b\\?([A-Za-z_][\w\\]*)::(?:dispatch|dispatchSync|dispatchAfterResponse|dispatchIf|dispatchUnless)\s*\(/g;
+const LARAVEL_JOB_FACADE_RE = /\b(?:Dispatcher|Bus|Queue|Illuminate\\Support\\Facades\\Bus|Illuminate\\Bus\\Dispatcher)::dispatch\s*\(\s*new\s+\\?([A-Za-z_][\w\\]*)/g;
+const LARAVEL_JOB_HELPER_RE = /\bdispatch\s*\(\s*new\s+\\?([A-Za-z_][\w\\]*)/g;
+// Class-body trait window: trait `use` lines always precede the first method.
+// The list ends at `;` or a `{` adaptation block (`use A { a as b; }`).
+const LARAVEL_TRAIT_USE_RE = /^\s*use\s+([A-Za-z_\\][\w\\,\s]*)/;
+const LARAVEL_EXTENDS_RE = /\bextends\s+([A-Za-z_][\w\\]*)/;
+const LARAVEL_DISPATCHABLE_DEPTH = 6;
+
+/** The `use …` trait statements inside a class body — everything up to the
+ *  first `function` keyword (trait uses precede methods in every real class). */
+function laravelClassTraitUses(cls: Node, lines: string[]): string[] {
+  const out: string[] = [];
+  for (let i = cls.startLine; i < (cls.endLine ?? cls.startLine) && i < lines.length; i++) {
+    const t = lines[i] ?? '';
+    if (/\bfunction\b/.test(t)) break;
+    const m = LARAVEL_TRAIT_USE_RE.exec(t);
+    if (m) for (const seg of m[1]!.split(',')) out.push(phpSimpleName(seg));
+  }
+  return out;
+}
+
+async function laravelJobDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  let scannedFiles = 0;
+  // Pass 1 — class → its trait uses + `extends` base (for the Dispatchable walk).
+  interface PhpClassInfo { cls: Node; traits: string[]; base: string | null }
+  const classInfo = new Map<string, PhpClassInfo>(); // by node id
+  const classesByName = new Map<string, PhpClassInfo[]>();
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!LARAVEL_PHP_EXT.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || (!content.includes('use ') && !content.includes('extends '))) continue;
+    const lines = stripCommentsForRegex(content, 'php').split('\n');
+    for (const cls of ctx.getNodesInFile(file)) {
+      if (cls.kind !== 'class') continue;
+      const decl = lines[cls.startLine - 1] ?? '';
+      const info: PhpClassInfo = {
+        cls,
+        traits: laravelClassTraitUses(cls, lines),
+        base: LARAVEL_EXTENDS_RE.exec(decl)?.[1]?.split('\\').pop() ?? null,
+      };
+      classInfo.set(cls.id, info);
+      let arr = classesByName.get(cls.name);
+      if (!arr) { arr = []; classesByName.set(cls.name, arr); }
+      arr.push(info);
+    }
+  }
+  if (!classInfo.size) return [];
+
+  // Dispatchable when the class or an ancestor carries the trait — koel's jobs
+  // all `extends QueuedJob` (the base holds `use Dispatchable`). Unique-name
+  // bases only; an ambiguous superclass name declines the chain.
+  const dispatchable = new Map<string, boolean>();
+  const isDispatchable = (info: PhpClassInfo, depth: number, seen: Set<string>): boolean => {
+    let v = dispatchable.get(info.cls.id);
+    if (v !== undefined) return v;
+    if (depth <= 0 || seen.has(info.cls.id)) return false;
+    seen.add(info.cls.id);
+    v = info.traits.some((t) => t === 'Dispatchable');
+    if (!v && info.base) {
+      const bases = (classesByName.get(info.base) ?? []).filter((b) => b.cls.id !== info.cls.id);
+      const base = bases.length === 1 ? bases[0] : bases.find((b) => b.cls.filePath === info.cls.filePath);
+      if (base) v = isDispatchable(base, depth - 1, seen);
+    }
+    dispatchable.set(info.cls.id, v);
+    return v;
+  };
+
+  // The job's `handle` — own method first, else up the superclass chain.
+  const handleCache = new Map<string, Node | null>();
+  const jobHandle = (info: PhpClassInfo, depth: number, seen: Set<string>): Node | null => {
+    let v = handleCache.get(info.cls.id);
+    if (v !== undefined) return v;
+    v = null;
+    if (depth > 0 && !seen.has(info.cls.id)) {
+      seen.add(info.cls.id);
+      v =
+        ctx
+          .getNodesInFile(info.cls.filePath)
+          .find(
+            (n) =>
+              n.kind === 'method' && n.name === 'handle' &&
+              n.startLine >= info.cls.startLine && n.startLine <= (info.cls.endLine ?? info.cls.startLine)
+          ) ?? null;
+      if (!v && info.base) {
+        const bases = (classesByName.get(info.base) ?? []).filter((b) => b.cls.id !== info.cls.id);
+        const base = bases.length === 1 ? bases[0] : bases.find((b) => b.cls.filePath === info.cls.filePath);
+        if (base) v = jobHandle(base, depth - 1, seen);
+      }
+    }
+    handleCache.set(info.cls.id, v);
+    return v;
+  };
+
+  // A class simple-name → its dispatchable job (exactly one, else ambiguous).
+  const dispatchableJob = (name: string, dispatchFile: string): PhpClassInfo | null => {
+    const cands = (classesByName.get(name) ?? []).filter((c) => isDispatchable(c, LARAVEL_DISPATCHABLE_DEPTH, new Set()));
+    if (!cands.length) return null;
+    return cands.length === 1 ? cands[0]! : cands.find((c) => c.cls.filePath === dispatchFile) ?? null;
+  };
+
+  // Pass 2 — dispatch sites.
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!LARAVEL_PHP_EXT.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('dispatch')) continue;
+    const safe = stripCommentsForRegex(content, 'php');
+    const nodesInFile = ctx.getNodesInFile(file);
+    const lineAt = makeLineAt(safe, 1);
+    let m: RegExpExecArray | null;
+    let added = 0;
+    const emit = (jobName: string, line: number) => {
+      if (added >= LARAVEL_FANOUT_CAP) return;
+      const disp = enclosingFn(nodesInFile, line);
+      if (!disp) return;
+      const job = dispatchableJob(phpSimpleName(jobName), file);
+      if (!job) return;
+      const target = jobHandle(job, LARAVEL_DISPATCHABLE_DEPTH, new Set());
+      if (!target || target.id === disp.id) return;
+      const key = `${disp.id}>${target.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: target.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'laravel-job', via: phpSimpleName(jobName), registeredAt: `${file}:${line}` },
+      });
+      added++;
+    };
+    // `XJob::dispatch(…)` — the static trait entry. A facade receiver
+    // (`Dispatcher::dispatch(new XJob(…))`) is handled by the facade arm —
+    // `Dispatcher` is never Dispatchable so it declines here naturally.
+    LARAVEL_JOB_STATIC_RE.lastIndex = 0;
+    while ((m = LARAVEL_JOB_STATIC_RE.exec(safe)) && added < LARAVEL_FANOUT_CAP) {
+      emit(m[1]!, lineAt(m.index));
+    }
+    LARAVEL_JOB_FACADE_RE.lastIndex = 0;
+    while ((m = LARAVEL_JOB_FACADE_RE.exec(safe)) && added < LARAVEL_FANOUT_CAP) {
+      emit(m[1]!, lineAt(m.index));
+    }
+    // `dispatch(new XJob(…))` helper — a bare call only: a `:`/`>`/`$` before
+    // `dispatch` means `X::dispatch`/`->dispatch`/`$x->dispatch` (handled
+    // above or not a job dispatch at all).
+    LARAVEL_JOB_HELPER_RE.lastIndex = 0;
+    while ((m = LARAVEL_JOB_HELPER_RE.exec(safe)) && added < LARAVEL_FANOUT_CAP) {
+      const before = safe[m.index - 1];
+      if (before === ':' || before === '>' || before === '$' || /[\w]/.test(before ?? '')) continue;
+      emit(m[1]!, lineAt(m.index));
+    }
+  }
+  return edges;
+}
+
 /**
  * Synthesize dispatcher→callback edges (field observers + EventEmitters +
  * React re-render + JSX children + Vue templates + SvelteKit load + RN event
@@ -5378,7 +5552,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
     gate: (has) => has('erlang'),
     run: (q, c, y) => erlangBehaviourDispatchEdges(q, c, y),
   },
-  { name: 'laravelEdges', gate: (has) => has('php'), run: (_q, c, y) => laravelEventEdges(c, y) },
+  { name: 'laravelEdges', gate: (has) => has('php'), run: async (_q, c, y) => (await laravelEventEdges(c, y)).concat(await laravelJobDispatchEdges(c, y)) },
   { name: 'drupalHookEdges', gate: (has) => has('php'), run: (q, c, y) => drupalHookEdges(q, c, y) },
   {
     name: 'cFnPtrEdges',
