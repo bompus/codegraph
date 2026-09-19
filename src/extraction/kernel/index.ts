@@ -193,8 +193,8 @@ export function tryKernelExtract(
   }
 }
 
-/** Languages `bindingsFile` handles: every walker language with rows: the TS/JS family, ArkTS, Python, Go, Java, Kotlin, PHP, C and C++. */
-const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'python', 'go', 'java', 'kotlin', 'php', 'c', 'cpp']);
+/** Languages `bindingsFile` handles: every walker language with rows: the TS/JS family, ArkTS, Python, Go, Java, Kotlin, PHP, C, C++ and Rust. */
+const BINDINGS_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'python', 'go', 'java', 'kotlin', 'php', 'c', 'cpp', 'rust']);
 
 /**
  * Binding rows for a TS/JS-family file from the kernel's AST-only emitter,

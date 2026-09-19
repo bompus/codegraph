@@ -43,8 +43,9 @@
 //! Files with parse errors defer to wasm.
 
 use crate::buffers::{
-    build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
+    build_meta, edge_kind_index, node_kind_index, Arena, BindingRow, BoolFlags, EdgeRow, EmitOut,
+    NodeRow, RefRow, StrRef, Tables, BINDING_IMPORT, EXPORT_NONE, EXPORT_PUBLIC, FLAG_IS_ASYNC,
+    FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -126,6 +127,28 @@ pub struct Walker<'t> {
     md_ref_keys: HashSet<String>,
 }
 
+impl<'t> Walker<'t> {
+    fn new(src: &'t str, file_path: &'t str) -> Self {
+        Walker {
+            src,
+            file_path,
+            line_starts: util::line_starts(src),
+            arena: Arena::default(),
+            tables: Tables::default(),
+            stack: Vec::new(),
+            nodes_meta: Vec::new(),
+            node_ids: Vec::new(),
+            defined_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            fn_ref_cands: Vec::new(),
+            fs_values: HashMap::new(),
+            fs_value_counts: HashMap::new(),
+            value_scopes: Vec::new(),
+            md_ref_keys: HashSet::new(),
+        }
+    }
+}
+
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let grammar = crate::langs::grammar_for("rust").ok_or("no rust grammar")?;
     let t0 = std::time::Instant::now();
@@ -137,23 +160,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         .parse(source, None)
         .ok_or_else(|| "parser returned null tree".to_string())?;
 
-    let mut w = Walker {
-        src: source,
-        file_path,
-        line_starts: util::line_starts(source),
-        arena: Arena::default(),
-        tables: Tables::default(),
-        stack: Vec::new(),
-        nodes_meta: Vec::new(),
-        node_ids: Vec::new(),
-        defined_fn_names: HashSet::new(),
-        imported_names: HashSet::new(),
-        fn_ref_cands: Vec::new(),
-        fs_values: HashMap::new(),
-        fs_value_counts: HashMap::new(),
-        value_scopes: Vec::new(),
-        md_ref_keys: HashSet::new(),
-    };
+    let mut w = Walker::new(source, file_path);
 
     let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
@@ -205,6 +212,13 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         bindings: w.tables.bindings,
         arena: w.arena.into_vec(),
     })
+}
+
+/// Binding rows only, for a rust file the generic extractor handles after a
+/// stack-guard defer (resolution-binding-model-plan.md §2.4). Rust has no
+/// cheaper AST-only pass — the one walk is the full emitter.
+pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
+    extract(file_path, source)
 }
 
 impl<'t> Walker<'t> {
@@ -488,6 +502,7 @@ impl<'t> Walker<'t> {
             skip_children = true;
         } else if kind == "use_declaration" {
             self.extract_import(node);
+            self.emit_use_bindings(node);
             // importTypes branch never sets skipChildren.
         } else if kind == "call_expression" {
             self.extract_call(node);
@@ -823,6 +838,165 @@ impl<'t> Walker<'t> {
                 continue;
             }
             self.push_ref_at(from_row, &text, imports_kind, n);
+        }
+    }
+
+    /// `use`-binding rows (resolution-binding-model-plan.md §2.1): one
+    /// `import` row per bound local name — the path leaf, or the `as` alias —
+    /// with `target_spec` the full `::` path as written and `target_name` its
+    /// leaf. `use a::{b::{c, d}}` flattens through nested `use_list`s; `self`
+    /// inside a list binds the parent path (`use a::b::{self}` → `b`); a `*`
+    /// glob emits a `name="*"` row that records the import but binds no name —
+    /// the resolver declines it. A `pub use` (any `visibility_modifier`)
+    /// carries `export_form=public` + `exported_as`, so a consumer's leaf
+    /// lookup can chase the re-export one hop.
+    ///
+    /// Scope is the use's PARENT extent — `source_file` for a top-level use,
+    /// the `declaration_list` for a `mod` body, the `block` for a
+    /// function-local use — the same region Rust scopes the import to.
+    /// Emitted on BOTH walks (`visit_node` for items, the calls/structure
+    /// walk for function bodies): the row is the whole contribution — a
+    /// function-local `use` still emits no import node or `imports` refs.
+    fn emit_use_bindings(&mut self, node: Node<'t>) {
+        fn join(prefix: &str, seg: &str) -> String {
+            if prefix.is_empty() {
+                seg.to_string()
+            } else {
+                format!("{prefix}::{seg}")
+            }
+        }
+        fn last_seg(p: &str) -> &str {
+            p.rsplit("::").next().unwrap_or(p)
+        }
+        /// One row per (spec, local-name-node) pair; the local name's own
+        /// token supplies the line.
+        fn collect<'t>(
+            w: &Walker<'t>,
+            n: Node<'t>,
+            prefix: &str,
+            out: &mut Vec<(String, String, Node<'t>)>,
+        ) {
+            stack_guard!();
+            match n.kind() {
+                "identifier" => {
+                    let seg = w.text(n);
+                    out.push((join(prefix, seg), seg.to_string(), n));
+                }
+                "scoped_identifier" => {
+                    let full = w.text(n).trim();
+                    let spec = if prefix.is_empty() {
+                        full.to_string()
+                    } else {
+                        format!("{prefix}::{full}")
+                    };
+                    let local = last_seg(&spec).to_string();
+                    out.push((spec, local, n));
+                }
+                "use_as_clause" => {
+                    let p = n.child_by_field_name("path").or_else(|| n.named_child(0));
+                    let a = n.child_by_field_name("alias");
+                    if let (Some(p), Some(a)) = (p, a) {
+                        // `use a::b::{self as io}` binds `io` to `a::b` —
+                        // `self` in a list names the prefix, not a segment.
+                        let spec = if p.kind() == "self" && !prefix.is_empty() {
+                            prefix.to_string()
+                        } else {
+                            let ptext = w.text(p).trim();
+                            if prefix.is_empty() {
+                                ptext.to_string()
+                            } else {
+                                format!("{prefix}::{ptext}")
+                            }
+                        };
+                        out.push((spec, w.text(a).trim().to_string(), a));
+                    } else if let Some(p) = p {
+                        collect(w, p, prefix, out);
+                    }
+                }
+                // `use a::b::{self}` binds `b` — the prefix's own leaf.
+                "self" | "super" | "crate" if !prefix.is_empty() => {
+                    out.push((prefix.to_string(), last_seg(prefix).to_string(), n));
+                }
+                "use_list" => {
+                    for i in 0..n.named_child_count() {
+                        if let Some(c) = n.named_child(i) {
+                            collect(w, c, prefix, out);
+                        }
+                    }
+                }
+                "scoped_use_list" => {
+                    let seg = n
+                        .child_by_field_name("path")
+                        .map(|p| w.text(p).trim().to_string())
+                        .unwrap_or_default();
+                    let new_prefix = if seg.is_empty() {
+                        prefix.to_string()
+                    } else {
+                        join(prefix, &seg)
+                    };
+                    let list = n.child_by_field_name("list").or_else(|| {
+                        (0..n.named_child_count())
+                            .filter_map(|i| n.named_child(i))
+                            .find(|c| c.kind() == "use_list")
+                    });
+                    if let Some(list) = list {
+                        collect(w, list, &new_prefix, out);
+                    }
+                }
+                // `use a::*` / `use a::{b::*}` — a glob records its module
+                // path under the never-matching name `*`; the resolver
+                // declines it, so the wildcard binds nothing.
+                "use_wildcard" => {
+                    let path_text = (0..n.named_child_count())
+                        .filter_map(|i| n.named_child(i))
+                        .map(|c| w.text(c).trim().to_string())
+                        .next()
+                        .unwrap_or_default();
+                    let spec = join(prefix, &path_text);
+                    if !spec.is_empty() {
+                        out.push((format!("{spec}::*"), "*".to_string(), n));
+                    }
+                }
+                _ => {} // visibility_modifier, bare crate/self/super at the root
+            }
+        }
+
+        let is_pub = (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .any(|c| c.kind() == "visibility_modifier");
+        let parent = node.parent().unwrap_or(node);
+        let scope = (
+            parent.start_position().row as u32 + 1,
+            parent.end_position().row as u32 + 1,
+        );
+        let mut out: Vec<(String, String, Node<'t>)> = Vec::new();
+        if let Some(arg) = node.child_by_field_name("argument") {
+            collect(self, arg, "", &mut out);
+        }
+        for (spec, local, leaf_node) in out {
+            // `self`/`super`/`crate` can't be bound names at a use site.
+            if local.is_empty() || matches!(local.as_str(), "self" | "super" | "crate") {
+                continue;
+            }
+            let exported = is_pub && local != "*";
+            let (name_ref, spec_ref, target_ref) = (
+                self.arena.put(&local),
+                self.arena.put(&spec),
+                self.arena.put(last_seg(&spec)),
+            );
+            self.tables.push_binding(&BindingRow {
+                kind: BINDING_IMPORT,
+                export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+                node_idx: NONE,
+                scope_start: scope.0,
+                scope_end: scope.1,
+                name: name_ref,
+                target_spec: spec_ref,
+                target_name: target_ref,
+                exported_as: if exported { name_ref } else { NONE_STR },
+                storage: NONE_STR,
+                line: self.line_of(leaf_node),
+            });
         }
     }
 
@@ -1215,6 +1389,12 @@ impl<'t> Walker<'t> {
         }
         if kind == "trait_item" {
             self.extract_interface(node);
+            return;
+        }
+        // A `use` inside a body emits binding rows only — import nodes and
+        // `imports` refs are module-level (visit_node) contributions.
+        if kind == "use_declaration" {
+            self.emit_use_bindings(node);
             return;
         }
 

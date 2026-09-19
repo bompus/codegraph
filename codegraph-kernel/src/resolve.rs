@@ -38,9 +38,9 @@ use std::sync::LazyLock;
 // ---------------------------------------------------------------------------
 
 /// Kernel pipeline eligibility. Mirrors BINDINGS_LANGUAGES
-/// (src/extraction/kernel/index.ts) plus `rust`, which resolves
-/// bindings-free in TS identically to the kernel (empty bindings
-/// both sides); TS `use`-path handling is ported ahead of the gate.
+/// (src/extraction/kernel/index.ts) — `rust` included since it joined the
+/// binding-emitting languages; its `use`-path handling was ported ahead of
+/// the gate while it still resolved bindings-free.
 fn is_migrated_language(lang: &str) -> bool {
     matches!(
         lang,
