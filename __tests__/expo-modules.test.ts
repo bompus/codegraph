@@ -65,6 +65,50 @@ class Helper {
     expect(result?.nodes).toHaveLength(0);
   });
 
+  it('spans the trailing closure — the method node covers its body, incl. past a chained modifier', () => {
+    const source = `
+import ExpoModulesCore
+public class WatchModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("ExpoWatch")
+    AsyncFunction("startWatch") { () -> Void in
+      sendEvent(withName: "watchTick", body: ["x": 1])
+      logTick()
+    }
+    Function("noop") { 42 }
+  }
+}
+`;
+    const result = expoModulesResolver.extract?.('ios/WatchModule.swift', source);
+    const start = result!.nodes.find((n) => n.name === 'startWatch')!;
+    const noop = result!.nodes.find((n) => n.name === 'noop')!;
+    // `sendEvent` (line 7) and `logTick` (line 8) sit INSIDE the startWatch
+    // range so enclosing-fn attribution lands on it, not on `definition`.
+    expect(start.startLine).toBe(6);
+    expect(start.endLine).toBe(9);
+    // A single-line closure still resolves to the line it spans.
+    expect(noop.startLine).toBe(10);
+    expect(noop.endLine).toBe(10);
+  });
+
+  it('follows `)` + `.modifier(…)` hops to a closure behind a chain', () => {
+    const source = `
+import ExpoModulesCore
+public class QModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("ExpoQ")
+    AsyncFunction("queuedWork").runOnQueue(.main) {
+      doWork()
+    }
+  }
+}
+`;
+    const result = expoModulesResolver.extract?.('ios/QModule.swift', source);
+    const m = result!.nodes.find((n) => n.name === 'queuedWork')!;
+    expect(m.startLine).toBe(6);
+    expect(m.endLine).toBe(8);
+  });
+
   it('also extracts from Kotlin module files', () => {
     const source = `
 class FooModule : Module() {
@@ -210,5 +254,55 @@ class BatteryModule : Module() {
     ).get();
     cg.close?.();
     expect(pair.c).toBeGreaterThanOrEqual(2); // swift->kotlin AND kotlin->swift
+  });
+
+  it('attributes a `sendEvent` inside an AsyncFunction closure to the method, not `definition`', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      '{"dependencies":{"expo-modules-core":"^1.0.0","react-native":"^0.74.0"}}'
+    );
+    fs.mkdirSync(path.join(dir, 'ios'));
+    fs.writeFileSync(
+      path.join(dir, 'ios', 'WatchModule.swift'),
+      `import ExpoModulesCore
+public class WatchModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("ExpoWatch")
+    AsyncFunction("startWatch") { () -> Void in
+      sendEvent(withName: "watchTickExpo", body: ["x": 1])
+    }
+  }
+}
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'app.ts'),
+      `import { NativeEventEmitter, NativeModules } from 'react-native';
+const emitter = new NativeEventEmitter(NativeModules.ExpoWatch);
+export function subscribeWatch() {
+  emitter.addListener('watchTickExpo', (t) => { console.log(t); });
+}
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, s.id source_id, t.name target
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'rn-event-channel'
+           AND json_extract(e.metadata,'$.event') = 'watchTickExpo'`
+      )
+      .all();
+    cg.close?.();
+    // Before the trailing-closure range fix the dispatcher attributed to
+    // `definition()`; now the edge sources from the AsyncFunction method node.
+    expect(edges).toHaveLength(1);
+    expect(edges[0].source_id.startsWith('expo-module:')).toBe(true);
+    expect(edges[0].source).toBe('startWatch');
+    expect(edges[0].target).toBe('subscribeWatch');
   });
 });

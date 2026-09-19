@@ -84,6 +84,65 @@ export function init() {
     cg.close?.();
   });
 
+  it('bridges an unbound `useXStore().action()` call straight to the action', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'authStore.ts'),
+      `import { defineStore } from 'pinia';
+export const useAuthStore = defineStore({
+  id: 'auth',
+  state: () => ({ token: '' }),
+  actions: {
+    async getMenu() { return loadMenu(); },
+  },
+});
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'boot.ts'),
+      `import { useAuthStore } from './authStore';
+export function boot() {
+  useAuthStore().getMenu();          // unbound factory call — no const binding
+  useAuthStore().$reset();           // Pinia built-in — must not bridge
+  useAuthStore();                    // bare factory call, no method — no edge
+}
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path tf
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'pinia-store'`
+      )
+      .all();
+    expect(edges.map((r: any) => `${r.source}->${r.target}`)).toEqual(['boot->getMenu']);
+    expect(edges.every((r: any) => /authStore\.ts$/.test(r.tf))).toBe(true);
+    cg.close?.();
+  });
+
+  it('ignores `.method()` on a same-named non-factory call (no defineStore behind it)', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'thing.ts'),
+      `export function useThing() { return { run() { return 1; } }; }
+export function go() {
+  useThing().run();
+}
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const c = db
+      .prepare(`SELECT count(*) c FROM edges WHERE json_extract(metadata,'$.synthesizedBy') = 'pinia-store'`)
+      .get().c;
+    expect(c).toBe(0);
+    cg.close?.();
+  });
+
   it('produces nothing when there is no defineStore factory (not a Pinia store)', async () => {
     fs.writeFileSync(
       path.join(dir, 'thing.ts'),
