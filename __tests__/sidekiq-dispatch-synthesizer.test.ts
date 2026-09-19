@@ -109,6 +109,89 @@ end
     cg.close?.();
   });
 
+  it('bridges superclass-inherited workers and Sidekiq::Client.push payloads', async () => {
+    // Only the BASE class carries the include; subclasses inherit worker-hood
+    // through `class X < Base` (diaspora's pattern). The dispatched `perform`
+    // resolves to the NEAREST definition on the chain — the subclass's own
+    // override wins over the ancestor's.
+    write('app/workers/base_worker.rb', `class BaseWorker
+  include Sidekiq::Job
+  def perform(id)
+  end
+end
+`);
+    write('app/workers/specialized_worker.rb', `class SpecializedWorker < BaseWorker
+end
+`);
+    write('app/workers/overriding_worker.rb', `class OverridingWorker < BaseWorker
+  def perform(id)
+  end
+end
+`);
+    // PRECISION: `AmbigWorker < SharedBase` where two classes bear the name —
+    // the superclass can't be proven, so the include chain is unverifiable.
+    write('app/workers/one/shared_base.rb', `module One
+  class SharedBase
+    include Sidekiq::Job
+  end
+end
+`);
+    write('app/workers/two/shared_base.rb', `module Two
+  class SharedBase
+  end
+end
+`);
+    write('app/workers/ambig_worker.rb', `class AmbigWorker < SharedBase
+  def perform(id)
+  end
+end
+`);
+    write('app/services/runner.rb', `class Runner
+  def kick
+    SpecializedWorker.perform_async(1)
+    OverridingWorker.perform_in(5, 2)
+    AmbigWorker.perform_async(3)
+  end
+
+  def enqueue
+    Sidekiq::Client.push('class' => 'BaseWorker', 'args' => [1])
+    Sidekiq::Client.push('class' => 'MissingWorker', 'args' => [])
+  end
+
+  def bulk
+    Sidekiq::Client.push_bulk('class' => SpecializedWorker, 'args' => [[1], [2]])
+  end
+end
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path tf, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'sidekiq-dispatch'`
+      )
+      .all();
+    cg.close?.();
+
+    const pair = (src: string, via: string) =>
+      edges.find((r: any) => r.source === src && r.via === via);
+
+    // Inherited worker: dispatches on the subclass land on the ancestor's perform.
+    expect(pair('kick', 'SpecializedWorker')?.tf).toMatch(/base_worker\.rb$/);
+    // Own override wins over the inherited perform.
+    expect(pair('kick', 'OverridingWorker')?.tf).toMatch(/overriding_worker\.rb$/);
+    // Payload-string dispatch: 'class' => 'W' string and => W literal, plus push_bulk.
+    expect(pair('enqueue', 'BaseWorker')?.tf).toMatch(/base_worker\.rb$/);
+    expect(pair('bulk', 'SpecializedWorker')?.tf).toMatch(/base_worker\.rb$/);
+    // PRECISION: ambiguous superclass chain and an unknown payload class — silent.
+    expect(edges.some((r: any) => r.via === 'AmbigWorker')).toBe(false);
+    expect(edges.some((r: any) => r.via === 'MissingWorker')).toBe(false);
+    expect(edges.length).toBe(4);
+  });
+
   it('produces no edges in a Ruby project with no Sidekiq (clean control)', async () => {
     write('lib/calc.rb', `class Calc
   def add(a, b)

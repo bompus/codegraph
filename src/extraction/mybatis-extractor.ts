@@ -236,8 +236,14 @@ export class MyBatisExtractor {
       let inc: RegExpExecArray | null;
       while ((inc = includeRegex.exec(elemBody)) !== null) {
         const refid = inc[2]!;
+        // A dotted refid is `<namespace>.<fragmentId>` — the LAST dot is the
+        // qualifier separator (Java-style namespaces are themselves dotted:
+        // `com.example.MapperB.sharedCols` → `com.example.MapperB::sharedCols`,
+        // matching the fragment node's qualifiedName). Blanket `.`→`::`
+        // mangled multi-dot namespaces into `com::example::…` and could never
+        // resolve (#cross-mapper include).
         const refQualified = refid.includes('.')
-          ? refid.replace(/\./g, '::')
+          ? `${refid.slice(0, refid.lastIndexOf('.'))}::${refid.slice(refid.lastIndexOf('.') + 1)}`
           : namespace
             ? `${namespace}::${refid}`
             : refid;

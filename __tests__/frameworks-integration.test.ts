@@ -612,6 +612,50 @@ describe('Java end-to-end — field-injected bean trace (issue #389)', () => {
     cg.close();
   });
 
+  it('resolves a cross-mapper <include refid="ns.frag"> to the other mapper\'s <sql> fragment', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-mybatis-xmapper-'));
+    const xmlDir = path.join(tmpDir, 'src/main/resources/mappers');
+    fs.mkdirSync(xmlDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'pom.xml'),
+      '<project><dependencies><dependency><groupId>org.mybatis</groupId><artifactId>mybatis</artifactId></dependency></dependencies></project>\n'
+    );
+    // MapperB owns the shared fragment; MapperA includes it by the
+    // namespace-qualified refid — the ONLY linking form when the fragment
+    // lives in a different mapper file.
+    fs.writeFileSync(
+      path.join(xmlDir, 'MapperB.xml'),
+      '<mapper namespace="com.example.MapperB">\n' +
+        '  <sql id="sharedCols">id, name, email</sql>\n' +
+        '</mapper>\n'
+    );
+    fs.writeFileSync(
+      path.join(xmlDir, 'MapperA.xml'),
+      '<mapper namespace="com.example.MapperA">\n' +
+        '  <select id="listAll" resultType="User">\n' +
+        '    SELECT <include refid="com.example.MapperB.sharedCols"/> FROM users\n' +
+        '  </select>\n' +
+        '</mapper>\n'
+    );
+
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    const methods = cg.getNodesByKind('method');
+    const listAll = methods.find((m) => m.name === 'listAll' && m.language === 'xml');
+    const frag = methods.find((m) => m.name === 'sharedCols' && m.language === 'xml');
+    expect(listAll).toBeDefined();
+    expect(frag).toBeDefined();
+    // The fragment's qualifiedName is what the qualified refid must match.
+    expect(frag!.qualifiedName).toBe('com.example.MapperB::sharedCols');
+    const incEdge = cg
+      .getOutgoingEdges(listAll!.id)
+      .find((e) => e.target === frag!.id);
+    expect(incEdge, 'cross-mapper <include> should reach MapperB\'s <sql> fragment').toBeDefined();
+
+    cg.close();
+  });
+
   it('covers legacy iBatis <sqlMap> statements and keeps same-line vendor-split pairs (#1182)', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-ibatis-'));
     const xmlDir = path.join(tmpDir, 'src/main/resources/sqlmaps');

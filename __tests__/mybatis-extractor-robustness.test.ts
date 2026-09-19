@@ -140,6 +140,36 @@ describe('MyBatis extractor — XML comments', () => {
   });
 });
 
+describe('MyBatis extractor — cross-mapper <include refid>', () => {
+  it('qualifies a dotted refid on the LAST dot only (ns.frag → ns::frag)', () => {
+    // `com.example.MapperB.sharedCols` refers to the <sql id="sharedCols">
+    // fragment in MapperB — Java-style namespaces are themselves dotted, so
+    // only the final dot is the qualifier separator. A blanket `.`→`::`
+    // produced `com::example::MapperB::sharedCols`, which could never match
+    // the fragment's qualifiedName.
+    const xml =
+      '<mapper namespace="com.example.MapperA">' +
+      '<select id="list">SELECT <include refid="com.example.MapperB.sharedCols"/> FROM t</select>' +
+      '</mapper>';
+    const refs = extractFromSource('MapperA.xml', xml).unresolvedReferences.map(
+      (r) => r.referenceName
+    );
+    expect(refs).toContain('com.example.MapperB::sharedCols');
+    expect(refs).not.toContain('com::example::MapperB::sharedCols');
+  });
+
+  it('still resolves a same-mapper refid through the enclosing namespace', () => {
+    const xml =
+      '<mapper namespace="com.example.MapperA">' +
+      '<select id="list">SELECT <include refid="cols"/> FROM t</select>' +
+      '</mapper>';
+    const refs = extractFromSource('MapperA.xml', xml).unresolvedReferences.map(
+      (r) => r.referenceName
+    );
+    expect(refs).toContain('com.example.MapperA::cols');
+  });
+});
+
 describe('MyBatis extractor — duplicate-id collision (#1182 gap 4)', () => {
   it('keeps both statements of a same-line vendor-split databaseId pair', () => {
     // Two <select>s share qualifiedName `…::findUser` AND a start line. The node

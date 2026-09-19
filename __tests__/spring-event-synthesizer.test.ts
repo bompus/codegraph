@@ -110,6 +110,109 @@ class LegacyListener implements ApplicationListener<OrderCancelledEvent> {
     cg.close?.();
   });
 
+  it('bridges publishEvent(bareVar), AbstractAggregateRoot.registerEvent, and @DomainEvents', async () => {
+    write('shop/Events.java', `package shop;
+class OrderShippedEvent { }
+class OrderCancelledEvent { }
+class OrderPlacedEvent { }
+class OrderPricedEvent { }
+class CartCheckedEvent { }
+class MutedEvent { }
+`);
+    // publishEvent of a bare identifier — the type is inferred inside the
+    // enclosing method: a `XEvent ev` param, a `XEvent ev = new XEvent()` local,
+    // or an `ev = new XEvent()` assignment. An untyped arg resolves nothing.
+    write('shop/OrderService.java', `package shop;
+import org.springframework.context.ApplicationEventPublisher;
+class OrderService {
+    private ApplicationEventPublisher publisher;
+    void ship(OrderShippedEvent ev) {
+        publisher.publishEvent(ev);
+    }
+    void cancel() {
+        OrderCancelledEvent ev = new OrderCancelledEvent();
+        publisher.publishEvent(ev);
+    }
+    void mute(Object raw) {
+        publisher.publishEvent(raw);
+    }
+}
+`);
+    // Spring Data domain events: registerEvent inside an AbstractAggregateRoot
+    // (published on save) — both inline `new` and a typed local.
+    write('shop/Order.java', `package shop;
+import org.springframework.data.domain.AbstractAggregateRoot;
+class Order extends AbstractAggregateRoot {
+    void place() {
+        registerEvent(new OrderPlacedEvent());
+    }
+    void reprice() {
+        OrderPricedEvent ev = new OrderPricedEvent();
+        registerEvent(ev);
+    }
+}
+`);
+    // @DomainEvents: the RETURNED event objects are published on save.
+    write('shop/Cart.java', `package shop;
+import org.springframework.data.domain.AbstractAggregateRoot;
+import org.springframework.domainEvents;
+import java.util.List;
+class Cart extends AbstractAggregateRoot {
+    @DomainEvents
+    List<Object> collect() {
+        return List.of(new CartCheckedEvent());
+    }
+}
+`);
+    // PRECISION: a same-named registerEvent in a file with NO aggregate-root
+    // reference is not Spring Data's hook — never a publisher.
+    write('shop/PlainRecorder.java', `package shop;
+class PlainRecorder {
+    void registerEvent(Object ev) { }
+    void touch() {
+        registerEvent(new MutedEvent());
+    }
+}
+`);
+    write('shop/Listeners.java', `package shop;
+import org.springframework.context.event.EventListener;
+class Listeners {
+    @EventListener public void onShipped(OrderShippedEvent e) { }
+    @EventListener public void onCancelled(OrderCancelledEvent e) { }
+    @EventListener public void onPlaced(OrderPlacedEvent e) { }
+    @EventListener public void onPriced(OrderPricedEvent e) { }
+    @EventListener public void onCartChecked(CartCheckedEvent e) { }
+    @EventListener public void onMuted(MutedEvent e) { }
+}
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'spring-event'`
+      )
+      .all();
+    cg.close?.();
+
+    const pairs = edges.map((r: any) => `${r.source}>${r.target}:${r.via}`).sort();
+    expect(pairs).toEqual([
+      'cancel>onCancelled:OrderCancelledEvent',
+      'collect>onCartChecked:CartCheckedEvent',
+      'place>onPlaced:OrderPlacedEvent',
+      'reprice>onPriced:OrderPricedEvent',
+      'ship>onShipped:OrderShippedEvent',
+    ]);
+    // PRECISION: publishEvent(raw) couldn't be typed → nothing; the non-DDD
+    // registerEvent is not a Spring publisher → MutedEvent stays silent even
+    // though a listener exists.
+    expect(edges.some((r: any) => r.source === 'mute')).toBe(false);
+    expect(edges.some((r: any) => r.via === 'MutedEvent')).toBe(false);
+  });
+
   it('produces no edges in a Spring app with no event bus (clean control)', async () => {
     write('shop/PlainService.java', `package shop;
 import org.springframework.stereotype.Service;

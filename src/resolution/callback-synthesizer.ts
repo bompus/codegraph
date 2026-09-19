@@ -3019,17 +3019,123 @@ async function vuexDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): P
 // object resolves to no task node → no edge, so a Celery-free repo yields 0. Same-file /
 // unique-candidate disambiguation like vuex. (Canvas forms — `group(t).delay()`, `t.s()`/`.si()`
 // — have no single identifier before `.delay`/`.apply_async`, so they're skipped, not mis-bridged.)
-const CELERY_DISPATCH_RE = /\b([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
+// The receiver chain before `.delay`/`.apply_async` — `task`, `mod.task`, or
+// `pkg.mod.task` (the last segment is the task name; a resolvable module prefix
+// scopes the lookup to that module). Canvas forms (`group(t).delay()`,
+// `t.s().delay()`) still can't match — `(`/`]` break the chain.
+const CELERY_DISPATCH_RE = /\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
+// `recv.send_task('dotted.name')` — celery's string-name dispatch. Any receiver
+// (`app.send_task`, `current_app.send_task`); the file-celery-import gate and the
+// registered-name match keep non-celery `send_task`s out.
+const CELERY_SEND_TASK_RE = /\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.\s*send_task\s*\(\s*['"]([^'"]+)['"]/g;
 // A task decorator: bare `@shared_task`/`@task` or attribute `@app.task`/`@celery_app.task`,
 // each optionally called with args. `\b`-bounded and `@`-anchored so `@mytask`, or a symbol
 // merely named `task`, can't match. No `/g`, so `.test()` is stateless across reuse.
 const CELERY_TASK_DECORATOR_RE = /@\s*(?:[A-Za-z_][\w.]*\.)?(?:shared_task|task)\b/;
+// `@alias` — a decorator whose name is bound to a celery task decorator by a
+// `from …celery… import shared_task as alias` line or an `alias = app.task`
+// module-level assignment (see celeryFileInfo).
+const CELERY_ALIAS_DECORATOR_RE = /^@\s*([A-Za-z_]\w*)\b/;
+// A file "has celery imports" when an import line's module path mentions celery
+// (`from celery import …`, `import celery`, `from myapp.celery import app`).
+const CELERY_IMPORT_RE = /(?:^|\n)\s*(?:from\s+[\w.]*celery[\w.]*\s+import\b|import\s+[\w.]*celery[\w.]*)/;
+// `from <mod> import a, b as c` — captures the module and the item list.
+const CELERY_FROM_IMPORT_RE = /^[ \t]*from\s+([\w.]+)\s+import\s+([^#\n]+)/gm;
+// `alias = <dotted>.task` / `= shared_task` (no call — the alias IS the decorator;
+// an empty `()` is the decorator-factory form — `t = app.task()` then `@t`).
+const CELERY_DECORATOR_ALIAS_RE = /^[ \t]*([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*(?:shared_task|task)\s*(?:\(\s*\))?\s*(?:#.*)?$/gm;
+// `x = <dotted>.task(fn)` / `x = shared_task(fn)` — a task OBJECT bound to a fn.
+const CELERY_TASK_BIND_RE = /^[ \t]*([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*(?:shared_task|task)\s*\(\s*([A-Za-z_]\w*)\s*[,)]/gm;
+// `x = SomeClass(` — a module-level instance binding (a `Task` subclass instance).
+const CELERY_CLASS_BIND_RE = /^[ \t]*([A-Za-z_]\w*)\s*=\s*([A-Z]\w*)\s*\(/gm;
+// `class X(<bases>)` — a base list containing a `Task`-named class is a celery
+// `Task` subclass when the file imports celery (`class X(app.Task)`/`(Task)`).
+const CELERY_CLASS_BASES_RE = /\bclass\s+[A-Za-z_]\w*\s*\(([^)]*)\)/;
+// `name='custom.name'` inside a task decorator's args — the registered task name.
+const CELERY_NAME_ARG_RE = /\bname\s*=\s*['"]([^'"]+)['"]/;
 const CELERY_PY_EXT = /\.py$/;
 const CELERY_FANOUT_CAP = 80;
 const CELERY_DECORATOR_LOOKBACK = 12; // max lines above a `def` to scan for its decorators
 
+interface CeleryFileInfo {
+  celeryImports: boolean;
+  /** Names usable as `@x` task decorators (`shared_task as x`, `x = app.task`). */
+  decoratorAliases: Set<string>;
+  /** `from <mod> import <fn> as <alias>` → alias → { module, orig }. */
+  importAliases: Map<string, { module: string; orig: string }>;
+  /** `x = app.task(fn)` → x → fn (the task object is `x`, the body is `fn`). */
+  taskFnBindings: Map<string, string>;
+  /** `x = SomeClass(` → x → SomeClass (a `Task` subclass instance). */
+  valueBindings: Map<string, string>;
+}
+
 async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scannedFiles = 0;
+  const fileInfoCache = new Map<string, CeleryFileInfo>();
+  const fileInfo = (file: string): CeleryFileInfo => {
+    let info = fileInfoCache.get(file);
+    if (info) return info;
+    info = { celeryImports: false, decoratorAliases: new Set(), importAliases: new Map(), taskFnBindings: new Map(), valueBindings: new Map() };
+    const content = ctx.readFile(file);
+    if (content) {
+      info.celeryImports = CELERY_IMPORT_RE.test(content);
+      // Decorator aliases and task-object bindings only exist in a celery
+      // context — a `st = app.task`-looking line in a celery-free file is not
+      // celery evidence (the alias/decorator extensions stay inert there).
+      if (info.celeryImports) {
+        CELERY_DECORATOR_ALIAS_RE.lastIndex = 0;
+        let am: RegExpExecArray | null;
+        while ((am = CELERY_DECORATOR_ALIAS_RE.exec(content))) info.decoratorAliases.add(am[1]!);
+        CELERY_TASK_BIND_RE.lastIndex = 0;
+        let bm: RegExpExecArray | null;
+        while ((bm = CELERY_TASK_BIND_RE.exec(content))) info.taskFnBindings.set(bm[1]!, bm[2]!);
+      }
+      // `from <mod> import <fn> [as <alias>]` — needed even in celery-free
+      // dispatch files (the alias binds the task by its real name). A plain
+      // `from tasks import bound` records `bound` too: the import may name a
+      // task-object binding (`bound = app.task(fn)`) or a `Task` subclass —
+      // the alias resolution follows it into the home module.
+      CELERY_FROM_IMPORT_RE.lastIndex = 0;
+      let im: RegExpExecArray | null;
+      while ((im = CELERY_FROM_IMPORT_RE.exec(content))) {
+        const mod = im[1]!;
+        for (const item of im[2]!.split(',')) {
+          const it = /^[ \t]*(\w+)(?:\s+as\s+(\w+))?/.exec(item);
+          if (!it) continue;
+          const orig = it[1]!;
+          const alias = it[2];
+          info.importAliases.set(alias ?? orig, { module: mod, orig });
+          if (/celery/.test(mod) && (orig === 'shared_task' || orig === 'task') && alias) info.decoratorAliases.add(alias);
+        }
+      }
+      // `x = SomeClass(` bindings are safe to record unconditionally — they only
+      // resolve through taskClassRun, which itself requires the CLASS's file to
+      // import celery (the gate travels with the target, not the binding site).
+      CELERY_CLASS_BIND_RE.lastIndex = 0;
+      let cm: RegExpExecArray | null;
+      while ((cm = CELERY_CLASS_BIND_RE.exec(content))) info.valueBindings.set(cm[1]!, cm[2]!);
+    }
+    fileInfoCache.set(file, info);
+    return info;
+  };
+
+  // The source lines ABOVE a def that hold its decorators (the def's own
+  // startLine excludes them). Shared by the task-decorator check and the
+  // `name='…'` custom-name lookup so both see the same decorator window.
+  const decoratorWindow = (node: Node): string[] => {
+    const content = ctx.readFile(node.filePath);
+    if (!content) return [];
+    const lines = content.split('\n');
+    const stop = Math.max(0, node.startLine - 1 - CELERY_DECORATOR_LOOKBACK);
+    const out: string[] = [];
+    for (let i = node.startLine - 2; i >= stop; i--) {
+      const t = (lines[i] ?? '').trim();
+      if (/^(?:async\s+def|def|class)\b/.test(t)) break; // previous decl → stop
+      out.push(t);
+    }
+    return out;
+  };
+
   // Memoize the decorator check per task-candidate node: it reads the file and scans a few
   // lines above the def. Only called on names that are actually `.delay`/`.apply_async`
   // receivers, so the candidate set stays small.
@@ -3039,30 +3145,201 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
     if (v !== undefined) return v;
     v = false;
     if (node.kind === 'function' && CELERY_PY_EXT.test(node.filePath)) {
-      const content = ctx.readFile(node.filePath);
-      if (content) {
-        const lines = content.split('\n');
-        // startLine is the `def` line (decorators sit ABOVE it). Walk upward, stopping at the
-        // previous declaration so a non-task def can never inherit the prior def's decorator.
-        const stop = Math.max(0, node.startLine - 1 - CELERY_DECORATOR_LOOKBACK);
-        for (let i = node.startLine - 2; i >= stop; i--) {
-          const t = (lines[i] ?? '').trim();
-          if (/^(?:async\s+def|def|class)\b/.test(t)) break; // previous decl → stop
-          if (CELERY_TASK_DECORATOR_RE.test(t)) { v = true; break; }
-        }
+      const info = fileInfo(node.filePath);
+      for (const t of decoratorWindow(node)) {
+        if (CELERY_TASK_DECORATOR_RE.test(t)) { v = true; break; }
+        // An aliased decorator (`@st` for `shared_task as st`, `@t` for `t = app.task`)
+        // — only when the file actually imports celery.
+        const alias = info.celeryImports ? CELERY_ALIAS_DECORATOR_RE.exec(t)?.[1] : undefined;
+        if (alias && info.decoratorAliases.has(alias)) { v = true; break; }
       }
+      // Module-level decoration: `send_email = app.task(send_email)` rebinds the
+      // def name to a task object — the def is the task body.
+      if (!v && info.celeryImports && info.taskFnBindings.get(node.name) === node.name) v = true;
     }
     taskCache.set(node.id, v);
     return v;
   };
 
-  const resolve = (name: string, dispatchFile: string): Node | null => {
-    const cands = ctx.getNodesByName(name).filter((n) => n.kind === 'function' && isCeleryTask(n));
-    if (!cands.length) return null;
-    if (cands.length === 1) return cands[0]!;
-    // Cross-module name collision: prefer a task defined in the dispatching file, else bail
-    // (ambiguous — precision over recall, like vuex's root-key resolution).
-    return cands.find((c) => c.filePath === dispatchFile) ?? null;
+  // A `class X(…Task…)` in a celery-importing file is a class-based task; the
+  // dispatched work is its `run` method.
+  const taskClassCache = new Map<string, Node | null>();
+  const taskClassRun = (cls: Node): Node | null => {
+    let v = taskClassCache.get(cls.id);
+    if (v !== undefined) return v;
+    v = null;
+    if (cls.kind === 'class' && fileInfo(cls.filePath).celeryImports) {
+      const content = ctx.readFile(cls.filePath);
+      const line = content?.split('\n')[cls.startLine - 1] ?? '';
+      const bases = CELERY_CLASS_BASES_RE.exec(line)?.[1];
+      if (bases && bases.split(',').some((b) => b.trim().split('.').pop() === 'Task')) {
+        v = ctx.getNodesInFile(cls.filePath).find(
+          (n) => n.kind === 'method' && n.name === 'run' && n.startLine >= cls.startLine && n.startLine <= (cls.endLine ?? cls.startLine)
+        ) ?? null;
+      }
+    }
+    taskClassCache.set(cls.id, v);
+    return v;
+  };
+
+  // The module FILE a dotted path names — `tasks` → `tasks.py`, `myapp.tasks` →
+  // `myapp/tasks.py` or the `__init__.py` of the package. Suffix-matched so a
+  // source root (`src/myapp/tasks.py`) still resolves; a multi-match (two
+  // `tasks.py`s) is ambiguous → null. Memoized — getAllFiles is per-call.
+  const moduleFileCache = new Map<string, string | null>();
+  const moduleFile = (mod: string): string | null => {
+    let v = moduleFileCache.get(mod);
+    if (v !== undefined) return v;
+    v = null;
+    const rel = mod.replace(/^\.+/, '').replace(/\./g, '/');
+    if (rel) {
+      const hits = ctx
+        .getAllFiles()
+        .filter((f) => f === `${rel}.py` || f.endsWith(`/${rel}.py`) || f.endsWith(`/${rel}/__init__.py`));
+      if (hits.length === 1) v = hits[0]!;
+    }
+    moduleFileCache.set(mod, v);
+    return v;
+  };
+
+  // `x = app.task(fn)` / `x = TaskSubclass()` in `file` → the dispatched body
+  // (`fn`, or the subclass's `run`). Bindings live at module level — the file
+  // here is the DEFINING file (dispatch file for a local `x`, home module for
+  // an imported one).
+  const bindingTarget = (info: CeleryFileInfo, name: string, file: string): Node | null => {
+    const boundFn = info.taskFnBindings.get(name);
+    if (boundFn) {
+      const bcands = ctx.getNodesInFile(file).filter((n) => n.kind === 'function' && n.name === boundFn);
+      return bcands.length === 1 ? bcands[0]! : null;
+    }
+    const boundCls = info.valueBindings.get(name);
+    if (boundCls) {
+      const ccands = ctx.getNodesByName(boundCls).filter((n) => n.kind === 'class' && taskClassRun(n));
+      const cls = ccands.length === 1 ? ccands[0]! : ccands.find((c) => c.filePath === file) ?? null;
+      return cls ? taskClassRun(cls) : null;
+    }
+    return null;
+  };
+
+  // `name` as an attribute of module `modFile` — an `x = app.task(fn)` /
+  // `x = TaskSubclass()` binding, a `Task` subclass, or a decorated function.
+  // For a package (`…/__init__.py`) the sibling files are searched too
+  // (re-exports); >1 hit across the package is ambiguous → null.
+  const moduleAttrTarget = (modFile: string, name: string): Node | null => {
+    const dir = modFile.endsWith('/__init__.py') ? modFile.slice(0, modFile.length - '__init__.py'.length) : null;
+    const files = dir
+      ? ctx.getAllFiles().filter((f) => f.startsWith(dir) && CELERY_PY_EXT.test(f))
+      : [modFile];
+    const hits: Node[] = [];
+    for (const f of files) {
+      const t =
+        bindingTarget(fileInfo(f), name, f) ??
+        (() => {
+          const cls = ctx.getNodesInFile(f).find((n) => n.kind === 'class' && n.name === name && taskClassRun(n));
+          return cls ? taskClassRun(cls) : null;
+        })() ??
+        ctx.getNodesInFile(f).find((n) => n.kind === 'function' && n.name === name && isCeleryTask(n)) ??
+        null;
+      if (t) hits.push(t);
+    }
+    return hits.length === 1 ? hits[0]! : null;
+  };
+
+  const resolve = (recv: string, dispatchFile: string): Node | null => {
+    const info = fileInfo(dispatchFile);
+    // `mod.name.delay()` — when `mod` resolves to a module file (`import
+    // tasks`, `import myapp.tasks`, or `from pkg import tasks`), the attribute
+    // is resolved INSIDE that module (the module binding is authoritative —
+    // no global-name fallback for a resolved module).
+    const dot = recv.lastIndexOf('.');
+    if (dot > 0) {
+      const modRef = recv.slice(0, dot);
+      const leaf = recv.slice(dot + 1);
+      const modAlias = info.importAliases.get(modRef);
+      const mf = moduleFile(modAlias ? `${modAlias.module}.${modAlias.orig}` : modRef);
+      if (mf) return moduleAttrTarget(mf, leaf);
+      recv = leaf; // `x.y.delay()` with unresolvable `x` — resolve `y` globally
+    }
+
+    // `from m import f [as a]` — an explicit import binding wins over global
+    // name lookup (the imported object is what `.delay` binds at runtime).
+    // Exclusive: resolves only through the import, so an imported non-task is
+    // never bridged to a same-named task elsewhere.
+    const alias = info.importAliases.get(recv);
+    if (alias) {
+      const mf = moduleFile(alias.module);
+      if (mf) return moduleAttrTarget(mf, alias.orig);
+      // Module unplaceable in-repo — fall back to a unique global task under
+      // the original name (a re-exported or renamed module we can't locate).
+      const acands = ctx.getNodesByName(alias.orig).filter((n) => n.kind === 'function' && isCeleryTask(n));
+      return acands.length === 1 ? acands[0]! : null;
+    }
+
+    // Direct name → decorated task function.
+    const cands = ctx.getNodesByName(recv).filter((n) => n.kind === 'function' && isCeleryTask(n));
+    if (cands.length) {
+      if (cands.length === 1) return cands[0]!;
+      // Cross-module name collision: prefer a task defined in the dispatching file, else bail
+      // (ambiguous — precision over recall, like vuex's root-key resolution).
+      return cands.find((c) => c.filePath === dispatchFile) ?? null;
+    }
+    // Class-based task: `MyTask.delay()` → its `run` (a `Task` subclass).
+    const clsCands = ctx.getNodesByName(recv).filter((n) => n.kind === 'class' && taskClassRun(n));
+    if (clsCands.length) {
+      const cls = clsCands.length === 1 ? clsCands[0]! : clsCands.find((c) => c.filePath === dispatchFile) ?? null;
+      return cls ? taskClassRun(cls) : null;
+    }
+    // Dispatch-file bindings — `x = app.task(fn)` → `x.delay()` runs fn;
+    // `x = MyTask()` → `x.delay()` runs MyTask.run.
+    return bindingTarget(info, recv, dispatchFile);
+  };
+
+  // Registered task name → task fn, for `send_task('dotted.name')` dispatch.
+  // Built lazily on the first send_task site (most celery repos have none).
+  // Default name = `<module dotted path>.<fn>`; custom `name='…'` decorator args
+  // register under their literal value.
+  let taskNames: Map<string, Node[]> | null = null;
+  const taskNameIndex = (): Map<string, Node[]> => {
+    if (taskNames) return taskNames;
+    taskNames = new Map();
+    const register = (key: string, n: Node) => {
+      const arr = taskNames!.get(key);
+      if (arr) arr.push(n); else taskNames!.set(key, [n]);
+    };
+    for (const file of ctx.getAllFiles()) {
+      if (!CELERY_PY_EXT.test(file)) continue;
+      const info = fileInfo(file);
+      if (!info.celeryImports) continue;
+      const mod = file.replace(/\.py$/, '').replace(/[\\/]/g, '.');
+      for (const n of ctx.getNodesInFile(file)) {
+        if (n.kind === 'function' && isCeleryTask(n)) {
+          register(`${mod}.${n.name}`, n);
+          // A `name='x'` arg anywhere in the decorator window is the custom name.
+          for (const t of decoratorWindow(n)) {
+            const nm = CELERY_NAME_ARG_RE.exec(t);
+            if (nm) register(nm[1]!, n);
+          }
+        }
+      }
+      // `x = app.task(fn)` registers `fn` under the module's dotted path.
+      for (const fnName of info.taskFnBindings.values()) {
+        const fn = ctx.getNodesInFile(file).find((n) => n.kind === 'function' && n.name === fnName);
+        if (fn) register(`${mod}.${fnName}`, fn);
+      }
+    }
+    return taskNames;
+  };
+  const resolveTaskName = (taskName: string): Node | null => {
+    const index = taskNameIndex();
+    const direct = index.get(taskName);
+    if (direct) return direct.length === 1 ? direct[0]! : null;
+    // Package-prefix tolerance: `myapp.tasks.f` vs file `tasks.py` (`tasks.f`),
+    // or the reverse — match when either dotted form suffixes the other.
+    const matches = new Map<string, Node>();
+    for (const [key, nodes] of index) {
+      if (key.endsWith(`.${taskName}`) || taskName.endsWith(`.${key}`)) for (const n of nodes) matches.set(n.id, n);
+    }
+    return matches.size === 1 ? [...matches.values()][0]! : null;
   };
 
   const edges: Edge[] = [];
@@ -3071,18 +3348,19 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!CELERY_PY_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!content.includes('.delay(') && !content.includes('.apply_async('))) continue;
+    if (!content || (!content.includes('.delay(') && !content.includes('.apply_async(') && !content.includes('.send_task('))) continue;
     const safe = stripCommentsForRegex(content, 'python');
     const nodesInFile = ctx.getNodesInFile(file);
+    const lineAt = makeLineAt(safe, 1);
+    let added = 0;
     CELERY_DISPATCH_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    let added = 0;
     while ((m = CELERY_DISPATCH_RE.exec(safe)) && added < CELERY_FANOUT_CAP) {
-      const name = m[1]!;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const recv = m[1]!.replace(/\s+/g, ''); // `x . y.delay()` → `x.y`
+      const line = lineAt(m.index);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue; // module-level dispatch — no source symbol to attribute
-      const target = resolve(name, file);
+      const target = resolve(recv, file);
       if (!target || target.id === disp.id) continue;
       const key = `${disp.id}>${target.id}`;
       if (seen.has(key)) continue;
@@ -3093,7 +3371,34 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
         kind: 'calls',
         line,
         provenance: 'heuristic',
-        metadata: { synthesizedBy: 'celery-dispatch', via: name, registeredAt: `${file}:${line}` },
+        metadata: { synthesizedBy: 'celery-dispatch', via: recv.slice(recv.lastIndexOf('.') + 1), registeredAt: `${file}:${line}` },
+      });
+      added++;
+    }
+    // `recv.send_task('dotted.name')` — string-name dispatch. The gate is the
+    // registered-name match itself: the task-name index is built only from
+    // celery-importing files, so in a celery-free project nothing registers
+    // and `send_task` produces nothing. (The common call shape is
+    // `from myapp import app; app.send_task(…)` — no celery import in the
+    // dispatch file — so a per-file import gate would lose real dispatches.)
+    CELERY_SEND_TASK_RE.lastIndex = 0;
+    while ((m = CELERY_SEND_TASK_RE.exec(safe)) && added < CELERY_FANOUT_CAP) {
+      const taskName = m[1]!;
+      const line = lineAt(m.index);
+      const disp = enclosingFn(nodesInFile, line);
+      if (!disp) continue;
+      const target = resolveTaskName(taskName);
+      if (!target || target.id === disp.id) continue;
+      const key = `${disp.id}>${target.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: target.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'celery-dispatch', via: taskName, registeredAt: `${file}:${line}` },
       });
       added++;
     }
@@ -3117,10 +3422,23 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
 // (Java method nodes INCLUDE their leading annotations in the range — startLine is the first
 // `@…` line — so the annotation block is scanned DOWNWARD from startLine, bounded to consecutive
 // `@`-lines so it can't bleed into an adjacent method.)
-const SPRING_PUBLISH_RE = /\.publishEvent\s*\(\s*new\s+([A-Z][A-Za-z0-9_]*)/g;
+// `recv.publishEvent(<arg>)` — arg is an inline `new XEvent(…)` or a bare
+// identifier whose type is inferred within the enclosing method (shared with
+// MediatR's arg resolver: a `X arg` param/local decl or an `arg = new X(…)`
+// assignment wins; untyped/ambiguous args yield nothing).
+const SPRING_PUBLISH_RE = /\.publishEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*(?=[\s(])|[A-Za-z_]\w*(?=[\s,)]))/g;
+// `registerEvent(<arg>)` — Spring Data's `AbstractAggregateRoot.registerEvent`
+// domain-event hook (published on save). Gated on the file referencing
+// `AbstractAggregateRoot`, so a same-named helper in a non-DDD file is skipped.
+const SPRING_REGISTER_RE = /\bregisterEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*(?=[\s(])|[A-Za-z_]\w*(?=[\s,)]))/g;
+// `@DomainEvents` — a method whose RETURNED `new XEvent(…)` objects are
+// published on save (the sibling of `registerEvent` in the same backlog item).
+const SPRING_DOMAIN_EVENTS_ANNO_RE = /@DomainEvents\b/;
+const SPRING_NEW_TYPE_RE = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
 const SPRING_LISTENER_ANNO_RE = /@(?:EventListener|TransactionalEventListener)\b/;
 const SPRING_ANNO_TYPE_RE = /@(?:EventListener|TransactionalEventListener)\s*\(\s*([A-Z][A-Za-z0-9_]*)\.class/;
 const SPRING_APP_LISTENER_RE = /\bApplicationListener\s*</;
+const SPRING_AGGREGATE_ROOT_RE = /\bAbstractAggregateRoot\b/;
 const SPRING_JAVA_EXT = /\.java$/;
 const SPRING_FANOUT_CAP = 80;
 
@@ -3154,7 +3472,9 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     if (!SPRING_JAVA_EXT.test(file)) continue;
     const content = ctx.readFile(file);
     if (!content) continue;
-    if (content.includes('.publishEvent(')) publisherFiles.push(file);
+    if (content.includes('.publishEvent(')
+      || (SPRING_AGGREGATE_ROOT_RE.test(content) && content.includes('registerEvent('))
+      || content.includes('@DomainEvents')) publisherFiles.push(file);
     const hasAnno = content.includes('@EventListener') || content.includes('@TransactionalEventListener');
     const hasAppListener = SPRING_APP_LISTENER_RE.test(content);
     if (!hasAnno && !hasAppListener) continue;
@@ -3185,27 +3505,24 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
   }
   if (!listeners.size) return [];
 
-  // Pass 2 — link each publishEvent(new XEvent(...)) site → every listener of
-  // XEvent. Only the publisher files recorded in pass 1 are (re-)read.
+  // Pass 2 — link each publish/register site → every listener of the event type.
+  // Only the publisher files recorded in pass 1 are (re-)read.
   const edges: Edge[] = [];
   const seen = new Set<string>();
   for (const file of publisherFiles) {
     if ((++scannedFiles & 15) === 0) await onYield();
     const content = ctx.readFile(file);
-    if (!content || !content.includes('.publishEvent(')) continue;
+    if (!content) continue;
     const safe = stripCommentsForRegex(content, 'java');
+    const safeLines = safe.split('\n');
     const nodesInFile = ctx.getNodesInFile(file);
-    SPRING_PUBLISH_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    let added = 0;
-    while ((m = SPRING_PUBLISH_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
-      const targets = listeners.get(m[1]!);
-      if (!targets || !targets.length) continue;
-      const line = safe.slice(0, m.index).split('\n').length;
-      const disp = enclosingFn(nodesInFile, line);
-      if (!disp) continue;
+    let added = 0; // per-file fan-out cap (same convention as the other passes)
+    const emit = (disp: Node, type: string, line: number): void => {
+      const targets = listeners.get(type);
+      if (!targets || !targets.length) return;
       for (const target of targets) {
-        if (target.id === disp.id) continue;
+        if (target.id === disp.id || added >= SPRING_FANOUT_CAP) continue;
         const key = `${disp.id}>${target.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -3215,9 +3532,59 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
           kind: 'calls',
           line,
           provenance: 'heuristic',
-          metadata: { synthesizedBy: 'spring-event', via: m[1]!, registeredAt: `${file}:${line}` },
+          metadata: { synthesizedBy: 'spring-event', via: type, registeredAt: `${file}:${line}` },
         });
         added++;
+      }
+    };
+    // The event type of a call-site arg: inline `new X(…)` directly, else the
+    // identifier resolved within the enclosing method (decl/param/`= new X`),
+    // the same narrow inference MediatR uses. Untyped args yield nothing.
+    const argType = (arg: string, disp: Node, line: number): string | null =>
+      resolveMediatrArgType(arg, safeLines, disp.startLine, line);
+    if (content.includes('.publishEvent(')) {
+      SPRING_PUBLISH_RE.lastIndex = 0;
+      while ((m = SPRING_PUBLISH_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
+        const line = safe.slice(0, m.index).split('\n').length;
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp) continue;
+        const type = argType(m[1]!, disp, line);
+        if (type) emit(disp, type, line);
+      }
+    }
+    // `registerEvent(…)` — AbstractAggregateRoot's domain-event hook; gated on
+    // the file actually referencing the aggregate base so a same-named helper
+    // in a non-DDD file is skipped.
+    if (SPRING_AGGREGATE_ROOT_RE.test(safe)) {
+      SPRING_REGISTER_RE.lastIndex = 0;
+      while ((m = SPRING_REGISTER_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
+        const line = safe.slice(0, m.index).split('\n').length;
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp) continue;
+        const type = argType(m[1]!, disp, line);
+        if (type) emit(disp, type, line);
+      }
+    }
+    // `@DomainEvents` — the method's RETURNED `new XEvent(…)` objects are
+    // published on save: scan its body for constructions, filtered through the
+    // listener map so helper-object constructions are ignored.
+    if (safe.includes('@DomainEvents')) {
+      for (const node of nodesInFile) {
+        if (node.kind !== 'method') continue;
+        let domainEvents = false;
+        for (let i = node.startLine - 1; i < safeLines.length && i < node.startLine + 7; i++) {
+          const t = (safeLines[i] ?? '').trim();
+          if (!t.startsWith('@')) break;
+          if (SPRING_DOMAIN_EVENTS_ANNO_RE.test(t)) { domainEvents = true; break; }
+        }
+        if (!domainEvents) continue;
+        const end = node.endLine ?? node.startLine;
+        const body = safeLines.slice(node.startLine - 1, end).join('\n');
+        SPRING_NEW_TYPE_RE.lastIndex = 0;
+        while ((m = SPRING_NEW_TYPE_RE.exec(body)) && added < SPRING_FANOUT_CAP) {
+          const line = node.startLine + body.slice(0, m.index).split('\n').length - 1;
+          emit(node, m[1]!, line);
+        }
       }
     }
   }
@@ -3535,26 +3902,84 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
 // a different shape and deliberately not matched, so an ActiveJob-only app yields 0.
 const SIDEKIQ_DISPATCH_RE = /([A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*)\s*\.\s*perform_(?:async|in|at)\b/g;
 const SIDEKIQ_WORKER_RE = /\binclude\s+Sidekiq::(?:Job|Worker)\b/;
+// `class Foo < Bar` — the superclass clause. Applied to the class's DECL line
+// only, so a nested `class Inner < X` in the body can't pose as the outer
+// class's superclass.
+const SIDEKIQ_SUPERCLASS_RE = /\bclass\s+[A-Z][\w:]*\s*<\s*([A-Z][A-Za-z0-9_:]*)/;
+// `Sidekiq::Client.push('class' => 'Worker', …)` — dispatch keyed by the job
+// payload's class name STRING (also `class: 'W'` / `:class => 'W'` / a `W`
+// class literal). The `Sidekiq::Client` receiver + the literal `class` key gate
+// it to the canonical serialized form.
+const SIDEKIQ_PUSH_RE = /\bSidekiq::Client\.push(?:_bulk)?\s*\(\s*\{?\s*(?:['"]class['"]\s*=>|:class\s*=>|class\s*:)\s*(?:['"]([A-Z][A-Za-z0-9_:]*)['"]|([A-Z][A-Za-z0-9_:]*)\b)/g;
 const SIDEKIQ_RB_EXT = /\.rb$/;
 const SIDEKIQ_FANOUT_CAP = 80;
+const SIDEKIQ_SUPER_MAX_DEPTH = 8; // bound on the worker superclass walk
 
 async function sidekiqDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scannedFiles = 0;
+  // class node → the class BODY source (memoized per file read through ctx).
+  const bodyOf = (cls: Node): string => {
+    const content = ctx.readFile(cls.filePath);
+    if (!content) return '';
+    const end = cls.endLine ?? cls.startLine;
+    return content.split('\n').slice(cls.startLine - 1, end).join('\n');
+  };
+  const performIn = (cls: Node): Node | null => {
+    const end = cls.endLine ?? cls.startLine;
+    return ctx.getNodesInFile(cls.filePath).find(
+      (n) => n.kind === 'method' && n.name === 'perform' && n.startLine >= cls.startLine && n.startLine <= end
+    ) ?? null;
+  };
+  // Resolve a class NAME to class nodes — namespaced by qualified name, else
+  // simple-name candidates (used for both worker refs and superclass lookups).
+  const classNamed = (ref: string): Node[] => {
+    if (ref.includes('::')) {
+      const q = ctx.getNodesByQualifiedName(ref).filter((n) => n.kind === 'class');
+      if (q.length) return q;
+    }
+    return ctx.getNodesByName(ref.split('::').pop()!).filter((n) => n.kind === 'class');
+  };
+
   // class node id → its instance `perform` method (null if the class isn't a Sidekiq worker),
-  // memoized. Reads the class body for the mixin; only consulted for actual dispatch receivers.
+  // memoized. A class is a worker when its own body includes `Sidekiq::Job|Worker` — OR when
+  // a SUPERCLASS does (`class Foo < BaseWorker` where only `BaseWorker` has the include —
+  // diaspora). The chain walk is bounded and cycle-guarded; the dispatched perform resolves
+  // to the NEAREST `perform` on the chain (the subclass's own override wins, else the
+  // inherited ancestor's).
+  // The superclass a class's decl line names — resolved to a UNIQUE class node
+  // (a same-named-superclass collision can't prove which `< Base` is meant, so
+  // it bails rather than guess — precision over recall).
+  const superclassOf = (cls: Node): Node | null => {
+    const firstLine = bodyOf(cls).split('\n')[0] ?? '';
+    const sup = SIDEKIQ_SUPERCLASS_RE.exec(firstLine)?.[1];
+    if (!sup) return null;
+    const cands = classNamed(sup);
+    return cands.length === 1 ? cands[0]! : null;
+  };
   const performCache = new Map<string, Node | null>();
+  const isWorker = (cls: Node, seen: Set<string>): boolean => {
+    if (seen.has(cls.id) || seen.size > SIDEKIQ_SUPER_MAX_DEPTH) return false;
+    seen.add(cls.id);
+    if (SIDEKIQ_WORKER_RE.test(bodyOf(cls))) return true;
+    const sup = superclassOf(cls);
+    return sup !== null && isWorker(sup, seen);
+  };
   const performOf = (cls: Node): Node | null => {
     let v = performCache.get(cls.id);
     if (v !== undefined) return v;
     v = null;
-    const content = ctx.readFile(cls.filePath);
-    if (content) {
-      const end = cls.endLine ?? cls.startLine;
-      const body = content.split('\n').slice(cls.startLine - 1, end).join('\n');
-      if (SIDEKIQ_WORKER_RE.test(body)) {
-        v = ctx.getNodesInFile(cls.filePath).find(
-          (n) => n.kind === 'method' && n.name === 'perform' && n.startLine >= cls.startLine && n.startLine <= end
-        ) ?? null;
+    if (isWorker(cls, new Set())) {
+      // Nearest perform wins: own override, else the closest worker ancestor's.
+      const seen = new Set<string>([cls.id]);
+      let cur: Node | null = cls;
+      while (cur && seen.size <= SIDEKIQ_SUPER_MAX_DEPTH) {
+        v = performIn(cur);
+        if (v) break;
+        cur = superclassOf(cur);
+        if (cur) {
+          if (seen.has(cur.id)) break;
+          seen.add(cur.id);
+        }
       }
     }
     performCache.set(cls.id, v);
@@ -3581,14 +4006,15 @@ async function sidekiqDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!SIDEKIQ_RB_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    if (!content || !/\.perform_(?:async|in|at)\b/.test(content)) continue;
+    if (!content || (!/\.perform_(?:async|in|at)\b/.test(content) && !content.includes('Sidekiq::Client.push'))) continue;
     const safe = stripCommentsForRegex(content, 'ruby');
     const nodesInFile = ctx.getNodesInFile(file);
+    const lineAt = makeLineAt(safe, 1);
+    let added = 0;
     SIDEKIQ_DISPATCH_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    let added = 0;
     while ((m = SIDEKIQ_DISPATCH_RE.exec(safe)) && added < SIDEKIQ_FANOUT_CAP) {
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineAt(m.index);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue;
       const target = resolve(m[1]!);
@@ -3603,6 +4029,29 @@ async function sidekiqDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
         line,
         provenance: 'heuristic',
         metadata: { synthesizedBy: 'sidekiq-dispatch', via: m[1]!, registeredAt: `${file}:${line}` },
+      });
+      added++;
+    }
+    // `Sidekiq::Client.push('class' => 'W', …)` — dispatch keyed by the class
+    // name string in the job payload. The `Sidekiq::Client` receiver + the
+    // literal `'class'` key gate it to the canonical serialized form.
+    SIDEKIQ_PUSH_RE.lastIndex = 0;
+    while ((m = SIDEKIQ_PUSH_RE.exec(safe)) && added < SIDEKIQ_FANOUT_CAP) {
+      const line = lineAt(m.index);
+      const disp = enclosingFn(nodesInFile, line);
+      if (!disp) continue;
+      const target = resolve(m[1] ?? m[2]!);
+      if (!target || target.id === disp.id) continue;
+      const key = `${disp.id}>${target.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: target.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'sidekiq-dispatch', via: m[1] ?? m[2]!, registeredAt: `${file}:${line}` },
       });
       added++;
     }
@@ -3639,6 +4088,36 @@ const ERLANG_EXT = /\.(?:erl|hrl)$/;
 const ERLANG_DISPATCH_RE = /(^|[^?\w@'])([A-Z][A-Za-z0-9_@]*):([a-z][A-Za-z0-9_@]*)\(/g;
 const ERLANG_CALLBACK_DECL_RE = /(^|\n)\s*-callback\s+('[^'\n]+'|[a-z][A-Za-z0-9_@]*)\s*\(/g;
 const ERLANG_BEHAVIOUR_FANOUT_CAP = 24;
+// ── gen_server registered-name dispatch ─────────────────────────────────────
+// `gen_server:call(Name, Req)`/`cast` dispatch by REGISTERED NAME, not by
+// module reference: the server registered `Name`→pid at
+// `gen_server:start*({local|global, Name}, Mod, …)`, and the dominant style
+// registers under the module's own name (the `atom == module name`
+// convention, often written `?MODULE`). The target callback is fixed by OTP:
+// `call`/`multi_call` → `handle_call/3`, `cast`/`abcast` → `handle_cast/2`.
+// Precision gates: the resolved module must declare `-behaviour(gen_server)`
+// (or `-behavior`) AND define+export the callback; a name registered by two
+// different modules, or one that resolves to nothing in-repo, stays silent.
+// `-behaviour(gen_server)`/`(-behavior)` — the OTP gen_server implementer gate.
+const ERLANG_GENSERVER_BEHAVIOUR_RE = /(^|\n)\s*-behaviou?r\s*\(\s*(?:'gen_server'|gen_server)\s*\)/;
+// Registration: `gen_server:start|start_link|start_monitor({local|global,
+// Name}, Mod, …)` — binds the registered Name to the callback module (`?MODULE`
+// resolves to the file's own module).
+const ERLANG_GENSERVER_REG_RE =
+  /\bgen_server\s*:\s*start(?:_link|_monitor)?\s*\(\s*\{\s*(?:local|global)\s*,\s*(?:'([^'\n]+)'|(\?MODULE|[a-z][A-Za-z0-9_@]*))\s*\}\s*,\s*(\?MODULE|'[^'\n]+'|[a-z][A-Za-z0-9_@]*)/g;
+// Dispatch: `gen_server:call|cast|abcast|multi_call(Ref, …)` where Ref is a
+// bare/quoted atom, `?MODULE`, or `{local|global, Name}` (the `{via,…}` form
+// routes through a registry module — statically opaque, deliberately not
+// matched). A Capitalized first arg is a variable — unresolvable, skipped.
+const ERLANG_GENSERVER_CALL_RE =
+  /\bgen_server\s*:\s*(call|cast|abcast|multi_call)\s*\(\s*(\?MODULE|\{\s*(?:local|global)\s*,\s*(?:'[^'\n]+'|\?MODULE|[a-z][A-Za-z0-9_@]*)\s*\}|'[^'\n]+'|[a-z][A-Za-z0-9_@]*)/g;
+const ERLANG_GENSERVER_FILE_CAP = 80;
+
+/** Arity suffix of an Erlang function qualifiedName (`mod::fn/2` → 2, #1610). */
+function erlangQnArity(qn: string): number {
+  const m = /\/(\d{1,3})$/.exec(qn);
+  return m ? Number(m[1]) : -1;
+}
 
 /**
  * Argument count of the call/declaration whose `(` sits at `openIdx` —
@@ -3909,7 +4388,109 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
       callbackNames.add(name);
     }
   }
-  if (declaringBehaviours.size === 0) return [];
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+
+  // ── gen_server registered-name dispatch ─────────────────────────────────
+  // Independent of the -callback machinery: a gen_server module usually has NO
+  // `-callback` decls of its own (they live in OTP, out-of-repo), so this pass
+  // must run before the behaviour early-return below. Two sweeps: (A) index
+  // `gen_server:start*({local|global, Name}, Mod, …)` registrations and the
+  // modules declaring `-behaviour(gen_server)`; (B) link each
+  // `gen_server:call|cast(Name, …)` site → the server's `handle_call/3` /
+  // `handle_cast/2`.
+  const genServerModules = new Map<string, Node>(); // module name → namespace node
+  const registeredNames = new Map<string, Set<string>>(); // regName → module names
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!ERLANG_EXT.test(file)) continue;
+    const mod = moduleByFile.get(file);
+    if (!mod) continue; // a module-less .hrl can't be a gen_server
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('gen_server')) continue;
+    const safe = stripCommentsForRegex(content, 'erlang');
+    if (ERLANG_GENSERVER_BEHAVIOUR_RE.test(safe)) genServerModules.set(mod.name, mod);
+    ERLANG_GENSERVER_REG_RE.lastIndex = 0;
+    let rm: RegExpExecArray | null;
+    while ((rm = ERLANG_GENSERVER_REG_RE.exec(safe))) {
+      const regName = rm[1] ?? (rm[2] === '?MODULE' ? mod.name : rm[2]!);
+      const rawMod = rm[3]!;
+      const modName = rawMod === '?MODULE' ? mod.name : rawMod.replace(/^'|'$/g, '');
+      let set = registeredNames.get(regName);
+      if (!set) { set = new Set(); registeredNames.set(regName, set); }
+      set.add(modName);
+    }
+  }
+  if (genServerModules.size || registeredNames.size) {
+    for (const file of ctx.getAllFiles()) {
+      if ((++scannedFiles & 15) === 0) await onYield();
+      if (!ERLANG_EXT.test(file)) continue;
+      const content = ctx.readFile(file);
+      if (!content || !content.includes('gen_server:')) continue;
+      const safe = stripCommentsForRegex(content, 'erlang');
+      const nodesInFile = ctx.getNodesInFile(file);
+      const lineAt = makeLineAt(safe, 1);
+      const ownMod = moduleByFile.get(file);
+      ERLANG_GENSERVER_CALL_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      let added = 0;
+      while ((m = ERLANG_GENSERVER_CALL_RE.exec(safe)) && added < ERLANG_GENSERVER_FILE_CAP) {
+        const verb = m[1]!;
+        const rawRef = m[2]!;
+        // Resolve the ref to a NAME: `?MODULE` → this file's module,
+        // `{local|global, N}` → N, else the bare/quoted atom itself.
+        let name: string | null = null;
+        if (rawRef === '?MODULE') name = ownMod?.name ?? null;
+        else if (rawRef.startsWith('{')) {
+          const inner = /\{\s*(?:local|global)\s*,\s*(?:'([^'\n]+)'|(\?MODULE|[a-z][A-Za-z0-9_@]*))\s*\}/.exec(rawRef);
+          if (!inner) continue; // `{via,…}` — registry-module form, opaque
+          name = inner[1] ?? (inner[2] === '?MODULE' ? ownMod?.name ?? null : inner[2]!);
+        } else name = rawRef.replace(/^'|'$/g, '');
+        if (!name) continue;
+        // A registered name wins over the module-name convention (it IS the
+        // runtime binding); a name registered by two modules is ambiguous —
+        // bail rather than guess.
+        const regs = registeredNames.get(name);
+        if (regs && regs.size > 1) continue;
+        const modName = regs && regs.size === 1 ? [...regs][0]! : name;
+        const mod = genServerModules.get(modName);
+        if (!mod) continue;
+        const cb = verb === 'call' || verb === 'multi_call' ? 'handle_call' : 'handle_cast';
+        const arity = verb === 'call' || verb === 'multi_call' ? 3 : 2;
+        const target = ctx
+          .getNodesInFile(mod.filePath)
+          .find(
+            (n) =>
+              n.kind === 'function' &&
+              n.name === cb &&
+              erlangQnArity(n.qualifiedName) === arity &&
+              n.isExported !== false,
+          );
+        if (!target) continue;
+        const line = lineAt(m.index);
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp) continue;
+        const key = `${disp.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          line,
+          provenance: 'heuristic',
+          metadata: {
+            synthesizedBy: 'erlang-gen-server',
+            via: `${mod.name}:${cb}/${arity}`,
+            registeredAt: `${file}:${line}`,
+          },
+        });
+        added++;
+      }
+    }
+  }
+
+  if (declaringBehaviours.size === 0) return edges;
 
   // Implementer target lookup, lazy per (behaviour, fn, arity): implementers
   // come from the `implements` edges extraction resolved, and the target is
@@ -3917,10 +4498,6 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
   // function qualifiedNames carry arity (`mod::fn/2`, #1610), so the arity the
   // dispatch site used selects among same-named definitions.
   const targetCache = new Map<string, Node[]>();
-  const qnArity = (qn: string): number => {
-    const m = /\/(\d{1,3})$/.exec(qn);
-    return m ? Number(m[1]) : -1;
-  };
   const targetsOf = (behaviour: Node, fn: string, arity: number): Node[] => {
     const cacheKey = `${behaviour.id}#${fn}/${arity}`;
     let targets = targetCache.get(cacheKey);
@@ -3935,7 +4512,7 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
           (n) =>
             n.kind === 'function' &&
             n.name === fn &&
-            qnArity(n.qualifiedName) === arity &&
+            erlangQnArity(n.qualifiedName) === arity &&
             n.isExported !== false,
         );
       if (fnNode) targets.push(fnNode);
@@ -3946,8 +4523,6 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
 
   // Pass 2 — dispatch sites. Only files containing a var-module call shape are
   // scanned in full.
-  const edges: Edge[] = [];
-  const seen = new Set<string>();
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!ERLANG_EXT.test(file)) continue;
@@ -4013,6 +4588,18 @@ const LARAVEL_FANOUT_CAP = 200;
 // A `$listen` entry: `Event::class => [Listener::class, …]`, key/values as `::class` or strings.
 const LISTEN_ENTRY_RE = /(?:([A-Za-z_\\][\w\\]*)::class|'([^']+)'|"([^"]+)")\s*=>\s*\[([^\]]*)\]/g;
 const LISTEN_CLASS_RE = /(?:([A-Za-z_\\][\w\\]*)::class|'([^']+)'|"([^"]+)")/g;
+// `Event::listen(X::class, function (…) {…})` — the class-literal first arg is
+// the event anchor; the closure may be untyped (`Event::listen` is the facade
+// form — `Events::listen`/helper-arg variants are deliberately not matched).
+const LARAVEL_LISTEN_KEYED_RE = /\bEvent::listen\s*\(\s*([A-Za-z_\\][\w\\]*)::class\s*,\s*(?:static\s+)?(?:function|fn)\b/g;
+// `Event::listen(function (X $e) {…})` — the closure-as-only-arg form (also
+// the `fn (X $e) =>` arrow): the event anchor is the closure's TYPED first
+// param, union-split like laravelHandleEventTypes. A string-keyed first arg
+// (`Event::listen('a.b', fn(X $e))`) is deliberately NOT matched — `event(new X)`
+// dispatches by class name, never by a custom string, so that edge could never
+// fire. Closures aren't extracted as nodes, so the enclosing method stands in
+// as the listener target.
+const LARAVEL_LISTEN_CLOSURE_RE = /\bEvent::listen\s*\(\s*(?:static\s+)?(?:function|fn)\s*\(\s*(\??[A-Za-z_\\][\w\\|]*)\s+&?\s*(?:\.\.\.\s*)?\$/g;
 
 /** Short class name from a PHP reference: `\App\Events\Foo` / `App\Events::Foo` → `Foo`. */
 function phpSimpleName(s: string): string {
@@ -4093,6 +4680,35 @@ async function laravelEventEdges(ctx: ResolutionContext, onYield: MaybeYield): P
             const cls = ctx.getNodesByName(ln).find((n) => n.kind === 'class' && handleOf(n));
             if (cls) add(event, handleOf(cls)!);
           }
+        }
+      }
+    }
+
+    // (C) `Event::listen` closure registrations — the listener is a closure,
+    // which extraction doesn't node-ify, so the enclosing METHOD stands in as
+    // the listener target (an `Event::listen` outside any method — e.g. a
+    // routes file — attributes nothing). Two shapes: class-keyed
+    // (`Event::listen(X::class, fn)` — anchor is the class literal) and
+    // inferred (`Event::listen(fn(X $e) => …)` — anchor is the typed first
+    // param). `Events::listen`, `$events->listen`, string-callable listeners,
+    // and string-keyed closures stay out of scope (see the regex comments).
+    if (content.includes('Event::listen')) {
+      const safe = stripCommentsForRegex(content, 'php');
+      const nodesInFile = ctx.getNodesInFile(file);
+      const lineAt = makeLineAt(safe, 1);
+      let lm: RegExpExecArray | null;
+      LARAVEL_LISTEN_KEYED_RE.lastIndex = 0;
+      while ((lm = LARAVEL_LISTEN_KEYED_RE.exec(safe))) {
+        const enclosing = enclosingFn(nodesInFile, lineAt(lm.index));
+        if (enclosing) add(phpSimpleName(lm[1]!), enclosing);
+      }
+      LARAVEL_LISTEN_CLOSURE_RE.lastIndex = 0;
+      while ((lm = LARAVEL_LISTEN_CLOSURE_RE.exec(safe))) {
+        const enclosing = enclosingFn(nodesInFile, lineAt(lm.index));
+        if (!enclosing) continue;
+        for (const t of lm[1]!.replace(/^\?/, '').split('|')) {
+          const ev = phpSimpleName(t);
+          if (/^[A-Z]\w*$/.test(ev)) add(ev, enclosing);
         }
       }
     }
