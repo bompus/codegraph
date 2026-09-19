@@ -224,3 +224,17 @@ units, MAX_FILE_SIZE / generated-file skips, `has_error()` → `defer:`.
   ~120–180s at the 2c envelope; graph counts must stay 2,048,664/6,405,964).
 - Deferral-rate guard <10%; suite; changelog rides the existing kernel entry.
 - DEFAULT_ROUTED += c, cpp only after ALL of the above.
+
+## Post-port enhancements (not part of the byte-identical baseline)
+
+- **Callable fn-pointer members as `field` nodes** (2026-09-19, ledger §5.33):
+  the kernel walker emits `field` nodes qualified `Type::member` for callable
+  members only — direct `int (*fp)(int)` declarators, fn-ptr-typedef members,
+  and `cb_t *cbp` function-type typedefs (file-local typedef registry; arrays,
+  scalars, bitfields, methods excluded; anonymous aggregates qualify as
+  `Outer::<anonymous>::m`). Member calls resolve via the bound-receiver arm
+  (`Type::member` admits `field` for c/cpp → `field-call` @0.9) plus a
+  singleton-only unique-field fallback (@0.7). Bare-name refs can never land
+  on a c/cpp `field` (exact-match excludes them; C++ implicit-this keeps the
+  owner-type carve-out) — the corpus caught ~39k libc-name collisions before
+  the gate.
