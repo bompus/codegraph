@@ -108,6 +108,75 @@ public class ThingsController {
     cg.close?.();
   });
 
+  it('resolves generic-typed args by erased name and declines member-path args', async () => {
+    write('Requests.cs', `namespace Shop;
+using MediatR;
+public record Envelope<T>(T Inner) : IRequest<int>;
+public record GetThingsQuery : IRequest<ThingsVm>;
+`);
+    write('Handlers.cs', `namespace Shop;
+using MediatR;
+using System.Threading;
+using System.Threading.Tasks;
+public class EnvelopeHandler<T> : IRequestHandler<Envelope<T>, int> {
+    public Task<int> Handle(Envelope<T> request, CancellationToken ct) => Task.FromResult(0);
+}
+public class GetThingsQueryHandler : IRequestHandler<GetThingsQuery, ThingsVm> {
+    public Task<ThingsVm> Handle(GetThingsQuery request, CancellationToken ct) => Task.FromResult(new ThingsVm());
+}
+`);
+    write('ThingsController.cs', `namespace Shop;
+using MediatR;
+using System.Threading.Tasks;
+public class ThingsController {
+    private readonly ISender _mediator;
+    public ThingsController(ISender mediator) { _mediator = mediator; }
+
+    public async Task Wrap(Envelope<int> envelope) {
+        var id = await _mediator.Send(envelope);
+    }
+    public async Task WrapGeneric<T>(Envelope<T> generic) {
+        await _mediator.Send<int>(generic);
+    }
+    public async Task Relay(GetThingsQuery holder) {
+        // Sends holder.Command — the member's type isn't visible here. The head
+        // ident's declared type must NOT be bridged (that would be a wrong edge).
+        await _mediator.Send(holder.Command);
+    }
+    public async Task Erase(GetThingsQuery query) {
+        IRequest<int> erased = query;
+        await _mediator.Send(erased);
+    }
+}
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'mediatr-dispatch'`
+      )
+      .all();
+
+    // `Envelope<int> envelope` and `Envelope<T> generic` both resolve to the
+    // erased `Envelope` key — the same erasure `new X<…>` args already use —
+    // and the explicit `Send<int>` generic call form dispatches too.
+    expect(edges.map((r: any) => r.source).sort()).toEqual(['Wrap', 'WrapGeneric']);
+    expect(edges.every((r: any) => r.via === 'Envelope')).toBe(true);
+    expect(edges.every((r: any) => r.target === 'Handle')).toBe(true);
+    // PRECISION: `Send(holder.Command)` resolves nothing (member-path args are
+    // declined — bridging `holder`'s GetThingsQuery type would be a wrong edge),
+    // and `IRequest<int> erased` resolves to `IRequest`, which has no handler.
+    expect(edges.some((r: any) => r.source === 'Relay')).toBe(false);
+    expect(edges.some((r: any) => r.source === 'Erase')).toBe(false);
+
+    cg.close?.();
+  });
+
   it('produces no edges in a C# project with no MediatR (clean control)', async () => {
     write('Service.cs', `namespace Shop;
 public class Service {

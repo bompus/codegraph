@@ -3727,7 +3727,11 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
 // C# has no `signature` on method nodes, so the handler's request type is read from the class
 // base-list source (`: IRequestHandler<X,…>`), not a param signature.
 const MEDIATR_HANDLER_BASE_RE = /(?:IRequestHandler|INotificationHandler)\s*<\s*([A-Za-z_]\w*)/;
-const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*)/g;
+// The arg after `Send(`/`Publish(`: `new X(…)`, a bare/member identifier, or
+// (rare) an explicit generic call `Send<R>(x)`. A member path (`req.Command`,
+// `this.cmd`) is CAPTURED so the arg resolver can decline it — resolving only
+// the head ident's declared type would mis-bridge the member's type.
+const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*(?:<[^<>\n]{0,80}>)?\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*(?:\.\w+)*)/g;
 const MEDIATR_RECEIVER_RE = /(?:mediator|sender|publisher)/i;
 const MEDIATR_CS_EXT = /\.cs$/;
 const MEDIATR_FANOUT_CAP = 80;
@@ -3741,7 +3745,11 @@ function resolveMediatrArgType(arg: string, lines: string[], methodStart: number
   if (inl) return inl[1]!;
   if (!/^[A-Za-z_]\w*$/.test(arg)) return null;
   const assignRe = new RegExp(`\\b${arg}\\b\\s*=\\s*new\\s+([A-Z]\\w*)`);
-  const declRe = new RegExp(`\\b([A-Z]\\w*)\\b\\s+${arg}\\b`);
+  // `X arg` or `X<…> arg` — the declared type resolves to its erased name
+  // (`IdentifiedCommand<T,R> message` → `IdentifiedCommand`, the same erasure
+  // `new X<…>` args already use; an interface-typed `IRequest<R> request` →
+  // `IRequest`, which simply isn't a handler key and stays silent).
+  const declRe = new RegExp(`\\b([A-Z]\\w*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\\s+${arg}\\b`);
   let declType: string | null = null;
   for (let i = Math.max(0, methodStart - 1); i < dispatchLine && i < lines.length; i++) {
     const ln = lines[i] ?? '';
