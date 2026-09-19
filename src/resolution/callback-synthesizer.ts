@@ -4188,16 +4188,24 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
 // is an external gem module that forms no resolvable edge. ActiveJob's `perform_later`/`_now` is
 // a different shape and deliberately not matched, so an ActiveJob-only app yields 0.
 const SIDEKIQ_DISPATCH_RE = /([A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*)\s*\.\s*perform_(?:async|in|at)\b/g;
-const SIDEKIQ_WORKER_RE = /\binclude\s+Sidekiq::(?:Job|Worker)\b/;
+const SIDEKIQ_WORKER_RE = /\binclude\s+(?:::)?Sidekiq::(?:Job|Worker)\b/;
 // `class Foo < Bar` — the superclass clause. Applied to the class's DECL line
 // only, so a nested `class Inner < X` in the body can't pose as the outer
 // class's superclass.
-const SIDEKIQ_SUPERCLASS_RE = /\bclass\s+[A-Z][\w:]*\s*<\s*([A-Z][A-Za-z0-9_:]*)/;
+const SIDEKIQ_SUPERCLASS_RE = /\bclass\s+[A-Z][\w:]*\s*<\s*(?:::)?([A-Z][A-Za-z0-9_:]*)/;
 // `Sidekiq::Client.push('class' => 'Worker', …)` — dispatch keyed by the job
 // payload's class name STRING (also `class: 'W'` / `:class => 'W'` / a `W`
 // class literal). The `Sidekiq::Client` receiver + the literal `class` key gate
 // it to the canonical serialized form.
 const SIDEKIQ_PUSH_RE = /\bSidekiq::Client\.push(?:_bulk)?\s*\(\s*\{?\s*(?:['"]class['"]\s*=>|:class\s*=>|class\s*:)\s*(?:['"]([A-Z][A-Za-z0-9_:]*)['"]|([A-Z][A-Za-z0-9_:]*)\b)/g;
+// `Jobs.enqueue(:job_sym)`/`Jobs.enqueue(JobClass)` — the Discourse job facade,
+// which constantizes `"::Jobs::#{sym.camelcase}"` and pushes it onto Sidekiq.
+// `enqueue_in`/`enqueue_at` take the job ref as the SECOND arg (a delay first).
+// The receiver is the top-level `Jobs` module — `::Jobs` qualifies, a nested
+// `Foo::Jobs` does not. The job class's entry point is `execute` (Discourse's
+// `Jobs::Base#perform` is the wrapper), not `perform` itself.
+const SIDEKIQ_JOBS_ENQUEUE_RE = /(?:^|[^\w:])(?:::)?Jobs\.enqueue\s*\(\s*(?::([a-zA-Z_]\w*)|([A-Z][A-Za-z0-9_:]*))/g;
+const SIDEKIQ_JOBS_ENQUEUE_TIMED_RE = /(?:^|[^\w:])(?:::)?Jobs\.enqueue_(?:in|at)\s*\([^,\n]+,\s*(?::([a-zA-Z_]\w*)|([A-Z][A-Za-z0-9_:]*))/g;
 const SIDEKIQ_RB_EXT = /\.rb$/;
 const SIDEKIQ_FANOUT_CAP = 80;
 const SIDEKIQ_SUPER_MAX_DEPTH = 8; // bound on the worker superclass walk
@@ -4287,13 +4295,49 @@ async function sidekiqDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
     return workers.length === 1 ? performOf(workers[0]!) : null;
   };
 
+  // The `Jobs.enqueue` facade (Discourse): the symbol is constantized as
+  // `"::Jobs::#{sym.camelcase}"` and the class's entry method is `execute`
+  // (`Jobs::Base#perform` is the framework wrapper around it). Nearest method
+  // of `name` on the superclass chain wins; the class must be a worker
+  // (`Jobs::Base` itself carries the `Sidekiq::Worker` include, so every
+  // `class Jobs::X < Jobs::Base` qualifies through the chain).
+  const methodOnChain = (cls: Node, name: string): Node | null => {
+    const seen = new Set<string>([cls.id]);
+    let cur: Node | null = cls;
+    while (cur && seen.size <= SIDEKIQ_SUPER_MAX_DEPTH) {
+      const end = cur.endLine ?? cur.startLine;
+      const found = ctx.getNodesInFile(cur.filePath).find(
+        (n) => n.kind === 'method' && n.name === name && n.startLine >= cur!.startLine && n.startLine <= end,
+      );
+      if (found) return found;
+      cur = superclassOf(cur);
+      if (cur) {
+        if (seen.has(cur.id)) break;
+        seen.add(cur.id);
+      }
+    }
+    return null;
+  };
+  const camelize = (sym: string): string =>
+    sym
+      .split('/')
+      .map((seg) => seg.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(''))
+      .join('::');
+  const resolveJob = (sym: string | undefined, cls: string | undefined): Node | null => {
+    const ref = sym ? `Jobs::${camelize(sym)}` : cls!;
+    for (const cand of classNamed(ref)) {
+      if (isWorker(cand, new Set())) return methodOnChain(cand, 'execute') ?? methodOnChain(cand, 'perform');
+    }
+    return null;
+  };
+
   const edges: Edge[] = [];
   const seen = new Set<string>();
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!SIDEKIQ_RB_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!/\.perform_(?:async|in|at)\b/.test(content) && !content.includes('Sidekiq::Client.push'))) continue;
+    if (!content || (!/\.perform_(?:async|in|at)\b/.test(content) && !content.includes('Sidekiq::Client.push') && !/\bJobs\.enqueue/.test(content))) continue;
     const safe = stripCommentsForRegex(content, 'ruby');
     const nodesInFile = ctx.getNodesInFile(file);
     const lineAt = makeLineAt(safe, 1);
@@ -4341,6 +4385,32 @@ async function sidekiqDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
         metadata: { synthesizedBy: 'sidekiq-dispatch', via: m[1] ?? m[2]!, registeredAt: `${file}:${line}` },
       });
       added++;
+    }
+    // `Jobs.enqueue(:sym)`/`Jobs.enqueue_in(N, :sym)`/`Jobs.enqueue_at(t, :sym)`
+    // (Discourse): the job ref is a SYMBOL constantized as `Jobs::<camelcase>`,
+    // or a class literal. Target is the job's `execute` (else `perform`) — the
+    // enclosing method is the dispatch source, as with `perform_async` sites.
+    for (const re of [SIDEKIQ_JOBS_ENQUEUE_RE, SIDEKIQ_JOBS_ENQUEUE_TIMED_RE]) {
+      re.lastIndex = 0;
+      while ((m = re.exec(safe)) && added < SIDEKIQ_FANOUT_CAP) {
+        const line = lineAt(m.index);
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp) continue;
+        const target = resolveJob(m[1], m[2]);
+        if (!target || target.id === disp.id) continue;
+        const key = `${disp.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          line,
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'sidekiq-dispatch', via: m[1] ? `:${m[1]}` : m[2]!, registeredAt: `${file}:${line}` },
+        });
+        added++;
+      }
     }
   }
   return edges;

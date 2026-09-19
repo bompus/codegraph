@@ -192,6 +192,98 @@ end
     expect(edges.length).toBe(4);
   });
 
+  it('bridges Jobs.enqueue(:sym) facade dispatch to the job execute method', async () => {
+    // The Discourse shape: Jobs::Base carries the Sidekiq include; jobs subclass
+    // it and define `execute` (not `perform`, which is Base's wrapper).
+    write('app/jobs/base.rb', `module Jobs
+  class Base
+    include Sidekiq::Worker
+    def execute(opts = {})
+    end
+    def perform(*args)
+    end
+  end
+
+  def self.enqueue(job, opts = {})
+    klass = "::Jobs::#{job.to_s.camelcase}".constantize
+    klass.client_push("class" => klass, "args" => [opts])
+  end
+end
+`);
+    write('app/jobs/regular/user_email.rb', `class Jobs::UserEmail < Jobs::Base
+  def execute(args)
+    User.find(args[:user_id]).email!
+  end
+end
+`);
+    write('app/jobs/scheduled/create_backup.rb', `class Jobs::CreateBackup < Jobs::Base
+  def execute(args)
+  end
+end
+`);
+    // A Jobs:: namespaced class that is NOT a worker — never a target.
+    write('app/jobs/regular/report.rb', `class Jobs::Report
+  def execute(args)
+  end
+end
+`);
+    write('app/services/user_service.rb', `class UserService
+  def notify(user)
+    Jobs.enqueue(:user_email, user_id: user.id)
+    ::Jobs.enqueue_in(3600, :create_backup)
+  end
+
+  def schedule_backup
+    Jobs.enqueue(Jobs::CreateBackup)
+  end
+
+  def bad
+    Jobs.enqueue(:report)
+    Jobs.enqueue(:no_such_job)
+    Outer::Jobs.enqueue(:user_email)
+  end
+end
+`);
+    write('lib/outer/jobs.rb', `module Outer
+  module Jobs
+    def self.enqueue(x)
+    end
+  end
+end
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path tf, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'sidekiq-dispatch'`
+      )
+      .all();
+    cg.close?.();
+
+    const pair = (src: string, via: string) =>
+      edges.find((r: any) => r.source === src && r.via === via);
+
+    // Symbol → Jobs::<camelized> → #execute (not Base#perform).
+    expect(pair('notify', ':user_email')?.target).toBe('execute');
+    expect(pair('notify', ':user_email')?.tf).toMatch(/user_email\.rb$/);
+    // Timed forms carry the symbol as the SECOND arg; `::Jobs` receiver qualifies.
+    expect(pair('notify', ':create_backup')?.target).toBe('execute');
+    expect(pair('notify', ':create_backup')?.tf).toMatch(/create_backup\.rb$/);
+    // Class-literal arg resolves the same way (`job.instance_of?(Class)` branch);
+    // from a distinct source so it isn't deduped against the symbol-arg pair.
+    expect(pair('schedule_backup', 'Jobs::CreateBackup')?.target).toBe('execute');
+    expect(pair('schedule_backup', 'Jobs::CreateBackup')?.tf).toMatch(/create_backup\.rb$/);
+    // PRECISION: non-worker Jobs:: class, unknown symbol, nested `X::Jobs` receiver.
+    expect(edges.some((r: any) => r.via === ':report')).toBe(false);
+    expect(edges.some((r: any) => r.via === ':no_such_job')).toBe(false);
+    expect(edges.filter((r: any) => r.source === 'bad').length).toBe(0);
+    expect(edges.length).toBe(3);
+  });
+
   it('produces no edges in a Ruby project with no Sidekiq (clean control)', async () => {
     write('lib/calc.rb', `class Calc
   def add(a, b)
