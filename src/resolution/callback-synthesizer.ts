@@ -2648,6 +2648,15 @@ const REGISTRY_AUGMENT_RE =
 // main dispatch regex on purpose (a quoted key is a static access).
 const REGISTRY_ALIAS_LITERAL_RE =
   /(?:\bnew\s+)?((?:this\.)?[A-Za-z_$][\w$]*)\s*\[\s*(['"])([\w$]+)\2\s*\]\s*(?:\(|\.[A-Za-z_$])/g;
+// `const v = reg[keyExpr]` — assign-then-call: `v` binds a COMPUTED registry
+// lookup and `v(…)` later is the dispatch call (warp-drive's
+// `const cmd = COMMANDS[cmdString]; await cmd(args)`). `const` only — a
+// `let`/`var` may be reassigned between lookup and call. The statement must
+// END at the access (`;`/newline): `v = reg[k].load()` binds a member of the
+// entry, a different shape. A literal `reg['k']` RHS resolves to that one key's
+// handler instead of fanning out.
+const REGISTRY_COMPUTED_ALIAS_RE =
+  /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?((?:this\.)?[A-Za-z_$][\w$]*)\s*\[\s*(?:([A-Za-z_$][\w$]*)|(['"])([\w$]+)\4)\s*\]\s*(?:;|\n|$)/g;
 const REGISTRY_MIN_ENTRIES = 2;
 const REGISTRY_FANOUT_CAP = 40;
 const REGISTRY_CLASS_ENTRY = new Set(['execute', 'run', 'handle', 'perform', 'process', 'call', 'apply', 'dispatch']);
@@ -2755,7 +2764,16 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
     while ((lm = REGISTRY_ALIAS_LITERAL_RE.exec(safe))) {
       literalAccesses.push({ ref: lm[1]!, key: lm[3]!, pos: lm.index });
     }
-    if (!dispatches.length && !literalAccesses.length) continue;
+    // Assign-then-call: `const v = reg[key]` binds a computed lookup; `v(…)`
+    // later is the dispatch. The ref joins the dispatched set so its literal
+    // registers below; `v(` call sites are emitted after registries exist.
+    const computedAliases: Array<{ var: string; ref: string; litKey: string | null; pos: number }> = [];
+    REGISTRY_COMPUTED_ALIAS_RE.lastIndex = 0;
+    let cm2: RegExpExecArray | null;
+    while ((cm2 = REGISTRY_COMPUTED_ALIAS_RE.exec(safe))) {
+      computedAliases.push({ var: cm2[1]!, ref: cm2[2]!, litKey: cm2[5] ?? null, pos: cm2.index });
+    }
+    if (!dispatches.length && !literalAccesses.length && !computedAliases.length) continue;
     // Normalize a leading `this.` so a class FIELD-INITIALIZER registry (`commands = {…}`)
     // matches a `this.commands[k]` dispatch, not just the constructor form `this.commands = {…}`.
     const norm = (r: string) => r.replace(/^this\./, '');
@@ -2774,6 +2792,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
       return x;
     };
     const refs = new Set([
+      ...computedAliases.map((a) => canon(norm(a.ref))),
       ...dispatches.map((d) => canon(norm(d.ref))),
       ...literalAccesses.map((l) => canon(norm(l.ref))),
     ]);
@@ -2871,6 +2890,51 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
           registeredAt: `${file}:${reg.line}`,
         },
       });
+    }
+
+    // 5. Assign-then-call: `const v = reg[key]` binds the lookup, `v(…)` later
+    //    dispatches. A literal `reg['k']` RHS resolves to that one handler; a
+    //    dynamic `reg[ident]` fans out to all entries (same as `reg[k](…)`).
+    for (const ca of computedAliases) {
+      const reg = registries.get(canon(norm(ca.ref)));
+      if (!reg) continue;
+      // The const's own scope: a fn-scoped alias bridges only calls in the same
+      // function after the assignment (a `v(` in another fn is a shadow, not
+      // the lookup); a module-level alias stays open to any later call.
+      const assignLine = safe.slice(0, ca.pos).split('\n').length;
+      const aliasScope = enclosingFn(nodesInFile, assignLine);
+      const callRe = new RegExp(`(^|[^\\w$])${ca.var.replace(/\$/g, '\\$')}\\s*\\(`, 'g');
+      let cl: RegExpExecArray | null;
+      while ((cl = callRe.exec(safe))) {
+        const varStart = cl.index + cl[1]!.length;
+        if (varStart <= ca.pos) continue; // uses can't precede the const (TDZ)
+        // Skip `function v(` declarations — only a bare `v(` use is a dispatch.
+        if (/function\s*$/.test(safe.slice(Math.max(0, varStart - 12), varStart))) continue;
+        const line = safe.slice(0, varStart).split('\n').length;
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp || (aliasScope && disp.id !== aliasScope.id)) continue;
+        const names = ca.litKey !== null ? [reg.literalKeys.get(ca.litKey)].filter((x): x is string => !!x) : reg.names;
+        for (const name of names.slice(0, REGISTRY_FANOUT_CAP)) {
+          const target = resolveRegistryHandler(ctx, name, null);
+          if (!target || target.id === disp.id) continue;
+          const key = `${disp.id}>${target.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          edges.push({
+            source: disp.id,
+            target: target.id,
+            kind: 'calls',
+            line,
+            provenance: 'heuristic',
+            metadata: {
+              synthesizedBy: 'object-registry',
+              via: name,
+              ...(ca.litKey !== null ? { key: ca.litKey } : {}),
+              registeredAt: `${file}:${reg.line}`,
+            },
+          });
+        }
+      }
     }
   }
   return edges;
