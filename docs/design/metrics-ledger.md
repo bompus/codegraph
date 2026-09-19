@@ -695,3 +695,27 @@ Extends §5.27's arm to three-segment paths: `Self::Assoc::leaf` binds the middl
 **Bugs found via corpus/fixture testing**: kernel port of the impl-opener check iterated ascending instead of descending (hit an unrelated earlier impl's member line and bailed); stale `dist/` masked a TS arm in shadow runs — corpus A/B must always rebuild dist first. Also noted: `is_rust_trait_impl_method`'s backward scan misses single-line `impl T for X { fn m() {} }` bodies (pre-existing shared helper, only visible for `private` cross-file targets — corpus targets were `public`).
 
 **Remaining Rust surface**: `Self::f().chain` (return-type inference), non-call `x.y`/`self.x`, bindings emission (enhancement), trait dispatch via `getSupertypes` (permanent). `Self::Assoc` is now exhausted — every remaining decline is a genuinely abstract trait-default context.
+### 5.29 Rust enhancement — `use` binding rows emitted by the kernel walker (2026-09-19)
+
+Third **enhancement** leg (item 3 of the §remainder list; the "Rust bindings emission" line). `rustlang.rs` now emits one `import` binding row per bound local name for every `use` declaration — the first Rust rows in the `bindings` table — so the generic bindings pipeline (`importMappingsFromBindings` → `getImportMappings`, `resolveViaImport`, `matchesAnyImport`) activates for rust identically in both engines.
+
+**What changed** (`codegraph-kernel/src/rustlang.rs`, `src/lib.rs`, `src/extraction/kernel/index.ts`, `src/resolve.rs` doc):
+
+- **`emit_use_bindings`** walks the `use_declaration`'s `argument` field and flattens nested `use_list`/`scoped_use_list`/`use_as_clause`/`use_wildcard` trees into `(spec, local)` pairs: leaf or alias is the local name, `target_spec` the full `::` path as written, `target_name` its leaf. `{self}` binds the prefix leaf (`use a::b::{self}` → `b` → `a::b`); `{self as x}` binds the alias to the prefix path; a glob is recorded under the never-matching `*` name (resolver declines it); `pub use` carries `export_form=public` + `exported_as`.
+- **Scope = the use's parent extent** — `source_file` for top-level, the `mod`/`declaration_list` for module-local, the `block` for function-local uses. Emitted on **both walks**: `visit_node` for item position, `visit_for_calls_and_structure` for body position (bindings only there — no import node/`imports` refs at fn scope, matching TS).
+- **`rustlang::bindings_only`** + `"rust"` in `bindings_file` dispatch and `BINDINGS_LANGUAGES`, so the generic-extractor defer path gets rows too. `is_migrated_language`'s "bindings-free" comment updated — rust is now a binding language.
+
+**Corpus evidence** (linux baseline; dual-db A/B — `bindingsFile` rows generated for all 496 rust files, 5,496 rows across 429 files, inserted into a corpus snapshot vs an identical no-bindings twin; both resolved with the same build):
+
+| Metric | no bindings | with bindings |
+|---|---:|---:|
+| rust refs resolved | 81 | **150** |
+| edges added vs baseline (of 3.83M refName-carrying edges) | — | **+69 / −0** |
+| kernel-vs-TS shadow divergences (`CODEGRAPH_RESOLVE_SHADOW=1`, sequential) | — | **0 / 11,942 handled** |
+| failure-reason churn among still-failed | — | none |
+
+**New edge class (all 69, reviewed)**: a `use`-bound capitalized type name (`Pin`, `Chipset`, `Meta`, `Receiver`, `Label`, `Chars`) whose true target is absent from the graph (`enum Chipset` is `macro_rules!`-generated; `enum Meta` in vendored `syn` is unextracted; `Pin` is `core::`) now passes the `matchesAnyImport` pre-filter and lands fuzzy @0.5 on a case-insensitive same-named callable. That is the resolver's standard weakest-tier behavior for an imported name with no in-graph declaration — the same edge TS produces for `import { Foo }` with no `Foo` node — not a bindings defect. Both engines produce them identically.
+
+**Gates**: 10/10 `bindings-rust` (new file: leaf/alias/list/nested-list/`{self}`/`{self as}`/glob/`pub use`/mod+fn scopes/`importMappingsFromBindings` decode), golden re-baselined (`torture.rs` +10 import rows), 6/6 parity, 8/8 self-owner, 662/662 extraction, 224/224 resolution, clippy `-D warnings` clean.
+
+**Note**: this leg began as a delegated worktree whose agent died mid-wiring (`emit_use_bindings` written, never called); completed inline — wiring, `argument`-field lookup, `{self as x}` spec fix, `bindings_only` + gates + corpus A/B.

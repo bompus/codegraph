@@ -660,6 +660,7 @@ pub fn bindings_file(file_path: String, content: String, language: String) -> Re
         "kotlin" => kotlin::bindings_only(&file_path, &content),
         "php" => php::bindings_only(&file_path, &content),
         "c" | "cpp" => ccpp::bindings_only(&file_path, &content, &language),
+        "rust" => rustlang::bindings_only(&file_path, &content),
         _ => tsjs::bindings_only(&file_path, &content, &language),
     }
     .map_err(Error::from_reason)?;

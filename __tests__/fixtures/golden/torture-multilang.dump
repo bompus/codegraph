@@ -4469,7 +4469,7 @@
 {"from_node_id":"variable:e5d1acb1f72fa51c98bb94af8c35fada","reference_name":"example.com/remote.md","reference_kind":"references","line":70,"col":22,"candidates":null,"file_path":"torture.go","language":"go","status":"failed","name_tail":"md"}
 {"from_node_id":"variable:f90ca95a6ecd4291f24e8cc99492595f","reference_name":"notes.md#top","reference_kind":"references","line":70,"col":20,"candidates":null,"file_path":"torture.luau","language":"luau","status":"failed","name_tail":"md#top"}
 {"from_node_id":"variable:feb330d554c5d0caaa8978323a006e52","reference_name":"README.md","reference_kind":"references","line":238,"col":11,"candidates":null,"file_path":"torture.rb","language":"ruby","status":"failed","name_tail":"md"}
-== bindings (688)
+== bindings (697)
 {"file_path":"Torture.java","name":"<Runnable$anon@27>","kind":"local","node_id":"class:c4ed77533cd6f14e451fe7962f484e20","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":27,"scope_end":32,"storage":null,"line":27}
 {"file_path":"Torture.java","name":"<Runnable$anon@42>","kind":"local","node_id":"class:66085d60d16ebfd037ddd1bd9273a82e","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":36,"scope_end":48,"storage":null,"line":42}
 {"file_path":"Torture.java","name":"API_BASE","kind":"local","node_id":"constant:027c429f02116e6725f83e648b4778cf","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":16,"scope_end":85,"storage":null,"line":21}
@@ -5029,6 +5029,15 @@
 {"file_path":"torture.py","name":"v","kind":"param","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":58,"scope_end":63,"storage":null,"line":58}
 {"file_path":"torture.py","name":"view","kind":"decl","node_id":"function:692077921d04b315880bc35a0bc872a9","target_spec":null,"target_name":null,"exported_as":"view","export_form":"public","scope_start":1,"scope_end":64,"storage":null,"line":37}
 {"file_path":"torture.py","name":"x","kind":"decl","node_id":"variable:788d75a828c79f9847e0be0e2b73a196","target_spec":null,"target_name":null,"exported_as":"x","export_form":"public","scope_start":1,"scope_end":64,"storage":null,"line":10}
+{"file_path":"torture.rs","name":"*","kind":"import","node_id":null,"target_spec":"std::collections::*","target_name":"*","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":9}
+{"file_path":"torture.rs","name":"A","kind":"import","node_id":null,"target_spec":"crate::mod_b::A","target_name":"A","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":6}
+{"file_path":"torture.rs","name":"C","kind":"import","node_id":null,"target_spec":"crate::mod_b::B","target_name":"B","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":6}
+{"file_path":"torture.rs","name":"D","kind":"import","node_id":null,"target_spec":"crate::mod_b::sub::D","target_name":"D","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":6}
+{"file_path":"torture.rs","name":"Item","kind":"import","node_id":null,"target_spec":"crate::mod_a::Item","target_name":"Item","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":5}
+{"file_path":"torture.rs","name":"c","kind":"import","node_id":null,"target_spec":"a::b::c","target_name":"c","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":7}
+{"file_path":"torture.rs","name":"d","kind":"import","node_id":null,"target_spec":"a::b::d","target_name":"d","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":7}
+{"file_path":"torture.rs","name":"fmt","kind":"import","node_id":null,"target_spec":"std::fmt","target_name":"fmt","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":4}
+{"file_path":"torture.rs","name":"foo_single","kind":"import","node_id":null,"target_spec":"foo_single","target_name":"foo_single","exported_as":null,"export_form":null,"scope_start":1,"scope_end":314,"storage":null,"line":8}
 {"file_path":"torture.tsx","name":"*","kind":"reexport","node_id":null,"target_spec":"./star-source","target_name":"*","exported_as":"*","export_form":"esm","scope_start":1,"scope_end":245,"storage":null,"line":11}
 {"file_path":"torture.tsx","name":"API_BASE","kind":"decl","node_id":"constant:4d2266cb0f452fd0233976ec146c28eb","target_spec":null,"target_name":null,"exported_as":"API_BASE","export_form":"esm","scope_start":1,"scope_end":245,"storage":null,"line":15}
 {"file_path":"torture.tsx","name":"AnonClassHolder","kind":"decl","node_id":"constant:ce115b27746b5ef3c1e4991d2e9113f0","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":1,"scope_end":245,"storage":null,"line":108}
