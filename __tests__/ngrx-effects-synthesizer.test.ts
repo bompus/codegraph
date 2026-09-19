@@ -220,6 +220,205 @@ export class UserService {
     cg.close?.();
   });
 
+  it('links an effect\'s store.select reads to the selector nodes (concatLatestFrom/withLatestFrom)', async () => {
+    write('src/user.actions.ts', `import { createActionGroup, emptyProps } from '@ngrx/store';
+export const UsersActions = createActionGroup({
+  source: 'Users',
+  events: { loadUsers: emptyProps(), audit: emptyProps() },
+});
+`);
+    write('src/user/user.selectors.ts', `import { createSelector, createFeatureSelector } from '@ngrx/store';
+export const selectUserState = createFeatureSelector<any>('user');
+export const selectCurrentUser = createSelector(selectUserState, (s: any) => s.current);
+export const selectUserIds = createSelector(selectUserState, (s: any) => s.ids);
+export const selectShared = createSelector(selectUserState, (s: any) => s);
+`);
+    // A same-named selector in a DIFFERENT feature dir — unpinned resolution
+    // must prefer the effect's own feature dir.
+    write('src/other/other.selectors.ts', `import { createSelector } from '@ngrx/store';
+export const selectShared = createSelector((s: any) => s, (s: any) => s);
+`);
+    // Same-named selector twice in the effect's own feature dir — a genuine
+    // tie declines rather than guess.
+    write('src/user/more.selectors.ts', `import { createSelector } from '@ngrx/store';
+export const selectTied = createSelector((s: any) => s, (s: any) => s);
+`);
+    write('src/user/even-more.selectors.ts', `import { createSelector } from '@ngrx/store';
+export const selectTied = createSelector((s: any) => s, (s: any) => s);
+`);
+    write('src/user/user.effects.ts', `import { Injectable, inject } from '@angular/core';
+import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { concatLatestFrom, withLatestFrom } from '@ngrx/operators';
+import { Store } from '@ngrx/store';
+import { map } from 'rxjs/operators';
+import { UsersActions } from '../user.actions';
+import * as UserSelectors from './user.selectors';
+import { selectUserIds } from './user.selectors';
+
+@Injectable()
+export class UserEffects {
+  constructor(private actions$: Actions, private store: Store) {}
+
+  loadUsers$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(UsersActions.loadUsers),
+      concatLatestFrom(() => this.store.select(UserSelectors.selectCurrentUser)),
+      map(([action, user]) => user)
+    )
+  );
+
+  audit$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(UsersActions.audit),
+      withLatestFrom(this.store.select(selectUserIds)),
+      map(([action, ids]) => ids)
+    )
+  );
+
+  feature$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(UsersActions.audit),
+      concatLatestFrom(() => this.store.select(selectShared)),
+      map(() => null)
+    )
+  );
+
+  tied$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(UsersActions.audit),
+      concatLatestFrom(() => this.store.select(selectTied)),
+      map(() => null)
+    )
+  );
+
+  notStore$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(UsersActions.audit),
+      concatLatestFrom(() => this.facadeThing.select(UserSelectors.selectCurrentUser)),
+      map(() => null)
+    )
+  );
+
+  gone$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(UsersActions.audit),
+      concatLatestFrom(() => this.store.select(selectMissing)),
+      map(() => null)
+    )
+  );
+}
+`);
+    write('src/user/user.service.ts', `import { Injectable } from '@angular/core';
+@Injectable()
+export class UserService { all() { return []; } }
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path targetFile, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'ngrx-select'`
+      )
+      .all();
+
+    const pairs = edges.map((r: any) => `${r.source}>${r.target}`).sort();
+    // Namespace-pinned (UserSelectors.selectCurrentUser), named-import pinned
+    // (selectUserIds), and unpinned-but-dir-nearest (selectShared) reads all
+    // resolve; the dispatch edges stay a separate 'ngrx-dispatch' family.
+    expect(pairs).toEqual([
+      'audit$>selectUserIds',
+      'feature$>selectShared',
+      'loadUsers$>selectCurrentUser',
+    ]);
+    expect(edges.find((r: any) => r.source === 'feature$')!.targetFile).toContain('user.selectors.ts');
+    // PRECISION: a tied same-name selector declines; a non-store receiver and
+    // an unresolvable selector name emit nothing.
+    expect(edges.some((r: any) => r.source === 'tied$')).toBe(false);
+    expect(edges.some((r: any) => r.source === 'notStore$')).toBe(false);
+    expect(edges.some((r: any) => r.source === 'gone$')).toBe(false);
+
+    cg.close?.();
+  });
+
+  it('links component/guard store.select + selectSignal reads the same way', async () => {
+    write('src/user/user.selectors.ts', `import { createSelector, createFeatureSelector } from '@ngrx/store';
+export const selectUserState = createFeatureSelector<any>('user');
+export const selectCurrentUser = createSelector(selectUserState, (s: any) => s.current);
+export const selectUserIds = createSelector(selectUserState, (s: any) => s.ids);
+`);
+    write('src/user/user.component.ts', `import { Component } from '@angular/core';
+import { Store } from '@ngrx/store';
+import * as UserSelectors from './user.selectors';
+import { selectUserIds } from './user.selectors';
+
+@Component({ selector: 'app-users', template: '' })
+export class UsersComponent {
+  user$ = this.store.select(UserSelectors.selectCurrentUser);
+  ids$ = this.store.selectSignal(selectUserIds);
+
+  constructor(private store: Store) {}
+
+  reload(): void {
+    this.users = this.store.select(selectUserIds);
+  }
+}
+`);
+    write('src/user/user.guard.ts', `import { inject } from '@angular/core';
+import { Store } from '@ngrx/store';
+import { map } from 'rxjs/operators';
+import { selectCurrentUser } from './user.selectors';
+
+export const userGuard = () => {
+  const store = inject(Store);
+  return store.select(selectCurrentUser).pipe(map((u) => !!u));
+};
+`);
+    // A .select( on a store-ish receiver in a file with NO @ngrx import is a
+    // different framework's protocol (Akita & friends) — never bridged.
+    write('src/user/akita-ish.ts', `export class OtherStore {
+  select(x: string) { return x; }
+}
+export class AkitaComponent {
+  constructor(private store: OtherStore) {}
+  load(): void {
+    this.store.select(selectCurrentUser);
+  }
+}
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, json_extract(e.metadata,'$.via') via,
+                json_extract(e.metadata,'$.readAt') readAt
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'ngrx-select'
+         ORDER BY s.name, t.name`
+      )
+      .all();
+
+    const pairs = edges.map((r: any) => `${r.source}>${r.target}`).sort();
+    // Class-field reads, a selectSignal read, an in-method read, and a
+    // functional guard's `store.select` all resolve to the same selectors.
+    expect(pairs).toEqual([
+      'ids$>selectUserIds',
+      'reload>selectUserIds',
+      'user$>selectCurrentUser',
+      'userGuard>selectCurrentUser',
+    ]);
+    // PRECISION: the no-@ngrx file's .select( is never bridged.
+    expect(edges.some((r: any) => r.source === 'load')).toBe(false);
+
+    cg.close?.();
+  });
+
   it('produces no edges in a TS project with no NgRx effects (clean control)', async () => {
     write('src/store.ts', `export class Store {
   dispatch(action: unknown) { return action; }

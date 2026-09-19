@@ -369,9 +369,16 @@ const FORMS: FormSpec[] = [
     // synthesizer connects matching literal emit→handler pairs statically:
     // this scanner only runs on a flow that FAILED to connect, where an
     // honest keyed site beats silence.
+    //
+    // The `{…:…}` arm covers `verb({type:'x'})` object-literal dispatch across
+    // the same verb family — and a QUOTED first prop (`{'type':'x'}` /
+    // `{"type":…}`): string CONTENTS are blanked before matching, so a quoted
+    // key arrives as quote-blanks-quote (`'    '`) and `type` itself can only
+    // match the bare form. postMessage stays with ipc-channel (its `type:`
+    // fallback already keys the object-payload shape).
     form: 'literal-key-dispatch',
     label: 'literal-keyed dispatch',
-    re: /\.(?:emit|dispatch|trigger|fire|publish|broadcast|sendAsync|sendMessage|send|post|notify|announce|raise|deliver|executeCommand|convertAndSend|basicPublish)\s*\(\s*(['"`])|\.dispatch\s*\(\s*\{\s*['"]?type['"]?\s*:|\.dispatchEvent\s*\(\s*new\s+\w*Event\s*\(|\b(?:do_action|apply_filters|do_shortcode)\s*\(\s*(['"`])/g,
+    re: /\.(?:emit|dispatch|trigger|fire|publish|broadcast|sendAsync|sendMessage|send|post|notify|announce|raise|deliver|executeCommand|convertAndSend|basicPublish)\s*\(\s*(['"`])|\.(?:emit|dispatch|trigger|fire|publish|broadcast|sendAsync|sendMessage|send|post|notify|announce|raise|deliver|executeCommand|convertAndSend|basicPublish)\s*\(\s*\{\s*(?:type\s*:|['"`][^'"`\n]*['"`]\s*:)|\.dispatchEvent\s*\(\s*new\s+\w*Event\s*\(|\b(?:do_action|apply_filters|do_shortcode)\s*\(\s*(['"`])/g,
     keyWindow: 100,
     keyFrom: (orig) => {
       const t = orig.match(/['"]?type['"]?\s*:\s*(['"`])([\w.:-]{1,64})\1/)
@@ -392,7 +399,11 @@ const FORMS: FormSpec[] = [
       // `new Worker('file.ts')` args are script paths, not channels.
       if (!/^(?:ipc|\.postMessage|chrome)/.test(orig)) return undefined;
       const m = orig.match(/\(\s*(['"`])([\w.:-]{1,64})\1/);
-      return m ? { key: m[2]! } : undefined;
+      if (m) return { key: m[2]! };
+      // `sendTo(id, {type:'x'})` — the channel position holds a numeric id;
+      // the payload object's `type` field is the dispatch key instead.
+      const t = orig.match(/['"]?type['"]?\s*:\s*(['"`])([\w.:-]{1,64})\1/);
+      return t ? { key: t[2]! } : undefined;
     },
   },
   {

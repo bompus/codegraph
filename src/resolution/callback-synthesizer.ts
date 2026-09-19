@@ -3727,7 +3727,11 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
 // C# has no `signature` on method nodes, so the handler's request type is read from the class
 // base-list source (`: IRequestHandler<X,…>`), not a param signature.
 const MEDIATR_HANDLER_BASE_RE = /(?:IRequestHandler|INotificationHandler)\s*<\s*([A-Za-z_]\w*)/;
-const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*)/g;
+// The arg after `Send(`/`Publish(`: `new X(…)`, a bare/member identifier, or
+// (rare) an explicit generic call `Send<R>(x)`. A member path (`req.Command`,
+// `this.cmd`) is CAPTURED so the arg resolver can decline it — resolving only
+// the head ident's declared type would mis-bridge the member's type.
+const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*(?:<[^<>\n]{0,80}>)?\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*(?:\.\w+)*)/g;
 const MEDIATR_RECEIVER_RE = /(?:mediator|sender|publisher)/i;
 const MEDIATR_CS_EXT = /\.cs$/;
 const MEDIATR_FANOUT_CAP = 80;
@@ -3741,7 +3745,11 @@ function resolveMediatrArgType(arg: string, lines: string[], methodStart: number
   if (inl) return inl[1]!;
   if (!/^[A-Za-z_]\w*$/.test(arg)) return null;
   const assignRe = new RegExp(`\\b${arg}\\b\\s*=\\s*new\\s+([A-Z]\\w*)`);
-  const declRe = new RegExp(`\\b([A-Z]\\w*)\\b\\s+${arg}\\b`);
+  // `X arg` or `X<…> arg` — the declared type resolves to its erased name
+  // (`IdentifiedCommand<T,R> message` → `IdentifiedCommand`, the same erasure
+  // `new X<…>` args already use; an interface-typed `IRequest<R> request` →
+  // `IRequest`, which simply isn't a handler key and stays silent).
+  const declRe = new RegExp(`\\b([A-Z]\\w*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\\s+${arg}\\b`);
   let declType: string | null = null;
   for (let i = Math.max(0, methodStart - 1); i < dispatchLine && i < lines.length; i++) {
     const ln = lines[i] ?? '';
@@ -3844,10 +3852,15 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
 // receiver must match /store/i (drops `dispatchEvent` and other `.dispatch(` protocols —
 // bare `dispatch(` never matches since a receiver is required), and the dispatched action
 // must have a registered ofType handler. `{dispatch:false}` effects still register — they
-// are ofType subscribers. `concatLatestFrom`/`withLatestFrom` store.select reads and NgRx
-// Signal Store (`signalStore`/`rxMethod`) are out of scope. `EffectsModule.forRoot`/
-// `provideEffects` registration lists are unnecessary — the ofType scan finds effect
-// definitions directly.
+// are ofType subscribers. The READ side is the same hop in reverse: any `.ts`
+// file that imports `@ngrx` and calls `*.store.select(sel)`/`selectSignal(sel)`
+// (inside an effect — the `concatLatestFrom`/`withLatestFrom` args are the common
+// carriers — or in a component/guard reading state) links the reader → the
+// selector node as `synthesizedBy:'ngrx-select'`, resolved through the reading
+// file's imports with ambiguity declining. NgRx Signal Store
+// (`signalStore`/`rxMethod`) stays out of scope — a different registration shape.
+// `EffectsModule.forRoot`/`provideEffects` registration lists are unnecessary — the
+// ofType scan finds effect definitions directly.
 const NGRX_OFTYPE_RE = /ofType\s*\(([^)]*)\)/g;
 const NGRX_CREATE_EFFECT_RE = /\bcreateEffect\s*\(/;
 const NGRX_EFFECT_ANNO_RE = /@Effect\b/;
@@ -3857,6 +3870,18 @@ const NGRX_TS_EXT = /\.tsx?$/;
 const NGRX_JS_EXT = /\.(?:tsx?|jsx?|mjs|cjs)$/;
 const NGRX_FANOUT_CAP = 80;
 const NGRX_ANNO_LOOKBACK = 3; // lines above a member's startLine a `@Effect` decorator may sit
+// The READ side of the store — `*.store.select(sel)` / `*.store.selectSignal(sel)`
+// (the args of `concatLatestFrom`/`withLatestFrom` inside effects are the common
+// carriers, but a component's `pending$ = this.store.select(sel)` is the same
+// hop). The receiver must look store-ish; the arg is a bare or namespace-dotted
+// selector ref — a quoted string key (`store.select('count')`) never matches.
+const NGRX_SELECT_RE = /([\w$.]*)\s*\.\s*select(?:Signal)?\s*\(\s*([A-Za-z_$][\w$.]*)\s*\)/g;
+// A candidate selector node must PRODUCE a selector (a createSelector-family
+// call in its signature) or live in a conventional selectors file — a plain
+// `function selectX`/`const selectX` elsewhere is not evidence enough.
+const NGRX_SELECTOR_SIG_RE = /\bcreateSelector\b|\bcreateFeatureSelector\b|\bcreateStructuredSelector\b|\bcreateSelectorFactory\b/;
+const NGRX_SELECTOR_FILE_RE = /(?:^|[/\\])[^/\\]*selectors?[^/\\]*\.|(?:^|[/\\])selectors?[/\\]/i;
+const NGRX_SELECTOR_KINDS = new Set<NodeKind>(['constant', 'function']);
 
 /** Normalize an ofType arg or dispatch callee to its action key: the LAST dot-segment
  *  (`TaskSharedActions.restoreTask` → `restoreTask`, `loadUsers` → `loadUsers`). String-typed
@@ -3890,6 +3915,84 @@ function resolveNgrxDispatchArg(arg: string, lines: string[], methodStart: numbe
   return declType ? ngrxActionKey(declType) : null; // `arg: Ns.Action` normalizes to `Action` too
 }
 
+/** Directory segments of a file path (everything before the basename). */
+function dirSegs(filePath: string): string[] {
+  return filePath.split('/').slice(0, -1);
+}
+
+/** Innermost `property` node containing `line` — class-field readers like
+ *  `user$ = this.store.select(…)` that neither enclosingFn (methods/functions/
+ *  components) nor enclosingValue (constants/variables) covers. */
+function enclosingProperty(nodesInFile: readonly Node[], line: number): Node | null {
+  let best: Node | null = null;
+  for (const n of nodesInFile) {
+    if (n.kind !== 'property') continue;
+    const end = n.endLine ?? n.startLine;
+    if (n.startLine <= line && end >= line && (!best || n.startLine >= best.startLine)) best = n;
+  }
+  return best;
+}
+
+/** The selector node a `store.select(ref)` arg names. `ref` is bare
+ *  (`selectIds`) or namespace-dotted (`BookSelectors.selectIds`); the name is
+ *  the last segment. Candidates are gated to selector-producing nodes
+ *  (NGRX_SELECTOR_SIG_RE on the signature, or a selectors-file path). A
+ *  `Ns.sel`/`sel` import mapping in the effect's file pins the candidate's
+ *  file — and a pin that yields nothing declines rather than falling back to
+ *  a same-named selector elsewhere. Unpinned, same-file wins, then the
+ *  candidate sharing the longest directory prefix with the effect; a tie
+ *  declines (NgRx features repeat selector names — `selectLoading`,
+ *  `selectError` — so "the only one in this feature's dir" is the honest
+ *  disambiguator). */
+function resolveNgrxSelector(
+  ctx: ResolutionContext,
+  fromFile: string,
+  expr: string,
+  imports: Map<string, string>
+): Node | null {
+  const name = ngrxActionKey(expr);
+  if (!name) return null;
+  let all: Node[];
+  try {
+    all = ctx.getNodesByName(name);
+  } catch {
+    return null;
+  }
+  const gated = all.filter(
+    (n) =>
+      NGRX_SELECTOR_KINDS.has(n.kind) &&
+      ((n.signature !== undefined && NGRX_SELECTOR_SIG_RE.test(n.signature)) ||
+        NGRX_SELECTOR_FILE_RE.test(n.filePath))
+  );
+  if (!gated.length) return null;
+  const head = expr.trim().split('.')[0]!;
+  const pinnedFile = imports.get(head);
+  if (pinnedFile) {
+    const pinned = gated.filter((n) => n.filePath === pinnedFile);
+    return pinned.length === 1 ? pinned[0]! : null;
+  }
+  const sameFile = gated.filter((n) => n.filePath === fromFile);
+  const pool = sameFile.length ? sameFile : gated;
+  if (pool.length === 1) return pool[0]!;
+  const aSegs = dirSegs(fromFile);
+  let best: Node | null = null;
+  let bestShared = -1;
+  let tie = false;
+  for (const n of pool) {
+    const bSegs = dirSegs(n.filePath);
+    let shared = 0;
+    while (shared < aSegs.length && shared < bSegs.length && aSegs[shared] === bSegs[shared]) shared++;
+    if (shared > bestShared) {
+      bestShared = shared;
+      best = n;
+      tie = false;
+    } else if (shared === bestShared) {
+      tie = true;
+    }
+  }
+  return tie ? null : best;
+}
+
 async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scannedFiles = 0;
   // Pass 1 — action key → effect nodes, scanning only .ts files that mention effects.
@@ -3898,6 +4001,7 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
   // publisherFiles pattern.
   const effectsByAction = new Map<string, Node[]>();
   const tsDispatchFiles: string[] = [];
+  const tsSelectFiles: string[] = [];
   const register = (key: string | null, node: Node): void => {
     if (!key) return;
     let arr = effectsByAction.get(key);
@@ -3917,6 +4021,9 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
     const content = ctx.readFile(file);
     if (!content) continue;
     if (content.includes('.dispatch(')) tsDispatchFiles.push(file);
+    // `.select(` reads count only in files that import @ngrx — that gate keeps
+    // Akita-style `store.select` APIs and unrelated `.select` protocols out.
+    if (content.includes('.select(') && content.includes('@ngrx')) tsSelectFiles.push(file);
     if (!content.includes('@ngrx/effects') && !content.includes('ofType(') && !content.includes('createEffect(')) continue;
     const lines = content.split('\n');
     const safe = stripCommentsForRegex(content, 'typescript');
@@ -3949,21 +4056,80 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
       registerOfTypes(span, node);
     }
   }
-  if (!effectsByAction.size) return [];
+  if (!effectsByAction.size && !tsSelectFiles.length) return [];
 
-  // Non-.ts JS-family dispatch files weren't read in pass 1 — find them now (rare:
-  // NgRx is a TypeScript ecosystem, but a mixed repo may dispatch from .js).
+  // Non-.ts JS-family dispatch/select files weren't read in pass 1 — find them
+  // now (rare: NgRx is a TypeScript ecosystem, but a mixed repo may use .js).
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (NGRX_TS_EXT.test(file) || !NGRX_JS_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    if (content && content.includes('.dispatch(')) tsDispatchFiles.push(file);
+    if (!content) continue;
+    if (content.includes('.dispatch(')) tsDispatchFiles.push(file);
+    if (content.includes('.select(') && content.includes('@ngrx')) tsSelectFiles.push(file);
   }
 
-  // Pass 2 — link each `*.store.dispatch(x)` site → every effect ofType-subscribed to x.
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const file of tsDispatchFiles) {
+  // `localName` → the file the import resolves to (`importedFrom` resolves the
+  // module specifier the way the import resolver does — binding rows carry no
+  // resolvedPath). Cached per file; a file with no usable mappings resolves
+  // unpinned.
+  const importCache = new Map<string, Map<string, string>>();
+  const importsOf = (file: string): Map<string, string> => {
+    let m = importCache.get(file);
+    if (!m) {
+      try {
+        m = importedFrom(ctx, file, file.endsWith('x') ? 'tsx' : 'typescript');
+      } catch {
+        m = new Map();
+      }
+      importCache.set(file, m);
+    }
+    return m;
+  };
+
+  // Read pass — link each `*.store.select(sel)`/`selectSignal(sel)` call → the
+  // selector node it reads. Effects (`concatLatestFrom`/`withLatestFrom` args),
+  // components and guards all make the same hop; the source is the enclosing
+  // node at the call line. Resolution is selector-gated and import-pinned; an
+  // ambiguous name declines.
+  for (const file of tsSelectFiles) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    const content = ctx.readFile(file);
+    if (!content) continue;
+    const safe = stripCommentsForRegex(content, 'typescript');
+    const lineAt = makeLineAt(safe, 1);
+    const nodesInFile = ctx.getNodesInFile(file);
+    const imports = importsOf(file);
+    NGRX_SELECT_RE.lastIndex = 0;
+    let sm: RegExpExecArray | null;
+    let selectAdded = 0;
+    while ((sm = NGRX_SELECT_RE.exec(safe)) && selectAdded < NGRX_FANOUT_CAP) {
+      if (!NGRX_RECEIVER_RE.test(sm[1]!)) continue; // not a store receiver
+      const sel = ngrxActionKey(sm[2]!);
+      if (!sel) continue;
+      const line = lineAt(sm.index);
+      const reader =
+        enclosingFn(nodesInFile, line) ?? enclosingValue(nodesInFile, line) ?? enclosingProperty(nodesInFile, line);
+      if (!reader) continue;
+      const target = resolveNgrxSelector(ctx, file, sm[2]!.trim(), imports);
+      if (!target || target.id === reader.id) continue;
+      const dedupKey = `${reader.id}>${target.id}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+      edges.push({
+        source: reader.id,
+        target: target.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'ngrx-select', via: sel, readAt: `${file}:${line}` },
+      });
+      selectAdded++;
+    }
+  }
+  for (const file of effectsByAction.size ? tsDispatchFiles : []) {
     if ((++scannedFiles & 15) === 0) await onYield();
     const content = ctx.readFile(file);
     if (!content || !content.includes('.dispatch(')) continue;
@@ -3978,8 +4144,10 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
       if (!NGRX_RECEIVER_RE.test(m[1]!)) continue; // not a store (dispatchEvent, dispatcher, …)
       const line = lineAt(m.index);
       // enclosingFn covers methods/functions/components (incl. class-field effects);
-      // enclosingValue reaches a dispatch written inside a functional-effect constant.
-      const disp = enclosingFn(nodesInFile, line) ?? enclosingValue(nodesInFile, line);
+      // enclosingValue reaches a dispatch written inside a functional-effect constant;
+      // enclosingProperty covers a class-field dispatch (`x = this.store.dispatch(…)`).
+      const disp =
+        enclosingFn(nodesInFile, line) ?? enclosingValue(nodesInFile, line) ?? enclosingProperty(nodesInFile, line);
       if (!disp) continue;
       const key = m[3] ? m[3]! : m[4] ? ngrxActionKey(m[4]!) : resolveNgrxDispatchArg(m[5]!, safeLines, disp.startLine, line);
       if (!key) continue;
