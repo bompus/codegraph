@@ -1046,6 +1046,9 @@ const IFACE_OVERRIDE_LANGS = new Set([
   'java', 'kotlin', 'csharp', 'typescript', 'javascript', 'swift', 'scala', 'go', 'rust',
   'arkts',
 ]);
+/** Depth cap for transitive-supertype BFS in interfaceOverrideEdges — real
+ *  extends/implements chains are ≤~6; the cap is a graph-corruption backstop. */
+const MAX_SUPERTYPE_DEPTH = 8;
 /**
  * Go implicit interface satisfaction (#584). Go has no `implements` keyword — a
  * struct satisfies an interface structurally when its method set covers the
@@ -1292,18 +1295,36 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
     if (sups.length === 0) continue;
     const implMethods = methodsOf(cls.id).filter((n) => IFACE_OVERRIDE_LANGS.has(n.language));
     if (implMethods.length === 0) continue;
-    for (const sup of sups) {
-      const base = queries.getNodeById(sup.target);
-      if (!base || !IFACE_OVERRIDE_LANGS.has(base.language) || base.id === cls.id) continue;
-      // Group impl methods by name to handle OVERLOADS: an interface `list()` and
-      // `list(params)` are distinct nodes and a call may resolve to either, so
-      // link every base overload → every same-name impl overload (keying by name
-      // alone would drop all but one and miss the resolved overload).
-      const implByName = new Map<string, Node[]>();
-      for (const m of implMethods) {
-        const arr = implByName.get(m.name);
-        if (arr) arr.push(m); else implByName.set(m.name, [m]);
+    // Group impl methods by name to handle OVERLOADS: an interface `list()` and
+    // `list(params)` are distinct nodes and a call may resolve to either, so
+    // link every base overload → every same-name impl overload (keying by name
+    // alone would drop all but one and miss the resolved overload).
+    const implByName = new Map<string, Node[]>();
+    for (const m of implMethods) {
+      const arr = implByName.get(m.name);
+      if (arr) arr.push(m); else implByName.set(m.name, [m]);
+    }
+    // TRANSITIVE supertypes: `A implements B`, `B extends C` → A also overrides
+    // C's members (a call typed to C dispatches to A's impl). BFS over the
+    // implements/extends edges, visited-guarded for diamonds/cycles and
+    // depth-capped — real hierarchies are shallow, and a mid-chain node that
+    // fails the language check is still traversed THROUGH (its own supertypes
+    // may be valid bases).
+    const supertypes: Node[] = [];
+    const visited = new Set<string>([cls.id]);
+    const queue: Array<{ id: string; depth: number }> = sups.map((s) => ({ id: s.target, depth: 1 }));
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (visited.has(cur.id)) continue;
+      visited.add(cur.id);
+      const base = queries.getNodeById(cur.id);
+      if (base && base.id !== cls.id && IFACE_OVERRIDE_LANGS.has(base.language)) supertypes.push(base);
+      if (cur.depth >= MAX_SUPERTYPE_DEPTH) continue;
+      for (const e of queries.getOutgoingEdges(cur.id, ['implements', 'extends'])) {
+        if (!visited.has(e.target)) queue.push({ id: e.target, depth: cur.depth + 1 });
       }
+    }
+    for (const base of supertypes) {
       let added = 0;
       for (const bm of methodsOf(base.id)) {
         if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
