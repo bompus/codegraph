@@ -1709,21 +1709,124 @@ function resolveRustPathReference(
   return null;
 }
 
+const rustCrateRootMemos = new WeakMap<ResolutionContext, Map<string, string | null>>();
+const rustRsDirIndexes = new WeakMap<ResolutionContext, Map<string, string[]>>();
+
+/** dir → indexed `.rs` files (sorted), built once per context. */
+function rustRsDirIndex(context: ResolutionContext): Map<string, string[]> {
+  let idx = rustRsDirIndexes.get(context);
+  if (!idx) {
+    idx = new Map<string, string[]>();
+    for (const f of context.getAllFiles()) {
+      const rel = f.replace(/\\/g, '/');
+      if (!rel.endsWith('.rs')) continue;
+      const dir = path.posix.dirname(rel);
+      const list = idx.get(dir);
+      if (list) list.push(rel);
+      else idx.set(dir, [rel]);
+    }
+    for (const list of idx.values()) list.sort();
+    rustRsDirIndexes.set(context, idx);
+  }
+  return idx;
+}
+
+/**
+ * Whether `relFile` contains a `mod <stem>;` declaration (comment-stripped;
+ * `pub`/`pub(...)` qualifiers allowed). `mod <stem> {` inline modules end in
+ * `{`, not `;`, and do not match.
+ */
+function rustFileDeclaresMod(
+  relFile: string,
+  stem: string,
+  context: ResolutionContext
+): boolean {
+  const lines =
+    context.getFileLines?.(relFile) ?? context.readFile(relFile)?.split('\n') ?? null;
+  if (!lines) return false;
+  const re = new RegExp(
+    `^\\s*(?:pub\\s*(?:\\([^)]*\\))?\\s+)?mod\\s+${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`
+  );
+  return lines.some((l) => re.test(l.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '')));
+}
+
+/**
+ * Fallback crate-root discovery for layouts whose root file is not
+ * `lib.rs`/`main.rs` (e.g. Linux kernel modules rooted at
+ * `rust_binder_main.rs`). Climbs the `mod` declaration chain: a file's
+ * parent module is the `.rs` file declaring `mod <stem>;` — either
+ * `<dir>/<dirname>.rs` one level up (2018 nested modules) or any sibling
+ * `.rs` in the parent dir (flat roots, `mod.rs`, `lib.rs`). The file with
+ * no declarant is the crate root; its directory is the root dir.
+ * Declarants must be indexed `.rs` files (graph-scoped, same as
+ * `fileExists`'s fast path).
+ */
+function rustModChainCrateRoot(
+  fromFileAbs: string,
+  context: ResolutionContext
+): string | null {
+  const projectRoot = context.getProjectRoot();
+  const toRel = (p: string) => path.relative(projectRoot, p).replace(/\\/g, '/');
+  let cur = fromFileAbs.replace(/\\/g, '/');
+  for (let i = 0; i < 64; i++) {
+    const base = path.posix.basename(cur);
+    const dir = path.posix.dirname(cur);
+    const [parentDir, stem] =
+      base === 'mod.rs'
+        ? [path.posix.dirname(dir), path.posix.basename(dir)]
+        : [dir, base.replace(/\.rs$/, '')];
+    // 2018 nested-module declarant: `<up>/<basename(parent)>.rs` owns
+    // `<parent>/` as its module dir (e.g. `binder/node.rs` declares
+    // `mod wrapper` for `binder/node/wrapper.rs`).
+    const nested = path.posix.join(
+      path.posix.dirname(parentDir),
+      `${path.posix.basename(parentDir)}.rs`
+    );
+    let declarant: string | null = null;
+    if (nested !== cur && rustFileDeclaresMod(toRel(nested), stem, context)) {
+      declarant = nested;
+    } else {
+      const parentRel = toRel(parentDir) || '.';
+      for (const cand of rustRsDirIndex(context).get(parentRel) ?? []) {
+        const candAbs = path.posix.join(projectRoot, cand);
+        if (candAbs !== cur && rustFileDeclaresMod(cand, stem, context)) {
+          declarant = candAbs;
+          break;
+        }
+      }
+    }
+    if (!declarant) return dir;
+    cur = declarant;
+  }
+  return null;
+}
+
 /** The crate-root directory (holds `lib.rs`/`main.rs`), walking up from a file. */
 function rustCrateRootDir(fromFileAbs: string, context: ResolutionContext): string | null {
+  let memo = rustCrateRootMemos.get(context);
+  if (!memo) {
+    memo = new Map<string, string | null>();
+    rustCrateRootMemos.set(context, memo);
+  }
+  const key = fromFileAbs.replace(/\\/g, '/');
+  if (memo.has(key)) return memo.get(key)!;
   const projectRoot = context.getProjectRoot();
   const toRel = (p: string) => path.relative(projectRoot, p).replace(/\\/g, '/');
   let dir = path.dirname(fromFileAbs);
+  let found: string | null = null;
   for (let i = 0; i < 64; i++) {
     if (context.fileExists(toRel(path.join(dir, 'lib.rs'))) ||
         context.fileExists(toRel(path.join(dir, 'main.rs')))) {
-      return dir;
+      found = dir;
+      break;
     }
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) break;
     dir = parent;
   }
-  return null;
+  const result = found ?? rustModChainCrateRoot(fromFileAbs, context);
+  memo.set(key, result);
+  return result;
 }
 
 /** Directory under which the current file's module declares its SUBMODULES. */

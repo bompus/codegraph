@@ -1437,6 +1437,8 @@ pub struct KernelResolver {
     c_static_memo: HashMap<String, bool>,
     rust_trait_memo: HashMap<String, bool>,
     root_import_memo: HashMap<String, bool>,
+    rust_crate_root_memo: HashMap<String, Option<String>>,
+    rust_rs_dir_index: Option<Rc<HashMap<String, Rc<Vec<String>>>>>,
     file_cache: FileCache,
     regex_cache: HashMap<String, Rc<Regex>>,
 }
@@ -1505,6 +1507,8 @@ impl KernelResolver {
             c_static_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
+            rust_crate_root_memo: HashMap::new(),
+            rust_rs_dir_index: None,
             file_cache: FileCache::new(1024),
             regex_cache: HashMap::new(),
         };
@@ -8230,7 +8234,8 @@ impl KernelResolver {
             return Ok(None);
         }
         let leaf = segments[segments.len() - 1];
-        let Some(file) = self.resolve_rust_module_file(&segments[..segments.len() - 1], &r.file_path)?
+        let Some(file) =
+            self.resolve_rust_module_file(&segments[..segments.len() - 1], &r.file_path)?
         else {
             return Ok(None);
         };
@@ -8266,7 +8271,7 @@ impl KernelResolver {
     /// a bare path tries self-relative (2018 expression position) then
     /// crate-relative (2015 crate-root items). External crates miss both.
     fn resolve_rust_module_file(
-        &self,
+        &mut self,
         segments: &[&str],
         from_file: &str,
     ) -> Result<Option<String>> {
@@ -8275,16 +8280,13 @@ impl KernelResolver {
         }
         let first = segments[0];
         if first == "crate" {
-            return Ok(self.rust_resolve_under(
-                self.rust_crate_root_dir(from_file),
-                &segments[1..],
-            ));
+            let root = self.rust_crate_root_dir(from_file)?;
+            return Ok(self.rust_resolve_under(root, &segments[1..]));
         }
         if first == "self" {
-            return Ok(self.rust_resolve_under(
-                Some(rust_self_module_dir(from_file)),
-                &segments[1..],
-            ));
+            return Ok(
+                self.rust_resolve_under(Some(rust_self_module_dir(from_file)), &segments[1..])
+            );
         }
         if first == "super" {
             let mut supers = 0usize;
@@ -8297,11 +8299,12 @@ impl KernelResolver {
             }
             return Ok(self.rust_resolve_under(dir, &segments[supers..]));
         }
-        Ok(self
-            .rust_resolve_under(Some(rust_self_module_dir(from_file)), segments)
-            .or_else(|| {
-                self.rust_resolve_under(self.rust_crate_root_dir(from_file), segments)
-            }))
+        let self_hit = self.rust_resolve_under(Some(rust_self_module_dir(from_file)), segments);
+        if self_hit.is_some() {
+            return Ok(self_hit);
+        }
+        let root = self.rust_crate_root_dir(from_file)?;
+        Ok(self.rust_resolve_under(root, segments))
     }
 
     /// The `resolveUnder` closure inside resolveRustModuleFile: walk module
@@ -8331,22 +8334,128 @@ impl KernelResolver {
     }
 
     /// rustCrateRootDir (import-resolver.ts): the directory holding
-    /// `lib.rs`/`main.rs`, walking up from the ref's file (≤64 levels).
-    fn rust_crate_root_dir(&self, from_file: &str) -> Option<String> {
+    /// `lib.rs`/`main.rs`, walking up from the ref's file (≤64 levels). When
+    /// no such anchor exists — kernel-style modules whose root file is
+    /// named e.g. `rust_binder_main.rs` — falls back to climbing the `mod`
+    /// declaration chain to the file no other file declares.
+    fn rust_crate_root_dir(&mut self, from_file: &str) -> Result<Option<String>> {
+        if let Some(v) = self.rust_crate_root_memo.get(from_file) {
+            return Ok(v.clone());
+        }
         let mut dir = pos_dirname(from_file).to_string();
+        let mut found = None;
         for _ in 0..64 {
             if self.file_exists(&pos_normalize(&format!("{}/lib.rs", dir)))
                 || self.file_exists(&pos_normalize(&format!("{}/main.rs", dir)))
             {
-                return Some(dir);
+                found = Some(dir);
+                break;
             }
             let parent = pos_dirname(&dir);
             if parent == dir {
-                return None;
+                break;
             }
             dir = parent.to_string();
         }
-        None
+        let v = match found {
+            Some(d) => Some(d),
+            None => self.rust_mod_chain_crate_root(from_file)?,
+        };
+        self.rust_crate_root_memo
+            .insert(from_file.to_string(), v.clone());
+        Ok(v)
+    }
+
+    /// Fallback crate-root discovery for layouts whose root file is not
+    /// `lib.rs`/`main.rs`. Climbs the `mod` declaration chain: a file's
+    /// parent module is the `.rs` file declaring `mod <stem>;` — either
+    /// `<dir>/<dirname>.rs` one level up (2018 nested modules) or any
+    /// sibling `.rs` in the parent dir (flat roots like
+    /// `rust_binder_main.rs`, `mod.rs`, `lib.rs`). The file with no
+    /// declarant is the crate root; its directory is the root dir.
+    /// Declarants must be indexed `.rs` files (graph-scoped, same as
+    /// `file_exists`'s fast path).
+    fn rust_mod_chain_crate_root(&mut self, from_file: &str) -> Result<Option<String>> {
+        let mut cur = pos_normalize(from_file);
+        for _ in 0..64 {
+            let base = pos_basename(&cur);
+            let dir = pos_dirname(&cur);
+            let (parent_dir, stem) = if base == "mod.rs" {
+                (pos_dirname(dir).to_string(), pos_basename(dir).to_string())
+            } else {
+                (
+                    dir.to_string(),
+                    base.strip_suffix(".rs").unwrap_or(base).to_string(),
+                )
+            };
+            // 2018 nested-module declarant: `<up>/<basename(parent)>.rs`
+            // owns `<parent>/` as its module dir (e.g. `binder/node.rs`
+            // declares `mod wrapper` for `binder/node/wrapper.rs`).
+            let nested = pos_normalize(&format!(
+                "{}/{}.rs",
+                pos_dirname(&parent_dir),
+                pos_basename(&parent_dir)
+            ));
+            let mut declarant = None;
+            if nested != cur && self.rust_file_declares_mod(&nested, &stem)? {
+                declarant = Some(nested);
+            } else {
+                let candidates = self.rust_rs_files_in_dir(&parent_dir);
+                for cand in candidates.iter() {
+                    if *cand != cur && self.rust_file_declares_mod(cand, &stem)? {
+                        declarant = Some(cand.clone());
+                        break;
+                    }
+                }
+            }
+            match declarant {
+                Some(d) => cur = d,
+                None => return Ok(Some(dir.to_string())),
+            }
+        }
+        Ok(None)
+    }
+
+    /// `.rs` files indexed under `dir` (exact parent dir, sorted for
+    /// determinism), built once from `known_files`.
+    fn rust_rs_files_in_dir(&mut self, dir: &str) -> Rc<Vec<String>> {
+        if self.rust_rs_dir_index.is_none() {
+            let mut m: HashMap<String, Vec<String>> = HashMap::new();
+            for f in &self.known_files {
+                let normalized = pos_normalize(f);
+                if normalized.ends_with(".rs") {
+                    m.entry(pos_dirname(&normalized).to_string())
+                        .or_default()
+                        .push(normalized);
+                }
+            }
+            for v in m.values_mut() {
+                v.sort();
+            }
+            self.rust_rs_dir_index = Some(Rc::new(
+                m.into_iter().map(|(k, v)| (k, Rc::new(v))).collect(),
+            ));
+        }
+        self.rust_rs_dir_index
+            .as_ref()
+            .unwrap()
+            .get(dir)
+            .cloned()
+            .unwrap_or_else(|| Rc::new(Vec::new()))
+    }
+
+    /// Whether `rel_file` contains a `mod <stem>;` declaration (comment-
+    /// stripped; `pub`/`pub(...)` qualifiers allowed). `mod <stem> {`
+    /// inline modules end in `{`, not `;`, and do not match.
+    fn rust_file_declares_mod(&mut self, rel_file: &str, stem: &str) -> Result<bool> {
+        let Some(lines) = self.read_file(rel_file) else {
+            return Ok(false);
+        };
+        let re = self.cached_regex(&format!(
+            r"^\s*(?:pub\s*(?:\([^)]*\))?\s+)?mod\s+{}\s*;",
+            regex::escape(stem)
+        ))?;
+        Ok(lines.iter().any(|l| re.is_match(&strip_line_comments(l))))
     }
 
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {

@@ -234,6 +234,17 @@ const FIXTURE: Record<string, string> = {
   'src/deep/inner.rs': 'pub fn deep_fn() {}\nfn deepuser() {}\n',
   'src/deep/sib.rs': 'pub fn sib_fn() {}\n',
   'src/user.rs': 'fn user() {}\n',
+  // Kernel-module-style crate: no lib.rs/main.rs — `mymod_main.rs` is the
+  // root (nothing declares it), discovered by climbing the `mod` decl
+  // chain. `node.rs` + `node/inner.rs` exercise the 2018 nested-module
+  // declarant (`<dir>/<dirname>.rs`).
+  'kmod/mymod_main.rs': 'mod sub;\nmod user;\nmod node;\nfn root_fn() {}\n',
+  'kmod/sub.rs': 'pub fn mod_leaf_fn() {}\n',
+  'kmod/user.rs': 'fn kmod_user() {}\n',
+  'kmod/node.rs': 'mod inner;\n',
+  'kmod/node/inner.rs': 'pub fn nested_inner_fn() {}\n',
+  // Orphan file: no declarant, no `sub.rs` sibling — `crate::sub` must miss.
+  'other/lonely.rs': 'fn lonely_fn() {}\n',
 };
 
 let tempDir: string | null = null;
@@ -506,6 +517,17 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `::` AND `.` — the boundReceiver claim can own an `a::b.c` receiver in
     // TS, so the arm leaves it punted.
     seed(libuserFn, 'a::b.c', 'src/lib.rs', 'rust', 'calls', 8);
+    // Kernel-module crate roots (no lib.rs/main.rs): the `mod`-chain
+    // fallback climbs `user.rs → mymod_main.rs`, then walks `crate::` down
+    // from `kmod/`. Nested `node.rs → node/inner.rs` climbs two levels.
+    const kmodUserFn = nodeId('kmod_user', 'kmod/user.rs');
+    const kmodInnerFn = nodeId('nested_inner_fn', 'kmod/node/inner.rs');
+    const lonelyFn = nodeId('lonely_fn', 'other/lonely.rs');
+    seed(kmodUserFn, 'crate::sub::mod_leaf_fn', 'kmod/user.rs', 'rust', 'calls', 2);
+    seed(kmodUserFn, 'sub::mod_leaf_fn', 'kmod/user.rs', 'rust', 'calls', 3);
+    seed(kmodUserFn, 'crate::node::inner::nested_inner_fn', 'kmod/user.rs', 'rust', 'calls', 4);
+    seed(kmodInnerFn, 'crate::sub::mod_leaf_fn', 'kmod/node/inner.rs', 'rust', 'calls', 2);
+    seed(lonelyFn, 'crate::sub::mod_leaf_fn', 'other/lonely.rs', 'rust', 'calls', 2);
     // Rust `self.` receiver arms — `self.m` (enclosing impl via caller
     // qname), `self.f.m` (field type off the struct decl), and a decline.
     seed(nodeId('again', 'sub.rs', 'method'), 'self.new', 'src/sub.rs', 'rust', 'calls', 5);
@@ -898,6 +920,34 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `::`+`.` names are receiver-shaped — dot-gated punt back to TS
     // (rust's non-self receiver inference is source-reading, unported).
     expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // `mod`-chain crate roots — `kmod/` has no lib.rs/main.rs; the fallback
+    // climbs `user.rs`'s `mod user;` decl to `mymod_main.rs` (the root) and
+    // resolves `crate::` under `kmod/`.
+    const kmodHit = at('crate::sub::mod_leaf_fn', 'kmod/user.rs', 'calls');
+    expect(kmodHit.status).toBe('resolved');
+    expect(kmodHit.targetNodeId).toBe(nodeId('mod_leaf_fn', 'kmod/sub.rs'));
+    // Bare path: self-relative `kmod/user/sub.rs` misses → crate-relative hit.
+    expect(at('sub::mod_leaf_fn', 'kmod/user.rs', 'calls').targetNodeId).toBe(
+      nodeId('mod_leaf_fn', 'kmod/sub.rs'),
+    );
+    // Two-level descent from the chain root: `node` → node.rs, `inner` →
+    // node/inner.rs (the `mod inner;` decl lives in node.rs).
+    const nestedHit = at('crate::node::inner::nested_inner_fn', 'kmod/user.rs', 'calls');
+    expect(nestedHit.status).toBe('resolved');
+    expect(nestedHit.targetNodeId).toBe(
+      nodeId('nested_inner_fn', 'kmod/node/inner.rs'),
+    );
+    // Climbing THROUGH a nested-module declarant: inner.rs's chain is
+    // inner.rs → node.rs → mymod_main.rs → root dir kmod/.
+    expect(
+      at('crate::sub::mod_leaf_fn', 'kmod/node/inner.rs', 'calls').targetNodeId,
+    ).toBe(nodeId('mod_leaf_fn', 'kmod/sub.rs'));
+    // Orphan file: `other/lonely.rs` has no declarant and no `sub.rs`
+    // sibling — `crate::sub` misses (root dir = `other/` itself); the arm
+    // falls through and the kernel punts to TS, same as pre-change.
+    expect(
+      at('crate::sub::mod_leaf_fn', 'other/lonely.rs', 'calls').status,
+    ).toBe('passthrough');
     // `self.m` → match_rust_self_call — enclosing impl type via caller qname.
     const selfNew = at('self.new', 'src/sub.rs', 'calls');
     expect(selfNew.status).toBe('resolved');
