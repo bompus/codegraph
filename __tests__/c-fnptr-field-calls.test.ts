@@ -140,6 +140,25 @@ describe.skipIf(!kernelBuilt)('C fn-pointer field nodes', () => {
     ]);
   });
 
+  it('a bare call sharing a field name never resolves to the field', async () => {
+    // Linux-scale regression guard: `bind(fd, …)` is libc, not
+    // `sock_ops::bind` — a receiver-less call cannot name a member.
+    const graph = await project({
+      'main.c': [
+        'struct sock_ops { int (*bind)(int); int (*close)(void); };',
+        '',
+        'void run(int fd) {',
+        '    bind(fd);',
+        '    close();',
+        '}',
+      ].join('\n'),
+    });
+    expect(fieldNodes(graph).map((f) => f.qname)).toEqual(
+      expect.arrayContaining(['sock_ops::bind', 'sock_ops::close'])
+    );
+    expect(callsFrom(graph, 'run')).toEqual([]);
+  });
+
   it('nested anonymous aggregates qualify under the outer struct', () => {
     const src = [
       'struct outer {',
@@ -182,5 +201,35 @@ describe.skipIf(!kernelBuilt)('C++ fn-pointer field calls', () => {
     expect(callsFrom(graph, 'run')).toEqual([
       { name: 'cb', kind: 'field', qname: 'L::cb', by: 'field-call' },
     ]);
+  });
+
+  it('implicit-this member calls inside a method still reach the field', async () => {
+    // The extractor drops `this`, so `this->fp(...)` / `fp(...)` inside a
+    // member arrive as bare names — the one case a bare call may be a field.
+    const graph = await project({
+      'main.cpp': [
+        'struct K { int (*fp)(int); void go(); };',
+        'struct Other { int (*fp)(int); };',
+        '',
+        'void K::go() {',
+        '    this->fp(1);',
+        '    fp(2);',
+        '}',
+      ].join('\n'),
+    });
+    const go = graph.getNodesByKind('method').find((n) => n.name === 'go')!;
+    expect(go).toBeDefined();
+    const calls = graph
+      .getOutgoingEdges(go.id)
+      .filter((e) => e.kind === 'calls')
+      .map((e) => graph.getNode(e.target)!)
+      .filter((t) => t.name === 'fp');
+    // Both calls land on K::fp (the enclosing type's own field), never
+    // Other::fp — two edges when both refs resolve, one if `this->` is kept.
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    for (const t of calls) {
+      expect(t.qualifiedName).toBe('K::fp');
+      expect(t.kind).toBe('field');
+    }
   });
 });

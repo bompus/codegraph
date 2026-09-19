@@ -463,18 +463,22 @@ function resolveMiddleware(
   name: string,
   context: ResolutionContext
 ): string | null {
-  // Try exact name first
+  // Try exact name first. A `field` is callable only through a receiver —
+  // C/C++ fn-pointer members are `field` nodes and bare middleware-ish names
+  // (`validate`, `sanitize`, `auth`) collide with them at kernel scale —
+  // never hand a receiver-less ref a member.
   const candidates = context.getNodesByName(name);
   const match = candidates.find((n) =>
-    n.name.toLowerCase() === name.toLowerCase() ||
-    n.name.toLowerCase() === name.replace(/Middleware$/i, '').toLowerCase()
+    n.kind !== 'field' &&
+    (n.name.toLowerCase() === name.toLowerCase() ||
+    n.name.toLowerCase() === name.replace(/Middleware$/i, '').toLowerCase())
   );
   if (match) return match.id;
 
   // Try without Middleware suffix
   const baseName = name.replace(/Middleware$/i, '');
   if (baseName !== name) {
-    const baseCandidates = context.getNodesByName(baseName);
+    const baseCandidates = context.getNodesByName(baseName).filter((n) => n.kind !== 'field');
     const MIDDLEWARE_DIRS = ['/middleware/', '/middlewares/'];
     const preferred = baseCandidates.filter((n) =>
       MIDDLEWARE_DIRS.some((d) => n.filePath.includes(d))

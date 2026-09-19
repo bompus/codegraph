@@ -3556,6 +3556,23 @@ impl KernelResolver {
         *qn == want || qn.ends_with(&format!("::{}", want)) || want.ends_with(&format!("::{}", qn))
     }
 
+    /// isImplicitThisFieldCall (name-matcher.ts): the one case a bare `calls`
+    /// name can be a `field` — C++ `this->fp(...)` arrives as a bare ref (the
+    /// extractor drops `this`), so allow it only when the field's owner is
+    /// the call site's enclosing type.
+    fn is_implicit_this_field_call(&mut self, r: &ResolveRefIn, field: &KNode) -> Result<bool> {
+        if r.language != "cpp" {
+            return Ok(false);
+        }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(false);
+        };
+        let Some(prefix) = Self::enclosing_type_prefix(Some(caller.as_ref())) else {
+            return Ok(false);
+        };
+        Ok(Self::enclosing_type_prefix(Some(field)).as_deref() == Some(prefix.as_str()))
+    }
+
     /// Returns `Ok(None)` when the call-site form vetoes every candidate
     /// (the TS `null` — reference stays unresolved).
     fn apply_cpp_call_site_form(
@@ -3701,6 +3718,29 @@ impl KernelResolver {
             candidates = kept;
         }
         candidates.retain(|n| !(bare_js && n.kind == "method"));
+        // A C/C++ `field` is reachable only through a receiver — `s.f`,
+        // `p->f`, `T::f` — which the extractor encodes as a dotted or
+        // `::`-qualified ref, so a bare name can never mean one. C++ keeps
+        // an implicit-this exception (`this->` is dropped by the extractor)
+        // when the field's owner is the ref site's enclosing type. Without
+        // this, Linux-scale corpora resolved ~39k bare libc/kernel calls
+        // (`bind`, `close`, `ioctl`) onto whatever fn-pointer member shared
+        // the name. Other languages' `field` nodes are exempt — Solidity
+        // `emit Event(...)` legitimately bare-calls an event field.
+        // (name-matcher.ts: matchByExactName / isImplicitThisFieldCall)
+        {
+            let mut kept: Vec<Rc<KNode>> = Vec::with_capacity(candidates.len());
+            for n in candidates.into_iter() {
+                if n.kind == "field"
+                    && (n.language == "c" || n.language == "cpp")
+                    && !self.is_implicit_this_field_call(r, &n)?
+                {
+                    continue;
+                }
+                kept.push(n);
+            }
+            candidates = kept;
+        }
         if bare_js {
             let locally_bound =
                 self.is_locally_bound_js_name(&r.reference_name, &r.file_path, Some(r.line))?;

@@ -967,6 +967,23 @@ function callableOnType(candidate: Node, typePrefix: string): boolean {
   return qn === want || qn.endsWith(`::${want}`) || want.endsWith(`::${qn}`);
 }
 
+/**
+ * The one case a bare `calls` name can be a `field`: C++ `this->fp(...)` —
+ * the extractor drops `this`, so the ref arrives as a bare name — inside a
+ * member of the field's own type. Anything else (C has no implicit member
+ * access; every other language encodes the receiver into the ref name) would
+ * be a free function or macro call guessed onto an unrelated struct member.
+ */
+function isImplicitThisFieldCall(
+  ref: UnresolvedRef,
+  fieldNode: Node,
+  context: ResolutionContext
+): boolean {
+  if (ref.language !== 'cpp') return false;
+  const prefix = enclosingTypePrefix(context.getNodeById?.(ref.fromNodeId));
+  return !!prefix && enclosingTypePrefix(fieldNode) === prefix;
+}
+
 function applyCppCallSiteForm(
   ref: UnresolvedRef,
   candidates: Node[],
@@ -1045,6 +1062,22 @@ export function matchByExactName(
       !ESM_FAMILY.has(n.language) || !isSealedModule(n.filePath, context))
     // A receiver-less JS/TS call cannot reach a method (#1714).
     .filter((n) => !(bareJs && n.kind === 'method'))
+    // A C/C++ `field` is reachable only through a receiver — `s.f`, `p->f`,
+    // `T::f` — which the extractor encodes as a dotted or `::`-qualified
+    // ref, so a bare name can never mean one. C++ alone keeps an exception:
+    // `this->` is dropped by the extractor, so `fp(...)` inside a member
+    // function may be an implicit-this field use — allowed only when the
+    // field's owner is the ref site's enclosing type. Without this,
+    // Linux-scale corpora resolved ~39k bare libc/kernel calls (`bind`,
+    // `close`, `ioctl`) onto whatever fn-pointer member shared the name.
+    // Other languages' `field` nodes are exempt — Solidity `emit Event(...)`
+    // legitimately bare-calls an event field.
+    .filter(
+      (n) =>
+        n.kind !== 'field' ||
+        (n.language !== 'c' && n.language !== 'cpp') ||
+        isImplicitThisFieldCall(ref, n, context)
+    )
     // A name the file binds itself (a parameter, a const) shadows every other
     // file's symbol of that name, so a bare call has no cross-file candidate.
     .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context, ref.line)));
