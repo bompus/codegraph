@@ -178,4 +178,93 @@ func (c *c${mod}) List(ctx context.Context, req *${mod}.ListReq) (res *${mod}.Li
     expect(byRoute['GET /cash/list']).toContain('controller/cash/');
     expect(byRoute['GET /order/list']).toContain('controller/order/');
   });
+
+  it('composes the s.Group prefix onto route labels through the Bind → controller → request-type chain', async () => {
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module example.com/app\n\nrequire github.com/gogf/gf/v2 v2.7.0\n');
+
+    fs.mkdirSync(path.join(dir, 'api', 'system'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'api', 'system', 'dept.go'),
+      `package system
+
+import "github.com/gogf/gf/v2/frame/g"
+
+type DeptSearchReq struct {
+	g.Meta \`path:"/dept/list" method:"get"\`
+}
+type DeptSearchRes struct{}
+
+// Bound to a controller that is never registered in a group — stays bare.
+type OrphanReq struct {
+	g.Meta \`path:"/orphan" method:"get"\`
+}
+type OrphanRes struct{}
+`
+    );
+
+    fs.mkdirSync(path.join(dir, 'internal', 'controller'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'internal', 'controller', 'dept.go'),
+      `package controller
+
+import (
+	"context"
+
+	"example.com/app/api/system"
+)
+
+type sysDeptController struct{}
+type orphanController struct{}
+
+func NewDept() *sysDeptController { return &sysDeptController{} }
+func NewOrphan() *orphanController { return &orphanController{} }
+
+func (c *sysDeptController) List(ctx context.Context, req *system.DeptSearchReq) (res *system.DeptSearchRes, err error) {
+	return
+}
+
+func (c *orphanController) Get(ctx context.Context, req *system.OrphanReq) (res *system.OrphanRes, err error) {
+	return
+}
+`
+    );
+
+    fs.mkdirSync(path.join(dir, 'internal', 'cmd'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'internal', 'cmd', 'cmd.go'),
+      `package cmd
+
+import (
+	"example.com/app/internal/controller"
+	"github.com/gogf/gf/v2/net/ghttp"
+)
+
+func Run(s *ghttp.Server) {
+	s.Group("/system", func(group *ghttp.RouterGroup) {
+		group.Middleware()
+		group.Bind(controller.NewDept())
+	})
+	s.Group("/other", func(group *ghttp.RouterGroup) {
+		// a Bind whose arg can't resolve (no constructor / type found) — inert
+		group.Bind(unbound.NewX())
+	})
+}
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const routes = db.prepare(`SELECT name FROM nodes WHERE kind='route' ORDER BY name`).all();
+    const edges = db
+      .prepare(`SELECT json_extract(metadata,'$.route') route FROM edges WHERE json_extract(metadata,'$.synthesizedBy')='goframe-route'`)
+      .all();
+    cg.close?.();
+
+    // The bound controller's routes gain the group prefix; the unbound one doesn't.
+    expect(routes.map((r: any) => r.name).sort()).toEqual(['GET /orphan', 'GET /system/dept/list']);
+    // …and the prefixed label flows into the synthesized edge metadata (the
+    // orphan route has a real handler — it links too, just unprefixed).
+    expect(edges.map((e: any) => e.route).sort()).toEqual(['GET /orphan', 'GET /system/dept/list']);
+  });
 });

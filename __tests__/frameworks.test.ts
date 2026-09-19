@@ -1085,6 +1085,76 @@ describe('goResolver.extract', () => {
     expect(nodes[0].name).toBe('GET /api/users/{id}');
     expect(references[0].referenceName).toBe('getUser');
   });
+
+  it('composes a gin Group prefix onto registrations on the group var', () => {
+    const src = [
+      'func setup(r *gin.Engine) {',
+      '  v1 := r.Group("/v1")',
+      '  v1.GET("/users", listUsers)',
+      '  v1.POST("/users", createUser)',
+      '  r.GET("/healthz", health)', // ungrouped — unchanged
+      '  admin := v1.Group("/admin")', // nested group composes
+      '  admin.GET("/stats", stats)',
+      '}',
+    ].join('\n');
+    const { nodes } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual([
+      'GET /v1/users',
+      'POST /v1/users',
+      'GET /healthz',
+      'GET /v1/admin/stats',
+    ]);
+  });
+
+  it('does not leak a group var across top-level func boundaries', () => {
+    // `v1` in func B is a DIFFERENT var than in func A — file-level tracking
+    // would mislabel B's routes if bindings didn't reset at `func`.
+    const src = [
+      'func a(r *gin.Engine) {',
+      '  v1 := r.Group("/a")',
+      '  v1.GET("/x", x)',
+      '}',
+      'func b(r *gin.Engine) {',
+      '  v1 := r.Group("/b")',
+      '  v1.GET("/y", y)',
+      '}',
+    ].join('\n');
+    const { nodes } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual(['GET /a/x', 'GET /b/y']);
+  });
+
+  it('composes a chi Route literal prefix onto routes inside its closure (nested included)', () => {
+    const src = [
+      'func routes(r chi.Router) {',
+      '  r.Route("/articles", func(r chi.Router) {',
+      '    r.Get("/", list)',
+      '    r.Route("/{id}", func(r chi.Router) {',
+      '      r.Get("/", getOne)',
+      '    })',
+      '  })',
+      '  r.Get("/outside", outside)', // root router — no prefix
+      '}',
+    ].join('\n');
+    const { nodes } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual([
+      'GET /articles/',
+      'GET /articles/{id}/',
+      'GET /outside',
+    ]);
+  });
+
+  it('composes a gorilla PathPrefix().Subrouter() prefix onto subrouter registrations', () => {
+    const src = [
+      'func routes(r *mux.Router) {',
+      '  s := r.PathPrefix("/api").Subrouter()',
+      '  s.HandleFunc("/users/{id}", getUser).Methods("GET")',
+      '  r.HandleFunc("/healthz", health)',
+      '}',
+    ].join('\n');
+    const { nodes, references } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual(['ANY /api/users/{id}', 'ANY /healthz']);
+    expect(references[0].referenceName).toBe('getUser');
+  });
 });
 
 import { goframeResolver } from '../src/resolution/frameworks/goframe';
@@ -1211,6 +1281,32 @@ let app = Router::new()
     const { nodes, references } = rustResolver.extract!('main.rs', src);
     expect(nodes[0].name).toBe('GET /health');
     expect(references[0].referenceName).toBe('health_check');
+  });
+
+  it('composes a web::scope prefix onto nested resource and route paths', () => {
+    const src = `App::new()
+  .service(
+    web::scope("/api")
+      .service(web::resource("/users").route(web::get().to(list_users)))
+      .route("/ping", web::get().to(ping)),
+  )
+  .route("/health", web::get().to(health_check))\n`;
+    const { nodes } = rustResolver.extract!('main.rs', src);
+    expect(nodes.map((n) => n.name).sort()).toEqual([
+      'GET /api/ping',
+      'GET /api/users',
+      'GET /health',
+    ]);
+  });
+
+  it('composes NESTED web::scope prefixes (scope inside a service arg)', () => {
+    const src = `App::new().service(
+  web::scope("/api").service(
+    web::scope("/v2").service(web::resource("/items").route(web::post().to(create))),
+  ),
+)\n`;
+    const { nodes } = rustResolver.extract!('main.rs', src);
+    expect(nodes.map((n) => n.name)).toEqual(['POST /api/v2/items']);
   });
 });
 

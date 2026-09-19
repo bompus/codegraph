@@ -187,6 +187,40 @@ export const rustResolver: FrameworkResolver = {
       }
     }
 
+    // Actix-web `web::scope("/api")` — every `.service(...)` / `.route(...)`
+    // arg in its method chain serves under the scope prefix, so a nested
+    // `web::resource("/x")` is really `/api/x`. Each chain element's arg list
+    // is a span; a path literal inside the innermost enclosing span gains its
+    // (composed) prefix. Nested scopes compose (`web::scope("/a").service(
+    // web::scope("/b")…)` → `/a/b/…`); a `service(handler_fn)` arg carries no
+    // path literal, so nothing else is prefixed.
+    interface ScopeSpan { start: number; end: number; prefix: string; }
+    const scopeSpans: ScopeSpan[] = [];
+    const scopedPath = (pos: number, lit: string): string => {
+      let best: ScopeSpan | null = null;
+      for (const sp of scopeSpans) {
+        if (pos >= sp.start && pos < sp.end && (!best || sp.start > best.start)) best = sp;
+      }
+      return best ? joinRustPath(best.prefix, lit) : lit;
+    };
+    const scopeRe = /web::scope\s*\(\s*"([^"]*)"\s*\)/g;
+    while ((match = scopeRe.exec(safe)) !== null) {
+      // A scope nested inside an outer scope's service arg composes prefixes.
+      const prefix = scopedPath(match.index, match[1]!);
+      let p = match.index + match[0].length;
+      for (;;) {
+        const chain = /^\s*\.\s*(\w+)\s*\(/.exec(safe.slice(p));
+        if (!chain) break;
+        const open = p + chain[0].length - 1;
+        const close = findMatchingParen(safe, open);
+        if (close < 0) break;
+        if (chain[1] === 'service' || chain[1] === 'route') {
+          scopeSpans.push({ start: p + chain[0].indexOf('.'), end: close, prefix });
+        }
+        p = close + 1;
+      }
+    }
+
     // Actix-web builder API (the dominant actix routing style; attribute macros
     // are handled above). The handler lives in `.to(handler)`, not `get(handler)`.
     const pushActixRoute = (routePath: string, method: string, handlerExpr: string, line: number) => {
@@ -218,29 +252,35 @@ export const rustResolver: FrameworkResolver = {
       });
     };
 
-    // web::resource("/path") { .route(web::METHOD().to(h)) | .to(h) } — possibly chained.
+    // web::resource("/path") { .route(web::METHOD().to(h)) | .to(h) } — possibly
+    // chained. The chain is the resource's OWN `.method(...)` elements, walked
+    // element-by-element and bounded by the enclosing arg list's ')' — the old
+    // fixed 500-char window bled into a scope's LATER `.route(...)` and
+    // mislabeled it as this resource's path.
     const resourceRegex = /web::resource\s*\(\s*"([^"]+)"\s*\)/g;
     while ((match = resourceRegex.exec(safe)) !== null) {
-      const routePath = match[1]!;
-      const startLine = safe.slice(0, match.index).split('\n').length;
-      const after = match.index + match[0].length;
-      // Bound the resource's method chain at the next resource() to avoid bleed.
-      const nextRes = safe.indexOf('web::resource', after);
-      const end = Math.min(after + 500, nextRes === -1 ? safe.length : nextRes);
-      const chain = safe.slice(after, end);
-
-      const methodTo = /web::(get|post|put|patch|delete|head)\s*\(\s*\)\s*\.to\s*\(\s*([A-Za-z_][\w:]*)/g;
-      let m2: RegExpExecArray | null;
-      let found = false;
-      while ((m2 = methodTo.exec(chain)) !== null) {
-        const mLine = startLine + chain.slice(0, m2.index).split('\n').length - 1;
-        pushActixRoute(routePath, m2[1]!, m2[2]!, mLine);
-        found = true;
-      }
-      // Direct `.resource("/x").to(handler)` (all methods) when no explicit verb route.
-      if (!found) {
-        const direct = chain.match(/^\s*\.to\s*\(\s*([A-Za-z_][\w:]*)/);
-        if (direct) pushActixRoute(routePath, 'ANY', direct[1]!, startLine);
+      const routePath = scopedPath(match.index, match[1]!);
+      let p = match.index + match[0].length;
+      for (;;) {
+        const chain = /^\s*\.\s*(\w+)\s*\(/.exec(safe.slice(p));
+        if (!chain) break;
+        const open = p + chain[0].length - 1;
+        const close = findMatchingParen(safe, open);
+        if (close < 0) break;
+        const args = safe.slice(open + 1, close);
+        if (chain[1] === 'route') {
+          const m2 = /web::(get|post|put|patch|delete|head)\s*\(\s*\)\s*\.to\s*\(\s*([A-Za-z_][\w:]*)/.exec(args);
+          if (m2) {
+            pushActixRoute(routePath, m2[1]!, m2[2]!, safe.slice(0, open).split('\n').length);
+          }
+        } else if (chain[1] === 'to') {
+          // Direct `.resource("/x").to(handler)` (all methods).
+          const m2 = /^\s*([A-Za-z_][\w:]*)/.exec(args);
+          if (m2) {
+            pushActixRoute(routePath, 'ANY', m2[1]!, safe.slice(0, open).split('\n').length);
+          }
+        }
+        p = close + 1;
       }
     }
 
@@ -248,12 +288,20 @@ export const rustResolver: FrameworkResolver = {
     const appRouteRegex = /\.route\s*\(\s*"([^"]+)"\s*,\s*web::(get|post|put|patch|delete|head)\s*\(\s*\)\s*\.to\s*\(\s*([A-Za-z_][\w:]*)/g;
     while ((match = appRouteRegex.exec(safe)) !== null) {
       const line = safe.slice(0, match.index).split('\n').length;
-      pushActixRoute(match[1]!, match[2]!, match[3]!, line);
+      pushActixRoute(scopedPath(match.index, match[1]!), match[2]!, match[3]!, line);
     }
 
     return { nodes, references };
   },
 };
+
+/** `/api` + `/x` → `/api/x` — slash-tolerant join for `web::scope` prefixes. */
+function joinRustPath(prefix: string, sub: string): string {
+  if (!prefix) return sub;
+  const p = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+  const s = sub.startsWith('/') ? sub : `/${sub}`;
+  return `${p}${s}`;
+}
 
 // Directory patterns
 const HANDLER_DIRS = ['/handlers/', '/handler/', '/api/', '/routes/', '/controllers/'];
