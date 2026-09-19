@@ -637,7 +637,7 @@ async function flutterBuildEdges(queries: QueryBuilder, ctx: ResolutionContext, 
   for (const file of ctx.getAllFiles()) {
     if (!file.endsWith('.dart')) continue;
     const content = ctx.readFile(file);
-    if (!content || !content.includes('routes:') || !FLUTTER_APP_RE.test(content)) continue;
+    if (!content || !content.includes('routes') || !FLUTTER_APP_RE.test(content)) continue;
     FLUTTER_ROUTES_BLOCK_RE.lastIndex = 0;
     let bm: RegExpExecArray | null;
     while ((bm = FLUTTER_ROUTES_BLOCK_RE.exec(content))) {
