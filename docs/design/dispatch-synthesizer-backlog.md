@@ -172,3 +172,32 @@ For each shape, before marking ✅:
       destructured off an enhanced api in a different file than the base) — the
       synth's same-file gate skips it today; would need a same-`reducerPath` or
       import-following relaxation, validated on a repo that splits endpoints.
+
+---
+
+## Deferred-item evidence sweep (2026-09-19)
+
+Repo-presence validation for the deferred recall items above — "does the shape
+actually exist in a real corpus repo" before building the synthesizer. Clones
+(`--depth 1`) live at `~/cg-scratch/corpora/`; the per-shape grep receipts and
+line cites are in `~/cg-scratch/needs-evidence/FINDINGS.md`. Repo corrections
+found by the sweep: `trezor-suite` is **`trezor/trezor-suite`** (satoshilabs org
+404s); warp-drive is **`warp-drive-data/warp-drive`** (warp-driveio and
+emberjs-data orgs both 404).
+
+| Deferred item | Repo (sha) | Verdict |
+|---|---|---|
+| `object-registry` assign-then-call (`const h = reg[k]; h()`) | warp-drive-data/warp-drive `2147c43` | **READY** — `COMMANDS[cmdString]` → `await cmd(args)` in tools/release + lazy `commands[k]` → `cmd.load()` variant in the shipped bin |
+| MediatR `Publish(domainEvent)` collection fan-out | dotnet/eShop `b4a4087` | **READY** — `DispatchDomainEventsAsync` flattens `AddDomainEvent` accumulations (11 sites) then `mediator.Publish` each; dispatch keyed on runtime event type |
+| Sidekiq `Jobs.enqueue(:sym)` symbol-payload | discourse/discourse `ae5ba2c` | **READY** — 155 `enqueue(:sym` + 29 `enqueue_in/at(N, :sym`; `perform_async` form entirely absent — symbol-payload is THE shape here |
+| Celery canvas (`group`/`chord`/`.s()`/`.delay()`) | paperless-ngx `d5425a8` | **READY** — chord 4, `group().delay()` 3, `.s()/.si()` 17, `.on_error()` callback signatures |
+| Celery canvas | pretix `aa14505` | **partial** — `chain(*sigs)` + `.si()` + `.on_error()` only; `group`/`chord`/`.delay()` = 0 (pretix uses `apply_async` exclusively) |
+| Laravel `XEvent::dispatch()` static-trait | firefly-iii `99f9b74` | **READY (thin)** — `SendWebhookMessage::dispatch($msg)->afterResponse()` ×2, `Dispatchable` users 5; `event(new X)` is 100× more common |
+| Laravel `XEvent::dispatch()` static-trait | koel `5169804` | **partial** — trait-static form absent; `Dispatcher::dispatch(new XJob)` facade 7 sites (handler keyed on arg class); `event(new X)` = 9 |
+| Spring listener re-publish | halo-dev/halo `01d9b59` | **partial** — explicit `publisher.publishEvent` inside listener bodies exists (SharedEventDispatcher:42 event→event bridge); return-value republish and `PayloadApplicationEvent` both absent — READY only if the synth targets explicit re-publish, no-signal for the return-value/`PayloadApplicationEvent` variants |
+| NgRx `concatLatestFrom`/`withLatestFrom` reads, `signalStore` | ngrx/platform `32c4c74` | **READY (thin)** — shape exists verbatim (router.effects.ts:19 `concatLatestFrom(() => store.select(...))` inside `createEffect`); covered by the `ngrx-select` read-side extension shipped in the NgRx row. `signalStore(` 323 repo-wide but concentrated in specs/migrations — one example-app call site |
+| trezor barrel-namespace `M[method]` | trezor/trezor-suite `1c09d63` | **READY but shelved** — shape confirmed verbatim (`method.ts`/`method.native.ts` `methods[method]` + IPC-proxy `X[method](...)`), still single-lineage per the SHELVED disposition above |
+
+No-signal rule applied: pretix group/chord/delay, halo return-value republish,
+koel trait-static are downgraded per the strict-token read — a synthesizer keyed
+on those exact tokens would find nothing to bridge in those repos.
