@@ -5654,19 +5654,22 @@ impl KernelResolver {
     /// `owner::leaf` qualified name over the prefixed member kinds (method,
     /// enum_member, constant). Advisory: Null falls through to the normal
     /// strategies so a ref today's bare-name arm resolves keeps its verdict.
-    /// Two segments after the non-nested turbofish strip — `Self::Assoc::m`
-    /// (associated-type binding) and `Self::f().chain` (return-type) decline.
+    /// Two segments after the non-nested turbofish strip, plus the
+    /// three-segment associated-type path `Self::Assoc::m` (`type Assoc = X`
+    /// in the caller's enclosing impl block binds the middle segment, then
+    /// `X::m` resolves like any owner path). `Self::f().chain` declines.
     fn match_rust_self_path(&mut self, r: &ResolveRefIn) -> Result<McRes> {
         if r.language != "rust" || !r.reference_name.starts_with("Self::") {
             return Ok(McRes::Null);
         }
+
         let strip = self.cached_regex(r"<[^>]*>")?;
         let name = strip.replace_all(&r.reference_name, "");
         let segs: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
-        if segs.len() != 2 || segs[0] != "Self" {
+        if segs[0] != "Self" || (segs.len() != 2 && segs.len() != 3) {
             return Ok(McRes::Null);
         }
-        let leaf = segs[1];
+        let leaf = segs[segs.len() - 1];
         if !leaf.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return Ok(McRes::Null);
         }
@@ -5679,7 +5682,16 @@ impl KernelResolver {
         if sep == 0 {
             return Ok(McRes::Null);
         }
-        let owner = &caller.qualified_name[..sep];
+        // `Self::Assoc::leaf` — the associated type binds in the caller's
+        // enclosing `impl` block (`type Assoc = X`), not on the type.
+        let owner: String = if segs.len() == 2 {
+            caller.qualified_name[..sep].to_string()
+        } else {
+            match self.rust_assoc_type_binding(&caller, segs[1])? {
+                Some(bound) => bound,
+                None => return Ok(McRes::Null),
+            }
+        };
         let want = format!("{}::{}", owner, leaf);
         let mut owned: Vec<Rc<KNode>> = self
             .nodes_by_qualified_name(&want)?
@@ -5694,7 +5706,7 @@ impl KernelResolver {
         // Same disambiguation as match_rust_self_call: rust qualified names
         // omit module paths — two same-named owners need the caller's file.
         let owners: Vec<Rc<KNode>> = self
-            .nodes_by_qualified_name(owner)?
+            .nodes_by_qualified_name(&owner)?
             .iter()
             .filter(|n| {
                 n.language == "rust"
@@ -5719,6 +5731,118 @@ impl KernelResolver {
             confidence: 0.9,
             resolved_by: "qualified-name",
         }))
+    }
+
+    /// rustAssocTypeBinding (name-matcher.ts): the concrete type an
+    /// associated-type name binds to inside the caller's enclosing `impl`
+    /// block — `Self::Assoc` in `impl Tr for T` means that impl's
+    /// `type Assoc = X` decl (trait defaults `type Assoc;` carry no `=` and
+    /// miss). The impl block is found by brace-counting backward from the
+    /// caller's first line to the enclosing block opener — only an `impl`
+    /// opener qualifies — then the decl is matched per line at depth 1 (or
+    /// on the opener line) and normalized like any inferred type name.
+    fn rust_assoc_type_binding(
+        &mut self,
+        caller: &Rc<KNode>,
+        assoc_name: &str,
+    ) -> Result<Option<String>> {
+        let Some(lines) = self.read_file(&caller.file_path) else {
+            return Ok(None);
+        };
+        // Backward brace scan: the first `{` whose net depth goes negative
+        // opens the block enclosing the caller — for a method, the impl.
+        let at = |i: i64| -> String {
+            if i < 0 {
+                String::new()
+            } else {
+                strip_line_comments(lines.get(i as usize).map(|s| s.as_str()).unwrap_or(""))
+            }
+        };
+        let mut depth = 0i32;
+        let mut block_idx = -1i64;
+        for i in (0..caller.start_line - 1).rev() {
+            let code = at(i);
+            for ch in code.chars() {
+                if ch == '{' {
+                    depth -= 1;
+                } else if ch == '}' {
+                    depth += 1;
+                }
+            }
+            if depth < 0 {
+                block_idx = i;
+                break;
+            }
+        }
+        let impl_re = self.cached_regex(r"\bimpl\b")?;
+        // Single-line impls put the opener on the caller's own line
+        // (`impl T { type A = X; fn m(&self) { ... } }`).
+        if block_idx < 0 {
+            let own = at(caller.start_line - 1);
+            if let Some(pos) = own.find('{') {
+                if impl_re.is_match(&own[..pos]) {
+                    block_idx = caller.start_line - 1;
+                }
+            }
+        }
+        if block_idx < 0 {
+            return Ok(None);
+        }
+        // The opener must head an `impl` — check the line's pre-`{` head,
+        // then brace-free continuation lines above it (`impl Tr for T\n{`);
+        // a line bearing `{`/`}` belongs to a different construct.
+        let mut is_impl = false;
+        for j in ((block_idx - 4).max(0)..=block_idx).rev() {
+            let code = at(j);
+            if j == block_idx {
+                let head = &code[..code.find('{').unwrap_or(0)];
+                if impl_re.is_match(head) {
+                    is_impl = true;
+                }
+                continue;
+            }
+            if code.contains('{') || code.contains('}') {
+                break;
+            }
+            if impl_re.is_match(&code) {
+                is_impl = true;
+                break;
+            }
+        }
+        if !is_impl {
+            return Ok(None);
+        }
+        // Forward: `type <assoc> = X;` is a direct member — match at depth 1
+        // or on the opener line itself, stop when the block closes.
+        let type_re = self.cached_regex(&format!(
+            r"\btype\s+{}\s*=\s*([^;]+);",
+            regex::escape(assoc_name)
+        ))?;
+        depth = 0;
+        let mut opened = false;
+        let mut bound: Option<String> = None;
+        for i in block_idx..lines.len() as i64 {
+            let code = at(i);
+            if (opened && depth == 1) || (i == block_idx && code.contains('{')) {
+                if let Some(m) = type_re.captures(&code) {
+                    bound = Some(m.get(1).unwrap().as_str().to_string());
+                    break;
+                }
+            }
+            for ch in code.chars() {
+                if ch == '{' {
+                    depth += 1;
+                    opened = true;
+                } else if ch == '}' {
+                    depth -= 1;
+                }
+            }
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+        let Some(bound) = bound else { return Ok(None) };
+        self.normalize_inferred_type_name(&bound)
     }
 
     /// matchRustSelfFieldCall (name-matcher.ts): `self.<field>.<method>()`,
