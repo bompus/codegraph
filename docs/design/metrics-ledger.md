@@ -729,3 +729,11 @@ Fourth **enhancement** leg — closes the last `Self::` frontier. A `Self::metho
 **Gates**: 12/12 `rust-self-owner` (3 new: `-> Self` same-owner chain, `-> Chain` cross-type, `Self::Assoc::m().tail` through the impl decl, plus the decline battery — `Option<Self>` receiver, missing tail, missing receiver), 6/6 parity, 10/10 bindings-rust, golden unchanged (resolution-only arm), clippy `-D warnings` clean.
 
 **Rust `Self::` surface is now exhausted**: 2-seg items (§5.27), 3-seg assoc-type (§5.28), call-chains (here). Everything still declined is abstract-by-design — trait defaults with unbound `type`, or stdlib/macro returns with no in-graph owner.
+
+### 5.31 Rust enhancement — bare `Self` refs bind the enclosing type (2026-09-19)
+
+Fifth **enhancement** leg — the largest remaining rust unresolved class. A bare `Self` ref (`Self { .. }` construction, `-> Self` position, `Self(..)` call — 2,245 refs on the linux corpus) binds to the caller qualified-name's owner TYPE node: `struct`/`enum`/`union`/`class` only — a `trait` owner stays the abstract implementor and declines. A type-level caller (`struct S { next: Option<Box<Self>> }`) binds to itself. Same file-pin disambiguation as the `Self::` member arms. Advisory placement before the bare-name pre-filter (identical position in both engines: kernel before `pre_pass`, TS before `preFilterPass`).
+
+**Corpus evidence** (self-chain snapshot twin, sequential shadow run): **1,320 refs flip** (81 → 1,401 resolved; `Self`-sourced edge delta: `references→struct` +1,011, `instantiates→struct` +292, `references→enum` +94, `references→union` +4 — all correct by construction since the target is the caller's own qualified-name owner). Remaining ~900 `Self` refs decline: trait-default callers, macro-generated impls whose type node isn't in the graph, ambiguous same-name owners. **0 shadow divergences** (1,556 kernel-handled checked).
+
+**Gates**: 15/15 `rust-self-owner` (new: `Self{}`/`->Self` → struct, `impl Tr for T` → T not Tr, trait-default decline), 6/6 parity, golden unchanged, clippy `-D warnings` clean.
