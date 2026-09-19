@@ -177,6 +177,100 @@ public class ThingsController {
     cg.close?.();
   });
 
+  it('fans out Publish of an erased/base-typed domain event to every notification handler', async () => {
+    write('Events.cs', `namespace Shop;
+using MediatR;
+public record OrderShippedDomainEvent(int Id) : INotification;
+public record BuyerVerifiedDomainEvent(int Id) : INotification;
+public record OrderCancelledCommand(int Id) : IRequest;
+`);
+    write('Handlers.cs', `namespace Shop;
+using MediatR;
+using System.Threading;
+using System.Threading.Tasks;
+public class OrderShippedHandler : INotificationHandler<OrderShippedDomainEvent> {
+    public Task Handle(OrderShippedDomainEvent notification, CancellationToken ct) => Task.CompletedTask;
+}
+public class BuyerVerifiedHandler : INotificationHandler<BuyerVerifiedDomainEvent> {
+    public Task Handle(BuyerVerifiedDomainEvent notification, CancellationToken ct) => Task.CompletedTask;
+}
+public class OrderCancelledCommandHandler : IRequestHandler<OrderCancelledCommand> {
+    public Task Handle(OrderCancelledCommand request, CancellationToken ct) => Task.CompletedTask;
+}
+`);
+    write('MediatorExtension.cs', `namespace Shop;
+using MediatR;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+public static class MediatorExtension {
+    // eShop's canonical domain-event drain: elements are INotification, so the
+    // var-erased loop arg must reach every INotificationHandler.
+    public static async Task DispatchDomainEventsAsync(this IMediator mediator, Ctx ctx) {
+        var domainEvents = ctx.ChangeTracker.Entries()
+            .SelectMany(x => x.Entity.DomainEvents).ToList();
+        foreach (var domainEvent in domainEvents)
+            await mediator.Publish(domainEvent);
+    }
+    // A base-typed declared arg fans out the same way.
+    public static async Task NotifyBase(this IMediator mediator, INotification notification) {
+        await mediator.Publish(notification);
+    }
+}
+public class Controller {
+    private readonly ISender _mediator;
+    public Controller(ISender mediator) { _mediator = mediator; }
+    // PRECISION declines:
+    public async Task Precise(int id) {
+        await _mediator.Publish(new OrderShippedDomainEvent(id)); // concrete new → its handler only
+    }
+    public async Task SendLoop(List<Ctx> orders) {
+        foreach (var order in orders)
+            await _mediator.Send(order); // Send never fans out
+    }
+    public async Task NonEventLoop(List<OrderCancelledCommand> commands) {
+        foreach (var cmd in commands)
+            await _mediator.Publish(cmd); // non-event collection — no evidence
+    }
+    public async Task MemberArg(Request req) {
+        await _mediator.Publish(req.Notification); // member-path arg — declined
+    }
+}
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.file_path tfile, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'mediatr-dispatch'`
+      )
+      .all();
+
+    // The erased loop publish reaches both notification handlers — and NOT the
+    // command handler (Send/request types never join the fan-out).
+    const loopEdges = edges.filter((r: any) => r.source === 'DispatchDomainEventsAsync');
+    expect(loopEdges.map((r: any) => r.tfile)).toEqual(['Handlers.cs', 'Handlers.cs']);
+    expect(loopEdges.every((r: any) => r.via === 'domainEvent:*')).toBe(true);
+    // The declared INotification param fans out the same way.
+    const baseEdges = edges.filter((r: any) => r.source === 'NotifyBase');
+    expect(baseEdges).toHaveLength(2);
+    expect(baseEdges.every((r: any) => r.via === 'INotification')).toBe(true);
+    // Concrete `new X()` still takes the precise path — one handler only.
+    const precise = edges.filter((r: any) => r.source === 'Precise');
+    expect(precise).toHaveLength(1);
+    expect(precise[0]!.via).toBe('OrderShippedDomainEvent');
+    // PRECISION: no Send fan-out, no non-event collection, no member-path arg.
+    expect(edges.some((r: any) => r.source === 'SendLoop')).toBe(false);
+    expect(edges.some((r: any) => r.source === 'NonEventLoop')).toBe(false);
+    expect(edges.some((r: any) => r.source === 'MemberArg')).toBe(false);
+
+    cg.close?.();
+  });
+
   it('produces no edges in a C# project with no MediatR (clean control)', async () => {
     write('Service.cs', `namespace Shop;
 public class Service {
