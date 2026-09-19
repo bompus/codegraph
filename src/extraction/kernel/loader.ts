@@ -84,6 +84,10 @@ export interface CfnptrFactsOut {
   arrayElems: string[];
   aliasNames: string[];
   dPairs: string[];
+  /** Distinct LHS field names of `x->f = fn;` / `(*x)->f = fn;` (the
+   *  bare-function-assignment registration filter). OPTIONAL — absent on
+   *  binaries that predate it; callers treat absence as empty. */
+  assignFields?: string[];
   dispatchFields: string[];
   arrayDispatchNames: string[];
   includes: string[];

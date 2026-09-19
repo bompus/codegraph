@@ -78,6 +78,10 @@ pub struct FileFacts {
     pub alias_names: Vec<String>,
     /// `lfield\0rfield`, distinct.
     pub d_pairs: Vec<String>,
+    /// Distinct LHS field names of `x->f = fn;` / `(*x)->f = fn;` matches
+    /// (bare-function-assignment registration filter; FN_ASSIGN_RE ∪
+    /// DEREF_FN_ASSIGN_RE second captures).
+    pub assign_fields: Vec<String>,
     pub dispatch_fields: Vec<String>,
     pub array_dispatch_names: Vec<String>,
     /// Raw `#include "…"` captures, in source order, NOT deduplicated —
@@ -838,6 +842,113 @@ fn field_assign_at(s: &[u8], p: usize) -> Option<(Range, Range, usize)> {
     Some(((f1s, f1e), (f2s, f2e), f2e))
 }
 
+/// FN_ASSIGN_RE: /(\w+)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g
+/// Collects the LHS field (second capture) of each `x->f = fn;` — the
+/// bare-function-assignment registration filter. `a->f = b->g` can't match
+/// (the RHS word must be followed by `;`), a bare `fp = fn` has no field
+/// access, and `(?!=)` keeps `==` out. Every byte position is a candidate
+/// start (JS advances one unit on failure); matches resume at their end.
+fn scan_fn_assign(s: &[u8], out: &mut Vec<String>) {
+    let mut pos = 0usize;
+    while pos < s.len() {
+        if !is_word(s[pos]) {
+            pos += 1;
+            continue;
+        }
+        match fn_assign_at(s, pos) {
+            Some((f, end)) => {
+                push_str(out, &s[f.0..f.1]);
+                pos = end;
+            }
+            None => pos += 1,
+        }
+    }
+}
+
+/// `\s*=(?!=)\s*&?\s*(\w+)\s*;` — the shared bare-function RHS tail of
+/// FN_ASSIGN_RE / DEREF_FN_ASSIGN_RE, starting just past the LHS field word.
+/// Returns the match end (one past the `;`).
+fn assign_rhs_tail(s: &[u8], i: usize) -> Option<usize> {
+    let eq = skip_jsws(s, i);
+    // `=(?!=)` — the `=` consumed, a second `=` rejected.
+    if s.get(eq) != Some(&b'=') || s.get(eq + 1) == Some(&b'=') {
+        return None;
+    }
+    let mut r1s = skip_jsws(s, eq + 1);
+    if s.get(r1s) == Some(&b'&') {
+        r1s = skip_jsws(s, r1s + 1);
+    }
+    if !is_word_at(s, r1s) {
+        return None;
+    }
+    let r1e = word_end(s, r1s);
+    let semi = skip_jsws(s, r1e);
+    if s.get(semi) != Some(&b';') {
+        return None;
+    }
+    Some(semi + 1)
+}
+
+/// `x->f` / `x.f` LHS of FN_ASSIGN_RE at `p` (a word start): returns the
+/// field-word range and the match end.
+fn fn_assign_at(s: &[u8], p: usize) -> Option<(Range, usize)> {
+    let w1 = word_end(s, p);
+    let a1 = arrow_at(s, skip_jsws(s, w1))?;
+    let f1s = skip_jsws(s, a1);
+    if !is_word_at(s, f1s) {
+        return None;
+    }
+    let f1e = word_end(s, f1s);
+    let end = assign_rhs_tail(s, f1e)?;
+    Some(((f1s, f1e), end))
+}
+
+/// DEREF_FN_ASSIGN_RE:
+/// /\(\s*\*\s*(\w+)\s*\)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g
+/// The dereference-receiver form `(*x)->f = fn;` / `(*x).f = fn;`. Collects
+/// the LHS field (second capture). Candidate starts are `(` positions only.
+fn scan_deref_fn_assign(s: &[u8], out: &mut Vec<String>) {
+    let mut pos = 0usize;
+    while pos < s.len() {
+        if s[pos] != b'(' {
+            pos += 1;
+            continue;
+        }
+        match deref_fn_assign_at(s, pos) {
+            Some((f, end)) => {
+                push_str(out, &s[f.0..f.1]);
+                pos = end;
+            }
+            None => pos += 1,
+        }
+    }
+}
+
+fn deref_fn_assign_at(s: &[u8], p: usize) -> Option<(Range, usize)> {
+    // p is the `(`.
+    let star = skip_jsws(s, p + 1);
+    if s.get(star) != Some(&b'*') {
+        return None;
+    }
+    let rs = skip_jsws(s, star + 1);
+    if !is_word_at(s, rs) {
+        return None;
+    }
+    let re = word_end(s, rs);
+    let cp = skip_jsws(s, re);
+    if s.get(cp) != Some(&b')') {
+        return None;
+    }
+    let a1 = arrow_at(s, skip_jsws(s, cp + 1))?;
+    let f1s = skip_jsws(s, a1);
+    if !is_word_at(s, f1s) {
+        return None;
+    }
+    let f1e = word_end(s, f1s);
+    let end = assign_rhs_tail(s, f1e)?;
+    Some(((f1s, f1e), end))
+}
+
 /// DISPATCH_RE: /((?:\w+(?:\s*\[[^\][]*\])?\s*(?:->|\.)\s*)+)(\w+)\s*\)?\s*\(/g
 /// The `+` loop is consumed greedily, then the field tail is tried at each
 /// segment count k descending — the JS engine's observable backtracking. The
@@ -1180,6 +1291,7 @@ pub fn scan_file(raw: &str, structs: &[StructExtent]) -> FileFacts {
         array_elems: Vec::new(),
         alias_names: Vec::new(),
         d_pairs: Vec::new(),
+        assign_fields: Vec::new(),
         dispatch_fields: Vec::new(),
         array_dispatch_names: Vec::new(),
         includes: Vec::new(),
@@ -1244,6 +1356,12 @@ pub fn scan_file(raw: &str, structs: &[StructExtent]) -> FileFacts {
     if contains_bytes(s, b"=") {
         scan_field_assign(s, &mut facts.d_pairs);
         facts.d_pairs = dedup_in_order(std::mem::take(&mut facts.d_pairs));
+        // Bare-function field assignment: FN_ASSIGN_RE runs over the whole
+        // file first, then DEREF_FN_ASSIGN_RE — same Set-insertion order as
+        // the JS sweep's `assignFields` collector.
+        scan_fn_assign(s, &mut facts.assign_fields);
+        scan_deref_fn_assign(s, &mut facts.assign_fields);
+        facts.assign_fields = dedup_in_order(std::mem::take(&mut facts.assign_fields));
     }
     scan_dispatch(s, &mut facts.dispatch_fields);
     facts.dispatch_fields = dedup_in_order(std::mem::take(&mut facts.dispatch_fields));

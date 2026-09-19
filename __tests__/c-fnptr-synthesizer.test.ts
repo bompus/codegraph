@@ -150,6 +150,57 @@ void call(struct hooks *h, const struct entry *found) {
     expect(has(edges, 'call', 'hk_get')).toBe(true);
   });
 
+  // The runtime vtable-wiring shape: `v->read = impl_read;` is the statement
+  // form of the designated `.read = impl_read` initializer — the ops-struct
+  // idiom (linux `file_operations`, redis `connection.ops`). Covers `x->f`,
+  // `x.f`, and the dereference receivers `(*x)->f` / `(*x).f`, plus `&fn`.
+  it('bridges a runtime field assignment x->f = fn (the ops-struct wiring shape)', async () => {
+    write('vfs.c', `
+struct vfs { int (*read)(int); int (*write)(int); int (*close)(int); };
+static int impl_read(int fd) { return fd; }
+static int impl_write(int fd) { return -fd; }
+static int impl_close(int fd) { return fd * 0; }
+static int orphan(int fd) { return fd + 7; }   /* defined, never registered */
+
+void vfs_init(struct vfs *v, struct vfs *w) {
+    v->read = impl_read;        /* x->f = fn */
+    (*v).write = &impl_write;   /* deref receiver + address-of */
+    w->read = impl_read;        /* a second receiver of the same struct */
+}
+int do_io(struct vfs *v, int fd) { return v->read(fd) + v->write(fd); }
+`);
+    const edges = await load();
+    expect(has(edges, 'do_io', 'impl_read')).toBe(true);
+    expect(has(edges, 'do_io', 'impl_write')).toBe(true);
+    // PRECISION: assigned but never dispatched, and never registered at all.
+    expect(has(edges, 'do_io', 'impl_close')).toBe(false);
+    expect(has(edges, 'do_io', 'orphan')).toBe(false);
+    expect(edges.every((e) => e.via === 'vfs.read' || e.via === 'vfs.write')).toBe(true);
+  });
+
+  // Precision boundaries of the bare-assign scanner: `a->f = b->g` is field←field
+  // propagation (not a fn registration), `x->f == fn` is a comparison, `x->f = var`
+  // names a non-function, and a bare `fp = fn` has no field anchor at all.
+  it('does not confuse propagation, comparison, or a non-function RHS for a registration', async () => {
+    write('neg.c', `
+struct slot { int (*fn)(int); int n; };
+static int impl(int x) { return x; }
+static int other(int x) { return x + 1; }
+int global_var = 0;
+
+void wire(struct slot *a, struct slot *b, int *fp_var) {
+    a->fn = b->fn;        /* propagation, not a direct registration */
+    a->n = impl;          /* data field — never a fn-pointer field */
+    *fp_var = impl;       /* bare pointer assignment — no field anchor */
+}
+int run(struct slot *s, int x) { return s->fn(x); }
+`);
+    const edges = await load();
+    // `b->fn` was never registered to anything, so `run` reaches nobody; the
+    // propagation pair alone doesn't conjure a registration.
+    expect(edges.length).toBe(0);
+  });
+
   it('keys by (struct, field): distinct fn-pointer fields do not cross-bleed', async () => {
     write('vtable.c', `
 struct io { int (*read)(void); int (*write)(int); };
