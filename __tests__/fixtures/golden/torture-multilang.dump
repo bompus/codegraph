@@ -1403,7 +1403,7 @@
 {"id":"variable:fb450996c12f335b36201ead67a34f64","kind":"variable","name":"INIT_MAP","qualified_name":"INIT_MAP","file_path":"torture.py","language":"python","start_line":54,"end_line":54,"start_column":0,"end_column":26,"docstring":null,"signature":"= {\"a\": helper()}","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:feb330d554c5d0caaa8978323a006e52","kind":"variable","name":"MD_BARE","qualified_name":"MD_BARE","file_path":"torture.rb","language":"ruby","start_line":238,"end_line":238,"start_column":0,"end_column":21,"docstring":null,"signature":"= 'README.md'","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fedacda34e94b85718ac655a74368326","kind":"variable","name":"okG","qualified_name":"okG","file_path":"torture.lua","language":"lua","start_line":12,"end_line":12,"start_column":6,"end_column":9,"docstring":null,"signature":"= pcall(require, \"app.guarded\")","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (1898)
+== edges (1900)
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"class:25244cbdbe3e9bc720df9fc4d54fac0a","kind":"extends","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"app::Config\"}","line":98,"col":35,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:0795ac46f5bef3826c20039a05014ebc","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:35a476809e2727e80d7f2c8c404180b2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -3056,6 +3056,7 @@
 {"source":"method:a83a51eab57270a522b9a2b7133e3e55","target":"constant:f3f2f36c072cdfa3d41c0be651e605ce","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"method:ac9d754fee3741f21584a0086c577453","target":"class:01a3945fa12793f1af9ac531aedcc8cd","kind":"instantiates","metadata":"{\"confidence\":0.7,\"resolvedBy\":\"framework\",\"refName\":\"Widget\"}","line":87,"col":8,"provenance":null}
 {"source":"method:ac9d754fee3741f21584a0086c577453","target":"class:2962f71edd3e8a7955a291e014192feb","kind":"instantiates","metadata":"{\"confidence\":0.7,\"resolvedBy\":\"framework\",\"refName\":\"Deep\"}","line":90,"col":19,"provenance":null}
+{"source":"method:ac9d754fee3741f21584a0086c577453","target":"struct:0c309a8ed6f33456724d94ba73599e04","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"qualified-name\",\"refName\":\"Self\"}","line":85,"col":28,"provenance":null}
 {"source":"method:aff4cbff9ff5e0d8d44b76d6b40cb120","target":"method:b428c051b0ed88967ff56fb804fe450a","kind":"calls","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"Compute\"}","line":136,"col":38,"provenance":null}
 {"source":"method:b02eab5f6eaac34cea7b2d8b5f76f0bf","target":"constant:878468d73ab3a497f0c85659f296475e","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"method:b0857dfe91cdb9b6241e743372a66cdf","target":"class:01a3945fa12793f1af9ac531aedcc8cd","kind":"references","metadata":"{\"confidence\":0.7,\"resolvedBy\":\"framework\",\"refName\":\"Widget\"}","line":140,"col":107,"provenance":null}
@@ -3081,6 +3082,7 @@
 {"source":"method:bdff2ed091815c4e1268e7ac0a575bb0","target":"constant:190c7c86b148186ed38f0157f9c3aebe","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"method:bdff2ed091815c4e1268e7ac0a575bb0","target":"constant:f3f2f36c072cdfa3d41c0be651e605ce","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"method:c19898b8b84cce6cc2b80007d1b6f588","target":"struct:8af466b07dba0b708a3b1922902ab00a","kind":"instantiates","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"FileSource\"}","line":173,"col":8,"provenance":null}
+{"source":"method:c19898b8b84cce6cc2b80007d1b6f588","target":"struct:8af466b07dba0b708a3b1922902ab00a","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"qualified-name\",\"refName\":\"Self\"}","line":172,"col":23,"provenance":null}
 {"source":"method:c5ebc8a6035cefc1d6ad34e086d7a66f","target":"method:2e4aeb10e475574338a751e4d0356a88","kind":"calls","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"render\"}","line":185,"col":10,"provenance":null}
 {"source":"method:ca160b191e7fb257769f213a8450ab4c","target":"function:a07d8ba50e32351d67a5892444ec6842","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"clamp_value\"}","line":29,"col":53,"provenance":null}
 {"source":"method:d089517f99bdd42860ded999d09f17da","target":"constant:7af11b36e8d4ddbbdc72a75e5d163a1f","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
@@ -3302,7 +3304,7 @@
 {"source":"variable:788d75a828c79f9847e0be0e2b73a196","target":"variable:8fef25ea8abe486ee94190ed47c3644b","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"variable:9b11e2d2271460cf5d5c12d00f607ca1","target":"method:3ac9d03b2b42036d5064669684b96d97","kind":"calls","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"helper\"}","line":52,"col":13,"provenance":null}
 {"source":"variable:fb450996c12f335b36201ead67a34f64","target":"method:3ac9d03b2b42036d5064669684b96d97","kind":"calls","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"helper\"}","line":54,"col":17,"provenance":null}
-== refs (1166)
+== refs (1164)
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Mix2","reference_kind":"implements","line":34,"col":37,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Mix2"}
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Paint","reference_kind":"implements","line":34,"col":59,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Paint"}
 {"from_node_id":"class:066eb79e83cf3105cebd14593747068f","reference_name":"mixins.LoggerMixin","reference_kind":"extends","line":13,"col":27,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"LoggerMixin"}
@@ -4266,7 +4268,6 @@
 {"from_node_id":"method:a718dbc13c2e00a42febe0fbdce991be","reference_name":"poly_call","reference_kind":"calls","line":153,"col":20,"candidates":null,"file_path":"torture.php","language":"php","status":"failed","name_tail":"poly_call"}
 {"from_node_id":"method:a7c6471a8b4b69c770e6366cb2b6f2bb","reference_name":"audit","reference_kind":"calls","line":90,"col":6,"candidates":null,"file_path":"torture.R","language":"r","status":"failed","name_tail":"audit"}
 {"from_node_id":"method:a935b33c83e72d78f5aba957dc6b5362","reference_name":"helper","reference_kind":"calls","line":55,"col":27,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"helper"}
-{"from_node_id":"method:ac9d754fee3741f21584a0086c577453","reference_name":"Self","reference_kind":"references","line":85,"col":28,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"Self"}
 {"from_node_id":"method:ac9d754fee3741f21584a0086c577453","reference_name":"Self::assoc","reference_kind":"calls","line":86,"col":8,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"assoc"}
 {"from_node_id":"method:ac9d754fee3741f21584a0086c577453","reference_name":"String::new","reference_kind":"calls","line":89,"col":18,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"new"}
 {"from_node_id":"method:afca03b4aca12c9f04530a20d67acad7","reference_name":"lcall","reference_kind":"calls","line":124,"col":66,"candidates":null,"file_path":"torture.R","language":"r","status":"failed","name_tail":"lcall"}
@@ -4301,7 +4302,6 @@
 {"from_node_id":"method:b9f48c19c78ddbfc77ee5cf8f1a6f183","reference_name":"btn.on","reference_kind":"calls","line":60,"col":4,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"on","failure_reason":"unknown-receiver"}
 {"from_node_id":"method:b9f48c19c78ddbfc77ee5cf8f1a6f183","reference_name":"register","reference_kind":"calls","line":59,"col":4,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"register"}
 {"from_node_id":"method:bf79e82e64a3df305e219d034086b2b0","reference_name":"T","reference_kind":"references","line":111,"col":23,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"T"}
-{"from_node_id":"method:c19898b8b84cce6cc2b80007d1b6f588","reference_name":"Self","reference_kind":"references","line":172,"col":23,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"Self"}
 {"from_node_id":"method:c226448f9903a610ae764b0916837387","reference_name":"enum_color","reference_kind":"calls","line":206,"col":15,"candidates":null,"file_path":"torture.php","language":"php","status":"failed","name_tail":"enum_color"}
 {"from_node_id":"method:c4753283cb00222b85753fe532e410ce","reference_name":"T","reference_kind":"references","line":44,"col":29,"candidates":null,"file_path":"torture.go","language":"go","status":"failed","name_tail":"T"}
 {"from_node_id":"method:c4753283cb00222b85753fe532e410ce","reference_name":"append","reference_kind":"calls","line":45,"col":11,"candidates":null,"file_path":"torture.go","language":"go","status":"failed","name_tail":"append"}
