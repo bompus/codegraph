@@ -75,6 +75,30 @@ const VUE_HANDLER_RE = /(?:@|v-on:)([a-zA-Z][\w-]*)(?:\.[\w]+)*\s*=\s*"([^"]+)"/
 // Captures the destructure body + the called composable; only `use*` calls qualify.
 const VUE_DESTRUCTURE_RE = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(\w+)\s*\(/g;
 
+// Vue component registrations — a template tag resolves through the REGISTERED
+// name before the PascalCase guess: `app.component('fancy-widget', FancyThing)`
+// (global, Vue 3 entry / `Vue.component` in Vue 2 / `nuxtApp.vueApp` in Nuxt
+// plugins) and an SFC's own `components: { 'my-comp': MyComp }` (local,
+// options API). Both map a kebab name onto a component whose own name may be
+// spelled differently, which a kebab→Pascal lookup can never find.
+const VUE_APP_GATE_RE = /\bcreateApp\s*\(|\bVue\.component\s*\(|\.vueApp\b/;
+const VUE_APP_COMPONENT_RE =
+  /(?:[\w$]+\s*\([^()]*\)|[\w$]+(?:\.[\w$]+)*)\s*\.\s*component\s*\(\s*['"]([^'"]+)['"]\s*,\s*(?:defineAsyncComponent\s*\(\s*)?(\(\s*\)\s*=>\s*import\s*\(\s*['"]([^'"]+)['"]|[A-Za-z_$][\w$]*)/g;
+const VUE_COMPONENTS_BLOCK_RE = /\bcomponents\s*:\s*\{/g;
+// Entries inside a `components: { … }` block: `'my-comp': Comp`, `myComp: Comp`,
+// `Comp` shorthand, or a lazy `x: () => import('./X.vue')` /
+// `x: defineAsyncComponent(() => import('./X.vue'))`.
+const VUE_COMP_ENTRY_RE =
+  /(['"])([\w$-]+)\1\s*:\s*(?:(?:defineAsyncComponent\s*\(\s*)?\(\s*\)\s*=>\s*import\s*\(\s*['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))|\b([A-Za-z_$][\w$]*)\s*:\s*(?:(?:defineAsyncComponent\s*\(\s*)?\(\s*\)\s*=>\s*import\s*\(\s*['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))|\b([A-Za-z_$][\w$]*)\s*(?=[,}])/g;
+
+/** A tag's registration-key spellings — Vue's resolveAsset tries the raw name, its camelCase, its PascalCase, and its hyphenated form. */
+function vueTagVariants(tag: string): string[] {
+  const camel = tag.replace(/-([a-z0-9])/g, (_s, c: string) => c.toUpperCase());
+  const pascal = camel.charAt(0).toUpperCase() + camel.slice(1);
+  const kebab = camel.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  return [...new Set([tag, camel, pascal, kebab])];
+}
+
 // Closure-collection dynamic dispatch (language-agnostic, Swift-first). A method
 // appends a closure to a collection property; another method iterates that
 // property *invoking each element* (`coll.forEach { $0() }` / `{ it() }`). The
@@ -1566,6 +1590,33 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     const nn = nuxtComponentName(c.filePath);
     if (nn && !nuxtComponents.has(nn)) nuxtComponents.set(nn, c);
   }
+
+  // Global `app.component('name', Comp)` registrations, collected once. The
+  // createApp/vueApp/Vue.component gate keeps a `.component(` call on an
+  // unrelated object from registering; the value must resolve to a real
+  // component (or a lazy `import()` of a `.vue` file) or the entry is inert.
+  const globalRegistrations = new Map<string, Node>();
+  const regComponent = (value: string, lazyPath: string | undefined, fromFile: string): Node | undefined => {
+    if (lazyPath) {
+      const target = resolveImportPath(lazyPath, fromFile, 'typescript', ctx);
+      return target ? ctx.getNodesInFile(target).find((n) => n.kind === 'component') : undefined;
+    }
+    const candidates = ctx.getNodesByName(value).filter((n) => COMPONENT_KINDS.has(n.kind));
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!/\.(?:vue|[cm]?[jt]s)$/.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('.component(') || !VUE_APP_GATE_RE.test(content)) continue;
+    VUE_APP_COMPONENT_RE.lastIndex = 0;
+    let am: RegExpExecArray | null;
+    while ((am = VUE_APP_COMPONENT_RE.exec(content))) {
+      const target = regComponent(am[2]!, am[3], file);
+      if (target && !globalRegistrations.has(am[1]!)) globalRegistrations.set(am[1]!, target);
+    }
+  }
+
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!file.endsWith('.vue')) continue;
@@ -1606,11 +1657,48 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
       return matches.find((n) => n.filePath === file) ?? matches[0];
     };
 
+    // This SFC's own `components: { 'my-comp': MyComp, Other }` registrations
+    // (options API). The registered KEY is the tag's real binding — the value
+    // may be any resolvable component or a lazy `() => import('./X.vue')`.
+    const localRegistrations = new Map<string, Node>();
+    VUE_COMPONENTS_BLOCK_RE.lastIndex = 0;
+    let cb: RegExpExecArray | null;
+    while ((cb = VUE_COMPONENTS_BLOCK_RE.exec(script))) {
+      const open = cb.index + cb[0].length - 1;
+      const close = matchBalanced(script, open);
+      if (close === -1) continue;
+      const block = script.slice(open, close + 1);
+      VUE_COMP_ENTRY_RE.lastIndex = 0;
+      let rm: RegExpExecArray | null;
+      while ((rm = VUE_COMP_ENTRY_RE.exec(block))) {
+        const key = rm[2] ?? rm[5] ?? rm[8];
+        const lazyPath = rm[3] ?? rm[6];
+        const value = rm[4] ?? rm[7] ?? rm[8];
+        if (!key) continue;
+        const target = regComponent(value!, lazyPath, file);
+        if (target && !localRegistrations.has(key)) localRegistrations.set(key, target);
+      }
+    }
+    // The registered name binds before a PascalCase guess — Vue resolves a tag
+    // through its registry (raw / camel / Pascal / kebab spellings), so
+    // `components: { 'my-comp': Special }` makes `<my-comp>` Special even when
+    // a `MyComp` component exists.
+    const registered = (tag: string): Node | undefined => {
+      for (const v of vueTagVariants(tag)) {
+        const t = localRegistrations.get(v) ?? globalRegistrations.get(v);
+        if (t) return t;
+      }
+      return undefined;
+    };
+
     let m: RegExpExecArray | null;
     VUE_KEBAB_RE.lastIndex = 0;
     while ((m = VUE_KEBAB_RE.exec(tpl))) {
       const tag = kebabToPascal(m[1]!);
-      addEdge(resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag), { synthesizedBy: 'jsx-render', via: m[1] });
+      addEdge(
+        registered(m[1]!) ?? resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag),
+        { synthesizedBy: 'jsx-render', via: m[1] }
+      );
     }
     // PascalCase component tags. Try a direct name match first (flat components
     // and explicit registrations), then the Nuxt dir-prefixed auto-import name
@@ -1618,7 +1706,10 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     VUE_PASCAL_RE.lastIndex = 0;
     while ((m = VUE_PASCAL_RE.exec(tpl))) {
       const tag = m[1]!;
-      addEdge(resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag), { synthesizedBy: 'jsx-render', via: tag });
+      addEdge(
+        registered(tag) ?? resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag),
+        { synthesizedBy: 'jsx-render', via: tag }
+      );
     }
     VUE_HANDLER_RE.lastIndex = 0;
     while ((m = VUE_HANDLER_RE.exec(tpl))) {
