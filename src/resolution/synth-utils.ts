@@ -65,3 +65,51 @@ export function enclosingValue(nodesInFile: readonly Node[], line: number): Node
   }
   return best;
 }
+
+/**
+ * Index of the delimiter matching the opener at `openIdx` (`(`, `[`, or
+ * `{`), skipping over line/block comments and `'…'`/`"…"`/`…` string
+ * literals (with escapes). Returns `-1` when the source is unbalanced past
+ * `openIdx`. Language-agnostic by design — callers use it for Kotlin/Swift
+ * trailing closures and Dart map literals; template-string interpolations
+ * containing the close delimiter are consumed whole, which matches how
+ * those languages nest braces anyway.
+ */
+export function matchBalanced(src: string, openIdx: number): number {
+  const open = src[openIdx];
+  const close = open === '(' ? ')' : open === '[' ? ']' : open === '{' ? '}' : null;
+  if (!open || !close) return -1;
+  let depth = 0;
+  for (let i = openIdx; i < src.length; i++) {
+    const c = src[i]!;
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i + 2);
+      if (nl === -1) return -1;
+      i = nl;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end === -1) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      for (i++; i < src.length; i++) {
+        const s = src[i]!;
+        if (s === '\\') {
+          i++;
+          continue;
+        }
+        if (s === c || (s === '\n' && c !== '`')) break;
+      }
+      if (i >= src.length) return -1;
+      continue;
+    }
+    if (c === open) depth++;
+    else if (c === close) {
+      if (--depth === 0) return i;
+    }
+  }
+  return -1;
+}

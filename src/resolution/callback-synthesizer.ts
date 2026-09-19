@@ -37,6 +37,7 @@ import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-syn
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { crossTierEdges } from './tier-synthesizer';
 import { enclosingFn, enclosingValue, makeLineAt } from './synth-utils';
+import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
 import { isDistinctiveIdentifier } from '../search/query-utils';
 
@@ -45,8 +46,17 @@ const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
 const MAX_CALLBACKS_PER_CHANNEL = 40;
 const EVENT_FANOUT_CAP = 6; // skip events with more handlers/dispatchers than this (too generic without type info)
 
-const ON_RE = /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:function\s+(\w+)|(?:this\.)?(\w+))/g;
+const ON_RE = /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:(?:async\s+)?function\s+(\w+)|(?:this\.)?(\w+))/g;
 const EMIT_RE = /\.(?:emit|fire|dispatchEvent)\(\s*['"]([^'"]+)['"]/g;
+// Inline listeners — `.on('x', (e) => {…})`, `.on('x', e => …)`,
+// `.on('x', function () {…})` (incl. `async` forms). Anonymous handlers have
+// no node (extraction deliberately attributes an inline closure's calls to
+// its enclosing function), so the registration is attributed to that same
+// enclosing function — where the event's work demonstrably happens — or to
+// the smallest enclosing constant/variable for an object-literal API site
+// (the rn-event-channel cross-language arm already does exactly this).
+const ON_INLINE_RE =
+  /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:async\s+)?(?:\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|function\s*\()/g;
 const SETSTATE_RE = /this\.setState\s*\(/;
 const FLUTTER_SETSTATE_RE = /\bsetState\s*\(/; // Flutter: setState((){…}) / this.setState
 const JS_FAMILY = ['typescript', 'javascript', 'tsx', 'jsx'];
@@ -332,6 +342,19 @@ async function eventEmitterEdges(ctx: ResolutionContext, onYield: MaybeYield): P
         if (!handler) continue;
         const map = handlersByEvent.get(m[1]!) ?? new Map<string, string>();
         map.set(handler.id, `${file}:${lineOf(m.index)}`); handlersByEvent.set(m[1]!, map);
+      }
+      // Inline listeners: the anonymous arrow/function can't be looked up by
+      // name (extraction attributes its calls to the enclosing function), so
+      // the edge lands on the enclosing function — the same node the
+      // listener's own calls attribute to — or on the smallest enclosing
+      // constant/variable for an object-literal API's registration site.
+      ON_INLINE_RE.lastIndex = 0;
+      while ((m = ON_INLINE_RE.exec(content))) {
+        const handler = enclosingFn(nodesInFile, lineOf(m.index)) ?? enclosingValue(nodesInFile, lineOf(m.index));
+        if (!handler) continue;
+        const map = handlersByEvent.get(m[1]!) ?? new Map<string, string>();
+        if (!map.has(handler.id)) map.set(handler.id, `${file}:${lineOf(m.index)}`);
+        handlersByEvent.set(m[1]!, map);
       }
     }
   }
@@ -1755,6 +1778,76 @@ async function rnEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Promis
 }
 
 /**
+ * React Native dynamic module-key callsites: `NativeModules[key].method()`
+ * where `key` is statically known — a string literal
+ * (`NativeModules['Capture'].start()`) or a same-file constant initialized
+ * to a string literal (`const KEY = 'Capture'; NativeModules[KEY].start()`).
+ * A subscript receiver emits no call reference, so these callsites never
+ * reach the bridge resolver — this pass scans source for the pattern and
+ * links the enclosing function to the module's native implementations
+ * (every platform's impl is a real bridge target).
+ *
+ * `NativeModules[opaqueExpr]` stays uncovered: an unresolvable key could
+ * name ANY module — no statically verifiable anchor, so we skip rather
+ * than fan out to every bridged method of that name.
+ */
+const RN_DYNAMIC_MODULE_RE =
+  /\bNativeModules\s*\[\s*(?:['"]([A-Za-z_$][\w$]*)['"]|([A-Za-z_$][\w$]*))\s*\]\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
+const RN_MODULE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+
+async function rnDynamicModuleEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  let scannedFiles = 0;
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!/\.(?:[cm]?[jt]sx?)$/.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('NativeModules[')) continue;
+    const nodesInFile = ctx.getNodesInFile(file);
+    const lineOf = makeLineAt(content, 1);
+    RN_DYNAMIC_MODULE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = RN_DYNAMIC_MODULE_RE.exec(content))) {
+      let moduleName: string | null = m[1] ?? null;
+      const keyIdent = m[2];
+      const method = m[3]!;
+      if (!moduleName && keyIdent) {
+        // Same-file `const KEY = 'Module'` — collect every literal binding of
+        // the identifier in this file; two distinct values mean the key is
+        // not statically known (conditional rebinding) → skip.
+        const decl = new RegExp(
+          `\\b(?:const|let|var)\\s+${keyIdent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(?::[^=;]*)?=\\s*['"]([^'"]+)['"]`,
+          'g'
+        );
+        const values = new Set<string>();
+        let dm: RegExpExecArray | null;
+        while ((dm = decl.exec(content))) values.add(dm[1]!);
+        if (values.size === 1) moduleName = [...values][0]!;
+      }
+      if (!moduleName || !RN_MODULE_NAME_RE.test(moduleName)) continue;
+      const disp =
+        enclosingFn(nodesInFile, lineOf(m.index)) ?? enclosingValue(nodesInFile, lineOf(m.index));
+      if (!disp) continue;
+      for (const target of rnModuleMethods(ctx, moduleName, method)) {
+        if (target.id === disp.id) continue;
+        const key = `${disp.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'rn-dynamic-module', module: moduleName, via: method },
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+/**
  * Phase 6 — React Native Fabric/Codegen view component bridge.
  *
  * The Fabric framework extractor (`frameworks/fabric.ts`) emits
@@ -2551,6 +2644,10 @@ const PINIA_CONSUMER_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs|vue)$/;
 const PINIA_FACTORY_RE = /\b(?:export\s+)?const\s+(\w+)\s*=\s*defineStore\s*\(/g;
 const PINIA_BIND_RE = /\bconst\s+(\w+)\s*=\s*(?:await\s+)?(\w+)\s*\(/g;
 const PINIA_CALL_RE = /(\w+)\s*\.\s*(\w+)\s*\(/g;
+// Unbound store calls: `useXStore().action()` — the factory name itself is the
+// static anchor, so no `const s = useXStore()` binding is needed. Only callee
+// names in `factoryFile` qualify, so `useAnything().method()` stays silent.
+const PINIA_DIRECT_CALL_RE = /\b(\w+)\s*\([^()]*\)\s*\.\s*(\w+)\s*\(/g;
 const PINIA_FANOUT_CAP = 80;
 
 async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
@@ -2585,27 +2682,25 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
       const sf = factoryFile.get(bm[2]!);
       if (sf) varStore.set(bm[1]!, sf);
     }
-    if (!varStore.size) continue;
 
-    // 3. Link `<var>.<method>(` → the action function node in the store's file.
+    // 3. Link `<store>.<method>(` → the action function node in the store's
+    //    file. Two receiver shapes share the same emit:
+    //      a) a bound variable — `authStore.getMenu()`;
+    //      b) an unbound factory call — `useAuthStore().getMenu()`.
     const nodesInFile = ctx.getNodesInFile(file);
     const fallbackDispatcher = nodesInFile.find((n) => n.kind === 'component'); // .vue top-level setup
-    PINIA_CALL_RE.lastIndex = 0;
-    let cm: RegExpExecArray | null;
     let added = 0;
-    while ((cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
-      const storeFile = varStore.get(cm[1]!);
-      if (!storeFile) continue;
-      const method = cm[2]!;
-      const line = safe.slice(0, cm.index).split('\n').length;
+    const linkCall = (storeFile: string, method: string, matchIndex: number): void => {
+      if (added >= PINIA_FANOUT_CAP) return;
+      const line = safe.slice(0, matchIndex).split('\n').length;
       const disp = enclosingFn(nodesInFile, line) ?? fallbackDispatcher;
-      if (!disp) continue;
+      if (!disp) return;
       const target = ctx
         .getNodesByName(method)
         .find((n) => n.kind === 'function' && n.filePath === storeFile);
-      if (!target || target.id === disp.id) continue;
+      if (!target || target.id === disp.id) return;
       const key = `${disp.id}>${target.id}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) return;
       seen.add(key);
       edges.push({
         source: disp.id,
@@ -2616,6 +2711,20 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
         metadata: { synthesizedBy: 'pinia-store', via: method, registeredAt: `${file}:${line}` },
       });
       added++;
+    };
+
+    PINIA_CALL_RE.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
+      const storeFile = varStore.get(cm[1]!);
+      if (!storeFile) continue;
+      linkCall(storeFile, cm[2]!, cm.index);
+    }
+    PINIA_DIRECT_CALL_RE.lastIndex = 0;
+    while ((cm = PINIA_DIRECT_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
+      const storeFile = factoryFile.get(cm[1]!);
+      if (!storeFile) continue;
+      linkCall(storeFile, cm[2]!, cm.index);
     }
   }
   return edges;
@@ -3924,6 +4033,13 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'kotlinExpectActual', gate: (has) => has('kotlin'), run: (q, _c, y) => kotlinExpectActualEdges(q, y) },
   { name: 'goGrpcEdges', gate: (has) => has('go'), run: (q, _c, y) => goGrpcStubImplEdges(q, y) },
   { name: 'rnEventEdgesList', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => rnEventEdges(c, y) },
+  // `NativeModules[key].method()` — needs both a JS callsite and a native
+  // module impl to link.
+  {
+    name: 'rnDynModuleEdges',
+    gate: (has) => has(...JS_FAMILY) && has('objc', 'swift', 'java', 'kotlin'),
+    run: (_q, c, y) => rnDynamicModuleEdges(c, y),
+  },
   { name: 'fabricNativeEdges', gate: ALWAYS, run: (_q, c, y) => fabricNativeImplEdges(c, y) },
   // Expo module nodes (`expo-module:` ids) are emitted only from .swift/.kt
   // files, and a pair needs BOTH platforms — so without both languages the
