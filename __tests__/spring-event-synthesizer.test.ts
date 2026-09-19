@@ -213,6 +213,70 @@ class Listeners {
     expect(edges.some((r: any) => r.via === 'MutedEvent')).toBe(false);
   });
 
+  it('bridges a listener-body re-publish of an erased delegate arg to every listener', async () => {
+    // halo shape: @EventListener(X.class) void on(X e) { publisher.publishEvent(e.getDelegate()) }
+    // — the delegate's runtime type is erased, so the edge set is all listeners.
+    write('shop/Delegator.java', `package shop;
+import org.springframework.context.ApplicationEvent;
+class DelegatorEvent extends ApplicationEvent {
+    private final ApplicationEvent delegate;
+    DelegatorEvent(Object source, ApplicationEvent delegate) { super(source); this.delegate = delegate; }
+    ApplicationEvent getDelegate() { return delegate; }
+}
+class AlphaEvent { }
+class BetaEvent { }
+`);
+    write('shop/Dispatcher.java', `package shop;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
+class Dispatcher {
+    private ApplicationEventPublisher publisher;
+    @EventListener(DelegatorEvent.class)
+    void onDelegator(DelegatorEvent event) {
+        publisher.publishEvent(event.getDelegate());
+    }
+}
+`);
+    write('shop/Listeners.java', `package shop;
+import org.springframework.context.event.EventListener;
+class Listeners {
+    @EventListener
+    public void onAlpha(AlphaEvent event) { }
+    @EventListener
+    public void onBeta(BetaEvent event) { }
+}
+`);
+    // PRECISION: a call-expression arg in a NON-listener method fans out to nothing.
+    write('shop/Helper.java', `package shop;
+import org.springframework.context.ApplicationEventPublisher;
+class Helper {
+    private ApplicationEventPublisher publisher;
+    void notAListener(DelegatorEvent event) {
+        publisher.publishEvent(event.getDelegate());
+    }
+}
+`);
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'spring-event'`
+      )
+      .all();
+    cg.close?.();
+
+    const pairs = edges.map((r: any) => `${r.source}>${r.target}:${r.via}`).sort();
+    expect(pairs).toEqual([
+      'onDelegator>onAlpha:delegate:*',
+      'onDelegator>onBeta:delegate:*',
+      // self-loop to its own DelegatorEvent listener slot is skipped
+    ]);
+    expect(edges.some((r: any) => r.source === 'notAListener')).toBe(false);
+  });
+
   it('produces no edges in a Spring app with no event bus (clean control)', async () => {
     write('shop/PlainService.java', `package shop;
 import org.springframework.stereotype.Service;

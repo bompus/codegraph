@@ -3648,11 +3648,20 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
 // (Java method nodes INCLUDE their leading annotations in the range — startLine is the first
 // `@…` line — so the annotation block is scanned DOWNWARD from startLine, bounded to consecutive
 // `@`-lines so it can't bleed into an adjacent method.)
-// `recv.publishEvent(<arg>)` — arg is an inline `new XEvent(…)` or a bare
+// `recv.publishEvent(<arg>)` — arg is an inline `new XEvent(…)`, a bare
+// identifier (resolved within the enclosing method), or inside a listener body
+// a call expression (`event.getDelegate()`) whose erased type fans out to all
 // identifier whose type is inferred within the enclosing method (shared with
 // MediatR's arg resolver: a `X arg` param/local decl or an `arg = new X(…)`
 // assignment wins; untyped/ambiguous args yield nothing).
 const SPRING_PUBLISH_RE = /\.publishEvent\s*\(\s*(new\s+[A-Z][A-Za-z0-9_]*(?=[\s(])|[A-Za-z_]\w*(?=[\s,)]))/g;
+// `recv.publishEvent(<expr>.<m>(…))` — a call-expression arg, matched separately
+// because the concrete event type is erased behind the call (halo's
+// SharedEventDispatcher re-publishes `event.getDelegate()` where the delegate
+// field is base `ApplicationEvent`). Only bridged when the enclosing method is
+// itself a registered listener (an event→event re-dispatch), fanned out to
+// every known listener — the runtime bound is genuinely "any event".
+const SPRING_REPUBLISH_RE = /\.publishEvent\s*\(\s*[A-Za-z_]\w*\s*\.\s*\w+\s*\(/g;
 // `registerEvent(<arg>)` — Spring Data's `AbstractAggregateRoot.registerEvent`
 // domain-event hook (published on save). Gated on the file referencing
 // `AbstractAggregateRoot`, so a same-named helper in a non-DDD file is skipped.
@@ -3776,6 +3785,41 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
         if (!disp) continue;
         const type = argType(m[1]!, disp, line);
         if (type) emit(disp, type, line);
+      }
+      SPRING_REPUBLISH_RE.lastIndex = 0;
+      while ((m = SPRING_REPUBLISH_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
+        const line = safe.slice(0, m.index).split('\n').length;
+        const disp = enclosingFn(nodesInFile, line);
+        if (!disp) continue;
+        // Gate: the enclosing method must itself be a registered listener —
+        // registered in the map by its param type, or carrying the annotation.
+        const pType = springFirstParamType(disp.signature);
+        let isListener = !!pType && (listeners.get(pType) ?? []).some((l) => l.id === disp.id);
+        if (!isListener) {
+          for (let i = disp.startLine - 1; i < safeLines.length && i < disp.startLine + 7; i++) {
+            const t = (safeLines[i] ?? '').trim();
+            if (!t.startsWith('@')) break;
+            if (SPRING_LISTENER_ANNO_RE.test(t)) { isListener = true; break; }
+          }
+        }
+        if (!isListener) continue;
+        for (const targets of listeners.values()) {
+          for (const target of targets) {
+            if (target.id === disp.id || added >= SPRING_FANOUT_CAP) continue;
+            const key = `${disp.id}>${target.id}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            edges.push({
+              source: disp.id,
+              target: target.id,
+              kind: 'calls',
+              line,
+              provenance: 'heuristic',
+              metadata: { synthesizedBy: 'spring-event', via: 'delegate:*', registeredAt: `${file}:${line}` },
+            });
+            added++;
+          }
+        }
       }
     }
     // `registerEvent(…)` — AbstractAggregateRoot's domain-event hook; gated on
