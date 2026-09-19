@@ -47,7 +47,7 @@ export interface ResolvedRef {
   /** Confidence score (0-1) */
   confidence: number;
   /** How it was resolved */
-  resolvedBy: 'exact-match' | 'import' | 'qualified-name' | 'framework' | 'fuzzy' | 'instance-method' | 'file-path' | 'function-ref';
+  resolvedBy: 'exact-match' | 'import' | 'qualified-name' | 'framework' | 'fuzzy' | 'instance-method' | 'file-path' | 'function-ref' | 'field-call';
   /**
    * Edge kind the edge should carry when it is NOT the ref's own kind — a
    * framework that turns a `calls` ref into a `navigates` edge, for example.

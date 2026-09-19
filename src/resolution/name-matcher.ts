@@ -2098,6 +2098,16 @@ function buildLocalReceiverTypePatterns(language: Language, r: string): RegExp[]
         // type sits before the `$`-variable (#1125). Namespace `\\` allowed.
         new RegExp(`\\b([A-Za-z_\\\\][\\w\\\\]*)\\s+&?\\$${r}\\b`), // Logger $lg  (typed param)
       ];
+    case 'c':
+      return [
+        // `struct ops *o` / `ops_t *o` / `ops o` — a declared parameter or
+        // local carrying an aggregate or typedef'd type; mirrors the cfnptr
+        // receiver-decl scan (recv_decl_types). Single `*` only — a
+        // pointer-to-pointer receiver can't be called through. The captured
+        // word is validated by the member lookup, so a loose hit is a miss,
+        // never a wrong edge.
+        new RegExp(`\\b(?:(?:struct|union)\\s+)?(\\w+)\\s*\\*?\\s*\\b${r}\\b\\s*(?:[,)=;]|\\[)`),
+      ];
     case 'lua':
     case 'luau':
       return [
@@ -2837,12 +2847,16 @@ function matchBoundTypeMember(type: string, method: string, ref: UnresolvedRef, 
     if (seen.has(typeNode.id)) continue;
     seen.add(typeNode.id);
     const members = context.getNodesByQualifiedName(`${typeNode.qualifiedName}::${method}`)
-      .filter(n => n.kind === 'method' && sameLanguageFamily(n.language, ref.language) &&
+      .filter(n => (n.kind === 'method' ||
+          // C/C++ function-pointer members are `field` nodes — `rtc->read(...)`
+          // proves `ds1685_priv::read` the same way a method is proven.
+          (n.kind === 'field' && (ref.language === 'c' || ref.language === 'cpp'))) &&
+        sameLanguageFamily(n.language, ref.language) &&
         (n.filePath === typeNode.filePath ||
           (ref.language === 'go' && path.posix.dirname(n.filePath) === path.posix.dirname(typeNode.filePath)) ||
           ref.language === 'cpp'));
     const member = members.length === 1 ? members[0] : members.find(n => n.filePath === typeNode.filePath);
-    if (member) return { original: ref, targetNodeId: member.id, confidence: 0.9, resolvedBy: 'instance-method' };
+    if (member) return { original: ref, targetNodeId: member.id, confidence: 0.9, resolvedBy: member.kind === 'field' ? 'field-call' : 'instance-method' };
     pending.push(...(context.getSupertypeNodes?.(typeNode.id) ?? []));
   }
   return null;
@@ -2986,6 +3000,17 @@ export function matchMethodCall(
       if (!awaited.name || TS_PRIMITIVE_TYPES.has(awaited.name)) return null;
       inferredType = awaited.name;
       typeSource = 'mc-await';
+    }
+    // `recv->fp(...)` / `x.fp(...)` whose receiver type can't be recovered:
+    // the member is still provable when exactly one same-language callable
+    // `field` carries its name (field nodes exist only for function-pointer
+    // members). Ambiguous or absent → fall through, never a guess.
+    if (!inferredType && (ref.language === 'c' || ref.language === 'cpp')) {
+      const fields = context.getNodesByName(methodName!).filter(n =>
+        n.kind === 'field' && sameLanguageFamily(n.language, ref.language));
+      if (fields.length === 1) {
+        return { original: ref, targetNodeId: fields[0]!.id, confidence: 0.7, resolvedBy: 'field-call' };
+      }
     }
     if (inferredType) {
       if (requireReceiverEvidence) {
