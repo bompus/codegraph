@@ -774,3 +774,28 @@ Corpus A/B evidence for the five synthesizer legs landed this session (#81–#86
 | Spring listener re-publish (#87) | halo `01d9b59` (991 java files) | `spring-event` **36 → 96** (+60 `delegate:*` from `SharedEventDispatcher.onApplicationEvent` → all 60 listeners) | n/a | `x.publishEvent(<expr>.<m>(…))` inside a registered listener body → all-listener fan-out (erased `ApplicationEvent` delegate); non-listener helpers stay silent. |
 
 **Cross-leg precision**: every edge added by these arms was target-audited on the corpus (all sampled targets are the semantically-correct handler/handle/execute — verified against source text), and dedupe keys keep repeat dispatch sites from multiplying. Index-time deltas are at noise level — the arms are bounded source scans over already-extracted graphs.
+
+### 5.35 Extraction — exported destructure-off-factory bindings (2026-10, #88)
+
+Extraction-layer leg closing the last documented NgRx gap: `export const { selectRouteData } = getRouterSelectors()` minted **no nodes**, so `ngrx-select` had nothing to pin at the canonical `concatLatestFrom(() => store.select(selectRouteData))` site. Both extraction paths gained the arm: generic-side `tree-sitter.ts` and the kernel TS walker (`tsjs/extractors.rs`) — gated to *exported* `object_pattern` declarations with a `call_expression` RHS, simple shorthand/rename bindings only (nested/rest skipped). The existing RTK Query bare-identifier carve-out is untouched. Selector gating widened to `getSelectors`/`getRouterSelectors` sigs so the new constant nodes satisfy the `ngrx-select` candidate gate.
+
+**Corpus evidence** (platform example-app, baseline `dist` vs new): `ngrx-select` **13 → 15** edges — `updateTitle$ → selectRouteData` lands end-to-end; **+5 constant nodes**, all verified factory destructures (`getRouterSelectors()` → `selectRouteData`; entity-adapter `getSelectors()` → `selectBookIds`/`selectBookEntities`/`selectAllBooks`/`selectTotalBooks`). `ngrx-dispatch` unchanged at 7. Blast radius: `export const {…} = f()` occurs at 3 sites across all 9 indexed corpora — the narrow gate is the right shape.
+
+**Gates**: 5/5 `ngrx-effects-synthesizer` (new destructure test incl. decline cases), 8/8 golden, clippy/fmt/tsc clean.
+
+### 5.36 Agent-eval A/B wave — end-to-end proof of the dispatch arc (2026-10)
+
+`run-all.sh` headless, Sonnet/high, 2 runs/arm, pre-warmed daemons, CLI shim blocking `codegraph` in both arms. One canonical flow prompt per repo, each exercising a just-landed arm. Full table in `dynamic-dispatch-coverage-playbook.md` §6 tail; headline numbers:
+
+| Metric | WITH | WITHOUT |
+|---|---|---|
+| File access (Read/Grep/Bash tokens) | **0 in all 12 runs** | 3.1k–26.1k tok/run (2–11 Reads, 3–12 Bash) |
+| Tool calls | 2–5 (median 2, all `codegraph_explore`) | 8–25 (median ~10.5) |
+| Duration | 14–37s (median ~21s) | 26–176s (median ~44.5s) |
+| Cost | $0.075–$0.327 | $0.126–$0.920 |
+| Tokens processed | 132k–355k | 249k–789k |
+| Answer correctness | 12/12 correct end-to-end | 12/12 correct end-to-end |
+| Contamination | — | 1 blocked CLI attempt per run, 0 returned output |
+| Allocation efficiency | 27.5–89.1% | — |
+
+**Verdict**: the dispatch edges are load-bearing in retrieval, not just graph-complete — every with-run answered with zero file access while every without-run paid a 4–6× tool-call and ~2× wall-clock/tokens tax to reconstruct the same trace. Honest residuals: explore sufficiency ~50% per-call (agents re-explore rather than answer after one call — consistent across all six repos, worth a follow-up look at whether the responses invite follow-ups or the model habitually double-checks); allocation efficiency dips to ~28–50% on fan-out-heavy answers (halo's 60-listener delegate edge returns a wide envelope the answer only partially cites).
