@@ -253,6 +253,44 @@ describe('scanDynamicDispatch', () => {
     expect(m[0]!.key).toBe('saved');
   });
 
+  it('detects a QUOTED `type` object-literal key — contents are blanked in the scanned text', () => {
+    // `{'type':'submitCart'}` — the scanner blanks string contents, so the
+    // quoted key arrives as `{'    ':' '}`; the quoted-prop arm still sees the
+    // dispatch shape and keyFrom reads the key off the ORIGINAL text.
+    const body = `function checkout() {\n  store.dispatch({'type':'submitCart'});\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('literal-key-dispatch');
+    expect(m[0]!.key).toBe('submitCart');
+
+    const dq = scanDynamicDispatch(`function checkout() {\n  store.dispatch({"type": "pay"});\n}`, 'typescript', 1);
+    expect(dq[0]!.key).toBe('pay');
+  });
+
+  it('detects {type:…} object-literal dispatch on the non-dispatch verbs', () => {
+    const body = [
+      'function tick() {',
+      "  emitter.emit({ type: 'saved' });",
+      "  socket.send({ type: 'ping' });",
+      '}',
+    ].join('\n');
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(2);
+    expect(m.every((x) => x.form === 'literal-key-dispatch')).toBe(true);
+    expect(m.map((x) => x.key).sort()).toEqual(['ping', 'saved']);
+    // postMessage keeps its ipc-channel form — the type: fallback keys it there.
+    const pm = scanDynamicDispatch(`function tick() {\n  channel.postMessage({'type':'scroll'});\n}`, 'typescript', 1);
+    expect(pm).toHaveLength(1);
+    expect(pm[0]!.form).toBe('ipc-channel');
+    expect(pm[0]!.key).toBe('scroll');
+  });
+
+  it('does not fire the object-literal arm on a bare non-type key', () => {
+    // `payload` isn't `type` and isn't quoted — nothing to announce with.
+    const body = `function save() {\n  store.dispatch({payload: 1});\n}`;
+    expect(scanDynamicDispatch(body, 'typescript', 1)).toHaveLength(0);
+  });
+
   // --- ipc-channel ----------------------------------------------------------
 
   it('detects an electron ipcMain handler with the channel as key', () => {
@@ -272,6 +310,14 @@ describe('scanDynamicDispatch', () => {
     expect(m[0]!.form).toBe('ipc-channel');
     expect(m[0]!.key).toBeUndefined();
     expect(m[0]!.moreSites).toBe(1);
+  });
+
+  it('extracts the payload `type` key when the ipc channel position is a numeric id', () => {
+    const body = `function wire() {\n  ipcRenderer.sendTo(3, { type: 'refresh' });\n}`;
+    const m = scanDynamicDispatch(body, 'typescript', 1);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.form).toBe('ipc-channel');
+    expect(m[0]!.key).toBe('refresh');
   });
 
   // --- delegate-invoke ------------------------------------------------------
