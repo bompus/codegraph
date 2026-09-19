@@ -7,8 +7,9 @@
  * the task function, gated on the DECORATOR (read from the source above the `def`) so a
  * `.delay()` on a non-task object resolves to nothing. Covers both decorator dialects
  * (`@shared_task`, `@app.task(...)`), the module-qualified `mod.task.apply_async()` form,
- * and proves the precision gates: a plain function called with `.delay()` and a canvas
- * `group(...).delay()` (no single identifier before `.delay`) both contribute no edge.
+ * and proves the precision gates: a plain function called with `.delay()` contributes no
+ * edge. Canvas signature construction (`task.s(...)`/`task.si(...)`) IS a dispatch-binding
+ * site — covered by the third test.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
@@ -71,7 +72,7 @@ def handle_request(req):
     crunch.apply_async(args=[5])               # → crunch task (@app.task dialect)
     tickets.invalidate_cache.apply_async()     # module-qualified → invalidate_cache
     process_data.delay(req.x)                  # NOT a task → no edge
-    group([send_email.s(a) for a in req.addrs]).delay()  # canvas → no edge
+    group([send_email.s(a) for a in req.addrs]).delay()  # canvas: .s() binds send_email (dedup'd to the same pair)
 `
     );
 
@@ -195,6 +196,92 @@ def kickoff():
     expect(via('custom_named').sort()).toEqual(['custom.named.task', 'custom_named']);
     // PRECISION: unknown task names contribute nothing.
     expect(edges.some((r: any) => r.via === 'tasks.nonexistent')).toBe(false);
+
+    cg.close?.();
+  });
+
+  it('bridges canvas signature sites — .s()/.si() in assignments, link/body/on_error args, comprehensions', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'tasks.py'),
+      `from celery import shared_task
+
+
+@shared_task
+def consume_file(path):
+    return path
+
+
+@shared_task
+def delete_docs(ids):
+    return ids
+
+
+@shared_task
+def error_callback(request, exc, tb):
+    return None
+
+
+@shared_task
+def apply_action(ids):
+    return ids
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'utils.py'),
+      `def cleanup(x):
+    return x
+`
+    );
+    // The eShop-style canvas shapes, all inside enclosing functions.
+    fs.writeFileSync(
+      path.join(dir, 'service.py'),
+      `from celery import group, chord, chain
+from tasks import consume_file, delete_docs, error_callback, apply_action
+from utils import cleanup
+
+
+def bulk_delete(paths, ids):
+    consume_tasks = []
+    for p in paths:
+        consume_tasks.append(consume_file.s(p))          # .s() in append arg → consume_file
+    chord(
+        header=consume_tasks,
+        body=delete_docs.si(ids),                        # .si() as body= → delete_docs
+    ).on_error(
+        error_callback.s()                               # .s() as on_error arg → error_callback
+    )
+
+
+def fanout(paths):
+    group([consume_file.signature(p) for p in paths]).delay()  # .signature() alias → consume_file
+
+
+def kickoff(ids):
+    chain([apply_action.si(ids)])()                      # .si() in a list elt → apply_action
+    cleanup.s(ids)                                       # non-task .s() → no edge
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'celery-dispatch'`
+      )
+      .all();
+
+    const targets = (src: string) => edges.filter((r: any) => r.source === src).map((r: any) => r.target).sort();
+    // bulk_delete's chord fans out to every signature it builds.
+    expect(targets('bulk_delete')).toEqual(['consume_file', 'delete_docs', 'error_callback']);
+    // The .signature() alias and the .si() list element both bind their tasks.
+    expect(targets('fanout')).toEqual(['consume_file']);
+    expect(targets('kickoff')).toEqual(['apply_action']);
+    // PRECISION: `.s()` on a non-task object contributes nothing.
+    expect(edges.some((r: any) => r.target === 'cleanup')).toBe(false);
 
     cg.close?.();
   });
