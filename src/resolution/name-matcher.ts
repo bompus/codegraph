@@ -3483,11 +3483,13 @@ function matchRustSelfCall(
  * they miss here by construction rather than by position guessing.
  *
  * v1 scope: exactly two path segments after turbofish stripping
- * (`Self::of::<E>` → `Self::of`). `Self::AssocType::member` needs the
- * associated-type binding (the trait's `type AssocType;` → impl's concrete
- * type), and `Self::f().chain` is the return-type frontier — both decline.
- * Caller treats this as advisory: a miss falls through to the normal
- * strategies so a ref today's bare-name arm resolves keeps its verdict.
+ * (`Self::of::<E>` → `Self::of`), plus the three-segment associated-type
+ * path `Self::AssocType::member` — `AssocType` binds through the caller's
+ * enclosing `impl` block's `type AssocType = X` decl, then `X::member`
+ * resolves like any owner path. `Self::f().chain` is the return-type
+ * frontier and declines. Caller treats this as advisory: a miss falls
+ * through to the normal strategies so a ref today's bare-name arm resolves
+ * keeps its verdict.
  */
 function matchRustSelfPath(
   ref: UnresolvedRef,
@@ -3500,15 +3502,25 @@ function matchRustSelfPath(
     .replace(/<[^>]*>/g, '')
     .split('::')
     .filter((s) => s.length > 0);
-  if (segments[0] !== 'Self' || segments.length !== 2) return null;
-  const leaf = segments[1]!;
+  if (segments[0] !== 'Self' || (segments.length !== 2 && segments.length !== 3)) return null;
+  const leaf = segments[segments.length - 1]!;
   if (!/^\w+$/.test(leaf)) return null;
 
   const caller = context.getNodeById?.(ref.fromNodeId);
   if (!caller?.qualifiedName) return null;
   const sep = caller.qualifiedName.lastIndexOf('::');
   if (sep <= 0) return null; // a free fn has no `Self`
-  const owner = caller.qualifiedName.slice(0, sep);
+
+  let owner: string | null;
+  if (segments.length === 2) {
+    owner = caller.qualifiedName.slice(0, sep);
+  } else {
+    // `Self::Assoc::leaf` — the associated type binds in the caller's
+    // enclosing `impl` block (`impl Tr for T { type Assoc = X; ... }`),
+    // not on `T` itself: `Self::Assoc` means the concrete `X` of THIS impl.
+    owner = rustAssocTypeBinding(caller, segments[1]!, context);
+    if (!owner) return null;
+  }
   const want = `${owner}::${leaf}`;
 
   let owned = context
@@ -3535,6 +3547,103 @@ function matchRustSelfPath(
     confidence: 0.9,
     resolvedBy: 'qualified-name',
   };
+}
+
+/**
+ * The concrete type an associated-type name binds to inside the caller's
+ * enclosing `impl` block — `Self::Assoc` in `impl Tr for T` means the
+ * `type Assoc = X` decl of THAT impl (trait defaults `type Assoc;` carry
+ * no `=` and miss). The impl block is found by brace-counting backward from
+ * the caller's first line to the enclosing block opener — methods sit one
+ * level inside `impl`/`trait`/`fn` bodies, and only `impl` counts. The decl
+ * is then matched per line at block depth 1 and normalized like any
+ * inferred type name. A caller inside a `trait` default body or a `mod`
+ * has no `impl` opener and declines.
+ */
+function rustAssocTypeBinding(
+  caller: Node,
+  assocName: string,
+  context: ResolutionContext,
+): string | null {
+  const lines =
+    context.getFileLines?.(caller.filePath) ??
+    context.readFile(caller.filePath)?.split('\n');
+  if (!lines) return null;
+  const strip = (l: string) => l.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '');
+
+  // Backward brace scan: the first `{` whose net depth goes negative opens
+  // the block enclosing the caller — for a method that is the impl opener.
+  let depth = 0;
+  let blockIdx = -1;
+  for (let i = caller.startLine - 2; i >= 0; i--) {
+    const code = strip(lines[i] ?? '');
+    for (const ch of code) {
+      if (ch === '{') depth--;
+      else if (ch === '}') depth++;
+    }
+    if (depth < 0) {
+      blockIdx = i;
+      break;
+    }
+  }
+  // Single-line impls put the opener on the caller's own line
+  // (`impl T { type A = X; fn m(&self) { ... } }`) — nothing above to find.
+  if (blockIdx < 0) {
+    const own = strip(lines[caller.startLine - 1] ?? '');
+    const brace = own.indexOf('{');
+    if (brace !== -1 && /\bimpl\b/.test(own.slice(0, brace))) {
+      blockIdx = caller.startLine - 1;
+    }
+  }
+  if (blockIdx < 0) return null;
+  // The opener must head an `impl` — check the line's pre-`{` head, then
+  // brace-free continuation lines above it (`impl Tr for T\n{`); a line
+  // bearing `{`/`}` belongs to a different construct, so the scan stops.
+  let isImpl = false;
+  for (let j = blockIdx; j >= Math.max(0, blockIdx - 4); j--) {
+    const code = strip(lines[j] ?? '');
+    if (j === blockIdx) {
+      const brace = code.indexOf('{');
+      if (/\bimpl\b/.test(code.slice(0, brace === -1 ? 0 : brace))) {
+        isImpl = true;
+      }
+      continue;
+    }
+    if (/[{}]/.test(code)) break;
+    if (/\bimpl\b/.test(code)) {
+      isImpl = true;
+      break;
+    }
+  }
+  if (!isImpl) return null;
+
+  // Forward: `type <assoc> = X;` is a direct member — match at depth 1 or
+  // on the opener line itself (`impl T { type Assoc = X; ... }`), and stop
+  // when the block's `}` closes it. `opened` defers the close-check until
+  // the `{` is seen — multi-line headers put it below `impl`.
+  const typeRe = new RegExp(`\\btype\\s+${assocName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*([^;]+);`);
+  depth = 0;
+  let opened = false;
+  let bound: string | null = null;
+  for (let i = blockIdx; i < lines.length; i++) {
+    const code = strip(lines[i] ?? '');
+    if ((opened && depth === 1) || (i === blockIdx && code.includes('{'))) {
+      const m = typeRe.exec(code);
+      if (m) {
+        bound = m[1]!;
+        break;
+      }
+    }
+    for (const ch of code) {
+      if (ch === '{') {
+        depth++;
+        opened = true;
+      } else if (ch === '}') depth--;
+    }
+    if (opened && depth <= 0) break;
+  }
+  if (!bound) return null;
+  return normalizeInferredTypeName(bound);
 }
 
 /**

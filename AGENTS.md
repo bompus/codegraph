@@ -173,6 +173,8 @@ Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond
 
 Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They write real files and exercise real SQLite — there is no DB mocking.
 
+Working copies of the real corpora (e.g. `~/codegraph-corpora/linux`, multi-GB SQLite DBs) must live on the workspace disk, never on `/tmp` — that is a shared tmpfs and a handful of `VACUUM INTO` snapshots will fill it and OOM the host. Put snapshots under `~/cg-scratch/` or the corpus tree and delete them when done.
+
 ### Windows-gated tests
 
 Behavior that differs by platform (path resolution, drive letters, `SENSITIVE_PATHS`, `%APPDATA%` config dirs, CRLF) must be gated, not assumed. Use `it.runIf(process.platform === 'win32')(...)` for Windows-only assertions and `it.runIf(process.platform !== 'win32')(...)` for POSIX-only ones — e.g. `/etc` is sensitive on POSIX but resolves to `C:\etc` (non-existent) on Windows, so an ungated `/etc` assertion fails on Windows. Validate the Windows side for real (see below); don't merge a Windows-gated test you haven't seen run.

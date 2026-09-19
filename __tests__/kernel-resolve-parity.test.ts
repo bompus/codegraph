@@ -204,15 +204,20 @@ const FIXTURE: Record<string, string> = {
     // `Self::item` associated-item paths — `Self` binds the enclosing impl
     // type (Mode for both the inherent impl and `impl Step for Mode`), then
     // the leaf resolves by `owner::leaf` qualified name: enum_member `On`,
-    // method `flip`. `Self::Assoc::new` (3-seg associated-type path) and the
-    // free-fn `Self::new` (no impl owner) decline to the name strategies.
+    // method `flip`. `Self::Assoc::init` in `impl Step` binds the middle
+    // segment through that impl's `type Assoc = Back` decl → `Back::init`;
+    // the same 3-seg shape inside the inherent impl (no `type Assoc` decl)
+    // and the free-fn `Self::new` (no impl owner) decline to the name
+    // strategies.
     'pub enum Mode { On, Off }',
+    'pub struct Back;',
+    'impl Back { pub fn init(&self) {} }',
     'impl Mode {',
     '    pub fn flip(&self) -> Mode { Self::Off }',
     '    pub fn make(&self) { Self::flip(); Self::Assoc::new(); }',
     '}',
-    'pub trait Step { fn step(&self) -> Self; }',
-    'impl Step for Mode { fn step(&self) -> Self { Self::Off } }',
+    'pub trait Step { type Assoc; fn step(&self) -> Self; }',
+    'impl Step for Mode { type Assoc = Back; fn step(&self) -> Self { Self::Assoc::init(); Self::Off } }',
     'pub fn free_self() { Self::new(); }',
   ].join('\n'),
   // Rust inheritance locality — `Error` is bound to a stdlib-rooted `use`,
@@ -530,6 +535,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('again', 'sub.rs', 'method'), 'Self::new', 'src/sub.rs', 'rust', 'calls', 5);
     seed(nodeId('make', 'sub.rs', 'method'), 'Self::On', 'src/sub.rs', 'rust', 'calls', 6);
     seed(nodeId('make', 'sub.rs', 'method'), 'Self::Assoc::new', 'src/sub.rs', 'rust', 'calls', 7);
+    // `step` exists twice — the trait declaration `Step::step` and the impl
+    // method `Mode::step`; the ref lives inside the impl, so select by QN.
+    const implStep = byName('step', 'method').find((n) => n.qualifiedName === 'Mode::step')!.id;
+    seed(implStep, 'Self::Assoc::init', 'src/sub.rs', 'rust', 'calls', 8);
     seed(useitFn, 'Self::flip', 'src/sub.rs', 'rust', 'calls', 26);
     // Gate exclusions — `::`+`.` (boundReceiver/scopedChain territory)
     // and `()` chain shapes stay punted to the TS spine. The `chains` fn
@@ -916,9 +925,17 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(selfVariant.status).toBe('resolved');
     expect(selfVariant.resolvedBy).toBe('qualified-name');
     expect(selfVariant.targetNodeId).toBe(nodeId('On', 'sub.rs', 'enum_member'));
-    // `Self::Assoc::new` — 3-seg associated-type path declines in the arm,
-    // and the downstream member-tail gate punts the `::` name to TS like
-    // any other deep path (byte-compare covers the identical TS verdict).
+    // `Self::Assoc::init` — 3-seg associated-type path: `Assoc` binds
+    // through the enclosing `impl Step for Mode` block's `type Assoc = Back`
+    // decl, then `Back::init` resolves by qualified name.
+    const selfAssoc = at('Self::Assoc::init', 'src/sub.rs', 'calls');
+    expect(selfAssoc.status).toBe('resolved');
+    expect(selfAssoc.resolvedBy).toBe('qualified-name');
+    expect(selfAssoc.confidence).toBe(0.9);
+    expect(selfAssoc.targetNodeId).toBe(nodeId('init', 'sub.rs', 'method'));
+    // `Self::Assoc::new` inside the inherent `impl Mode` — no `type Assoc`
+    // decl there, so the arm declines and the member-tail gate punts the
+    // `::` name to TS like any other deep path.
     expect(at('Self::Assoc::new', 'src/sub.rs', 'calls').status).toBe('passthrough');
     // `Self::flip` from the free fn `useit` — no impl owner → falls through
     // to strat3, where `flip` is the unique rust method → @0.7, same as TS.

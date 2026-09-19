@@ -91,7 +91,17 @@ it('binds Self through a trait impl (impl Tr for T)', async () => {
   expect(calls).toEqual(['Target::helper']);
 });
 
-it('declines Self::AssocType::member paths and absent members', async () => {
+it('resolves Self::AssocType::member through the impl assoc-type decl', async () => {
+  await index({
+    'lib.rs': 'pub struct Back;\nimpl Back { pub fn init(&self) {} }\npub struct Target;\npub trait Tr { type A; fn step(&self); }\nimpl Tr for Target { type A = Back; fn step(&self) { Self::A::init(); } }',
+  });
+  const caller = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::step');
+  const calls = cg!.getOutgoingEdges(caller!.id).filter(e => e.kind === 'calls')
+    .map(e => cg!.getNode(e.target)!.qualifiedName);
+  expect(calls).toEqual(['Back::init']);
+});
+
+it('declines Self::AssocType paths with no impl decl, and absent members', async () => {
   await index({
     'lib.rs': 'pub struct Target;\nimpl Target { pub fn run(&self) { Self::Assoc::new(); Self::nonexistent_zz(); } }',
   });
