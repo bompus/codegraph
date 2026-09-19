@@ -66,3 +66,34 @@ it('declines indistinguishable inline-module owners instead of claiming one (#18
   }` });
   expect(targets('lib.rs')).toEqual([]);
 });
+
+it('resolves Self::item associated paths to the enclosing impl type', async () => {
+  await index({
+    'lib.rs': 'pub struct Target;\nimpl Target { pub fn helper(&self) {} pub fn run(&self) { Self::helper(); } }',
+  });
+  expect(targets('lib.rs')).toEqual(['src/lib.rs:Target::helper']);
+});
+
+it('resolves Self::Variant(..) constructor to the enum member', async () => {
+  await index({
+    'lib.rs': 'pub enum Target { On(u8), Off }\nimpl Target { pub fn run(&self) -> Target { Self::On(1) } }',
+  });
+  expect(targets('lib.rs')).toEqual(['src/lib.rs:Target::On']);
+});
+
+it('binds Self through a trait impl (impl Tr for T)', async () => {
+  await index({
+    'lib.rs': 'pub struct Target;\npub trait Tr { fn step(&self) -> Self; }\nimpl Tr for Target { fn step(&self) -> Self { Self::helper() } }\nimpl Target { pub fn helper(&self) {} }',
+  });
+  const caller = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::step');
+  const calls = cg!.getOutgoingEdges(caller!.id).filter(e => e.kind === 'calls')
+    .map(e => cg!.getNode(e.target)!.qualifiedName);
+  expect(calls).toEqual(['Target::helper']);
+});
+
+it('declines Self::AssocType::member paths and absent members', async () => {
+  await index({
+    'lib.rs': 'pub struct Target;\nimpl Target { pub fn run(&self) { Self::Assoc::new(); Self::nonexistent_zz(); } }',
+  });
+  expect(targets('lib.rs')).toEqual([]);
+});

@@ -201,6 +201,19 @@ const FIXTURE: Record<string, string> = {
     'pub fn worker() { let ctx: Ctx = Ctx; ctx.run(); }',
     'pub fn unbound() { w.new(); z.again(); z.nomethod(); }',
     'pub fn chains() { Widget::new().again(); make().run(); }',
+    // `Self::item` associated-item paths — `Self` binds the enclosing impl
+    // type (Mode for both the inherent impl and `impl Step for Mode`), then
+    // the leaf resolves by `owner::leaf` qualified name: enum_member `On`,
+    // method `flip`. `Self::Assoc::new` (3-seg associated-type path) and the
+    // free-fn `Self::new` (no impl owner) decline to the name strategies.
+    'pub enum Mode { On, Off }',
+    'impl Mode {',
+    '    pub fn flip(&self) -> Mode { Self::Off }',
+    '    pub fn make(&self) { Self::flip(); Self::Assoc::new(); }',
+    '}',
+    'pub trait Step { fn step(&self) -> Self; }',
+    'impl Step for Mode { fn step(&self) -> Self { Self::Off } }',
+    'pub fn free_self() { Self::new(); }',
   ].join('\n'),
   // Rust inheritance locality — `Error` is bound to a stdlib-rooted `use`,
   // so the same-named local type_alias must NOT adopt the implements ref.
@@ -509,6 +522,15 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(unboundFn, 'w.new', 'src/sub.rs', 'rust', 'calls', 25);
     seed(unboundFn, 'z.again', 'src/sub.rs', 'rust', 'calls', 25);
     seed(unboundFn, 'z.nomethod', 'src/sub.rs', 'rust', 'calls', 25);
+    // Rust `Self::item` associated-item path — `Self` binds the caller's
+    // impl owner (Widget for `again`, Mode for `make`); the leaf resolves by
+    // `owner::leaf` qualified name across method/enum_member kinds. A free
+    // fn has no `Self` and the 3-seg associated-type path declines — both
+    // fall through to the strats exactly like TS.
+    seed(nodeId('again', 'sub.rs', 'method'), 'Self::new', 'src/sub.rs', 'rust', 'calls', 5);
+    seed(nodeId('make', 'sub.rs', 'method'), 'Self::On', 'src/sub.rs', 'rust', 'calls', 6);
+    seed(nodeId('make', 'sub.rs', 'method'), 'Self::Assoc::new', 'src/sub.rs', 'rust', 'calls', 7);
+    seed(useitFn, 'Self::flip', 'src/sub.rs', 'rust', 'calls', 26);
     // Gate exclusions — `::`+`.` (boundReceiver/scopedChain territory)
     // and `()` chain shapes stay punted to the TS spine. The `chains` fn
     // also exercises them through real extraction (byte-compare leg).
@@ -882,6 +904,29 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `self.unknown.m` — field not declared on Holder → exclusive
     // decline (member-tail punt; TS produces the same failed verdict).
     expect(at('self.unknown.new', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // `Self::item` → match_rust_self_path — `Self` binds the caller's impl
+    // owner and the leaf resolves by `owner::leaf` qualified name.
+    const selfPath = at('Self::new', 'src/sub.rs', 'calls');
+    expect(selfPath.status).toBe('resolved');
+    expect(selfPath.resolvedBy).toBe('qualified-name');
+    expect(selfPath.confidence).toBe(0.9);
+    expect(selfPath.targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
+    // `Self::On` → enum_member `Mode::On` on the same binding.
+    const selfVariant = at('Self::On', 'src/sub.rs', 'calls');
+    expect(selfVariant.status).toBe('resolved');
+    expect(selfVariant.resolvedBy).toBe('qualified-name');
+    expect(selfVariant.targetNodeId).toBe(nodeId('On', 'sub.rs', 'enum_member'));
+    // `Self::Assoc::new` — 3-seg associated-type path declines in the arm,
+    // and the downstream member-tail gate punts the `::` name to TS like
+    // any other deep path (byte-compare covers the identical TS verdict).
+    expect(at('Self::Assoc::new', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // `Self::flip` from the free fn `useit` — no impl owner → falls through
+    // to strat3, where `flip` is the unique rust method → @0.7, same as TS.
+    const freeSelf = at('Self::flip', 'src/sub.rs', 'calls');
+    expect(freeSelf.status).toBe('resolved');
+    expect(freeSelf.resolvedBy).toBe('instance-method');
+    expect(freeSelf.confidence).toBe(0.7);
+    expect(freeSelf.targetNodeId).toBe(nodeId('flip', 'sub.rs', 'method'));
     // `x.y` local receiver inference (R5). `let mut v: Widget`, a typed
     // param `p: &Widget`, and `ctx: Ctx` (the exact §5.25 drift shape)
     // donate their annotation → rmot @0.9 instance-method.

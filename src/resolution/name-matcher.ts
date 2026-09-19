@@ -2914,6 +2914,18 @@ export function matchMethodCall(
     });
   }
 
+  // Rust `Self::item` — an associated-item path whose receiver is the
+  // enclosing impl type, not a name in scope. `Self` binds to the calling
+  // method's qualified-name owner (same binding `self.m()` uses), then the
+  // leaf resolves as that owner's member. Placed before the `!match` bail so
+  // deeper paths (`Self::Assoc::m`) reach it too — they decline for now.
+  // Fall-through on miss: an unbound path keeps today's verdict rather than
+  // denying the downstream name strategies their (lower-confidence) hits.
+  if (ref.language === 'rust' && ref.referenceName.startsWith('Self::')) {
+    const selfPath = nmTimedT('mc-rustselfpath', ref, () => matchRustSelfPath(ref, context));
+    if (selfPath) return selfPath;
+  }
+
   const match = dotMatch || colonMatch || luaColonMatch || rDollarMatch;
   if (!match) {
     return null;
@@ -3443,6 +3455,72 @@ function matchRustSelfCall(
   // ownership. In that case require a single owner declaration in the
   // caller's file and a method in that file. Otherwise leave it unresolved.
   // A unique owner still permits ordinary impl blocks split across files.
+  const owners = context.getNodesByQualifiedName(owner).filter((n) =>
+    n.language === 'rust' && ['struct', 'enum', 'union', 'trait', 'class'].includes(n.kind));
+  if (owners.length > 1) {
+    if (owners.filter((n) => n.filePath === caller.filePath).length !== 1) return null;
+    owned = owned.filter((n) => n.filePath === caller.filePath);
+  }
+  if (owned.length !== 1) return null;
+
+  return {
+    original: ref,
+    targetNodeId: owned[0]!.id,
+    confidence: 0.9,
+    resolvedBy: 'qualified-name',
+  };
+}
+
+/**
+ * Resolve a Rust `Self::item` associated-item path — `Self::helper()`,
+ * `Self::Variant`, `Self::CONST` — emitted with the `Self` receiver intact.
+ * `Self` binds to the calling method's qualified-name owner exactly as
+ * `matchRustSelfCall` derives it (`Outer::run` → `Outer`; `impl Tr for Outer`
+ * methods carry `Outer::` too, so trait impls bind to the impl type). The leaf
+ * then resolves by `owner::leaf` qualified name across the member kinds that
+ * carry the owner prefix (methods, enum members, constants) — associated
+ * `const`s and `type` aliases are extracted as file-level unprefixed nodes, so
+ * they miss here by construction rather than by position guessing.
+ *
+ * v1 scope: exactly two path segments after turbofish stripping
+ * (`Self::of::<E>` → `Self::of`). `Self::AssocType::member` needs the
+ * associated-type binding (the trait's `type AssocType;` → impl's concrete
+ * type), and `Self::f().chain` is the return-type frontier — both decline.
+ * Caller treats this as advisory: a miss falls through to the normal
+ * strategies so a ref today's bare-name arm resolves keeps its verdict.
+ */
+function matchRustSelfPath(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  // Same non-nested generic strip the extractor/ruslang uses — `Self::of::<E>`
+  // loses `<E>` and segments cleanly; nested `<Vec<T>>` degrades to a leaf
+  // that simply matches nothing.
+  const segments = ref.referenceName
+    .replace(/<[^>]*>/g, '')
+    .split('::')
+    .filter((s) => s.length > 0);
+  if (segments[0] !== 'Self' || segments.length !== 2) return null;
+  const leaf = segments[1]!;
+  if (!/^\w+$/.test(leaf)) return null;
+
+  const caller = context.getNodeById?.(ref.fromNodeId);
+  if (!caller?.qualifiedName) return null;
+  const sep = caller.qualifiedName.lastIndexOf('::');
+  if (sep <= 0) return null; // a free fn has no `Self`
+  const owner = caller.qualifiedName.slice(0, sep);
+  const want = `${owner}::${leaf}`;
+
+  let owned = context
+    .getNodesByQualifiedName(want)
+    .filter(
+      (n) =>
+        (n.kind === 'method' || n.kind === 'enum_member' || n.kind === 'constant') &&
+        n.language === 'rust' &&
+        n.qualifiedName === want,
+    );
+  // Same disambiguation as matchRustSelfCall: rust qualified names omit
+  // module paths, so two same-named owners need the caller's file to pin one.
   const owners = context.getNodesByQualifiedName(owner).filter((n) =>
     n.language === 'rust' && ['struct', 'enum', 'union', 'trait', 'class'].includes(n.kind));
   if (owners.length > 1) {
