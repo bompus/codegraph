@@ -2613,6 +2613,19 @@ async function reduxThunkEdges(queries: QueryBuilder, ctx: ResolutionContext, on
 // `{ width: 5 }` literal resolves to nothing → no edges); fan-out capped.
 const REGISTRY_ASSIGN_RE = /(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)|((?:this\.)?[A-Za-z_$][\w$]*))\s*=\s*\{/g;
 const REGISTRY_DISPATCH_RE = /(?:\bnew\s+)?((?:this\.)?[A-Za-z_$][\w$]*)\s*\[\s*([A-Za-z_$][\w$.]*)\s*\]\s*(?:\(|\.[A-Za-z_$])/g;
+// `const r = registry` — an alias the dispatch ref may be written through.
+// RHS must be a BARE ref (a `reg[k]` element grab is a different shape).
+const REGISTRY_ALIAS_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*((?:this\.)?[A-Za-z_$][\w$]*)\s*(?:;|\n|$)/g;
+// `registry['k'] = fn` / `registry[KEY] = fn` / `registry.k = fn` — entries
+// added after the literal. RHS is a bare/qualified ident (`fn`, `ns.fn`,
+// `this.fn`); a call/arrow/object RHS fails the trailing `;` gate.
+const REGISTRY_AUGMENT_RE =
+  /((?:this\.)?[A-Za-z_$][\w$]*)\s*(?:\[\s*(['"])([\w$]+)\2\s*\]|\[\s*([A-Za-z_$][\w$.]*)\s*\]|\.\s*([A-Za-z_$][\w$]*))\s*=(?!=)\s*([A-Za-z_$][\w$.]*)\s*;/g;
+// `r['k'](` — a LITERAL-key access through an alias: statically resolvable
+// when 'k' is a known registry key (declared or augmented), and missed by the
+// main dispatch regex on purpose (a quoted key is a static access).
+const REGISTRY_ALIAS_LITERAL_RE =
+  /(?:\bnew\s+)?((?:this\.)?[A-Za-z_$][\w$]*)\s*\[\s*(['"])([\w$]+)\2\s*\]\s*(?:\(|\.[A-Za-z_$])/g;
 const REGISTRY_MIN_ENTRIES = 2;
 const REGISTRY_FANOUT_CAP = 40;
 const REGISTRY_CLASS_ENTRY = new Set(['execute', 'run', 'handle', 'perform', 'process', 'call', 'apply', 'dispatch']);
@@ -2633,7 +2646,7 @@ function braceBody(src: string, openIdx: number): string | null {
  *  (`x: () => …`), and nested objects (`x: { … }`) don't leak their inner `k: v` pairs as
  *  bogus handlers. The per-segment anchor (`^… key: Ident …$`) keeps only pure identifier
  *  values — a data value (`x: 5`), call, or arrow fails to match. */
-function registryEntryNames(body: string): string[] {
+function registryEntryNames(body: string): { names: string[]; literalKeys: Map<string, string> } {
   const segs: string[] = [];
   let depth = 0;
   let start = 0;
@@ -2645,11 +2658,17 @@ function registryEntryNames(body: string): string[] {
   }
   segs.push(body.slice(start));
   const names: string[] = [];
+  const literalKeys = new Map<string, string>();
   for (const seg of segs) {
-    const m = /^\s*(?:\[[^\]]+\]|['"]?[\w$]+['"]?)\s*:\s*([A-Za-z_$][\w$]*)\s*$/.exec(seg);
-    if (m && m[1]!.length >= 3 && !names.includes(m[1]!)) names.push(m[1]!);
+    const m = /^\s*(?:\[[^\]]+\]|(['"]?)([\w$]+)\1)\s*:\s*([A-Za-z_$][\w$]*)\s*$/.exec(seg);
+    if (m && m[3]!.length >= 3 && !names.includes(m[3]!)) {
+      names.push(m[3]!);
+      // `[COMPUTED]` keys hold a runtime value we can't spell, so only plain
+      // `k:` / `'k':` / `"k":` entries become literal-key lookup targets.
+      if (!seg.trimStart().startsWith('[')) literalKeys.set(m[2]!, m[3]!);
+    }
   }
-  return names;
+  return { names, literalKeys };
 }
 
 /** Resolve a registered handler name to its callable entry: a function value, or a class's
@@ -2686,8 +2705,9 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
     if (!REGISTRY_JS_EXT.test(file)) continue;
     const content = ctx.readFile(file);
-    // Cheap pre-filter: a computed member access BY NAME (`ident[ident`) — the dispatch shape.
-    if (!content || !/[\w$]\s*\[\s*[A-Za-z_$]/.test(content)) continue;
+    // Cheap pre-filter: a member access BY NAME (`ident[ident` or `ident['…'`)
+    // — the var-dispatch and alias-literal shapes respectively.
+    if (!content || !/[\w$]\s*\[\s*[A-Za-z_$'"]/.test(content)) continue;
     // Skip minified/generated bundles (draco, three.min, base64…): their pervasive `h[x](...)`
     // calls + single-letter `{a:b}` literals are a false-positive minefield. Average line
     // length is the reliable tell — real source ~30–80, minified in the hundreds/thousands.
@@ -2705,32 +2725,72 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
       const cm = /\]\s*\([^)]*\)\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win) || /\]\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win);
       dispatches.push({ ref: dm[1]!, line: safe.slice(0, dm.index).split('\n').length, chained: cm ? cm[1]! : null });
     }
-    if (!dispatches.length) continue;
+    // Literal-key accesses through an alias (`r['k'](…)`) — collected up front
+    // so a file with ONLY these (no `r[k]` var dispatch) still proceeds.
+    const literalAccesses: Array<{ ref: string; key: string; pos: number }> = [];
+    REGISTRY_ALIAS_LITERAL_RE.lastIndex = 0;
+    let lm: RegExpExecArray | null;
+    while ((lm = REGISTRY_ALIAS_LITERAL_RE.exec(safe))) {
+      literalAccesses.push({ ref: lm[1]!, key: lm[3]!, pos: lm.index });
+    }
+    if (!dispatches.length && !literalAccesses.length) continue;
     // Normalize a leading `this.` so a class FIELD-INITIALIZER registry (`commands = {…}`)
     // matches a `this.commands[k]` dispatch, not just the constructor form `this.commands = {…}`.
     const norm = (r: string) => r.replace(/^this\./, '');
-    const refs = new Set(dispatches.map((d) => norm(d.ref)));
+    // Aliases: `const r = registry` — the dispatch may be written through the
+    // alias (`r[k]`). Collected unconditionally (the RHS needn't be a known
+    // registry — an unresolvable alias simply never matches), then resolved
+    // transitively (`const b = a; const a = reg`).
+    const aliasOf = new Map<string, string>();
+    REGISTRY_ALIAS_RE.lastIndex = 0;
+    let al: RegExpExecArray | null;
+    while ((al = REGISTRY_ALIAS_RE.exec(safe))) aliasOf.set(al[1]!, norm(al[2]!));
+    const canon = (r: string): string => {
+      let x = r;
+      const seen2 = new Set<string>();
+      while (aliasOf.has(x) && !seen2.has(x)) { seen2.add(x); x = aliasOf.get(x)!; }
+      return x;
+    };
+    const refs = new Set([
+      ...dispatches.map((d) => canon(norm(d.ref))),
+      ...literalAccesses.map((l) => canon(norm(l.ref))),
+    ]);
 
     // 2. Registries: an object literal assigned to a dispatched ref, ≥2 entries resolving to callables.
     REGISTRY_ASSIGN_RE.lastIndex = 0;
-    const registries = new Map<string, { names: string[]; line: number }>();
+    const registries = new Map<string, { names: string[]; literalKeys: Map<string, string>; line: number }>();
     let am: RegExpExecArray | null;
     while ((am = REGISTRY_ASSIGN_RE.exec(safe))) {
       const lhs = norm(am[1] ?? am[2]!);
       if (!refs.has(lhs) || registries.has(lhs)) continue;
       const body = braceBody(safe, am.index + am[0].length - 1);
       if (!body) continue;
-      const names = registryEntryNames(body); // depth-0 `key: Identifier` entries only
+      const { names, literalKeys } = registryEntryNames(body); // depth-0 `key: Identifier` entries only
       if (names.length >= REGISTRY_MIN_ENTRIES) {
-        registries.set(lhs, { names, line: safe.slice(0, am.index).split('\n').length });
+        registries.set(lhs, { names, literalKeys, line: safe.slice(0, am.index).split('\n').length });
       }
     }
     if (!registries.size) continue;
 
+    // 2b. Post-declaration augmentation: `registry['k'] = fn` / `registry[KEY] = fn`
+    //     / `registry.k = fn` — entries appended after the literal (Prebid's
+    //     single-entry `modules['x'] = fn` pattern). Only augments a registry
+    //     the file already dispatches through.
+    REGISTRY_AUGMENT_RE.lastIndex = 0;
+    let ug: RegExpExecArray | null;
+    while ((ug = REGISTRY_AUGMENT_RE.exec(safe))) {
+      const reg = registries.get(canon(norm(ug[1]!)));
+      if (!reg) continue;
+      const rhsTail = ug[6]!.split('.').pop()!;
+      if (rhsTail.length >= 3 && !reg.names.includes(rhsTail)) reg.names.push(rhsTail);
+      const litKey = ug[3] ?? ug[5];
+      if (litKey) reg.literalKeys.set(litKey, rhsTail);
+    }
+
     // 3. Link each dispatcher → each registered handler's callable entry.
     const nodesInFile = ctx.getNodesInFile(file);
     for (const d of dispatches) {
-      const reg = registries.get(norm(d.ref));
+      const reg = registries.get(canon(norm(d.ref)));
       if (!reg) continue;
       const disp = enclosingFn(nodesInFile, d.line);
       if (!disp) continue;
@@ -2752,6 +2812,43 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
         });
         added++;
       }
+    }
+
+    // 4. Literal-key access THROUGH AN ALIAS: `const r = registry; r['k'](…)`
+    //    — the main regex skips quoted keys (they're static accesses) and the
+    //    resolver can't see through the const alias, so this is a genuinely
+    //    missing edge. Only fires when 'k' is a KNOWN key of the resolved
+    //    registry (declared literal or augmented) — an unknown key is skipped.
+    for (const la of literalAccesses) {
+      const refName = norm(la.ref);
+      if (!aliasOf.has(refName)) continue; // aliases only — reg['k'] is the resolver's job
+      const reg = registries.get(canon(refName));
+      if (!reg) continue;
+      const handler = reg.literalKeys.get(la.key);
+      if (!handler) continue;
+      const line = safe.slice(0, la.pos).split('\n').length;
+      const disp = enclosingFn(nodesInFile, line);
+      if (!disp) continue;
+      const win = safe.slice(la.pos, la.pos + 160);
+      const cm = /\]\s*\([^)]*\)\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win) || /\]\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win);
+      const target = resolveRegistryHandler(ctx, handler, cm ? cm[1]! : null);
+      if (!target || target.id === disp.id) continue;
+      const key = `${disp.id}>${target.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: target.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: {
+          synthesizedBy: 'object-registry',
+          via: handler,
+          key: la.key,
+          registeredAt: `${file}:${reg.line}`,
+        },
+      });
     }
   }
   return edges;
