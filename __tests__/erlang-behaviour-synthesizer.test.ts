@@ -188,6 +188,131 @@ on_event(Ev) -> {seen, Ev}.
     expect(rows.map((r) => path.basename(r.tf))).toEqual(['public_impl.erl']);
   });
 
+  it('bridges gen_server:call/cast by registered name to handle_call/handle_cast', async () => {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    // The server: registers {local, ?MODULE} and implements the callbacks.
+    fs.writeFileSync(
+      path.join(dir, 'src', 'my_server.erl'),
+      `-module(my_server).
+-behaviour(gen_server).
+-export([start_link/0, self_ping/0, handle_call/3, handle_cast/2]).
+
+start_link() ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+%% A call from INSIDE the server module via ?MODULE still resolves to itself.
+self_ping() ->
+    gen_server:call(?MODULE, ping).
+
+handle_call(_Req, _From, State) -> {reply, ok, State}.
+handle_cast(_Msg, State) -> {noreply, State}.
+`
+    );
+    // A second server registered under a name that is NOT its module name —
+    // the registered name is the runtime binding and wins resolution.
+    fs.writeFileSync(
+      path.join(dir, 'src', 'other_server.erl'),
+      `-module(other_server).
+-behaviour(gen_server).
+-export([start_link/0, handle_call/3]).
+
+start_link() ->
+    gen_server:start_link({local, alias_name}, ?MODULE, [], []).
+
+handle_call(_Req, _From, State) -> {reply, ok, State}.
+`
+    );
+    // The caller: name-based call, {local, Name} cast, and alias-name call.
+    fs.writeFileSync(
+      path.join(dir, 'src', 'client.erl'),
+      `-module(client).
+-export([ask/1, tell/1, ask_alias/1, ask_opaque/1, ask_missing/1]).
+
+ask(Req) ->
+    gen_server:call(my_server, Req).
+
+tell(Msg) ->
+    gen_server:cast({local, my_server}, Msg).
+
+ask_alias(Req) ->
+    gen_server:call(alias_name, Req).
+
+%% {via, Registry, Name} routes through a registry module — statically opaque.
+ask_opaque(Req) ->
+    gen_server:call({via, some_registry, my_server}, Req).
+
+%% A name nothing registers and no gen_server module bears.
+ask_missing(Req) ->
+    gen_server:call(no_such_server, Req).
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const rows = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path tf,
+                json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'erlang-gen-server'`
+      )
+      .all();
+    cg.destroy();
+    const targets = (src: string) =>
+      rows.filter((r) => r.source === src).map((r) => `${path.basename(r.tf)}:${r.target}`).sort();
+
+    expect(targets('ask')).toEqual(['my_server.erl:handle_call']);
+    expect(targets('tell')).toEqual(['my_server.erl:handle_cast']);
+    expect(targets('ask_alias')).toEqual(['other_server.erl:handle_call']);
+    // ?MODULE inside the server resolves to the server itself.
+    expect(targets('self_ping')).toEqual(['my_server.erl:handle_call']);
+    // {via,…} is opaque; an unregistered/non-server name resolves nothing.
+    expect(targets('ask_opaque')).toEqual([]);
+    expect(targets('ask_missing')).toEqual([]);
+    // Provenance names the resolved module + callback.
+    expect(rows.find((r) => r.source === 'ask').via).toBe('my_server:handle_call/3');
+    expect(rows.find((r) => r.source === 'tell').via).toBe('my_server:handle_cast/2');
+    expect(rows.find((r) => r.source === 'ask_alias').via).toBe('other_server:handle_call/3');
+  });
+
+  it('bails when a registered name is claimed by two different modules', async () => {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    for (const m of ['srv_a', 'srv_b']) {
+      fs.writeFileSync(
+        path.join(dir, 'src', `${m}.erl`),
+        `-module(${m}).
+-behaviour(gen_server).
+-export([start/0, handle_call/3]).
+
+start() ->
+    gen_server:start_link({local, shared_name}, ?MODULE, [], []).
+
+handle_call(_Req, _From, State) -> {reply, ok, State}.
+`
+      );
+    }
+    fs.writeFileSync(
+      path.join(dir, 'src', 'asker.erl'),
+      `-module(asker).
+-export([go/1]).
+
+go(Req) ->
+    gen_server:call(shared_name, Req).
+`
+    );
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const count = db
+      .prepare(`SELECT count(*) c FROM edges WHERE json_extract(metadata,'$.synthesizedBy') = 'erlang-gen-server'`)
+      .get();
+    cg.destroy();
+    // `shared_name` could be either server — a wrong edge is worse than none.
+    expect(count.c).toBe(0);
+  });
+
   it('counts dispatch-site arity across <<binary>> literals (#1358)', async () => {
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(

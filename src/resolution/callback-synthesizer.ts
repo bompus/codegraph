@@ -3019,7 +3019,11 @@ async function vuexDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): P
 // object resolves to no task node → no edge, so a Celery-free repo yields 0. Same-file /
 // unique-candidate disambiguation like vuex. (Canvas forms — `group(t).delay()`, `t.s()`/`.si()`
 // — have no single identifier before `.delay`/`.apply_async`, so they're skipped, not mis-bridged.)
-const CELERY_DISPATCH_RE = /\b([A-Za-z_]\w*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
+// The receiver chain before `.delay`/`.apply_async` — `task`, `mod.task`, or
+// `pkg.mod.task` (the last segment is the task name; a resolvable module prefix
+// scopes the lookup to that module). Canvas forms (`group(t).delay()`,
+// `t.s().delay()`) still can't match — `(`/`]` break the chain.
+const CELERY_DISPATCH_RE = /\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\.\s*(?:delay|apply_async)\s*\(/g;
 // `recv.send_task('dotted.name')` — celery's string-name dispatch. Any receiver
 // (`app.send_task`, `current_app.send_task`); the file-celery-import gate and the
 // registered-name match keep non-celery `send_task`s out.
@@ -3086,8 +3090,11 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
         let bm: RegExpExecArray | null;
         while ((bm = CELERY_TASK_BIND_RE.exec(content))) info.taskFnBindings.set(bm[1]!, bm[2]!);
       }
-      // `from <mod> import <fn> as <alias>` — needed even in celery-free dispatch
-      // files (the alias binds the task function by its real name).
+      // `from <mod> import <fn> [as <alias>]` — needed even in celery-free
+      // dispatch files (the alias binds the task by its real name). A plain
+      // `from tasks import bound` records `bound` too: the import may name a
+      // task-object binding (`bound = app.task(fn)`) or a `Task` subclass —
+      // the alias resolution follows it into the home module.
       CELERY_FROM_IMPORT_RE.lastIndex = 0;
       let im: RegExpExecArray | null;
       while ((im = CELERY_FROM_IMPORT_RE.exec(content))) {
@@ -3097,7 +3104,7 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
           if (!it) continue;
           const orig = it[1]!;
           const alias = it[2];
-          if (alias) info.importAliases.set(alias, { module: mod, orig });
+          info.importAliases.set(alias ?? orig, { module: mod, orig });
           if (/celery/.test(mod) && (orig === 'shared_task' || orig === 'task') && alias) info.decoratorAliases.add(alias);
         }
       }
@@ -3175,9 +3182,101 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
     return v;
   };
 
-  const resolve = (name: string, dispatchFile: string): Node | null => {
+  // The module FILE a dotted path names — `tasks` → `tasks.py`, `myapp.tasks` →
+  // `myapp/tasks.py` or the `__init__.py` of the package. Suffix-matched so a
+  // source root (`src/myapp/tasks.py`) still resolves; a multi-match (two
+  // `tasks.py`s) is ambiguous → null. Memoized — getAllFiles is per-call.
+  const moduleFileCache = new Map<string, string | null>();
+  const moduleFile = (mod: string): string | null => {
+    let v = moduleFileCache.get(mod);
+    if (v !== undefined) return v;
+    v = null;
+    const rel = mod.replace(/^\.+/, '').replace(/\./g, '/');
+    if (rel) {
+      const hits = ctx
+        .getAllFiles()
+        .filter((f) => f === `${rel}.py` || f.endsWith(`/${rel}.py`) || f.endsWith(`/${rel}/__init__.py`));
+      if (hits.length === 1) v = hits[0]!;
+    }
+    moduleFileCache.set(mod, v);
+    return v;
+  };
+
+  // `x = app.task(fn)` / `x = TaskSubclass()` in `file` → the dispatched body
+  // (`fn`, or the subclass's `run`). Bindings live at module level — the file
+  // here is the DEFINING file (dispatch file for a local `x`, home module for
+  // an imported one).
+  const bindingTarget = (info: CeleryFileInfo, name: string, file: string): Node | null => {
+    const boundFn = info.taskFnBindings.get(name);
+    if (boundFn) {
+      const bcands = ctx.getNodesInFile(file).filter((n) => n.kind === 'function' && n.name === boundFn);
+      return bcands.length === 1 ? bcands[0]! : null;
+    }
+    const boundCls = info.valueBindings.get(name);
+    if (boundCls) {
+      const ccands = ctx.getNodesByName(boundCls).filter((n) => n.kind === 'class' && taskClassRun(n));
+      const cls = ccands.length === 1 ? ccands[0]! : ccands.find((c) => c.filePath === file) ?? null;
+      return cls ? taskClassRun(cls) : null;
+    }
+    return null;
+  };
+
+  // `name` as an attribute of module `modFile` — an `x = app.task(fn)` /
+  // `x = TaskSubclass()` binding, a `Task` subclass, or a decorated function.
+  // For a package (`…/__init__.py`) the sibling files are searched too
+  // (re-exports); >1 hit across the package is ambiguous → null.
+  const moduleAttrTarget = (modFile: string, name: string): Node | null => {
+    const dir = modFile.endsWith('/__init__.py') ? modFile.slice(0, modFile.length - '__init__.py'.length) : null;
+    const files = dir
+      ? ctx.getAllFiles().filter((f) => f.startsWith(dir) && CELERY_PY_EXT.test(f))
+      : [modFile];
+    const hits: Node[] = [];
+    for (const f of files) {
+      const t =
+        bindingTarget(fileInfo(f), name, f) ??
+        (() => {
+          const cls = ctx.getNodesInFile(f).find((n) => n.kind === 'class' && n.name === name && taskClassRun(n));
+          return cls ? taskClassRun(cls) : null;
+        })() ??
+        ctx.getNodesInFile(f).find((n) => n.kind === 'function' && n.name === name && isCeleryTask(n)) ??
+        null;
+      if (t) hits.push(t);
+    }
+    return hits.length === 1 ? hits[0]! : null;
+  };
+
+  const resolve = (recv: string, dispatchFile: string): Node | null => {
+    const info = fileInfo(dispatchFile);
+    // `mod.name.delay()` — when `mod` resolves to a module file (`import
+    // tasks`, `import myapp.tasks`, or `from pkg import tasks`), the attribute
+    // is resolved INSIDE that module (the module binding is authoritative —
+    // no global-name fallback for a resolved module).
+    const dot = recv.lastIndexOf('.');
+    if (dot > 0) {
+      const modRef = recv.slice(0, dot);
+      const leaf = recv.slice(dot + 1);
+      const modAlias = info.importAliases.get(modRef);
+      const mf = moduleFile(modAlias ? `${modAlias.module}.${modAlias.orig}` : modRef);
+      if (mf) return moduleAttrTarget(mf, leaf);
+      recv = leaf; // `x.y.delay()` with unresolvable `x` — resolve `y` globally
+    }
+
+    // `from m import f [as a]` — an explicit import binding wins over global
+    // name lookup (the imported object is what `.delay` binds at runtime).
+    // Exclusive: resolves only through the import, so an imported non-task is
+    // never bridged to a same-named task elsewhere.
+    const alias = info.importAliases.get(recv);
+    if (alias) {
+      const mf = moduleFile(alias.module);
+      if (mf) return moduleAttrTarget(mf, alias.orig);
+      // Module unplaceable in-repo — fall back to a unique global task under
+      // the original name (a re-exported or renamed module we can't locate).
+      const acands = ctx.getNodesByName(alias.orig).filter((n) => n.kind === 'function' && isCeleryTask(n));
+      return acands.length === 1 ? acands[0]! : null;
+    }
+
     // Direct name → decorated task function.
-    const cands = ctx.getNodesByName(name).filter((n) => n.kind === 'function' && isCeleryTask(n));
+    const cands = ctx.getNodesByName(recv).filter((n) => n.kind === 'function' && isCeleryTask(n));
     if (cands.length) {
       if (cands.length === 1) return cands[0]!;
       // Cross-module name collision: prefer a task defined in the dispatching file, else bail
@@ -3185,38 +3284,14 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
       return cands.find((c) => c.filePath === dispatchFile) ?? null;
     }
     // Class-based task: `MyTask.delay()` → its `run` (a `Task` subclass).
-    const clsCands = ctx.getNodesByName(name).filter((n) => n.kind === 'class' && taskClassRun(n));
+    const clsCands = ctx.getNodesByName(recv).filter((n) => n.kind === 'class' && taskClassRun(n));
     if (clsCands.length) {
       const cls = clsCands.length === 1 ? clsCands[0]! : clsCands.find((c) => c.filePath === dispatchFile) ?? null;
       return cls ? taskClassRun(cls) : null;
     }
-    // Dispatch-file bindings — an import alias (`from tasks import send_email as
-    // se` → `se.delay()` names send_email), a task-object binding
-    // (`x = app.task(fn)` → `x.delay()` runs fn), or a Task-subclass instance
-    // (`x = MyTask()` → `x.delay()` runs MyTask.run).
-    const info = fileInfo(dispatchFile);
-    const alias = info.importAliases.get(name);
-    if (alias) {
-      const modPath = alias.module.replace(/\./g, '/');
-      const acands = ctx.getNodesByName(alias.orig).filter((n) => n.kind === 'function' && isCeleryTask(n));
-      if (acands.length === 1) return acands[0]!;
-      // Prefer candidates in the aliased module (`tasks.py` or a `tasks/` package).
-      const inMod = acands.filter((c) => c.filePath === `${modPath}.py` || c.filePath.endsWith(`/${modPath}.py`) || c.filePath.includes(`/${modPath}/`));
-      if (inMod.length === 1) return inMod[0]!;
-      return acands.find((c) => c.filePath === dispatchFile) ?? null;
-    }
-    const boundFn = info.taskFnBindings.get(name);
-    if (boundFn) {
-      const bcands = ctx.getNodesByName(boundFn).filter((n) => n.kind === 'function' && n.filePath === dispatchFile);
-      return bcands.length === 1 ? bcands[0]! : null;
-    }
-    const boundCls = info.valueBindings.get(name);
-    if (boundCls) {
-      const ccands = ctx.getNodesByName(boundCls).filter((n) => n.kind === 'class' && taskClassRun(n));
-      const cls = ccands.length === 1 ? ccands[0]! : ccands.find((c) => c.filePath === dispatchFile) ?? null;
-      return cls ? taskClassRun(cls) : null;
-    }
-    return null;
+    // Dispatch-file bindings — `x = app.task(fn)` → `x.delay()` runs fn;
+    // `x = MyTask()` → `x.delay()` runs MyTask.run.
+    return bindingTarget(info, recv, dispatchFile);
   };
 
   // Registered task name → task fn, for `send_task('dotted.name')` dispatch.
@@ -3281,11 +3356,11 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
     CELERY_DISPATCH_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CELERY_DISPATCH_RE.exec(safe)) && added < CELERY_FANOUT_CAP) {
-      const name = m[1]!;
+      const recv = m[1]!.replace(/\s+/g, ''); // `x . y.delay()` → `x.y`
       const line = lineAt(m.index);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue; // module-level dispatch — no source symbol to attribute
-      const target = resolve(name, file);
+      const target = resolve(recv, file);
       if (!target || target.id === disp.id) continue;
       const key = `${disp.id}>${target.id}`;
       if (seen.has(key)) continue;
@@ -3296,13 +3371,16 @@ async function celeryDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield):
         kind: 'calls',
         line,
         provenance: 'heuristic',
-        metadata: { synthesizedBy: 'celery-dispatch', via: name, registeredAt: `${file}:${line}` },
+        metadata: { synthesizedBy: 'celery-dispatch', via: recv.slice(recv.lastIndexOf('.') + 1), registeredAt: `${file}:${line}` },
       });
       added++;
     }
-    // `recv.send_task('dotted.name')` — string-name dispatch, gated on the file
-    // importing celery (a `send_task` in a celery-free file is some other API).
-    if (!fileInfo(file).celeryImports) continue;
+    // `recv.send_task('dotted.name')` — string-name dispatch. The gate is the
+    // registered-name match itself: the task-name index is built only from
+    // celery-importing files, so in a celery-free project nothing registers
+    // and `send_task` produces nothing. (The common call shape is
+    // `from myapp import app; app.send_task(…)` — no celery import in the
+    // dispatch file — so a per-file import gate would lose real dispatches.)
     CELERY_SEND_TASK_RE.lastIndex = 0;
     while ((m = CELERY_SEND_TASK_RE.exec(safe)) && added < CELERY_FANOUT_CAP) {
       const taskName = m[1]!;

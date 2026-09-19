@@ -150,6 +150,82 @@ class SongService {
     cg.close?.();
   });
 
+  it('bridges event(new X) to Event::listen closures via the enclosing method', async () => {
+    write('app/Events/SongLiked.php', `<?php
+namespace App\\Events;
+class SongLiked {}
+`);
+    write('app/Events/ScanDone.php', `<?php
+namespace App\\Events;
+class ScanDone {}
+`);
+    write('app/Events/OwnerTest.php', `<?php
+namespace App\\Events;
+class OwnerTest {}
+`);
+    // Closures aren't extracted as nodes, so the enclosing method is the
+    // listener target. Two real shapes + two deliberate non-matches.
+    write('app/Providers/EventServiceProvider.php', `<?php
+namespace App\\Providers;
+use Illuminate\\Support\\Facades\\Event;
+use App\\Events\\SongLiked;
+use App\\Events\\ScanDone;
+use App\\Events\\OwnerTest;
+class EventServiceProvider {
+    public function boot(): void {
+        // Class-keyed: the ::class literal is the event anchor.
+        Event::listen(SongLiked::class, function ($event) {
+            // …
+        });
+        // Typed-first-param: the closure's own param type anchors it.
+        Event::listen(function (ScanDone $event) {
+            // …
+        });
+        // Untyped closure — no anchor, produces no listener.
+        Event::listen(function ($event) {
+            // …
+        });
+        // String-keyed — event(new X) dispatches by class name, never by a
+        // custom string, so this could never fire for our dispatch sites.
+        Event::listen('custom.key', function (OwnerTest $event) {
+            // …
+        });
+    }
+}
+`);
+    write('app/Services/SongService.php', `<?php
+namespace App\\Services;
+use App\\Events\\SongLiked;
+use App\\Events\\ScanDone;
+use App\\Events\\OwnerTest;
+class SongService {
+    public function like(int $id): void { event(new SongLiked($id)); }
+    public function scan(): void { event(new ScanDone()); }
+    public function ownerTest(): void { event(new OwnerTest()); }
+}
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, json_extract(e.metadata,'$.via') via
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'laravel-event'`
+      )
+      .all();
+    cg.close?.();
+
+    const pairs = edges.map((r: any) => `${r.source}>${r.target}:${r.via}`).sort();
+    // The enclosing `boot` stands in for both real closures — SongLiked keyed,
+    // ScanDone inferred from the typed param.
+    expect(pairs).toEqual(['like>boot:SongLiked', 'scan>boot:ScanDone']);
+    // PRECISION: the untyped closure anchors nothing, and the string-keyed
+    // closure can never fire for a class-name dispatch — OwnerTest is silent.
+    expect(edges.some((r: any) => r.via === 'OwnerTest')).toBe(false);
+  });
+
   it('produces no edges in a PHP project with no Laravel events (clean control)', async () => {
     write('src/Client.php', `<?php
 namespace Acme;
