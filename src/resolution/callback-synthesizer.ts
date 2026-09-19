@@ -36,7 +36,8 @@ import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { crossTierEdges } from './tier-synthesizer';
-import { enclosingFn, enclosingValue, makeLineAt } from './synth-utils';
+import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-utils';
+import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
 import { isDistinctiveIdentifier } from '../search/query-utils';
 
@@ -45,8 +46,17 @@ const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
 const MAX_CALLBACKS_PER_CHANNEL = 40;
 const EVENT_FANOUT_CAP = 6; // skip events with more handlers/dispatchers than this (too generic without type info)
 
-const ON_RE = /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:function\s+(\w+)|(?:this\.)?(\w+))/g;
+const ON_RE = /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:(?:async\s+)?function\s+(\w+)|(?:this\.)?(\w+))/g;
 const EMIT_RE = /\.(?:emit|fire|dispatchEvent)\(\s*['"]([^'"]+)['"]/g;
+// Inline listeners — `.on('x', (e) => {…})`, `.on('x', e => …)`,
+// `.on('x', function () {…})` (incl. `async` forms). Anonymous handlers have
+// no node (extraction deliberately attributes an inline closure's calls to
+// its enclosing function), so the registration is attributed to that same
+// enclosing function — where the event's work demonstrably happens — or to
+// the smallest enclosing constant/variable for an object-literal API site
+// (the rn-event-channel cross-language arm already does exactly this).
+const ON_INLINE_RE =
+  /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:async\s+)?(?:\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|function\s*\()/g;
 const SETSTATE_RE = /this\.setState\s*\(/;
 const FLUTTER_SETSTATE_RE = /\bsetState\s*\(/; // Flutter: setState((){…}) / this.setState
 const JS_FAMILY = ['typescript', 'javascript', 'tsx', 'jsx'];
@@ -64,6 +74,30 @@ const VUE_HANDLER_RE = /(?:@|v-on:)([a-zA-Z][\w-]*)(?:\.[\w]+)*\s*=\s*"([^"]+)"/
 // Composable/hook destructure: `const { close: closeSidebar } = useSidebarControl()`.
 // Captures the destructure body + the called composable; only `use*` calls qualify.
 const VUE_DESTRUCTURE_RE = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(\w+)\s*\(/g;
+
+// Vue component registrations — a template tag resolves through the REGISTERED
+// name before the PascalCase guess: `app.component('fancy-widget', FancyThing)`
+// (global, Vue 3 entry / `Vue.component` in Vue 2 / `nuxtApp.vueApp` in Nuxt
+// plugins) and an SFC's own `components: { 'my-comp': MyComp }` (local,
+// options API). Both map a kebab name onto a component whose own name may be
+// spelled differently, which a kebab→Pascal lookup can never find.
+const VUE_APP_GATE_RE = /\bcreateApp\s*\(|\bVue\.component\s*\(|\.vueApp\b/;
+const VUE_APP_COMPONENT_RE =
+  /(?:[\w$]+\s*\([^()]*\)|[\w$]+(?:\.[\w$]+)*)\s*\.\s*component\s*\(\s*['"]([^'"]+)['"]\s*,\s*(?:defineAsyncComponent\s*\(\s*)?(\(\s*\)\s*=>\s*import\s*\(\s*['"]([^'"]+)['"]|[A-Za-z_$][\w$]*)/g;
+const VUE_COMPONENTS_BLOCK_RE = /\bcomponents\s*:\s*\{/g;
+// Entries inside a `components: { … }` block: `'my-comp': Comp`, `myComp: Comp`,
+// `Comp` shorthand, or a lazy `x: () => import('./X.vue')` /
+// `x: defineAsyncComponent(() => import('./X.vue'))`.
+const VUE_COMP_ENTRY_RE =
+  /(['"])([\w$-]+)\1\s*:\s*(?:(?:defineAsyncComponent\s*\(\s*)?\(\s*\)\s*=>\s*import\s*\(\s*['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))|\b([A-Za-z_$][\w$]*)\s*:\s*(?:(?:defineAsyncComponent\s*\(\s*)?\(\s*\)\s*=>\s*import\s*\(\s*['"]([^'"]+)['"]|([A-Za-z_$][\w$]*))|\b([A-Za-z_$][\w$]*)\s*(?=[,}])/g;
+
+/** A tag's registration-key spellings — Vue's resolveAsset tries the raw name, its camelCase, its PascalCase, and its hyphenated form. */
+function vueTagVariants(tag: string): string[] {
+  const camel = tag.replace(/-([a-z0-9])/g, (_s, c: string) => c.toUpperCase());
+  const pascal = camel.charAt(0).toUpperCase() + camel.slice(1);
+  const kebab = camel.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  return [...new Set([tag, camel, pascal, kebab])];
+}
 
 // Closure-collection dynamic dispatch (language-agnostic, Swift-first). A method
 // appends a closure to a collection property; another method iterates that
@@ -333,6 +367,19 @@ async function eventEmitterEdges(ctx: ResolutionContext, onYield: MaybeYield): P
         const map = handlersByEvent.get(m[1]!) ?? new Map<string, string>();
         map.set(handler.id, `${file}:${lineOf(m.index)}`); handlersByEvent.set(m[1]!, map);
       }
+      // Inline listeners: the anonymous arrow/function can't be looked up by
+      // name (extraction attributes its calls to the enclosing function), so
+      // the edge lands on the enclosing function — the same node the
+      // listener's own calls attribute to — or on the smallest enclosing
+      // constant/variable for an object-literal API's registration site.
+      ON_INLINE_RE.lastIndex = 0;
+      while ((m = ON_INLINE_RE.exec(content))) {
+        const handler = enclosingFn(nodesInFile, lineOf(m.index)) ?? enclosingValue(nodesInFile, lineOf(m.index));
+        if (!handler) continue;
+        const map = handlersByEvent.get(m[1]!) ?? new Map<string, string>();
+        if (!map.has(handler.id)) map.set(handler.id, `${file}:${lineOf(m.index)}`);
+        handlersByEvent.set(m[1]!, map);
+      }
     }
   }
 
@@ -531,7 +578,26 @@ async function reactRenderEdges(queries: QueryBuilder, ctx: ResolutionContext, o
  * it: for each Dart class with a `build` method, link every sibling method whose
  * body calls `setState(` → `build`. The setState gate + `.dart` file keep this to
  * Flutter State classes. Over-approximation accepted (reachability-correct).
+ *
+ * Second phase (same pass): named navigation — `Navigator.pushNamed(context,
+ * '/detail')` is a string-keyed dispatch whose destination lives in the app's
+ * `routes:` table (`MaterialApp(routes: { '/detail': (ctx) => DetailPage() })`),
+ * not at the callsite, so nothing links caller → page widget. Build a
+ * route-name → widget-class map from every `routes:` map literal (only inside a
+ * file that constructs a `MaterialApp`/`CupertinoApp`/`WidgetsApp`), then link
+ * the enclosing method at each `Navigator.*Named(…, '/route')` site to the
+ * widget class that route builds. `Navigator.push(ctx, MaterialPageRoute(
+ * builder: (_) => X()))` needs nothing — the `X()` constructor is a literal
+ * call in the enclosing method already. `GetPage(name:…, page:…)`/GetX's
+ * `Get.toNamed` is a different registration shape — deferred.
  */
+const FLUTTER_APP_RE = /\b(?:MaterialApp|CupertinoApp|WidgetsApp|GetMaterialApp)\s*\(/;
+const FLUTTER_ROUTES_BLOCK_RE = /\broutes\s*:\s*\{/g;
+const FLUTTER_ROUTE_ENTRY_RE =
+  /['"]([^'"]+)['"]\s*:\s*(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>\s*(?:const\s+)?([A-Z]\w*)\s*\(/g;
+const FLUTTER_NAMED_NAV_RE =
+  /\b[Nn]avigator\s*\.\s*(?:of\s*\([^()]*\)\s*\.\s*)?(?:pushNamed|pushReplacementNamed|pushNamedAndRemoveUntil|popAndPushNamed|restorablePushNamed|restorablePushReplacementNamed)\s*\(\s*(?:[\w$.!]+\s*,\s*)?['"]([^'"]+)['"]/g;
+
 async function flutterBuildEdges(queries: QueryBuilder, ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scanned255 = 0;
   const edges: Edge[] = [];
@@ -559,6 +625,81 @@ async function flutterBuildEdges(queries: QueryBuilder, ctx: ResolutionContext, 
         metadata: { synthesizedBy: 'flutter-build', via: 'setState', registeredAt: `${build.filePath}:${build.startLine}` },
       });
       added++;
+    }
+  }
+
+  // ── named routes → page widgets ──────────────────────────────────────────
+  // Pass 1: collect `routes: { '/x': (ctx) => XPage(), … }` entries — only
+  // from a file that constructs an app widget, so a `routes:` map on an
+  // unrelated object literal never registers.
+  const routeWidgets = new Map<string, { widget: string; file: string }>();
+  const routeAmbiguous = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if (!file.endsWith('.dart')) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('routes') || !FLUTTER_APP_RE.test(content)) continue;
+    FLUTTER_ROUTES_BLOCK_RE.lastIndex = 0;
+    let bm: RegExpExecArray | null;
+    while ((bm = FLUTTER_ROUTES_BLOCK_RE.exec(content))) {
+      const open = bm.index + bm[0].length - 1;
+      const close = matchBalanced(content, open);
+      if (close === -1) continue;
+      const block = content.slice(open, close + 1);
+      FLUTTER_ROUTE_ENTRY_RE.lastIndex = 0;
+      let em: RegExpExecArray | null;
+      while ((em = FLUTTER_ROUTE_ENTRY_RE.exec(block))) {
+        const [, routeName, widget] = em;
+        const prev = routeWidgets.get(routeName!);
+        if (prev && (prev.widget !== widget! || prev.file !== file)) {
+          // Two different widgets behind one route name — can't tell which a
+          // pushNamed means, so drop the route rather than guess.
+          routeAmbiguous.add(routeName!);
+          routeWidgets.delete(routeName!);
+        } else if (!routeAmbiguous.has(routeName!)) {
+          routeWidgets.set(routeName!, { widget: widget!, file });
+        }
+      }
+    }
+  }
+  if (routeWidgets.size === 0) return edges;
+
+  // Pass 2: `Navigator.pushNamed(context, '/x')` sites. The registered-name
+  // backstop — only a route string actually declared in a `routes:` map ever
+  // links — is the precision gate; an unknown name yields nothing.
+  let scannedFiles = 0;
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!file.endsWith('.dart')) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('pushNamed')) continue;
+    const nodesInFile = ctx.getNodesInFile(file);
+    const lineOf = makeLineAt(content, 1);
+    FLUTTER_NAMED_NAV_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = FLUTTER_NAMED_NAV_RE.exec(content))) {
+      const reg = routeWidgets.get(m[1]!);
+      if (!reg) continue;
+      const candidates = ctx
+        .getNodesByName(reg.widget)
+        .filter((n) => n.kind === 'class' && n.filePath.endsWith('.dart'));
+      const widgetCls =
+        candidates.find((n) => n.filePath === reg.file) ??
+        (candidates.length === 1 ? candidates[0] : undefined);
+      if (!widgetCls) continue;
+      const disp =
+        enclosingFn(nodesInFile, lineOf(m.index)) ?? enclosingValue(nodesInFile, lineOf(m.index));
+      if (!disp || disp.id === widgetCls.id) continue;
+      const key = `${disp.id}>${widgetCls.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: widgetCls.id,
+        kind: 'navigates',
+        line: lineOf(m.index),
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'flutter-nav', route: m[1], registeredAt: `${file}:${lineOf(m.index)}` },
+      });
     }
   }
   return edges;
@@ -1449,6 +1590,33 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     const nn = nuxtComponentName(c.filePath);
     if (nn && !nuxtComponents.has(nn)) nuxtComponents.set(nn, c);
   }
+
+  // Global `app.component('name', Comp)` registrations, collected once. The
+  // createApp/vueApp/Vue.component gate keeps a `.component(` call on an
+  // unrelated object from registering; the value must resolve to a real
+  // component (or a lazy `import()` of a `.vue` file) or the entry is inert.
+  const globalRegistrations = new Map<string, Node>();
+  const regComponent = (value: string, lazyPath: string | undefined, fromFile: string): Node | undefined => {
+    if (lazyPath) {
+      const target = resolveImportPath(lazyPath, fromFile, 'typescript', ctx);
+      return target ? ctx.getNodesInFile(target).find((n) => n.kind === 'component') : undefined;
+    }
+    const candidates = ctx.getNodesByName(value).filter((n) => COMPONENT_KINDS.has(n.kind));
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!/\.(?:vue|[cm]?[jt]s)$/.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('.component(') || !VUE_APP_GATE_RE.test(content)) continue;
+    VUE_APP_COMPONENT_RE.lastIndex = 0;
+    let am: RegExpExecArray | null;
+    while ((am = VUE_APP_COMPONENT_RE.exec(content))) {
+      const target = regComponent(am[2]!, am[3], file);
+      if (target && !globalRegistrations.has(am[1]!)) globalRegistrations.set(am[1]!, target);
+    }
+  }
+
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!file.endsWith('.vue')) continue;
@@ -1489,11 +1657,48 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
       return matches.find((n) => n.filePath === file) ?? matches[0];
     };
 
+    // This SFC's own `components: { 'my-comp': MyComp, Other }` registrations
+    // (options API). The registered KEY is the tag's real binding — the value
+    // may be any resolvable component or a lazy `() => import('./X.vue')`.
+    const localRegistrations = new Map<string, Node>();
+    VUE_COMPONENTS_BLOCK_RE.lastIndex = 0;
+    let cb: RegExpExecArray | null;
+    while ((cb = VUE_COMPONENTS_BLOCK_RE.exec(script))) {
+      const open = cb.index + cb[0].length - 1;
+      const close = matchBalanced(script, open);
+      if (close === -1) continue;
+      const block = script.slice(open, close + 1);
+      VUE_COMP_ENTRY_RE.lastIndex = 0;
+      let rm: RegExpExecArray | null;
+      while ((rm = VUE_COMP_ENTRY_RE.exec(block))) {
+        const key = rm[2] ?? rm[5] ?? rm[8];
+        const lazyPath = rm[3] ?? rm[6];
+        const value = rm[4] ?? rm[7] ?? rm[8];
+        if (!key) continue;
+        const target = regComponent(value!, lazyPath, file);
+        if (target && !localRegistrations.has(key)) localRegistrations.set(key, target);
+      }
+    }
+    // The registered name binds before a PascalCase guess — Vue resolves a tag
+    // through its registry (raw / camel / Pascal / kebab spellings), so
+    // `components: { 'my-comp': Special }` makes `<my-comp>` Special even when
+    // a `MyComp` component exists.
+    const registered = (tag: string): Node | undefined => {
+      for (const v of vueTagVariants(tag)) {
+        const t = localRegistrations.get(v) ?? globalRegistrations.get(v);
+        if (t) return t;
+      }
+      return undefined;
+    };
+
     let m: RegExpExecArray | null;
     VUE_KEBAB_RE.lastIndex = 0;
     while ((m = VUE_KEBAB_RE.exec(tpl))) {
       const tag = kebabToPascal(m[1]!);
-      addEdge(resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag), { synthesizedBy: 'jsx-render', via: m[1] });
+      addEdge(
+        registered(m[1]!) ?? resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag),
+        { synthesizedBy: 'jsx-render', via: m[1] }
+      );
     }
     // PascalCase component tags. Try a direct name match first (flat components
     // and explicit registrations), then the Nuxt dir-prefixed auto-import name
@@ -1501,7 +1706,10 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     VUE_PASCAL_RE.lastIndex = 0;
     while ((m = VUE_PASCAL_RE.exec(tpl))) {
       const tag = m[1]!;
-      addEdge(resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag), { synthesizedBy: 'jsx-render', via: tag });
+      addEdge(
+        registered(tag) ?? resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag),
+        { synthesizedBy: 'jsx-render', via: tag }
+      );
     }
     VUE_HANDLER_RE.lastIndex = 0;
     while ((m = VUE_HANDLER_RE.exec(tpl))) {
@@ -1747,6 +1955,76 @@ async function rnEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Promis
           kind: 'calls',
           provenance: 'heuristic',
           metadata: { synthesizedBy: 'rn-event-channel', event, registeredAt },
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+/**
+ * React Native dynamic module-key callsites: `NativeModules[key].method()`
+ * where `key` is statically known — a string literal
+ * (`NativeModules['Capture'].start()`) or a same-file constant initialized
+ * to a string literal (`const KEY = 'Capture'; NativeModules[KEY].start()`).
+ * A subscript receiver emits no call reference, so these callsites never
+ * reach the bridge resolver — this pass scans source for the pattern and
+ * links the enclosing function to the module's native implementations
+ * (every platform's impl is a real bridge target).
+ *
+ * `NativeModules[opaqueExpr]` stays uncovered: an unresolvable key could
+ * name ANY module — no statically verifiable anchor, so we skip rather
+ * than fan out to every bridged method of that name.
+ */
+const RN_DYNAMIC_MODULE_RE =
+  /\bNativeModules\s*\[\s*(?:['"]([A-Za-z_$][\w$]*)['"]|([A-Za-z_$][\w$]*))\s*\]\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
+const RN_MODULE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+
+async function rnDynamicModuleEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  let scannedFiles = 0;
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!/\.(?:[cm]?[jt]sx?)$/.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('NativeModules[')) continue;
+    const nodesInFile = ctx.getNodesInFile(file);
+    const lineOf = makeLineAt(content, 1);
+    RN_DYNAMIC_MODULE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = RN_DYNAMIC_MODULE_RE.exec(content))) {
+      let moduleName: string | null = m[1] ?? null;
+      const keyIdent = m[2];
+      const method = m[3]!;
+      if (!moduleName && keyIdent) {
+        // Same-file `const KEY = 'Module'` — collect every literal binding of
+        // the identifier in this file; two distinct values mean the key is
+        // not statically known (conditional rebinding) → skip.
+        const decl = new RegExp(
+          `\\b(?:const|let|var)\\s+${keyIdent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(?::[^=;]*)?=\\s*['"]([^'"]+)['"]`,
+          'g'
+        );
+        const values = new Set<string>();
+        let dm: RegExpExecArray | null;
+        while ((dm = decl.exec(content))) values.add(dm[1]!);
+        if (values.size === 1) moduleName = [...values][0]!;
+      }
+      if (!moduleName || !RN_MODULE_NAME_RE.test(moduleName)) continue;
+      const disp =
+        enclosingFn(nodesInFile, lineOf(m.index)) ?? enclosingValue(nodesInFile, lineOf(m.index));
+      if (!disp) continue;
+      for (const target of rnModuleMethods(ctx, moduleName, method)) {
+        if (target.id === disp.id) continue;
+        const key = `${disp.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: disp.id,
+          target: target.id,
+          kind: 'calls',
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'rn-dynamic-module', module: moduleName, via: method },
         });
       }
     }
@@ -2551,6 +2829,10 @@ const PINIA_CONSUMER_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs|vue)$/;
 const PINIA_FACTORY_RE = /\b(?:export\s+)?const\s+(\w+)\s*=\s*defineStore\s*\(/g;
 const PINIA_BIND_RE = /\bconst\s+(\w+)\s*=\s*(?:await\s+)?(\w+)\s*\(/g;
 const PINIA_CALL_RE = /(\w+)\s*\.\s*(\w+)\s*\(/g;
+// Unbound store calls: `useXStore().action()` — the factory name itself is the
+// static anchor, so no `const s = useXStore()` binding is needed. Only callee
+// names in `factoryFile` qualify, so `useAnything().method()` stays silent.
+const PINIA_DIRECT_CALL_RE = /\b(\w+)\s*\([^()]*\)\s*\.\s*(\w+)\s*\(/g;
 const PINIA_FANOUT_CAP = 80;
 
 async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
@@ -2585,27 +2867,25 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
       const sf = factoryFile.get(bm[2]!);
       if (sf) varStore.set(bm[1]!, sf);
     }
-    if (!varStore.size) continue;
 
-    // 3. Link `<var>.<method>(` → the action function node in the store's file.
+    // 3. Link `<store>.<method>(` → the action function node in the store's
+    //    file. Two receiver shapes share the same emit:
+    //      a) a bound variable — `authStore.getMenu()`;
+    //      b) an unbound factory call — `useAuthStore().getMenu()`.
     const nodesInFile = ctx.getNodesInFile(file);
     const fallbackDispatcher = nodesInFile.find((n) => n.kind === 'component'); // .vue top-level setup
-    PINIA_CALL_RE.lastIndex = 0;
-    let cm: RegExpExecArray | null;
     let added = 0;
-    while ((cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
-      const storeFile = varStore.get(cm[1]!);
-      if (!storeFile) continue;
-      const method = cm[2]!;
-      const line = safe.slice(0, cm.index).split('\n').length;
+    const linkCall = (storeFile: string, method: string, matchIndex: number): void => {
+      if (added >= PINIA_FANOUT_CAP) return;
+      const line = safe.slice(0, matchIndex).split('\n').length;
       const disp = enclosingFn(nodesInFile, line) ?? fallbackDispatcher;
-      if (!disp) continue;
+      if (!disp) return;
       const target = ctx
         .getNodesByName(method)
         .find((n) => n.kind === 'function' && n.filePath === storeFile);
-      if (!target || target.id === disp.id) continue;
+      if (!target || target.id === disp.id) return;
       const key = `${disp.id}>${target.id}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) return;
       seen.add(key);
       edges.push({
         source: disp.id,
@@ -2616,6 +2896,20 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
         metadata: { synthesizedBy: 'pinia-store', via: method, registeredAt: `${file}:${line}` },
       });
       added++;
+    };
+
+    PINIA_CALL_RE.lastIndex = 0;
+    let cm: RegExpExecArray | null;
+    while ((cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
+      const storeFile = varStore.get(cm[1]!);
+      if (!storeFile) continue;
+      linkCall(storeFile, cm[2]!, cm.index);
+    }
+    PINIA_DIRECT_CALL_RE.lastIndex = 0;
+    while ((cm = PINIA_DIRECT_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
+      const storeFile = factoryFile.get(cm[1]!);
+      if (!storeFile) continue;
+      linkCall(storeFile, cm[2]!, cm.index);
     }
   }
   return edges;
@@ -3924,6 +4218,13 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'kotlinExpectActual', gate: (has) => has('kotlin'), run: (q, _c, y) => kotlinExpectActualEdges(q, y) },
   { name: 'goGrpcEdges', gate: (has) => has('go'), run: (q, _c, y) => goGrpcStubImplEdges(q, y) },
   { name: 'rnEventEdgesList', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => rnEventEdges(c, y) },
+  // `NativeModules[key].method()` — needs both a JS callsite and a native
+  // module impl to link.
+  {
+    name: 'rnDynModuleEdges',
+    gate: (has) => has(...JS_FAMILY) && has('objc', 'swift', 'java', 'kotlin'),
+    run: (_q, c, y) => rnDynamicModuleEdges(c, y),
+  },
   { name: 'fabricNativeEdges', gate: ALWAYS, run: (_q, c, y) => fabricNativeImplEdges(c, y) },
   // Expo module nodes (`expo-module:` ids) are emitted only from .swift/.kt
   // files, and a pair needs BOTH platforms — so without both languages the

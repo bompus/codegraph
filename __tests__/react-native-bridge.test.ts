@@ -344,6 +344,56 @@ describe('React Native cross-platform pairing — end to end', () => {
   });
 });
 
+describe('React Native dynamic module-key callsites — end to end', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rn-dynmod-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('links `NativeModules[key].method()` to native impls when the key is statically known', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"dependencies":{"react-native":"^0.74.0"}}');
+    fs.writeFileSync(path.join(dir, 'index.ts'),
+      "import { NativeModules } from 'react-native';\n" +
+      "const MOD = 'DynCap';\n" +
+      'export function literalKey() { return NativeModules[\'DynCap\'].startDynCapture(); }\n' +
+      'export function constKey() { return NativeModules[MOD].startDynCapture(); }\n' +
+      'export function opaqueKey(key: string) { return NativeModules[key].startDynCapture(); }\n' +
+      'export function missingModule() { return NativeModules[\'Missing\'].startDynCapture(); }\n');
+    fs.writeFileSync(path.join(dir, 'DynCap.java'),
+      'public class DynCap extends ReactContextBaseJavaModule {\n' +
+      '  @Override public String getName() { return "DynCap"; }\n' +
+      '  @ReactMethod public void startDynCapture(Callback cb) {}\n}\n');
+    fs.writeFileSync(path.join(dir, 'DynCap.m'),
+      '@implementation DynCap\n' +
+      'RCT_EXPORT_MODULE()\n' +
+      'RCT_EXPORT_METHOD(startDynCapture:(RCTResponseSenderBlock)cb) {}\n@end\n');
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    const edges = db.prepare(
+      `SELECT s.name source, t.name target, t.language tl,
+              json_extract(e.metadata,'$.module') module
+       FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+       WHERE json_extract(e.metadata,'$.synthesizedBy') = 'rn-dynamic-module'`
+    ).all();
+
+    // The literal and same-file-const keys each link to BOTH platform impls;
+    // the opaque parameter key and the module that doesn't exist link to nothing.
+    const pairs = edges.map((r: any) => `${r.source}->${r.target}:${r.tl}`).sort();
+    expect(pairs).toEqual([
+      'constKey->startDynCapture:java',
+      'constKey->startDynCapture:objc',
+      'literalKey->startDynCapture:java',
+      'literalKey->startDynCapture:objc',
+    ]);
+    expect(edges.every((r: any) => r.module === 'DynCap')).toBe(true);
+    expect(pairs.some((p: string) => p.startsWith('opaqueKey'))).toBe(false);
+    expect(pairs.some((p: string) => p.startsWith('missingModule'))).toBe(false);
+    cg.close?.();
+  });
+});
+
 // =============================================================================
 // Swift modules via RCT_EXTERN_MODULE, and receiver evidence
 // =============================================================================
@@ -413,6 +463,7 @@ describe('React Native bridge resolver — RCT_EXTERN (Swift) modules', () => {
     const ambiguous = new Set<string>();
     collectNativeModuleAliases(
       'const captureView = NativeModules.CaptureView\n' +
+        'const bracketed = NativeModules[\'BracketMod\']\n' +
         'export const { CaptureEvents, Geo: geolocation } = NativeModules\n' +
         'let typed: Spec = NativeModules.Typed\n',
       aliases,
@@ -421,6 +472,7 @@ describe('React Native bridge resolver — RCT_EXTERN (Swift) modules', () => {
     // Direct bindings first (one pass), then the destructured ones.
     expect([...aliases]).toEqual([
       ['captureView', 'CaptureView'],
+      ['bracketed', 'BracketMod'],
       ['typed', 'Typed'],
       ['CaptureEvents', 'CaptureEvents'],
       ['geolocation', 'Geo'],

@@ -242,9 +242,13 @@ export function collectNativeModuleAliases(
     }
     aliases.set(alias, moduleName);
   };
-  const direct = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*NativeModules\.([A-Z][\w$]*)/g;
+  // `const mod = NativeModules.CaptureView` and the bracket-literal form
+  // `const mod = NativeModules['CaptureView']` bind the local name just as
+  // surely — the key is statically visible either way.
+  const direct =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*NativeModules\s*(?:\.([A-Z][\w$]*)|\[\s*['"]([A-Za-z_$][\w$]*)['"]\s*\])/g;
   let m: RegExpExecArray | null;
-  while ((m = direct.exec(source)) !== null) bind(m[1]!, m[2]!);
+  while ((m = direct.exec(source)) !== null) bind(m[1]!, (m[2] ?? m[3])!);
   const destructured = /\b(?:const|let|var)\s*\{([^}]+)\}\s*=\s*NativeModules\b/g;
   while ((m = destructured.exec(source)) !== null) {
     for (const part of m[1]!.split(',')) {
@@ -489,6 +493,23 @@ function buildRNMaps(context: ResolutionContext): { byJsName: Map<string, Native
   const result = { byJsName, aliases };
   nativeMethodMaps.set(context, result);
   return result;
+}
+
+/**
+ * Native methods behind `NativeModules.<moduleName>.<jsName>` — the exported
+ * accessor for the dynamic-key synthesizer (`NativeModules[key].method()`
+ * callsites emit no call reference — a subscript receiver never reaches
+ * `resolve()`). Returns every platform implementation (ObjC/Swift/Java/
+ * Kotlin), so the caller links each real node.
+ */
+export function rnModuleMethods(
+  context: ResolutionContext,
+  moduleName: string,
+  jsName: string
+): Node[] {
+  return (buildRNMaps(context).byJsName.get(jsName) ?? [])
+    .filter((e) => e.moduleName === moduleName)
+    .map((e) => e.node);
 }
 
 // ─── Resolver ───────────────────────────────────────────────────────────────

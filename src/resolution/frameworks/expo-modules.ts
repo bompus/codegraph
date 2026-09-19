@@ -40,6 +40,7 @@
 import type { Node } from '../../types';
 import { innermostBinding } from '../name-matcher';
 import { resolveViaImport } from '../import-resolver';
+import { matchBalanced } from '../synth-utils';
 import {
   FrameworkExtractionResult,
   FrameworkResolver,
@@ -126,6 +127,39 @@ function extractExpoMethods(filePath: string, source: string, language: 'swift' 
     seenAtLine.add(dedupKey);
 
     const startColumn = before.length - before.lastIndexOf('\n') - 1;
+
+    // Extend the node's range over the trailing closure — `AsyncFunction("x")
+    // { …body… }`, possibly behind a chained modifier like
+    // `.runOnQueue(.main)`. Without this the body keeps attributing to the
+    // surrounding `definition()`, so enclosing-fn lookup can never place a
+    // callsite inside the method it belongs to. Scanning is anchored at this
+    // declaration's own `(` and only follows `)` + `.modifier(…)` hops, so an
+    // unrelated closure elsewhere in the file is never captured.
+    let endIdx = -1;
+    const openParen = source.indexOf('(', m.index + kind.length);
+    if (openParen !== -1) {
+      let cursor = matchBalanced(source, openParen);
+      for (let hops = 0; hops < 4 && cursor !== -1; hops++) {
+        let i = cursor + 1;
+        while (i < source.length && /\s/.test(source[i]!)) i++;
+        if (source[i] === '{') {
+          endIdx = matchBalanced(source, i);
+          break;
+        }
+        // Chained call: `.name(…)` (optional generics) — hop past it.
+        const chain = /^\.\s*[A-Za-z_$][\w$]*\s*(?:<[^(]*>)?\s*\(/.exec(source.slice(i));
+        if (!chain) break;
+        const close = matchBalanced(source, i + chain[0].length - 1);
+        if (close === -1) break;
+        cursor = close;
+      }
+    }
+    const endLine = endIdx === -1 ? startLine : source.slice(0, endIdx + 1).split('\n').length;
+    const endBefore = endIdx === -1 ? null : source.slice(0, endIdx + 1);
+    const endColumn = endBefore
+      ? endBefore.length - endBefore.lastIndexOf('\n') - 1
+      : startColumn + kind.length + 2 + methodName.length + 2;
+
     nodes.push({
       id: `expo-module:${filePath}:${moduleName}:${methodName}:${startLine}`,
       kind: 'method',
@@ -134,12 +168,9 @@ function extractExpoMethods(filePath: string, source: string, language: 'swift' 
       filePath,
       language,
       startLine,
-      // We don't extract the closure body's end-line — use the literal's
-      // line as a single-line range. trace/explore still surfaces the
-      // declaration site, which is the main user-visible signal.
-      endLine: startLine,
+      endLine,
       startColumn,
-      endColumn: startColumn + kind.length + 2 + methodName.length + 2,
+      endColumn,
       docstring: `Expo Modules ${kind}("${methodName}") in ${moduleName}`,
       signature: `${kind}("${methodName}")`,
       isExported: true,
