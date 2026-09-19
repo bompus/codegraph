@@ -13,9 +13,10 @@
  *
  * This bridges it, keyed by **(struct type, fn-pointer field)**:
  *   • registrations — a function bound to `S.field` via a positional
- *     initializer (matched by field index) or a designated `.field = fn`.
- *     (A bare `x.field = fn` statement registration is a deferred gap —
- *     `FIELD_ASSIGN_RE` only sees `a->f = b->g` propagation, not bare-fn RHS);
+ *     initializer (matched by field index), a designated `.field = fn`, or a
+ *     statement assignment `x->field = fn;` / `(*x).field = fn;` (the runtime
+ *     vtable-wiring shape — the field is the anchor, so a bare `fp = fn`
+ *     variable assignment still does NOT register: it has no struct field);
  *   • dispatch — `recv->field(…)` / `recv.field(…)` where `recv` resolves to a
  *     value of struct type `S` (from the enclosing function's params / locals,
  *     or by walking a chained/array receiver `c->cmd->proc` across field types),
@@ -404,6 +405,13 @@ const DISPATCH_RE = /((?:\w+(?:\s*\[[^\][]*\])?\s*(?:->|\.)\s*)+)(\w+)\s*\)?\s*\
 const ARRAY_DISPATCH_RE = /(?:\(\s*\*\s*)?\b(\w+)\s*\[[^\][]*\]\s*\)?\s*\(/g;
 /** Field←field propagation sites: `a->f = b->g`. */
 const FIELD_ASSIGN_RE = /(\w+)\s*(?:->|\.)\s*(\w+)\s*=\s*(\w+)\s*(?:->|\.)\s*(\w+)/g;
+/** Bare-function field registration: `x->f = fn;` / `x.f = &fn;`. The `;`
+ *  terminator keeps `a->f = b->g` propagation and member RHS (`= x.y`) out;
+ *  `(?!=)` keeps `==` comparisons out. A bare `fp = fn` never matches — no
+ *  field access on the LHS. */
+const FN_ASSIGN_RE = /(\w+)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g;
+/** The dereference-receiver form of the same: `(*x)->f = fn;` / `(*x).f = fn;`. */
+const DEREF_FN_ASSIGN_RE = /\(\s*\*\s*(\w+)\s*\)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g;
 
 /** Per-file facts the extraction sweep leaves behind for the linking stages.
  *  Everything here is a SURVIVAL FILTER (over-approximate by construction —
@@ -422,6 +430,9 @@ interface FileFacts {
   inlineTypes: string[] | null;
   /** Distinct `FIELD_ASSIGN_RE` `lfield\0rfield` pairs (propagation filter). */
   dPairs: string[] | null;
+  /** Distinct LHS field names of `FN_ASSIGN_RE`/`DEREF_FN_ASSIGN_RE` matches
+   *  (bare-function-assignment registration filter). */
+  assignFields: string[] | null;
   /** Distinct `DISPATCH_RE` field names (dispatch filter). */
   dispatchFields: string[] | null;
   /** Distinct `ARRAY_DISPATCH_RE` array names (dispatch filter). */
@@ -456,7 +467,7 @@ export async function cFnPointerDispatchEdges(
   // dominant work. `files` is swept once per stage loop below (extraction,
   // registration, propagation, dispatch), reported at the same per-16-files
   // cadence as the cooperative yield.
-  const FILE_SWEEPS = 4;
+  const FILE_SWEEPS = 5;
   const tick = async (): Promise<void> => {
     if ((++scannedFiles & 15) === 0) {
       onFraction?.(scannedFiles / (files.length * FILE_SWEEPS));
@@ -724,9 +735,12 @@ export async function cFnPointerDispatchEdges(
       const t = resolveInclude(file, cap);
       if (t) includes.push(intern(t));
     }
+    // Older kernel binaries predate `assignFields` — treat its absence as
+    // empty so the bare-assign stage just never survives on those binaries.
+    const assignFields = out.assignFields ?? [];
     if (
       out.initTokens.length || out.arrayElems.length || out.inlinePtr || out.inlineTypes.length ||
-      out.dPairs.length || out.dispatchFields.length || out.arrayDispatchNames.length || includes.length
+      out.dPairs.length || assignFields.length || out.dispatchFields.length || out.arrayDispatchNames.length || includes.length
     ) {
       factsByFile.set(file, {
         initTokens: out.initTokens.length ? out.initTokens.map(intern) : null,
@@ -734,6 +748,7 @@ export async function cFnPointerDispatchEdges(
         inlinePtr: out.inlinePtr,
         inlineTypes: out.inlineTypes.length ? out.inlineTypes.map(intern) : null,
         dPairs: out.dPairs.length ? out.dPairs.map(intern) : null,
+        assignFields: assignFields.length ? assignFields.map(intern) : null,
         dispatchFields: out.dispatchFields.length ? out.dispatchFields.map(intern) : null,
         arrayDispatchNames: out.arrayDispatchNames.length ? out.arrayDispatchNames.map(intern) : null,
         includes: includes.length ? includes : NO_INCLUDES,
@@ -883,10 +898,15 @@ export async function cFnPointerDispatchEdges(
     // Propagation + dispatch filters (full-file scans ⊇ the per-function-body
     // scans the pass bodies run — a body slice is a substring of the file).
     const dPairs = new Set<string>();
+    const assignFields = new Set<string>();
     if (s.includes('=')) {
       FIELD_ASSIGN_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = FIELD_ASSIGN_RE.exec(s))) dPairs.add(intern(m[2]! + '\0' + m[4]!));
+      FN_ASSIGN_RE.lastIndex = 0;
+      while ((m = FN_ASSIGN_RE.exec(s))) assignFields.add(intern(m[2]!));
+      DEREF_FN_ASSIGN_RE.lastIndex = 0;
+      while ((m = DEREF_FN_ASSIGN_RE.exec(s))) assignFields.add(intern(m[2]!));
     }
     const dispatchFields = new Set<string>();
     const arrayNames = new Set<string>();
@@ -899,7 +919,7 @@ export async function cFnPointerDispatchEdges(
     const includes = scanIncludes(file);
     if (
       initTokens.size || arrayElems.size || inlinePtr || inlineTypes.size ||
-      dPairs.size || dispatchFields.size || arrayNames.size || includes.length
+      dPairs.size || assignFields.size || dispatchFields.size || arrayNames.size || includes.length
     ) {
       factsByFile.set(file, {
         initTokens: initTokens.size ? [...initTokens] : null,
@@ -907,6 +927,7 @@ export async function cFnPointerDispatchEdges(
         inlinePtr,
         inlineTypes: inlineTypes.size ? [...inlineTypes] : null,
         dPairs: dPairs.size ? [...dPairs] : null,
+        assignFields: assignFields.size ? [...assignFields] : null,
         dispatchFields: dispatchFields.size ? [...dispatchFields] : null,
         arrayDispatchNames: arrayNames.size ? [...arrayNames] : null,
         includes,
@@ -1356,6 +1377,59 @@ export async function cFnPointerDispatchEdges(
     }
     return t;
   };
+
+  // ---- Bare-function field assignment: `x->f = fn;` / `x.f = fn;` ----
+  // The statement form of the designated `.f = fn` initializer — a struct's
+  // fn-pointer field filled in at runtime (`ops->read = vfs_read;`, the
+  // vtable-wiring shape). Anchored on BOTH ends: the field must be a
+  // fn-pointer field of the receiver's declared type (fnPtrFieldOf — same
+  // resolution the dispatch side uses), and the RHS must resolve to a real
+  // function (resolveFn). `a->f = b->g` can't match (the RHS ident must be
+  // followed by `;`), a bare `fp = fn` has no field access, and `x->f = g()`
+  // leaves a non-identifier RHS. Runs before either link path so the native
+  // `reg` table carries these registrations too.
+  // Filter: a file matters only when some collected LHS field is a known
+  // fn-pointer field — the loop body's own pre-gate.
+  {
+    const tA = prof ? Date.now() : 0;
+    for (const file of files) {
+      await tick();
+      const facts = factsByFile.get(file);
+      if (!facts?.assignFields?.some((f) => fieldToStructs.has(f))) continue;
+      const s = src(file);
+      if (!s || !s.includes('=')) continue;
+      const tN = prof ? Date.now() : 0;
+      const fnsA = ctx.getNodesInFile(file);
+      if (prof) { prof.nodesMs += Date.now() - tN; prof.nodesN++; }
+      const aLines = s.split('\n');
+      for (const fn of fnsA) {
+        if (!FN_KINDS.has(fn.kind)) continue;
+        const body = sliceLinesPre(aLines, fn.startLine, fn.endLine);
+        if (!body.includes('=')) continue;
+        for (const re of [FN_ASSIGN_RE, DEREF_FN_ASSIGN_RE]) {
+          re.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(body))) {
+            const [, recv, field, rhs] = m;
+            // Pre-gate on the field NAME (same as stage D): only a field that
+            // is a fn-pointer field of SOME struct can pass fnPtrFieldOf.
+            if (!fieldToStructs.has(field!)) continue;
+            // The receiver's declared struct type (param/local/file-scope
+            // table), else the unique-owner fallback the dispatch side uses.
+            let type = recvTypeIn(body, recv!);
+            if (!type || !fnPtrFieldOf(type, field!)) {
+              const owners = fieldToStructs.get(field!)!;
+              type = owners.size === 1 ? [...owners][0]! : null;
+            }
+            if (!type) continue;
+            const target = resolveFn(rhs!, fn.filePath);
+            if (target) addReg(type, field!, target);
+          }
+        }
+      }
+    }
+    if (prof) prof.C += Date.now() - tA;
+  }
 
   const edges: Edge[] = [];
   if (nativeLink) {
