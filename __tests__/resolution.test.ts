@@ -1325,6 +1325,42 @@ impl Describe for Ctl { fn describe(&self) -> String { "ctl".into() } }
       ).toBe('interface-impl');
     });
 
+    it('bridges TRANSITIVE supertypes — A implements B, B extends C → A overrides C members', async () => {
+      // A call typed to `Shape` dispatches to `Circle.draw` even though Circle
+      // only directly `implements Colored` — the interface-impl bridge must
+      // walk implements/extends chains, not just direct supertypes.
+      fs.writeFileSync(
+        path.join(tempDir, 'Shapes.java'),
+        `public interface Shape { void draw(); }
+public interface Colored extends Shape { void fill(); }
+public class Circle implements Colored {
+    public void draw() { }
+    public void fill() { }
+}
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+
+      const methods = cg.getNodesByKind('method');
+      const shapeDraw = methods.find((n) => n.qualifiedName === 'Shape::draw');
+      const coloredFill = methods.find((n) => n.qualifiedName === 'Colored::fill');
+      const circleDraw = methods.find((n) => n.qualifiedName === 'Circle::draw');
+      const circleFill = methods.find((n) => n.qualifiedName === 'Circle::fill');
+      expect(shapeDraw && coloredFill && circleDraw && circleFill).toBeTruthy();
+
+      const synth = (id: string) =>
+        cg.getOutgoingEdges(id).filter((e) => e.kind === 'calls' && e.provenance === 'heuristic');
+      // Transitive: Shape::draw → Circle::draw (two hops: Circle→Colored→Shape).
+      expect(synth(shapeDraw!.id).map((e) => e.target)).toEqual([circleDraw!.id]);
+      // Direct supertype still bridges: Colored::fill → Circle::fill.
+      expect(synth(coloredFill!.id).map((e) => e.target)).toEqual([circleFill!.id]);
+      const edge = synth(shapeDraw!.id)[0]!;
+      expect(
+        (edge.metadata as { synthesizedBy?: string } | undefined)?.synthesizedBy
+      ).toBe('interface-impl');
+    });
+
     it('qualifies a generic impl by its type, so trait dispatch reaches it and no edge is invented from its body (#1588)', async () => {
       // `impl<T> Source for BufSource<T>`: the implementing type parses as a
       // generic_type, so the old positional receiver scan picked the TRAIT.

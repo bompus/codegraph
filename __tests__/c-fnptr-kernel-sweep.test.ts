@@ -132,6 +132,20 @@ static int trace(int x) { return x * 2; }
 static op_t *ops[4] = { trace };
 int step2(int pc, int x) { return (*ops[pc])(x); }
 `);
+    // Bare-function field assignment — `x->f = fn;` / `(*x).f = &fn;` (the
+    // runtime vtable-wiring shape). Exercises FN_ASSIGN_RE + DEREF_FN_ASSIGN_RE
+    // on both sweep paths; the ONLY registration of vfs.read/vfs.write is the
+    // statement, so a scanner that misses it loses the edges.
+    write('assign.c', `
+struct vfs { int (*read)(int); int (*write)(int); };
+static int impl_read(int fd) { return fd; }
+static int impl_write(int fd) { return -fd; }
+void vfs_init(struct vfs *v) {
+    v->read = impl_read;
+    (*v).write = &impl_write;
+}
+int do_io(struct vfs *v, int fd) { return v->read(fd) + v->write(fd); }
+`);
     // Field←field propagation (the hook_demo shape) + chained receiver.
     write('hook.c', `
 typedef void hook_fn(int);
@@ -191,6 +205,9 @@ void fire(struct hook *h, int v) { h->func(v); }
       'struct realStruct { cb_t cb; fnt *f; int n; };',
       'void go(struct realStruct *r, struct realStruct *q) {',
       '  r->cb = q->cb;',
+      '  r->cb = direct;',
+      '  (*q).f = other;',
+      '  r->cb == q->cb;',
       '  r->cb(1);',
       '  tbl[NUM](2);',
       '}',
@@ -203,6 +220,10 @@ void fire(struct hook *h, int v) { h->func(v); }
     expect(out.aliasNames).toEqual(['ALIAS']); // NUM numeric, FN function-like
     expect(out.includes).toEqual(['a.def', 'b.h']);
     expect(out.dPairs).toEqual(['cb\0cb']);
+    // FN_ASSIGN_RE collects `cb` (from `r->cb = direct;`), DEREF_FN_ASSIGN_RE
+    // `f` (from `(*q).f = other;`), in that scan order; `r->cb == q->cb;` is a
+    // comparison ((?!=)) and contributes nothing.
+    expect(out.assignFields).toEqual(['cb', 'f']);
     expect(out.dispatchFields).toContain('cb');
     expect(out.arrayDispatchNames).toContain('tbl');
     expect(out.initTokens).toContain('ALIAS');

@@ -1085,6 +1085,76 @@ describe('goResolver.extract', () => {
     expect(nodes[0].name).toBe('GET /api/users/{id}');
     expect(references[0].referenceName).toBe('getUser');
   });
+
+  it('composes a gin Group prefix onto registrations on the group var', () => {
+    const src = [
+      'func setup(r *gin.Engine) {',
+      '  v1 := r.Group("/v1")',
+      '  v1.GET("/users", listUsers)',
+      '  v1.POST("/users", createUser)',
+      '  r.GET("/healthz", health)', // ungrouped — unchanged
+      '  admin := v1.Group("/admin")', // nested group composes
+      '  admin.GET("/stats", stats)',
+      '}',
+    ].join('\n');
+    const { nodes } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual([
+      'GET /v1/users',
+      'POST /v1/users',
+      'GET /healthz',
+      'GET /v1/admin/stats',
+    ]);
+  });
+
+  it('does not leak a group var across top-level func boundaries', () => {
+    // `v1` in func B is a DIFFERENT var than in func A — file-level tracking
+    // would mislabel B's routes if bindings didn't reset at `func`.
+    const src = [
+      'func a(r *gin.Engine) {',
+      '  v1 := r.Group("/a")',
+      '  v1.GET("/x", x)',
+      '}',
+      'func b(r *gin.Engine) {',
+      '  v1 := r.Group("/b")',
+      '  v1.GET("/y", y)',
+      '}',
+    ].join('\n');
+    const { nodes } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual(['GET /a/x', 'GET /b/y']);
+  });
+
+  it('composes a chi Route literal prefix onto routes inside its closure (nested included)', () => {
+    const src = [
+      'func routes(r chi.Router) {',
+      '  r.Route("/articles", func(r chi.Router) {',
+      '    r.Get("/", list)',
+      '    r.Route("/{id}", func(r chi.Router) {',
+      '      r.Get("/", getOne)',
+      '    })',
+      '  })',
+      '  r.Get("/outside", outside)', // root router — no prefix
+      '}',
+    ].join('\n');
+    const { nodes } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual([
+      'GET /articles/',
+      'GET /articles/{id}/',
+      'GET /outside',
+    ]);
+  });
+
+  it('composes a gorilla PathPrefix().Subrouter() prefix onto subrouter registrations', () => {
+    const src = [
+      'func routes(r *mux.Router) {',
+      '  s := r.PathPrefix("/api").Subrouter()',
+      '  s.HandleFunc("/users/{id}", getUser).Methods("GET")',
+      '  r.HandleFunc("/healthz", health)',
+      '}',
+    ].join('\n');
+    const { nodes, references } = goResolver.extract!('routes.go', src);
+    expect(nodes.map((n) => n.name)).toEqual(['ANY /api/users/{id}', 'ANY /healthz']);
+    expect(references[0].referenceName).toBe('getUser');
+  });
 });
 
 import { goframeResolver } from '../src/resolution/frameworks/goframe';
@@ -1211,6 +1281,32 @@ let app = Router::new()
     const { nodes, references } = rustResolver.extract!('main.rs', src);
     expect(nodes[0].name).toBe('GET /health');
     expect(references[0].referenceName).toBe('health_check');
+  });
+
+  it('composes a web::scope prefix onto nested resource and route paths', () => {
+    const src = `App::new()
+  .service(
+    web::scope("/api")
+      .service(web::resource("/users").route(web::get().to(list_users)))
+      .route("/ping", web::get().to(ping)),
+  )
+  .route("/health", web::get().to(health_check))\n`;
+    const { nodes } = rustResolver.extract!('main.rs', src);
+    expect(nodes.map((n) => n.name).sort()).toEqual([
+      'GET /api/ping',
+      'GET /api/users',
+      'GET /health',
+    ]);
+  });
+
+  it('composes NESTED web::scope prefixes (scope inside a service arg)', () => {
+    const src = `App::new().service(
+  web::scope("/api").service(
+    web::scope("/v2").service(web::resource("/items").route(web::post().to(create))),
+  ),
+)\n`;
+    const { nodes } = rustResolver.extract!('main.rs', src);
+    expect(nodes.map((n) => n.name)).toEqual(['POST /api/v2/items']);
   });
 });
 
@@ -1660,6 +1756,173 @@ app.get(
       'update',
       'multiLine',
     ]);
+  });
+
+  it('indexes enum-path routes so postExtract can relabel them', () => {
+    const src = `app.get(SiteURL.api(.search).pathComponents, use: searchHandler)\n`;
+    const { nodes, references } = vaporResolver.extract!('routes.swift', src);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.name).toBe('GET /'); // label fixed by postExtract
+    expect(references[0]!.referenceName).toBe('searchHandler');
+  });
+});
+
+describe('vaporResolver.postExtract — typed-route enums', () => {
+  function mkRoute(
+    filePath: string,
+    line: number,
+    method: string,
+    path: string,
+    nameOverride?: string
+  ): Node {
+    return {
+      id: `route:${filePath}:${line}:${method}:${path}`,
+      kind: 'route',
+      name: nameOverride ?? `${method} ${path}`,
+      qualifiedName: `${filePath}::${method}:${path}`,
+      filePath,
+      language: 'swift',
+      startLine: line,
+      endLine: line,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+  }
+
+  function makeContext(opts: { files?: Record<string, string>; nodes?: Node[] }) {
+    const files = opts.files ?? {};
+    const all = opts.nodes ?? [];
+    return {
+      getNodesInFile: (fp: string) => all.filter((n) => n.filePath === fp),
+      getNodesByName: (name: string) => all.filter((n) => n.name === name),
+      getNodesByQualifiedName: () => [],
+      getNodesByKind: (kind: Node['kind']) => all.filter((n) => n.kind === kind),
+      fileExists: (fp: string) => files[fp] !== undefined,
+      readFile: (fp: string) => files[fp] ?? null,
+      getProjectRoot: () => '/test',
+      getAllFiles: () => Object.keys(files),
+      getNodesByLowerName: () => [],
+      getImportMappings: () => [],
+    } as any;
+  }
+
+  const SITE_URL = `
+enum SiteURL: Resourceable {
+    case api(Api)
+    case faq
+    case privacy
+    var path: String {
+        switch self {
+            case .api(let api):
+                return "api" + api.path
+            case .faq:
+                return "faq"
+            case .privacy:
+                return "privacy"
+        }
+    }
+    var pathComponents: [PathComponent] { .init(string: path) }
+}
+
+enum Api: Resourceable {
+    case search
+    case version(Version)
+    var path: String {
+        switch self {
+            case .search:
+                return "/search"
+            case .version(let v):
+                return "/versions" + v.path
+        }
+    }
+}
+
+enum Version: Resourceable {
+    case current
+    var path: String {
+        switch self {
+            case .current:
+                return "/current"
+        }
+    }
+}
+`;
+
+  it('renames a bare literal enum path (SiteURL.privacy)', () => {
+    const ctx = makeContext({
+      files: {
+        'Sources/App/SiteURL.swift': SITE_URL,
+        'Sources/App/routes.swift': `app.get(SiteURL.privacy.pathComponents, use: showPrivacy)\n`,
+      },
+      nodes: [mkRoute('Sources/App/routes.swift', 1, 'GET', '/')],
+    });
+    const updates = vaporResolver.postExtract!(ctx);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.name).toBe('GET /privacy');
+    // id + qualifiedName preserved → edges intact + idempotent re-run.
+    expect(updates[0]!.id).toBe('route:Sources/App/routes.swift:1:GET:/');
+    expect(updates[0]!.qualifiedName).toBe('Sources/App/routes.swift::GET:/');
+  });
+
+  it('composes delegation chains (SiteURL.api(.search) and 2-level version)', () => {
+    const ctx = makeContext({
+      files: {
+        'Sources/App/SiteURL.swift': SITE_URL,
+        'Sources/App/routes.swift': `app.get(SiteURL.api(.search).pathComponents, use: search)
+app.get(SiteURL.api(.version(.current)).pathComponents, use: current)
+`,
+      },
+      nodes: [
+        mkRoute('Sources/App/routes.swift', 1, 'GET', '/'),
+        mkRoute('Sources/App/routes.swift', 2, 'GET', '/'),
+      ],
+    });
+    const updates = vaporResolver.postExtract!(ctx);
+    expect(updates).toHaveLength(1); // .version(.current) has nested parens → skipped
+    expect(updates[0]!.name).toBe('GET /api/search');
+  });
+
+  it('prepends a grouped receiver prefix', () => {
+    const ctx = makeContext({
+      files: {
+        'Sources/App/SiteURL.swift': SITE_URL,
+        'Sources/App/routes.swift': `let v1 = routes.grouped("v1")
+v1.get(SiteURL.faq.pathComponents, use: faq)
+`,
+      },
+      nodes: [mkRoute('Sources/App/routes.swift', 2, 'GET', '/')],
+    });
+    const updates = vaporResolver.postExtract!(ctx);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.name).toBe('GET /v1/faq');
+  });
+
+  it('skips dynamic/unknown enum paths instead of guessing', () => {
+    const ctx = makeContext({
+      files: {
+        'Sources/App/SiteURL.swift': SITE_URL,
+        'Sources/App/routes.swift': `app.get(SiteURL.unknown.pathComponents, use: h1)
+app.get(Other.privacy.pathComponents, use: h2)
+`,
+      },
+      nodes: [
+        mkRoute('Sources/App/routes.swift', 1, 'GET', '/'),
+        mkRoute('Sources/App/routes.swift', 2, 'GET', '/'),
+      ],
+    });
+    expect(vaporResolver.postExtract!(ctx)).toHaveLength(0);
+  });
+
+  it('is a no-op on a second run', () => {
+    const ctx = makeContext({
+      files: {
+        'Sources/App/SiteURL.swift': SITE_URL,
+        'Sources/App/routes.swift': `app.get(SiteURL.privacy.pathComponents, use: showPrivacy)\n`,
+      },
+      nodes: [mkRoute('Sources/App/routes.swift', 1, 'GET', '/', 'GET /privacy')],
+    });
+    expect(vaporResolver.postExtract!(ctx)).toHaveLength(0);
   });
 });
 

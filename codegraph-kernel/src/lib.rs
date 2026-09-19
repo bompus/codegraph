@@ -251,6 +251,10 @@ pub struct CfnptrFacts {
     pub array_elems: Vec<String>,
     pub alias_names: Vec<String>,
     pub d_pairs: Vec<String>,
+    /// Distinct LHS field names of `x->f = fn;` / `(*x)->f = fn;` (the
+    /// bare-function-assignment registration filter). Absent on binaries
+    /// built before this field existed — the TS side reads it optional.
+    pub assign_fields: Vec<String>,
     pub dispatch_fields: Vec<String>,
     pub array_dispatch_names: Vec<String>,
     pub includes: Vec<String>,
@@ -280,6 +284,7 @@ fn facts_to_out(facts: cfnptr::FileFacts) -> CfnptrFacts {
         array_elems: facts.array_elems,
         alias_names: facts.alias_names,
         d_pairs: facts.d_pairs,
+        assign_fields: facts.assign_fields,
         dispatch_fields: facts.dispatch_fields,
         array_dispatch_names: facts.array_dispatch_names,
         includes: facts.includes,
@@ -300,6 +305,7 @@ fn empty_cfnptr_facts() -> CfnptrFacts {
         array_elems: Vec::new(),
         alias_names: Vec::new(),
         d_pairs: Vec::new(),
+        assign_fields: Vec::new(),
         dispatch_fields: Vec::new(),
         array_dispatch_names: Vec::new(),
         includes: Vec::new(),
