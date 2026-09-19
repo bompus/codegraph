@@ -3788,6 +3788,12 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
 // to the enclosing method. Precision rests on TWO gates: the receiver must be mediator-ish
 // (`mediator`/`sender`/`publisher`, so MAUI `MessagingCenter.Send` is ignored) AND the resolved
 // type must be a known handler request type (so a same-named non-request DTO is never bridged).
+// `Publish` also has a fan-out arm for the canonical domain-event loop —
+// `foreach (var domainEvent in domainEvents) await mediator.Publish(domainEvent)`
+// (eShop MediatorExtension) — where the arg is `var`-erased or declared as the
+// notification base (`INotification`): runtime dispatch reaches every
+// `INotificationHandler<T>.Handle`, so the site links to all of them. `Send`
+// never fans out (single-handler semantics).
 // C# has no `signature` on method nodes, so the handler's request type is read from the class
 // base-list source (`: IRequestHandler<X,…>`), not a param signature.
 const MEDIATR_HANDLER_BASE_RE = /(?:IRequestHandler|INotificationHandler)\s*<\s*([A-Za-z_]\w*)/;
@@ -3795,8 +3801,12 @@ const MEDIATR_HANDLER_BASE_RE = /(?:IRequestHandler|INotificationHandler)\s*<\s*
 // (rare) an explicit generic call `Send<R>(x)`. A member path (`req.Command`,
 // `this.cmd`) is CAPTURED so the arg resolver can decline it — resolving only
 // the head ident's declared type would mis-bridge the member's type.
-const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*(?:<[^<>\n]{0,80}>)?\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*(?:\.\w+)*)/g;
+const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(Send|Publish)\s*(?:<[^<>\n]{0,80}>)?\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*(?:\.\w+)*)/g;
 const MEDIATR_RECEIVER_RE = /(?:mediator|sender|publisher)/i;
+// A `Publish(x)` arg declared as the notification base itself (`INotification`,
+// `IDomainEvent`, `DomainEvent`…) — runtime dispatch reaches every notification
+// handler, so the erased type fans out instead of missing a concrete key.
+const MEDIATR_NOTIFICATION_ARG_RE = /^I?(?:Domain)?Notification$|^IDomainEvent$/;
 const MEDIATR_CS_EXT = /\.cs$/;
 const MEDIATR_FANOUT_CAP = 80;
 const MEDIATR_HANDLER_DECL_LOOKAHEAD = 4; // lines from a class startLine to find a wrapped base list
@@ -3827,10 +3837,28 @@ function resolveMediatrArgType(arg: string, lines: string[], methodStart: number
   return declType;
 }
 
+/** `arg` is the loop variable of a `foreach (… arg in <collection>)` where the
+ *  collection name is event-ish (`domainEvents`, `notifications`…). The
+ *  canonical DDD fan-out (eShop `MediatorExtension`): domain events are held as
+ *  `INotification`, so `var domainEvent` erases the type — but the collection
+ *  name carries the evidence that `Publish(arg)` reaches all handlers. */
+function isForeachEventVar(arg: string, lines: string[], methodStart: number, dispatchLine: number): boolean {
+  if (!/^[A-Za-z_]\w*$/.test(arg)) return false;
+  const re = new RegExp(`foreach\\s*\\(\\s*(?:var|[A-Z]\\w*(?:<[\\w.<>,?\\s]*>)?)\\s+${arg}\\s+in\\s+([\\w.]+)`);
+  for (let i = Math.max(0, methodStart - 1); i < dispatchLine && i < lines.length; i++) {
+    const m = re.exec(lines[i] ?? '');
+    if (m && /events|notifications/i.test(m[1]!)) return true;
+  }
+  return false;
+}
+
 async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scannedFiles = 0;
   // Pass 1 — request/notification type → the Handle method of each handler class.
+  // `notificationHandlers` additionally records every INotificationHandler<T> —
+  // a `Publish` of a base-typed or collection element fans out to all of them.
   const handlers = new Map<string, Node[]>();
+  const notificationHandlers: Node[] = [];
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!MEDIATR_CS_EXT.test(file)) continue;
@@ -3852,6 +3880,7 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
       let arr = handlers.get(type);
       if (!arr) { arr = []; handlers.set(type, arr); }
       arr.push(handle);
+      if (/INotificationHandler\s*</.test(decl)) notificationHandlers.push(handle);
     }
   }
   if (!handlers.size) return [];
@@ -3875,9 +3904,21 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
       const line = safe.slice(0, m.index).split('\n').length;
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue;
-      const type = resolveMediatrArgType(m[2]!, safeLines, disp.startLine, line);
-      if (!type) continue;
-      const targets = handlers.get(type);
+      const verb = m[2]!;
+      const arg = m[3]!;
+      const type = resolveMediatrArgType(arg, safeLines, disp.startLine, line);
+      let targets = type ? handlers.get(type) : undefined;
+      // Publish of an erased/base-typed notification reaches every notification
+      // handler (MediatR dispatches on the runtime type, whose static bound is
+      // the INotification collection/base). Two evidence paths: a declared
+      // notification-base arg type, or a foreach var over an event-ish
+      // collection (eShop `foreach (var domainEvent in domainEvents)`).
+      if (!targets && verb === 'Publish' && notificationHandlers.length) {
+        const fan = type
+          ? MEDIATR_NOTIFICATION_ARG_RE.test(type)
+          : isForeachEventVar(arg, safeLines, disp.startLine, line);
+        if (fan) targets = notificationHandlers;
+      }
       if (!targets) continue;
       for (const target of targets) {
         if (target.id === disp.id) continue;
@@ -3890,7 +3931,7 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
           kind: 'calls',
           line,
           provenance: 'heuristic',
-          metadata: { synthesizedBy: 'mediatr-dispatch', via: type, registeredAt: `${file}:${line}` },
+          metadata: { synthesizedBy: 'mediatr-dispatch', via: type ?? `${arg}:*`, registeredAt: `${file}:${line}` },
         });
         added++;
       }
