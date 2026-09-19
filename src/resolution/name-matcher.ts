@@ -3486,8 +3486,9 @@ function matchRustSelfCall(
  * (`Self::of::<E>` → `Self::of`), plus the three-segment associated-type
  * path `Self::AssocType::member` — `AssocType` binds through the caller's
  * enclosing `impl` block's `type AssocType = X` decl, then `X::member`
- * resolves like any owner path. `Self::f().chain` is the return-type
- * frontier and declines. Caller treats this as advisory: a miss falls
+ * resolves like any owner path. A `Self::f().tail` leaf resolves through
+ * the receiver method's declared return type (`-> Self` means the
+ * receiver's owner). Caller treats this as advisory: a miss falls
  * through to the normal strategies so a ref today's bare-name arm resolves
  * keeps its verdict.
  */
@@ -3503,8 +3504,7 @@ function matchRustSelfPath(
     .split('::')
     .filter((s) => s.length > 0);
   if (segments[0] !== 'Self' || (segments.length !== 2 && segments.length !== 3)) return null;
-  const leaf = segments[segments.length - 1]!;
-  if (!/^\w+$/.test(leaf)) return null;
+  let leaf = segments[segments.length - 1]!;
 
   const caller = context.getNodeById?.(ref.fromNodeId);
   if (!caller?.qualifiedName) return null;
@@ -3521,32 +3521,58 @@ function matchRustSelfPath(
     owner = rustAssocTypeBinding(caller, segments[1]!, context);
     if (!owner) return null;
   }
-  const want = `${owner}::${leaf}`;
 
+  // `Self::f().tail` — a call-chained member: the leaf carries `f().tail`,
+  // so the receiver method resolves first and its declared return type
+  // binds the tail (`-> Self` means the RECEIVER's owner, not the caller's).
+  // Only an empty-arg call chain is read; anything else declines.
+  const chained = leaf.match(/^(\w+)\(\)\.(\w+)$/);
+  if (chained) {
+    const recv = resolveRustSelfMember(owner, chained[1]!, caller, context, ['method']);
+    const arrow = recv?.signature?.lastIndexOf('->') ?? -1;
+    if (!recv?.signature || arrow < 0) return null;
+    const rawRet = recv.signature.slice(arrow + 2).trim();
+    const recvSep = recv.qualifiedName.lastIndexOf('::');
+    owner = rawRet === 'Self' ? recv.qualifiedName.slice(0, recvSep) : normalizeInferredTypeName(rawRet);
+    if (!owner) return null;
+    leaf = chained[2]!;
+  } else if (!/^\w+$/.test(leaf)) return null;
+
+  const node = resolveRustSelfMember(owner, leaf, caller, context, ['method', 'enum_member', 'constant']);
+  if (!node) return null;
+
+  return {
+    original: ref,
+    targetNodeId: node.id,
+    confidence: 0.9,
+    resolvedBy: 'qualified-name',
+  };
+}
+
+/**
+ * The `owner::leaf` qualified-name lookup shared by `Self::item` and the
+ * `Self::f().tail` chain: rust qualified names omit module paths, so two
+ * same-named owners need the caller's file to pin one (matchRustSelfCall's
+ * disambiguation).
+ */
+function resolveRustSelfMember(
+  owner: string,
+  leaf: string,
+  caller: Node,
+  context: ResolutionContext,
+  kinds: string[],
+): Node | null {
+  const want = `${owner}::${leaf}`;
   let owned = context
     .getNodesByQualifiedName(want)
-    .filter(
-      (n) =>
-        (n.kind === 'method' || n.kind === 'enum_member' || n.kind === 'constant') &&
-        n.language === 'rust' &&
-        n.qualifiedName === want,
-    );
-  // Same disambiguation as matchRustSelfCall: rust qualified names omit
-  // module paths, so two same-named owners need the caller's file to pin one.
+    .filter((n) => kinds.includes(n.kind) && n.language === 'rust' && n.qualifiedName === want);
   const owners = context.getNodesByQualifiedName(owner).filter((n) =>
     n.language === 'rust' && ['struct', 'enum', 'union', 'trait', 'class'].includes(n.kind));
   if (owners.length > 1) {
     if (owners.filter((n) => n.filePath === caller.filePath).length !== 1) return null;
     owned = owned.filter((n) => n.filePath === caller.filePath);
   }
-  if (owned.length !== 1) return null;
-
-  return {
-    original: ref,
-    targetNodeId: owned[0]!.id,
-    confidence: 0.9,
-    resolvedBy: 'qualified-name',
-  };
+  return owned.length === 1 ? owned[0]! : null;
 }
 
 /**

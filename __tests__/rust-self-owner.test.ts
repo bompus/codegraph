@@ -107,3 +107,52 @@ it('declines Self::AssocType paths with no impl decl, and absent members', async
   });
   expect(targets('lib.rs')).toEqual([]);
 });
+
+it('resolves Self::f().tail through the receiver return type', async () => {
+  await index({
+    'lib.rs':
+      'pub struct Chain;\nimpl Chain { pub fn next(&self) {} }\n' +
+      'pub struct Target;\nimpl Target {\n' +
+      '  pub fn make() -> Self { Self }\n' +
+      '  pub fn step(&self) {}\n' +
+      '  pub fn to_chain() -> Chain { Chain }\n' +
+      '  pub fn run(&self) { Self::make().step(); Self::to_chain().next(); }\n}',
+  });
+  const caller = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::run');
+  const calls = cg!.getOutgoingEdges(caller!.id).filter(e => e.kind === 'calls')
+    .map(e => cg!.getNode(e.target)!.qualifiedName);
+  // `Self::make`/`Self::to_chain` inner calls resolve via the 2-seg arm;
+  // the `.step`/`.next` tails ride the receiver return type.
+  expect(calls.sort()).toEqual(['Chain::next', 'Target::make', 'Target::step', 'Target::to_chain']);
+});
+
+it('binds the tail of Self::Assoc::f().tail through the impl type decl', async () => {
+  await index({
+    'lib.rs':
+      'pub struct Out;\nimpl Out { pub fn finish(&self) {} }\n' +
+      'pub struct Back;\nimpl Back { pub fn make() -> Out { Out } }\n' +
+      'pub struct Target;\npub trait Tr { type A; fn step(&self); }\n' +
+      'impl Tr for Target { type A = Back; fn step(&self) { Self::A::make().finish(); } }',
+  });
+  const caller = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::step');
+  const calls = cg!.getOutgoingEdges(caller!.id).filter(e => e.kind === 'calls')
+    .map(e => cg!.getNode(e.target)!.qualifiedName);
+  // `Self::A::make` inner call via the assoc-type arm; `.finish` tail via
+  // make's `-> Out`.
+  expect(calls.sort()).toEqual(['Back::make', 'Out::finish']);
+});
+
+it('declines Self::f().tail when the return type or tail is unresolvable', async () => {
+  await index({
+    'lib.rs':
+      'pub struct Target;\nimpl Target {\n' +
+      '  pub fn opt() -> Option<Self> { None }\n' +
+      '  pub fn run(&self) { Self::opt().unwrap(); Self::opt().missing_zz(); Self::nope().x(); }\n}',
+  });
+  const caller = cg!.getNodesByKind('method').find(n => n.qualifiedName === 'Target::run');
+  const calls = cg!.getOutgoingEdges(caller!.id).filter(e => e.kind === 'calls')
+    .map(e => cg!.getNode(e.target)!.qualifiedName);
+  // `Self::opt` inner calls resolve (two edges, one per call site); every
+  // `.tail` declines (Option is not an in-graph owner; `nope` receiver misses).
+  expect(calls).toEqual(['Target::opt', 'Target::opt']);
+});
