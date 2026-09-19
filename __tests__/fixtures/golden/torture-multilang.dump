@@ -1,4 +1,4 @@
-== nodes (1404)
+== nodes (1405)
 {"id":"class:0083dc18baa2b629e8572db20ba2b464","kind":"class","name":"Widget","qualified_name":"Widget","file_path":"torture.cpp","language":"cpp","start_line":98,"end_line":104,"start_column":0,"end_column":1,"docstring":"UE-macro shapes — every one below is recovered by the hoisted preParse\n(export macro, reflection markup, inline specifier, API member prefix).","signature":null,"visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"class:00e4c67aff13a714886744f6829e0cea","kind":"class","name":"Cfg","qualified_name":"Cfg","file_path":"TortureDoubleWalk.dart","language":"dart","start_line":60,"end_line":62,"start_column":0,"end_column":1,"docstring":null,"signature":null,"visibility":"public","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"class:01a3945fa12793f1af9ac531aedcc8cd","kind":"class","name":"Widget","qualified_name":"Widget","file_path":"TortureMini.dart","language":"dart","start_line":34,"end_line":52,"start_column":0,"end_column":1,"docstring":null,"signature":null,"visibility":"public","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
@@ -433,6 +433,7 @@
 {"id":"field:bb16503247c8833e9d5ea8dc4ce7cb45","kind":"field","name":"area","qualified_name":"com.example.torture::WidgetK::area","file_path":"torture.kt","language":"kotlin","start_line":62,"end_line":62,"start_column":4,"end_column":31,"docstring":null,"signature":null,"visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"field:bbe3080718c0bdbcfadaa578e7ec76dd","kind":"field","name":"siblings","qualified_name":"Visi::siblings","file_path":"torture.swift","language":"swift","start_line":130,"end_line":130,"start_column":2,"end_column":67,"docstring":null,"signature":null,"visibility":"internal","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"field:bc4d5f167c7b2067e067da75f388cd26","kind":"field","name":"mutable","qualified_name":"Session::mutable","file_path":"torture.swift","language":"swift","start_line":8,"end_line":8,"start_column":2,"end_column":17,"docstring":null,"signature":null,"visibility":"internal","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
+{"id":"field:c798d3703257f8a5dfbd95045e25247e","kind":"field","name":"on_recv","qualified_name":"conn_t::on_recv","file_path":"torture.c","language":"c","start_line":30,"end_line":30,"start_column":2,"end_column":23,"docstring":null,"signature":"void (*on_recv)(int);","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"field:ce554246fe9c6404266238a03686b0ed","kind":"field","name":"name","qualified_name":"com.example.torture::LombokBean::name","file_path":"Torture.java","language":"java","start_line":89,"end_line":89,"start_column":17,"end_column":21,"docstring":null,"signature":"String name","visibility":"private","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"field:d0559487d0cc404bd15f014e7a5a0e5d","kind":"field","name":"count","qualified_name":"App\\Services::Documented::count","file_path":"torture.php","language":"php","start_line":45,"end_line":45,"start_column":24,"end_column":30,"docstring":null,"signature":"int $count","visibility":"public","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"field:d7c2f172d98e1be2062ece802dcdc4e5","kind":"field","name":"delegate","qualified_name":"Session::delegate","file_path":"torture.swift","language":"swift","start_line":13,"end_line":13,"start_column":2,"end_column":37,"docstring":null,"signature":null,"visibility":"internal","is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
@@ -1403,7 +1404,7 @@
 {"id":"variable:fb450996c12f335b36201ead67a34f64","kind":"variable","name":"INIT_MAP","qualified_name":"INIT_MAP","file_path":"torture.py","language":"python","start_line":54,"end_line":54,"start_column":0,"end_column":26,"docstring":null,"signature":"= {\"a\": helper()}","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:feb330d554c5d0caaa8978323a006e52","kind":"variable","name":"MD_BARE","qualified_name":"MD_BARE","file_path":"torture.rb","language":"ruby","start_line":238,"end_line":238,"start_column":0,"end_column":21,"docstring":null,"signature":"= 'README.md'","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fedacda34e94b85718ac655a74368326","kind":"variable","name":"okG","qualified_name":"okG","file_path":"torture.lua","language":"lua","start_line":12,"end_line":12,"start_column":6,"end_column":9,"docstring":null,"signature":"= pcall(require, \"app.guarded\")","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (1900)
+== edges (1902)
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"class:25244cbdbe3e9bc720df9fc4d54fac0a","kind":"extends","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"app::Config\"}","line":98,"col":35,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:0795ac46f5bef3826c20039a05014ebc","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:35a476809e2727e80d7f2c8c404180b2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -2814,6 +2815,7 @@
 {"source":"function:776ddd2f0dd066bab2295c09c8685d6a","target":"class:2962f71edd3e8a7955a291e014192feb","kind":"instantiates","metadata":"{\"confidence\":0.7,\"resolvedBy\":\"framework\",\"refName\":\"Deep\"}","line":229,"col":15,"provenance":null}
 {"source":"function:79cca57cb60354ea51143a1e9b5e13e9","target":"class:c2dfee99ca5361d8de7ae7de6858d0bf","kind":"instantiates","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"WidgetK\",\"refKind\":\"calls\"}","line":263,"col":17,"provenance":null}
 {"source":"function:79cca57cb60354ea51143a1e9b5e13e9","target":"method:de718159205cba9b0d17647ac71f8f2a","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"instance-method\",\"refName\":\"x.render\"}","line":262,"col":4,"provenance":null}
+{"source":"function:7a0b33da86ba854a62dfdbc9159b1318","target":"field:c798d3703257f8a5dfbd95045e25247e","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"field-call\",\"refName\":\"c.on_recv\"}","line":77,"col":2,"provenance":null}
 {"source":"function:7a0b33da86ba854a62dfdbc9159b1318","target":"variable:ee9c6e0fee8889153857dd10264fe3d8","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"function:7b4a76daee5d5358323598a43254c8c2","target":"class:01a3945fa12793f1af9ac531aedcc8cd","kind":"instantiates","metadata":"{\"confidence\":0.7,\"resolvedBy\":\"framework\",\"refName\":\"Widget\"}","line":36,"col":6,"provenance":null}
 {"source":"function:7b4a76daee5d5358323598a43254c8c2","target":"class:3430daaa185d0f5949cf1a99185038b0","kind":"references","metadata":"{\"confidence\":0.7,\"resolvedBy\":\"framework\",\"refName\":\"Registry\"}","line":35,"col":20,"provenance":null}
@@ -3266,6 +3268,7 @@
 {"source":"struct:6d96b486579cf3fdd66718872215294c","target":"constant:03a7deca3c8e64b747972d99b0c1bcdc","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:6d96b486579cf3fdd66718872215294c","target":"field:81b9c56215cb5a70857091431b97bd1a","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:6d96b486579cf3fdd66718872215294c","target":"struct:6d96b486579cf3fdd66718872215294c","kind":"instantiates","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"HTTPMethod\",\"refKind\":\"calls\"}","line":41,"col":19,"provenance":null}
+{"source":"struct:7dcc3e8c0c639ebb09d04ec84126b25b","target":"field:c798d3703257f8a5dfbd95045e25247e","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8af466b07dba0b708a3b1922902ab00a","target":"method:35091377684dd9ce1422bc199925f095","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8af466b07dba0b708a3b1922902ab00a","target":"method:c19898b8b84cce6cc2b80007d1b6f588","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8af466b07dba0b708a3b1922902ab00a","target":"trait:7cbd29a1473d80a74da70be5024bc1d6","kind":"implements","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Source\"}","line":130,"col":5,"provenance":null}
@@ -3304,7 +3307,7 @@
 {"source":"variable:788d75a828c79f9847e0be0e2b73a196","target":"variable:8fef25ea8abe486ee94190ed47c3644b","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"variable:9b11e2d2271460cf5d5c12d00f607ca1","target":"method:3ac9d03b2b42036d5064669684b96d97","kind":"calls","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"helper\"}","line":52,"col":13,"provenance":null}
 {"source":"variable:fb450996c12f335b36201ead67a34f64","target":"method:3ac9d03b2b42036d5064669684b96d97","kind":"calls","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"helper\"}","line":54,"col":17,"provenance":null}
-== refs (1164)
+== refs (1163)
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Mix2","reference_kind":"implements","line":34,"col":37,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Mix2"}
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Paint","reference_kind":"implements","line":34,"col":59,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Paint"}
 {"from_node_id":"class:066eb79e83cf3105cebd14593747068f","reference_name":"mixins.LoggerMixin","reference_kind":"extends","line":13,"col":27,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"LoggerMixin"}
@@ -3808,7 +3811,6 @@
 {"from_node_id":"function:776ddd2f0dd066bab2295c09c8685d6a","reference_name":"n2","reference_kind":"calls","line":228,"col":14,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"n2"}
 {"from_node_id":"function:776ddd2f0dd066bab2295c09c8685d6a","reference_name":"takes","reference_kind":"calls","line":226,"col":4,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"takes"}
 {"from_node_id":"function:776ddd2f0dd066bab2295c09c8685d6a","reference_name":"w.method_a","reference_kind":"calls","line":218,"col":12,"candidates":null,"file_path":"torture.rs","language":"rust","status":"failed","name_tail":"method_a"}
-{"from_node_id":"function:7a0b33da86ba854a62dfdbc9159b1318","reference_name":"c.on_recv","reference_kind":"calls","line":77,"col":2,"candidates":null,"file_path":"torture.c","language":"c","status":"failed","name_tail":"on_recv","failure_reason":"unknown-receiver"}
 {"from_node_id":"function:7a0b33da86ba854a62dfdbc9159b1318","reference_name":"fn","reference_kind":"calls","line":75,"col":10,"candidates":null,"file_path":"torture.c","language":"c","status":"failed","name_tail":"fn"}
 {"from_node_id":"function:7aff2a0a16ed21b7561d9fce12e1dbd7","reference_name":"Object","reference_kind":"references","line":48,"col":0,"candidates":null,"file_path":"torture.dart","language":"dart","status":"failed","name_tail":"Object"}
 {"from_node_id":"function:7aff2a0a16ed21b7561d9fce12e1dbd7","reference_name":"Object","reference_kind":"references","line":48,"col":11,"candidates":null,"file_path":"torture.dart","language":"dart","status":"failed","name_tail":"Object"}
@@ -4469,7 +4471,7 @@
 {"from_node_id":"variable:e5d1acb1f72fa51c98bb94af8c35fada","reference_name":"example.com/remote.md","reference_kind":"references","line":70,"col":22,"candidates":null,"file_path":"torture.go","language":"go","status":"failed","name_tail":"md"}
 {"from_node_id":"variable:f90ca95a6ecd4291f24e8cc99492595f","reference_name":"notes.md#top","reference_kind":"references","line":70,"col":20,"candidates":null,"file_path":"torture.luau","language":"luau","status":"failed","name_tail":"md#top"}
 {"from_node_id":"variable:feb330d554c5d0caaa8978323a006e52","reference_name":"README.md","reference_kind":"references","line":238,"col":11,"candidates":null,"file_path":"torture.rb","language":"ruby","status":"failed","name_tail":"md"}
-== bindings (697)
+== bindings (698)
 {"file_path":"Torture.java","name":"<Runnable$anon@27>","kind":"local","node_id":"class:c4ed77533cd6f14e451fe7962f484e20","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":27,"scope_end":32,"storage":null,"line":27}
 {"file_path":"Torture.java","name":"<Runnable$anon@42>","kind":"local","node_id":"class:66085d60d16ebfd037ddd1bd9273a82e","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":36,"scope_end":48,"storage":null,"line":42}
 {"file_path":"Torture.java","name":"API_BASE","kind":"local","node_id":"constant:027c429f02116e6725f83e648b4778cf","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":16,"scope_end":85,"storage":null,"line":21}
@@ -4599,6 +4601,7 @@
 {"file_path":"torture.c","name":"md_rooted","kind":"decl","node_id":"constant:6bed44accb2fc1bc31a415aee2c7d0fd","target_spec":null,"target_name":null,"exported_as":"md_rooted","export_form":"public","scope_start":1,"scope_end":184,"storage":"static","line":177}
 {"file_path":"torture.c","name":"md_two_in_one","kind":"decl","node_id":"constant:88d02606dfec0edefe8cfcfdf8305815","target_spec":null,"target_name":null,"exported_as":"md_two_in_one","export_form":"public","scope_start":1,"scope_end":184,"storage":"static","line":181}
 {"file_path":"torture.c","name":"n","kind":"local","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":133,"scope_end":137,"storage":null,"line":135}
+{"file_path":"torture.c","name":"on_recv","kind":"local","node_id":"field:c798d3703257f8a5dfbd95045e25247e","target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":28,"scope_end":31,"storage":null,"line":30}
 {"file_path":"torture.c","name":"opts","kind":"local","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":102,"scope_end":110,"storage":null,"line":103}
 {"file_path":"torture.c","name":"outer","kind":"local","node_id":null,"target_spec":null,"target_name":null,"exported_as":null,"export_form":null,"scope_start":102,"scope_end":110,"storage":null,"line":106}
 {"file_path":"torture.c","name":"packet","kind":"decl","node_id":"struct:c178330f11d7b530d10a9a362596e95e","target_spec":null,"target_name":null,"exported_as":"packet","export_form":"public","scope_start":1,"scope_end":184,"storage":null,"line":39}
@@ -5190,7 +5193,7 @@
 {"path":"TortureVref.scala","language":"scala","node_count":14}
 {"path":"TortureVrefDart.dart","language":"dart","node_count":22}
 {"path":"torture.R","language":"r","node_count":86}
-{"path":"torture.c","language":"c","node_count":52}
+{"path":"torture.c","language":"c","node_count":53}
 {"path":"torture.cpp","language":"cpp","node_count":40}
 {"path":"torture.dart","language":"dart","node_count":91}
 {"path":"torture.go","language":"go","node_count":26}

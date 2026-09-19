@@ -512,6 +512,16 @@ fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
             (r"\$?R\b\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", 0),
             (r"\b([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R\b", 0),
         ],
+        // `struct ops *o` / `ops_t *o` / `ops o` — a declared parameter or
+        // local carrying an aggregate or typedef'd type; mirrors the cfnptr
+        // receiver-decl scan (`recv_decl_types`). Single `*` only — a
+        // pointer-to-pointer receiver can't be called through. The captured
+        // word is validated by the member lookup, so a loose hit is a miss,
+        // never a wrong edge.
+        "c" => vec![(
+            r"\b(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*\bR\b\s*(?:[,)=;]|\[)",
+            0,
+        )],
         _ => vec![],
     };
     pats.into_iter()
@@ -5074,7 +5084,12 @@ impl KernelResolver {
             .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method))?
             .iter()
             .filter(|n| {
-                n.kind == "method"
+                // C/C++ function-pointer members are `field` nodes —
+                // `rtc->read(...)` proves `ds1685_priv::read` the same way a
+                // method is proven on its owner.
+                (n.kind == "method"
+                    || (n.kind == "field"
+                        && (site.language == "c" || site.language == "cpp")))
                     && same_language_family(&n.language, &site.language)
                     && (n.file_path == owner.file_path
                         || (site.language == "go"
@@ -5092,9 +5107,13 @@ impl KernelResolver {
         };
         match member {
             Some(m) => Ok(McRes::Hit(KCand {
+                resolved_by: if m.kind == "field" {
+                    "field-call"
+                } else {
+                    "instance-method"
+                },
                 node: m,
                 confidence: 0.9,
-                resolved_by: "instance-method",
             })),
             None => Ok(McRes::Punt("btm-supers")),
         }
@@ -6483,6 +6502,34 @@ impl KernelResolver {
         Ok(receiver == "it" || declaration.is_some_and(|d| d.contains("->")))
     }
 
+    /// The un-receiver-typed c/cpp field fallback: every same-language
+    /// `field` node carrying `member`'s name, resolved only when the set is
+    /// a singleton. Field nodes exist only for callable function-pointer
+    /// members, so any singleton is a callable member by construction.
+    fn unique_field_candidate(
+        &mut self,
+        member: &str,
+        r: &ResolveRefIn,
+    ) -> Result<Option<KCand>> {
+        let fields: Vec<Rc<KNode>> = self
+            .nodes_by_name(member)?
+            .iter()
+            .filter(|n| {
+                n.kind == "field" && same_language_family(&n.language, &r.language)
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        Ok(if fields.len() == 1 {
+            Some(KCand {
+                node: fields.into_iter().next().unwrap(),
+                confidence: 0.7,
+                resolved_by: "field-call",
+            })
+        } else {
+            None
+        })
+    }
+
     /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
     /// boundReceiver evidence slice. Punt points: php instanceof guards,
     /// go/kotlin iteration constructs, ESM awaited inference, and every
@@ -6584,6 +6631,16 @@ impl KernelResolver {
                     && self.mc_await_gate(&object_or_class, r)?
                 {
                     return Ok(McRes::Punt("mc-await"));
+                }
+                // `recv->fp(...)` / `x.fp(...)` with an unrecoverable
+                // receiver type: the member is still provable when exactly
+                // one same-language callable `field` carries its name.
+                // Ambiguous or absent → fall through to the name arms (and
+                // ultimately unresolved), never a guess.
+                if r.language == "c" || r.language == "cpp" {
+                    if let Some(hit) = self.unique_field_candidate(&method_name, r)? {
+                        return Ok(McRes::Hit(hit));
+                    }
                 }
             }
             if let Some(t) = inferred.take() {
@@ -6757,6 +6814,13 @@ impl KernelResolver {
                 && self.mc_await_gate(&object_or_class, r)?
             {
                 return Ok(McRes::Punt("mc-await"));
+            }
+            // Same unique-field fallback as the bound arm — `recv->fp(...)`
+            // proves its field member when exactly one exists.
+            if inferred.is_none() && (r.language == "c" || r.language == "cpp") {
+                if let Some(hit) = self.unique_field_candidate(&method_name, r)? {
+                    return Ok(McRes::Hit(hit));
+                }
             }
             if let Some(t) = inferred {
                 // Java/Kotlin: the file's import pins WHICH same-named class.

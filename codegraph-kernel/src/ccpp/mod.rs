@@ -54,6 +54,12 @@
 //!    `field_declaration` (not `function_definition`); mint a method node so
 //!    abstract-base calls and cpp-override synthesis have a target. Mirrors
 //!    TS `methodTypes` + `classifyMethodNode` / `isAbstract`.
+//!  - callable members (c-fnptr-field-nodes): a `field_declaration` whose
+//!    declarator is a fn-pointer — `int (*read)(int)`, a fn-ptr typedef
+//!    member `hook_fn read`, or a `typedef void cb_t(void)` member behind
+//!    `*` — mints a `field` node qualified `Owner::name`, the graph target
+//!    `s->fp(...)`/`x.fp(...)` calls resolve to. Scalar/array/plain members
+//!    mint nothing; the typedef registries are file-local.
 //!  - stack construction (#1035): cpp `declaration` with class-like named
 //!    `type` and an init_declarator whose value is argument_list /
 //!    initializer_list → `instantiates` (most-vexing-parse excluded).
@@ -344,6 +350,14 @@ pub struct Walker<'t> {
     namespace_prefix: Vec<String>,
     /// cppLocalFnPtrs: caller row → local name → insertion-ordered targets.
     local_fn_ptrs: HashMap<u32, HashMap<String, Vec<String>>>,
+    /// Function-pointer typedef names seen in this file — `typedef int
+    /// (*hook_fn)(int)` — so a member declared `hook_fn read;` mints a
+    /// `field` node. File-local only: a typedef living in another header is
+    /// unknown here, and the member then mints nothing (never a guess).
+    fn_ptr_typedefs: HashSet<String>,
+    /// Function-TYPE typedefs — `typedef void cb_t(void)` — callable only
+    /// through an explicit `*` member declarator (`cb_t *cbp`).
+    fn_type_typedefs: HashSet<String>,
     defined_fn_names: HashSet<String>,
     imported_names: HashSet<String>,
     fn_ref_cands: Vec<Cand>,
@@ -453,6 +467,8 @@ impl<'t> Walker<'t> {
             node_ids: Vec::new(),
             namespace_prefix: Vec::new(),
             local_fn_ptrs: HashMap::new(),
+            fn_ptr_typedefs: HashSet::new(),
+            fn_type_typedefs: HashSet::new(),
             defined_fn_names: HashSet::new(),
             imported_names: HashSet::new(),
             fn_ref_cands: Vec::new(),
@@ -896,22 +912,29 @@ impl<'t> Walker<'t> {
         } else if kind == "type_definition"
             || (self.variant == Variant::Cpp && kind == "alias_declaration")
         {
+            // Register fn-pointer typedefs BEFORE extract_type_alias consumes
+            // the node — a later struct member declared `hook_fn read;` is a
+            // callable field only if the typedef is known.
+            self.register_fn_typedefs(node);
             skip_children = self.extract_type_alias(node);
         } else if kind == "declaration" && !self.inside_class_like() {
             self.extract_variable(node);
             self.scan_fn_ref_subtree(node, 0);
             skip_children = true;
-        } else if self.variant == Variant::Cpp
-            && kind == "field_declaration"
-            && self.inside_class_like()
-            && self.is_cpp_pure_virtual_method_decl(node)
-        {
-            // Pure-virtual methods have no `function_definition` body — mint the
-            // method node so calls through the abstract base and cpp-override
-            // synthesis have a target (#1727). Non-pure field_declarations fall
-            // through to the children walk (data members / prototypes).
-            self.extract_method(node);
-            skip_children = true;
+        } else if kind == "field_declaration" && self.inside_class_like() {
+            if self.variant == Variant::Cpp && self.is_cpp_pure_virtual_method_decl(node) {
+                // Pure-virtual methods have no `function_definition` body — mint the
+                // method node so calls through the abstract base and cpp-override
+                // synthesis have a target (#1727). Non-pure field_declarations fall
+                // through to the children walk (data members / prototypes).
+                self.extract_method(node);
+                skip_children = true;
+            } else {
+                // Callable function-pointer members mint `field` nodes so
+                // `s->fp(...)`/`x.fp(...)` calls have a graph target. Children
+                // still walk — a nested struct/union specifier lives there.
+                self.extract_callable_fields(node);
+            }
         } else if kind == "preproc_include" {
             self.extract_import(node);
         } else if kind == "call_expression" {
@@ -1211,6 +1234,212 @@ impl<'t> Walker<'t> {
         (0..node.named_child_count())
             .filter_map(|i| node.named_child(i))
             .find(|c| c.kind() == kind)
+    }
+
+    // --- callable fields (fn-pointer members → `field` nodes) ----------------
+    //
+    // A struct/union member that can be CALLED — `ops->read(...)` — gets a
+    // `field` node qualified `Owner::name`, giving the resolver's member-call
+    // arm a target for the ~12k `recv->fn(args)` refs a kernel-scale corpus
+    // leaves dangling. Only three declarator shapes qualify:
+    //   1. `int (*read)(int);`            — direct fn-pointer declarator
+    //   2. `hook_fn read;`                — member of a `typedef int
+    //      (*hook_fn)(int)` known in this file
+    //   3. `cb_t *cbp;`                   — pointer to a `typedef void
+    //      cb_t(void)` function type
+    // Scalar, array-of-non-fnptr, and plain members mint nothing — Linux has
+    // millions of those, and an edge can only be as good as the call site.
+
+    /// Register the fn-pointer typedef names a `type_definition` (C/C++) or a
+    /// cpp `alias_declaration` (`using Fn = int(*)(int)`) introduces. The
+    /// registries are file-local and never cleared: C requires
+    /// declare-before-use, so a name registered here is visible to every
+    /// aggregate declared later in the walk.
+    fn register_fn_typedefs(&mut self, node: Node<'t>) {
+        if node.kind() == "alias_declaration" {
+            // `using Name = <type>`: classify the type subtree — a
+            // pointer inside parens of an abstract_function_declarator is a
+            // fn-pointer alias; a bare abstract_function_declarator is a
+            // function-type alias.
+            let Some(name_node) = node.child_by_field_name("name") else { return };
+            let Some(mut ty) = node.child_by_field_name("type") else { return };
+            while ty.kind() == "type_descriptor" {
+                let Some(d) = ty.child_by_field_name("declarator") else { return };
+                ty = d;
+            }
+            if ty.kind() != "abstract_function_declarator" {
+                return;
+            }
+            let mut inner = ty.child_by_field_name("declarator");
+            let mut is_ptr = false;
+            while let Some(i) = inner {
+                match i.kind() {
+                    "abstract_parenthesized_declarator" => {
+                        inner = i.child_by_field_name("declarator").or_else(|| i.named_child(0));
+                    }
+                    "abstract_pointer_declarator" => {
+                        is_ptr = true;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            let name = self.text(name_node);
+            if !name.is_empty() {
+                if is_ptr {
+                    self.fn_ptr_typedefs.insert(name.to_string());
+                } else {
+                    self.fn_type_typedefs.insert(name.to_string());
+                }
+            }
+            return;
+        }
+
+        // `typedef … declarator, declarator;` — each declarator decides
+        // independently (`typedef int X, (*P)(int);` registers only P).
+        let mut cursor = node.walk();
+        for declarator in node.children_by_field_name("declarator", &mut cursor) {
+            if declarator.kind() != "function_declarator" {
+                continue;
+            }
+            // The typedef's NAME binds inside the declarator: unwrap parens —
+            // `typedef int (*P)(int)` reaches the `pointer_declarator`; a bare
+            // `typedef int F(int)` reaches the `type_identifier` directly.
+            let Some(mut inner) = declarator.child_by_field_name("declarator") else {
+                continue;
+            };
+            // `parenthesized_declarator` has no `declarator` field — the inner
+            // node is just its first named child.
+            while inner.kind() == "parenthesized_declarator" {
+                let Some(i) = inner
+                    .child_by_field_name("declarator")
+                    .or_else(|| inner.named_child(0))
+                else {
+                    break;
+                };
+                inner = i;
+            }
+            let mut name_node = inner;
+            while matches!(
+                name_node.kind(),
+                "pointer_declarator" | "array_declarator" | "reference_declarator"
+                    | "parenthesized_declarator"
+            ) {
+                match name_node
+                    .child_by_field_name("declarator")
+                    .or_else(|| name_node.named_child(0))
+                {
+                    Some(i) => name_node = i,
+                    None => break,
+                }
+            }
+            if !matches!(name_node.kind(), "type_identifier" | "identifier") {
+                continue;
+            }
+            let name = self.text(name_node);
+            if name.is_empty() {
+                continue;
+            }
+            if inner.kind() == "pointer_declarator" {
+                self.fn_ptr_typedefs.insert(name.to_string());
+            } else {
+                self.fn_type_typedefs.insert(name.to_string());
+            }
+        }
+    }
+
+    /// The `field_identifier` a callable member's declarator binds, or None.
+    /// `ptr_td`/`fn_td` are the declaration's `type` being a registered
+    /// fn-pointer / function-type typedef.
+    fn callable_field_name(
+        &self,
+        d: Node<'t>,
+        ptr_td: bool,
+        fn_td: bool,
+    ) -> Option<Node<'t>> {
+        match d.kind() {
+            // `Ret (*name)(Args)`: a function_declarator whose declarator
+            // unwraps through parens to a POINTER declarator bound directly to
+            // a field_identifier. A method decl (`Ret name(Args)`), a function
+            // returning a fn-ptr (`Ret (*name())(Args)`), a ptr-to-ptr
+            // (`Ret (**name)(Args)`), or an array of fn-ptrs
+            // (`Ret (*name[N])(Args)`) is not a callable field.
+            "function_declarator" => {
+                let mut inner = d.child_by_field_name("declarator")?;
+                while inner.kind() == "parenthesized_declarator" {
+                    inner = inner
+                        .child_by_field_name("declarator")
+                        .or_else(|| inner.named_child(0))?;
+                }
+                if inner.kind() != "pointer_declarator" {
+                    return None;
+                }
+                match inner.child_by_field_name("declarator") {
+                    Some(name) if name.kind() == "field_identifier" => Some(name),
+                    _ => None,
+                }
+            }
+            // `hook_fn read;` — the typedef already carries the `*`.
+            "field_identifier" => {
+                if ptr_td {
+                    Some(d)
+                } else {
+                    None
+                }
+            }
+            // `cb_t *cbp;` — exactly one star onto a function-type typedef.
+            "pointer_declarator" => {
+                if fn_td {
+                    match d.child_by_field_name("declarator") {
+                        Some(inner) if inner.kind() == "field_identifier" => Some(inner),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            // `int (*fp)(int) = &f;` — C++ NSDMI / GNU member initializer.
+            "init_declarator" => {
+                let inner = d.child_by_field_name("declarator")?;
+                self.callable_field_name(inner, ptr_td, fn_td)
+            }
+            _ => None,
+        }
+    }
+
+    /// Mint `field` nodes for the callable members of a `field_declaration`.
+    /// The node's own span covers the member declaration; the `contains`
+    /// edge lands on the enclosing aggregate (create_node's scope stack).
+    fn extract_callable_fields(&mut self, node: Node<'t>) {
+        let type_name = node
+            .child_by_field_name("type")
+            .map(|t| self.text(t).to_string());
+        let ptr_td = type_name
+            .as_deref()
+            .is_some_and(|t| self.fn_ptr_typedefs.contains(t));
+        let fn_td = type_name
+            .as_deref()
+            .is_some_and(|t| self.fn_type_typedefs.contains(t));
+        let mut cursor = node.walk();
+        for declarator in node.children_by_field_name("declarator", &mut cursor) {
+            let Some(name_node) = self.callable_field_name(declarator, ptr_td, fn_td) else {
+                continue;
+            };
+            let name = self.text(name_node);
+            if name.is_empty() {
+                continue;
+            }
+            self.create_node(
+                "field",
+                name,
+                node,
+                Extra {
+                    docstring: preceding_docstring(node, self.src),
+                    signature: Some(self.text(node).trim().to_string()),
+                    ..Extra::default()
+                },
+            );
+        }
     }
 
     /// extractVariable: C takes the dedicated branch (file-scope declarators,
@@ -1921,6 +2150,14 @@ impl<'t> Walker<'t> {
         }
         if kind == "declaration" {
             self.emit_local_rows(node);
+        }
+        // A typedef inside a function body still registers fn-pointer names —
+        // a local struct declared after it may use them (`register_fn_typedefs`
+        // otherwise runs only from visit_node's top-level arm).
+        if kind == "type_definition"
+            || (self.variant == Variant::Cpp && kind == "alias_declaration")
+        {
+            self.register_fn_typedefs(node);
         }
 
         // C++ stack construction `Calculator calc(0)` / `Widget w{1,2}` (#1035).
