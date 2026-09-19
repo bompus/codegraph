@@ -27,6 +27,7 @@ import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex } from './strip-comments';
 import { cFnPointerDispatchEdges } from './c-fnptr-synthesizer';
+import { drupalHookEdges } from './drupal-hook-synthesizer';
 import { goframeRouteEdges } from './goframe-synthesizer';
 import { expoRouterReturnEdges } from './expo-router-synthesizer';
 import { nextLinkEdges } from './next-router-synthesizer';
@@ -4881,7 +4882,8 @@ async function laravelEventEdges(ctx: ResolutionContext, onYield: MaybeYield): P
  * Celery task .delay()/.apply_async() → task body + Spring publishEvent → @EventListener +
  * MediatR Send/Publish → IRequestHandler/INotificationHandler +
  * NgRx store.dispatch → ofType effect +
- * Sidekiq Worker.perform_async → #perform + Laravel event(new X) → listener handle).
+ * Sidekiq Worker.perform_async → #perform + Laravel event(new X) → listener handle +
+ * Drupal invokeAll/invoke/alter → hook impl).
  * Returns the count added. Never throws into indexing — callers wrap in try/catch.
  */
 
@@ -4991,6 +4993,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
     run: (q, c, y) => erlangBehaviourDispatchEdges(q, c, y),
   },
   { name: 'laravelEdges', gate: (has) => has('php'), run: (_q, c, y) => laravelEventEdges(c, y) },
+  { name: 'drupalHookEdges', gate: (has) => has('php'), run: (q, c, y) => drupalHookEdges(q, c, y) },
   {
     name: 'cFnPtrEdges',
     gate: (has) => has('c', 'cpp'),

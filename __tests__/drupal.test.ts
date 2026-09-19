@@ -1076,3 +1076,206 @@ describe('Drupal end-to-end — route node linked to controller method', () => {
     cg.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// drupalHookEdges — dispatch-site → hook-implementation synthesis
+// ---------------------------------------------------------------------------
+
+describe('drupalHookEdges synthesizer', () => {
+  let tmpDir: string | undefined;
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  /** Build a two-module Drupal fixture and return the drupal-hook edge rows. */
+  async function indexFixture(): Promise<any[]> {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-drupal-hook-'));
+
+    fs.writeFileSync(
+      path.join(tmpDir, 'composer.json'),
+      JSON.stringify({ require: { 'drupal/core-recommended': '~11.0' } }),
+    );
+
+    const modDir = path.join(tmpDir, 'web', 'modules', 'custom', 'my_module');
+    const otherDir = path.join(tmpDir, 'web', 'modules', 'custom', 'other_module');
+    fs.mkdirSync(path.join(modDir, 'src', 'Controller'), { recursive: true });
+    fs.mkdirSync(path.join(modDir, 'src', 'Hook'), { recursive: true });
+    fs.mkdirSync(otherDir, { recursive: true });
+
+    // Procedural impls: my_module_cron, my_module_form_alter, and a
+    // docblock impl whose name does NOT end with its hook (suffix rule can't
+    // reach it — only the leftover hook_ ref row can).
+    fs.writeFileSync(
+      path.join(modDir, 'my_module.module'),
+      `<?php
+/**
+ * Implements hook_cron().
+ */
+function my_module_cron() {}
+
+/**
+ * Implements hook_form_alter().
+ */
+function my_module_form_alter(&$form, $form_state, $form_id) {}
+
+/**
+ * Implements hook_node_presave().
+ */
+function helper_fn($node) {}
+
+function my_module_dispatch() {
+  \\Drupal::moduleHandler()->invokeAll('cron');
+}
+`,
+    );
+
+    // D11 attribute-era impl: #[Hook('cron')] on a src/Hook/ method.
+    fs.writeFileSync(
+      path.join(modDir, 'src', 'Hook', 'MyHooks.php'),
+      `<?php
+namespace Drupal\\my_module\\Hook;
+
+use Drupal\\Core\\Hook\\Attribute\\Hook;
+
+class MyHooks {
+  #[Hook('cron')]
+  public function runCronJob(): void {}
+}
+`,
+    );
+
+    fs.writeFileSync(
+      path.join(otherDir, 'other_module.module'),
+      `<?php
+/**
+ * Implements hook_form_alter().
+ */
+function other_module_form_alter(&$form, $form_state, $form_id) {}
+
+/**
+ * Implements hook_user_login_alter().
+ */
+function other_module_user_login_alter(&$data) {}
+`,
+    );
+
+    // Dispatch sites — one verb per function so (source,target) dedup doesn't
+    // collapse distinct call shapes into a single edge.
+    fs.writeFileSync(
+      path.join(modDir, 'src', 'Controller', 'Dispatcher.php'),
+      `<?php
+namespace Drupal\\my_module\\Controller;
+
+class Dispatcher {
+  public function runCron($moduleHandler) {
+    $moduleHandler->invokeAll('cron');
+  }
+  public function legacyCron() {
+    module_invoke_all('cron');
+  }
+  public function alterThings($moduleHandler, &$data) {
+    $moduleHandler->alter(['form', 'user_login'], $data);
+    drupal_alter('form', $data); // same disp → same targets: dedupes, not doubles
+  }
+  public function invokeOne($moduleHandler) {
+    $moduleHandler->invoke('other_module', 'form_alter');
+  }
+  public function presave($moduleHandler) {
+    $moduleHandler->invokeAll('node_presave');
+  }
+  public function dynamic($moduleHandler, $name) {
+    $moduleHandler->invokeAll($name); // non-literal: never bridged
+  }
+  public function noImpl($moduleHandler) {
+    $moduleHandler->invokeAll('nothook_here'); // zero impls: never bridged
+  }
+}
+`,
+    );
+
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, t.file_path tf,
+                json_extract(e.metadata,'$.via') via, e.line
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'drupal-hook'`,
+      )
+      .all();
+    cg.close();
+    return edges as any[];
+  }
+
+  it('bridges invokeAll/module_invoke_all/alter/invoke dispatch sites to hook impls', async () => {
+    const edges = await indexFixture();
+    const has = (s: string, t: string, via?: string) =>
+      edges.some((r) => r.source === s && r.target === t && (via === undefined || r.via === via));
+
+    // ->invokeAll('cron') → procedural impl + D11 #[Hook('cron')] method.
+    expect(has('runCron', 'my_module_cron', 'cron')).toBe(true);
+    expect(has('runCron', 'runCronJob', 'cron')).toBe(true);
+    // module_invoke_all('cron') — the legacy procedural shape, same impl set.
+    expect(has('legacyCron', 'my_module_cron')).toBe(true);
+    expect(has('legacyCron', 'runCronJob')).toBe(true);
+    // A .module-file dispatch counts too (\\Drupal::moduleHandler()->invokeAll).
+    expect(has('my_module_dispatch', 'my_module_cron')).toBe(true);
+    expect(has('my_module_dispatch', 'runCronJob')).toBe(true);
+    // ->alter(['form','user_login']) expands per element → *_form_alter
+    // impls of BOTH modules + the user_login_alter impl.
+    expect(has('alterThings', 'my_module_form_alter', 'form_alter')).toBe(true);
+    expect(has('alterThings', 'other_module_form_alter', 'form_alter')).toBe(true);
+    expect(has('alterThings', 'other_module_user_login_alter', 'user_login_alter')).toBe(true);
+    // drupal_alter('form') shares the disp/target pairs → no duplicate edges.
+    expect(
+      edges.filter((r) => r.source === 'alterThings' && r.via === 'form_alter'),
+    ).toHaveLength(2);
+    // ->invoke('other_module','form_alter') is module-scoped: the named
+    // module's impl only — my_module_form_alter must NOT be reached.
+    expect(has('invokeOne', 'other_module_form_alter', 'other_module:form_alter')).toBe(true);
+    expect(has('invokeOne', 'my_module_form_alter')).toBe(false);
+    // Docblock impl whose name doesn't end with the hook — the suffix rule
+    // can't reach helper_fn; only its leftover hook_node_presave ref row can.
+    expect(has('presave', 'helper_fn', 'node_presave')).toBe(true);
+    // And it was never mistaken as an impl for a DIFFERENT hook.
+    expect(edges.filter((r) => r.target === 'helper_fn')).toHaveLength(1);
+    // Dynamic and impl-less dispatches contribute nothing.
+    expect(edges.some((r) => r.source === 'dynamic')).toBe(false);
+    expect(edges.some((r) => r.source === 'noImpl')).toBe(false);
+    // Every edge carries the convention metadata.
+    expect(edges.every((r) => typeof r.via === 'string' && r.via.length > 0)).toBe(true);
+  });
+
+  it('is a no-op on a non-Drupal PHP project', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-drupal-ctl-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'composer.json'),
+      JSON.stringify({ require: { 'laravel/framework': '^10' } }),
+    );
+    fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'src', 'Caller.php'),
+      `<?php
+class Caller {
+  public function go($mh) {
+    $mh->invokeAll('cron');
+    $mh->alter('form', $data);
+    module_invoke_all('cron');
+  }
+}
+`,
+    );
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const count = db
+      .prepare(
+        `SELECT count(*) c FROM edges WHERE json_extract(metadata,'$.synthesizedBy') = 'drupal-hook'`,
+      )
+      .get() as any;
+    expect(count.c).toBe(0);
+    cg.close();
+  });
+});
