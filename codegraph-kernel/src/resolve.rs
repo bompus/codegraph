@@ -5657,7 +5657,8 @@ impl KernelResolver {
     /// Two segments after the non-nested turbofish strip, plus the
     /// three-segment associated-type path `Self::Assoc::m` (`type Assoc = X`
     /// in the caller's enclosing impl block binds the middle segment, then
-    /// `X::m` resolves like any owner path). `Self::f().chain` declines.
+    /// `X::m` resolves like any owner path). A `Self::f().tail` leaf
+    /// resolves through the receiver method's declared return type.
     fn match_rust_self_path(&mut self, r: &ResolveRefIn) -> Result<McRes> {
         if r.language != "rust" || !r.reference_name.starts_with("Self::") {
             return Ok(McRes::Null);
@@ -5669,10 +5670,7 @@ impl KernelResolver {
         if segs[0] != "Self" || (segs.len() != 2 && segs.len() != 3) {
             return Ok(McRes::Null);
         }
-        let leaf = segs[segs.len() - 1];
-        if !leaf.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Ok(McRes::Null);
-        }
+        let mut leaf = segs[segs.len() - 1].to_string();
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
             return Ok(McRes::Null);
         };
@@ -5684,7 +5682,7 @@ impl KernelResolver {
         }
         // `Self::Assoc::leaf` — the associated type binds in the caller's
         // enclosing `impl` block (`type Assoc = X`), not on the type.
-        let owner: String = if segs.len() == 2 {
+        let mut owner: String = if segs.len() == 2 {
             caller.qualified_name[..sep].to_string()
         } else {
             match self.rust_assoc_type_binding(&caller, segs[1])? {
@@ -5692,21 +5690,79 @@ impl KernelResolver {
                 None => return Ok(McRes::Null),
             }
         };
+
+        // `Self::f().tail` — a call-chained member: the leaf carries
+        // `f().tail`, so the receiver method resolves first and its
+        // declared return type binds the tail (`-> Self` means the
+        // RECEIVER's owner, not the caller's). Only an empty-arg call
+        // chain is read; anything else declines.
+        let chain_re = self.cached_regex(r"^(\w+)\(\)\.(\w+)$")?;
+        if let Some(chained) = chain_re.captures(&leaf) {
+            const METHOD: &[&str] = &["method"];
+            let Some(recv) = self.resolve_rust_self_member(&owner, &chained[1], &caller, METHOD)?
+            else {
+                return Ok(McRes::Null);
+            };
+            let Some(sig) = recv.signature.as_deref() else {
+                return Ok(McRes::Null);
+            };
+            let Some(arrow) = sig.rfind("->") else {
+                return Ok(McRes::Null);
+            };
+            let raw_ret = sig[arrow + 2..].trim();
+            owner = if raw_ret == "Self" {
+                match recv.qualified_name.rfind("::") {
+                    Some(rs) => recv.qualified_name[..rs].to_string(),
+                    None => return Ok(McRes::Null),
+                }
+            } else {
+                match self.normalize_inferred_type_name(raw_ret)? {
+                    Some(t) => t,
+                    None => return Ok(McRes::Null),
+                }
+            };
+            leaf = chained[2].to_string();
+        } else if !leaf.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Ok(McRes::Null);
+        }
+
+        const MEMBER_KINDS: &[&str] = &["method", "enum_member", "constant"];
+        let Some(node) = self.resolve_rust_self_member(&owner, &leaf, &caller, MEMBER_KINDS)?
+        else {
+            return Ok(McRes::Null);
+        };
+        Ok(McRes::Hit(KCand {
+            node,
+            confidence: 0.9,
+            resolved_by: "qualified-name",
+        }))
+    }
+
+    /// resolveRustSelfMember (name-matcher.ts): the `owner::leaf`
+    /// qualified-name lookup shared by `Self::item` and the `Self::f().tail`
+    /// chain. Rust qualified names omit module paths, so two same-named
+    /// owners need the caller's file to pin one (match_rust_self_call's
+    /// disambiguation).
+    fn resolve_rust_self_member(
+        &mut self,
+        owner: &str,
+        leaf: &str,
+        caller: &Rc<KNode>,
+        kinds: &[&str],
+    ) -> Result<Option<Rc<KNode>>> {
         let want = format!("{}::{}", owner, leaf);
         let mut owned: Vec<Rc<KNode>> = self
             .nodes_by_qualified_name(&want)?
             .iter()
             .filter(|n| {
-                matches!(n.kind.as_str(), "method" | "enum_member" | "constant")
+                kinds.contains(&n.kind.as_str())
                     && n.language == "rust"
                     && n.qualified_name == want
             })
             .map(|n| Rc::new(n.clone()))
             .collect();
-        // Same disambiguation as match_rust_self_call: rust qualified names
-        // omit module paths — two same-named owners need the caller's file.
         let owners: Vec<Rc<KNode>> = self
-            .nodes_by_qualified_name(&owner)?
+            .nodes_by_qualified_name(owner)?
             .iter()
             .filter(|n| {
                 n.language == "rust"
@@ -5719,18 +5775,14 @@ impl KernelResolver {
             .collect();
         if owners.len() > 1 {
             if owners.iter().filter(|n| n.file_path == caller.file_path).count() != 1 {
-                return Ok(McRes::Null);
+                return Ok(None);
             }
             owned.retain(|n| n.file_path == caller.file_path);
         }
         if owned.len() != 1 {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
-        Ok(McRes::Hit(KCand {
-            node: owned[0].clone(),
-            confidence: 0.9,
-            resolved_by: "qualified-name",
-        }))
+        Ok(Some(owned[0].clone()))
     }
 
     /// rustAssocTypeBinding (name-matcher.ts): the concrete type an

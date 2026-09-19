@@ -719,3 +719,13 @@ Third **enhancement** leg (item 3 of the §remainder list; the "Rust bindings em
 **Gates**: 10/10 `bindings-rust` (new file: leaf/alias/list/nested-list/`{self}`/`{self as}`/glob/`pub use`/mod+fn scopes/`importMappingsFromBindings` decode), golden re-baselined (`torture.rs` +10 import rows), 6/6 parity, 8/8 self-owner, 662/662 extraction, 224/224 resolution, clippy `-D warnings` clean.
 
 **Note**: this leg began as a delegated worktree whose agent died mid-wiring (`emit_use_bindings` written, never called); completed inline — wiring, `argument`-field lookup, `{self as x}` spec fix, `bindings_only` + gates + corpus A/B.
+
+### 5.30 Rust enhancement — `Self::f().tail` call-chain resolution (2026-09-19)
+
+Fourth **enhancement** leg — closes the last `Self::` frontier. A `Self::method().tail` leaf (37 refs on the linux corpus) now resolves through the receiver method's declared return type: `Self::make().step()` binds `make` via the existing 2-seg arm (or `Self::Assoc::m().tail` via the §5.28 impl `type` decl), reads `-> Ret` off the receiver's `signature`, normalizes it (`normalizeInferredTypeName`), maps bare `-> Self` to the RECEIVER's owner, then resolves `Ret::tail` by qualified name. The shared `owner::leaf` lookup (member-kind filter + same-name-owner file disambiguation) is factored into `resolveRustSelfMember`/`resolve_rust_self_member` in both engines.
+
+**Corpus evidence**: 0/37 refs flip — verified correct per ref: every tail is a stdlib member on a `Result`/`Option`/raw-pointer return (`map`, `unwrap`, `into`, `cast_mut`, `len`) or a `macro_rules!`-generated receiver (`regs::zeroed`) with no in-graph owner, and the `Self::Backend::*` callers are trait default bodies where `type Backend` stays abstract (§5.28 declines by design). **0 shadow divergences** (1,556 kernel-handled refs checked, sequential shadow run on the same snapshot twin protocol).
+
+**Gates**: 12/12 `rust-self-owner` (3 new: `-> Self` same-owner chain, `-> Chain` cross-type, `Self::Assoc::m().tail` through the impl decl, plus the decline battery — `Option<Self>` receiver, missing tail, missing receiver), 6/6 parity, 10/10 bindings-rust, golden unchanged (resolution-only arm), clippy `-D warnings` clean.
+
+**Rust `Self::` surface is now exhausted**: 2-seg items (§5.27), 3-seg assoc-type (§5.28), call-chains (here). Everything still declined is abstract-by-design — trait defaults with unbound `type`, or stdlib/macro returns with no in-graph owner.
