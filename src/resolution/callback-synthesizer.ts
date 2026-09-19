@@ -4071,7 +4071,7 @@ const NGRX_SELECT_RE = /([\w$.]*)\s*\.\s*select(?:Signal)?\s*\(\s*([A-Za-z_$][\w
 // A candidate selector node must PRODUCE a selector (a createSelector-family
 // call in its signature) or live in a conventional selectors file — a plain
 // `function selectX`/`const selectX` elsewhere is not evidence enough.
-const NGRX_SELECTOR_SIG_RE = /\bcreateSelector\b|\bcreateFeatureSelector\b|\bcreateStructuredSelector\b|\bcreateSelectorFactory\b/;
+const NGRX_SELECTOR_SIG_RE = /\bcreateSelector\b|\bcreateFeatureSelector\b|\bcreateStructuredSelector\b|\bcreateSelectorFactory\b|\bgetSelectors\b|\bgetRouterSelectors\b/;
 const NGRX_SELECTOR_FILE_RE = /(?:^|[/\\])[^/\\]*selectors?[^/\\]*\.|(?:^|[/\\])selectors?[/\\]/i;
 const NGRX_SELECTOR_KINDS = new Set<NodeKind>(['constant', 'function']);
 

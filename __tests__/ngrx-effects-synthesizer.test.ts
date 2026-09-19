@@ -419,6 +419,54 @@ export class AkitaComponent {
     cg.close?.();
   });
 
+  it('resolves a selector destructured off getRouterSelectors() (platform example-app shape)', async () => {
+    // The real site: `export const { selectRouteData } = getRouterSelectors()`
+    // in reducers/index.ts — a factory-destructure binding, not a
+    // createSelector() declarator, so the selector node only exists via the
+    // exported-factory-binding extraction arm.
+    write('src/reducers/index.ts', `import { getRouterSelectors } from '@ngrx/router-store';
+export const { selectRouteData, selectQueryParams } = getRouterSelectors();
+const { notExported } = getRouterSelectors();
+`);
+    write('src/effects/router.effects.ts', `import { createEffect } from '@ngrx/effects';
+import { concatLatestFrom } from '@ngrx/operators';
+import { inject } from '@angular/core';
+import { Store } from '@ngrx/store';
+import { selectRouteData } from '../reducers';
+
+export const routeEffect = createEffect(() => {
+  const store = inject(Store);
+  return store.someStream$.pipe(concatLatestFrom(() => store.select(selectRouteData)));
+});
+`);
+
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+
+    // The destructured exported bindings mint constant nodes; the unexported
+    // destructure stays unextracted.
+    const nodes = db
+      .prepare(`SELECT name, kind, signature FROM nodes WHERE name IN ('selectRouteData','selectQueryParams','notExported')`)
+      .all();
+    expect(nodes.map((n: any) => `${n.name}:${n.kind}`).sort()).toEqual([
+      'selectQueryParams:constant',
+      'selectRouteData:constant',
+    ]);
+    expect(nodes.find((n: any) => n.name === 'selectRouteData')!.signature).toContain('getRouterSelectors');
+
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'ngrx-select'`
+      )
+      .all();
+    expect(edges.map((r: any) => `${r.source}>${r.target}`)).toEqual(['routeEffect>selectRouteData']);
+
+    cg.close?.();
+  });
+
   it('produces no edges in a TS project with no NgRx effects (clean control)', async () => {
     write('src/store.ts', `export class Store {
   dispatch(action: unknown) { return action; }
