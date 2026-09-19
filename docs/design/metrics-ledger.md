@@ -659,3 +659,27 @@ Same host/arm shape (`taskset -c 0-7`, node v26.9.0, kernel-on, linux corpus, `C
 **Gates**: 6/6 parity (new pins: `v.new`/`p.new`/`ctx.run` → rmot @0.9 instance-method; `w.again`/`w.new`/`z.again`/`w.inner.again` → strat unique-method @0.7 including the spaced-`=` miss and the cross-function scope bound; `z.nomethod` → prefilter-terminal `unresolved`; `Widget::new().again`/`make().run` → member-tail punt, also exercised through real extraction in the byte-compare leg), 223/223 resolution, 12/12 target-kind, 4,996/4,996 suite, clippy `-D warnings` (lib target), ast-grep clean.
 
 **Remaining Rust surface**: `Self::` associated items (unassessed, small), trait dispatch through `getSupertypes` (permanent — §5.21), non-call `x.y`/`self.x` and `::`/`()` chain shapes (attributed punts), bindings emission (enhancement, not migration).
+
+### 5.27 Rust enhancement — `Self::item` associated-path binding (2026-09-19)
+
+First post-R5 **enhancement** (item 1 of the §remainder list): resolves refs the TS resolver previously failed, so the gate is **dual-engine agreement on the new verdicts**, not old-graph byte-identity.
+
+**What changed** — `Self::item` now binds `Self` to the caller method's qualified-name owner (the same derivation `matchRustSelfCall` uses; `impl Tr for T` methods carry `T::`, so trait impls bind to the impl type, not the trait). The leaf then resolves by `owner::leaf` qualified name over the prefixed member kinds (`method`, `enum_member`, `constant`), at @0.9 `qualified-name`, with the same multi-owner file-locality disambiguation as `self.` calls. Implemented in both engines: `matchRustSelfPath` (name-matcher.ts) + `match_rust_self_path` (resolve.rs), armed in `matchMethodCall`/`match_method_call`/`match_method_call_free` ahead of the `!matched` bail, advisory — a miss falls through to the existing strategies so every verdict TS made before is still reachable.
+
+**v1 scope (declines, identical in both engines)**: `Self::AssocType::member` (needs associated-type binding), `Self::f().chain` (return-type frontier), non-2-segment paths after turbofish strip, free-function callers (no owner prefix), ambiguous multi-owner types, absent members. Associated `const`/`type` nodes are extracted unprefixed, so they miss by construction — not by position guessing.
+
+**Corpus evidence** (linux baseline, shadow mode `CODEGRAPH_RESOLVE_SHADOW=1`, sequential):
+
+| Metric | Count |
+|---|---:|
+| `Self::*` refs re-run | 177 |
+| kernel-handled, **0 divergent** vs TS | 84 |
+| newly resolved @0.9 `qualified-name` | **81** (owner-verified: 81/81 target owner == caller owner) |
+| `member-tail` passthrough (identical TS outcome) | 93 |
+| terminal unresolved | 3 |
+
+Pre-existing: of the 115 `Self::` edges resolved before via strat `instance-method` @0.65/0.7, 95 already pointed at the caller's owner (arm now lands them at @0.9); **~16 were fabrications** (e.g. `Self::new` inside `impl Process` → `ListLinksSelfPtr::new`) that re-target to the true `owner::new` on next resolution; ~4 preserve (generic `T`, owner-less `VTABLE`, genuinely absent members).
+
+**Gates**: 6/6 kernel-resolve-parity (new seeds: `Self::new`/`Self::On`/`Self::helper` → resolved @0.9 qualified-name incl. enum_member + trait-impl owner; `Self::Assoc::new` → member-tail passthrough; free-fn + missing-member + ambiguous-owner declines), 8/8 rust-self-owner e2e (new: `Self::On(1)` tuple-variant → `enum_member`, trait-impl binding, multi-owner decline), tsc clean, cargo check clean, kernel rebuilt.
+
+**Remaining Rust surface**: `Self::AssocType::*` (associated-type binding), `Self::f().chain` (return-type inference), non-call `x.y`/`self.x`, bindings emission (enhancement), trait dispatch via `getSupertypes` (permanent).

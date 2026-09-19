@@ -5648,6 +5648,79 @@ impl KernelResolver {
         }))
     }
 
+    /// matchRustSelfPath (name-matcher.ts): `Self::item` associated-item
+    /// path — `Self` binds to the caller qualified-name owner exactly as
+    /// match_rust_self_call derives it, then the leaf resolves by
+    /// `owner::leaf` qualified name over the prefixed member kinds (method,
+    /// enum_member, constant). Advisory: Null falls through to the normal
+    /// strategies so a ref today's bare-name arm resolves keeps its verdict.
+    /// Two segments after the non-nested turbofish strip — `Self::Assoc::m`
+    /// (associated-type binding) and `Self::f().chain` (return-type) decline.
+    fn match_rust_self_path(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        if r.language != "rust" || !r.reference_name.starts_with("Self::") {
+            return Ok(McRes::Null);
+        }
+        let strip = self.cached_regex(r"<[^>]*>")?;
+        let name = strip.replace_all(&r.reference_name, "");
+        let segs: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
+        if segs.len() != 2 || segs[0] != "Self" {
+            return Ok(McRes::Null);
+        }
+        let leaf = segs[1];
+        if !leaf.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Ok(McRes::Null);
+        }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else {
+            return Ok(McRes::Null);
+        };
+        let Some(sep) = caller.qualified_name.rfind("::") else {
+            return Ok(McRes::Null);
+        };
+        if sep == 0 {
+            return Ok(McRes::Null);
+        }
+        let owner = &caller.qualified_name[..sep];
+        let want = format!("{}::{}", owner, leaf);
+        let mut owned: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(&want)?
+            .iter()
+            .filter(|n| {
+                matches!(n.kind.as_str(), "method" | "enum_member" | "constant")
+                    && n.language == "rust"
+                    && n.qualified_name == want
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        // Same disambiguation as match_rust_self_call: rust qualified names
+        // omit module paths — two same-named owners need the caller's file.
+        let owners: Vec<Rc<KNode>> = self
+            .nodes_by_qualified_name(owner)?
+            .iter()
+            .filter(|n| {
+                n.language == "rust"
+                    && matches!(
+                        n.kind.as_str(),
+                        "struct" | "enum" | "union" | "trait" | "class"
+                    )
+            })
+            .map(|n| Rc::new(n.clone()))
+            .collect();
+        if owners.len() > 1 {
+            if owners.iter().filter(|n| n.file_path == caller.file_path).count() != 1 {
+                return Ok(McRes::Null);
+            }
+            owned.retain(|n| n.file_path == caller.file_path);
+        }
+        if owned.len() != 1 {
+            return Ok(McRes::Null);
+        }
+        Ok(McRes::Hit(KCand {
+            node: owned[0].clone(),
+            confidence: 0.9,
+            resolved_by: "qualified-name",
+        }))
+    }
+
     /// matchRustSelfFieldCall (name-matcher.ts): `self.<field>.<method>()`,
     /// exclusive for `self.<field>` receivers — the field's declared type
     /// off the owner struct's OWN declaration lines (comment-stripped,
@@ -6215,6 +6288,13 @@ impl KernelResolver {
             }
         }
 
+        // Rust `Self::item` — associated-item path binding `Self` to the
+        // caller's impl owner. Before the `!matched` bail so deeper paths
+        // (`Self::Assoc::m`) reach it; a miss falls through like TS.
+        if let McRes::Hit(c) = self.match_rust_self_path(r)? {
+            return Ok(McRes::Hit(c));
+        }
+
         let dot_re = self
             .cached_regex(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$")?;
         let mut dot_match = dot_re.captures(&r.reference_name);
@@ -6409,6 +6489,13 @@ impl KernelResolver {
                     fqn.as_deref(),
                 );
             }
+        }
+
+        // Rust `Self::item` — associated-item path binding `Self` to the
+        // caller's impl owner. Before the `!matched` bail so deeper paths
+        // (`Self::Assoc::m`) reach it; a miss falls through like TS.
+        if let McRes::Hit(c) = self.match_rust_self_path(r)? {
+            return Ok(McRes::Hit(c));
         }
 
         let dot_re = self
