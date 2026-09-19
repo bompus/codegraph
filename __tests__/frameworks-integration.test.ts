@@ -188,6 +188,65 @@ describe('Flutter end-to-end — setState→build synthesis', () => {
   });
 });
 
+describe('Flutter end-to-end — named routes → page widgets', () => {
+  let tmpDir: string | undefined;
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  it('links Navigator.pushNamed(ctx, "/x") to the widget the routes map builds for "/x"', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-flutter-nav-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'detail.dart'),
+      'import "package:flutter/material.dart";\n' +
+        'class DetailPage extends StatelessWidget {\n' +
+        '  Widget build(BuildContext context) { return Text("d"); }\n' +
+        '}\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'app.dart'),
+      'import "package:flutter/material.dart";\n' +
+        'import "detail.dart";\n' +
+        'class App extends StatelessWidget {\n' +
+        '  Widget build(BuildContext context) {\n' +
+        '    return MaterialApp(routes: { "/detail": (ctx) => DetailPage() });\n' +
+        '  }\n' +
+        '}\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'home.dart'),
+      'import "package:flutter/material.dart";\n' +
+        'class HomePage extends StatelessWidget {\n' +
+        '  void openDetail(BuildContext context) {\n' +
+        '    Navigator.pushNamed(context, "/detail");\n' +
+        '  }\n' +
+        '  void openNowhere(BuildContext context) {\n' +
+        '    Navigator.pushNamed(context, "/nowhere");\n' + // not in the routes map — no edge
+        '  }\n' +
+        '  Widget build(BuildContext context) { return Text("h"); }\n' +
+        '}\n'
+    );
+
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const db = (cg as any).db.db;
+    const edges = db
+      .prepare(
+        `SELECT s.name source, t.name target, e.kind, json_extract(e.metadata,'$.route') route
+         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'flutter-nav'`
+      )
+      .all();
+    // `pushNamed('/detail')` reaches the DetailPage widget class the routes map
+    // builds; `/nowhere` was never registered, so `openNowhere` links nothing.
+    expect(edges).toEqual([
+      { source: 'openDetail', target: 'DetailPage', kind: 'navigates', route: '/detail' },
+    ]);
+    cg.close();
+  });
+});
+
 describe('C++ end-to-end — virtual override synthesis', () => {
   let tmpDir: string | undefined;
   afterEach(() => {

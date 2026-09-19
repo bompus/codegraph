@@ -36,7 +36,7 @@ import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { crossTierEdges } from './tier-synthesizer';
-import { enclosingFn, enclosingValue, makeLineAt } from './synth-utils';
+import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-utils';
 import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
 import { isDistinctiveIdentifier } from '../search/query-utils';
@@ -554,7 +554,26 @@ async function reactRenderEdges(queries: QueryBuilder, ctx: ResolutionContext, o
  * it: for each Dart class with a `build` method, link every sibling method whose
  * body calls `setState(` → `build`. The setState gate + `.dart` file keep this to
  * Flutter State classes. Over-approximation accepted (reachability-correct).
+ *
+ * Second phase (same pass): named navigation — `Navigator.pushNamed(context,
+ * '/detail')` is a string-keyed dispatch whose destination lives in the app's
+ * `routes:` table (`MaterialApp(routes: { '/detail': (ctx) => DetailPage() })`),
+ * not at the callsite, so nothing links caller → page widget. Build a
+ * route-name → widget-class map from every `routes:` map literal (only inside a
+ * file that constructs a `MaterialApp`/`CupertinoApp`/`WidgetsApp`), then link
+ * the enclosing method at each `Navigator.*Named(…, '/route')` site to the
+ * widget class that route builds. `Navigator.push(ctx, MaterialPageRoute(
+ * builder: (_) => X()))` needs nothing — the `X()` constructor is a literal
+ * call in the enclosing method already. `GetPage(name:…, page:…)`/GetX's
+ * `Get.toNamed` is a different registration shape — deferred.
  */
+const FLUTTER_APP_RE = /\b(?:MaterialApp|CupertinoApp|WidgetsApp|GetMaterialApp)\s*\(/;
+const FLUTTER_ROUTES_BLOCK_RE = /\broutes\s*:\s*\{/g;
+const FLUTTER_ROUTE_ENTRY_RE =
+  /['"]([^'"]+)['"]\s*:\s*(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>\s*(?:const\s+)?([A-Z]\w*)\s*\(/g;
+const FLUTTER_NAMED_NAV_RE =
+  /\b[Nn]avigator\s*\.\s*(?:of\s*\([^()]*\)\s*\.\s*)?(?:pushNamed|pushReplacementNamed|pushNamedAndRemoveUntil|popAndPushNamed|restorablePushNamed|restorablePushReplacementNamed)\s*\(\s*(?:[\w$.!]+\s*,\s*)?['"]([^'"]+)['"]/g;
+
 async function flutterBuildEdges(queries: QueryBuilder, ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scanned255 = 0;
   const edges: Edge[] = [];
@@ -582,6 +601,81 @@ async function flutterBuildEdges(queries: QueryBuilder, ctx: ResolutionContext, 
         metadata: { synthesizedBy: 'flutter-build', via: 'setState', registeredAt: `${build.filePath}:${build.startLine}` },
       });
       added++;
+    }
+  }
+
+  // ── named routes → page widgets ──────────────────────────────────────────
+  // Pass 1: collect `routes: { '/x': (ctx) => XPage(), … }` entries — only
+  // from a file that constructs an app widget, so a `routes:` map on an
+  // unrelated object literal never registers.
+  const routeWidgets = new Map<string, { widget: string; file: string }>();
+  const routeAmbiguous = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if (!file.endsWith('.dart')) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('routes:') || !FLUTTER_APP_RE.test(content)) continue;
+    FLUTTER_ROUTES_BLOCK_RE.lastIndex = 0;
+    let bm: RegExpExecArray | null;
+    while ((bm = FLUTTER_ROUTES_BLOCK_RE.exec(content))) {
+      const open = bm.index + bm[0].length - 1;
+      const close = matchBalanced(content, open);
+      if (close === -1) continue;
+      const block = content.slice(open, close + 1);
+      FLUTTER_ROUTE_ENTRY_RE.lastIndex = 0;
+      let em: RegExpExecArray | null;
+      while ((em = FLUTTER_ROUTE_ENTRY_RE.exec(block))) {
+        const [, routeName, widget] = em;
+        const prev = routeWidgets.get(routeName!);
+        if (prev && (prev.widget !== widget! || prev.file !== file)) {
+          // Two different widgets behind one route name — can't tell which a
+          // pushNamed means, so drop the route rather than guess.
+          routeAmbiguous.add(routeName!);
+          routeWidgets.delete(routeName!);
+        } else if (!routeAmbiguous.has(routeName!)) {
+          routeWidgets.set(routeName!, { widget: widget!, file });
+        }
+      }
+    }
+  }
+  if (routeWidgets.size === 0) return edges;
+
+  // Pass 2: `Navigator.pushNamed(context, '/x')` sites. The registered-name
+  // backstop — only a route string actually declared in a `routes:` map ever
+  // links — is the precision gate; an unknown name yields nothing.
+  let scannedFiles = 0;
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 15) === 0) await onYield();
+    if (!file.endsWith('.dart')) continue;
+    const content = ctx.readFile(file);
+    if (!content || !content.includes('pushNamed')) continue;
+    const nodesInFile = ctx.getNodesInFile(file);
+    const lineOf = makeLineAt(content, 1);
+    FLUTTER_NAMED_NAV_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = FLUTTER_NAMED_NAV_RE.exec(content))) {
+      const reg = routeWidgets.get(m[1]!);
+      if (!reg) continue;
+      const candidates = ctx
+        .getNodesByName(reg.widget)
+        .filter((n) => n.kind === 'class' && n.filePath.endsWith('.dart'));
+      const widgetCls =
+        candidates.find((n) => n.filePath === reg.file) ??
+        (candidates.length === 1 ? candidates[0] : undefined);
+      if (!widgetCls) continue;
+      const disp =
+        enclosingFn(nodesInFile, lineOf(m.index)) ?? enclosingValue(nodesInFile, lineOf(m.index));
+      if (!disp || disp.id === widgetCls.id) continue;
+      const key = `${disp.id}>${widgetCls.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: disp.id,
+        target: widgetCls.id,
+        kind: 'navigates',
+        line: lineOf(m.index),
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'flutter-nav', route: m[1], registeredAt: `${file}:${lineOf(m.index)}` },
+      });
     }
   }
   return edges;
