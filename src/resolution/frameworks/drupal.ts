@@ -207,7 +207,10 @@ function extractDrupalRoutes(
 
 const HOOK_FILE_EXTENSIONS = ['.module', '.install', '.theme', '.inc'];
 
-function isDrupalHookFile(filePath: string): boolean {
+/** Exported for the drupalHookEdges synth pass — the same file set resolve()'s
+ *  procedural `*_X` candidate filter uses, so synth candidates and resolver
+ *  targets agree. */
+export function isDrupalHookFile(filePath: string): boolean {
   return HOOK_FILE_EXTENSIONS.some((ext) => filePath.endsWith(ext));
 }
 
@@ -931,6 +934,22 @@ function hookAttributeIndex(
   return index;
 }
 
+/** The graph node a `#[Hook]` attribute target describes, within its file. */
+function hookTargetNode(
+  fileNodes: Node[],
+  target: { kind: 'function' | 'method' | 'class'; name: string; owner?: string }
+): Node | null {
+  return (
+    fileNodes.find(
+      (nd) =>
+        nd.kind === target.kind &&
+        nd.name === target.name &&
+        (target.owner === undefined ||
+          nd.qualifiedName.includes(`${target.owner}::`))
+    ) ?? fileNodes.find((nd) => nd.kind === target.kind && nd.name === target.name) ?? null
+  );
+}
+
 /**
  * Find the node a `#[Hook('X')]` attribute marks as the `hook_X`
  * implementation: the attributed method, the class-level `method:`/`__invoke`
@@ -943,20 +962,38 @@ function findHookAttributeImpl(
   for (const [filePath, parsed] of hookAttributeIndex(context)) {
     for (const impl of parsed.impls) {
       if (impl.hook !== hookSuffix) continue;
-      const target = hookAttributeTarget(impl, parsed.decls);
-      const fileNodes = context.getNodesInFile(filePath);
-      const node =
-        fileNodes.find(
-          (nd) =>
-            nd.kind === target.kind &&
-            nd.name === target.name &&
-            (target.owner === undefined ||
-              nd.qualifiedName.includes(`${target.owner}::`))
-        ) ?? fileNodes.find((nd) => nd.kind === target.kind && nd.name === target.name);
+      const node = hookTargetNode(context.getNodesInFile(filePath), hookAttributeTarget(impl, parsed.decls));
       if (node) return node;
     }
   }
   return null;
+}
+
+/**
+ * Every `#[Hook('X')]` implementation node in the project, keyed by the SHORT
+ * hook name (`user_cancel`, not `hook_user_cancel`). Same impl→node mapping
+ * `resolve()` applies through {@link findHookAttributeImpl}, but returns ALL
+ * impls rather than the first — the drupalHookEdges synth pass fans
+ * `invokeAll('X')` out to every implementation. Shares the per-context
+ * `src/Hook/` scan cache, so a resolver that already probed the attribute era
+ * pays nothing here.
+ */
+export function drupalHookAttributeImpls(context: ResolutionContext): Map<string, Node[]> {
+  const out = new Map<string, Node[]>();
+  for (const [filePath, parsed] of hookAttributeIndex(context)) {
+    const fileNodes = context.getNodesInFile(filePath);
+    for (const impl of parsed.impls) {
+      const node = hookTargetNode(fileNodes, hookAttributeTarget(impl, parsed.decls));
+      if (!node) continue;
+      let arr = out.get(impl.hook);
+      if (!arr) {
+        arr = [];
+        out.set(impl.hook, arr);
+      }
+      if (!arr.some((n) => n.id === node.id)) arr.push(node);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
