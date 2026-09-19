@@ -283,18 +283,21 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
 
 ### Agent A/B wave — dispatch-synth flows (2026-10, `run-all.sh`, Sonnet/high, 2 runs/arm, warm daemon, CLI shim on)
 
-Six canonical flow prompts, each exercising an arm landed in the dispatch wave (MediatR collection fan-out, Sidekiq `:sym` payload, Celery canvas + task dispatch, Laravel `Dispatchable` job dispatch, Spring listener re-publish, NgRx select incl. destructured-factory selectors). **12/12 with-runs: 0 Read / 0 Grep / 0 Bash file access; 24/24 runs answered correctly end-to-end; 0 CLI contamination** (each without-run made exactly one blocked CLI attempt; no output entered the window). Allocation efficiency (share of returned bytes cited): 27.5–89.1%.
+Nine canonical flow prompts, each exercising an arm landed in the dispatch wave (MediatR collection fan-out, Sidekiq `:sym` payload, Celery canvas + task dispatch, Laravel `Dispatchable`/facade job dispatch ×2, Spring listener re-publish, NgRx select incl. destructured-factory selectors, object-registry assign-then-call). **36/36 runs answered correctly end-to-end; 0 CLI contamination** (each without-run made exactly one blocked CLI attempt; no output entered the window). 16/18 with-runs had zero file access; the four exceptions (koel-r1, pretix-r1/r2, warp-drive-r1/r2) touched 0.5–2.7k tok of file bytes — small verification reads, not retrieval failures (no run ever Read a file explore didn't return).
 
 | Repo (arm exercised) | WITH codegraph | WITHOUT |
 |---|---|---|
 | eShop M — MediatR `Publish(domainEvent)` → `INotificationHandler.Handle` | 24s/28s, 2/3 calls, 0 file access | 31s/66s, 11/20 calls, 4/8 Read + 6/10 Bash (+1 Agent) |
 | discourse L — `Jobs.enqueue(:user_email)` → `execute` | 17s/20s, 2/2 calls, 0 file access | 74s/47s, 13/10 calls, 4/5 Read + 8/4 Bash |
 | paperless-ngx M — consume → `consume_file` Celery task | 37s/19s, 5/3 calls, 0 file access | 51s/37s, 10/10 calls, 6/3 Read + 3/6 Bash |
+| pretix L — celery canvas `.si()`/`.s()` element → task | 39s/59s, 6/5 calls, 2.5k/1.8k tok file access | 195s/47s, 17/8 calls, 2/2 Read + 15/6 Bash |
 | firefly-iii M — webhook submit → `SendWebhookMessage::dispatch` → `handle` | 15s/15s, 3/2 calls, 0 file access | 32s/47s, 8/11 calls, 4/5 Read + 3/5 Bash |
+| koel M — `Dispatcher::dispatch(new XJob)` → `handle` | 36s/29s, 4/2 calls, 360 tok / 0 file access | 38s/71s, 12/9 calls, 5/2 Read + 6/6 Bash |
 | halo L — plugin `publishEvent` → core listeners (delegate fan-out) | 25s/31s, 2/2 calls, 0 file access | 26s/176s, 25/12 calls, 11/6 Read + 12/6 Bash (+1 Agent) |
 | platform example-app S — router nav → `selectRouteData` read | 14s/20s, 2/2 calls, 0 file access | 26s/42s, 11/9 calls, 4/2 Read + 6/6 Bash |
+| warp-drive M — `const cmd = COMMANDS[k]` → handler fan-out | 41s/44s, 7/6 calls, 2.7k/0.5k tok file access | 52s/57s, 27/16 calls, 14/10 Read + 12/6 Bash (+1 Agent) |
 
-Medians: with ≈ 2 tool calls / ~21s / $0.16–0.21; without ≈ 10.5 calls / ~44s / $0.19–0.24. Tool calls −70–90%, wall-clock ~1.4–4× faster; tokens processed roughly halved. Residual: ~50% of explore calls were followed by another explore rather than an immediate answer (strict per-call sufficiency metric; small-n) — the one-shot bar isn't met, but no with-run ever fell back to file access.
+Medians: with ≈ 2–3 tool calls / ~28s; without ≈ 11 calls / ~47s. Tool calls −70–90%; tokens processed roughly halved. Allocation efficiency (share of returned bytes cited): 27.5–89.1% — dips on fan-out-heavy answers (halo's 60-listener delegate edge, warp-drive's 10-handler registry return wide envelopes the answer only partially cites). Residual: ~50% of explore calls were followed by another explore rather than an immediate answer (strict per-call sufficiency metric; small-n) — the one-shot bar isn't met, and warp-drive's registry flow ran 5 explores/run against a heavy envelope, the least sufficient shape in the wave.
 
 ### Retrieval A/Bs that are not coverage work
 

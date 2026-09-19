@@ -785,17 +785,17 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 ### 5.36 Agent-eval A/B wave — end-to-end proof of the dispatch arc (2026-10)
 
-`run-all.sh` headless, Sonnet/high, 2 runs/arm, pre-warmed daemons, CLI shim blocking `codegraph` in both arms. One canonical flow prompt per repo, each exercising a just-landed arm. Full table in `dynamic-dispatch-coverage-playbook.md` §6 tail; headline numbers:
+`run-all.sh` headless, Sonnet/high, 2 runs/arm, pre-warmed daemons, CLI shim blocking `codegraph` in both arms. Nine canonical flow prompts across eShop / discourse / paperless-ngx / pretix / firefly-iii / koel / halo / platform example-app / warp-drive, each exercising a just-landed arm. Full table in `dynamic-dispatch-coverage-playbook.md` §6 tail; headline numbers:
 
 | Metric | WITH | WITHOUT |
 |---|---|---|
-| File access (Read/Grep/Bash tokens) | **0 in all 12 runs** | 3.1k–26.1k tok/run (2–11 Reads, 3–12 Bash) |
-| Tool calls | 2–5 (median 2, all `codegraph_explore`) | 8–25 (median ~10.5) |
-| Duration | 14–37s (median ~21s) | 26–176s (median ~44.5s) |
-| Cost | $0.075–$0.327 | $0.126–$0.920 |
-| Tokens processed | 132k–355k | 249k–789k |
-| Answer correctness | 12/12 correct end-to-end | 12/12 correct end-to-end |
+| File access (Read/Grep/Bash tokens) | **0 in 14/18 runs**; 0.5–2.7k tok in the rest | 1.7k–30.3k tok/run (2–14 Reads, 3–15 Bash) |
+| Tool calls | 2–7 (median 2–3, all `codegraph_explore`-led) | 8–27 (median ~11) |
+| Duration | 14–59s (median ~28s) | 26–195s (median ~47s) |
+| Cost | $0.075–$0.398 | $0.126–$0.976 |
+| Tokens processed | 132k–499k | 249k–789k |
+| Answer correctness | 18/18 correct end-to-end | 18/18 correct end-to-end |
 | Contamination | — | 1 blocked CLI attempt per run, 0 returned output |
 | Allocation efficiency | 27.5–89.1% | — |
 
-**Verdict**: the dispatch edges are load-bearing in retrieval, not just graph-complete — every with-run answered with zero file access while every without-run paid a 4–6× tool-call and ~2× wall-clock/tokens tax to reconstruct the same trace. Honest residuals: explore sufficiency ~50% per-call (agents re-explore rather than answer after one call — consistent across all six repos, worth a follow-up look at whether the responses invite follow-ups or the model habitually double-checks); allocation efficiency dips to ~28–50% on fan-out-heavy answers (halo's 60-listener delegate edge returns a wide envelope the answer only partially cites).
+**Verdict**: the dispatch edges are load-bearing in retrieval, not just graph-complete — every with-run answered while every without-run paid a 4–6× tool-call and ~2× wall-clock/tokens tax to reconstruct the same trace. Honest residuals: four with-runs (koel, pretix ×2, warp-drive ×2) did small verification reads after exploring — file access 6–25× lower than their without twins, and never a recall miss (no Read of a file explore didn't return). Explore sufficiency ~50% per-call across the wave — agents re-explore rather than answer after one call; warp-drive's registry flow was the least sufficient shape (5 explores/run, 45–55k tok envelopes, 27–57% residual ctx). Worth a follow-up on whether wide fan-out envelopes should collapse their tails.
