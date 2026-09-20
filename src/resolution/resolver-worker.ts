@@ -38,7 +38,7 @@ let queries: QueryBuilder | null = null;
 let resolver: ReferenceResolver | null = null;
 
 type InMessage =
-  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null }
+  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null; kernelGeneration?: string }
   | { type: 'recycle'; id: number }
   | { type: 'resolve'; id: number; refs: UnresolvedReference[] }
   | { type: 'synth'; id: number; pass: string }
@@ -70,8 +70,11 @@ port.on('message', (msg: InMessage) => {
         // reads. `null` disables the kernel here — the lazy init in
         // resolveListForAdmission must then never fall back to the live
         // path, which initKernelResolver(null) guarantees.
+        // The pool's generation makes every worker of this run share one
+        // in-memory node table over the snapshot instead of filling six.
         resolver.initKernelResolver(
-          msg.kernelDbPath && msg.kernelDbPath !== msg.dbPath ? msg.kernelDbPath : null
+          msg.kernelDbPath && msg.kernelDbPath !== msg.dbPath ? msg.kernelDbPath : null,
+          msg.kernelGeneration
         );
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] worker open: db=${tDb - tOpen}ms init=${Date.now() - tDb}ms`);
         port.postMessage({ type: 'ready' });

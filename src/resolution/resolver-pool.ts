@@ -66,6 +66,7 @@ export function minRefsForPool(): number {
 }
 
 export class ResolverPool {
+  private static poolSeq = 0;
   private workers: PoolWorker[] = [];
   private nextId = 0;
   private waiters = new Map<number, { resolve: (r: ChunkResult) => void; reject: (e: Error) => void }>();
@@ -166,6 +167,10 @@ export class ResolverPool {
   }
 
   private constructor(workerScript: string, dbPath: string, projectRoot: string, size: number, kernelDbPath: string | null) {
+    // One token per pool: the workers' kernel resolvers key their shared
+    // node table on it, so a later pool over a rewritten snapshot at the
+    // same path can never pick up this run's table.
+    const kernelGeneration = kernelDbPath ? `${process.pid}-${Date.now().toString(36)}-${++ResolverPool.poolSeq}` : undefined;
     for (let i = 0; i < size; i++) {
       const worker = new Worker(workerScript);
       let readyResolve!: () => void;
@@ -225,7 +230,7 @@ export class ResolverPool {
           readyReject(this.failed!);
         }
       });
-      worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath });
+      worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration });
       this.workers.push(pw);
     }
   }

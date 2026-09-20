@@ -974,9 +974,9 @@ export class ReferenceResolver {
    * conn on the real -shm races node:sqlite's wal-index state — the two
    * SQLite builds' intra-process locks can't see each other).
    */
-  initKernelResolver(dbPath?: string | null): void {
+  initKernelResolver(dbPath?: string | null, generation?: string): void {
     this.kernelResolverTried = true;
-    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath);
+    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath, generation);
   }
 
   /**
@@ -1030,7 +1030,7 @@ export class ReferenceResolver {
     return this.kernelReaderSnapshot;
   }
 
-  private openKernelResolver(parallelDbPath: string | undefined): KernelResolverLike | null {
+  private openKernelResolver(parallelDbPath: string | undefined, generation?: string): KernelResolverLike | null {
     if (process.env.CODEGRAPH_KERNEL_RESOLVE === '0') return null;
     const kernelModule = getKernel();
     if (!kernelModule?.KernelResolver) return null;
@@ -1062,6 +1062,7 @@ export class ReferenceResolver {
         frameworksActive: this.frameworks.length > 0,
         frameworkNames: this.frameworks.map((f) => f.name),
         ambiguousNameCeiling: resolveAmbiguousNameCeiling(),
+        generation,
       });
     } catch (err) {
       logDebug('Kernel resolver unavailable; staying on the TypeScript path', {

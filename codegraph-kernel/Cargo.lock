@@ -48,6 +48,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "libc",
+ "memchr",
  "napi",
  "napi-build",
  "napi-derive",
