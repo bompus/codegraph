@@ -69,23 +69,6 @@ pub struct Walker<'t> {
     line_count: u32,
 }
 
-/// Binding rows for a Python file from the AST alone, for the generic
-/// extractor's path (the `CODEGRAPH_KERNEL=0` switch, a stack-guard defer).
-/// Nodes, edges and refs are empty; the TS side attaches node ids by name
-/// and line (resolution-binding-model-plan.md §2.4).
-pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("python").ok_or("no python grammar")?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language(python) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path);
-    w.collect_ast_rows(tree.root_node());
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
-    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
-}
-
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let grammar = crate::langs::grammar_for("python").ok_or("no python grammar")?;
     let t0 = std::time::Instant::now();
@@ -658,113 +641,6 @@ impl<'t> Walker<'t> {
     }
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: Python) ---------------
-
-    /// AST-only rows for `bindings_only`: the rules the walk applies through
-    /// `create_node` / `visit_for_calls_and_structure`, without nodes. The TS
-    /// side attaches node ids by name and line. Iterative, so a file too deep
-    /// for the recursive walker still gets its rows.
-    fn collect_ast_rows(&mut self, root: Node<'t>) {
-        // (node, enclosing function/class range or None at module level)
-        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
-        while let Some((node, scope)) = stack.pop() {
-            let kind = node.kind();
-            let mut child_scope = scope;
-            match kind {
-                "function_definition" | "class_definition" => {
-                    let range = (self.line_of(node), node.end_position().row as u32 + 1);
-                    if let Some(name_node) = node.child_by_field_name("name") {
-                        let name = self.text(name_node).to_string();
-                        let line = self.line_of(node);
-                        match scope {
-                            None => {
-                                let storage = if name.starts_with('_') { Some("private") } else { None };
-                                self.push_binding_row(BINDING_DECL, &name, NONE, (1, self.line_count), line, None, true, storage);
-                            }
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    if kind == "function_definition" {
-                        self.emit_param_bindings(node);
-                    }
-                    child_scope = Some(range);
-                }
-                "assignment" => {
-                    if let Some(left) = node.child_by_field_name("left") {
-                        if left.kind() == "identifier" {
-                            let name = self.text(left).to_string();
-                            let line = self.line_of(left);
-                            match scope {
-                                None => {
-                                    let storage = if name.starts_with('_') { Some("private") } else { None };
-                                    self.push_binding_row(BINDING_DECL, &name, NONE, (1, self.line_count), line, None, true, storage);
-                                }
-                                Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                            }
-                        }
-                    }
-                }
-                "import_statement" | "import_from_statement" => {
-                    // emit_import_rows_only scopes by the walk's stack; here the
-                    // scope is the explicit one.
-                    self.import_rows_scoped(node, scope.unwrap_or((1, self.line_count)));
-                    continue;
-                }
-                _ => {}
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(c) = node.named_child(i) {
-                    stack.push((c, child_scope));
-                }
-            }
-        }
-    }
-
-    fn import_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
-        let mut rows: Vec<(String, String, String, Node<'t>)> = Vec::new();
-        if node.kind() == "import_from_statement" {
-            let Some(module_node) = node.child_by_field_name("module_name") else { return };
-            let module_name = self.text(module_node).to_string();
-            for i in 0..node.named_child_count() {
-                let Some(child) = node.named_child(i) else { continue };
-                if child.start_byte() == module_node.start_byte() && child.end_byte() == module_node.end_byte() {
-                    continue;
-                }
-                let (name_node, imported) = match child.kind() {
-                    "aliased_import" => (
-                        child.child_by_field_name("alias").or_else(|| child.child_by_field_name("name")),
-                        child.child_by_field_name("name").map(|n| self.text(n).to_string()),
-                    ),
-                    "dotted_name" => (Some(child), Some(self.text(child).to_string())),
-                    _ => (None, None),
-                };
-                let (Some(name_node), Some(imported)) = (name_node, imported) else { continue };
-                let local = self.text(name_node).rsplit('.').next().unwrap_or("").to_string();
-                if !local.is_empty() {
-                    rows.push((local, module_name.clone(), imported, name_node));
-                }
-            }
-        } else {
-            for i in 0..node.named_child_count() {
-                let Some(child) = node.named_child(i) else { continue };
-                let (dotted, alias) = match child.kind() {
-                    "dotted_name" => (Some(child), None),
-                    "aliased_import" => (
-                        (0..child.named_child_count()).filter_map(|j| child.named_child(j)).find(|c| c.kind() == "dotted_name"),
-                        child.child_by_field_name("alias"),
-                    ),
-                    _ => (None, None),
-                };
-                let Some(dotted) = dotted else { continue };
-                let name = self.text(dotted).to_string();
-                let local = alias.map(|a| self.text(a).to_string()).unwrap_or_else(|| name.split('.').next().unwrap_or(&name).to_string());
-                rows.push((local, name, "*".to_string(), dotted));
-            }
-        }
-        for (local, module, imported, n) in rows {
-            let line = self.line_of(n);
-            self.push_binding_row(BINDING_IMPORT, &local, NONE, scope, line, Some((&module, &imported)), false, None);
-        }
-    }
 
     /// The enclosing function or class node's lines, or None at module scope.
     fn enclosing_scope(&self) -> Option<(u32, u32)> {

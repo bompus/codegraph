@@ -557,8 +557,9 @@ impl<'t> Walker<'t> {
         let callee = value_node
             .child_by_field_name("function")
             .or_else(|| value_node.named_child(0));
+        // `.slice(0, 60)` counts UTF-16 units, not scalar values.
         let callee_text: String = callee
-            .map(|c| self.text(c).chars().take(60).collect())
+            .map(|c| util::slice_utf16(self.text(c), 60).0)
             .unwrap_or_default();
         let signature = format!("= {}(…)", callee_text);
         for i in 0..pattern.named_child_count() {

@@ -427,6 +427,39 @@ pub struct EmitOut {
     pub arena: Vec<u8>,
 }
 
+impl EmitOut {
+    /// The binding rows alone, for `bindings_file`: nodes, edges and refs
+    /// are dropped and every row's node index is cleared — the TS side
+    /// created its own nodes and re-attaches ids by name and line
+    /// (`attachBindingNodeIds`). One emitter, the walk, for both paths; the
+    /// arena keeps its strings, so the rows' references stay valid.
+    pub fn bindings_only(mut self) -> EmitOut {
+        for row in self.bindings.as_chunks_mut::<BINDING_ROW_SIZE>().0 {
+            row[4..8].copy_from_slice(&NONE.to_le_bytes());
+        }
+        let binding_count = (self.bindings.len() / BINDING_ROW_SIZE) as u32;
+        let duration_ms = f64::from_le_bytes(self.meta[28..36].try_into().unwrap_or([0; 8]));
+        let tables = Tables {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            refs: Vec::new(),
+            bindings: self.bindings,
+            node_count: 0,
+            edge_count: 0,
+            ref_count: 0,
+            binding_count,
+        };
+        EmitOut {
+            meta: build_meta(&tables, self.arena.len() as u32, NONE_STR, duration_ms),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            refs: Vec::new(),
+            bindings: tables.bindings,
+            arena: self.arena,
+        }
+    }
+}
+
 /// The wasm extractor's parse-collapse warning (tree-sitter.ts, #1522): a tree
 /// with errors that yielded no symbol at all is indexed but contributes
 /// nothing to the graph. Emitted as the file's only `errors` entry so the CLI

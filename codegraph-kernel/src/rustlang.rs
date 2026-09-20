@@ -214,13 +214,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     })
 }
 
-/// Binding rows only, for a rust file the generic extractor handles after a
-/// stack-guard defer (resolution-binding-model-plan.md §2.4). Rust has no
-/// cheaper AST-only pass — the one walk is the full emitter.
-pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    extract(file_path, source)
-}
-
 impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
@@ -433,6 +426,7 @@ impl<'t> Walker<'t> {
     /// `Foo`. Shapes naming no single type (tuple, `dyn Tr`, pointer,
     /// primitive, fn type…) → None. Mirrored byte-for-byte — change both.
     fn impl_type_name(&self, ty: Option<Node>) -> Option<String> {
+        stack_guard!();
         let ty = ty?;
         match ty.kind() {
             "type_identifier" | "identifier" => Some(self.text(ty).to_string()),

@@ -92,10 +92,10 @@ fn is_scala_builtin(name: &str) -> bool {
     )
 }
 
-/// extractScalaReturnType's simple-name gate (`/^[A-Za-z_]\w*$/`).
+/// extractScalaReturnType's simple-name gate (`/^[A-Za-z_][0-9A-Za-z_]*$/`).
 fn simple_type_name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
 }
 /// extractScalaReturnType's generic-args strip (`/\[[^\]]*\]/g`).
 fn bracket_args_re() -> &'static Regex {
@@ -606,9 +606,10 @@ impl<'t> Walker<'t> {
         match node.kind() {
             "val_definition" | "var_definition" => {
                 let is_val = node.kind() == "val_definition";
+                // `if (!name) return false` — TS declines "" as well as null.
                 let name = match self.val_var_name(node) {
-                    Some(n) => n.to_string(),
-                    None => return false,
+                    Some(n) if !n.is_empty() => n.to_string(),
+                    _ => return false,
                 };
                 // Enclosing-definition NODE-TYPE walk (scala.ts:146-156).
                 let mut enclosing: Option<&'static str> = None;

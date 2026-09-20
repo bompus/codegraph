@@ -67,6 +67,12 @@ const FIXTURE: Record<string, string> = {
     '  const made = Service.create();',
     '  made.run();',
     '  svc.call();',
+    // A receiver that STARTS with a non-ASCII letter: JS's `\b` is ASCII, so
+    // TS's `\büber\b\s*=\s*new` never matches and inference misses — the
+    // kernel's regexes must miss the same way (`(?-u:\b)`), or it would
+    // infer `Service` and resolve `run` at 0.9 where TS lands at 0.7.
+    '  const über = new Service();',
+    '  über.run();',
     '}',
   ].join('\n'),
   'src/other.ts': 'export function unrelated() { return 0; }\n',
@@ -512,6 +518,7 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(runFn, 'svc.run', 'src/main.ts', 'typescript', 'calls', 16);
     seed(runFn, 'made.run', 'src/main.ts', 'typescript', 'calls', 18);
     seed(runFn, 'svc.call', 'src/main.ts', 'typescript', 'calls', 19);
+    seed(runFn, 'über.run', 'src/main.ts', 'typescript', 'calls', 21);
     // Java field receiver — `private K k = new K()` inside class J.
     seed(nodeId('user', 'K.java', 'method'), 'k.mymethod', 'src/K.java', 'java', 'calls', 2);
     // Go factory receiver + two-hop field chain.
@@ -790,6 +797,11 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `svc.call` infers Service then misses `Service::call` — the supertype
     // walk reads live edges, so the kernel punts for TS to decide.
     expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('passthrough');
+    // `über.run`: ASCII word boundaries miss the non-ASCII receiver in both
+    // engines, and the receiver's `local` row makes the bound-receiver claim
+    // exclusive — a refused claim is terminal. With Unicode boundaries the
+    // kernel would have inferred `Service` and resolved `run` at 0.9.
+    expect(at('über.run', 'src/main.ts', 'calls').status).toBe('unresolved');
     // Java field receiver — `private K k = new K()` infers K → `K::mymethod`.
     const km = at('k.mymethod', 'src/K.java', 'calls');
     expect(km.status).toBe('resolved');

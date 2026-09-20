@@ -168,9 +168,9 @@ static RUST_STDLIB_ROOTS: LazyLock<HashSet<&'static str>> =
 static RUST_USE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);").unwrap()
 });
-/// `use` alias tail — `^(.*?)\s+as\s+([A-Za-z_]\w*)$`.
+/// `use` alias tail — `^(.*?)\s+as\s+([A-Za-z_][0-9A-Za-z_]*)$`.
 static RUST_USE_ALIAS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.*?)\s+as\s+([A-Za-z_]\w*)$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(.*?)\s+as\s+([A-Za-z_][0-9A-Za-z_]*)$").unwrap());
 
 /// rustFieldTypeName (name-matcher.ts): reduce a field's declared type text
 /// to the simple name a method call auto-derefs to. Unwraps only the layers
@@ -182,7 +182,7 @@ fn rust_field_type_name(raw: &str) -> Option<String> {
     loop {
         let before = t.clone();
         static REF_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"^&\s*(?:'\w+\s+)?(?:mut\s+)?").unwrap());
+            LazyLock::new(|| Regex::new(r"^&\s*(?:'[0-9A-Za-z_]+\s+)?(?:mut\s+)?").unwrap());
         static PTR_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"^(?:Box|Rc|Arc)\s*<\s*").unwrap());
         static DYN_RE: LazyLock<Regex> =
@@ -200,7 +200,7 @@ fn rust_field_type_name(raw: &str) -> Option<String> {
     let t = TRIM_RE.replace(&t, "").trim().to_string();
     let seg = t.split("::").filter(|s| !s.is_empty()).last()?;
     static IDENT_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap());
+        LazyLock::new(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap());
     static GENERIC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]$").unwrap());
     if !IDENT_RE.is_match(seg)
         || RUST_NON_PROJECT_FIELD_TYPES.contains(seg)
@@ -484,46 +484,46 @@ fn strip_line_comments(line: &str) -> String {
 fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
     let pats: Vec<(&str, u8)> = match language {
         "typescript" | "javascript" | "tsx" | "jsx" | "arkts" => vec![
-            (r"\bR\b\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", 0),
-            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.$]*)", 1),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.$]*)", 1),
         ],
         "python" => vec![
-            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r#"\bR\b\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, 0),
-            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r#"(?-u:\b)R(?-u:\b)\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
         ],
         "java" => vec![
-            (r"\bR\b\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
-            (r"\b([A-Z][A-Za-z0-9_.]*)\s+R\b\s*[=;,:)]", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,:)]", 0),
         ],
         "kotlin" => vec![
-            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
         ],
         "rust" => vec![
             // let r [mut] [: T] = [&][mut] Type::new()/Type{}/Type — a `let`
             // binding with an optional annotation; the capture is the
             // initializer's type, not the annotation's.
             (
-                r"\blet\s+(?:mut\s+)?R\b(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+                r"(?-u:\b)let\s+(?:mut\s+)?R(?-u:\b)(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
                 0,
             ),
             // r : [&][mut] Type — a `let r: T` binding OR a typed parameter
             // (`fn f(r: &T)`, closure `|r: T|`) — the same shape (#1125).
-            (r"\bR\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)", 0),
+            (r"(?-u:\b)R\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)", 0),
         ],
         "go" => vec![
             (
-                r"\bR\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
+                r"(?-u:\b)R\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
                 0,
             ),
-            (r"\bR\b\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{", 0),
-            (r"\bvar\s+R\s+\*?([A-Za-z_][A-Za-z0-9_.]*)", 0),
-            (r"\bR\s+\*?([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{", 0),
+            (r"(?-u:\b)var\s+R\s+\*?([A-Za-z_][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R\s+\*?([A-Z][A-Za-z0-9_.]*)", 0),
         ],
         "php" => vec![
-            (r"\$?R\b\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", 0),
-            (r"\b([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R\b", 0),
+            (r"\$?R(?-u:\b)\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", 0),
+            (r"(?-u:\b)([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R(?-u:\b)", 0),
         ],
         // `struct ops *o` / `ops_t *o` / `ops o` — a declared parameter or
         // local carrying an aggregate or typedef'd type; mirrors the cfnptr
@@ -532,34 +532,34 @@ fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
         // word is validated by the member lookup, so a loose hit is a miss,
         // never a wrong edge.
         "c" => vec![(
-            r"\b(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*\bR\b\s*(?:[,)=;]|\[)",
+            r"(?-u:\b)(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*(?-u:\b)R(?-u:\b)\s*(?:[,)=;]|\[)",
             0,
         )],
         "csharp" => vec![
-            (r"\bR\b\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
-            (r"\b([A-Z][A-Za-z0-9_.]*)\s+R\b\s*[=;,)]", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]", 0),
         ],
         "swift" => vec![
-            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
         ],
-        "ruby" => vec![(r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new\b", 0)],
+        "ruby" => vec![(r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)", 0)],
         "scala" => vec![
-            (r"\bR\b\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)", 0),
-            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
         ],
         "dart" => vec![
-            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r"\b([A-Z][A-Za-z0-9_.]*)\s+R\b\s*[=;,)]", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]", 0),
         ],
         // The annotation arm's lookahead rejects Lua's `receiver:Name(` /
         // `"s"` / `{t}` call forms (#1124) — guard 2 in infer_match_line.
         "lua" | "luau" => vec![
-            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_]*)\.new\b", 0),
-            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(", 0),
-            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 2),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_]*)\.new(?-u:\b)", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(", 0),
+            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 2),
         ],
-        "r" => vec![(r"\bR\b\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new\b", 0)],
+        "r" => vec![(r"(?-u:\b)R(?-u:\b)\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new(?-u:\b)", 0)],
         _ => vec![],
     };
     pats.into_iter()
@@ -573,13 +573,13 @@ fn php_property_type_patterns(r: &str) -> Vec<(String, u8)> {
     vec![
         (
             format!(
-                r"\b(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\${}\b",
+                r"(?-u:\b)(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\${}(?-u:\b)",
                 r
             ),
             0,
         ),
         (
-            format!(r"\$this->{}\b\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", r),
+            format!(r"\$this->{}(?-u:\b)\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", r),
             0,
         ),
     ]
@@ -753,16 +753,16 @@ static BARE_ALIAS_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static IMPL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(pub(\([^)]*\))?\s+)?(unsafe\s+)?impl\b").unwrap()
+    Regex::new(r"^\s*(pub(\([^)]*\))?\s+)?(unsafe\s+)?impl(?-u:\b)").unwrap()
 });
 static IMPL_FOR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\sfor\s").unwrap());
 static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(pub(\([^)]*\))?\s+)?(fn|struct|enum|mod|trait|const|static|type)\b").unwrap()
+    Regex::new(r"^(pub(\([^)]*\))?\s+)?(fn|struct|enum|mod|trait|const|static|type)(?-u:\b)").unwrap()
 });
 static JS_CALL_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[.A-Za-z0-9_$\]\)]\s*$").unwrap());
 static JS_CALL_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$")
+    Regex::new(r"(?-u:\b)(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$")
         .unwrap()
 });
 static CPP_THIS_DOT_RE: LazyLock<Regex> =
@@ -4481,10 +4481,10 @@ impl KernelResolver {
         call_idx: usize,
     ) -> Result<Option<String>> {
         let assign_re = self.cached_regex(&format!(
-            r"\$this->{}\b\s*=\s*\$([A-Za-z0-9_]+)\b",
+            r"\$this->{}(?-u:\b)\s*=\s*\$([A-Za-z0-9_]+)(?-u:\b)",
             escaped_prop
         ))?;
-        let func_re = self.cached_regex(r"\bfunction\b")?;
+        let func_re = self.cached_regex(r"(?-u:\b)function(?-u:\b)")?;
         let mut assign_idx: Option<usize> = None;
         let mut var_name: Option<String> = None;
         for i in (0..=call_idx).rev() {
@@ -4532,7 +4532,7 @@ impl KernelResolver {
     /// take the last `::` segment (or the qualified name when preserving).
     fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Result<Option<String>> {
         let kw = self
-            .cached_regex(r"\b(?:const|volatile|mutable|typename|class|struct)\b")?
+            .cached_regex(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")?
             .replace_all(raw, " ");
         let no_ref = self.cached_regex(r"[&*]+")?.replace_all(&kw, " ");
         let no_gen = self.cached_regex(r"<[^>]*>")?.replace_all(&no_ref, " ");
@@ -4562,7 +4562,7 @@ impl KernelResolver {
     /// remainder: the greedy `\s*` tail can't shrink into a passing position.
     fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Result<Option<String>> {
         let re = self.cached_regex(&format!(
-            r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*\b{}\b\s*",
+            r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*(?-u:\b){}(?-u:\b)\s*",
             escaped_receiver
         ))?;
         for caps in re.captures_iter(line) {
@@ -4598,7 +4598,7 @@ impl KernelResolver {
         }
         let call_idx = (r.line - 1).clamp(0, lines.len() as i64 - 1) as usize;
         let escaped = regex::escape(receiver);
-        let receiver_re = self.cached_regex(&format!(r"\b{}\b", escaped))?;
+        let receiver_re = self.cached_regex(&format!(r"(?-u:\b){}(?-u:\b)", escaped))?;
         for i in (0..=call_idx).rev() {
             let line = &lines[i];
             if line.is_empty() || !receiver_re.is_match(line) {
@@ -4661,7 +4661,7 @@ impl KernelResolver {
         depth: u32,
     ) -> Result<Option<String>> {
         let m = self
-            .cached_regex(&format!(r"\b{}\b\s*=\s*([^;]+)", regex::escape(receiver)))?
+            .cached_regex(&format!(r"(?-u:\b){}(?-u:\b)\s*=\s*([^;]+)", regex::escape(receiver)))?
             .captures(line)
             .and_then(|c| c.get(1).map(|g| g.as_str().trim().to_string()));
         let Some(init) = m else { return Ok(None) };
@@ -5389,7 +5389,7 @@ impl KernelResolver {
         };
         let ty = if binding.kind == "param" {
             self.cached_regex(&format!(
-                r"\b{}\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)",
+                r"(?-u:\b){}\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)",
                 escaped
             ))?
             .captures(&declaration)
@@ -5405,7 +5405,7 @@ impl KernelResolver {
             match sig_ty {
                 Some(t) => Some(t),
                 None => self
-                    .cached_regex(&format!(r"\b{}\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", escaped))?
+                    .cached_regex(&format!(r"(?-u:\b){}\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", escaped))?
                     .captures(&declaration)
                     .and_then(|c| c.get(1).map(|g| g.as_str().to_string())),
             }
@@ -5423,7 +5423,7 @@ impl KernelResolver {
             return Ok(McRes::Null);
         }
         let assign_re = self.cached_regex(
-            r"\b([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(",
+            r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(",
         )?;
         let site_bindings = self.bindings(&site.file_path)?;
         for caps in assign_re.captures_iter(&declaration) {
@@ -5526,7 +5526,7 @@ impl KernelResolver {
             return Ok(McRes::Null);
         };
         let field_re = self.cached_regex(&format!(
-            r"\b{}\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)",
+            r"(?-u:\b){}\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)",
             regex::escape(field)
         ))?;
         let structs: Vec<Rc<KNode>> = prefer_call_site_file(
@@ -5610,21 +5610,21 @@ impl KernelResolver {
         let pats: Vec<(String, bool)> = vec![
             (
                 format!(
-                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
                     field_esc
                 ),
                 true,
             ),
             (
                 format!(
-                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
                     field_esc
                 ),
                 false,
             ),
             (
                 format!(
-                    r"\b{}\b\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    r"(?-u:\b){}(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
                     field_esc
                 ),
                 false,
@@ -5995,7 +5995,7 @@ impl KernelResolver {
                 break;
             }
         }
-        let impl_re = self.cached_regex(r"\bimpl\b")?;
+        let impl_re = self.cached_regex(r"(?-u:\b)impl(?-u:\b)")?;
         // Single-line impls put the opener on the caller's own line
         // (`impl T { type A = X; fn m(&self) { ... } }`).
         if block_idx < 0 {
@@ -6036,7 +6036,7 @@ impl KernelResolver {
         // Forward: `type <assoc> = X;` is a direct member — match at depth 1
         // or on the opener line itself, stop when the block closes.
         let type_re = self.cached_regex(&format!(
-            r"\btype\s+{}\s*=\s*([^;]+);",
+            r"(?-u:\b)type\s+{}\s*=\s*([^;]+);",
             regex::escape(assoc_name)
         ))?;
         depth = 0;
@@ -6105,7 +6105,7 @@ impl KernelResolver {
             &r.file_path,
         );
         let field_re = self.cached_regex(&format!(
-            r"\b{}\s*:\s*([^,{{}}]+)",
+            r"(?-u:\b){}\s*:\s*([^,{{}}]+)",
             regex::escape(field)
         ))?;
         for s in owners {
@@ -6197,21 +6197,21 @@ impl KernelResolver {
         let pats: Vec<(String, bool)> = vec![
             (
                 format!(
-                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
                     field_esc
                 ),
                 true,
             ),
             (
                 format!(
-                    r"\b{}\b\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
                     field_esc
                 ),
                 false,
             ),
             (
                 format!(
-                    r"\b{}\b\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                    r"(?-u:\b){}(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
                     field_esc
                 ),
                 false,
@@ -6355,7 +6355,7 @@ impl KernelResolver {
         let escaped = regex::escape(root);
         let lines = self.read_file(&r.file_path);
         let declares_re = self.cached_regex(&format!(
-            r"\b(?:const|let|var)\s+{}\s*=",
+            r"(?-u:\b)(?:const|let|var)\s+{}\s*=",
             escaped
         ))?;
         let declares_value = lines
@@ -6375,7 +6375,7 @@ impl KernelResolver {
             Some(s) => Some(s),
             None => {
                 let sig_re = self.cached_regex(&format!(
-                    r"\b(?:const|let|var)\s+{}\s*(=[\s\S]+)",
+                    r"(?-u:\b)(?:const|let|var)\s+{}\s*(=[\s\S]+)",
                     escaped
                 ))?;
                 declaration
@@ -6433,7 +6433,7 @@ impl KernelResolver {
             }
             false
         };
-        let awaited_re = self.cached_regex(r"^=\s*await\b")?;
+        let awaited_re = self.cached_regex(r"^=\s*await(?-u:\b)")?;
         let awaited = awaited_re.is_match(&init);
         let mut callee_name: Option<String> = None;
         let mut owner_name: Option<String> = None;
@@ -6569,7 +6569,7 @@ impl KernelResolver {
             return Ok(false);
         };
         let re = self.cached_regex(&format!(
-            r"\b(?:const|let|var)\s+{}\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(",
+            r"(?-u:\b)(?:const|let|var)\s+{}\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(",
             regex::escape(receiver)
         ))?;
         Ok(lines.iter().any(|l| re.is_match(l)))
