@@ -1236,7 +1236,7 @@ fn shared_regex_count() -> usize {
 
 /// A candidate list as one node query returns it — that query's ORDER BY,
 /// as pointers into the run's table. Cloning it is one refcount.
-type NodeList = Arc<[Arc<KNode>]>;
+type NodeList = Arc<Vec<Arc<KNode>>>;
 
 /// The `nodes` and `files` tables of one database, loaded once and indexed
 /// the way the resolver queries them. Resolution never writes nodes, so the
@@ -1257,7 +1257,10 @@ struct NodeTable {
     by_name: HashMap<String, NodeList>,
     /// getNodesByLowerName — `lower(name) = lower(?)`, rowid order. SQLite's
     /// built-in `lower()` folds ASCII only, as `to_ascii_lowercase` does.
-    by_lower: HashMap<String, NodeList>,
+    /// Built on first use: only the fuzzy matcher asks.
+    by_lower: std::sync::OnceLock<HashMap<String, NodeList>>,
+    /// Every node in rowid order — the source for the lazy indexes.
+    nodes: Vec<Arc<KNode>>,
     /// getNodesByQualifiedName — rowid order.
     by_qname: HashMap<String, NodeList>,
     /// getNodesInFile — ORDER BY start_line.
@@ -1279,30 +1282,42 @@ fn push_group(map: &mut HashMap<String, Vec<Arc<KNode>>>, key: &str, n: &Arc<KNo
 }
 
 fn freeze(map: HashMap<String, Vec<Arc<KNode>>>) -> HashMap<String, NodeList> {
-    map.into_iter().map(|(k, v)| (k, NodeList::from(v))).collect()
+    map.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
 }
 
 impl NodeTable {
     fn load(conn: &Connection) -> rusqlite::Result<NodeTable> {
+        let t0 = std::time::Instant::now();
+        let table = Self::load_inner(conn)?;
+        if std::env::var_os("CODEGRAPH_KERNEL_STATS").is_some_and(|v| v == "1") {
+            eprintln!(
+                "[node-table] loaded {} nodes, {} names, {} files in {} ms",
+                table.by_id.len(),
+                table.by_name.len(),
+                table.files.len(),
+                t0.elapsed().as_millis()
+            );
+        }
+        Ok(table)
+    }
+
+    fn load_inner(conn: &Connection) -> rusqlite::Result<NodeTable> {
         let sql = format!("SELECT {NODE_COLS} FROM nodes ORDER BY rowid");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], KNode::from_row)?;
-        let mut by_name: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
-        let mut by_lower: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
-        let mut by_qname: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
-        let mut by_file: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
-        let mut by_id: HashMap<String, Arc<KNode>> = HashMap::new();
+        let count: usize = conn.query_row("SELECT count(*) FROM nodes", [], |r| r.get::<_, i64>(0))? as usize;
+        let mut nodes: Vec<Arc<KNode>> = Vec::with_capacity(count);
+        let mut by_name: HashMap<String, Vec<Arc<KNode>>> = HashMap::with_capacity(count / 2);
+        let mut by_qname: HashMap<String, Vec<Arc<KNode>>> = HashMap::with_capacity(count / 2);
+        let mut by_file: HashMap<String, Vec<Arc<KNode>>> = HashMap::with_capacity(count / 8);
+        let mut by_id: HashMap<String, Arc<KNode>> = HashMap::with_capacity(count);
         for row in rows {
             let n = Arc::new(row?);
             push_group(&mut by_name, &n.name, &n);
-            if n.name.bytes().any(|b| b.is_ascii_uppercase()) {
-                push_group(&mut by_lower, &n.name.to_ascii_lowercase(), &n);
-            } else {
-                push_group(&mut by_lower, &n.name, &n);
-            }
             push_group(&mut by_qname, &n.qualified_name, &n);
             push_group(&mut by_file, &n.file_path, &n);
-            by_id.insert(n.id.clone(), n);
+            by_id.insert(n.id.clone(), n.clone());
+            nodes.push(n);
         }
         for list in by_name.values_mut() {
             list.sort_by(|a, b| {
@@ -1323,18 +1338,34 @@ impl NodeTable {
         }
         let table = NodeTable {
             by_name: freeze(by_name),
-            by_lower: freeze(by_lower),
+            by_lower: std::sync::OnceLock::new(),
+            nodes,
             by_qname: freeze(by_qname),
             by_file: freeze(by_file),
             by_id,
             files,
-            empty: NodeList::from(Vec::new()),
+            empty: Arc::new(Vec::new()),
         };
         if std::env::var_os("CODEGRAPH_NODE_TABLE_VERIFY").is_some_and(|v| v == "1") {
             let mismatches = table.verify(conn)?;
             eprintln!("[node-table] verify: {mismatches} mismatches");
         }
         Ok(table)
+    }
+
+    /// The lowercase-name index, built on first use.
+    fn by_lower(&self) -> &HashMap<String, NodeList> {
+        self.by_lower.get_or_init(|| {
+            let mut map: HashMap<String, Vec<Arc<KNode>>> = HashMap::with_capacity(self.by_name.len());
+            for n in &self.nodes {
+                if n.name.bytes().any(|b| b.is_ascii_uppercase()) {
+                    push_group(&mut map, &n.name.to_ascii_lowercase(), n);
+                } else {
+                    push_group(&mut map, &n.name, n);
+                }
+            }
+            freeze(map)
+        })
     }
 
     /// Re-runs each replaced per-key query and counts id sequences that
@@ -1344,7 +1375,7 @@ impl NodeTable {
     fn verify(&self, conn: &Connection) -> rusqlite::Result<usize> {
         let checks: [(&str, &HashMap<String, NodeList>, &str); 4] = [
             ("name", &self.by_name, "SELECT id FROM nodes WHERE name = ?1 ORDER BY file_path, start_line"),
-            ("lower", &self.by_lower, "SELECT id FROM nodes WHERE lower(name) = lower(?1)"),
+            ("lower", self.by_lower(), "SELECT id FROM nodes WHERE lower(name) = lower(?1)"),
             ("qname", &self.by_qname, "SELECT id FROM nodes WHERE qualified_name = ?1"),
             ("file", &self.by_file, "SELECT id FROM nodes WHERE file_path = ?1 ORDER BY start_line"),
         ];
@@ -2354,7 +2385,7 @@ impl KernelResolver {
     /// ORDER BY (rowid order, same as the TS reader).
     fn nodes_by_lower_name(&self, name: &str) -> Result<NodeList> {
         let t = self.table()?;
-        Ok(t.by_lower.get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone()))
+        Ok(t.by_lower().get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesByQualifiedName — no ORDER BY (TS uses rowid order).
@@ -4521,7 +4552,7 @@ impl KernelResolver {
             // to JS calls — so a c/cpp ref dies here exactly as in TS.
             return Ok(ResolveOutcome::unresolved());
         }
-        let import_hit = self.resolve_via_import(r)?;
+        let import_hit = probe!(r, "resolve_via_import", self.resolve_via_import(r)?);
         let import_hit = self.gate_language(import_hit, r);
         if let Some(c) = import_hit {
             let winner = match self.gate_target_kind(c, r)? {
@@ -7715,7 +7746,7 @@ impl KernelResolver {
         let receiver = &r.reference_name[..dot];
         let method = &r.reference_name[dot + 1..];
         let root = receiver.split('.').next().unwrap_or(receiver);
-        let bindings = probe!(r, "brc:bindings", self.bindings(&r.file_path)?);
+        let bindings = self.bindings(&r.file_path)?;
         let binding = Self::innermost_binding(&bindings, root, Some(r.line)).cloned();
 
         if !is_esm_family(&r.language) {
@@ -7728,11 +7759,11 @@ impl KernelResolver {
                 // descent: an owner means btm owns the ref (or refuses a
                 // deeper receiver); a miss falls through to br:import.
                 if r.language == "java" || r.language == "kotlin" {
-                    match probe!(r, "brc:resolve_bound_type", self.resolve_bound_type(root, r, 0)?) {
+                    match self.resolve_bound_type(root, r, 0)? {
                         BtRes::Owner(_) => {
                             return Ok(if receiver == root {
                                 Self::mc_to_claim(
-                                    probe!(r, "brc:match_bound_type_member", self.match_bound_type_member(root, method, r)?),
+                                    self.match_bound_type_member(root, method, r)?,
                                 )
                             } else {
                                 BoundClaim::Refused
@@ -7742,7 +7773,7 @@ impl KernelResolver {
                         BtRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
                     }
                 }
-                return Ok(match probe!(r, "brc:resolve_via_import_member", self.resolve_via_import_member(r)?) {
+                return Ok(match self.resolve_via_import_member(r)? {
                     ViaImport::Hit(c) => {
                         if matches!(
                             c.node.kind.as_str(),
@@ -7766,7 +7797,7 @@ impl KernelResolver {
             if receiver.contains('.') {
                 return Ok(BoundClaim::Refused);
             }
-            return Ok(match probe!(r, "brc:resolve_via_import_member", self.resolve_via_import_member(r)?) {
+            return Ok(match self.resolve_via_import_member(r)? {
                 ViaImport::Hit(c) => {
                     if matches!(
                         c.node.kind.as_str(),
@@ -7798,7 +7829,7 @@ impl KernelResolver {
             if let Some(nid) = &binding.node_id {
                 site.from_node_id = nid.clone();
             }
-            let Some(ty) = probe!(r, "brc:infer_local_receiver_type", self.infer_local_receiver_type(root, &site, true)?) else {
+            let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else {
                 return Ok(BoundClaim::Refused);
             };
             let type_binding = Self::innermost_binding(
@@ -7815,13 +7846,13 @@ impl KernelResolver {
                     ref2.reference_name = ty.clone();
                     ref2.reference_kind = "references".to_string();
                     let via = if ty.contains('.') {
-                        match probe!(r, "brc:resolve_via_import_member", self.resolve_via_import_member(&ref2)?) {
+                        match self.resolve_via_import_member(&ref2)? {
                             ViaImport::Hit(c) => Some(c),
                             ViaImport::Miss => None,
                             ViaImport::Punt(p) => return Ok(BoundClaim::Punt(p)),
                         }
                     } else {
-                        probe!(r, "brc:resolve_via_import", self.resolve_via_import(&ref2)?)
+                        self.resolve_via_import(&ref2)?
                     };
                     via.map(|c| c.node.id.clone())
                 }
@@ -7840,7 +7871,7 @@ impl KernelResolver {
                     ) =>
                 {
                     Self::mc_to_claim(
-                        probe!(r, "brc:match_ts_field_call_bound", self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?),
+                        self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?,
                     )
                 }
                 _ => BoundClaim::Refused,
@@ -7855,7 +7886,7 @@ impl KernelResolver {
             return Ok(BoundClaim::Refused);
         }
         Ok(Self::mc_to_claim(
-            probe!(r, "brc:esm_factory_tail", self.esm_factory_tail(&binding, root, method, r)?),
+            self.esm_factory_tail(&binding, root, method, r)?,
         ))
     }
 
@@ -8467,7 +8498,7 @@ impl KernelResolver {
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));
         if !pre_pass {
-            if probe!(r, "is_bare_js_call", self.is_bare_js_call(r)?) {
+            if self.is_bare_js_call(r)? {
                 return Ok(ResolveOutcome::passthrough("store-bind"));
             }
             return Ok(ResolveOutcome::unresolved());
@@ -8480,7 +8511,7 @@ impl KernelResolver {
         // only non-bare shape matchFunctionRef resolves; `.`/`this.` forms
         // always miss in it). A miss punts back to that same block.
         if r.reference_kind == "function_ref" {
-            match probe!(r, "resolve_via_import_member", self.resolve_via_import_member(r)?) {
+            match self.resolve_via_import_member(r)? {
                 ViaImport::Punt(reason) => {
                     return Ok(ResolveOutcome::passthrough(reason));
                 }
@@ -8498,7 +8529,7 @@ impl KernelResolver {
                     }
                 }
             }
-            if let Some(c) = probe!(r, "match_function_ref_scoped", self.match_function_ref_scoped(r)?) {
+            if let Some(c) = self.match_function_ref_scoped(r)? {
                 // Frameworks never run on this path — a gated candidate is
                 // discarded to terminal unresolved, exactly like the bare arm.
                 return match self.gate_language(Some(c), r) {
@@ -8521,7 +8552,7 @@ impl KernelResolver {
             return Ok(ResolveOutcome::passthrough("php-inc"));
         }
         // resolvePhpImportedStaticCall — terminal before frameworks.
-        if let Some(outcome) = probe!(r, "resolve_php_imported_static", self.resolve_php_imported_static(r)?) {
+        if let Some(outcome) = self.resolve_php_imported_static(r)? {
             return Ok(outcome);
         }
         // matchBoundReceiverCall — claimed refs are terminal either way.
@@ -8588,7 +8619,7 @@ impl KernelResolver {
         }
 
         let mut cands: Vec<KCand> = Vec::new();
-        match probe!(r, "resolve_via_import_member", self.resolve_via_import_member(r)?) {
+        match self.resolve_via_import_member(r)? {
             ViaImport::Punt(reason) => {
                 return Ok(ResolveOutcome::passthrough(reason));
             }
@@ -8622,14 +8653,14 @@ impl KernelResolver {
         // methodCall's requireReceiverEvidence=false arm. Everything after
         // (exactName/fuzzy, then deferred drains) stays in TS behind the
         // member-tail punt.
-        let name_cand = match probe!(r, "match_by_file_path", self.match_by_file_path(r)?) {
+        let name_cand = match self.match_by_file_path(r)? {
             Some(c) => Some(c),
-            None => match probe!(r, "match_by_qualified_name", self.match_by_qualified_name(r)?) {
+            None => match self.match_by_qualified_name(r)? {
                 Some(c) => Some(c),
-                None => match probe!(r, "match_call_chain", self.match_call_chain(r)?) {
+                None => match self.match_call_chain(r)? {
                     McRes::Hit(c) => Some(c),
                     McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
-                    McRes::Null => match probe!(r, "match_method_call_free", self.match_method_call_free(r)?) {
+                    McRes::Null => match self.match_method_call_free(r)? {
                         McRes::Hit(c) => Some(c),
                         McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
                         McRes::Null => None,
@@ -8639,7 +8670,7 @@ impl KernelResolver {
         };
         let name_result = self.gate_language(name_cand, r);
         if let Some(c) = name_result {
-            if probe!(r, "is_visible_across_files", self.is_visible_across_files(&c.node, r)?) {
+            if self.is_visible_across_files(&c.node, r)? {
                 cands.push(c);
             }
         }
@@ -8827,7 +8858,7 @@ impl KernelResolver {
         // An import hit resolves only when its target is a callable value —
         // function/method, or a Python class (bareClassOk). A gated-out
         // import is discarded, not pooled, before the name matcher runs.
-        let import_cand = self.resolve_via_import(r)?;
+        let import_cand = probe!(r, "resolve_via_import", self.resolve_via_import(r)?);
         let import_result = self.gate_language(import_cand, r);
         if let Some(c) = import_result {
             if c.node.kind == "function"
@@ -9309,7 +9340,7 @@ impl KernelResolver {
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
             // import member descent, filePath and qualifiedName — the rest
             // of the member matchers punt back to the TS spine.
-            return self.resolve_nonbare_ref(r);
+            return probe!(r, "resolve_nonbare_ref", self.resolve_nonbare_ref(r));
         }
         if r.file_path.is_empty() {
             return Ok(ResolveOutcome::passthrough("ineligible:path"));
@@ -9319,7 +9350,7 @@ impl KernelResolver {
         //   builtin/external → CFML/jvm/razor/phpStatic arms all dead →
         //   prefilter → frameworks (TS) → boundReceiver (dead) → chain guard
         //   (dead) → viaImport → name-match → post-checks → first-max.
-        if probe!(r, "builtin", self.is_built_in_or_external(r)) {
+        if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
         }
         // The store-binding matcher stays in TS (source-reading): it can fire
@@ -9350,8 +9381,8 @@ impl KernelResolver {
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
         // names; the claimsReference arm is evaluated natively — a claimed
         // name still reaches the framework resolvers through the TS path.
-        let pre_pass =
-            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?;
+        let pre_pass = probe!(r, "pre-pass",
+            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
         if !pre_pass {
             return Ok(if self.framework_claims(&r.reference_name) {
                 ResolveOutcome::passthrough("claimed")
@@ -9361,7 +9392,7 @@ impl KernelResolver {
         }
 
         let mut cands: Vec<KCand> = Vec::new();
-        let import_cand = self.resolve_via_import(r)?;
+        let import_cand = probe!(r, "resolve_via_import", self.resolve_via_import(r)?);
         let import_result = self.gate_language(import_cand, r);
         let mut final_import: Option<KCand> = None;
         if let Some(c) = import_result {
@@ -9394,7 +9425,7 @@ impl KernelResolver {
             return self.finish(r, winner, None, true);
         }
 
-        let name_cand = self.match_reference_bare(r)?;
+        let name_cand = probe!(r, "match_reference_bare", self.match_reference_bare(r)?);
         let name_result = self.gate_language(name_cand, r);
         if let Some(c) = name_result {
             // Post-pipeline visibility check on the committed target — a
@@ -9546,7 +9577,7 @@ mod tests {
         // getNodesByName: file_path, start_line, then rowid for the n2/n4 tie.
         assert_eq!(ids(&t.by_name["run"]), ["n5", "n2", "n4", "n1"]);
         // getNodesByLowerName: rowid order across both spellings.
-        assert_eq!(ids(&t.by_lower["run"]), ["n1", "n2", "n3", "n4", "n5"]);
+        assert_eq!(ids(&t.by_lower()["run"]), ["n1", "n2", "n3", "n4", "n5"]);
         assert_eq!(ids(&t.by_qname["A::run"]), ["n2", "n4", "n5"]);
         // getNodesInFile: start_line, rowid on ties.
         assert_eq!(ids(&t.by_file["a.ts"]), ["n5", "n2", "n3", "n4"]);
