@@ -198,6 +198,11 @@ export interface KernelResolverConfig {
    *  "every prefilter miss is claimed" behavior. */
   frameworkNames?: string[];
   ambiguousNameCeiling?: number;
+  /** Run token shared by every resolver of one resolution run — the pool hands
+   *  it to its workers. Resolvers with the same dbPath and generation share
+   *  one in-memory node table; without it the table is private to the
+   *  instance. */
+  generation?: string;
 }
 
 /** One pending unresolved_refs row, kernel-read. */

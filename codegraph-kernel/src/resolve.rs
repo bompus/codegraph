@@ -28,9 +28,39 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
+
+/// This thread's own clone of a shared, statically compiled regex. A clone
+/// shares the compiled program but gets its own search-cache pool, and a
+/// pool's owner thread skips the pool's mutex; searched straight from the
+/// static, every pool worker but one runs on the slow path (regex docs,
+/// "Sharing a regex across threads can result in contention" — the case here
+/// exactly: short haystacks, one search after another).
+fn thread_regex(re: &'static Regex) -> Rc<Regex> {
+    thread_local! {
+        static LOCAL: RefCell<HashMap<usize, Rc<Regex>>> = RefCell::new(HashMap::new());
+    }
+    LOCAL.with(|map| {
+        map.borrow_mut()
+            .entry(re as *const Regex as usize)
+            .or_insert_with(|| Rc::new(re.clone()))
+            .clone()
+    })
+}
+
+/// A fixed pattern as this thread's own regex (see thread_regex for why
+/// per thread), compiled on the thread's first use of the site.
+macro_rules! re {
+    ($pattern:expr) => {{
+        thread_local! {
+            static RE: Rc<Regex> = Rc::new(Regex::new($pattern).unwrap());
+        }
+        RE.with(Rc::clone)
+    }};
+}
 
 // ---------------------------------------------------------------------------
 // Tables — ports of the TS sets in src/resolution/{index,name-matcher,
@@ -187,9 +217,9 @@ fn rust_field_type_name(raw: &str) -> Option<String> {
             LazyLock::new(|| Regex::new(r"^(?:Box|Rc|Arc)\s*<\s*").unwrap());
         static DYN_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"^(?:dyn|impl)\s+").unwrap());
-        t = REF_RE.replace(&t, "").into_owned();
-        t = PTR_RE.replace(&t, "").into_owned();
-        t = DYN_RE.replace(&t, "").into_owned();
+        t = thread_regex(&REF_RE).replace(&t, "").into_owned();
+        t = thread_regex(&PTR_RE).replace(&t, "").into_owned();
+        t = thread_regex(&DYN_RE).replace(&t, "").into_owned();
         if t == before {
             break;
         }
@@ -197,14 +227,14 @@ fn rust_field_type_name(raw: &str) -> Option<String> {
     // Drop generic args, closing `>`s of unwrapped pointers, and trait-object
     // bounds (`dyn Source + Send`); keep the last path segment.
     static TRIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[<>+].*$").unwrap());
-    let t = TRIM_RE.replace(&t, "").trim().to_string();
+    let t = thread_regex(&TRIM_RE).replace(&t, "").trim().to_string();
     let seg = t.split("::").filter(|s| !s.is_empty()).last()?;
     static IDENT_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap());
     static GENERIC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]$").unwrap());
-    if !IDENT_RE.is_match(seg)
+    if !thread_regex(&IDENT_RE).is_match(seg)
         || RUST_NON_PROJECT_FIELD_TYPES.contains(seg)
-        || GENERIC_RE.is_match(seg)
+        || thread_regex(&GENERIC_RE).is_match(seg)
     {
         return None;
     }
@@ -264,10 +294,10 @@ fn collect_rust_use_bindings(content: &str) -> std::collections::HashMap<String,
 
     let mut out = std::collections::HashMap::new();
     static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-    for m in RUST_USE_RE.captures_iter(content) {
-        let spec = WS_RE.replace_all(&m[1], " ");
+    for m in thread_regex(&RUST_USE_RE).captures_iter(content) {
+        let spec = thread_regex(&WS_RE).replace_all(&m[1], " ");
         for flat in expand(&spec) {
-            let alias = RUST_USE_ALIAS_RE.captures(&flat);
+            let alias = thread_regex(&RUST_USE_ALIAS_RE).captures(&flat);
             let raw_path = alias
                 .as_ref()
                 .map(|a| a[1].trim())
@@ -297,23 +327,23 @@ fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "cics" => name.starts_with("cics-transid:"),
         "django" => name == "_iterable_class" || name.ends_with(".urls"),
         "drupal" => {
-            name.starts_with("hook_") || name.contains('\\') || DRUPAL_CLAIM_RE.is_match(name)
+            name.starts_with("hook_") || name.contains('\\') || thread_regex(&DRUPAL_CLAIM_RE).is_match(name)
         }
-        "expo-router" => EXPO_NAV_RE.is_match(name),
-        "laravel" => LARAVEL_CLAIM_RE.is_match(name),
-        "nextjs" => NEXT_NAV_RE.is_match(name),
-        "play" => PLAY_CLAIM_RE.is_match(name),
+        "expo-router" => thread_regex(&EXPO_NAV_RE).is_match(name),
+        "laravel" => thread_regex(&LARAVEL_CLAIM_RE).is_match(name),
+        "nextjs" => thread_regex(&NEXT_NAV_RE).is_match(name),
+        "play" => thread_regex(&PLAY_CLAIM_RE).is_match(name),
         // react-native-bridge's claimsReference returns false — JS-visible
         // method names reach the resolver through the name-exists arm.
         "react-native-bridge" => false,
-        "react-router" => RR_NAV_RE.is_match(name),
-        "rails" => RAILS_CLAIM_RE.is_match(name),
+        "react-router" => thread_regex(&RR_NAV_RE).is_match(name),
+        "rails" => thread_regex(&RAILS_CLAIM_RE).is_match(name),
         "spring" => name.ends_with(":prefix"),
         "sveltekit-router" => matches!(name, "goto" | "redirect"),
         "swift-objc-bridge" => name.contains(':'),
-        "tanstack-router" => TANSTACK_NAV_RE.is_match(name),
-        "terraform" => TERRA_CLAIM_RE.is_match(name),
-        "vue-router" => VUE_NAV_RE.is_match(name),
+        "tanstack-router" => thread_regex(&TANSTACK_NAV_RE).is_match(name),
+        "terraform" => thread_regex(&TERRA_CLAIM_RE).is_match(name),
+        "vue-router" => thread_regex(&VUE_NAV_RE).is_match(name),
         "aspnet" | "astro" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "nestjs" | "react" | "rust" | "svelte" | "swiftui" | "uikit"
         | "vapor" | "vue" => false,
@@ -379,9 +409,9 @@ fn is_binding_receiver_call(r: &ResolveRefIn) -> bool {
                 r.language.as_str(),
                 "python" | "go" | "java" | "kotlin" | "php" | "c" | "cpp"
             ))
-        && BOUND_RECEIVER_RE.is_match(&r.reference_name)
+        && thread_regex(&BOUND_RECEIVER_RE).is_match(&r.reference_name)
         && !r.reference_name.contains("()")
-        && !BOUND_ROOT_RE.is_match(&r.reference_name)
+        && !thread_regex(&BOUND_ROOT_RE).is_match(&r.reference_name)
 }
 
 /// isUnresolvedJsMemberCall (name-matcher.ts): an untyped 2+-level member
@@ -392,17 +422,17 @@ fn is_unresolved_js_member_call(r: &ResolveRefIn) -> bool {
             r.language.as_str(),
             "typescript" | "tsx" | "javascript" | "jsx"
         )
-        && !JS_MEMBER_ROOT_RE.is_match(&r.reference_name)
-        && JS_MEMBER_RE.is_match(&r.reference_name)
+        && !thread_regex(&JS_MEMBER_ROOT_RE).is_match(&r.reference_name)
+        && thread_regex(&JS_MEMBER_RE).is_match(&r.reference_name)
 }
 
 /// preferCallSiteFile (name-matcher.ts): same-file candidates first,
 /// preserving order; a no-op under <2 candidates or no same-file member.
-fn prefer_call_site_file(nodes: Vec<Rc<KNode>>, call_site_file: &str) -> Vec<Rc<KNode>> {
+fn prefer_call_site_file(nodes: Vec<Arc<KNode>>, call_site_file: &str) -> Vec<Arc<KNode>> {
     if nodes.len() < 2 || !nodes.iter().any(|n| n.file_path == call_site_file) {
         return nodes;
     }
-    let (mut same, other): (Vec<Rc<KNode>>, Vec<Rc<KNode>>) = nodes
+    let (mut same, other): (Vec<Arc<KNode>>, Vec<Arc<KNode>>) = nodes
         .into_iter()
         .partition(|n| n.file_path == call_site_file);
     same.extend(other);
@@ -481,108 +511,444 @@ fn strip_line_comments(line: &str) -> String {
 /// cannot absorb `[,)]`/EOL, and shrinking it can never satisfy the suffix
 /// either). Languages outside the switch (cpp, pascal, cfml — the latter two
 /// unrouted) get no patterns, same as the TS `default: return []`.
-fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
-    let pats: Vec<(&str, u8)> = match language {
-        "typescript" | "javascript" | "tsx" | "jsx" | "arkts" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", 0),
-            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.$]*)", 1),
+/// JS `\w` / the crate's `(?-u:\b)` word class.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Whether `(?-u:\b)` holds at byte offset `at` of `hay` (a non-ASCII byte
+/// is non-word, as in the ASCII boundary).
+fn word_boundary_at(hay: &str, at: usize) -> bool {
+    let bytes = hay.as_bytes();
+    let before = at > 0 && is_word_byte(bytes[at - 1]);
+    let after = at < bytes.len() && is_word_byte(bytes[at]);
+    before != after
+}
+
+/// Every byte offset of `needle` in `hay` at or after `from`, overlapping
+/// occurrences included (a regex examines every start position too). A
+/// whole file gets memchr's SIMD substring search (`str::find` is the
+/// two-way algorithm, several times slower there); a line keeps `str::find`,
+/// since building the searcher costs more than scanning 80 bytes and the
+/// receiver scans call this once per line.
+fn occurrences<'a>(hay: &'a str, needle: &'a str, from: usize) -> impl Iterator<Item = usize> + 'a {
+    let step = needle.chars().next().map_or(1, char::len_utf8);
+    let finder = (hay.len() >= 512).then(|| memchr::memmem::Finder::new(needle));
+    let mut pos = from;
+    std::iter::from_fn(move || {
+        if needle.is_empty() || pos > hay.len() {
+            return None;
+        }
+        let rel = match &finder {
+            Some(f) => f.find(&hay.as_bytes()[pos..])?,
+            None => hay[pos..].find(needle)?,
+        };
+        let at = pos + rel;
+        pos = at + step;
+        Some(at)
+    })
+}
+
+/// `(?-u:\b)word(?-u:\b)` anywhere in `hay`.
+fn has_word(hay: &str, word: &str) -> bool {
+    occurrences(hay, word, 0)
+        .any(|at| word_boundary_at(hay, at) && word_boundary_at(hay, at + word.len()))
+}
+
+/// A pattern of the form `HEAD word TAIL`, kept apart so the word is found
+/// as a literal and only the fixed parts are regexes, compiled once for the
+/// process. The resolver used to format the word into the pattern and
+/// compile the result per reference — tens of thousands of regexes per pool
+/// worker on a large corpus, about 2 GB, plus the compile time.
+///
+/// With a `head`, the search runs on the head — its literal (`const`,
+/// `type`, `$this->`) is what the regex engine prefilters on, where a short
+/// receiver like `e` occurs in every line — and the word must start where
+/// the head match ends; `tail` is anchored at its start (`^…`) and matched
+/// against the text after the word. Without a head the word is found as a
+/// literal. A `(?-u:\b)` that sat directly against the word is
+/// `bound_before` / `bound_after`, checked on the whole line (an anchor at a
+/// slice edge would see the wrong neighbour). Matches are taken in order and
+/// never overlap, the sequence `captures_iter` produces for these shapes:
+/// every head ends in whitespace, a literal, or an identifier the word's own
+/// boundary keeps apart, so a head's leftmost match is the one the whole
+/// pattern would use.
+struct Affix {
+    head: Option<Regex>,
+    tail: Option<Regex>,
+    bound_before: bool,
+    bound_after: bool,
+    /// Capture group 1 lives in `head` (else in `tail`).
+    group_in_head: bool,
+    /// The bytes the tail can start with after optional whitespace, when
+    /// known — a lookahead cheaper than the regex for a headless pattern
+    /// whose word is common (`e` in minified code occurs a thousand times a
+    /// line; `e.target` fails on `.` without a regex call).
+    tail_lead: Option<&'static [u8]>,
+}
+
+/// One match: where it ends in the line, and group 1's span when any.
+struct AffixMatch {
+    end: usize,
+    group: Option<(usize, usize)>,
+}
+
+impl Affix {
+    fn new(head: &str, tail: &str, bound_before: bool, bound_after: bool, group_in_head: bool) -> Affix {
+        let compile = |p: String| Regex::new(&p).unwrap_or_else(|e| panic!("affix pattern {p:?}: {e}"));
+        Affix {
+            head: (!head.is_empty()).then(|| compile(head.to_string())),
+            tail: (!tail.is_empty()).then(|| compile(format!("^{tail}"))),
+            bound_before,
+            bound_after,
+            group_in_head,
+            tail_lead: None,
+        }
+    }
+
+    /// The tail's possible first bytes after optional whitespace (see
+    /// `tail_lead`); the equivalence tests keep a hint honest.
+    fn lead(mut self, bytes: &'static [u8]) -> Affix {
+        self.tail_lead = Some(bytes);
+        self
+    }
+
+    /// This thread's clones of the head and tail, fetched once per line set.
+    fn local(&'static self) -> (Option<Rc<Regex>>, Option<Rc<Regex>>) {
+        (self.head.as_ref().map(thread_regex), self.tail.as_ref().map(thread_regex))
+    }
+
+    /// The first match at or after `from`.
+    fn find_from(&'static self, line: &str, word: &str, from: usize) -> Option<AffixMatch> {
+        let (head, tail) = self.local();
+        self.find_with(line, word, from, head.as_deref(), tail.as_deref())
+    }
+
+    fn find_with(&self, line: &str, word: &str, from: usize, head: Option<&Regex>, tail: Option<&Regex>) -> Option<AffixMatch> {
+        match head {
+            Some(head) => {
+                // A miss on the whole line is the common case and the plain
+                // search answers it from the prefilter alone.
+                if from == 0 && !head.is_match(line) {
+                    return None;
+                }
+                let mut pos = from;
+                while pos <= line.len() {
+                    let caps = head.captures_at(line, pos)?;
+                    let m0 = caps.get(0)?;
+                    let at = m0.end();
+                    if line[at..].starts_with(word) {
+                        let group = self.group_in_head.then(|| caps.get(1).map(|g| (g.start(), g.end()))).flatten();
+                        if let Some(m) = self.finish_at(line, word, at, group, tail) {
+                            return Some(m);
+                        }
+                    }
+                    pos = m0.end().max(m0.start() + 1);
+                }
+                None
+            }
+            None => occurrences(line, word, from).find_map(|at| self.finish_at(line, word, at, None, tail)),
+        }
+    }
+
+    /// Whether any line matches — one regex lookup for the whole set.
+    fn any_line<'l>(&'static self, lines: impl IntoIterator<Item = &'l str>, word: &str) -> bool {
+        let (head, tail) = self.local();
+        lines.into_iter().any(|l| self.find_with(l, word, 0, head.as_deref(), tail.as_deref()).is_some())
+    }
+
+    /// The match for a word at `at`, once the head (if any) has matched up
+    /// to it: the word's boundaries, then the tail.
+    fn finish_at(
+        &self,
+        line: &str,
+        word: &str,
+        at: usize,
+        group: Option<(usize, usize)>,
+        tail: Option<&Regex>,
+    ) -> Option<AffixMatch> {
+        let word_end = at + word.len();
+        if (self.bound_before && !word_boundary_at(line, at))
+            || (self.bound_after && !word_boundary_at(line, word_end))
+        {
+            return None;
+        }
+        if let Some(lead) = self.tail_lead {
+            let next = line[word_end..].trim_start().bytes().next();
+            if !next.is_some_and(|b| lead.contains(&b)) {
+                return None;
+            }
+        }
+        let mut group = group;
+        let mut end = word_end;
+        if let Some(tail) = tail {
+            let caps = tail.captures(&line[word_end..])?;
+            end = word_end + caps.get(0).map_or(0, |m| m.end());
+            if !self.group_in_head {
+                group = caps.get(1).map(|g| (word_end + g.start(), word_end + g.end()));
+            }
+        }
+        Some(AffixMatch { end, group })
+    }
+
+    fn is_match(&'static self, line: &str, word: &str) -> bool {
+        self.find_from(line, word, 0).is_some()
+    }
+
+    /// Group 1 of the first match.
+    fn capture<'l>(&'static self, line: &'l str, word: &str) -> Option<&'l str> {
+        self.find_from(line, word, 0)?.group.map(|(s, e)| &line[s..e])
+    }
+}
+
+/// A receiver-type pattern (name-matcher.ts buildLocalReceiverTypePatterns)
+/// with its guard (see infer_match_line).
+struct ReceiverPattern {
+    affix: Affix,
+    guard: u8,
+}
+
+fn rp(head: &str, tail: &str, bound_before: bool, bound_after: bool, group_in_head: bool, guard: u8) -> ReceiverPattern {
+    ReceiverPattern { affix: Affix::new(head, tail, bound_before, bound_after, group_in_head), guard }
+}
+
+/// buildLocalReceiverTypePatterns, split around the receiver (`R` in the
+/// TypeScript source): the receiver's own `\b`s become the bound flags and
+/// every other anchor stays in the head or tail.
+static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<ReceiverPattern>>> = LazyLock::new(|| {
+    // `\bR\b TAIL` — the common shape; `lead` is the tail's first byte set.
+    let both = |tail: &str, lead: &'static [u8], guard: u8| {
+        ReceiverPattern { affix: Affix::new("", tail, true, true, false).lead(lead), guard }
+    };
+    let mut m: HashMap<&'static str, Vec<ReceiverPattern>> = HashMap::new();
+    for lang in ["typescript", "javascript", "tsx", "jsx", "arkts"] {
+        m.insert(
+            lang,
+            vec![
+                both(r"\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", b"=", 0),
+                both(r"\s*:\s*([A-Z][A-Za-z0-9_.$]*)", b":", 1),
+            ],
+        );
+    }
+    m.insert(
+        "python",
+        vec![
+            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            both(r#"\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, b":", 0),
+            both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
-        "python" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r#"(?-u:\b)R(?-u:\b)\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, 0),
-            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+    );
+    m.insert(
+        "java",
+        vec![
+            both(r"\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", b"=", 0),
+            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+", r"\s*[=;,:)]", false, true, true, 0),
         ],
-        "java" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
-            (r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,:)]", 0),
+    );
+    m.insert(
+        "kotlin",
+        vec![
+            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
-        "kotlin" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
-        ],
-        "rust" => vec![
+    );
+    m.insert(
+        "rust",
+        vec![
             // let r [mut] [: T] = [&][mut] Type::new()/Type{}/Type — a `let`
             // binding with an optional annotation; the capture is the
             // initializer's type, not the annotation's.
-            (
-                r"(?-u:\b)let\s+(?:mut\s+)?R(?-u:\b)(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+            rp(
+                r"(?-u:\b)let\s+(?:mut\s+)?",
+                r"(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+                false,
+                true,
+                false,
                 0,
             ),
             // r : [&][mut] Type — a `let r: T` binding OR a typed parameter
             // (`fn f(r: &T)`, closure `|r: T|`) — the same shape (#1125).
-            (r"(?-u:\b)R\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)", 0),
+            ReceiverPattern { affix: Affix::new("", r"\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)", true, false, false).lead(b":"), guard: 0 },
         ],
-        "go" => vec![
-            (
-                r"(?-u:\b)R\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
-                0,
-            ),
-            (r"(?-u:\b)R(?-u:\b)\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{", 0),
-            (r"(?-u:\b)var\s+R\s+\*?([A-Za-z_][A-Za-z0-9_.]*)", 0),
-            (r"(?-u:\b)R\s+\*?([A-Z][A-Za-z0-9_.]*)", 0),
+    );
+    m.insert(
+        "go",
+        vec![
+            rp("", r"\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)", true, false, false, 0),
+            both(r"\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{", b":", 0),
+            rp(r"(?-u:\b)var\s+", r"\s+\*?([A-Za-z_][A-Za-z0-9_.]*)", false, false, false, 0),
+            rp("", r"\s+\*?([A-Z][A-Za-z0-9_.]*)", true, false, false, 0),
         ],
-        "php" => vec![
-            (r"\$?R(?-u:\b)\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", 0),
-            (r"(?-u:\b)([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R(?-u:\b)", 0),
+    );
+    m.insert(
+        "php",
+        vec![
+            // `\$?R\b …` — the optional `$` never decides whether a line matches.
+            rp("", r"\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", false, true, false, 0),
+            rp(r"(?-u:\b)([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$", "", false, true, true, 0),
         ],
-        // `struct ops *o` / `ops_t *o` / `ops o` — a declared parameter or
-        // local carrying an aggregate or typedef'd type; mirrors the cfnptr
-        // receiver-decl scan (`recv_decl_types`). Single `*` only — a
-        // pointer-to-pointer receiver can't be called through. The captured
-        // word is validated by the member lookup, so a loose hit is a miss,
-        // never a wrong edge.
-        "c" => vec![(
-            r"(?-u:\b)(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*(?-u:\b)R(?-u:\b)\s*(?:[,)=;]|\[)",
+    );
+    // `struct ops *o` / `ops_t *o` / `ops o` — a declared parameter or
+    // local carrying an aggregate or typedef'd type; mirrors the cfnptr
+    // receiver-decl scan (`recv_decl_types`). Single `*` only — a
+    // pointer-to-pointer receiver can't be called through. The captured
+    // word is validated by the member lookup, so a loose hit is a miss,
+    // never a wrong edge.
+    m.insert(
+        "c",
+        vec![rp(
+            r"(?-u:\b)(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*",
+            r"\s*(?:[,)=;]|\[)",
+            true,
+            true,
+            true,
             0,
         )],
-        "csharp" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
-            (r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]", 0),
+    );
+    m.insert(
+        "csharp",
+        vec![
+            both(r"\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", b"=", 0),
+            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+", r"\s*[=;,)]", false, true, true, 0),
         ],
-        "swift" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+    );
+    m.insert(
+        "swift",
+        vec![
+            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
-        "ruby" => vec![(r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)", 0)],
-        "scala" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)", 0),
-            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+    );
+    m.insert("ruby", vec![both(r"\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)", b"=", 0)]);
+    m.insert(
+        "scala",
+        vec![
+            both(r"\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)", b"=", 0),
+            both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
-        "dart" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
-            (r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]", 0),
+    );
+    m.insert(
+        "dart",
+        vec![
+            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+", r"\s*[=;,)]", false, true, true, 0),
         ],
-        // The annotation arm's lookahead rejects Lua's `receiver:Name(` /
-        // `"s"` / `{t}` call forms (#1124) — guard 2 in infer_match_line.
-        "lua" | "luau" => vec![
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_]*)\.new(?-u:\b)", 0),
-            (r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(", 0),
-            (r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)", 2),
-        ],
-        "r" => vec![(r"(?-u:\b)R(?-u:\b)\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new(?-u:\b)", 0)],
-        _ => vec![],
-    };
-    pats.into_iter()
-        .map(|(p, g)| (p.replace('R', r), g))
-        .collect()
+    );
+    // The annotation arm's lookahead rejects Lua's `receiver:Name(` /
+    // `"s"` / `{t}` call forms (#1124) — guard 2 in infer_match_line.
+    for lang in ["lua", "luau"] {
+        m.insert(
+            lang,
+            vec![
+                both(r"\s*=\s*([A-Z][A-Za-z0-9_]*)\.new(?-u:\b)", b"=", 0),
+                both(r"\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(", b"=", 0),
+                both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 2),
+            ],
+        );
+    }
+    m.insert("r", vec![both(r"\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new(?-u:\b)", b"<=", 0)]);
+    m
+});
+
+fn local_receiver_type_patterns(language: &str) -> &'static [ReceiverPattern] {
+    RECEIVER_TYPE_PATTERNS.get(language).map_or(&[], Vec::as_slice)
 }
 
 /// buildPhpPropertyTypePatterns — only property-shaped declarations qualify
 /// for `$this->prop` receivers (typed/promoted property, `new` assignment).
-fn php_property_type_patterns(r: &str) -> Vec<(String, u8)> {
+static PHP_PROPERTY_TYPE_PATTERNS: LazyLock<Vec<ReceiverPattern>> = LazyLock::new(|| {
     vec![
-        (
-            format!(
-                r"(?-u:\b)(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\${}(?-u:\b)",
-                r
-            ),
+        rp(
+            r"(?-u:\b)(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$",
+            "",
+            false,
+            true,
+            true,
             0,
         ),
-        (
-            format!(r"\$this->{}(?-u:\b)\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", r),
-            0,
-        ),
+        rp(r"\$this->", r"\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", false, true, false, 0),
     ]
+});
+
+/// The lookahead tails of infer_match_line's guards 1 and 2.
+static GUARD1_TAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:<[^>]*>)?\s*[\[|&]").unwrap());
+static GUARD2_TAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^\s*[({"'\[]"#).unwrap());
+/// `^NAME\s*[(<]` / `(^|[^A-Za-z0-9_])NAME\s*\(` after the literal name.
+static BARE_CALL_OPENER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*[(<]").unwrap());
+static CPP_CALL_OPENER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\(").unwrap());
+
+/// The TypeScript class-field type shapes matchTsFieldCall reads off an
+/// owner's body — `field?: Type`, `field: typeof Ns` (the bool: a value
+/// type), `field = new Type` — around the literal field name.
+static TS_FIELD_TYPE_PATTERNS: LazyLock<[(Affix, bool); 3]> = LazyLock::new(|| {
+    [
+        (
+            Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:"),
+            true,
+        ),
+        (
+            Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:"),
+            false,
+        ),
+        (Affix::new("", r"\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"="), false),
+    ]
+});
+
+/// `\bconst\s*(?:\{[^{}]*\bNAME\b|NAME\b)` over a file's text — a `const`
+/// destructure naming NAME, or `const NAME` itself — with the ASCII word
+/// boundaries JavaScript's `\b` has. One forward pass over the `const`
+/// sites: the file is scanned once per call whatever the name, where a walk
+/// back from every occurrence of a short name was quadratic.
+fn js_const_binds(text: &str, name: &str) -> bool {
+    static CONST: LazyLock<memchr::memmem::Finder<'static>> = LazyLock::new(|| memchr::memmem::Finder::new("const"));
+    let bytes = text.as_bytes();
+    // One searcher for the name: a minified bundle has thousands of
+    // `const{…}` sites, each a short brace-free run to search.
+    let name_finder = memchr::memmem::Finder::new(name);
+    let name_step = name.chars().next().map_or(1, char::len_utf8);
+    let word_in_run = |run: &str| {
+        let mut pos = 0;
+        while pos <= run.len() {
+            let Some(at) = name_finder.find(&run.as_bytes()[pos..]).map(|i| pos + i) else { break };
+            if word_boundary_at(run, at) && word_boundary_at(run, at + name.len()) {
+                return true;
+            }
+            pos = at + name_step;
+        }
+        false
+    };
+    let mut from = 0;
+    while let Some(at) = CONST.find(&bytes[from..]).map(|i| from + i) {
+        from = at + 5;
+        if !word_boundary_at(text, at) {
+            continue;
+        }
+        // `\s*`
+        let mut p = at + 5;
+        while let Some(c) = text[p..].chars().next() {
+            if !c.is_whitespace() {
+                break;
+            }
+            p += c.len_utf8();
+        }
+        // `const\s*NAME\b`
+        if text[p..].starts_with(name) && word_boundary_at(text, p + name.len()) {
+            return true;
+        }
+        // `const\s*\{[^{}]*\bNAME\b` — the brace-free run after `{`; its
+        // edges are braces or the end of text, non-word like a slice edge.
+        if bytes.get(p) == Some(&b'{') {
+            let run_start = p + 1;
+            let run_len = bytes[run_start..]
+                .iter()
+                .position(|&b| b == b'{' || b == b'}')
+                .unwrap_or(bytes.len() - run_start);
+            if word_in_run(&text[run_start..run_start + run_len]) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// SUPERTYPE_TARGET_KINDS (resolution/types.ts).
@@ -800,28 +1166,235 @@ struct KNode {
 }
 
 impl KNode {
+    /// A row selected with NODE_COLS, in that column order (positional reads:
+    /// a by-name read scans the column list per column per row).
     fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        let raw_tps: Option<String> = row.get("type_parameters")?;
-        let raw_decs: Option<String> = row.get("decorators")?;
+        let raw_tps: Option<String> = row.get(14)?;
+        let raw_decs: Option<String> = row.get(15)?;
         Ok(KNode {
-            id: row.get("id")?,
-            kind: row.get("kind")?,
-            name: row.get("name")?,
-            qualified_name: row.get("qualified_name")?,
-            file_path: row.get("file_path")?,
-            language: row.get("language")?,
-            start_line: row.get("start_line")?,
-            end_line: row.get("end_line")?,
-            start_column: row.get("start_column")?,
-            end_column: row.get("end_column")?,
-            signature: row.get("signature")?,
-            visibility: row.get("visibility")?,
-            is_exported: row.get::<_, i64>("is_exported")? != 0,
-            return_type: row.get("return_type")?,
+            id: row.get(0)?,
+            kind: row.get(1)?,
+            name: row.get(2)?,
+            qualified_name: row.get(3)?,
+            file_path: row.get(4)?,
+            language: row.get(5)?,
+            start_line: row.get(6)?,
+            end_line: row.get(7)?,
+            start_column: row.get(8)?,
+            end_column: row.get(9)?,
+            signature: row.get(10)?,
+            visibility: row.get(11)?,
+            is_exported: row.get::<_, i64>(12)? != 0,
+            return_type: row.get(13)?,
             type_parameters: raw_tps.as_deref().and_then(parse_json_string_array),
             decorators: raw_decs.as_deref().and_then(parse_json_string_array),
         })
     }
+}
+
+/// Compiled patterns for the one pattern still built per reference — the
+/// C++ declarator regex, whose greedy type-capture prefix has no split form
+/// (`cpp_declarator_match`). Shared by every resolver in the process and
+/// FIFO-bounded: a per-resolver map compiled the same pattern once per pool
+/// worker and grew without bound (the receiver-type patterns, since split
+/// into `Affix` forms, once put ~50k regexes, about 2 GB, in six workers).
+/// An evicted pattern just recompiles.
+struct RegexCache {
+    map: HashMap<String, Arc<Regex>>,
+    order: VecDeque<String>,
+}
+
+const REGEX_CACHE_CAP: usize = 4096;
+
+static REGEX_CACHE: LazyLock<Mutex<RegexCache>> =
+    LazyLock::new(|| Mutex::new(RegexCache { map: HashMap::new(), order: VecDeque::new() }));
+
+fn shared_regex(pattern: &str) -> Result<Arc<Regex>> {
+    if let Some(re) = REGEX_CACHE.lock().unwrap_or_else(|p| p.into_inner()).map.get(pattern) {
+        return Ok(re.clone());
+    }
+    // Compiled outside the lock: a compile is the expensive part, and two
+    // workers racing on one pattern just insert the same thing twice.
+    let re = Arc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
+    let mut cache = REGEX_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(existing) = cache.map.get(pattern) {
+        return Ok(existing.clone());
+    }
+    if cache.map.len() >= REGEX_CACHE_CAP {
+        if let Some(oldest) = cache.order.pop_front() {
+            cache.map.remove(&oldest);
+        }
+    }
+    cache.order.push_back(pattern.to_string());
+    cache.map.insert(pattern.to_string(), re.clone());
+    Ok(re)
+}
+
+fn shared_regex_count() -> usize {
+    REGEX_CACHE.lock().unwrap_or_else(|p| p.into_inner()).map.len()
+}
+
+/// A candidate list as one node query returns it — that query's ORDER BY,
+/// as pointers into the run's table. Cloning it is one refcount.
+type NodeList = Arc<[Arc<KNode>]>;
+
+/// The `nodes` and `files` tables of one database, loaded once and indexed
+/// the way the resolver queries them. Resolution never writes nodes, so the
+/// table is immutable for the run. It replaces the per-resolver caches of
+/// owned row copies (`name_cache`, `qname_cache`, `file_nodes`, `node_by_id`,
+/// `lower_cache`, `known_names`, `known_files`) that each pool worker filled
+/// separately — six workers held up to four copies of every touched node on
+/// a large corpus, and every miss was a SQLite query.
+///
+/// The orders reproduce the TypeScript queries' ORDER BY exactly: SQLite
+/// scans a `WHERE col = ?` through the column's index in rowid order and its
+/// sorter is stable, so a stable sort of the rowid-ordered group by the
+/// ORDER BY keys (BINARY collation, byte order) is the same sequence.
+/// `CODEGRAPH_NODE_TABLE_VERIFY=1` re-runs every replaced query and reports
+/// any sequence that differs.
+struct NodeTable {
+    /// getNodesByName — ORDER BY file_path, start_line.
+    by_name: HashMap<String, NodeList>,
+    /// getNodesByLowerName — `lower(name) = lower(?)`, rowid order. SQLite's
+    /// built-in `lower()` folds ASCII only, as `to_ascii_lowercase` does.
+    by_lower: HashMap<String, NodeList>,
+    /// getNodesByQualifiedName — rowid order.
+    by_qname: HashMap<String, NodeList>,
+    /// getNodesInFile — ORDER BY start_line.
+    by_file: HashMap<String, NodeList>,
+    /// getNodeById.
+    by_id: HashMap<String, Arc<KNode>>,
+    /// `SELECT path FROM files` — knownFiles.
+    files: HashSet<String>,
+    empty: NodeList,
+}
+
+fn push_group(map: &mut HashMap<String, Vec<Arc<KNode>>>, key: &str, n: &Arc<KNode>) {
+    match map.get_mut(key) {
+        Some(list) => list.push(n.clone()),
+        None => {
+            map.insert(key.to_string(), vec![n.clone()]);
+        }
+    }
+}
+
+fn freeze(map: HashMap<String, Vec<Arc<KNode>>>) -> HashMap<String, NodeList> {
+    map.into_iter().map(|(k, v)| (k, NodeList::from(v))).collect()
+}
+
+impl NodeTable {
+    fn load(conn: &Connection) -> rusqlite::Result<NodeTable> {
+        let sql = format!("SELECT {NODE_COLS} FROM nodes ORDER BY rowid");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], KNode::from_row)?;
+        let mut by_name: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_lower: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_qname: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_file: HashMap<String, Vec<Arc<KNode>>> = HashMap::new();
+        let mut by_id: HashMap<String, Arc<KNode>> = HashMap::new();
+        for row in rows {
+            let n = Arc::new(row?);
+            push_group(&mut by_name, &n.name, &n);
+            if n.name.bytes().any(|b| b.is_ascii_uppercase()) {
+                push_group(&mut by_lower, &n.name.to_ascii_lowercase(), &n);
+            } else {
+                push_group(&mut by_lower, &n.name, &n);
+            }
+            push_group(&mut by_qname, &n.qualified_name, &n);
+            push_group(&mut by_file, &n.file_path, &n);
+            by_id.insert(n.id.clone(), n);
+        }
+        for list in by_name.values_mut() {
+            list.sort_by(|a, b| {
+                a.file_path
+                    .as_bytes()
+                    .cmp(b.file_path.as_bytes())
+                    .then(a.start_line.cmp(&b.start_line))
+            });
+        }
+        for list in by_file.values_mut() {
+            list.sort_by_key(|n| n.start_line);
+        }
+        let mut stmt = conn.prepare("SELECT path FROM files")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut files = HashSet::new();
+        for p in rows {
+            files.insert(p?);
+        }
+        let table = NodeTable {
+            by_name: freeze(by_name),
+            by_lower: freeze(by_lower),
+            by_qname: freeze(by_qname),
+            by_file: freeze(by_file),
+            by_id,
+            files,
+            empty: NodeList::from(Vec::new()),
+        };
+        if std::env::var_os("CODEGRAPH_NODE_TABLE_VERIFY").is_some_and(|v| v == "1") {
+            let mismatches = table.verify(conn)?;
+            eprintln!("[node-table] verify: {mismatches} mismatches");
+        }
+        Ok(table)
+    }
+
+    /// Re-runs each replaced per-key query and counts id sequences that
+    /// differ from the table's — the check behind the ordering argument
+    /// above (a second pass over the database; the first five differences
+    /// go to stderr).
+    fn verify(&self, conn: &Connection) -> rusqlite::Result<usize> {
+        let checks: [(&str, &HashMap<String, NodeList>, &str); 4] = [
+            ("name", &self.by_name, "SELECT id FROM nodes WHERE name = ?1 ORDER BY file_path, start_line"),
+            ("lower", &self.by_lower, "SELECT id FROM nodes WHERE lower(name) = lower(?1)"),
+            ("qname", &self.by_qname, "SELECT id FROM nodes WHERE qualified_name = ?1"),
+            ("file", &self.by_file, "SELECT id FROM nodes WHERE file_path = ?1 ORDER BY start_line"),
+        ];
+        let mut mismatches = 0usize;
+        for (label, map, sql) in checks {
+            let mut stmt = conn.prepare(sql)?;
+            for (key, list) in map {
+                let rows = stmt.query_map([key], |r| r.get::<_, String>(0))?;
+                let mut expected = Vec::with_capacity(list.len());
+                for id in rows {
+                    expected.push(id?);
+                }
+                let same = expected.len() == list.len()
+                    && expected.iter().zip(list.iter()).all(|(e, n)| *e == n.id);
+                if !same {
+                    mismatches += 1;
+                    if mismatches <= 5 {
+                        eprintln!("[node-table] {label} {key:?}: table {:?} vs sqlite {expected:?}",
+                            list.iter().map(|n| n.id.as_str()).collect::<Vec<_>>());
+                    }
+                }
+            }
+        }
+        Ok(mismatches)
+    }
+}
+
+/// Tables shared across the resolvers of one run, keyed by database path
+/// and run generation. `Weak`, so a table lives exactly as long as some
+/// resolver holds it — the pool's workers drop theirs at teardown, and the
+/// next run's generation never matches a stale entry.
+static NODE_TABLES: OnceLock<Mutex<HashMap<String, Weak<NodeTable>>>> = OnceLock::new();
+
+fn node_table_for(db_path: &str, generation: Option<&str>, conn: &Connection) -> Result<Arc<NodeTable>> {
+    let load = || NodeTable::load(conn).map_err(|e| Error::from_reason(format!("node table: {e}")));
+    let Some(generation) = generation else {
+        return Ok(Arc::new(load()?));
+    };
+    let key = format!("{db_path}\0{generation}");
+    let registry = NODE_TABLES.get_or_init(Default::default);
+    // Held across the load, so concurrent workers wait for one table instead
+    // of each building their own.
+    let mut tables = registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(table) = tables.get(&key).and_then(Weak::upgrade) {
+        return Ok(table);
+    }
+    let table = Arc::new(load()?);
+    tables.retain(|_, weak| weak.strong_count() > 0);
+    tables.insert(key, Arc::downgrade(&table));
+    Ok(table)
 }
 
 /// safeJsonParse for the `["a","b"]` shape type_parameters is stored as —
@@ -925,10 +1498,10 @@ struct KReExport {
 /// code there and not ported.)
 #[derive(Debug)]
 struct FileExportIndexK {
-    by_name: HashMap<String, KNode>,
-    default_component: Option<KNode>,
-    default_fn_class: Option<KNode>,
-    default_binding: Option<KNode>,
+    by_name: HashMap<String, Arc<KNode>>,
+    default_component: Option<Arc<KNode>>,
+    default_fn_class: Option<Arc<KNode>>,
+    default_binding: Option<Arc<KNode>>,
 }
 
 /// AliasPattern (project-aliases.ts).
@@ -1159,14 +1732,14 @@ fn normalize_markdown_anchor(anchor: &str) -> String {
 
 /// pickClosestFileNode (name-matcher.ts): same-dir candidates first, then
 /// strict-`>` argmax of path proximity + a same-language-family bonus.
-fn pick_closest_file_node(candidates: &[Rc<KNode>], r: &ResolveRefIn) -> Rc<KNode> {
+fn pick_closest_file_node(candidates: &[Arc<KNode>], r: &ResolveRefIn) -> Arc<KNode> {
     let ref_dir = pos_dirname(&r.file_path);
-    let same_dir: Vec<Rc<KNode>> = candidates
+    let same_dir: Vec<Arc<KNode>> = candidates
         .iter()
         .filter(|c| pos_dirname(&c.file_path) == ref_dir)
         .cloned()
         .collect();
-    let pool: &[Rc<KNode>] = if same_dir.is_empty() { candidates } else { &same_dir };
+    let pool: &[Arc<KNode>] = if same_dir.is_empty() { candidates } else { &same_dir };
     let mut best = pool[0].clone();
     let mut best_score = i64::MIN;
     for c in pool {
@@ -1238,6 +1811,10 @@ pub struct KernelResolverConfig {
     pub framework_names: Option<Vec<String>>,
     /// Max distinct-name count for the fuzzy matcher (queries.fuzzyMatchCeiling).
     pub ambiguous_name_ceiling: Option<u32>,
+    /// Run token the pool hands every worker of one resolution run. Resolvers
+    /// with the same `db_path` and generation share one in-memory node table
+    /// (see NodeTable); without it the table is private to the instance.
+    pub generation: Option<String>,
 }
 
 /// One unresolved_refs row — mirrors UnresolvedReference/rowId shape so the
@@ -1333,7 +1910,7 @@ impl ResolveOutcome {
 // ---------------------------------------------------------------------------
 
 struct KCand {
-    node: Rc<KNode>,
+    node: Arc<KNode>,
     confidence: f64,
     resolved_by: &'static str,
 }
@@ -1371,7 +1948,7 @@ enum McRes {
 /// needs a qualified-name lookup the enclosing call can't reach — kept for
 /// symmetry; resolveJvmImport is ported so this is currently unused-defensive).
 enum BtRes {
-    Owner(Rc<KNode>),
+    Owner(Arc<KNode>),
     Null,
     Punt(&'static str),
 }
@@ -1451,6 +2028,42 @@ impl FileCache {
 // KernelResolver
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    static PROF: std::cell::RefCell<HashMap<String, (u64, u64)>> = std::cell::RefCell::new(HashMap::new());
+}
+static PROF_ON: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("CODEGRAPH_KERNEL_PROF").is_some_and(|v| v == "1"));
+/// `CODEGRAPH_KERNEL_PROF=1`: attribute a step's time to `sub:<label>`;
+/// otherwise the expression alone.
+macro_rules! probe {
+    ($r:expr, $label:expr, $e:expr) => {{
+        if *PROF_ON {
+            let t0 = std::time::Instant::now();
+            let v = $e;
+            prof_add(format!("sub:{}|{}|{}", $label, $r.reference_kind, $r.language), t0.elapsed().as_nanos() as u64);
+            v
+        } else {
+            $e
+        }
+    }};
+}
+fn prof_add(key: String, ns: u64) {
+    PROF.with(|p| {
+        let mut p = p.borrow_mut();
+        let e = p.entry(key).or_insert((0, 0));
+        e.0 += 1;
+        e.1 += ns;
+    });
+}
+fn prof_dump(label: &str) {
+    PROF.with(|p| {
+        let p = p.borrow();
+        for (k, (n, ns)) in p.iter() {
+            eprintln!("[kernel-prof] {label} {k} n={n} ns={ns}");
+        }
+    });
+}
+
 #[napi]
 pub struct KernelResolver {
     // Option so close() can drop the Connection deterministically — see
@@ -1467,20 +2080,19 @@ pub struct KernelResolver {
     framework_names: Option<Vec<String>>,
     ambiguous_ceiling: i64,
 
-    known_names: HashSet<String>,
-    known_files: HashSet<String>,
-
-    name_cache: HashMap<String, Rc<Vec<KNode>>>,
-    lower_cache: HashMap<String, Rc<Vec<KNode>>>,
-    qname_cache: HashMap<String, Rc<Vec<KNode>>>,
-    file_nodes: HashMap<String, Rc<Vec<KNode>>>,
-    node_by_id: HashMap<String, Option<Rc<KNode>>>,
+    /// The run's node table, loaded on first use (a worker reports ready
+    /// before it) and dropped by close().
+    table: std::cell::OnceCell<Arc<NodeTable>>,
+    db_path: String,
+    /// The run token the table is shared under (see NodeTable); None keeps
+    /// the table private.
+    generation: Option<String>,
     bindings_cache: HashMap<String, Rc<Vec<KBinding>>>,
     import_map_cache: HashMap<String, Rc<Vec<KImport>>>,
     reexport_cache: HashMap<String, Rc<Vec<KReExport>>>,
     export_index: HashMap<String, Option<Rc<FileExportIndexK>>>,
     import_path_memo: HashMap<String, Option<String>>,
-    exported_symbol_memo: HashMap<String, Option<Rc<KNode>>>,
+    exported_symbol_memo: HashMap<String, Option<Arc<KNode>>>,
     sealed_memo: HashMap<String, bool>,
     c_static_memo: HashMap<String, bool>,
     rust_trait_memo: HashMap<String, bool>,
@@ -1491,7 +2103,6 @@ pub struct KernelResolver {
     /// `getAllFiles()` order (`ORDER BY path`), built once on first use.
     lua_basename_index: Option<Rc<HashMap<String, Rc<Vec<String>>>>>,
     file_cache: FileCache,
-    regex_cache: HashMap<String, Rc<Regex>>,
 }
 
 #[napi]
@@ -1516,9 +2127,11 @@ impl KernelResolver {
         // compile_commands.json + convention heuristics and passes the list;
         // empty means no -I search, not a fallback.
         let cpp_include_dirs = config.cpp_include_dirs.unwrap_or_default();
-
-        let mut r = KernelResolver {
+        Ok(KernelResolver {
             conn: Some(conn),
+            table: std::cell::OnceCell::new(),
+            db_path: config.db_path,
+            generation: config.generation,
             project_root: config.project_root,
             root_abs,
             aliases: config.aliases.map(|a| AliasMapK {
@@ -1541,13 +2154,6 @@ impl KernelResolver {
             frameworks_active: config.frameworks_active,
             framework_names: config.framework_names,
             ambiguous_ceiling: config.ambiguous_name_ceiling.unwrap_or(500) as i64,
-            known_names: HashSet::new(),
-            known_files: HashSet::new(),
-            name_cache: HashMap::new(),
-            lower_cache: HashMap::new(),
-            qname_cache: HashMap::new(),
-            file_nodes: HashMap::new(),
-            node_by_id: HashMap::new(),
             bindings_cache: HashMap::new(),
             import_map_cache: HashMap::new(),
             reexport_cache: HashMap::new(),
@@ -1562,10 +2168,7 @@ impl KernelResolver {
             rust_rs_dir_index: None,
             lua_basename_index: None,
             file_cache: FileCache::new(1024),
-            regex_cache: HashMap::new(),
-        };
-        r.warm_caches()?;
-        Ok(r)
+        })
     }
 
     /// Deterministic connection teardown. Without it the rusqlite Connection
@@ -1579,7 +2182,40 @@ impl KernelResolver {
     /// after they die.
     #[napi]
     pub fn close(&mut self) {
+        self.debug_stats("close");
         self.conn.take();
+        self.table.take();
+    }
+
+    /// `CODEGRAPH_KERNEL_STATS=1`: the per-instance cache sizes, to stderr —
+    /// what a resolver holds by the end of a run.
+    fn debug_stats(&self, at: &str) {
+        if !std::env::var_os("CODEGRAPH_KERNEL_STATS").is_some_and(|v| v == "1") {
+            return;
+        }
+        let file_lines: usize = self.file_cache.map.values().map(|v| v.as_ref().map_or(0, |l| l.len())).sum();
+        let file_bytes: usize = self
+            .file_cache
+            .map
+            .values()
+            .map(|v| v.as_ref().map_or(0, |l| l.iter().map(|s| s.capacity() + 24).sum::<usize>()))
+            .sum();
+        eprintln!(
+            "[kernel-stats] {at}: regex(shared)={} files={} (lines={file_lines} bytes={file_bytes}) bindings={} imports={} reexports={} export_index={} memos: symbol={} import_path={} sealed={} c_static={} rust_trait={} root_import={} crate_root={}",
+            shared_regex_count(),
+            self.file_cache.map.len(),
+            self.bindings_cache.len(),
+            self.import_map_cache.len(),
+            self.reexport_cache.len(),
+            self.export_index.len(),
+            self.exported_symbol_memo.len(),
+            self.import_path_memo.len(),
+            self.sealed_memo.len(),
+            self.c_static_memo.len(),
+            self.rust_trait_memo.len(),
+            self.root_import_memo.len(),
+            self.rust_crate_root_memo.len(),
+        );
     }
 
     /// The `read` stage — same keyset cursor and prerequisite split as
@@ -1664,7 +2300,17 @@ impl KernelResolver {
     pub fn resolve_chunk(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
-            out.push(self.resolve_ref(&r)?);
+            let t0 = PROF_ON.then(std::time::Instant::now);
+            let o = self.resolve_ref(&r)?;
+            if let Some(t0) = t0 {
+                let key = match o.status.as_str() {
+                    "passthrough" => format!("punt:{}|{}|{}", o.reason.as_deref().unwrap_or(""), r.reference_kind, r.language),
+                    "resolved" => format!("hit:{}|{}|{}", o.resolved_by.as_deref().unwrap_or(""), r.reference_kind, r.language),
+                    st => format!("{st}|{}|{}", r.reference_kind, r.language),
+                };
+                prof_add(key, t0.elapsed().as_nanos() as u64);
+            }
+            out.push(o);
         }
         Ok(out)
     }
@@ -1690,112 +2336,53 @@ impl KernelResolver {
             .ok_or_else(|| Error::from_reason("KernelResolver is closed"))
     }
 
-    /// warmCaches (ReferenceResolver): the known-file and known-symbol sets.
-    fn warm_caches(&mut self) -> Result<()> {
-        // Field-level borrow (not self.conn()) so the statement and the
-        // cache-field writes below stay disjoint borrows.
-        let conn = self
-            .conn
-            .as_ref()
-            .ok_or_else(|| Error::from_reason("KernelResolver is closed"))?;
-        let mut stmt = conn
-            .prepare("SELECT path FROM files")
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        let mut files = Vec::new();
-        for p in rows {
-            files.push(p.map_err(|e| Error::from_reason(e.to_string()))?);
+    fn table(&self) -> Result<&NodeTable> {
+        if let Some(t) = self.table.get() {
+            return Ok(t);
         }
-        self.known_files.extend(files);
-        // getAllNodeNames: `SELECT DISTINCT name FROM nodes` — no kind filter.
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT name FROM nodes")
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        let mut names = Vec::new();
-        for n in rows {
-            names.push(n.map_err(|e| Error::from_reason(e.to_string()))?);
-        }
-        self.known_names.extend(names);
-        Ok(())
-    }
-
-    fn query_nodes(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Vec<KNode>> {
-        let mut stmt = self
-            .conn()?
-            .prepare(sql)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        let rows = stmt
-            .query_map(params, KNode::from_row)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        let mut out = Vec::new();
-        for n in rows {
-            out.push(n.map_err(|e| Error::from_reason(e.to_string()))?);
-        }
-        Ok(out)
+        let table = node_table_for(&self.db_path, self.generation.as_deref(), self.conn()?)?;
+        Ok(self.table.get_or_init(|| table))
     }
 
     /// queries.getNodesByName — ORDER BY file_path, start_line.
-    fn nodes_by_name(&mut self, name: &str) -> Result<Rc<Vec<KNode>>> {
-        if let Some(v) = self.name_cache.get(name) {
-            return Ok(v.clone());
-        }
-        let sql = format!("SELECT {} FROM nodes WHERE name = ?1 ORDER BY file_path, start_line", NODE_COLS);
-        let v = Rc::new(self.query_nodes(&sql, &[&name])?);
-        self.name_cache.insert(name.to_string(), v.clone());
-        Ok(v)
+    fn nodes_by_name(&self, name: &str) -> Result<NodeList> {
+        let t = self.table()?;
+        Ok(t.by_name.get(name).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesByLowerName — `WHERE lower(name) = lower(?)`, no
     /// ORDER BY (rowid order, same as the TS reader).
-    fn nodes_by_lower_name(&mut self, name: &str) -> Result<Rc<Vec<KNode>>> {
-        if let Some(v) = self.lower_cache.get(name) {
-            return Ok(v.clone());
-        }
-        let sql = format!(
-            "SELECT {} FROM nodes WHERE lower(name) = lower(?1)",
-            NODE_COLS
-        );
-        let v = Rc::new(self.query_nodes(&sql, &[&name])?);
-        self.lower_cache.insert(name.to_string(), v.clone());
-        Ok(v)
+    fn nodes_by_lower_name(&self, name: &str) -> Result<NodeList> {
+        let t = self.table()?;
+        Ok(t.by_lower.get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesByQualifiedName — no ORDER BY (TS uses rowid order).
-    fn nodes_by_qualified_name(&mut self, qname: &str) -> Result<Rc<Vec<KNode>>> {
-        if let Some(v) = self.qname_cache.get(qname) {
-            return Ok(v.clone());
-        }
-        let sql = format!("SELECT {} FROM nodes WHERE qualified_name = ?1", NODE_COLS);
-        let v = Rc::new(self.query_nodes(&sql, &[&qname])?);
-        self.qname_cache.insert(qname.to_string(), v.clone());
-        Ok(v)
+    fn nodes_by_qualified_name(&self, qname: &str) -> Result<NodeList> {
+        let t = self.table()?;
+        Ok(t.by_qname.get(qname).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesInFile — ORDER BY start_line.
-    fn nodes_in_file(&mut self, file_path: &str) -> Result<Rc<Vec<KNode>>> {
-        if let Some(v) = self.file_nodes.get(file_path) {
-            return Ok(v.clone());
-        }
-        let sql = format!("SELECT {} FROM nodes WHERE file_path = ?1 ORDER BY start_line", NODE_COLS);
-        let v = Rc::new(self.query_nodes(&sql, &[&file_path])?);
-        self.file_nodes.insert(file_path.to_string(), v.clone());
-        Ok(v)
+    fn nodes_in_file(&self, file_path: &str) -> Result<NodeList> {
+        let t = self.table()?;
+        Ok(t.by_file.get(file_path).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodeById.
-    fn node_by_id(&mut self, id: &str) -> Result<Option<Rc<KNode>>> {
-        if let Some(v) = self.node_by_id.get(id) {
-            return Ok(v.clone());
-        }
-        let sql = format!("SELECT {} FROM nodes WHERE id = ?1", NODE_COLS);
-        let v = self.query_nodes(&sql, &[&id])?.into_iter().next().map(Rc::new);
-        self.node_by_id.insert(id.to_string(), v.clone());
-        Ok(v)
+    fn node_by_id(&self, id: &str) -> Result<Option<Arc<KNode>>> {
+        Ok(self.table()?.by_id.get(id).cloned())
+    }
+
+    /// knownSymbols membership (`SELECT DISTINCT name FROM nodes`); false
+    /// once closed.
+    fn known_name(&self, name: &str) -> bool {
+        self.table().is_ok_and(|t| t.by_name.contains_key(name))
+    }
+
+    /// knownFiles membership (`SELECT path FROM files`); false once closed.
+    fn known_file(&self, path: &str) -> bool {
+        self.table().is_ok_and(|t| t.files.contains(path))
     }
 
     /// queries.getBindings — ORDER BY rowid.
@@ -1843,7 +2430,7 @@ impl KernelResolver {
     /// fallback for files not yet indexed (queries' per-candidate hot path).
     fn file_exists(&self, rel: &str) -> bool {
         let normalized = rel.replace('\\', "/");
-        if self.known_files.contains(rel) || self.known_files.contains(normalized.as_str()) {
+        if self.known_file(rel) || self.known_file(normalized.as_str()) {
             return true;
         }
         lexical_path_within_root(&self.root_abs, rel)
@@ -1869,13 +2456,8 @@ impl KernelResolver {
     /// Compile-once-per-pattern regexes — the bare-call and store-bind
     /// matchers build name-parameterized patterns per ref, and identical
     /// names recur across thousands of refs.
-    fn cached_regex(&mut self, pattern: &str) -> Result<Rc<Regex>> {
-        if let Some(re) = self.regex_cache.get(pattern) {
-            return Ok(re.clone());
-        }
-        let re = Rc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
-        self.regex_cache.insert(pattern.to_string(), re.clone());
-        Ok(re)
+    fn cached_regex(&mut self, pattern: &str) -> Result<Arc<Regex>> {
+        shared_regex(pattern)
     }
 
     // -----------------------------------------------------------------------
@@ -1964,9 +2546,9 @@ impl KernelResolver {
             return Ok(v.clone());
         }
         let nodes = self.nodes_in_file(file_path)?;
-        let mut by_name: HashMap<String, KNode> = HashMap::new();
-        let mut default_component: Option<KNode> = None;
-        let mut default_fn_class: Option<KNode> = None;
+        let mut by_name: HashMap<String, Arc<KNode>> = HashMap::new();
+        let mut default_component: Option<Arc<KNode>> = None;
+        let mut default_fn_class: Option<Arc<KNode>> = None;
         for n in nodes.iter() {
             if !n.is_exported {
                 continue;
@@ -1980,9 +2562,9 @@ impl KernelResolver {
             }
         }
         let rows = self.bindings(file_path)?;
-        let mut default_binding: Option<KNode> = None;
+        let mut default_binding: Option<Arc<KNode>> = None;
         if let Some(bound) = Self::default_export_binding(&rows) {
-            let mut candidates: Vec<&KNode> = nodes
+            let mut candidates: Vec<&Arc<KNode>> = nodes
                 .iter()
                 .filter(|n| n.name == bound && is_default_binding_kind(&n.kind))
                 .collect();
@@ -1996,7 +2578,7 @@ impl KernelResolver {
         // Local export clauses: `export { impl as alias }` binds the renamed
         // name to the real declaration.
         if !rows.is_empty() {
-            let by_id: HashMap<&str, &KNode> =
+            let by_id: HashMap<&str, &Arc<KNode>> =
                 nodes.iter().map(|n| (n.id.as_str(), n)).collect();
             for r in rows.iter() {
                 let (Some(exported), Some(node_id)) = (r.exported_as.as_deref(), r.node_id.as_deref())
@@ -2031,7 +2613,7 @@ impl KernelResolver {
         language: &str,
         visited: &mut HashSet<String>,
         depth: usize,
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         const REEXPORT_MAX_DEPTH: usize = 8;
         if depth > REEXPORT_MAX_DEPTH {
             return Ok(None);
@@ -2069,7 +2651,7 @@ impl KernelResolver {
                 .or_else(|| export_index.default_binding.clone())
                 .or_else(|| export_index.default_fn_class.clone());
             if let Some(d) = direct {
-                return self.memo_symbol(memo_key, d);
+                return self.memo_symbol(memo_key, d.clone());
             }
         } else if want.is_namespace && want.member_name.is_some() {
             if let Some(d) = export_index.by_name.get(want.member_name.as_deref().unwrap()) {
@@ -2185,14 +2767,14 @@ impl KernelResolver {
         self.memo_symbol_opt(memo_key, None)
     }
 
-    fn memo_symbol(&mut self, key: Option<String>, n: KNode) -> Result<Option<Rc<KNode>>> {
-        self.memo_symbol_opt(key, Some(Rc::new(n)))
+    fn memo_symbol(&mut self, key: Option<String>, n: Arc<KNode>) -> Result<Option<Arc<KNode>>> {
+        self.memo_symbol_opt(key, Some(n))
     }
     fn memo_symbol_opt(
         &mut self,
         key: Option<String>,
-        v: Option<Rc<KNode>>,
-    ) -> Result<Option<Rc<KNode>>> {
+        v: Option<Arc<KNode>>,
+    ) -> Result<Option<Arc<KNode>>> {
         if let Some(k) = key {
             self.exported_symbol_memo.insert(k, v.clone());
         }
@@ -2381,7 +2963,7 @@ impl KernelResolver {
         if r.language == "python" && PYTHON_BUILT_IN_METHODS.contains(name) {
             // A bare name colliding with a builtin method is only a builtin
             // when nothing declares it.
-            return !self.known_names.contains(name);
+            return !self.known_name(name);
         }
         // Go: stdlib package member access (`fmt.Println`) is external — but
         // only when the ref is not a binding-receiver call: a bound receiver
@@ -2418,26 +3000,26 @@ impl KernelResolver {
     fn has_any_possible_match(&self, name: &str) -> bool {
         let path_name = name.replace('\\', "/");
         let path_name = path_name.split('#').next().unwrap_or("");
-        if self.known_names.contains(name) {
+        if self.known_name(name) {
             return true;
         }
-        if path_name != name && self.known_names.contains(path_name) {
+        if path_name != name && self.known_name(path_name) {
             return true;
         }
         if let Some(dot_idx) = name.find('.') {
             if dot_idx > 0 {
                 let (receiver, member) = (&name[..dot_idx], &name[dot_idx + 1..]);
-                if self.known_names.contains(receiver) || self.known_names.contains(member) {
+                if self.known_name(receiver) || self.known_name(member) {
                     return true;
                 }
                 let capitalized = capitalize_first(receiver);
-                if self.known_names.contains(capitalized.as_str()) {
+                if self.known_name(capitalized.as_str()) {
                     return true;
                 }
                 if let Some(last_dot) = name.rfind('.') {
                     if last_dot > dot_idx {
                         let tail = &name[last_dot + 1..];
-                        if !tail.is_empty() && self.known_names.contains(tail) {
+                        if !tail.is_empty() && self.known_name(tail) {
                             return true;
                         }
                     }
@@ -2447,13 +3029,13 @@ impl KernelResolver {
         if let Some(colon_idx) = name.find("::") {
             if colon_idx > 0 {
                 let (receiver, member) = (&name[..colon_idx], &name[colon_idx + 2..]);
-                if self.known_names.contains(receiver) || self.known_names.contains(member) {
+                if self.known_name(receiver) || self.known_name(member) {
                     return true;
                 }
                 if let Some(last_colon) = name.rfind("::") {
                     if last_colon > colon_idx {
                         let tail = &name[last_colon + 2..];
-                        if !tail.is_empty() && self.known_names.contains(tail) {
+                        if !tail.is_empty() && self.known_name(tail) {
                             return true;
                         }
                     }
@@ -2467,24 +3049,24 @@ impl KernelResolver {
             if let Some(sep_idx) = name.find(sep) {
                 if sep_idx > 0 {
                     let (receiver, member) = (&name[..sep_idx], &name[sep_idx + 1..]);
-                    if self.known_names.contains(member) || self.known_names.contains(receiver) {
+                    if self.known_name(member) || self.known_name(receiver) {
                         return true;
                     }
                     let capitalized = capitalize_first(receiver);
-                    if self.known_names.contains(capitalized.as_str()) {
+                    if self.known_name(capitalized.as_str()) {
                         return true;
                     }
                 }
             }
         }
         if let Some(slash_idx) = path_name.rfind('/') {
-            if slash_idx > 0 && self.known_names.contains(&path_name[slash_idx + 1..]) {
+            if slash_idx > 0 && self.known_name(&path_name[slash_idx + 1..]) {
                 return true;
             }
         }
         if !path_name.contains('/')
-            && EXT_TAIL_RE.is_match(path_name)
-            && self.known_names.contains(path_name)
+            && thread_regex(&EXT_TAIL_RE).is_match(path_name)
+            && self.known_name(path_name)
         {
             return true;
         }
@@ -2720,7 +3302,7 @@ impl KernelResolver {
         }
         let joined = format!("{}{}", dir, subpath);
         static MULTI_SLASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/{2,}").unwrap());
-        Some(MULTI_SLASH.replace_all(&joined, "/").to_string())
+        Some(thread_regex(&MULTI_SLASH).replace_all(&joined, "/").to_string())
     }
 
     /// applyAliases (path-aliases.ts): candidate paths relative to
@@ -2936,20 +3518,20 @@ impl KernelResolver {
         &mut self,
         module: &str,
         exclude_file: &str,
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         if module.is_empty() || module.starts_with('.') {
             return Ok(None);
         }
         let rel = module.replace('.', "/");
         let last_seg = module.split('.').next_back().unwrap_or(module);
-        let mut candidates: Vec<Rc<KNode>> = Vec::new();
+        let mut candidates: Vec<Arc<KNode>> = Vec::new();
         for n in self.nodes_by_name(&format!("{}.py", last_seg))?.iter() {
             let want = format!("{}.py", rel);
             if n.kind == "file"
                 && n.file_path != exclude_file
                 && (n.file_path == want || n.file_path.ends_with(&format!("/{}", want)))
             {
-                candidates.push(Rc::new(n.clone()));
+                candidates.push(n.clone());
             }
         }
         for n in self.nodes_by_name("__init__.py")?.iter() {
@@ -2958,7 +3540,7 @@ impl KernelResolver {
                 && n.file_path != exclude_file
                 && (n.file_path == want || n.file_path.ends_with(&format!("/{}", want)))
             {
-                candidates.push(Rc::new(n.clone()));
+                candidates.push(n.clone());
             }
         }
         for root in ["", "src/"] {
@@ -2979,7 +3561,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         imports: &[KImport],
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         if r.reference_kind != "imports" {
             return Ok(None);
         }
@@ -3014,7 +3596,7 @@ impl KernelResolver {
                         .iter()
                         .find(|n| n.kind == "file")
                     {
-                        return Ok(Some(Rc::new(file_node.clone())));
+                        return Ok(Some(file_node.clone()));
                     }
                 }
             }
@@ -3034,7 +3616,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         imports: &[KImport],
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         if imports.is_empty() {
             return Ok(None);
         }
@@ -3061,7 +3643,7 @@ impl KernelResolver {
                 }
                 let fp = node.file_path.replace('\\', "/");
                 if fp.ends_with(&fqn_path) || fp.ends_with(&format!("/{}", fqn_path)) {
-                    return Ok(Some(Rc::new(node.clone())));
+                    return Ok(Some(node.clone()));
                 }
             }
             // `import static com.example.Foo.bar;` — the FQN tail is the
@@ -3080,7 +3662,7 @@ impl KernelResolver {
                             if fp.ends_with(&owner_path)
                                 || fp.ends_with(&format!("/{}", owner_path))
                             {
-                                return Ok(Some(Rc::new(node.clone())));
+                                return Ok(Some(node.clone()));
                             }
                         }
                     }
@@ -3108,7 +3690,7 @@ impl KernelResolver {
                 .find(|n| n.kind == "file" && n.file_path == sibling_path)
             {
                 return Ok(Some(KCand {
-                    node: Rc::new(sibling.clone()),
+                    node: sibling.clone(),
                     confidence: 0.92,
                     resolved_by: "import",
                 }));
@@ -3125,7 +3707,7 @@ impl KernelResolver {
                 .find(|n| n.kind == "file" && n.file_path == resolved_path)
             {
                 return Ok(Some(KCand {
-                    node: Rc::new(file_node.clone()),
+                    node: file_node.clone(),
                     confidence: 0.9,
                     resolved_by: "import",
                 }));
@@ -3291,7 +3873,7 @@ impl KernelResolver {
     }
 
     /// applyLanguageGate (name-matcher.ts).
-    fn apply_language_gate(&self, candidates: Vec<Rc<KNode>>, r: &ResolveRefIn) -> Vec<Rc<KNode>> {
+    fn apply_language_gate(&self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
         if r.reference_kind == "references" || r.reference_kind == "function_ref" {
             return candidates
                 .into_iter()
@@ -3319,7 +3901,7 @@ impl KernelResolver {
         let qn = &candidate.qualified_name;
         let Some(sep) = qn.rfind("::") else { return Ok(true) };
         let parent_qn = &qn[..sep];
-        let containers: Vec<KNode> = self
+        let containers: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(parent_qn)?
             .iter()
             .filter(|p| {
@@ -3403,12 +3985,12 @@ impl KernelResolver {
                 break;
             }
             let line = lines.get(i as usize).map(|s| s.as_str()).unwrap_or("");
-            if IMPL_RE.is_match(line) {
+            if thread_regex(&IMPL_RE).is_match(line) {
                 let stripped = line.split("//").next().unwrap_or("");
-                is_trait = IMPL_FOR_RE.is_match(stripped);
+                is_trait = thread_regex(&IMPL_FOR_RE).is_match(stripped);
                 break;
             }
-            if ITEM_RE.is_match(line) {
+            if thread_regex(&ITEM_RE).is_match(line) {
                 break;
             }
             i -= 1;
@@ -3455,7 +4037,7 @@ impl KernelResolver {
     fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Result<bool> {
         if r.language != "markdown"
             && candidate.language == "markdown"
-            && !MARKDOWN_PATH_RE.is_match(&r.reference_name.replace('\\', "/"))
+            && !thread_regex(&MARKDOWN_PATH_RE).is_match(&r.reference_name.replace('\\', "/"))
         {
             return Ok(false);
         }
@@ -3483,7 +4065,7 @@ impl KernelResolver {
         let lang = candidate.language.as_str();
         if lang == "c" || lang == "cpp" {
             return Ok(candidate.kind != "function"
-                || !C_SOURCE_EXT_RE.is_match(&candidate.file_path)
+                || !thread_regex(&C_SOURCE_EXT_RE).is_match(&candidate.file_path)
                 || !self.is_static_c_function(candidate)?);
         }
         if lang == "go" {
@@ -3520,14 +4102,16 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
         let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(false) };
         let at = Self::js_slice(line, r.column as usize);
-        // `new RegExp('^' + nameEsc + '\\s*[(<]')` — nameEsc is the JS regex
-        // escape, which `regex::escape` reproduces for our charset.
-        let call_re = self.cached_regex(&format!("^{}\\s*[(<]", regex::escape(&r.reference_name)))?;
-        if !call_re.is_match(at) {
+        // `new RegExp('^' + nameEsc + '\\s*[(<]')` — the name is a literal
+        // prefix, then the call opener.
+        let is_call = at
+            .strip_prefix(r.reference_name.as_str())
+            .is_some_and(|rest| thread_regex(&BARE_CALL_OPENER_RE).is_match(rest));
+        if !is_call {
             return Ok(false);
         }
         let before = Self::js_prefix(line, r.column as usize);
-        Ok(!JS_CALL_PREFIX_RE.is_match(before) || JS_CALL_KEYWORD_RE.is_match(before))
+        Ok(!thread_regex(&JS_CALL_PREFIX_RE).is_match(before) || thread_regex(&JS_CALL_KEYWORD_RE).is_match(before))
     }
 
     /// cppBareCallForm (name-matcher.ts) — only the ADL range names.
@@ -3546,16 +4130,17 @@ impl KernelResolver {
         let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(None) };
         let from = (r.column as usize).min(Self::utf16_len(line));
         let hay = Self::js_slice(line, from);
-        let re = self.cached_regex(&format!(
-            "(^|[^A-Za-z0-9_]){}\\s*\\(",
-            regex::escape(&r.reference_name)
-        ))?;
-        let Some(m) = re.captures(hay) else { return Ok(None) };
-        // m.index / m[1].length are UTF-16 units in TS; convert the haystack
-        // byte offsets back to units before re-anchoring on `line`.
-        let name_at = from
-            + Self::utf16_len(&hay[..m.get(0).unwrap().start()])
-            + Self::utf16_len(m.get(1).unwrap().as_str());
+        // `(^|[^A-Za-z0-9_])NAME\s*\(` — the literal name, not preceded by a
+        // word byte, then the call opener.
+        let name = r.reference_name.as_str();
+        let Some(at) = occurrences(hay, name, 0).find(|&at| {
+            (at == 0 || !is_word_byte(hay.as_bytes()[at - 1]))
+                && thread_regex(&CPP_CALL_OPENER_RE).is_match(&hay[at + name.len()..])
+        }) else {
+            return Ok(None);
+        };
+        // m.index + m[1].length in TS: the name's UTF-16 offset in `hay`.
+        let name_at = from + Self::utf16_len(&hay[..at]);
         let before: String = Self::js_prefix(line, name_at)
             .chars()
             .filter(|c| !c.is_whitespace())
@@ -3563,7 +4148,7 @@ impl KernelResolver {
         if before.ends_with("::") {
             return Ok(Some("qualified"));
         }
-        if CPP_THIS_ARROW_RE.is_match(&before) || CPP_THIS_DOT_RE.is_match(&before) {
+        if thread_regex(&CPP_THIS_ARROW_RE).is_match(&before) || thread_regex(&CPP_THIS_DOT_RE).is_match(&before) {
             return Ok(Some("this-member"));
         }
         if before.ends_with("->") || before.ends_with('.') {
@@ -3572,7 +4157,7 @@ impl KernelResolver {
         let after_name = Self::js_slice(line, name_at + Self::utf16_len(&r.reference_name));
         let Some(open) = after_name.find('(') else { return Ok(Some("implicit-this")) };
         Ok(Some(
-            if AFTER_NAME_PAREN_RE.is_match(&after_name[open + 1..]) {
+            if thread_regex(&AFTER_NAME_PAREN_RE).is_match(&after_name[open + 1..]) {
                 "implicit-this"
             } else {
                 "free-args"
@@ -3625,8 +4210,8 @@ impl KernelResolver {
     fn apply_cpp_call_site_form(
         &mut self,
         r: &ResolveRefIn,
-        candidates: Vec<Rc<KNode>>,
-    ) -> Result<Option<Vec<Rc<KNode>>>> {
+        candidates: Vec<Arc<KNode>>,
+    ) -> Result<Option<Vec<Arc<KNode>>>> {
         let Some(form) = self.cpp_bare_call_form(r)? else {
             return Ok(Some(candidates));
         };
@@ -3645,7 +4230,7 @@ impl KernelResolver {
                 ))
             }
             "free-args" => {
-                let local: Vec<Rc<KNode>> = candidates
+                let local: Vec<Arc<KNode>> = candidates
                     .into_iter()
                     .filter(|n| n.kind == "function" && n.file_path == r.file_path)
                     .collect();
@@ -3677,9 +4262,9 @@ impl KernelResolver {
     }
 
     /// findBestMatch (name-matcher.ts) — strict `>` first-max scoring.
-    fn find_best_match(&self, r: &ResolveRefIn, candidates: &[Rc<KNode>]) -> Option<Rc<KNode>> {
+    fn find_best_match(&self, r: &ResolveRefIn, candidates: &[Arc<KNode>]) -> Option<Arc<KNode>> {
         let mut best_score = -1f64;
-        let mut best: Option<Rc<KNode>> = None;
+        let mut best: Option<Arc<KNode>> = None;
         let mut ref_dirs: Vec<String> =
             r.file_path.split('/').map(|s| s.to_string()).collect();
         ref_dirs.pop();
@@ -3733,16 +4318,15 @@ impl KernelResolver {
     /// matchByExactName (name-matcher.ts).
     fn match_by_exact_name(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
         let bare_js = self.is_bare_js_call(r)?;
-        let all_named: Vec<Rc<KNode>> = self
+        let all_named: Vec<Arc<KNode>> = self
             .nodes_by_name(&r.reference_name)?
             .iter()
             .cloned()
-            .map(Rc::new)
             .collect();
         let mut candidates = self.apply_language_gate(all_named, r);
         candidates.retain(|n| n.kind != "import");
         // Nested locals reachable only from inside their container (#1230).
-        let mut kept: Vec<Rc<KNode>> = Vec::with_capacity(candidates.len());
+        let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
             if self.is_lexically_reachable(&n, r)? {
                 kept.push(n);
@@ -3752,7 +4336,7 @@ impl KernelResolver {
         candidates.retain(|n| !is_inheritance_ref(&r.reference_kind) || is_supertype_target_kind(&n.kind));
         candidates.retain(|n| r.reference_kind != "imports" || is_importable_kind(&n.kind));
         {
-            let mut kept: Vec<Rc<KNode>> = Vec::with_capacity(candidates.len());
+            let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
             for n in candidates.into_iter() {
                 if r.reference_kind != "imports"
                     || n.file_path == r.file_path
@@ -3776,7 +4360,7 @@ impl KernelResolver {
         // `emit Event(...)` legitimately bare-calls an event field.
         // (name-matcher.ts: matchByExactName / isImplicitThisFieldCall)
         {
-            let mut kept: Vec<Rc<KNode>> = Vec::with_capacity(candidates.len());
+            let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
             for n in candidates.into_iter() {
                 if n.kind == "field"
                     && (n.language == "c" || n.language == "cpp")
@@ -3857,14 +4441,13 @@ impl KernelResolver {
             }
         }
         let candidates = self.nodes_by_lower_name(&r.reference_name)?;
-        let callable: Vec<Rc<KNode>> = candidates
+        let callable: Vec<Arc<KNode>> = candidates
             .iter()
             .filter(|n| matches!(n.kind.as_str(), "function" | "method" | "class"))
             .cloned()
-            .map(Rc::new)
             .collect();
         let gated = self.apply_language_gate(callable, r);
-        let same_language: Vec<Rc<KNode>> = gated
+        let same_language: Vec<Arc<KNode>> = gated
             .iter()
             .filter(|n| n.language == r.language)
             .cloned()
@@ -4003,19 +4586,18 @@ impl KernelResolver {
         let normalized = r.reference_name.replace('\\', "/");
         let (path_and_symbol, anchor) = split_anchor(&normalized);
         let (path_wo_anchor, symbol_name) = split_file_symbol(path_and_symbol);
-        if !path_wo_anchor.contains('/') && !FILE_PATH_EXT_RE.is_match(path_wo_anchor) {
+        if !path_wo_anchor.contains('/') && !thread_regex(&FILE_PATH_EXT_RE).is_match(path_wo_anchor) {
             return Ok(None);
         }
         let file_name = pos_basename(path_wo_anchor);
         if file_name.is_empty() {
             return Ok(None);
         }
-        let file_nodes: Vec<Rc<KNode>> = self
+        let file_nodes: Vec<Arc<KNode>> = self
             .nodes_by_name(file_name)?
             .iter()
             .filter(|n| n.kind == "file")
             .cloned()
-            .map(Rc::new)
             .collect();
         if file_nodes.is_empty() {
             return Ok(None);
@@ -4052,7 +4634,7 @@ impl KernelResolver {
                 resolved_by: "file-path",
             }));
         }
-        let suffix_matches: Vec<Rc<KNode>> = file_nodes
+        let suffix_matches: Vec<Arc<KNode>> = file_nodes
             .iter()
             .filter(|n| {
                 n.qualified_name.ends_with(path_wo_anchor) || n.file_path.ends_with(path_wo_anchor)
@@ -4082,9 +4664,9 @@ impl KernelResolver {
         &mut self,
         path_wo_anchor: &str,
         symbol_name: &str,
-        file_nodes: &[Rc<KNode>],
-    ) -> Result<Option<Rc<KNode>>> {
-        let candidate_files: Vec<Rc<KNode>> = file_nodes
+        file_nodes: &[Arc<KNode>],
+    ) -> Result<Option<Arc<KNode>>> {
+        let candidate_files: Vec<Arc<KNode>> = file_nodes
             .iter()
             .filter(|n| {
                 n.qualified_name == path_wo_anchor
@@ -4094,7 +4676,7 @@ impl KernelResolver {
             })
             .cloned()
             .collect();
-        let search: &[Rc<KNode>] = if !candidate_files.is_empty() {
+        let search: &[Arc<KNode>] = if !candidate_files.is_empty() {
             &candidate_files
         } else if file_nodes.len() == 1 {
             file_nodes
@@ -4113,7 +4695,7 @@ impl KernelResolver {
                     || n.qualified_name.ends_with(&colon_tail)
                     || n.qualified_name.ends_with(&dot_tail)
             }) {
-                return Ok(Some(Rc::new(exact.clone())));
+                return Ok(Some(exact.clone()));
             }
             let last_part = normalized_symbol.split(['.', ':']).next_back().unwrap_or("");
             if last_part.is_empty() {
@@ -4126,7 +4708,7 @@ impl KernelResolver {
                         "function" | "method" | "class" | "module" | "constant" | "variable"
                     )
             }) {
-                return Ok(Some(Rc::new(by_last.clone())));
+                return Ok(Some(by_last.clone()));
             }
         }
         Ok(None)
@@ -4138,8 +4720,8 @@ impl KernelResolver {
         &mut self,
         path_wo_anchor: &str,
         anchor: &str,
-        file_nodes: &[Rc<KNode>],
-    ) -> Result<Option<Rc<KNode>>> {
+        file_nodes: &[Arc<KNode>],
+    ) -> Result<Option<Arc<KNode>>> {
         let normalized_anchor = normalize_markdown_anchor(anchor);
         for file_node in file_nodes.iter().filter(|n| {
             n.qualified_name == path_wo_anchor
@@ -4153,7 +4735,7 @@ impl KernelResolver {
                 .iter()
                 .find(|n| n.kind == "module" && n.language == "markdown")
             {
-                return Ok(Some(Rc::new(exact.clone())));
+                return Ok(Some(exact.clone()));
             }
             if let Some(section) = self
                 .nodes_in_file(&file_node.file_path)?
@@ -4164,7 +4746,7 @@ impl KernelResolver {
                         && n.qualified_name == section_qn
                 })
             {
-                return Ok(Some(Rc::new(section.clone())));
+                return Ok(Some(section.clone()));
             }
         }
         Ok(None)
@@ -4204,7 +4786,7 @@ impl KernelResolver {
         if r.language != "php" || r.reference_kind != "calls" {
             return Ok(None);
         }
-        let Some(call) = PHP_STATIC_CALL_RE.captures(&r.reference_name) else {
+        let Some(call) = thread_regex(&PHP_STATIC_CALL_RE).captures(&r.reference_name) else {
             return Ok(None);
         };
         let receiver = call.get(1).unwrap().as_str();
@@ -4222,11 +4804,11 @@ impl KernelResolver {
             Some(sep) => format!("{}::{}", &fqn[..sep], &fqn[sep + 1..]),
             None => fqn.to_string(),
         };
-        let owners: Vec<Rc<KNode>> = self
+        let owners: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&type_name)?
             .iter()
             .filter(|n| n.language == "php" && is_static_member_container(&n.kind))
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         // Claimed: a single owner is required; ambiguity or absence is a
         // terminal refusal, never a name-match fallthrough.
@@ -4235,13 +4817,13 @@ impl KernelResolver {
         }
         let owner = owners[0].clone();
         let member_qn = format!("{}::{}", owner.qualified_name, member);
-        let methods: Vec<Rc<KNode>> = self
+        let methods: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&member_qn)?
             .iter()
             .filter(|n| {
                 n.language == "php" && n.kind == "method" && n.file_path == owner.file_path
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if methods.len() != 1 {
             return Ok(Some(ResolveOutcome::unresolved()));
@@ -4320,7 +4902,7 @@ impl KernelResolver {
     /// normalizeInferredTypeName — strip generics + `&`/`*`, take the last
     /// `.`/`:`-separated segment, reject non-type tokens.
     fn normalize_inferred_type_name(&mut self, raw: &str) -> Result<Option<String>> {
-        let generics = self.cached_regex("<[^>]*>")?;
+        let generics = re!("<[^>]*>");
         let cleaned = generics.replace_all(raw, "");
         let cleaned: String = cleaned
             .chars()
@@ -4350,35 +4932,38 @@ impl KernelResolver {
     fn infer_match_line(
         &mut self,
         line: &str,
-        pats: &[(String, u8)],
+        receiver: &str,
+        pats: &'static [ReceiverPattern],
         preserve: bool,
     ) -> Result<Option<String>> {
         if Self::utf16_len(line) > 10_000 {
             return Ok(None);
         }
-        for (pat, guard) in pats {
-            let re = self.cached_regex(pat)?;
-            for caps in re.captures_iter(line) {
-                let Some(m1) = caps.get(1) else { break };
-                if m1.as_str().is_empty() {
+        for pat in pats {
+            let mut from = 0;
+            while let Some(m) = pat.affix.find_from(line, receiver, from) {
+                let Some((gs, ge)) = m.group else { break };
+                let m1 = &line[gs..ge];
+                if m1.is_empty() {
                     break;
                 }
-                if *guard == 1 {
-                    let rest = &line[caps.get(0).unwrap().end()..];
+                // The next match starts after this one, as captures_iter's does.
+                from = m.end;
+                if pat.guard == 1 {
+                    let rest = &line[m.end..];
                     if rest.chars().next().is_some_and(|c| {
                         c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '$'
                     }) {
                         continue;
                     }
-                    let tail = self.cached_regex(r"^\s*(?:<[^>]*>)?\s*[\[|&]")?;
-                    if tail.is_match(rest) {
+                    if thread_regex(&GUARD1_TAIL_RE).is_match(rest) {
                         continue;
                     }
-                } else if *guard == 2 {
+                } else if pat.guard == 2 {
                     // `(?![\w.]|\s*[({"'\[])` — the greedy capture already
                     // consumed every `[\w.]`, and a shrunk capture would be
                     // followed by one, so the call-form tail is the whole gate.
-                    let rest = &line[caps.get(0).unwrap().end()..];
+                    let rest = &line[m.end..];
                     if rest
                         .chars()
                         .next()
@@ -4386,18 +4971,13 @@ impl KernelResolver {
                     {
                         continue;
                     }
-                    let tail = self.cached_regex(r#"^\s*[({"'\[]"#)?;
-                    if tail.is_match(rest) {
+                    if thread_regex(&GUARD2_TAIL_RE).is_match(rest) {
                         continue;
                     }
                 }
-                match self.normalize_inferred_type_name(m1.as_str())? {
+                match self.normalize_inferred_type_name(m1)? {
                     Some(t) => {
-                        return Ok(Some(if preserve {
-                            m1.as_str().to_string()
-                        } else {
-                            t
-                        }));
+                        return Ok(Some(if preserve { m1.to_string() } else { t }));
                     }
                     None => break,
                 }
@@ -4421,18 +5001,17 @@ impl KernelResolver {
         let mut component_scoped = false;
         let mut php_property = false;
         if site.language == "php" {
-            let re = self.cached_regex("^this->(.+)$")?;
+            let re = re!("^this->(.+)$");
             if let Some(m) = re.captures(&scan_receiver) {
                 scan_receiver = m[1].to_string();
                 component_scoped = true;
                 php_property = true;
             }
         }
-        let escaped = regex::escape(&scan_receiver);
-        let pats = if php_property {
-            php_property_type_patterns(&escaped)
+        let pats: &'static [ReceiverPattern] = if php_property {
+            &PHP_PROPERTY_TYPE_PATTERNS
         } else {
-            local_receiver_type_patterns(&site.language, &escaped)
+            local_receiver_type_patterns(&site.language)
         };
         if pats.is_empty() {
             return Ok(None);
@@ -4455,19 +5034,19 @@ impl KernelResolver {
             call_idx.min((scope - 1).max(0) as usize)
         };
         for i in (start_idx..=call_idx).rev() {
-            if let Some(t) = self.infer_match_line(&lines[i], &pats, preserve)? {
+            if let Some(t) = self.infer_match_line(&lines[i], &scan_receiver, pats, preserve)? {
                 return Ok(Some(t));
             }
         }
         if component_scoped {
             for line in lines.iter().skip(call_idx + 1) {
-                if let Some(t) = self.infer_match_line(line, &pats, preserve)? {
+                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve)? {
                     return Ok(Some(t));
                 }
             }
         }
         if php_property {
-            return self.infer_php_assigned_property_type(&escaped, &lines, call_idx);
+            return self.infer_php_assigned_property_type(&scan_receiver, &lines, call_idx);
         }
         Ok(None)
     }
@@ -4476,15 +5055,14 @@ impl KernelResolver {
     /// typing through the assigned variable's own declaration.
     fn infer_php_assigned_property_type(
         &mut self,
-        escaped_prop: &str,
+        prop: &str,
         lines: &[String],
         call_idx: usize,
     ) -> Result<Option<String>> {
-        let assign_re = self.cached_regex(&format!(
-            r"\$this->{}(?-u:\b)\s*=\s*\$([A-Za-z0-9_]+)(?-u:\b)",
-            escaped_prop
-        ))?;
-        let func_re = self.cached_regex(r"(?-u:\b)function(?-u:\b)")?;
+        // `\$this->PROP\b\s*=\s*\$([A-Za-z0-9_]+)\b`
+        static ASSIGN: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new(r"\$this->", r"\s*=\s*\$([A-Za-z0-9_]+)(?-u:\b)", false, true, false));
+        let func_re = re!(r"(?-u:\b)function(?-u:\b)");
         let mut assign_idx: Option<usize> = None;
         let mut var_name: Option<String> = None;
         for i in (0..=call_idx).rev() {
@@ -4492,9 +5070,9 @@ impl KernelResolver {
             if line.is_empty() || Self::utf16_len(line) > 10_000 {
                 continue;
             }
-            if let Some(m) = assign_re.captures(line) {
+            if let Some(var) = ASSIGN.capture(line, prop) {
                 assign_idx = Some(i);
-                var_name = Some(m[1].to_string());
+                var_name = Some(var.to_string());
                 break;
             }
         }
@@ -4503,9 +5081,9 @@ impl KernelResolver {
                 if line.is_empty() || Self::utf16_len(line) > 10_000 {
                     continue;
                 }
-                if let Some(m) = assign_re.captures(line) {
+                if let Some(var) = ASSIGN.capture(line, prop) {
                     assign_idx = Some(i);
-                    var_name = Some(m[1].to_string());
+                    var_name = Some(var.to_string());
                     break;
                 }
             }
@@ -4513,11 +5091,11 @@ impl KernelResolver {
         let (Some(ai), Some(vn)) = (assign_idx, var_name) else {
             return Ok(None);
         };
-        let pats = local_receiver_type_patterns("php", &regex::escape(&vn));
+        let pats = local_receiver_type_patterns("php");
         for i in (0..=ai).rev() {
             let line = &lines[i];
             if !line.is_empty() && Self::utf16_len(line) <= 10_000 {
-                if let Some(t) = self.infer_match_line(line, &pats, false)? {
+                if let Some(t) = self.infer_match_line(line, &vn, pats, false)? {
                     return Ok(Some(t));
                 }
             }
@@ -4531,11 +5109,10 @@ impl KernelResolver {
     /// normalizeCppTypeName — strip cv-qualifiers/keywords, refs, generics;
     /// take the last `::` segment (or the qualified name when preserving).
     fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Result<Option<String>> {
-        let kw = self
-            .cached_regex(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")?
+        let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")
             .replace_all(raw, " ");
-        let no_ref = self.cached_regex(r"[&*]+")?.replace_all(&kw, " ");
-        let no_gen = self.cached_regex(r"<[^>]*>")?.replace_all(&no_ref, " ");
+        let no_ref = re!(r"[&*]+").replace_all(&kw, " ");
+        let no_gen = re!(r"<[^>]*>").replace_all(&no_ref, " ");
         let normalized = no_gen.split_whitespace().collect::<Vec<_>>().join(" ");
         if normalized.is_empty() {
             return Ok(None);
@@ -4598,10 +5175,9 @@ impl KernelResolver {
         }
         let call_idx = (r.line - 1).clamp(0, lines.len() as i64 - 1) as usize;
         let escaped = regex::escape(receiver);
-        let receiver_re = self.cached_regex(&format!(r"(?-u:\b){}(?-u:\b)", escaped))?;
         for i in (0..=call_idx).rev() {
             let line = &lines[i];
-            if line.is_empty() || !receiver_re.is_match(line) {
+            if line.is_empty() || !has_word(line, receiver) {
                 continue;
             }
             if let Some(decl) = self.cpp_declarator_match(line, &escaped)? {
@@ -4620,7 +5196,7 @@ impl KernelResolver {
                 }
             }
         }
-        let ext_re = self.cached_regex(r"(?i)\.(?:c|cc|cpp|cxx)$")?;
+        let ext_re = re!(r"(?i)\.(?:c|cc|cpp|cxx)$");
         let mut header_candidates: Vec<String> = Vec::new();
         for ext in [".h", ".hpp", ".hxx"] {
             let candidate = ext_re.replace(&r.file_path, ext).to_string();
@@ -4636,7 +5212,7 @@ impl KernelResolver {
                 continue;
             };
             for line in header_lines.iter() {
-                if !receiver_re.is_match(line) {
+                if !has_word(line, receiver) {
                     continue;
                 }
                 let Some(decl) = self.cpp_declarator_match(line, &escaped)? else {
@@ -4660,17 +5236,16 @@ impl KernelResolver {
         r: &ResolveRefIn,
         depth: u32,
     ) -> Result<Option<String>> {
-        let m = self
-            .cached_regex(&format!(r"(?-u:\b){}(?-u:\b)\s*=\s*([^;]+)", regex::escape(receiver)))?
-            .captures(line)
-            .and_then(|c| c.get(1).map(|g| g.as_str().trim().to_string()));
-        let Some(init) = m else { return Ok(None) };
-        let neu = self.cached_regex(r"^new\s+([A-Za-z_][A-Za-z0-9_:]*)")?;
+        // `\bRECV\b\s*=\s*([^;]+)`
+        static INIT: LazyLock<Affix> = LazyLock::new(|| Affix::new("", r"\s*=\s*([^;]+)", true, true, false).lead(b"="));
+        let Some(init) = INIT.capture(line, receiver).map(|s| s.trim().to_string()) else {
+            return Ok(None);
+        };
+        let neu = re!(r"^new\s+([A-Za-z_][A-Za-z0-9_:]*)");
         if let Some(n) = neu.captures(&init) {
             return Ok(Some(Self::cpp_last_segment(&n[1])));
         }
-        let call = self
-            .cached_regex(r"^([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^>;]*>)?)\s*\(")?;
+        let call = re!(r"^([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^>;]*>)?)\s*\(");
         if let Some(c) = call.captures(&init) {
             let collapsed: String = c[1].split_whitespace().collect();
             return self.resolve_cpp_call_result_type(&collapsed, r, depth + 1);
@@ -4690,8 +5265,7 @@ impl KernelResolver {
             return Ok(None);
         }
         let expr = inner.trim();
-        let make = self
-            .cached_regex(r"(?:^|::)(?:make_unique|make_shared)\s*<\s*([A-Za-z_][A-Za-z0-9_]*)")?;
+        let make = re!(r"(?:^|::)(?:make_unique|make_shared)\s*<\s*([A-Za-z_][A-Za-z0-9_]*)");
         if let Some(m) = make.captures(expr) {
             return Ok(Some(m[1].to_string()));
         }
@@ -4735,7 +5309,7 @@ impl KernelResolver {
         } else {
             (callee.to_string(), None)
         };
-        let candidates: Vec<KNode> = self
+        let candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(&method)?
             .iter()
             .filter(|n| {
@@ -4795,7 +5369,7 @@ impl KernelResolver {
     /// return type is the receiver's type (#645); resolveMethodOnType
     /// validates, so a wrong inference yields no edge.
     fn match_cpp_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
-        let Some(m) = CALL_CHAIN_RE.captures(&r.reference_name) else {
+        let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
             return Ok(McRes::Null);
         };
         let inner = m.get(1).unwrap().as_str();
@@ -4810,7 +5384,7 @@ impl KernelResolver {
     /// (PHP `Cls::for($x)->m()`, Rust `Foo::new().bar()`); a `self` return
     /// marker resolves to the factory's own class (#608).
     fn match_scoped_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
-        let Some(m) = CALL_CHAIN_RE.captures(&r.reference_name) else {
+        let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
             return Ok(McRes::Null);
         };
         let inner = m.get(1).unwrap().as_str();
@@ -4831,7 +5405,7 @@ impl KernelResolver {
     /// (#645/#608). The Go bare-name fallback (exactName/fuzzy) is unported —
     /// the member-tail punt reproduces it.
     fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
-        let Some(m) = CALL_CHAIN_RE.captures(&r.reference_name) else {
+        let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
             return Ok(McRes::Null);
         };
         let inner = m.get(1).unwrap().as_str();
@@ -4922,7 +5496,7 @@ impl KernelResolver {
             return Ok(None);
         }
         let best = if candidates.len() == 1 {
-            Rc::new(candidates[0].clone())
+            candidates[0].clone()
         } else {
             Self::pick_closest_jvm_candidate(&candidates, &r.file_path)
         };
@@ -4935,7 +5509,7 @@ impl KernelResolver {
 
     /// pickClosestJvmCandidate — shared-directory-prefix proximity, Kotlin
     /// Multiplatform `expect` preferred on a tie.
-    fn pick_closest_jvm_candidate(candidates: &[KNode], from_path: &str) -> Rc<KNode> {
+    fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &str) -> Arc<KNode> {
         let from_dirs: Vec<&str> = from_path.split('/').collect();
         let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
         let shared = |p: &str| -> usize {
@@ -4961,7 +5535,7 @@ impl KernelResolver {
                 best_prox = prox;
             }
         }
-        Rc::new(best.clone())
+        best.clone()
     }
 
     /// resolveBoundType — the declared type's owner node: Java type-parameter
@@ -4978,7 +5552,7 @@ impl KernelResolver {
         }
         if r.language == "java" {
             let in_file = self.nodes_in_file(&r.file_path)?;
-            let mut scopes: Vec<&KNode> = in_file
+            let mut scopes: Vec<&Arc<KNode>> = in_file
                 .iter()
                 .filter(|n| {
                     matches!(n.kind.as_str(), "class" | "interface" | "method")
@@ -4994,7 +5568,7 @@ impl KernelResolver {
                     .then(b.start_column.cmp(&a.start_column))
             });
             let bound_re =
-                self.cached_regex(r"^[A-Za-z0-9_]+\s+extends\s+([A-Za-z0-9_.]+)$")?;
+                re!(r"^[A-Za-z0-9_]+\s+extends\s+([A-Za-z0-9_.]+)$");
             for scope in scopes {
                 let decl = scope.type_parameters.as_ref().and_then(|tps| {
                     tps.iter().find(|p| {
@@ -5050,7 +5624,7 @@ impl KernelResolver {
                 owner_id = b.node_id.clone();
             }
         }
-        let mut owner: Option<Rc<KNode>> = match &owner_id {
+        let mut owner: Option<Arc<KNode>> = match &owner_id {
             Some(id) => self.node_by_id(id)?,
             None => None,
         };
@@ -5063,7 +5637,7 @@ impl KernelResolver {
                     }
                     _ => stripped.to_string(),
                 };
-                let owners: Vec<KNode> = self
+                let owners: Vec<Arc<KNode>> = self
                     .nodes_by_qualified_name(&qualified)?
                     .iter()
                     .filter(|n| {
@@ -5073,7 +5647,7 @@ impl KernelResolver {
                     .cloned()
                     .collect();
                 owner = if owners.len() == 1 {
-                    Some(Rc::new(owners[0].clone()))
+                    Some(owners[0].clone())
                 } else {
                     None
                 };
@@ -5085,7 +5659,7 @@ impl KernelResolver {
             } else {
                 self.nodes_by_name(ty)?
             };
-            let mut candidates: Vec<Rc<KNode>> = Vec::new();
+            let mut candidates: Vec<Arc<KNode>> = Vec::new();
             for n in raw.iter() {
                 if !matches!(
                     n.kind.as_str(),
@@ -5096,9 +5670,9 @@ impl KernelResolver {
                 if !self.is_visible_across_files(n, r)? {
                     continue;
                 }
-                candidates.push(Rc::new(n.clone()));
+                candidates.push(n.clone());
             }
-            let local: Vec<Rc<KNode>> = candidates
+            let local: Vec<Arc<KNode>> = candidates
                 .iter()
                 .filter(|n| n.file_path == r.file_path)
                 .cloned()
@@ -5120,7 +5694,7 @@ impl KernelResolver {
                     packages.insert(0, ns.clone());
                 }
             }
-            let package_candidates: Vec<Rc<KNode>> = candidates
+            let package_candidates: Vec<Arc<KNode>> = candidates
                 .into_iter()
                 .filter(|n| {
                     if r.language == "python" {
@@ -5183,7 +5757,7 @@ impl KernelResolver {
             BtRes::Null => return Ok(McRes::Null),
             BtRes::Punt(p) => return Ok(McRes::Punt(p)),
         };
-        let members: Vec<Rc<KNode>> = self
+        let members: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method))?
             .iter()
             .filter(|n| {
@@ -5199,7 +5773,7 @@ impl KernelResolver {
                             && pos_dirname(&n.file_path) == pos_dirname(&owner.file_path))
                         || site.language == "cpp")
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         let member = if members.len() == 1 {
             members.into_iter().next()
@@ -5235,7 +5809,7 @@ impl KernelResolver {
         preferred_fqn: Option<&str>,
     ) -> Result<McRes> {
         let want = format!("{}::{}", type_name, method);
-        let matches: Vec<Rc<KNode>> = self
+        let matches: Vec<Arc<KNode>> = self
             .nodes_by_name(method)?
             .iter()
             .filter(|m| {
@@ -5244,7 +5818,7 @@ impl KernelResolver {
                     && (m.qualified_name == want
                         || m.qualified_name.ends_with(&format!("::{}", want)))
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if matches.is_empty() {
             return Ok(McRes::Punt("rmot-supers"));
@@ -5321,12 +5895,11 @@ impl KernelResolver {
         if type_raw.is_empty() {
             return Ok(None);
         }
-        let no_generics = self.cached_regex(r"<[^>]*>")?.replace_all(type_raw, "");
-        let no_array = self
-            .cached_regex(r"\[\s*\]")?
+        let no_generics = re!(r"<[^>]*>").replace_all(type_raw, "");
+        let no_array = re!(r"\[\s*\]")
             .replace_all(&no_generics, "")
             .to_string();
-        let no_varargs = self.cached_regex(r"\.\.\.$")?.replace(&no_array, "");
+        let no_varargs = re!(r"\.\.\.$").replace(&no_array, "");
         let Some(last) = no_varargs
             .split(|c: char| c == '.' || c.is_whitespace())
             .rfind(|s| !s.is_empty())
@@ -5351,7 +5924,7 @@ impl KernelResolver {
         let bindings = self.bindings(&r.file_path)?;
         let mut binding = Self::innermost_binding(&bindings, receiver, Some(r.line)).cloned();
         if binding.is_none() {
-            let mut values: Vec<Rc<KNode>> = Vec::new();
+            let mut values: Vec<Arc<KNode>> = Vec::new();
             for n in self.nodes_by_name(receiver)?.iter() {
                 if n.language != "go"
                     || !matches!(n.kind.as_str(), "variable" | "constant")
@@ -5364,7 +5937,7 @@ impl KernelResolver {
                     .iter()
                     .any(|row| row.node_id.as_deref() == Some(n.id.as_str()) && row.kind == "decl")
                 {
-                    values.push(Rc::new(n.clone()));
+                    values.push(n.clone());
                 }
             }
             if values.len() != 1 {
@@ -5382,32 +5955,27 @@ impl KernelResolver {
             .read_file(&site.file_path)
             .and_then(|ls| ls.get((binding.line - 1) as usize).cloned())
             .unwrap_or_default();
-        let escaped = regex::escape(receiver);
+        // `\bRECV\s+\*?TYPE(?:\s*[,)]|\s*$)` / `\bRECV\s+\*?TYPE\s*(?:=|$)`
+        static PARAM_TYPE: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)", true, false, false));
+        static VAR_TYPE: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", true, false, false));
         let value = match &binding.node_id {
             Some(id) => self.node_by_id(id)?,
             None => None,
         };
         let ty = if binding.kind == "param" {
-            self.cached_regex(&format!(
-                r"(?-u:\b){}\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)",
-                escaped
-            ))?
-            .captures(&declaration)
-            .and_then(|c| c.get(1).map(|g| g.as_str().to_string()))
+            PARAM_TYPE.capture(&declaration, receiver).map(str::to_string)
         } else {
             let sig_ty = match value.as_ref().and_then(|v| v.signature.as_deref()) {
-                Some(sig) => self
-                    .cached_regex(r"^=\s*&?([A-Za-z0-9_.]+)\s*\{")?
+                Some(sig) => re!(r"^=\s*&?([A-Za-z0-9_.]+)\s*\{")
                     .captures(sig)
                     .and_then(|c| c.get(1).map(|g| g.as_str().to_string())),
                 None => None,
             };
             match sig_ty {
                 Some(t) => Some(t),
-                None => self
-                    .cached_regex(&format!(r"(?-u:\b){}\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", escaped))?
-                    .captures(&declaration)
-                    .and_then(|c| c.get(1).map(|g| g.as_str().to_string())),
+                None => VAR_TYPE.capture(&declaration, receiver).map(str::to_string),
             }
         };
         if let Some(ty) = ty {
@@ -5422,9 +5990,7 @@ impl KernelResolver {
         if binding.kind == "param" {
             return Ok(McRes::Null);
         }
-        let assign_re = self.cached_regex(
-            r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(",
-        )?;
+        let assign_re = re!(r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(");
         let site_bindings = self.bindings(&site.file_path)?;
         for caps in assign_re.captures_iter(&declaration) {
             let names: Vec<String> = caps[1]
@@ -5444,7 +6010,7 @@ impl KernelResolver {
                 Some(binding.line),
             )
             .cloned();
-            let mut callee: Option<Rc<KNode>> = None;
+            let mut callee: Option<Arc<KNode>> = None;
             match &factory_binding {
                 Some(b) if b.kind == "import" => {
                     let via = if name.contains('.') {
@@ -5467,7 +6033,7 @@ impl KernelResolver {
                 }
                 None => {
                     if !name.contains('.') {
-                        let cands: Vec<Rc<KNode>> = self
+                        let cands: Vec<Arc<KNode>> = self
                             .nodes_by_name(&name)?
                             .iter()
                             .filter(|n| {
@@ -5476,7 +6042,7 @@ impl KernelResolver {
                                     && pos_dirname(&n.file_path)
                                         == pos_dirname(&site.file_path)
                             })
-                            .map(|n| Rc::new(n.clone()))
+                            .cloned()
                             .collect();
                         if cands.len() == 1 {
                             callee = Some(cands[0].clone());
@@ -5484,7 +6050,7 @@ impl KernelResolver {
                     }
                 }
             }
-            let ret_shape = self.cached_regex(r"^\*?[A-Za-z0-9_.]+$")?;
+            let ret_shape = re!(r"^\*?[A-Za-z0-9_.]+$");
             let valid = callee.as_ref().is_some_and(|c| {
                 c.kind == "function"
                     && c.return_type
@@ -5525,17 +6091,16 @@ impl KernelResolver {
         let Some(base_type) = self.infer_local_receiver_type(base, r, false)? else {
             return Ok(McRes::Null);
         };
-        let field_re = self.cached_regex(&format!(
-            r"(?-u:\b){}\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)",
-            regex::escape(field)
-        ))?;
-        let structs: Vec<Rc<KNode>> = prefer_call_site_file(
+        // `\bFIELD\s+\*?\[?\]?TYPE`
+        static FIELD_TYPE: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new("", r"\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)", true, false, false));
+        let structs: Vec<Arc<KNode>> = prefer_call_site_file(
             self.nodes_by_name(&base_type)?
                 .iter()
                 .filter(|n| {
                     matches!(n.kind.as_str(), "struct" | "class") && n.language == "go"
                 })
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect(),
             &r.file_path,
         );
@@ -5547,10 +6112,9 @@ impl KernelResolver {
             let end = (s.end_line as usize).min(source.len());
             for raw in &source[start..end] {
                 let line = strip_line_comments(raw);
-                let Some(m) = field_re.captures(&line) else {
+                let Some(raw_type) = FIELD_TYPE.capture(&line, field).map(str::to_string) else {
                     continue;
                 };
-                let raw_type = m[1].to_string();
                 if raw_type.contains('.') {
                     let pkg = raw_type.split('.').next().unwrap_or("");
                     let in_module = match self.go_module_path.clone() {
@@ -5606,55 +6170,31 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Result<McRes> {
-        let field_esc = regex::escape(field);
-        let pats: Vec<(String, bool)> = vec![
-            (
-                format!(
-                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
-                    field_esc
-                ),
-                true,
-            ),
-            (
-                format!(
-                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
-                    field_esc
-                ),
-                false,
-            ),
-            (
-                format!(
-                    r"(?-u:\b){}(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
-                    field_esc
-                ),
-                false,
-            ),
-        ];
         let Some(source) = self.read_file(&owner.file_path) else {
             return Ok(McRes::Null);
         };
-        let tail_re = self.cached_regex(r"^[\s]*(?:<[^>]*>)?\s*[\[|&]")?;
+        let tail_re = re!(r"^[\s]*(?:<[^>]*>)?\s*[\[|&]");
         let start = (owner.start_line - 1).max(0) as usize;
         let end = (owner.end_line as usize).min(source.len());
         for raw in &source[start..end] {
             let line = strip_line_comments(raw);
-            for (pat, value_type) in &pats {
-                let re = self.cached_regex(pat)?;
-                let Some(caps) = re.captures(&line) else {
+            for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
+                let Some(m) = affix.find_from(&line, field, 0) else {
                     continue;
                 };
-                let Some(m1) = caps.get(1) else { continue };
-                if m1.as_str().is_empty() {
+                let Some((gs, ge)) = m.group else { continue };
+                let m1 = &line[gs..ge];
+                if m1.is_empty() {
                     continue;
                 }
-                if tail_re.is_match(&line[caps.get(0).unwrap().end()..]) {
+                if tail_re.is_match(&line[m.end..]) {
                     return Ok(McRes::Null);
                 }
                 if *value_type {
                     let cls_bindings = self.bindings(&owner.file_path)?;
                     let row = Self::innermost_binding(
                         &cls_bindings,
-                        m1.as_str(),
+                        m1,
                         Some(owner.start_line),
                     )
                     .cloned();
@@ -5663,7 +6203,7 @@ impl KernelResolver {
                             let mut ref2 = Self::ref_clone(r);
                             ref2.file_path = owner.file_path.clone();
                             ref2.line = owner.start_line;
-                            ref2.reference_name = m1.as_str().to_string();
+                            ref2.reference_name = m1.to_string();
                             ref2.reference_kind = "references".to_string();
                             match self.resolve_via_import_member(&ref2)? {
                                 ViaImport::Hit(c) => Some(c.node.id.clone()),
@@ -5692,7 +6232,7 @@ impl KernelResolver {
                         None => McRes::Null,
                     });
                 }
-                let type_name = m1.as_str().split('.').next_back().unwrap_or("");
+                let type_name = m1.split('.').next_back().unwrap_or("");
                 if !type_name
                     .chars()
                     .next()
@@ -5704,7 +6244,7 @@ impl KernelResolver {
                 bsite.file_path = owner.file_path.clone();
                 bsite.line = owner.start_line;
                 return Ok(match self.match_bound_type_member(
-                    m1.as_str(),
+                    m1,
                     method,
                     &bsite,
                 )? {
@@ -5734,19 +6274,19 @@ impl KernelResolver {
         }
         let owner = &caller.qualified_name[..sep];
         let want = format!("{}::{}", owner, method);
-        let mut owned: Vec<Rc<KNode>> = self
+        let mut owned: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&want)?
             .iter()
             .filter(|n| {
                 n.kind == "method" && n.language == "rust" && n.qualified_name == want
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         // Rust qualified names omit module paths — two modules can declare
         // the same `Target`. Require one owner declaration in the caller's
         // file and the method there too; a unique owner still permits impl
         // blocks split across files.
-        let owners: Vec<Rc<KNode>> = self
+        let owners: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(owner)?
             .iter()
             .filter(|n| {
@@ -5756,7 +6296,7 @@ impl KernelResolver {
                         "struct" | "enum" | "union" | "trait" | "class"
                     )
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if owners.len() > 1 {
             if owners.iter().filter(|n| n.file_path == caller.file_path).count() != 1 {
@@ -5790,7 +6330,7 @@ impl KernelResolver {
             return Ok(McRes::Null);
         }
 
-        let strip = self.cached_regex(r"<[^>]*>")?;
+        let strip = re!(r"<[^>]*>");
         let name = strip.replace_all(&r.reference_name, "");
         let segs: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
         if segs[0] != "Self" || (segs.len() != 2 && segs.len() != 3) {
@@ -5822,7 +6362,7 @@ impl KernelResolver {
         // declared return type binds the tail (`-> Self` means the
         // RECEIVER's owner, not the caller's). Only an empty-arg call
         // chain is read; anything else declines.
-        let chain_re = self.cached_regex(r"^(\w+)\(\)\.(\w+)$")?;
+        let chain_re = re!(r"^(\w+)\(\)\.(\w+)$");
         if let Some(chained) = chain_re.captures(&leaf) {
             const METHOD: &[&str] = &["method"];
             let Some(recv) = self.resolve_rust_self_member(&owner, &chained[1], &caller, METHOD)?
@@ -5873,11 +6413,11 @@ impl KernelResolver {
         &mut self,
         owner: &str,
         leaf: &str,
-        caller: &Rc<KNode>,
+        caller: &Arc<KNode>,
         kinds: &[&str],
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         let want = format!("{}::{}", owner, leaf);
-        let mut owned: Vec<Rc<KNode>> = self
+        let mut owned: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&want)?
             .iter()
             .filter(|n| {
@@ -5885,9 +6425,9 @@ impl KernelResolver {
                     && n.language == "rust"
                     && n.qualified_name == want
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
-        let owners: Vec<Rc<KNode>> = self
+        let owners: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(owner)?
             .iter()
             .filter(|n| {
@@ -5897,7 +6437,7 @@ impl KernelResolver {
                         "struct" | "enum" | "union" | "trait" | "class"
                     )
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if owners.len() > 1 {
             if owners.iter().filter(|n| n.file_path == caller.file_path).count() != 1 {
@@ -5931,7 +6471,7 @@ impl KernelResolver {
             Some(0) | None => return Ok(None),
             Some(s) => &caller.qualified_name[..s],
         };
-        let mut owners: Vec<Rc<KNode>> = self
+        let mut owners: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(owner)?
             .iter()
             .filter(|n| {
@@ -5939,7 +6479,7 @@ impl KernelResolver {
                     && TYPE_KINDS.contains(&n.kind.as_str())
                     && n.qualified_name == owner
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if owners.len() > 1 {
             owners.retain(|n| n.file_path == caller.file_path);
@@ -5964,7 +6504,7 @@ impl KernelResolver {
     /// on the opener line) and normalized like any inferred type name.
     fn rust_assoc_type_binding(
         &mut self,
-        caller: &Rc<KNode>,
+        caller: &Arc<KNode>,
         assoc_name: &str,
     ) -> Result<Option<String>> {
         let Some(lines) = self.read_file(&caller.file_path) else {
@@ -5995,7 +6535,7 @@ impl KernelResolver {
                 break;
             }
         }
-        let impl_re = self.cached_regex(r"(?-u:\b)impl(?-u:\b)")?;
+        let impl_re = re!(r"(?-u:\b)impl(?-u:\b)");
         // Single-line impls put the opener on the caller's own line
         // (`impl T { type A = X; fn m(&self) { ... } }`).
         if block_idx < 0 {
@@ -6035,18 +6575,17 @@ impl KernelResolver {
         }
         // Forward: `type <assoc> = X;` is a direct member — match at depth 1
         // or on the opener line itself, stop when the block closes.
-        let type_re = self.cached_regex(&format!(
-            r"(?-u:\b)type\s+{}\s*=\s*([^;]+);",
-            regex::escape(assoc_name)
-        ))?;
+        // `\btype\s+ASSOC\s*=\s*([^;]+);`
+        static ASSOC_TYPE: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new(r"(?-u:\b)type\s+", r"\s*=\s*([^;]+);", false, false, false));
         depth = 0;
         let mut opened = false;
         let mut bound: Option<String> = None;
         for i in block_idx..lines.len() as i64 {
             let code = at(i);
             if (opened && depth == 1) || (i == block_idx && code.contains('{')) {
-                if let Some(m) = type_re.captures(&code) {
-                    bound = Some(m.get(1).unwrap().as_str().to_string());
+                if let Some(t) = ASSOC_TYPE.capture(&code, assoc_name) {
+                    bound = Some(t.to_string());
                     break;
                 }
             }
@@ -6100,14 +6639,13 @@ impl KernelResolver {
                     matches!(n.kind.as_str(), "struct" | "union" | "class")
                         && n.language == "rust"
                 })
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect(),
             &r.file_path,
         );
-        let field_re = self.cached_regex(&format!(
-            r"(?-u:\b){}\s*:\s*([^,{{}}]+)",
-            regex::escape(field)
-        ))?;
+        // `\bFIELD\s*:\s*([^,{}]+)`
+        static RUST_FIELD_TYPE: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new("", r"\s*:\s*([^,{}]+)", true, false, false).lead(b":"));
         for s in owners {
             let Some(source) = self.read_file(&s.file_path) else {
                 continue;
@@ -6115,13 +6653,13 @@ impl KernelResolver {
             let start = (s.start_line - 1).max(0) as usize;
             let end = (s.end_line as usize).min(source.len());
             for raw in &source[start..end] {
-                let line = RUST_LINE_COMMENTS.replace_all(raw, "");
-                let Some(m) = field_re.captures(&line) else {
+                let line = thread_regex(&RUST_LINE_COMMENTS).replace_all(raw, "");
+                let Some(declared) = RUST_FIELD_TYPE.capture(&line, field) else {
                     continue;
                 };
                 // The field is declared here; whether or not its type names a
                 // project symbol, this owner is the answer — terminal.
-                let Some(field_type) = rust_field_type_name(&m[1]) else {
+                let Some(field_type) = rust_field_type_name(declared) else {
                     return Ok(McRes::Null);
                 };
                 return self.resolve_method_on_type(
@@ -6189,34 +6727,10 @@ impl KernelResolver {
                     matches!(n.kind.as_str(), "class" | "component")
                         && same_language_family(&n.language, &r.language)
                 })
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect(),
             &r.file_path,
         );
-        let field_esc = regex::escape(field);
-        let pats: Vec<(String, bool)> = vec![
-            (
-                format!(
-                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
-                    field_esc
-                ),
-                true,
-            ),
-            (
-                format!(
-                    r"(?-u:\b){}(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
-                    field_esc
-                ),
-                false,
-            ),
-            (
-                format!(
-                    r"(?-u:\b){}(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
-                    field_esc
-                ),
-                false,
-            ),
-        ];
         for cls in &owners {
             let Some(source) = self.read_file(&cls.file_path) else {
                 continue;
@@ -6225,13 +6739,13 @@ impl KernelResolver {
             let end = (cls.end_line as usize).min(source.len());
             for raw in &source[start..end] {
                 let line = strip_line_comments(raw);
-                for (pat, value_type) in &pats {
-                    let re = self.cached_regex(pat)?;
-                    let Some(caps) = re.captures(&line) else {
+                for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
+                    let Some(m) = affix.find_from(&line, field, 0) else {
                         continue;
                     };
-                    let Some(m1) = caps.get(1) else { continue };
-                    if m1.as_str().is_empty() {
+                    let Some((gs, ge)) = m.group else { continue };
+                    let m1 = &line[gs..ge];
+                    if m1.is_empty() {
                         continue;
                     }
                     // No tail_re check — that guard is `boundOwner &&` in TS.
@@ -6239,7 +6753,7 @@ impl KernelResolver {
                         // `field: typeof Ns` — the namespace value's members
                         // are bare-named functions inside a const/variable.
                         let holder_name =
-                            m1.as_str().split('.').next_back().unwrap_or("");
+                            m1.split('.').next_back().unwrap_or("");
                         let holders = prefer_call_site_file(
                             self.nodes_by_name(holder_name)?
                                 .iter()
@@ -6247,7 +6761,7 @@ impl KernelResolver {
                                     matches!(n.kind.as_str(), "constant" | "variable")
                                         && same_language_family(&n.language, &r.language)
                                 })
-                                .map(|n| Rc::new(n.clone()))
+                                .cloned()
                                 .collect(),
                             &r.file_path,
                         );
@@ -6266,7 +6780,7 @@ impl KernelResolver {
                     }
                     // `ns.Mailer` → `Mailer`; a primitive or builtin names no
                     // project type.
-                    let type_name = m1.as_str().split('.').next_back().unwrap_or("");
+                    let type_name = m1.split('.').next_back().unwrap_or("");
                     if !type_name
                         .chars()
                         .next()
@@ -6277,7 +6791,7 @@ impl KernelResolver {
                     // Two apps in one repo may each declare the type. Among
                     // its declarations of the method prefer the one closest
                     // to the call site's directory — never index order.
-                    let declared: Vec<Rc<KNode>> = self
+                    let declared: Vec<Arc<KNode>> = self
                         .nodes_by_name(method)?
                         .iter()
                         .filter(|n| {
@@ -6287,7 +6801,7 @@ impl KernelResolver {
                                     || n.qualified_name
                                         .ends_with(&format!("::{type_name}::{method}")))
                         })
-                        .map(|n| Rc::new(n.clone()))
+                        .cloned()
                         .collect();
                     if declared.len() > 1 {
                         let call_dirs: Vec<&str> = {
@@ -6309,7 +6823,7 @@ impl KernelResolver {
                         };
                         let max_shared =
                             declared.iter().map(|n| shared(&n.file_path)).max().unwrap_or(0);
-                        let nearest: Vec<&Rc<KNode>> = declared
+                        let nearest: Vec<&Arc<KNode>> = declared
                             .iter()
                             .filter(|n| shared(&n.file_path) == max_shared)
                             .collect();
@@ -6352,16 +6866,16 @@ impl KernelResolver {
             Some(id) => self.node_by_id(id)?,
             None => None,
         };
-        let escaped = regex::escape(root);
+        // `\b(?:const|let|var)\s+ROOT\s*=` and its `(=…)` capture form.
+        static DECLARES: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=", false, false, false));
+        static DECLARED_INIT: LazyLock<Affix> =
+            LazyLock::new(|| Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*(=[\s\S]+)", false, false, false));
         let lines = self.read_file(&r.file_path);
-        let declares_re = self.cached_regex(&format!(
-            r"(?-u:\b)(?:const|let|var)\s+{}\s*=",
-            escaped
-        ))?;
         let declares_value = lines
             .as_ref()
             .and_then(|ls| ls.get((binding.line - 1) as usize))
-            .is_some_and(|l| declares_re.is_match(l));
+            .is_some_and(|l| DECLARES.is_match(l, root));
         let declaration = if declares_value {
             lines.as_ref().map(|ls| {
                 let lo = (binding.line - 1).max(0) as usize;
@@ -6373,15 +6887,9 @@ impl KernelResolver {
         };
         let signature = match value.as_ref().and_then(|v| v.signature.clone()) {
             Some(s) => Some(s),
-            None => {
-                let sig_re = self.cached_regex(&format!(
-                    r"(?-u:\b)(?:const|let|var)\s+{}\s*(=[\s\S]+)",
-                    escaped
-                ))?;
-                declaration
-                    .as_deref()
-                    .and_then(|d| sig_re.captures(d).map(|c| c[1].to_string()))
-            }
+            None => declaration
+                .as_deref()
+                .and_then(|d| DECLARED_INIT.capture(d, root).map(str::to_string)),
         };
         let init = signature.unwrap_or_default();
         // parensEnd — UTF-16 unit index one past the ')' that closes the '('
@@ -6433,12 +6941,12 @@ impl KernelResolver {
             }
             false
         };
-        let awaited_re = self.cached_regex(r"^=\s*await(?-u:\b)")?;
+        let awaited_re = re!(r"^=\s*await(?-u:\b)");
         let awaited = awaited_re.is_match(&init);
         let mut callee_name: Option<String> = None;
         let mut owner_name: Option<String> = None;
         let factory_re =
-            self.cached_regex(r"^=\s*(await\s+)?([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(")?;
+            re!(r"^=\s*(await\s+)?([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(");
         if let Some(fm) = factory_re.captures(&init) {
             let end = parens_end(&init, Self::utf16_len(&init[..fm.get(0).unwrap().end()]));
             if ends_initializer(&init, end) {
@@ -6446,16 +6954,12 @@ impl KernelResolver {
             }
         }
         if callee_name.is_none() {
-            let ctor_re = self.cached_regex(
-                r"^=\s*(?:await\s+)?new\s+([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(",
-            )?;
+            let ctor_re = re!(r"^=\s*(?:await\s+)?new\s+([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(");
             if let Some(cm) = ctor_re.captures(&init) {
                 let ctor_end =
                     parens_end(&init, Self::utf16_len(&init[..cm.get(0).unwrap().end()]));
                 if ctor_end >= 0 {
-                    let member_re = self.cached_regex(
-                        r"^\s*\.\s*([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(",
-                    )?;
+                    let member_re = re!(r"^\s*\.\s*([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(");
                     let tail = Self::js_slice(&init, ctor_end as usize);
                     if let Some(mm) = member_re.captures(tail) {
                         let m_end = parens_end(
@@ -6475,7 +6979,7 @@ impl KernelResolver {
             return Ok(McRes::Null);
         };
         let bindings = self.bindings(&r.file_path)?;
-        let callee: Option<Rc<KNode>> = if let Some(owner_name) = owner_name {
+        let callee: Option<Arc<KNode>> = if let Some(owner_name) = owner_name {
             let owner_binding =
                 Self::innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
             let owner_id = match &owner_binding {
@@ -6506,7 +7010,7 @@ impl KernelResolver {
             ))?
             .iter()
             .find(|n| n.kind == "method" && n.file_path == owner.file_path)
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
         } else {
             let factory_binding =
                 Self::innermost_binding(&bindings, &callee_name, Some(binding.line))
@@ -6530,8 +7034,7 @@ impl KernelResolver {
             }
         };
         let Some(callee) = callee else { return Ok(McRes::Null) };
-        let ret_re = self
-            .cached_regex(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$")?;
+        let ret_re = re!(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$");
         let return_type = callee.return_type.clone().or_else(|| {
             callee
                 .signature
@@ -6542,7 +7045,7 @@ impl KernelResolver {
         let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
             return Ok(McRes::Null);
         };
-        let promise_re = self.cached_regex(r"^Promise<(.+)>$")?;
+        let promise_re = re!(r"^Promise<(.+)>$");
         let ty = if awaited {
             promise_re
                 .replace(&return_type, "$1")
@@ -6568,11 +7071,11 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(false);
         };
-        let re = self.cached_regex(&format!(
-            r"(?-u:\b)(?:const|let|var)\s+{}\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(",
-            regex::escape(receiver)
-        ))?;
-        Ok(lines.iter().any(|l| re.is_match(l)))
+        // `\b(?:const|let|var)\s+RECV\s*=\s*await\s+x\s*\(`
+        static AWAITED: LazyLock<Affix> = LazyLock::new(|| {
+            Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(", false, false, false)
+        });
+        Ok(AWAITED.any_line(lines.iter().map(String::as_str), receiver))
     }
 
     /// Cheap gate for inferIterationReceiver — kotlin/go only, fires only
@@ -6614,13 +7117,13 @@ impl KernelResolver {
         member: &str,
         r: &ResolveRefIn,
     ) -> Result<Option<KCand>> {
-        let fields: Vec<Rc<KNode>> = self
+        let fields: Vec<Arc<KNode>> = self
             .nodes_by_name(member)?
             .iter()
             .filter(|n| {
                 n.kind == "field" && same_language_family(&n.language, &r.language)
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         Ok(if fields.len() == 1 {
             Some(KCand {
@@ -6640,7 +7143,7 @@ impl KernelResolver {
     fn match_method_call(&mut self, r: &ResolveRefIn) -> Result<McRes> {
         // PHP `$this->prop->method()` — exclusive declared-type path.
         if r.language == "php" {
-            let re = self.cached_regex(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$")?;
+            let re = re!(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$");
             if let Some(m) = re.captures(&r.reference_name) {
                 let receiver = m[1].to_string();
                 let php_method = m[2].to_string();
@@ -6668,16 +7171,13 @@ impl KernelResolver {
             return Ok(McRes::Hit(c));
         }
 
-        let dot_re = self
-            .cached_regex(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$")?;
+        let dot_re = re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
         let mut dot_match = dot_re.captures(&r.reference_name);
         if dot_match.is_none() && r.language == "cpp" {
-            let op_re = self.cached_regex(
-                r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$",
-            )?;
+            let op_re = re!(r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$");
             dot_match = op_re.captures(&r.reference_name);
         }
-        let colon_match = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?
+        let colon_match = re!(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")
             .captures(&r.reference_name);
         // `match = dotMatch || colonMatch || luaColonMatch || rDollarMatch`;
         // every shape but `::` is a receiver whose type the local declaration
@@ -6798,14 +7298,14 @@ impl KernelResolver {
             && !object_or_class.contains('.')
             && is_object_literal_language(&r.language)
         {
-            let holders: Vec<Rc<KNode>> = prefer_call_site_file(
+            let holders: Vec<Arc<KNode>> = prefer_call_site_file(
                 self.nodes_by_name(&object_or_class)?
                     .iter()
                     .filter(|n| {
                         matches!(n.kind.as_str(), "constant" | "variable")
                             && n.file_path == r.file_path
                     })
-                    .map(|n| Rc::new(n.clone()))
+                    .cloned()
                     .collect(),
                 &r.file_path,
             );
@@ -6833,7 +7333,7 @@ impl KernelResolver {
         let class_candidates = prefer_call_site_file(
             self.nodes_by_name(&object_or_class)?
                 .iter()
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect(),
             &r.file_path,
         );
@@ -6859,7 +7359,7 @@ impl KernelResolver {
         // PHP `$this->prop.method` — exclusive declared-type path,
         // unconditional in both modes.
         if r.language == "php" {
-            let re = self.cached_regex(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$")?;
+            let re = re!(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$");
             if let Some(m) = re.captures(&r.reference_name) {
                 let receiver = m[1].to_string();
                 let php_method = m[2].to_string();
@@ -6887,16 +7387,13 @@ impl KernelResolver {
             return Ok(McRes::Hit(c));
         }
 
-        let dot_re = self
-            .cached_regex(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$")?;
+        let dot_re = re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
         let mut dot_match = dot_re.captures(&r.reference_name);
         if dot_match.is_none() && r.language == "cpp" {
-            let op_re = self.cached_regex(
-                r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$",
-            )?;
+            let op_re = re!(r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$");
             dot_match = op_re.captures(&r.reference_name);
         }
-        let colon_match = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?
+        let colon_match = re!(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")
             .captures(&r.reference_name);
         let (object_or_class, method_name, inferable) = if let Some(m) = dot_match.as_ref() {
             (m[1].to_string(), m[2].to_string(), true)
@@ -7036,7 +7533,7 @@ impl KernelResolver {
                         matches!(n.kind.as_str(), "constant" | "variable")
                             && n.file_path == r.file_path
                     })
-                    .map(|n| Rc::new(n.clone()))
+                    .cloned()
                     .collect(),
                 &r.file_path,
             );
@@ -7057,7 +7554,7 @@ impl KernelResolver {
         let class_candidates = prefer_call_site_file(
             self.nodes_by_name(&object_or_class)?
                 .iter()
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect(),
             &r.file_path,
         );
@@ -7075,7 +7572,7 @@ impl KernelResolver {
                     && n.qualified_name.contains(c.name.as_str())
             }) {
                 return Ok(McRes::Hit(KCand {
-                    node: Rc::new(mn.clone()),
+                    node: mn.clone(),
                     confidence: 0.85,
                     resolved_by: "qualified-name",
                 }));
@@ -7093,7 +7590,7 @@ impl KernelResolver {
             let fuzzy_candidates = prefer_call_site_file(
                 self.nodes_by_name(&capitalized)?
                     .iter()
-                    .map(|n| Rc::new(n.clone()))
+                    .cloned()
                     .collect(),
                 &r.file_path,
             );
@@ -7111,7 +7608,7 @@ impl KernelResolver {
                         && n.qualified_name.contains(c.name.as_str())
                 }) {
                     return Ok(McRes::Hit(KCand {
-                        node: Rc::new(mn.clone()),
+                        node: mn.clone(),
                         confidence: 0.8,
                         resolved_by: "instance-method",
                     }));
@@ -7127,12 +7624,12 @@ impl KernelResolver {
             if method_candidates.len() as i64 > self.ambiguous_ceiling {
                 return Ok(McRes::Null);
             }
-            let methods: Vec<Rc<KNode>> = method_candidates
+            let methods: Vec<Arc<KNode>> = method_candidates
                 .iter()
                 .filter(|n| n.kind == "method" && n.name == method_name)
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect();
-            let same_lang: Vec<Rc<KNode>> = methods
+            let same_lang: Vec<Arc<KNode>> = methods
                 .iter()
                 .filter(|m| m.language == r.language)
                 .cloned()
@@ -7154,7 +7651,7 @@ impl KernelResolver {
                 // Same-file candidates first, so a score tie resolves to the
                 // call site's own file (`score > bestScore` keeps first seen).
                 let ordered = prefer_call_site_file(target.clone(), &r.file_path);
-                let mut best: Option<Rc<KNode>> = None;
+                let mut best: Option<Arc<KNode>> = None;
                 let mut best_score = 0i64;
                 for m in &ordered {
                     let class_words = split_camel_case(&m.qualified_name);
@@ -7195,7 +7692,7 @@ impl KernelResolver {
         if r.language != "lua" && r.language != "luau" {
             return Ok(None);
         }
-        let re = self.cached_regex(r"^([A-Za-z0-9_.]+):([A-Za-z0-9_]+)$")?;
+        let re = re!(r"^([A-Za-z0-9_.]+):([A-Za-z0-9_]+)$");
         Ok(re
             .captures(&r.reference_name)
             .map(|c| (c[1].to_string(), c[2].to_string())))
@@ -7206,7 +7703,7 @@ impl KernelResolver {
         if r.language != "r" {
             return Ok(None);
         }
-        let re = self.cached_regex(r"^([A-Za-z0-9_.]+)\$([A-Za-z0-9_]+)$")?;
+        let re = re!(r"^([A-Za-z0-9_.]+)\$([A-Za-z0-9_]+)$");
         Ok(re
             .captures(&r.reference_name)
             .map(|c| (c[1].to_string(), c[2].to_string())))
@@ -7218,7 +7715,7 @@ impl KernelResolver {
         let receiver = &r.reference_name[..dot];
         let method = &r.reference_name[dot + 1..];
         let root = receiver.split('.').next().unwrap_or(receiver);
-        let bindings = self.bindings(&r.file_path)?;
+        let bindings = probe!(r, "brc:bindings", self.bindings(&r.file_path)?);
         let binding = Self::innermost_binding(&bindings, root, Some(r.line)).cloned();
 
         if !is_esm_family(&r.language) {
@@ -7231,11 +7728,11 @@ impl KernelResolver {
                 // descent: an owner means btm owns the ref (or refuses a
                 // deeper receiver); a miss falls through to br:import.
                 if r.language == "java" || r.language == "kotlin" {
-                    match self.resolve_bound_type(root, r, 0)? {
+                    match probe!(r, "brc:resolve_bound_type", self.resolve_bound_type(root, r, 0)?) {
                         BtRes::Owner(_) => {
                             return Ok(if receiver == root {
                                 Self::mc_to_claim(
-                                    self.match_bound_type_member(root, method, r)?,
+                                    probe!(r, "brc:match_bound_type_member", self.match_bound_type_member(root, method, r)?),
                                 )
                             } else {
                                 BoundClaim::Refused
@@ -7245,7 +7742,7 @@ impl KernelResolver {
                         BtRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
                     }
                 }
-                return Ok(match self.resolve_via_import_member(r)? {
+                return Ok(match probe!(r, "brc:resolve_via_import_member", self.resolve_via_import_member(r)?) {
                     ViaImport::Hit(c) => {
                         if matches!(
                             c.node.kind.as_str(),
@@ -7260,7 +7757,7 @@ impl KernelResolver {
                     ViaImport::Punt(reason) => BoundClaim::Punt(reason),
                 });
             }
-            return Ok(Self::mc_to_claim(self.match_method_call(r)?));
+            return Ok(Self::mc_to_claim(probe!(r, "brc:match_method_call", self.match_method_call(r)?)));
         }
 
         if binding.as_ref().is_some_and(|b| b.kind == "import") {
@@ -7269,7 +7766,7 @@ impl KernelResolver {
             if receiver.contains('.') {
                 return Ok(BoundClaim::Refused);
             }
-            return Ok(match self.resolve_via_import_member(r)? {
+            return Ok(match probe!(r, "brc:resolve_via_import_member", self.resolve_via_import_member(r)?) {
                 ViaImport::Hit(c) => {
                     if matches!(
                         c.node.kind.as_str(),
@@ -7301,7 +7798,7 @@ impl KernelResolver {
             if let Some(nid) = &binding.node_id {
                 site.from_node_id = nid.clone();
             }
-            let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else {
+            let Some(ty) = probe!(r, "brc:infer_local_receiver_type", self.infer_local_receiver_type(root, &site, true)?) else {
                 return Ok(BoundClaim::Refused);
             };
             let type_binding = Self::innermost_binding(
@@ -7318,13 +7815,13 @@ impl KernelResolver {
                     ref2.reference_name = ty.clone();
                     ref2.reference_kind = "references".to_string();
                     let via = if ty.contains('.') {
-                        match self.resolve_via_import_member(&ref2)? {
+                        match probe!(r, "brc:resolve_via_import_member", self.resolve_via_import_member(&ref2)?) {
                             ViaImport::Hit(c) => Some(c),
                             ViaImport::Miss => None,
                             ViaImport::Punt(p) => return Ok(BoundClaim::Punt(p)),
                         }
                     } else {
-                        self.resolve_via_import(&ref2)?
+                        probe!(r, "brc:resolve_via_import", self.resolve_via_import(&ref2)?)
                     };
                     via.map(|c| c.node.id.clone())
                 }
@@ -7343,13 +7840,13 @@ impl KernelResolver {
                     ) =>
                 {
                     Self::mc_to_claim(
-                        self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?,
+                        probe!(r, "brc:match_ts_field_call_bound", self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?),
                     )
                 }
                 _ => BoundClaim::Refused,
             });
         }
-        match self.match_method_call(r)? {
+        match probe!(r, "brc:match_method_call", self.match_method_call(r)?) {
             McRes::Hit(c) => return Ok(BoundClaim::Hit(c)),
             McRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
             McRes::Null => {}
@@ -7358,7 +7855,7 @@ impl KernelResolver {
             return Ok(BoundClaim::Refused);
         }
         Ok(Self::mc_to_claim(
-            self.esm_factory_tail(&binding, root, method, r)?,
+            probe!(r, "brc:esm_factory_tail", self.esm_factory_tail(&binding, root, method, r)?),
         ))
     }
 
@@ -7390,7 +7887,7 @@ impl KernelResolver {
                     .cloned()
                 {
                     return Ok(ViaImport::Hit(KCand {
-                        node: Rc::new(file_node),
+                        node: file_node,
                         confidence: 0.9,
                         resolved_by: "import",
                     }));
@@ -7580,7 +8077,7 @@ impl KernelResolver {
             }
             if let Some(file_node) = self.nodes_in_file(&best)?.iter().find(|n| n.kind == "file") {
                 return Ok(Some(KCand {
-                    node: Rc::new(file_node.clone()),
+                    node: file_node.clone(),
                     confidence: 0.9,
                     resolved_by: "import",
                 }));
@@ -7593,12 +8090,14 @@ impl KernelResolver {
     /// `ORDER BY path` is byte order — the same order `sort()` gives.
     fn lua_basename_bucket(&mut self, basename: &str) -> Rc<Vec<String>> {
         if self.lua_basename_index.is_none() {
-            let mut paths: Vec<&String> = self.known_files.iter().collect();
-            paths.sort();
             let mut m: HashMap<String, Vec<String>> = HashMap::new();
-            for f in paths {
-                let base = f.rsplit('/').next().unwrap_or("").to_string();
-                m.entry(base).or_default().push(f.clone());
+            if let Ok(t) = self.table() {
+                let mut paths: Vec<&String> = t.files.iter().collect();
+                paths.sort();
+                for f in paths {
+                    let base = f.rsplit('/').next().unwrap_or("").to_string();
+                    m.entry(base).or_default().push(f.clone());
+                }
             }
             self.lua_basename_index = Some(Rc::new(
                 m.into_iter().map(|(k, v)| (k, Rc::new(v))).collect(),
@@ -7653,7 +8152,7 @@ impl KernelResolver {
                 let file_dir = fp.rfind('/').map(|i| &fp[..i]).unwrap_or("");
                 if file_dir == pkg_dir {
                     return Ok(Some(KCand {
-                        node: Rc::new(node.clone()),
+                        node: node.clone(),
                         confidence: 0.9,
                         resolved_by: "import",
                     }));
@@ -7736,7 +8235,7 @@ impl KernelResolver {
             });
             if let Some(target) = target {
                 return Ok(Some(KCand {
-                    node: Rc::new(target.clone()),
+                    node: target.clone(),
                     confidence: 0.85,
                     resolved_by: "import",
                 }));
@@ -7771,7 +8270,7 @@ impl KernelResolver {
         container: &KNode,
         r: &ResolveRefIn,
         local_name: &str,
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         if !is_static_member_container(&container.kind) {
             return Ok(None);
         }
@@ -7783,11 +8282,11 @@ impl KernelResolver {
             return Ok(None);
         }
         let member_qn = format!("{}::{}", container.qualified_name, member);
-        let candidates: Vec<Rc<KNode>> = self
+        let candidates: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&member_qn)?
             .iter()
             .filter(|n| n.file_path == container.file_path)
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if candidates.is_empty() {
             return Ok(None);
@@ -7849,12 +8348,12 @@ impl KernelResolver {
                 && a.end_line == b.end_line
                 && a.end_column == b.end_column
         };
-        let inside: Vec<Rc<KNode>> = in_file
+        let inside: Vec<Arc<KNode>> = in_file
             .iter()
             .filter(|n| n.id != container.id && range_within(n, container))
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
-        let mut candidates: Vec<Rc<KNode>> = inside
+        let mut candidates: Vec<Arc<KNode>> = inside
             .iter()
             .filter(|n| n.name == member && accepts(n))
             .cloned()
@@ -7863,7 +8362,7 @@ impl KernelResolver {
             return Ok(None);
         }
         // Drop members nested inside another callable's body in the literal.
-        let bodies: Vec<&Rc<KNode>> = inside.iter().filter(|n| callable(n)).collect();
+        let bodies: Vec<&Arc<KNode>> = inside.iter().filter(|n| callable(n)).collect();
         candidates.retain(|c| {
             !bodies
                 .iter()
@@ -7894,7 +8393,7 @@ impl KernelResolver {
             return Ok(None);
         }
         // A `calls` ref never resolves to a yaml/properties config key (#1180).
-        let keep_for_ref = |nodes: &[KNode]| -> Vec<Rc<KNode>> {
+        let keep_for_ref = |nodes: &[Arc<KNode>]| -> Vec<Arc<KNode>> {
             nodes
                 .iter()
                 .filter(|n| {
@@ -7902,11 +8401,11 @@ impl KernelResolver {
                         || !(n.kind == "constant"
                             && (n.language == "yaml" || n.language == "properties"))
                 })
-                .map(|n| Rc::new(n.clone()))
+                .cloned()
                 .collect()
         };
 
-        let candidates = keep_for_ref(self.nodes_by_qualified_name(&r.reference_name)?.as_slice());
+        let candidates = keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?);
         if candidates.len() == 1 {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
@@ -7932,7 +8431,7 @@ impl KernelResolver {
             .next()
             .unwrap_or("");
         if !last_name.is_empty() {
-            let partial = keep_for_ref(self.nodes_by_name(last_name)?.as_slice())
+            let partial = keep_for_ref(&self.nodes_by_name(last_name)?)
                 .into_iter()
                 .filter(|n| n.qualified_name.ends_with(&r.reference_name))
                 .collect();
@@ -7964,11 +8463,11 @@ impl KernelResolver {
         } else {
             &r.reference_name
         };
-        let pre_pass = self.has_any_possible_match(existence)
+        let pre_pass = probe!(r, "pre-pass", self.has_any_possible_match(existence)
             || self.matches_any_import(r)?
-            || self.framework_claims(&r.reference_name);
+            || self.framework_claims(&r.reference_name));
         if !pre_pass {
-            if self.is_bare_js_call(r)? {
+            if probe!(r, "is_bare_js_call", self.is_bare_js_call(r)?) {
                 return Ok(ResolveOutcome::passthrough("store-bind"));
             }
             return Ok(ResolveOutcome::unresolved());
@@ -7981,7 +8480,7 @@ impl KernelResolver {
         // only non-bare shape matchFunctionRef resolves; `.`/`this.` forms
         // always miss in it). A miss punts back to that same block.
         if r.reference_kind == "function_ref" {
-            match self.resolve_via_import_member(r)? {
+            match probe!(r, "resolve_via_import_member", self.resolve_via_import_member(r)?) {
                 ViaImport::Punt(reason) => {
                     return Ok(ResolveOutcome::passthrough(reason));
                 }
@@ -7999,7 +8498,7 @@ impl KernelResolver {
                     }
                 }
             }
-            if let Some(c) = self.match_function_ref_scoped(r)? {
+            if let Some(c) = probe!(r, "match_function_ref_scoped", self.match_function_ref_scoped(r)?) {
                 // Frameworks never run on this path — a gated candidate is
                 // discarded to terminal unresolved, exactly like the bare arm.
                 return match self.gate_language(Some(c), r) {
@@ -8022,12 +8521,12 @@ impl KernelResolver {
             return Ok(ResolveOutcome::passthrough("php-inc"));
         }
         // resolvePhpImportedStaticCall — terminal before frameworks.
-        if let Some(outcome) = self.resolve_php_imported_static(r)? {
+        if let Some(outcome) = probe!(r, "resolve_php_imported_static", self.resolve_php_imported_static(r)?) {
             return Ok(outcome);
         }
         // matchBoundReceiverCall — claimed refs are terminal either way.
         if is_binding_receiver_call(r) {
-            match self.bound_receiver_claim(r)? {
+            match probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?) {
                 BoundClaim::Punt(reason) => {
                     return Ok(ResolveOutcome::passthrough(reason));
                 }
@@ -8079,7 +8578,7 @@ impl KernelResolver {
         // The chain guard routes `x().y` calls through matchReference only —
         // the chain matchers there (storeAccessorChain et al.) are unported.
         if r.reference_kind == "calls"
-            && CHAIN_SHAPE_RE.is_match(&r.reference_name)
+            && thread_regex(&CHAIN_SHAPE_RE).is_match(&r.reference_name)
             && matches!(
                 r.language.as_str(),
                 "typescript" | "javascript" | "tsx" | "jsx" | "python"
@@ -8089,7 +8588,7 @@ impl KernelResolver {
         }
 
         let mut cands: Vec<KCand> = Vec::new();
-        match self.resolve_via_import_member(r)? {
+        match probe!(r, "resolve_via_import_member", self.resolve_via_import_member(r)?) {
             ViaImport::Punt(reason) => {
                 return Ok(ResolveOutcome::passthrough(reason));
             }
@@ -8123,14 +8622,14 @@ impl KernelResolver {
         // methodCall's requireReceiverEvidence=false arm. Everything after
         // (exactName/fuzzy, then deferred drains) stays in TS behind the
         // member-tail punt.
-        let name_cand = match self.match_by_file_path(r)? {
+        let name_cand = match probe!(r, "match_by_file_path", self.match_by_file_path(r)?) {
             Some(c) => Some(c),
-            None => match self.match_by_qualified_name(r)? {
+            None => match probe!(r, "match_by_qualified_name", self.match_by_qualified_name(r)?) {
                 Some(c) => Some(c),
-                None => match self.match_call_chain(r)? {
+                None => match probe!(r, "match_call_chain", self.match_call_chain(r)?) {
                     McRes::Hit(c) => Some(c),
                     McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
-                    McRes::Null => match self.match_method_call_free(r)? {
+                    McRes::Null => match probe!(r, "match_method_call_free", self.match_method_call_free(r)?) {
                         McRes::Hit(c) => Some(c),
                         McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
                         McRes::Null => None,
@@ -8140,7 +8639,7 @@ impl KernelResolver {
         };
         let name_result = self.gate_language(name_cand, r);
         if let Some(c) = name_result {
-            if self.is_visible_across_files(&c.node, r)? {
+            if probe!(r, "is_visible_across_files", self.is_visible_across_files(&c.node, r)?) {
                 cands.push(c);
             }
         }
@@ -8230,27 +8729,22 @@ impl KernelResolver {
         &mut self,
         alias_node: &KNode,
         member_name: Option<&str>,
-    ) -> Result<Option<Rc<KNode>>> {
+    ) -> Result<Option<Arc<KNode>>> {
         if !is_alias_binding_kind(&alias_node.kind) {
             return Ok(None);
         }
         let sig = alias_node.signature.as_deref().unwrap_or("").trim();
         let target_name = match member_name {
             Some(m) if !m.is_empty() => {
-                let key = regex::escape(m);
-                let explicit = self
-                    .cached_regex(&format!(
-                        r"[{{,]\s*{}\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,}}]",
-                        key
-                    ))?
-                    .captures(sig)
-                    .map(|c| c.get(1).unwrap().as_str().to_string());
-                match explicit {
-                    Some(t) => Some(t),
-                    None => self
-                        .cached_regex(&format!(r"[{{,]\s*({})\s*[,}}]", key))?
-                        .captures(sig)
-                        .map(|c| c.get(1).unwrap().as_str().to_string()),
+                // `[{,]\s*KEY\s*:\s*(target)\s*[,}]`, else the shorthand `[{,]\s*KEY\s*[,}]`.
+                static EXPLICIT: LazyLock<Affix> = LazyLock::new(|| {
+                    Affix::new(r"[{,]\s*", r"\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,}]", false, false, false)
+                });
+                static SHORTHAND: LazyLock<Affix> =
+                    LazyLock::new(|| Affix::new(r"[{,]\s*", r"\s*[,}]", false, false, false));
+                match EXPLICIT.capture(sig, m) {
+                    Some(t) => Some(t.to_string()),
+                    None => SHORTHAND.is_match(sig, m).then(|| m.to_string()),
                 }
             }
             _ => BARE_ALIAS_RE
@@ -8261,7 +8755,7 @@ impl KernelResolver {
         if target_name == alias_node.name {
             return Ok(None);
         }
-        let candidates: Vec<KNode> = self
+        let candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(&target_name)?
             .iter()
             .filter(|n| is_callable_kind(&n.kind))
@@ -8270,18 +8764,18 @@ impl KernelResolver {
         if candidates.is_empty() {
             return Ok(None);
         }
-        let same_file: Vec<&KNode> = candidates
+        let same_file: Vec<&Arc<KNode>> = candidates
             .iter()
             .filter(|n| n.file_path == alias_node.file_path)
             .collect();
         if same_file.len() == 1 {
-            return Ok(Some(Rc::new(same_file[0].clone())));
+            return Ok(Some(same_file[0].clone()));
         }
         if same_file.len() > 1 {
             return Ok(None);
         }
         Ok(if candidates.len() == 1 {
-            Some(Rc::new(candidates[0].clone()))
+            Some(candidates[0].clone())
         } else {
             None
         })
@@ -8315,11 +8809,7 @@ impl KernelResolver {
         }
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
         let text = lines.join("\n");
-        let name = regex::escape(&r.reference_name);
-        let re = self.cached_regex(&format!(
-            "\\bconst\\s*(?:\\{{[^{{}}]*\\b{}\\b|{}\\b)", name, name
-        ))?;
-        Ok(re.is_match(&text))
+        Ok(js_const_binds(&text, &r.reference_name))
     }
 
     /// The `function_ref` block of resolveOneInner (index.ts). TS order:
@@ -8329,8 +8819,8 @@ impl KernelResolver {
     /// `calls`-gated — dead for function_ref — and frameworks never run on
     /// this path, so the miss is terminal either way.
     fn resolve_function_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
-        let pre_pass =
-            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?;
+        let pre_pass = probe!(r, "pre-pass",
+            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
         if !pre_pass {
             return Ok(ResolveOutcome::unresolved());
         }
@@ -8365,7 +8855,7 @@ impl KernelResolver {
             "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "cpp" | "python" | "php"
         );
         let bare_class_ok = r.language == "python";
-        let mut candidates: Vec<Rc<KNode>> = self
+        let mut candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(&r.reference_name)?
             .iter()
             .filter(|n| {
@@ -8375,7 +8865,7 @@ impl KernelResolver {
                     && same_language_family(&n.language, &r.language)
                     && n.id != r.from_node_id
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if candidates.is_empty() {
             return Ok(None);
@@ -8414,7 +8904,7 @@ impl KernelResolver {
         // Same-file definition wins; same-name overloads in one file are the
         // same conceptual symbol — first by position for determinism
         // (min_by_key keeps the first minimum, matching TS's `<=` reduce).
-        let same_file: Vec<Rc<KNode>> = candidates
+        let same_file: Vec<Arc<KNode>> = candidates
             .iter()
             .filter(|n| n.file_path == r.file_path)
             .cloned()
@@ -8458,7 +8948,7 @@ impl KernelResolver {
         };
         let member = &r.reference_name[sep + 2..];
         let suffix = format!("::{}", r.reference_name);
-        let scoped: Vec<Rc<KNode>> = self
+        let scoped: Vec<Arc<KNode>> = self
             .nodes_by_name(member)?
             .iter()
             .filter(|n| {
@@ -8468,12 +8958,12 @@ impl KernelResolver {
                     && (n.qualified_name == r.reference_name
                         || n.qualified_name.ends_with(&suffix))
             })
-            .map(|n| Rc::new(n.clone()))
+            .cloned()
             .collect();
         if scoped.is_empty() {
             return Ok(None);
         }
-        let same_file: Vec<Rc<KNode>> = scoped
+        let same_file: Vec<Arc<KNode>> = scoped
             .iter()
             .filter(|n| n.file_path == r.file_path)
             .cloned()
@@ -8571,7 +9061,7 @@ impl KernelResolver {
                 )
         });
         Ok(target.map(|n| KCand {
-            node: Rc::new(n.clone()),
+            node: n.clone(),
             confidence: 0.9,
             resolved_by: "import",
         }))
@@ -8732,7 +9222,7 @@ impl KernelResolver {
     fn rust_rs_files_in_dir(&mut self, dir: &str) -> Rc<Vec<String>> {
         if self.rust_rs_dir_index.is_none() {
             let mut m: HashMap<String, Vec<String>> = HashMap::new();
-            for f in &self.known_files {
+            for f in self.table().map(|t| &t.files).into_iter().flatten() {
                 let normalized = pos_normalize(f);
                 if normalized.ends_with(".rs") {
                     m.entry(pos_dirname(&normalized).to_string())
@@ -8762,11 +9252,11 @@ impl KernelResolver {
         let Some(lines) = self.read_file(rel_file) else {
             return Ok(false);
         };
-        let re = self.cached_regex(&format!(
-            r"^\s*(?:pub\s*(?:\([^)]*\))?\s+)?mod\s+{}\s*;",
-            regex::escape(stem)
-        ))?;
-        Ok(lines.iter().any(|l| re.is_match(&strip_line_comments(l))))
+        // `^\s*(?:pub\s*(?:\([^)]*\))?\s+)?mod\s+STEM\s*;`
+        static MOD_DECL: LazyLock<Affix> = LazyLock::new(|| {
+            Affix::new(r"^\s*(?:pub\s*(?:\([^)]*\))?\s+)?mod\s+", r"\s*;", false, false, false)
+        });
+        Ok(lines.iter().any(|l| MOD_DECL.is_match(&strip_line_comments(l), stem)))
     }
 
     fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
@@ -8829,14 +9319,14 @@ impl KernelResolver {
         //   builtin/external → CFML/jvm/razor/phpStatic arms all dead →
         //   prefilter → frameworks (TS) → boundReceiver (dead) → chain guard
         //   (dead) → viaImport → name-match → post-checks → first-max.
-        if self.is_built_in_or_external(r) {
+        if probe!(r, "builtin", self.is_built_in_or_external(r)) {
             return Ok(ResolveOutcome::unresolved());
         }
         // The store-binding matcher stays in TS (source-reading): it can fire
         // on a prefilter miss AND short-circuits matchByExactName's candidate
         // list, so a JS bare call whose file const-binds its name must
         // passthrough wherever it would otherwise settle.
-        if self.is_bare_js_call(r)? && self.file_could_store_bind(r)? {
+        if probe!(r, "bare-js-call", self.is_bare_js_call(r)?) && probe!(r, "store-bind", self.file_could_store_bind(r)?) {
             return Ok(ResolveOutcome::passthrough("store-bind"));
         }
         // `function_ref` (#756) has a dedicated, strictly-gated TS path that
@@ -8996,5 +9486,290 @@ impl KernelResolver {
             is_final,
             candidates,
         ))
+    }
+}
+
+impl Drop for KernelResolver {
+    fn drop(&mut self) {
+        self.debug_stats("drop");
+        prof_dump("drop");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rows inserted out of every query's order, with ties on each ORDER BY
+    /// key, so the table's stable sorts are checked against SQLite's own
+    /// answers (the `verify` pass) and against the documented sequences.
+    #[test]
+    fn node_table_orders_match_sqlite() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, \
+             qualified_name TEXT NOT NULL, file_path TEXT NOT NULL, language TEXT NOT NULL, \
+             start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, start_column INTEGER NOT NULL, \
+             end_column INTEGER NOT NULL, signature TEXT, visibility TEXT, \
+             is_exported INTEGER NOT NULL DEFAULT 0, return_type TEXT, type_parameters TEXT, decorators TEXT); \
+             CREATE INDEX idx_nodes_name ON nodes(name); \
+             CREATE INDEX idx_nodes_qualified_name ON nodes(qualified_name); \
+             CREATE INDEX idx_nodes_file_path ON nodes(file_path); \
+             CREATE INDEX idx_nodes_file_line ON nodes(file_path, start_line); \
+             CREATE INDEX idx_nodes_lower_name ON nodes(lower(name)); \
+             CREATE TABLE files (path TEXT PRIMARY KEY); \
+             INSERT INTO files(path) VALUES ('b.ts'), ('a.ts');",
+        )
+        .unwrap();
+        // (id, name, qualified_name, file_path, start_line): the files arrive in
+        // reverse order, n2/n4 tie on every key, n3 differs from them in case only.
+        let rows = [
+            ("n1", "run", "B::run", "b.ts", 5),
+            ("n2", "run", "A::run", "a.ts", 9),
+            ("n3", "Run", "run", "a.ts", 9),
+            ("n4", "run", "A::run", "a.ts", 9),
+            ("n5", "run", "A::run", "a.ts", 2),
+        ];
+        for (id, name, qn, file, line) in rows {
+            conn.execute(
+                "INSERT INTO nodes(id, kind, name, qualified_name, file_path, language, start_line, \
+                 end_line, start_column, end_column) VALUES (?1, 'function', ?2, ?3, ?4, 'typescript', ?5, ?5, 0, 0)",
+                rusqlite::params![id, name, qn, file, line],
+            )
+            .unwrap();
+        }
+        let t = NodeTable::load(&conn).unwrap();
+        assert_eq!(t.verify(&conn).unwrap(), 0);
+        fn ids(l: &NodeList) -> Vec<&str> {
+            l.iter().map(|n| n.id.as_str()).collect()
+        }
+        // getNodesByName: file_path, start_line, then rowid for the n2/n4 tie.
+        assert_eq!(ids(&t.by_name["run"]), ["n5", "n2", "n4", "n1"]);
+        // getNodesByLowerName: rowid order across both spellings.
+        assert_eq!(ids(&t.by_lower["run"]), ["n1", "n2", "n3", "n4", "n5"]);
+        assert_eq!(ids(&t.by_qname["A::run"]), ["n2", "n4", "n5"]);
+        // getNodesInFile: start_line, rowid on ties.
+        assert_eq!(ids(&t.by_file["a.ts"]), ["n5", "n2", "n3", "n4"]);
+        assert_eq!(t.by_id["n3"].qualified_name, "run");
+        assert!(t.files.contains("a.ts") && !t.by_name.contains_key("missing"));
+    }
+
+    /// The match sequence (group 1, match end) an `Affix` yields for `word`
+    /// on `line`, the way infer_match_line walks it.
+    fn affix_matches(affix: &'static Affix, line: &str, word: &str) -> Vec<(String, usize)> {
+        let mut got = Vec::new();
+        let mut from = 0;
+        while let Some(m) = affix.find_from(line, word, from) {
+            got.push((m.group.map_or(String::new(), |(s, e)| line[s..e].to_string()), m.end));
+            from = m.end;
+        }
+        got
+    }
+
+    /// `captures_iter` of the original pattern with `word` formatted in for
+    /// `R`, in the same shape.
+    fn regex_matches(pattern_with_r: &str, line: &str, word: &str) -> Vec<(String, usize)> {
+        let re = Regex::new(&pattern_with_r.replace('R', &regex::escape(word))).unwrap();
+        re.captures_iter(line)
+            .map(|c| (c.get(1).map_or(String::new(), |g| g.as_str().to_string()), c.get(0).unwrap().end()))
+            .collect()
+    }
+
+    const RECEIVERS: [&str; 7] = ["user", "x", "my_var", "über", "Foo", "this", "req"];
+    const LINES: [&str; 20] = [
+        "const user = new UserStore();",
+        "let user: Foo<Bar> | null = x;",
+        "user = Foo.new; user: Bar",
+        "  user := &Store{}",
+        "var user *pkg.Client",
+        "func f(user pkg.Client, x int)",
+        "Foo user = new Foo(); Bar user;",
+        "private ?Foo $user;  $user = new Bar;",
+        "struct ops *user, x;",
+        "let mut user: &Foo = Bar::new();",
+        "user : Foo = Bar()",
+        "user <- Foo$new()",
+        "x = x = Foo.new",
+        "userx user\u{a0}=\u{a0}new Baz",
+        "user user = Foo(); Foo user user = Bar",
+        "über: Über.new  über = Straße(",
+        "a.user: Foo;this.user: Bar",
+        "user: Foo<Bar>[]",
+        "type Foo = Bar; mod user; pub(crate) mod user ;",
+        "",
+    ];
+
+    /// Every receiver-type pattern, split (`Affix`) against the original
+    /// regex with the receiver formatted in: identical match sequences on
+    /// lines carrying each language's shapes plus repeats, ties and
+    /// non-ASCII whitespace.
+    #[test]
+    fn affix_receiver_patterns_match_the_formatted_regexes() {
+        let originals: &[(&str, &[&str])] = &[
+            ("typescript", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.$]*)",
+            ]),
+            ("python", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r#"(?-u:\b)R(?-u:\b)\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#,
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
+            ]),
+            ("java", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)",
+                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,:)]",
+            ]),
+            ("kotlin", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
+            ]),
+            ("rust", &[
+                r"(?-u:\b)let\s+(?:mut\s+)?R(?-u:\b)(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+                r"(?-u:\b)R\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+            ]),
+            ("go", &[
+                r"(?-u:\b)R\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
+                r"(?-u:\b)R(?-u:\b)\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{",
+                r"(?-u:\b)var\s+R\s+\*?([A-Za-z_][A-Za-z0-9_.]*)",
+                r"(?-u:\b)R\s+\*?([A-Z][A-Za-z0-9_.]*)",
+            ]),
+            ("php", &[
+                r"\$?R(?-u:\b)\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)",
+                r"(?-u:\b)([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R(?-u:\b)",
+            ]),
+            ("c", &[
+                r"(?-u:\b)(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*(?-u:\b)R(?-u:\b)\s*(?:[,)=;]|\[)",
+            ]),
+            ("csharp", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)",
+                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]",
+            ]),
+            ("swift", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
+            ]),
+            ("ruby", &[r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)"]),
+            ("scala", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)",
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
+            ]),
+            ("dart", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]",
+            ]),
+            ("lua", &[
+                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_]*)\.new(?-u:\b)",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
+            ]),
+            ("r", &[r"(?-u:\b)R(?-u:\b)\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new(?-u:\b)"]),
+        ];
+        let php_property: &[&str] = &[
+            r"(?-u:\b)(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R(?-u:\b)",
+            r"\$this->R(?-u:\b)\s*=\s*new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)",
+        ];
+        let mut cases = 0usize;
+        let mut check = |label: &str, pats: &[&str], affixes: &'static [ReceiverPattern]| {
+            assert_eq!(affixes.len(), pats.len(), "{label}");
+            for (pat, rp) in pats.iter().zip(affixes) {
+                for recv in RECEIVERS {
+                    for line in LINES {
+                        assert_eq!(
+                            affix_matches(&rp.affix, line, recv),
+                            regex_matches(pat, line, recv),
+                            "{label} {pat:?} recv={recv:?} line={line:?}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        };
+        for (lang, pats) in originals {
+            check(lang, pats, local_receiver_type_patterns(lang));
+        }
+        check("php property", php_property, &PHP_PROPERTY_TYPE_PATTERNS);
+        assert!(cases > 3000);
+    }
+
+    /// The other split sites — declaration and member shapes — against
+    /// their original patterns.
+    #[test]
+    fn affix_site_patterns_match_the_formatted_regexes() {
+        let sites: &'static [(&str, Affix)] = Vec::leak(vec![
+            (r"(?-u:\b)(?:const|let|var)\s+R\s*=", Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=", false, false, false)),
+            (r"(?-u:\b)(?:const|let|var)\s+R\s*(=[\s\S]+)", Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*(=[\s\S]+)", false, false, false)),
+            (
+                r"(?-u:\b)(?:const|let|var)\s+R\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(",
+                Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(", false, false, false),
+            ),
+            (r"[{,]\s*R\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,}]", Affix::new(r"[{,]\s*", r"\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,}]", false, false, false)),
+            (r"(?-u:\b)type\s+R\s*=\s*([^;]+);", Affix::new(r"(?-u:\b)type\s+", r"\s*=\s*([^;]+);", false, false, false)),
+            (r"(?-u:\b)R\s*:\s*([^,{}]+)", Affix::new("", r"\s*:\s*([^,{}]+)", true, false, false).lead(b":")),
+            (r"(?-u:\b)R(?-u:\b)\s*=\s*([^;]+)", Affix::new("", r"\s*=\s*([^;]+)", true, true, false).lead(b"=")),
+            (r"(?-u:\b)R\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)", Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)", true, false, false)),
+            (r"(?-u:\b)R\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)", Affix::new("", r"\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)", true, false, false)),
+            (r"^\s*(?:pub\s*(?:\([^)]*\))?\s+)?mod\s+R\s*;", Affix::new(r"^\s*(?:pub\s*(?:\([^)]*\))?\s+)?mod\s+", r"\s*;", false, false, false)),
+            (r"\$this->R(?-u:\b)\s*=\s*\$([A-Za-z0-9_]+)(?-u:\b)", Affix::new(r"\$this->", r"\s*=\s*\$([A-Za-z0-9_]+)(?-u:\b)", false, true, false)),
+            (
+                r"(?-u:\b)R(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:"),
+            ),
+            (
+                r"(?-u:\b)R(?-u:\b)\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)",
+                Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:"),
+            ),
+        ]);
+        let extra = [
+            "const user = await fetchUser(id);",
+            "{ user: makeUser, x }",
+            "{user,x}",
+            "$this->user = $repo; $this->user = new Foo",
+            "var user = (a, b) => a + b\n  , x = 1",
+            "let  user  =  user  ",
+            "  private user?: typeof Store; readonly x!: Foo.Bar<T>[]",
+        ];
+        for (pat, affix) in sites {
+            for word in RECEIVERS {
+                for line in LINES.iter().chain(extra.iter()) {
+                    assert_eq!(affix_matches(affix, line, word), regex_matches(pat, line, word), "{pat:?} word={word:?} line={line:?}");
+                }
+            }
+        }
+    }
+
+    /// `js_const_binds` against the JavaScript pattern it replaces, with
+    /// ASCII word boundaries.
+    #[test]
+    fn js_const_binds_matches_the_regex() {
+        let names = ["a", "user", "über", "b$"];
+        let texts = [
+            "const user = 1;",
+            "constuser = 2",
+            "const {a, user} = X.getState();",
+            "const {\n  a,\n  user\n} = s;",
+            "const {a: {user}} = x",
+            "let user = 1; const b$ = 2",
+            "x.const user",
+            "const\u{a0}user",
+            "const { über } = 1",
+            "const {a} = {user}",
+            "aconst user",
+            "const {} user",
+            "const user_1 = 0",
+            "const {a} = 1; const {b, name} = x; const {\n c: user } = y",
+            "xconst user; const\n{ user }",
+            "",
+        ];
+        for name in names {
+            // The oracle: the pattern the function replaced, per name.
+            let pattern = format!(
+                r"(?-u:\b)const\s*(?:\{{[^{{}}]*(?-u:\b){0}(?-u:\b)|{0}(?-u:\b))",
+                regex::escape(name)
+            );
+            let re = Regex::new(&pattern).unwrap();
+            for text in texts {
+                assert_eq!(js_const_binds(text, name), re.is_match(text), "name={name:?} text={text:?}");
+            }
+        }
     }
 }

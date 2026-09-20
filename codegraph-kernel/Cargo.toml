@@ -14,6 +14,7 @@ napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = "3"
 tree-sitter = "0.25"
 sha2 = "0.10"
+memchr = "2"
 regex = "1"
 # Bundled libsqlite3: the resolver's read stage must see the exact WAL
 # semantics the writer (node:sqlite) produces, not whatever system
