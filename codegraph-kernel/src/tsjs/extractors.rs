@@ -1247,6 +1247,28 @@ impl<'t> Walker<'t> {
         let func = node
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
+        // Dynamic `import('x')`: the specifier is an import boundary, not a
+        // callee — emit it as an `imports` ref like a static `import … from
+        // 'x'` so lazy edges (`load: () => import('./x')`, React.lazy, split
+        // points) stay traversable. The `.then(v => v.m)` unwrap is a member
+        // access on the module namespace generic resolution cannot type —
+        // the module edge is the honest deliverable. Declarator specs go
+        // through `require_spec`; bare call sites come through here.
+        if func.is_some_and(|f| f.kind() == "import") {
+            if let Some(args) = node.child_by_field_name("arguments") {
+                if let Some(first) = args.named_child(0) {
+                    if first.kind() == "string" {
+                        let spec: String =
+                            self.text(first).chars().filter(|c| *c != '\'' && *c != '"').collect();
+                        if !spec.is_empty() {
+                            let from_row = self.top_row();
+                            self.push_ref(from_row, &spec, edge_kind_index("imports").unwrap(), node);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let mut callee_name = String::new();
 
         if let Some(func) = func {

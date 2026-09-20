@@ -1163,6 +1163,39 @@ export function resolveViaImport(
     return null;
   }
 
+  // TS/JS path-shaped `imports` refs — dynamic `import('./x')` call sites and
+  // the module-name ref of a static `import … from './x'` carry the specifier
+  // itself as referenceName. Resolve the path directly to the file node like
+  // the C/C++/Nix include paths above: falling through to symbol lookup would
+  // search for a symbol literally named `./commands/about.ts`, and basename
+  // matching guesses among same-named files (warp-drive has six `install.ts`).
+  // Specifiers without a path shape (`react`, `v.m`) keep the symbol path.
+  if (
+    ref.referenceKind === 'imports' &&
+    ref.referenceName.includes('/') &&
+    (ref.language === 'typescript' ||
+      ref.language === 'tsx' ||
+      ref.language === 'javascript' ||
+      ref.language === 'jsx' ||
+      ref.language === 'arkts')
+  ) {
+    const resolvedPath = resolveImportPath(ref.referenceName, ref.filePath, ref.language, context);
+    if (!resolvedPath) return null;
+    const basename = resolvedPath.split('/').pop()!;
+    const fileNode = context
+      .getNodesByName(basename)
+      .find((n) => n.kind === 'file' && n.filePath === resolvedPath);
+    if (fileNode) {
+      return {
+        original: ref,
+        targetNodeId: fileNode.id,
+        confidence: 0.9,
+        resolvedBy: 'import',
+      };
+    }
+    return null;
+  }
+
   // Use cached import mappings (avoids re-reading and re-parsing per ref)
   const imports = context.getImportMappings(ref.filePath, ref.language);
   if (imports.length === 0 && !context.readFile(ref.filePath)) {

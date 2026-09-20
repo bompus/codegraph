@@ -4818,6 +4818,31 @@ export class TreeSitterExtractor {
     } else {
       const func = getChildByField(node, 'function') || node.namedChild(0);
 
+      // Dynamic `import('x')`: the specifier is an import boundary, not a
+      // callee — emit it as an `imports` ref like a static `import … from
+      // 'x'` so lazy edges (`load: () => import('./x')`, React.lazy, split
+      // points) stay traversable. The `.then(v => v.m)` unwrap is a member
+      // access on the module namespace generic resolution cannot type — the
+      // module edge is the honest deliverable. Mirrored in the kernel's
+      // extract_call (tsjs/extractors.rs).
+      if (func && func.type === 'import') {
+        const args = getChildByField(node, 'arguments');
+        const first = args?.namedChild(0);
+        if (first?.type === 'string') {
+          const spec = getNodeText(first, this.source).replace(/['"]/g, '');
+          if (spec) {
+            this.unresolvedReferences.push({
+              fromNodeId: callerId,
+              referenceName: spec,
+              referenceKind: 'imports',
+              line: node.startPosition.row + 1,
+              column: node.startPosition.column,
+            });
+          }
+        }
+        return;
+      }
+
       // C++ explicit operator call `a.operator+(b)` / `p->operator+(b)` (#1247):
       // tree-sitter-cpp can't parse an operator_name in field position, so the
       // callee is NOT a field_expression — the call_expression carries
