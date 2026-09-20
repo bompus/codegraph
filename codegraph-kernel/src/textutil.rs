@@ -95,13 +95,70 @@ pub fn utf16_len(s: &str) -> usize {
     s.chars().map(|c| c.len_utf16()).sum()
 }
 
-/// Column (UTF-16 units) of `byte_pos` on line `row`, given `line_starts`.
+/// Column (UTF-16 units) of `byte_pos` on line `row`, given `line_starts` —
+/// the rescanning reference `Cols::col` is checked against.
+#[cfg(test)]
 pub fn col16(src: &str, starts: &[usize], row: usize, byte_pos: usize) -> u32 {
     let ls = starts.get(row).copied().unwrap_or(0);
     if byte_pos <= ls {
         return 0;
     }
     utf16_len(&src[ls..byte_pos]) as u32
+}
+
+/// Prefix table: UTF-16 units before each byte offset (len + 1 entries).
+pub fn utf16_prefix(src: &str) -> Vec<u32> {
+    let bytes = src.as_bytes();
+    let mut out = vec![0u32; bytes.len() + 1];
+    let mut units = 0u32;
+    let mut i = 0;
+    for ch in src.chars() {
+        let len = ch.len_utf8();
+        for k in 0..len {
+            out[i + k] = units;
+        }
+        units += ch.len_utf16() as u32;
+        i += len;
+    }
+    out[bytes.len()] = units;
+    out
+}
+
+/// Per-file column service for the walkers: `col` is the same UTF-16 column
+/// `col16` computes, in O(1) instead of a rescan of the line prefix per
+/// node — an all-ASCII file (the common case, and every minified one-liner,
+/// where the rescan was quadratic) reads columns straight off the byte
+/// offsets; a non-ASCII file builds the UTF-16 prefix table once, on first
+/// use.
+pub struct Cols {
+    starts: Vec<usize>,
+    ascii: bool,
+    prefix: std::cell::OnceCell<Vec<u32>>,
+}
+
+impl Cols {
+    pub fn new(src: &str) -> Cols {
+        Cols { starts: line_starts(src), ascii: src.is_ascii(), prefix: std::cell::OnceCell::new() }
+    }
+
+    /// `split('\n').length` — the file node's endLine.
+    pub fn line_count(&self) -> u32 {
+        self.starts.len() as u32
+    }
+
+    /// Column (UTF-16 units) of `byte_pos` on line `row`.
+    pub fn col(&self, src: &str, row: usize, byte_pos: usize) -> u32 {
+        let ls = self.starts.get(row).copied().unwrap_or(0);
+        if byte_pos <= ls {
+            return 0;
+        }
+        if self.ascii {
+            return (byte_pos - ls) as u32;
+        }
+        let prefix = self.prefix.get_or_init(|| utf16_prefix(src));
+        let at = |b: usize| prefix.get(b).copied().unwrap_or_else(|| prefix[prefix.len() - 1]);
+        at(byte_pos) - at(ls)
+    }
 }
 
 /// JS `String.prototype.slice(0, n)` in UTF-16 units, without splitting a
@@ -169,6 +226,33 @@ mod tests {
         assert_eq!(col16(src, &starts, 0, 1), 1); // after 'a'
         assert_eq!(col16(src, &starts, 0, 3), 2); // after 'é'
         assert_eq!(col16(src, &starts, 0, 7), 4); // after '😀'
+        let cols = Cols::new(src);
+        for (byte, want) in [(0, 0), (1, 1), (3, 2), (7, 4), (8, 5)] {
+            assert_eq!(cols.col(src, 0, byte), want, "byte {byte}");
+            assert_eq!(cols.col(src, 0, byte), col16(src, &starts, 0, byte));
+        }
+    }
+
+    #[test]
+    fn cols_match_col16_across_lines() {
+        let src = "ascii line\n  x = 1\nünïcödé π\n\tlast";
+        let starts = line_starts(src);
+        let cols = Cols::new(src);
+        assert_eq!(cols.line_count(), 4);
+        for (row, &ls) in starts.iter().enumerate() {
+            let end = starts.get(row + 1).map(|n| n - 1).unwrap_or(src.len());
+            for byte in ls..=end {
+                if !src.is_char_boundary(byte) {
+                    continue;
+                }
+                assert_eq!(cols.col(src, row, byte), col16(src, &starts, row, byte), "row {row} byte {byte}");
+            }
+        }
+        // ASCII fast path agrees too.
+        let a = "plain\nlines only\n";
+        let ac = Cols::new(a);
+        let astarts = line_starts(a);
+        assert_eq!(ac.col(a, 1, 8), col16(a, &astarts, 1, 8));
     }
 
     #[test]

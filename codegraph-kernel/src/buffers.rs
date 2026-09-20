@@ -133,12 +133,58 @@ pub const REF_FLAG_FILE_PATH: u8 = 1;
 /// `language` field and parity compares the objects whole.
 pub const REF_FLAG_LANGUAGE: u8 = 2;
 
+/// Index of `kind` in NODE_KINDS. A `match` (not a scan) so a literal
+/// argument folds to its constant at the call site — the walkers ask for
+/// `"contains"`/`"calls"`/`"references"` once per node or ref emitted.
+#[inline]
 pub fn node_kind_index(kind: &str) -> Option<u8> {
-    NODE_KINDS.iter().position(|k| *k == kind).map(|i| i as u8)
+    Some(match kind {
+        "file" => 0,
+        "module" => 1,
+        "class" => 2,
+        "struct" => 3,
+        "interface" => 4,
+        "trait" => 5,
+        "protocol" => 6,
+        "function" => 7,
+        "method" => 8,
+        "property" => 9,
+        "field" => 10,
+        "variable" => 11,
+        "constant" => 12,
+        "enum" => 13,
+        "enum_member" => 14,
+        "type_alias" => 15,
+        "namespace" => 16,
+        "parameter" => 17,
+        "import" => 18,
+        "export" => 19,
+        "route" => 20,
+        "component" => 21,
+        "union" => 22,
+        _ => return None,
+    })
 }
 
+/// Index of `kind` in EDGE_KINDS — same shape as `node_kind_index`.
+#[inline]
 pub fn edge_kind_index(kind: &str) -> Option<u8> {
-    EDGE_KINDS.iter().position(|k| *k == kind).map(|i| i as u8)
+    Some(match kind {
+        "contains" => 0,
+        "calls" => 1,
+        "imports" => 2,
+        "exports" => 3,
+        "extends" => 4,
+        "implements" => 5,
+        "references" => 6,
+        "type_of" => 7,
+        "returns" => 8,
+        "instantiates" => 9,
+        "overrides" => 10,
+        "decorates" => 11,
+        "navigates" => 12,
+        _ => return None,
+    })
 }
 
 /// (offset, len) arena reference. `NONE_STR` encodes an absent field.

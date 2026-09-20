@@ -802,6 +802,27 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.40 Kernel review, pass 2 — performance batch A, the walkers (2026-09-20)
+
+The mechanical half of the performance pass: changes that cannot move a verdict, applied across all fifteen walkers, so the byte-identical gate is the whole review. The one that matters is the column service. Every walker computed a node's UTF-16 column by re-measuring the line prefix from the line start (`col16`: `utf16_len(&src[line_start..pos])`), twice per node and once per reference — linear in the line, so quadratic on a long line, and a minified bundle is one long line. `textutil::Cols` replaces it: an all-ASCII file (the common case) reads columns straight off byte offsets, and a non-ASCII file builds the UTF-16 prefix table once, lazily, on first use; `col16` survives only as the test oracle `Cols::col` is checked against. The rest: `ids::node_id` hex-encodes through a nibble table instead of sixteen `format!` calls per id; the node/edge kind lookups are `match` tables instead of linear scans over the kind lists; the `{"valueRef":true}` arena put is hoisted out of the value-reference loops; `collect()`-then-iterate child walks became direct cursor iteration (29 sites); `&x.clone()` at reference-push sites became `&x` (21 sites); the TypeScript walker's `(name, line)` `String`-keyed scoped-row and `require()`-declarator lookups became line-keyed maps (no allocation per declaration) and its line count comes from the column service instead of a third newline scan; the doubled `markdown_refs_from_string` calls in the C/C++ and TypeScript walks are gone (a string node reached the second call on the same path with nothing emitted between, so reference order is unchanged); Java's Lombok owner test compares by `strip_prefix` instead of formatting a qualified name per node per class; the C paren-conversion regex runs only on a `(`-led callee; the fn-pointer sweep's `struct`/`union` keyword scan keeps each keyword's next hit instead of re-searching both to end of file per match; three `from_utf8_lossy` copies became `from_utf8` moves; `tree.rs` reuses `textutil::utf16_prefix`.
+
+**Kernel-only extraction** (every file the index holds, in index order, through `tryKernelExtractRaw` on one thread — no decode, no store; best of 3; baseline kernel built from `e8ecd153`, loaded through `CODEGRAPH_KERNEL_PATH`):
+
+| corpus | files | source | before | after | Δ |
+|---|---:|---:|---:|---:|---:|
+| koel | 2,051 | 3.6 M chars | 484 ms | 461 ms | −5% |
+| firefly-iii | 1,954 | 10.6 M | 1,484 ms | 951 ms | −36% |
+| warp-drive | 1,631 | 8.8 M | 869 ms | 874 ms | 0 |
+| halo | 2,251 | 9.2 M | 865 ms | 815 ms | −6% |
+| pretix | 1,417 | 20.0 M | 2,762 ms | 2,263 ms | −18% |
+| discourse | 15,564 | 61.2 M | 29,919 ms | 10,742 ms | **−64%** |
+
+discourse is the quadratic case (long-line JavaScript and Ruby); warp-drive's TypeScript was never column-bound. Peak RSS of the bench process is unchanged on every corpus (±1 MB).
+
+**Index level** (`codegraph index`, kernel-on, `nice -n 10`, single runs; wall / max RSS / `parse-loop`): eShop 1.29 s / 554 MB / 250 ms → 1.13 / 554 / 210; koel 3.86 / 1.35 GB / 1,015 → 3.62 / 1.36 / 753; firefly-iii 7.95 / 1.64 / 1,165 → 7.60 / 1.64 / 876; pretix 11.29 / 3.86 / 1,364 → 11.35 / 3.95 / 1,244; discourse 22.75 / 5.56 GB / 6,309 → 22.60 / 5.42 / 6,332. The parse loop is bound by the main thread's store (discourse: `store=4.55 s` of the 6.3 s loop) with six parse workers absorbing the walker time, so the walker gain lands as CPU, not wall, on this host; a narrower pool sees it directly. Resolution (discourse 12.8 s, pretix 8.6 s) is the next batch.
+
+**Gate**: `scripts/dump-graph.mjs` byte-identical against the baseline kernel on all fourteen corpora (eShop, Alamofire, os-lib, bloc, lazy.nvim, dplyr, lune, koel, firefly-iii, paperless-ngx, warp-drive, halo, pretix, discourse); kernel 28/28 (two new `Cols` tests), clippy `-D warnings`, ast-grep rules; full suite 303 files / 5,178 tests.
+
 ### 5.39 Kernel review, pass 1 — bugs (2026-09-20)
 
 A whole-kernel audit (six read-only reviewer agents over the per-language walkers in disjoint batches; the core, the resolver and the TypeScript walker read directly) produced the first fix batch: crash classes, determinism, parity with the TypeScript reference, and one structural defect. No metric moves by design — the batch is verdict-neutral on ASCII corpora — so the row records the gate.

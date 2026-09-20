@@ -98,24 +98,6 @@ pub struct TreeNames {
 
 pub const TREE_ABI_VERSION: u32 = 1;
 
-/// Prefix table: UTF-16 units before each byte offset (len + 1 entries).
-fn utf16_prefix(src: &str) -> Vec<u32> {
-    let bytes = src.as_bytes();
-    let mut out = vec![0u32; bytes.len() + 1];
-    let mut units = 0u32;
-    let mut i = 0;
-    for ch in src.chars() {
-        let len = ch.len_utf8();
-        for k in 0..len {
-            out[i + k] = units;
-        }
-        units += ch.len_utf16() as u32;
-        i += len;
-    }
-    out[bytes.len()] = units;
-    out
-}
-
 struct Row {
     kind: u16,
     flags: u8,
@@ -158,7 +140,7 @@ fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
     // ASCII: byte offsets ARE UTF-16 offsets and tree-sitter's byte columns
     // are code-unit columns. Only a non-ASCII file pays for the prefix table.
     let ascii = content.is_ascii();
-    let prefix: Vec<u32> = if ascii { Vec::new() } else { utf16_prefix(content) };
+    let prefix: Vec<u32> = if ascii { Vec::new() } else { crate::textutil::utf16_prefix(content) };
     let line_starts: Vec<usize> = if ascii { Vec::new() } else { crate::textutil::line_starts(content) };
     let idx16 = |byte: usize| -> u32 { if ascii { byte as u32 } else { prefix[byte] } };
     let col16 = |row: usize, col_bytes: usize, byte: usize| -> u32 {

@@ -73,7 +73,7 @@ pub struct Walker<'t> {
     src: &'t str,
     file_path: &'t str,
     is_luau: bool,
-    line_starts: Vec<usize>,
+    cols: util::Cols,
     arena: Arena,
     tables: Tables,
     md_ref_keys: HashSet<String>,
@@ -99,7 +99,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         src: source,
         file_path,
         is_luau: language == "luau",
-        line_starts: util::line_starts(source),
+        cols: util::Cols::new(source),
         arena: Arena::default(),
         tables: Tables::default(),
         md_ref_keys: HashSet::new(),
@@ -172,10 +172,10 @@ impl<'t> Walker<'t> {
         node.start_position().row as u32 + 1
     }
     fn col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.start_position().row, node.start_byte())
+        self.cols.col(self.src, node.start_position().row, node.start_byte())
     }
     fn end_col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.end_position().row, node.end_byte())
+        self.cols.col(self.src, node.end_position().row, node.end_byte())
     }
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
@@ -489,8 +489,7 @@ impl<'t> Walker<'t> {
         }
 
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.visit(child);
         }
     }
@@ -726,8 +725,7 @@ impl<'t> Walker<'t> {
     fn extract_lua_table_functions(&mut self, table: Node<'t>, receiver: String) {
         stack_guard!();
         let mut cursor = table.walk();
-        let fields: Vec<Node<'t>> = table.named_children(&mut cursor).collect();
-        for field in fields {
+        for field in table.named_children(&mut cursor) {
             if field.kind() != "field" {
                 continue;
             }
@@ -820,8 +818,7 @@ impl<'t> Walker<'t> {
         // variable/type_alias nodes minted.
 
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.visit_body(child);
         }
     }
@@ -916,8 +913,7 @@ impl<'t> Walker<'t> {
             }
             "expression_list" => {
                 let mut cursor = v.walk();
-                let kids: Vec<Node<'t>> = v.named_children(&mut cursor).collect();
-                for c in kids {
+                for c in v.named_children(&mut cursor) {
                     self.normalize_fn_ref_value(c, from, depth + 1);
                 }
             }
@@ -944,8 +940,7 @@ impl<'t> Walker<'t> {
         }
         self.maybe_capture_fn_refs(node);
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for c in children {
+        for c in node.named_children(&mut cursor) {
             self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
@@ -969,7 +964,7 @@ impl<'t> Walker<'t> {
             if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
                 continue;
             }
-            let column = util::col16(self.src, &self.line_starts, c.row, c.column_byte);
+            let column = self.cols.col(self.src, c.row, c.column_byte);
             let name_ref = self.arena.put(&c.name);
             self.tables.push_ref(&RefRow {
                 from_idx: c.from,

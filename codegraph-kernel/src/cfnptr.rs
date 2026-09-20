@@ -432,9 +432,20 @@ struct InlineScan {
 fn scan_inline_structs(s: &[u8]) -> InlineScan {
     let mut out = InlineScan { ptr: false, types: Vec::new(), tags: Vec::new() };
     let mut last = 0;
+    // Each keyword's next occurrence is searched once and kept until the
+    // scan passes it: a hit at or beyond `last` is still the first hit from
+    // `last`, so only the keyword the loop consumed is re-searched (the old
+    // shape re-scanned BOTH to end of file on every iteration — O(n·k) on a
+    // header with many `struct`s and no `union`).
+    let mut next_struct = find_word(s, b"struct", 0);
+    let mut next_union = find_word(s, b"union", 0);
     loop {
-        let next_struct = find_word(s, b"struct", last);
-        let next_union = find_word(s, b"union", last);
+        if next_struct.is_some_and(|p| p < last) {
+            next_struct = find_word(s, b"struct", last);
+        }
+        if next_union.is_some_and(|p| p < last) {
+            next_union = find_word(s, b"union", last);
+        }
         let Some((t, keyword_len)) = (match (next_struct, next_union) {
             (Some(st), Some(un)) if st < un => Some((st, 6)),
             (Some(_), Some(un)) => Some((un, 5)),
@@ -1686,7 +1697,8 @@ pub fn file_env(raw: &str) -> FileEnv {
     if contains_bytes(raw_b, b"include") {
         scan_includes(raw_b, &mut env.includes);
     }
-    env.stripped = String::from_utf8_lossy(&stripped).into_owned();
+    // Valid UTF-8 (the usual case) moves in without a copy.
+    env.stripped = String::from_utf8(stripped).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     env
 }
 
@@ -2248,7 +2260,7 @@ fn link_dispatch_file(text: &str, f: &LinkFile, tabs: &Tabs, out: &mut Vec<LinkE
 fn read_text(abs: &str) -> Option<String> {
     std::fs::read(abs)
         .ok()
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map(|b| String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
         .filter(|t| !t.is_empty())
 }
 
