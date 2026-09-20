@@ -67,7 +67,7 @@ struct Scope {
 pub struct Walker<'t> {
     src: &'t str,
     file_path: &'t str,
-    line_starts: Vec<usize>,
+    cols: util::Cols,
     arena: Arena,
     tables: Tables,
     md_ref_keys: std::collections::HashSet<String>,
@@ -88,7 +88,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let mut w = Walker {
         src: source,
         file_path,
-        line_starts: util::line_starts(source),
+        cols: util::Cols::new(source),
         arena: Arena::default(),
         tables: Tables::default(),
         md_ref_keys: std::collections::HashSet::new(),
@@ -156,10 +156,10 @@ impl<'t> Walker<'t> {
         node.start_position().row as u32 + 1
     }
     fn col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.start_position().row, node.start_byte())
+        self.cols.col(self.src, node.start_position().row, node.start_byte())
     }
     fn end_col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.end_position().row, node.end_byte())
+        self.cols.col(self.src, node.end_position().row, node.end_byte())
     }
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
@@ -316,8 +316,7 @@ impl<'t> Walker<'t> {
             self.extract_call(node);
         }
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.visit(child);
         }
     }
@@ -498,8 +497,7 @@ impl<'t> Walker<'t> {
         };
         let mut positional = 0u32;
         let mut cursor = args.walk();
-        let arg_nodes: Vec<Node<'t>> = args.named_children(&mut cursor).collect();
-        for arg in arg_nodes {
+        for arg in args.named_children(&mut cursor) {
             if arg.kind() != "argument" {
                 continue;
             }

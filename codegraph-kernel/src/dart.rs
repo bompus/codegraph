@@ -124,7 +124,7 @@ struct Extra {
 pub struct Walker<'t> {
     src: &'t str,
     file_path: &'t str,
-    line_starts: Vec<usize>,
+    cols: util::Cols,
     arena: Arena,
     tables: Tables,
     md_ref_keys: HashSet<String>,
@@ -152,7 +152,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let mut w = Walker {
         src: source,
         file_path,
-        line_starts: util::line_starts(source),
+        cols: util::Cols::new(source),
         arena: Arena::default(),
         tables: Tables::default(),
         md_ref_keys: HashSet::new(),
@@ -228,10 +228,10 @@ impl<'t> Walker<'t> {
         node.start_position().row as u32 + 1
     }
     fn col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.start_position().row, node.start_byte())
+        self.cols.col(self.src, node.start_position().row, node.start_byte())
     }
     fn end_col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.end_position().row, node.end_byte())
+        self.cols.col(self.src, node.end_position().row, node.end_byte())
     }
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
@@ -671,8 +671,7 @@ impl<'t> Walker<'t> {
         }
 
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.visit(child);
         }
     }
@@ -804,8 +803,7 @@ impl<'t> Walker<'t> {
         self.stack.push(Scope { row, kind: "class", name });
         let body = resolved_body.unwrap_or(node);
         let mut cursor = body.walk();
-        let children: Vec<Node<'t>> = body.named_children(&mut cursor).collect();
-        for child in children {
+        for child in body.named_children(&mut cursor) {
             self.visit(child);
         }
         self.stack.pop();
@@ -835,8 +833,7 @@ impl<'t> Walker<'t> {
         // No extractDecoratorsFor on the enum path.
         self.stack.push(Scope { row, kind: "enum", name });
         let mut cursor = body.walk();
-        let children: Vec<Node<'t>> = body.named_children(&mut cursor).collect();
-        for child in children {
+        for child in body.named_children(&mut cursor) {
             if child.kind() == "enum_constant" {
                 self.extract_enum_members(child);
             } else {
@@ -1096,8 +1093,7 @@ impl<'t> Walker<'t> {
         // Scan 1: direct children (+ modifiers descent) — inert for dart
         // (annotations are preceding siblings), ported for fidelity.
         let mut cursor = decl.walk();
-        let kids: Vec<Node<'t>> = decl.named_children(&mut cursor).collect();
-        for child in kids {
+        for child in decl.named_children(&mut cursor) {
             self.consider_decorator(child, decorated_row);
             if child.kind() == "modifiers" {
                 let mut mc = child.walk();
@@ -1138,8 +1134,7 @@ impl<'t> Walker<'t> {
         }
         let mut target: Option<Node<'t>> = None;
         let mut cursor = n.walk();
-        let kids: Vec<Node<'t>> = n.named_children(&mut cursor).collect();
-        for child in kids {
+        for child in n.named_children(&mut cursor) {
             if child.kind() == "call_expression" {
                 let fnn = child.child_by_field_name("function").or_else(|| child.named_child(0));
                 if let Some(f) = fnn {
@@ -1183,8 +1178,7 @@ impl<'t> Walker<'t> {
 
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         let mut cursor = node.walk();
-        let kids: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for child in kids {
+        for child in node.named_children(&mut cursor) {
             if child.kind() == "superclass" {
                 // extends type + `with` mixins (implements) — dart branch.
                 let mut cc = child.walk();
@@ -1246,8 +1240,7 @@ impl<'t> Walker<'t> {
             return;
         }
         let mut cursor = node.walk();
-        let kids: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for c in kids {
+        for c in node.named_children(&mut cursor) {
             self.type_refs_from_subtree(c, from_row);
         }
     }
@@ -1284,8 +1277,7 @@ impl<'t> Walker<'t> {
         }
 
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.visit_body(child);
         }
     }
@@ -1388,8 +1380,7 @@ impl<'t> Walker<'t> {
             }
             "argument" => {
                 let mut cursor = v.walk();
-                let kids: Vec<Node<'t>> = v.named_children(&mut cursor).collect();
-                for c in kids {
+                for c in v.named_children(&mut cursor) {
                     self.normalize_fn_ref_value(c, from, depth + 1);
                 }
             }
@@ -1416,8 +1407,7 @@ impl<'t> Walker<'t> {
         }
         self.maybe_capture_fn_refs(node);
         let mut cursor = node.walk();
-        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
-        for c in children {
+        for c in node.named_children(&mut cursor) {
             self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
@@ -1439,7 +1429,7 @@ impl<'t> Walker<'t> {
             if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
                 continue;
             }
-            let column = util::col16(self.src, &self.line_starts, c.row, c.column_byte);
+            let column = self.cols.col(self.src, c.row, c.column_byte);
             let name_ref = self.arena.put(&c.name);
             self.tables.push_ref(&RefRow {
                 from_idx: c.from,
@@ -1509,6 +1499,8 @@ impl<'t> Walker<'t> {
         }
 
         let refs_kind = edge_kind_index("references").unwrap();
+        // One arena string for every value-ref edge of the file (unchanged when none).
+        let mut value_ref_meta: Option<StrRef> = None;
         for scope in &scopes {
             let mut seen: HashSet<&str> = HashSet::new();
             let mut stack: Vec<Node> = vec![scope.node];
@@ -1535,7 +1527,7 @@ impl<'t> Walker<'t> {
                             && !seen.contains(&target_id)
                         {
                             seen.insert(target_id);
-                            let meta = self.arena.put(r#"{"valueRef":true}"#);
+                            let meta = *value_ref_meta.get_or_insert_with(|| self.arena.put(r#"{"valueRef":true}"#));
                             self.tables.push_edge(&EdgeRow {
                                 source_idx: scope.row,
                                 target_idx: target_row,

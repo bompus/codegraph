@@ -83,10 +83,12 @@ impl<'t> Walker<'t> {
                     if scope.is_none() {
                         // The walk creates a node for a module-level declarator;
                         // its row becomes the `import` row (it may be re-exported).
-                        self.import_decls.insert((name, self.line_of(name_node)), spec);
+                        let line = self.line_of(name_node);
+                        self.set_import_decl(name, line, spec);
                     } else {
                         self.push_import_row(&name, &spec, "default", name_node, range);
-                        self.scoped_rows.insert((name, self.line_of(name_node)));
+                        let line = self.line_of(name_node);
+                        self.mark_scoped_row(&name, line);
                     }
                 }
                 "object_pattern" => {
@@ -319,7 +321,7 @@ impl<'t> Walker<'t> {
 
     fn push_scoped_row(&mut self, name: &str, kind: u8, node: Node<'t>, (scope_start, scope_end): (u32, u32)) {
         let line = self.line_of(node);
-        if !self.scoped_rows.insert((name.to_string(), line)) {
+        if !self.mark_scoped_row(name, line) {
             return;
         }
         let name_ref = self.arena.put(name);

@@ -21,14 +21,28 @@ pub fn node_id(file_path: &str, kind: &str, name: &str, line: u32) -> String {
     hasher.update(b":");
     hasher.update(name.as_bytes());
     hasher.update(b":");
-    hasher.update(line.to_string().as_bytes());
+    // Decimal line number without a heap allocation (this runs once per node).
+    let mut digits = [0u8; 10];
+    let mut i = digits.len();
+    let mut n = line;
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    hasher.update(&digits[i..]);
     let digest = hasher.finalize();
     // 32 hex chars = first 16 bytes.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut hex = String::with_capacity(kind.len() + 1 + 32);
     hex.push_str(kind);
     hex.push(':');
     for b in &digest[..16] {
-        hex.push_str(&format!("{b:02x}"));
+        hex.push(HEX[(b >> 4) as usize] as char);
+        hex.push(HEX[(b & 0x0f) as usize] as char);
     }
     hex
 }

@@ -398,7 +398,7 @@ pub fn cfnptr_scan_paths(files: Vec<CfnptrPathIn>) -> Vec<CfnptrFacts> {
 /// the TS reference directly.
 #[napi]
 pub fn cfnptr_strip_c(text: String) -> String {
-    String::from_utf8_lossy(&cfnptr::strip_c(text.as_bytes())).into_owned()
+    String::from_utf8(cfnptr::strip_c(text.as_bytes())).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 // ---- cFnPtr stage C env extraction + stages D/E link ----

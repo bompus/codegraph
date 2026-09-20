@@ -340,7 +340,7 @@ pub struct Walker<'t> {
     src: &'t str,
     file_path: &'t str,
     variant: Variant,
-    line_starts: Vec<usize>,
+    cols: util::Cols,
     arena: Arena,
     tables: Tables,
     stack: Vec<Scope>,
@@ -444,7 +444,7 @@ impl<'t> Walker<'t> {
             src: source,
             file_path,
             variant,
-            line_starts: util::line_starts(source),
+            cols: util::Cols::new(source),
             arena: Arena::default(),
             tables: Tables::default(),
             stack: Vec::new(),
@@ -473,10 +473,10 @@ impl<'t> Walker<'t> {
         node.start_position().row as u32 + 1
     }
     fn col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.start_position().row, node.start_byte())
+        self.cols.col(self.src, node.start_position().row, node.start_byte())
     }
     fn end_col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.end_position().row, node.end_byte())
+        self.cols.col(self.src, node.end_position().row, node.end_byte())
     }
     fn top_row(&self) -> u32 {
         self.stack.last().map(|s| s.row).unwrap_or(0)
@@ -847,11 +847,9 @@ impl<'t> Walker<'t> {
         let kind = node.kind();
         let mut skip_children = false;
 
-        let md_owner = self.top_row();
-        self.markdown_refs_from_string(node, md_owner);
-
         // C++ namespace blocks: prefix-only, no node (#1291/#1093). Anonymous
-        // namespaces fall through to the generic walk.
+        // namespaces fall through to the generic walk. (No markdown scan
+        // before this early return: a namespace node is never a string.)
         if self.variant == Variant::Cpp && kind == "namespace_definition" {
             let ns_name = node
                 .child_by_field_name("name")
@@ -1397,15 +1395,9 @@ impl<'t> Walker<'t> {
     /// The node's own span covers the member declaration; the `contains`
     /// edge lands on the enclosing aggregate (create_node's scope stack).
     fn extract_callable_fields(&mut self, node: Node<'t>) {
-        let type_name = node
-            .child_by_field_name("type")
-            .map(|t| self.text(t).to_string());
-        let ptr_td = type_name
-            .as_deref()
-            .is_some_and(|t| self.fn_ptr_typedefs.contains(t));
-        let fn_td = type_name
-            .as_deref()
-            .is_some_and(|t| self.fn_type_typedefs.contains(t));
+        let type_name = node.child_by_field_name("type").map(|t| self.text(t));
+        let ptr_td = type_name.is_some_and(|t| self.fn_ptr_typedefs.contains(t));
+        let fn_td = type_name.is_some_and(|t| self.fn_type_typedefs.contains(t));
         let mut cursor = node.walk();
         for declarator in node.children_by_field_name("declarator", &mut cursor) {
             let Some(name_node) = self.callable_field_name(declarator, ptr_td, fn_td) else {
@@ -1786,8 +1778,9 @@ impl<'t> Walker<'t> {
             }
         }
 
-        if !callee_name.is_empty() {
-            // `(*fp)(x)` → `fp` (parenthesized-conversion normalization).
+        if callee_name.starts_with('(') {
+            // `(*fp)(x)` → `fp` (parenthesized-conversion normalization; the
+            // pattern is `^\(`-anchored, so only a `(`-led callee can match).
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
@@ -2285,7 +2278,7 @@ impl<'t> Walker<'t> {
             if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
                 continue;
             }
-            let column = util::col16(self.src, &self.line_starts, c.row, c.column_byte);
+            let column = self.cols.col(self.src, c.row, c.column_byte);
             let name_ref = self.arena.put(&c.name);
             self.tables.push_ref(&RefRow {
                 from_idx: c.from,
@@ -2354,6 +2347,8 @@ impl<'t> Walker<'t> {
         }
 
         let refs_kind = edge_kind_index("references").unwrap();
+        // One arena string for every value-ref edge of the file (unchanged when none).
+        let mut value_ref_meta: Option<StrRef> = None;
         for scope in &scopes {
             let mut seen: HashSet<&str> = HashSet::new();
             let mut stack: Vec<Node> = vec![scope.node];
@@ -2373,7 +2368,7 @@ impl<'t> Walker<'t> {
                             && !seen.contains(&target_id)
                         {
                             seen.insert(target_id);
-                            let meta = self.arena.put(r#"{"valueRef":true}"#);
+                            let meta = *value_ref_meta.get_or_insert_with(|| self.arena.put(r#"{"valueRef":true}"#));
                             self.tables.push_edge(&EdgeRow {
                                 source_idx: scope.row,
                                 target_idx: target_row,

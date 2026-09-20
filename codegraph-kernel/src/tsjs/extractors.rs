@@ -1109,7 +1109,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(import_text), ..Extra::default() },
         );
         let parent = self.top_row();
-        self.push_ref(parent, &module_name.clone(), edge_kind_index("imports").unwrap(), node);
+        self.push_ref(parent, &module_name, edge_kind_index("imports").unwrap(), node);
         self.emit_import_binding_refs(node, parent);
     }
 
@@ -1340,7 +1340,7 @@ impl<'t> Walker<'t> {
         }
 
         if !callee_name.is_empty() {
-            self.push_call_ref(&callee_name.clone(), node);
+            self.push_call_ref(&callee_name, node);
         }
     }
 

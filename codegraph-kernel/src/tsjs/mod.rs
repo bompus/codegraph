@@ -7,7 +7,7 @@
 //! bug-for-bug fidelity where the TS code has quirks. Every function notes the
 //! TS function it mirrors; if you change one side, change the other or the
 //! parity gate fails. Positions are emitted in UTF-16 code units (what
-//! web-tree-sitter reports), see util::col16.
+//! web-tree-sitter reports), see util::Cols.
 
 mod bindings;
 mod extractors;
@@ -186,7 +186,7 @@ pub struct Walker<'t> {
     src: &'t str,
     file_path: &'t str,
     variant: Variant,
-    line_starts: Vec<usize>,
+    cols: util::Cols,
     arena: Arena,
     tables: Tables,
     stack: Vec<Scope>,
@@ -220,9 +220,13 @@ pub struct Walker<'t> {
     /// (name, line) → specifier for a module-level `const x = require(..)`
     /// declarator: the walk emits its row as an `import` row (node-backed, so
     /// a later `module.exports = { x }` can still export it).
-    import_decls: HashMap<(String, u32), String>,
+    /// Line → (name, spec) of module-level `require()` declarators, so the
+    /// walk's decl row becomes an `import` row. Keyed by line: the lookup is
+    /// per declaration and a `(String, u32)` key would cost an allocation each.
+    import_decls: HashMap<u32, Vec<(String, String)>>,
     /// (name, line) of `param`/`local` rows the pre-walk emitted (dedupe).
-    scoped_rows: HashSet<(String, u32)>,
+    /// Line → names whose binding row the pre-walk already emitted.
+    scoped_rows: HashMap<u32, Vec<String>>,
     /// `exports.x = function () {}` / `module.exports.x = () => …`: (x, line),
     /// consumed by the AST-only decl pass (the walker names such nodes itself).
     cjs_fn_exports: Vec<(String, u32)>,
@@ -254,7 +258,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
 
     // File node (TreeSitterExtractor.extract): id `file:<path>`, endLine =
     // newline count + 1, isExported explicitly false.
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+    let line_count = w.line_count;
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(FLAG_IS_EXPORTED, false);
@@ -281,7 +285,6 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     });
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
-    w.line_count = line_count;
     w.collect_later_exports(tree.root_node());
     w.collect_scoped_bindings(tree.root_node());
 
@@ -312,11 +315,13 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
 
 impl<'t> Walker<'t> {
     fn new(source: &'t str, file_path: &'t str, variant: Variant) -> Walker<'t> {
+        let cols = util::Cols::new(source);
         Walker {
             src: source,
             file_path,
             variant,
-            line_starts: util::line_starts(source),
+            line_count: cols.line_count(),
+            cols,
             arena: Arena::default(),
             tables: Tables::default(),
             stack: Vec::new(),
@@ -330,9 +335,8 @@ impl<'t> Walker<'t> {
             vue_store_file: None,
             md_ref_keys: HashSet::new(),
             later_exports: HashMap::new(),
-            line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
             import_decls: HashMap::new(),
-            scoped_rows: HashSet::new(),
+            scoped_rows: HashMap::new(),
             cjs_fn_exports: Vec::new(),
         }
     }
@@ -348,11 +352,11 @@ impl<'t> Walker<'t> {
     }
 
     fn col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.start_position().row, node.start_byte())
+        self.cols.col(self.src, node.start_position().row, node.start_byte())
     }
 
     fn end_col_of(&self, node: Node) -> u32 {
-        util::col16(self.src, &self.line_starts, node.end_position().row, node.end_byte())
+        self.cols.col(self.src, node.end_position().row, node.end_byte())
     }
 
     fn top_row(&self) -> u32 {
@@ -624,6 +628,40 @@ impl<'t> Walker<'t> {
         }
     }
 
+    /// True when the pre-walk already emitted a binding row for `name` on `line`.
+    pub(super) fn has_scoped_row(&self, name: &str, line: u32) -> bool {
+        self.scoped_rows.get(&line).is_some_and(|names| names.iter().any(|n| n == name))
+    }
+
+    /// Records `name`@`line` as emitted; false when it already was.
+    pub(super) fn mark_scoped_row(&mut self, name: &str, line: u32) -> bool {
+        let names = self.scoped_rows.entry(line).or_default();
+        if names.iter().any(|n| n == name) {
+            return false;
+        }
+        names.push(name.to_string());
+        true
+    }
+
+    /// The `require()` spec a module-level declarator on `line` binds `name` to.
+    pub(super) fn import_decl_spec(&self, name: &str, line: u32) -> Option<&str> {
+        self.import_decls
+            .get(&line)?
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, spec)| spec.as_str())
+    }
+
+    /// Records the spec (a later declarator of the same name on the same line
+    /// replaces it, as a keyed insert did).
+    pub(super) fn set_import_decl(&mut self, name: String, line: u32, spec: String) {
+        let entries = self.import_decls.entry(line).or_default();
+        match entries.iter_mut().find(|(n, _)| *n == name) {
+            Some(entry) => entry.1 = spec,
+            None => entries.push((name, spec)),
+        }
+    }
+
     /// Replaces the regex `is_exported_later`: same question, answered from the AST.
     pub(super) fn is_exported_later(&self, name: &str) -> bool {
         self.later_exports.contains_key(name)
@@ -638,10 +676,10 @@ impl<'t> Walker<'t> {
             return;
         }
         let line = self.line_of(node);
-        if self.scoped_rows.contains(&(name.to_string(), line)) {
+        if self.has_scoped_row(name, line) {
             return;
         }
-        let require_spec = self.import_decls.get(&(name.to_string(), line)).cloned();
+        let require_spec = self.import_decl_spec(name, line).map(str::to_string);
         // Scope from the AST, not the node stack: an IIFE or a callback has no
         // node, so a function declared inside one is still nested. The same
         // rule the pre-walk and the AST-only emitter use (bindings.rs).
@@ -819,6 +857,8 @@ impl<'t> Walker<'t> {
         }
 
         let refs_kind = edge_kind_index("references").unwrap();
+        // One arena string for every value-ref edge of the file (unchanged when none).
+        let mut value_ref_meta: Option<StrRef> = None;
         for scope in &scopes {
             // Self-skip and per-scope dedupe compare node ID STRINGS (which
             // collide for same-(kind, name, line) nodes), matching the TS side.
@@ -839,7 +879,7 @@ impl<'t> Walker<'t> {
                             && !seen.contains(&target_id)
                         {
                             seen.insert(target_id);
-                            let meta = self.arena.put(r#"{"valueRef":true}"#);
+                            let meta = *value_ref_meta.get_or_insert_with(|| self.arena.put(r#"{"valueRef":true}"#));
                             self.tables.push_edge(&EdgeRow {
                                 source_idx: scope.row,
                                 target_idx: target_row,
@@ -919,7 +959,7 @@ impl<'t> Walker<'t> {
             if !seen.insert((self.node_ids[from as usize].clone(), c.name.clone())) {
                 continue;
             }
-            let column = util::col16(self.src, &self.line_starts, c.row, c.column_byte);
+            let column = self.cols.col(self.src, c.row, c.column_byte);
             let name_ref = self.arena.put(&c.name);
             self.tables.push_ref(&RefRow {
                 from_idx: from,
@@ -1033,8 +1073,6 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
-        let md_owner = self.top_row();
-        self.markdown_refs_from_string(node, md_owner);
 
         if kind == "call_expression" {
             self.extract_call(node);
