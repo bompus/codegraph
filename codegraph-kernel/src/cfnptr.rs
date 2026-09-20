@@ -1874,7 +1874,7 @@ fn chain_segs(chain: &[u8]) -> Vec<&[u8]> {
 /// `resolveChainType` — walk `seg[i]`'s declared field type down the chain.
 fn resolve_chain_type(body: &[u8], chain: &[u8], tabs: &Tabs) -> Option<String> {
     let segs = chain_segs(chain);
-    let mut t = var_type_in(body, segs[0], tabs)?;
+    let mut t = var_type_in(body, segs.first()?, tabs)?;
     for seg in &segs[1..] {
         let mut next: Option<String> = None;
         if let Some(variants) = tabs.all_fields.get(t.as_str()) {
@@ -2026,7 +2026,14 @@ fn body_slice<'s>(s: &'s [u8], lines: &[usize], start_line: i64, end_line: i64) 
         return &s[0..0];
     }
     let a = (start_line - 1) as usize;
-    let b = end_line as usize;
+    // JS `slice(a, b)`: a negative end counts back from the array's end (the
+    // TS caller never sends one — `endLine ?? startLine ?? 0` — but a raw
+    // `as usize` would wrap it into "the whole tail of the file").
+    let b = if end_line < 0 {
+        (lines.len() as i64 + end_line).max(0) as usize
+    } else {
+        end_line as usize
+    };
     if a >= lines.len() || b <= a {
         return &s[0..0];
     }

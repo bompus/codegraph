@@ -102,13 +102,13 @@ fn has_lower_re() -> &'static Regex {
 fn ret_wrapper_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\b(?:std\s*::\s*)?(?:unique_ptr|shared_ptr|weak_ptr|optional)\s*<\s*([^,>]+?)\s*>")
+        Regex::new(r"(?-u:\b)(?:std\s*::\s*)?(?:unique_ptr|shared_ptr|weak_ptr|optional)\s*<\s*([^,>]+?)\s*>")
             .unwrap()
     })
 }
 fn ret_keyword_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b(?:const|volatile|typename|struct|class|enum)\b").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?-u:\b)(?:const|volatile|typename|struct|class|enum)(?-u:\b)").unwrap())
 }
 fn angle_group_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -367,21 +367,6 @@ pub struct Walker<'t> {
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
     line_count: u32,
-}
-
-/// Binding rows for a C/C++ file from the AST alone (resolution-binding-model-plan.md §2.4).
-pub fn bindings_only(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
-    let variant = if language == "cpp" { Variant::Cpp } else { Variant::C };
-    let grammar = crate::langs::grammar_for(language).ok_or("no c/cpp grammar")?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language({language}) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path, variant);
-    w.collect_ast_rows(tree.root_node());
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
-    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
@@ -1357,6 +1342,7 @@ impl<'t> Walker<'t> {
         ptr_td: bool,
         fn_td: bool,
     ) -> Option<Node<'t>> {
+        stack_guard!();
         match d.kind() {
             // `Ret (*name)(Args)`: a function_declarator whose declarator
             // unwraps through parens to a POINTER declarator bound directly to
@@ -1581,157 +1567,6 @@ impl<'t> Walker<'t> {
         out
     }
 
-    /// AST-only rows for `bindings_only` (resolution-binding-model-plan.md §2.4).
-    /// A `namespace` block is not a scope (the walk keeps it as a name prefix).
-    fn collect_ast_rows(&mut self, root: Node<'t>) {
-        // (node, scope, scope is a function body): the walk mints nodeless
-        // locals only inside a function body; a class body's declarations
-        // are fields or nothing.
-        #[allow(clippy::type_complexity)]
-        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>, bool)> = vec![(root, None, false)];
-        while let Some((node, scope, in_fn)) = stack.pop() {
-            let kind = node.kind();
-            let mut child_scope = scope;
-            let mut child_in_fn = in_fn;
-            match kind {
-                "function_definition" => {
-                    // `class MACRO Name : Base { … }` parses as a function
-                    // definition whose first child is a bodyless class_specifier
-                    // and whose name sits in an ERROR: the walk recovers the
-                    // class (#946/#1061); so does this pass.
-                    if let Some(class_name) = self.macro_class_name(node) {
-                        let line = self.line_of(node);
-                        match scope {
-                            None => self.file_level_decl_row(&class_name, NONE, line, false),
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &class_name, NONE, s, line, None, false, None),
-                        }
-                        child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                        child_in_fn = false;
-                    } else {
-                        // The walk's own name and misparse rules: a definition the
-                        // parser mangled (no `declarator` field, a keyword name, an
-                        // ERROR in its parameter list) is no node, and its children
-                        // stay at the enclosing scope.
-                        let name = if node.child_by_field_name("declarator").is_some() { self.extract_name(node) } else { "<anonymous>".to_string() };
-                        if name != "<anonymous>" && !name.is_empty() && !self.is_misparsed_function(&name, node) && !self.parameter_list_has_error(node) {
-                            let line = self.line_of(node);
-                            match scope {
-                                None => { let st = self.has_static_storage(node); self.file_level_decl_row(&name, NONE, line, st); }
-                                Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                            }
-                            self.emit_param_bindings(node);
-                            child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                            child_in_fn = true;
-                        }
-                    }
-                }
-                "struct_specifier" | "union_specifier" | "enum_specifier" | "class_specifier" => {
-                    // As the walk: a specifier without a body (a forward
-                    // declaration, a mangled header) is skipped with its subtree.
-                    if node.child_by_field_name("body").is_none() {
-                        continue;
-                    }
-                    if kind == "class_specifier" && self.variant != Variant::Cpp {
-                        continue;
-                    }
-                    let name = self.extract_name(node);
-                    if name != "<anonymous>" && !name.is_empty() {
-                        let line = self.line_of(node);
-                        match scope {
-                            None => self.file_level_decl_row(&name, NONE, line, false),
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                    child_in_fn = false;
-                }
-                "declaration" => match scope {
-                    Some(s) => { if in_fn { self.emit_local_rows_scoped(node, s) } }
-                    None => {
-                        // The walk's extract_variable: C takes init / pointer /
-                        // array declarators, C++ only a bare identifier.
-                        let st = self.has_static_storage(node);
-                        let mut names: Vec<Node<'t>> = Vec::new();
-                        for i in 0..node.named_child_count() {
-                            let Some(c) = node.named_child(i) else { continue };
-                            let take = match self.variant {
-                                Variant::C => matches!(c.kind(), "init_declarator" | "pointer_declarator" | "array_declarator"),
-                                Variant::Cpp => c.kind() == "identifier",
-                            };
-                            if take {
-                                if let Some(id) = declarator_identifier(c) {
-                                    names.push(id);
-                                }
-                            }
-                        }
-                        for n in names {
-                            let name = self.text(n).to_string();
-                            if name.is_empty() {
-                                continue;
-                            }
-                            let line = self.line_of(n);
-                            self.file_level_decl_row(&name, NONE, line, st);
-                        }
-                    }
-                },
-                "preproc_include" => {
-                    let module_name: Option<String> = if let Some(sys) = self.find_child_by_kind(node, "system_lib_string") {
-                        let t = self.text(sys);
-                        Some(t.strip_prefix('<').unwrap_or(t).strip_suffix('>').unwrap_or(t).to_string())
-                    } else if let Some(lit) = self.find_child_by_kind(node, "string_literal") {
-                        self.find_child_by_kind(lit, "string_content").map(|sc| self.text(sc).to_string())
-                    } else {
-                        None
-                    };
-                    if let Some(m) = module_name {
-                        if !m.is_empty() {
-                            let local = include_local_name(&m);
-                            self.emit_import_binding(&local, &m, node);
-                        }
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(c) = node.named_child(i) {
-                    stack.push((c, child_scope, child_in_fn));
-                }
-            }
-        }
-    }
-
-    /// The class name of a `class MACRO Name` misparse: a function_definition
-    /// whose first named child is a bodyless class/struct specifier and whose
-    /// name is the identifier inside a direct ERROR child.
-    fn macro_class_name(&self, node: Node<'t>) -> Option<String> {
-        let first = node.named_child(0)?;
-        if !matches!(first.kind(), "class_specifier" | "struct_specifier") || first.child_by_field_name("body").is_some() {
-            return None;
-        }
-        for i in 0..node.named_child_count() {
-            let c = node.named_child(i)?;
-            if c.kind() == "ERROR" {
-                let id = (0..c.named_child_count()).filter_map(|j| c.named_child(j)).find(|n| n.kind() == "identifier")?;
-                let name = self.text(id).to_string();
-                return if name.is_empty() { None } else { Some(name) };
-            }
-        }
-        None
-    }
-
-    fn parameter_list_has_error(&self, node: Node<'t>) -> bool {
-        let Some(mut decl) = node.child_by_field_name("declarator") else { return false };
-        while matches!(decl.kind(), "pointer_declarator" | "reference_declarator") {
-            match decl.child_by_field_name("declarator").or_else(|| decl.named_child(0)) {
-                Some(i) => decl = i,
-                None => break,
-            }
-        }
-        let Some(params) = decl.child_by_field_name("parameters") else { return false };
-        (0..params.child_count()).filter_map(|i| params.child(i)).any(|c| c.kind() == "ERROR")
-    }
-
     // --- bindings (resolution-binding-model-plan.md, Phase 3: C/C++) --------------------
 
     /// The enclosing node's lines, or None at file level. The package
@@ -1876,7 +1711,10 @@ impl<'t> Walker<'t> {
                     }
                 }
                 if !operator_name.is_empty() {
-                    let sym = operator_name["operator".len()..].trim().to_string();
+                    // `operatorName.slice(8)` — an ERROR-recovered node may be
+                    // shorter than the keyword; JS yields "" where a fixed
+                    // byte slice would panic.
+                    let sym = operator_name.get("operator".len()..).unwrap_or("").trim().to_string();
                     if symbolic_op_re().is_match(&sym) {
                         let compact: String = sym.chars().filter(|c| !c.is_whitespace()).collect();
                         operator_name = format!("operator{compact}");

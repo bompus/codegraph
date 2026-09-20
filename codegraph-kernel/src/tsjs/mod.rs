@@ -35,9 +35,12 @@ pub enum Variant {
 }
 
 impl Variant {
+    /// ArkTS rides the TypeScript rules: its own grammar parses the file
+    /// (`langs::grammar_for("arkts")`) and this walker supplies its binding
+    /// rows for the generic extractor, which owns its nodes.
     pub fn from_language(language: &str) -> Option<Variant> {
         match language {
-            "typescript" => Some(Variant::Typescript),
+            "typescript" | "arkts" => Some(Variant::Typescript),
             "tsx" => Some(Variant::Tsx),
             "javascript" => Some(Variant::Javascript),
             "jsx" => Some(Variant::Jsx),
@@ -84,12 +87,13 @@ fn is_signature_method_type(kind: &str) -> bool {
     kind == "method_signature"
 }
 
-/// A block that narrows a binding's scope: a statement block or class body,
-/// but not the body of `declare global { }` or a `namespace X { }`, whose
-/// declarations are module-level for every purpose the rows serve.
+/// A block that narrows a binding's scope: a statement block or class body
+/// (an ArkTS component's body is a `struct_body`), but not the body of
+/// `declare global { }` or a `namespace X { }`, whose declarations are
+/// module-level for every purpose the rows serve.
 pub(super) fn is_scope_block(node: Node) -> bool {
     match node.kind() {
-        "class_body" => true,
+        "class_body" | "struct_body" => true,
         "statement_block" => !matches!(
             node.parent().map(|p| p.kind()).unwrap_or(""),
             "ambient_declaration" | "internal_module" | "module" | "program"
@@ -296,39 +300,6 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         file_path,
     );
     let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
-    Ok(EmitOut {
-        meta,
-        nodes: w.tables.nodes,
-        edges: w.tables.edges,
-        refs: w.tables.refs,
-        bindings: w.tables.bindings,
-        arena: w.arena.into_vec(),
-    })
-}
-
-/// Binding rows for a TS/JS-family file from the AST alone, without the node
-/// walk: the path for a file the walker deferred on and for ArkTS, which the
-/// generic extractor extracts. Nodes, edges and refs are empty; the TS side
-/// attaches node ids to `decl` rows by name and line
-/// (resolution-binding-model-plan.md §2.4: one emitter, in the kernel).
-pub fn bindings_only(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
-    let variant = match language {
-        "arkts" => Variant::Typescript,
-        other => Variant::from_language(other).ok_or_else(|| format!("tsjs bindings do not handle language: {other}"))?,
-    };
-    let grammar = langs::grammar_for(language).ok_or_else(|| format!("no grammar for language: {language}"))?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language({language}) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path, variant);
-    let root = tree.root_node();
-    w.collect_later_exports(root);
-    w.collect_scoped_bindings(root);
-    w.collect_import_rows(root);
-    w.collect_decl_rows(root);
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
     Ok(EmitOut {
         meta,
         nodes: w.tables.nodes,

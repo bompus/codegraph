@@ -331,18 +331,54 @@ pub fn cfnptr_scan_files(files: Vec<CfnptrFileIn>) -> Vec<CfnptrFacts> {
         .collect()
 }
 
+/// Read a file the way JS `readFileSync(path, 'utf-8')` does: valid UTF-8
+/// moves in without a copy; invalid bytes take the lossy path.
+fn read_lossy(path: &str) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
+
+/// Fan `f` over `items` on scoped threads (≤16, ≤ items), output 1:1 with
+/// input order. Per-item work is independent, so the batch scales with
+/// cores instead of riding one worker thread. A chunk thread that panics pads
+/// its slots with `pad()` so alignment survives; per-item panics are the
+/// caller's to catch when it wants finer padding.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync, pad: impl Fn() -> R) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16)
+        .min(items.len().max(1));
+    if threads <= 1 {
+        return items.iter().map(&f).collect();
+    }
+    let chunk_len = items.len().div_ceil(threads);
+    let chunks: Vec<&[T]> = items.chunks(chunk_len).collect();
+    let mut parts: Vec<Vec<R>> = Vec::with_capacity(chunks.len());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| s.spawn(|| chunk.iter().map(&f).collect::<Vec<_>>()))
+            .collect();
+        for (i, h) in handles.into_iter().enumerate() {
+            match h.join() {
+                Ok(v) => parts.push(v),
+                Err(_) => parts.push(chunks[i].iter().map(|_| pad()).collect()),
+            }
+        }
+    });
+    parts.into_iter().flatten().collect()
+}
+
 /// Path-driven variant of `cfnptr_scan_files`: the kernel reads each file
-/// itself and fans the batch across scoped threads — the sweep's per-file
-/// work (read + strip + regex scans) is independent, so the batch scales with
-/// cores instead of riding one worker thread. Output stays 1:1 with input
-/// order: an unreadable file or a per-file panic yields empty facts, and a
-/// chunk thread's own failure pads its outputs the same way.
+/// itself and fans the batch across scoped threads. Output stays 1:1 with
+/// input order: an unreadable file or a per-file panic yields empty facts,
+/// and a chunk thread's own failure pads its outputs the same way.
 #[napi]
 pub fn cfnptr_scan_paths(files: Vec<CfnptrPathIn>) -> Vec<CfnptrFacts> {
     fn scan_one(f: &CfnptrPathIn) -> CfnptrFacts {
-        let text = match std::fs::read(&f.path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(_) => return empty_cfnptr_facts(),
+        let Some(text) = read_lossy(&f.path) else {
+            return empty_cfnptr_facts();
         };
         let structs: Vec<cfnptr::StructExtent> = f
             .structs
@@ -354,31 +390,7 @@ pub fn cfnptr_scan_paths(files: Vec<CfnptrPathIn>) -> Vec<CfnptrFacts> {
             Err(_) => empty_cfnptr_facts(),
         }
     }
-
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(16)
-        .min(files.len().max(1));
-    if threads <= 1 {
-        return files.iter().map(scan_one).collect();
-    }
-    let chunk_len = files.len().div_ceil(threads);
-    let chunks: Vec<&[CfnptrPathIn]> = files.chunks(chunk_len).collect();
-    let mut parts: Vec<Vec<CfnptrFacts>> = Vec::with_capacity(chunks.len());
-    std::thread::scope(|s| {
-        let handles: Vec<_> = chunks
-            .iter()
-            .map(|chunk| s.spawn(move || chunk.iter().map(scan_one).collect::<Vec<_>>()))
-            .collect();
-        for (i, h) in handles.into_iter().enumerate() {
-            match h.join() {
-                Ok(v) => parts.push(v),
-                Err(_) => parts.push(chunks[i].iter().map(|_| empty_cfnptr_facts()).collect()),
-            }
-        }
-    });
-    parts.into_iter().flatten().collect()
+    par_map(&files, scan_one, empty_cfnptr_facts)
 }
 
 /// Debug/differential hook: the native `stripCommentsForRegex(text, 'c')`.
@@ -422,12 +434,13 @@ pub struct CfnptrFileEnv {
 /// Path-driven per-file env extraction for stage C's `buildEnv`, internally
 /// threaded like `cfnptr_scan_paths` — output is index-aligned with input,
 /// `null` per unreadable path (the caller then falls back to `ctx.readFile`,
-/// so a virtual FS still resolves). OPTIONAL: absent on older binaries, where
-/// the synthesizer keeps its lazy LRU-cached extractor path.
+/// so a virtual FS still resolves) and per slot of a chunk thread that
+/// panicked. OPTIONAL: absent on older binaries, where the synthesizer keeps
+/// its lazy LRU-cached extractor path.
 #[napi]
 pub fn cfnptr_file_envs(paths: Vec<String>) -> Vec<Option<CfnptrFileEnv>> {
-    fn one(path: &String) -> Option<CfnptrFileEnv> {
-        let text = String::from_utf8_lossy(&std::fs::read(path).ok()?).into_owned();
+    fn one(path: &str) -> Option<CfnptrFileEnv> {
+        let text = read_lossy(path)?;
         let e = cfnptr::file_env(&text);
         Some(CfnptrFileEnv {
             fn_macros: e
@@ -445,27 +458,7 @@ pub fn cfnptr_file_envs(paths: Vec<String>) -> Vec<Option<CfnptrFileEnv>> {
             stripped: e.stripped,
         })
     }
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(16)
-        .min(paths.len().max(1));
-    if threads <= 1 {
-        return paths.iter().map(one).collect();
-    }
-    let chunk_len = paths.len().div_ceil(threads);
-    let chunks: Vec<&[String]> = paths.chunks(chunk_len).collect();
-    let mut parts: Vec<Vec<Option<CfnptrFileEnv>>> = Vec::with_capacity(chunks.len());
-    std::thread::scope(|s| {
-        let handles: Vec<_> = chunks
-            .iter()
-            .map(|c| s.spawn(move || c.iter().map(one).collect::<Vec<_>>()))
-            .collect();
-        for h in handles {
-            parts.push(h.join().unwrap_or_default());
-        }
-    });
-    parts.into_iter().flatten().collect()
+    par_map(&paths, |p| one(p), || None)
 }
 
 /// `{name, type, isFnPtr}` — the FieldInfo members stages D/E consult; `type`
@@ -648,62 +641,56 @@ fn field_in(f: CfnptrLinkField) -> cfnptr::LinkField {
     cfnptr::LinkField { name: f.name, ftype: f.ty, is_fn_ptr: f.is_fn_ptr }
 }
 
-/// Binding rows only, from the AST, for a TS/JS-family or ArkTS file the
-/// generic extractor extracts (resolution-binding-model-plan.md §2.4). The
-/// pre-walks are iterative, so this never defers.
-#[napi]
-pub fn bindings_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
-    let out = match language.as_str() {
-        "python" => python::bindings_only(&file_path, &content),
-        "go" => go::bindings_only(&file_path, &content),
-        "java" => java::bindings_only(&file_path, &content),
-        "kotlin" => kotlin::bindings_only(&file_path, &content),
-        "php" => php::bindings_only(&file_path, &content),
-        "c" | "cpp" => ccpp::bindings_only(&file_path, &content, &language),
-        "rust" => rustlang::bindings_only(&file_path, &content),
-        _ => tsjs::bindings_only(&file_path, &content, &language),
-    }
-    .map_err(Error::from_reason)?;
-    Ok(ExtractBuffers {
+/// The per-language walk, under the stack guard (stack.rs, #1581): a file
+/// nested deeply enough to overflow this thread's stack comes back as a
+/// `defer:` error — the TS side's routine "serve this one file another way"
+/// signal — instead of a SIGSEGV that kills the entire indexer process.
+fn walk_file(file_path: &str, content: &str, language: &str) -> std::result::Result<buffers::EmitOut, String> {
+    stack::run_guarded(|| match language {
+        "java" => java::extract(file_path, content),
+        "python" => python::extract(file_path, content),
+        "go" => go::extract(file_path, content),
+        "c" | "cpp" => ccpp::extract(file_path, content, language),
+        "rust" => rustlang::extract(file_path, content),
+        "csharp" => csharp::extract(file_path, content),
+        "ruby" => ruby::extract(file_path, content),
+        "php" => php::extract(file_path, content),
+        "swift" => swift::extract(file_path, content),
+        "kotlin" => kotlin::extract(file_path, content),
+        "r" => rlang::extract(file_path, content),
+        "lua" | "luau" => lua::extract(file_path, content, language),
+        "scala" => scala::extract(file_path, content),
+        "dart" => dart::extract(file_path, content),
+        _ => tsjs::extract(file_path, content, language),
+    })
+}
+
+fn to_buffers(out: buffers::EmitOut) -> ExtractBuffers {
+    ExtractBuffers {
         meta: out.meta.into(),
         nodes: out.nodes.into(),
         edges: out.edges.into(),
         refs: out.refs.into(),
         bindings: out.bindings.into(),
         arena: out.arena.into(),
-    })
+    }
+}
+
+/// Binding rows only, for a file the generic extractor extracts (a
+/// stack-guard defer, ArkTS, the kernel kill switch —
+/// resolution-binding-model-plan.md §2.4). The same walk as `extract_file`
+/// produces them, so the two paths can never disagree on a row; nodes, edges
+/// and refs are dropped and the rows come back nodeless for the TS side to
+/// attach by name and line. A file too deep for the walk yields `defer:` and
+/// no rows, like its nodes.
+#[napi]
+pub fn bindings_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
+    let out = walk_file(&file_path, &content, &language).map_err(Error::from_reason)?;
+    Ok(to_buffers(out.bindings_only()))
 }
 
 #[napi]
 pub fn extract_file(file_path: String, content: String, language: String) -> Result<ExtractBuffers> {
-    // The whole walk runs under the stack guard (stack.rs, #1581): a file
-    // nested deeply enough to overflow this thread's stack comes back as a
-    // `defer:` error — the TS side's routine "serve this one file another way"
-    // signal — instead of a SIGSEGV that kills the entire indexer process.
-    let out = stack::run_guarded(|| match language.as_str() {
-        "java" => java::extract(&file_path, &content),
-        "python" => python::extract(&file_path, &content),
-        "go" => go::extract(&file_path, &content),
-        "c" | "cpp" => ccpp::extract(&file_path, &content, &language),
-        "rust" => rustlang::extract(&file_path, &content),
-        "csharp" => csharp::extract(&file_path, &content),
-        "ruby" => ruby::extract(&file_path, &content),
-        "php" => php::extract(&file_path, &content),
-        "swift" => swift::extract(&file_path, &content),
-        "kotlin" => kotlin::extract(&file_path, &content),
-        "r" => rlang::extract(&file_path, &content),
-        "lua" | "luau" => lua::extract(&file_path, &content, &language),
-        "scala" => scala::extract(&file_path, &content),
-        "dart" => dart::extract(&file_path, &content),
-        _ => tsjs::extract(&file_path, &content, &language),
-    })
-    .map_err(Error::from_reason)?;
-    Ok(ExtractBuffers {
-        meta: out.meta.into(),
-        nodes: out.nodes.into(),
-        edges: out.edges.into(),
-        refs: out.refs.into(),
-        bindings: out.bindings.into(),
-        arena: out.arena.into(),
-    })
+    let out = walk_file(&file_path, &content, &language).map_err(Error::from_reason)?;
+    Ok(to_buffers(out))
 }

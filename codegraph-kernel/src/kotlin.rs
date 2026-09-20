@@ -206,20 +206,6 @@ pub struct Walker<'t> {
     line_count: u32,
 }
 
-/// Binding rows for a Kotlin file from the AST alone (resolution-binding-model-plan.md §2.4).
-pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("kotlin").ok_or("no kotlin grammar")?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language(kotlin) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path);
-    w.collect_ast_rows(tree.root_node());
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
-    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
-}
-
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let grammar = crate::langs::grammar_for("kotlin").ok_or("no kotlin grammar")?;
     let t0 = std::time::Instant::now();
@@ -792,6 +778,7 @@ impl<'t> Walker<'t> {
     }
 
     fn try_visit_hook(&mut self, node: Node<'t>) -> bool {
+        stack_guard!();
         // An own-line accessor already walked by its owning property below. The
         // ownership test re-derives the property's kind rather than remembering
         // it: a destructured or local declaration mints no node, so its
@@ -1335,75 +1322,6 @@ impl<'t> Walker<'t> {
         out
     }
 
-    /// AST-only rows for `bindings_only` (resolution-binding-model-plan.md §2.4).
-    fn collect_ast_rows(&mut self, root: Node<'t>) {
-        // (node, scope, scope is a function body): the walk mints nodeless
-        // locals for a `val` only inside a function body; a class-level `val`
-        // is a field node, and an `init { }` body mints nothing.
-        #[allow(clippy::type_complexity)]
-        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>, bool)> = vec![(root, None, false)];
-        while let Some((node, scope, in_fn)) = stack.pop() {
-            let kind = node.kind();
-            let mut child_scope = scope;
-            let mut child_in_fn = in_fn;
-            match kind {
-                // A local object inside a function is not a node in the walk:
-                // no row, and its members scope to the enclosing function.
-                "object_declaration" if scope.is_some() => {}
-                "class_declaration" | "object_declaration" | "function_declaration" | "type_alias" => {
-                    let name_node = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "type_identifier" || c.kind() == "simple_identifier");
-                    if let Some(name_node) = name_node {
-                        let name = self.text(name_node).to_string();
-                        let line = self.line_of(node);
-                        match scope {
-                            None => { let v = self.visibility_of(node); self.file_level_decl_row(&name, NONE, line, Some(v)); }
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    if kind == "function_declaration" {
-                        self.emit_param_bindings(node);
-                    }
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                    child_in_fn = kind == "function_declaration";
-                }
-                // A companion object and an object literal are not scopes in the
-                // walk: their members attach to the enclosing class or function.
-                // An enum entry's body is not walked at all.
-                "enum_entry" => continue,
-                "property_declaration" => match scope {
-                    Some(s) => { if in_fn { self.emit_local_rows_scoped(node, s) } }
-                    None => {
-                        let names = self.local_names(node);
-                        for n in names {
-                            let name = self.text(n).to_string();
-                            let line = self.line_of(node);
-                            let v = self.visibility_of(node);
-                            self.file_level_decl_row(&name, NONE, line, Some(v));
-                        }
-                        // The walk visits the initializer under the property's
-                        // node: `val x = object { fun run() }` scopes `run` to it.
-                        child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                        child_in_fn = false;
-                    }
-                },
-                "import_header" => {
-                    let identifier = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "identifier");
-                    if let Some(identifier) = identifier {
-                        let fqn = self.text(identifier).to_string();
-                        self.import_row_of(node, &fqn);
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(c) = node.named_child(i) {
-                    stack.push((c, child_scope, child_in_fn));
-                }
-            }
-        }
-    }
-
     // --- bindings (resolution-binding-model-plan.md, Phase 3: JVM) --------------------
 
     /// The enclosing node's lines, or None at file level. The package
@@ -1553,10 +1471,10 @@ impl<'t> Walker<'t> {
                     } else {
                         callee_name = format!("{receiver_name}.{method_name}");
                     }
-                } else if receiver.map(|r| r.kind() == "call_expression").unwrap_or(false) {
+                } else if let Some(recv) = receiver.filter(|r| r.kind() == "call_expression") {
                     // #750 kotlin re-encode: innerNav = receiver.namedChild(0)
                     // (NOT a function field), ws-stripped, /^[A-Z]/ gate.
-                    let inner = receiver.unwrap().named_child(0);
+                    let inner = recv.named_child(0);
                     let inner_callee =
                         inner.map(|n| strip_js_ws(self.text(n))).unwrap_or_default();
                     let reencode = inner_callee

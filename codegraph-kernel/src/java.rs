@@ -53,6 +53,10 @@ fn is_builtin_type(name: &str) -> bool {
 }
 
 /// LOMBOK_LOG_ANNOTATIONS (languages/java.ts).
+fn has_ann(anns: &[String], name: &str) -> bool {
+    anns.iter().any(|a| a == name)
+}
+
 fn is_lombok_log_annotation(name: &str) -> bool {
     matches!(
         name,
@@ -67,7 +71,7 @@ fn generic_args_re() -> &'static Regex {
 }
 fn simple_ident_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
 }
 fn capitalized_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -140,20 +144,6 @@ pub struct Walker<'t> {
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
     line_count: u32,
-}
-
-/// Binding rows for a Java file from the AST alone (resolution-binding-model-plan.md §2.4).
-pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("java").ok_or("no java grammar")?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language(java) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path);
-    w.collect_ast_rows(tree.root_node());
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
-    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -446,7 +436,7 @@ impl<'t> Walker<'t> {
 
     fn visibility_of(&self, node: Node) -> Option<u8> {
         for i in 0..node.child_count() {
-            let child = node.child(i)?;
+            let Some(child) = node.child(i) else { continue };
             if child.kind() == "modifiers" {
                 let text = self.text(child);
                 if text.contains("public") {
@@ -759,6 +749,7 @@ impl<'t> Walker<'t> {
 
     /// extractField — each declarator becomes a field/constant node.
     fn extract_field(&mut self, node: Node<'t>) {
+        stack_guard!();
         let docstring = preceding_docstring(node, self.src);
         let visibility = self.visibility_of(node);
         let is_static = Some(self.is_static(node));
@@ -926,71 +917,6 @@ impl<'t> Walker<'t> {
             }
         }
         out
-    }
-
-    /// AST-only rows for `bindings_only`: file-level declarations with their
-    /// modifiers, nested declarations as `local`, parameters, method-body
-    /// locals and imports. Iterative; the TS side attaches node ids.
-    fn collect_ast_rows(&mut self, root: Node<'t>) {
-        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
-        while let Some((node, scope)) = stack.pop() {
-            let kind = node.kind();
-            let mut child_scope = scope;
-            match kind {
-                "class_declaration" | "interface_declaration" | "enum_declaration" | "record_declaration" | "annotation_type_declaration"
-                | "method_declaration" | "constructor_declaration" => {
-                    if let Some(name_node) = node.child_by_field_name("name") {
-                        let name = self.text(name_node).to_string();
-                        let line = self.line_of(node);
-                        match scope {
-                            None => { let v = self.visibility_of(node); self.file_level_decl_row(&name, NONE, line, v); }
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    if matches!(kind, "method_declaration" | "constructor_declaration") {
-                        self.emit_param_bindings(node);
-                    }
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                }
-                "field_declaration" | "enum_constant" => {
-                    if let Some(s) = scope {
-                        let names: Vec<Node<'t>> = if kind == "enum_constant" { node.child_by_field_name("name").into_iter().collect() } else { self.local_names(node) };
-                        for n in names {
-                            let name = self.text(n).to_string();
-                            let line = self.line_of(n);
-                            self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None);
-                        }
-                    }
-                }
-                "local_variable_declaration" => {
-                    if let Some(s) = scope {
-                        self.emit_local_rows_scoped(node, s);
-                    }
-                }
-                "object_creation_expression" => {
-                    // `new Runnable() { … }`: the walk mints an anonymous class
-                    // node spanning the expression, and its members scope to it.
-                    let has_body = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).any(|c| c.kind() == "class_body");
-                    if has_body {
-                        child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                    }
-                }
-                "import_declaration" => {
-                    let scoped = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "scoped_identifier");
-                    if let Some(scoped) = scoped {
-                        let fqn = self.text(scoped).to_string();
-                        self.import_row_of(node, &fqn);
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(c) = node.named_child(i) {
-                    stack.push((c, child_scope));
-                }
-            }
-        }
     }
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: JVM) --------------------
@@ -1611,16 +1537,20 @@ impl<'t> Walker<'t> {
 
     // --- Lombok synthesis (#912, languages/java.ts synthesizeLombokMembers) ------------
 
-    fn lombok_annotation_names(&self, node: Node<'t>) -> HashSet<String> {
-        let mut names = HashSet::new();
+    /// Simple annotation names on a declaration, in source order and deduped
+    /// — the TS `Set` iterates in insertion order, and `[...classAnns].find`
+    /// picks the FIRST `@Log*` annotation; a hash set would pick one at random
+    /// per process and make the dump non-reproducible.
+    fn lombok_annotation_names(&self, node: Node<'t>) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
         let Some(modifiers) = self.modifiers_child(node) else { return names };
         for i in 0..modifiers.named_child_count() {
             let Some(child) = modifiers.named_child(i) else { continue };
             if matches!(child.kind(), "marker_annotation" | "annotation") {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if let Some(simple) = self.text(name_node).trim().rsplit('.').next() {
-                        if !simple.is_empty() {
-                            names.insert(simple.to_string());
+                        if !simple.is_empty() && !names.iter().any(|n| n == simple) {
+                            names.push(simple.to_string());
                         }
                     }
                 }
@@ -1631,13 +1561,13 @@ impl<'t> Walker<'t> {
 
     fn synthesize_lombok_members(&mut self, class_node: Node<'t>, class_row: u32) {
         let class_anns = self.lombok_annotation_names(class_node);
-        let class_getter = class_anns.contains("Getter");
-        let class_setter = class_anns.contains("Setter");
-        let is_data = class_anns.contains("Data");
-        let is_value = class_anns.contains("Value");
-        let has_builder = class_anns.contains("Builder") || class_anns.contains("SuperBuilder");
-        let has_to_string = is_data || is_value || class_anns.contains("ToString");
-        let has_equals = is_data || is_value || class_anns.contains("EqualsAndHashCode");
+        let class_getter = has_ann(&class_anns, "Getter");
+        let class_setter = has_ann(&class_anns, "Setter");
+        let is_data = has_ann(&class_anns, "Data");
+        let is_value = has_ann(&class_anns, "Value");
+        let has_builder = has_ann(&class_anns, "Builder") || has_ann(&class_anns, "SuperBuilder");
+        let has_to_string = is_data || is_value || has_ann(&class_anns, "ToString");
+        let has_equals = is_data || is_value || has_ann(&class_anns, "EqualsAndHashCode");
         let log_ann = class_anns.iter().find(|a| is_lombok_log_annotation(a)).cloned();
 
         let Some(body) = class_node.child_by_field_name("body") else { return };
@@ -1712,8 +1642,8 @@ impl<'t> Walker<'t> {
             }
             let is_final = word_re("final").is_match(mods);
             let field_anns = self.lombok_annotation_names(*fd);
-            let field_getter = field_anns.contains("Getter");
-            let field_setter = field_anns.contains("Setter");
+            let field_getter = has_ann(&field_anns, "Getter");
+            let field_setter = has_ann(&field_anns, "Setter");
 
             let want_getter = class_getter || is_data || is_value || field_getter;
             let want_setter = (class_setter || is_data || field_setter) && !is_final;
@@ -1781,7 +1711,7 @@ impl<'t> Walker<'t> {
 
         // Class-level synthesized methods.
         if has_builder {
-            let from = if class_anns.contains("SuperBuilder") { "@SuperBuilder" } else { "@Builder" };
+            let from = if has_ann(&class_anns, "SuperBuilder") { "@SuperBuilder" } else { "@Builder" };
             emit_method!(
                 "builder".to_string(),
                 class_name_node,
@@ -1871,8 +1801,8 @@ fn word_re(word: &'static str) -> &'static Regex {
     static STATIC_RE: OnceLock<Regex> = OnceLock::new();
     static FINAL_RE: OnceLock<Regex> = OnceLock::new();
     match word {
-        "static" => STATIC_RE.get_or_init(|| Regex::new(r"\bstatic\b").unwrap()),
-        "final" => FINAL_RE.get_or_init(|| Regex::new(r"\bfinal\b").unwrap()),
+        "static" => STATIC_RE.get_or_init(|| Regex::new(r"(?-u:\b)static(?-u:\b)").unwrap()),
+        "final" => FINAL_RE.get_or_init(|| Regex::new(r"(?-u:\b)final(?-u:\b)").unwrap()),
         _ => unreachable!("word_re only supports static/final"),
     }
 }

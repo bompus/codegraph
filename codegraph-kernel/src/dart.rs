@@ -71,7 +71,7 @@ fn is_builtin_type(name: &str) -> bool {
 /// extractDartReturnType's simple-name gate + the static-member receiver gate.
 fn simple_type_name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
 }
 fn cap_ident_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -732,6 +732,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_method(&mut self, node: Node<'t>) {
+        stack_guard!();
         // Gate (:1747): not inside class-like (no methodsAreTopLevel, no
         // receiver, parent never object/object_expression) → extractFunction.
         if !self.inside_class_like() {

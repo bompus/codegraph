@@ -29,15 +29,15 @@ const MAX_VALUE_REF_NODES: usize = 20_000;
 
 fn receiver_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\(\s*(?:[A-Za-z_]\w*\s+)?\*?\s*([A-Za-z_]\w*)").unwrap())
+    RE.get_or_init(|| Regex::new(r"\(\s*(?:[A-Za-z_][0-9A-Za-z_]*\s+)?\*?\s*([A-Za-z_][0-9A-Za-z_]*)").unwrap())
 }
 fn simple_ident_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
 }
 fn go_two_hop_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_]\w*\.[A-Za-z_]\w*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*\.[A-Za-z_][0-9A-Za-z_]*$").unwrap())
 }
 fn generic_angle_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -119,21 +119,6 @@ pub struct Walker<'t> {
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
     line_count: u32,
-}
-
-/// Binding rows for a Go file from the AST alone, for the generic extractor's
-/// path (resolution-binding-model-plan.md §2.4).
-pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("go").ok_or("no go grammar")?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language(go) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path);
-    w.collect_ast_rows(tree.root_node());
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
-    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
@@ -908,82 +893,6 @@ impl<'t> Walker<'t> {
         let line = self.line_of(node);
         let line_count = self.line_count;
         self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((import_path, "*")), false, None);
-    }
-
-    /// AST-only rows for `bindings_only`: the walk's rules without nodes. The
-    /// TS side attaches node ids by name and line. Iterative.
-    fn collect_ast_rows(&mut self, root: Node<'t>) {
-        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
-        while let Some((node, scope)) = stack.pop() {
-            let kind = node.kind();
-            let mut child_scope = scope;
-            match kind {
-                "function_declaration" | "method_declaration" => {
-                    if let Some(name_node) = node.child_by_field_name("name") {
-                        let name = self.text(name_node).to_string();
-                        let line = self.line_of(node);
-                        match scope {
-                            None => self.package_level_decl_row(&name, NONE, line),
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    self.emit_param_bindings(node);
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                }
-                "method_elem" | "method_spec" => {
-                    // An interface method spec is a method node in the walk,
-                    // with parameter rows scoped to the spec's own line(s).
-                    self.emit_param_bindings(node);
-                }
-                "func_literal" => {
-                    // The walk names a closure after its variable and gives it
-                    // parameter rows scoped to the literal; the rows are the same.
-                    self.emit_param_bindings(node);
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                }
-                "type_spec" => {
-                    if let Some(name_node) = node.child_by_field_name("name") {
-                        let name = self.text(name_node).to_string();
-                        let line = self.line_of(node);
-                        match scope {
-                            None => self.package_level_decl_row(&name, NONE, line),
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                }
-                "var_declaration" | "const_declaration" if scope.is_none() => {
-                    for spec in declaration_specs(node) {
-                        if let Some(n) = spec.named_child(0).filter(|c| c.kind() == "identifier") {
-                            let name = self.text(n).to_string();
-                            let line = self.line_of(spec);
-                            self.package_level_decl_row(&name, NONE, line);
-                        }
-                    }
-                }
-                "short_var_declaration" | "var_declaration" | "range_clause" => {
-                    if let Some(s) = scope {
-                        self.emit_local_rows_scoped(node, s);
-                    }
-                }
-                "import_spec" => {
-                    let lit = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "interpreted_string_literal");
-                    if let Some(lit) = lit {
-                        let import_path: String = self.text(lit).chars().filter(|c| *c != '\'' && *c != '"').collect();
-                        if !import_path.is_empty() {
-                            let local = self.import_local_name(node, &import_path);
-                            self.emit_import_binding(&local, &import_path, node);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(c) = node.named_child(i) {
-                    stack.push((c, child_scope));
-                }
-            }
-        }
     }
 
     /// extractCall — Go's generic-tail paths (selector_expression callees).

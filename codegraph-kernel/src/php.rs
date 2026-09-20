@@ -156,20 +156,6 @@ pub struct Walker<'t> {
     line_count: u32,
 }
 
-/// Binding rows for a PHP file from the AST alone (resolution-binding-model-plan.md §2.4).
-pub fn bindings_only(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("php").ok_or("no php grammar")?;
-    let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).map_err(|e| format!("set_language(php) failed: {e}"))?;
-    let tree = parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())?;
-    let mut w = Walker::new(source, file_path);
-    w.collect_ast_rows(tree.root_node());
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let meta = build_meta(&w.tables, w.arena.len(), NONE_STR, duration_ms);
-    Ok(EmitOut { meta, nodes: w.tables.nodes, edges: w.tables.edges, refs: w.tables.refs, bindings: w.tables.bindings, arena: w.arena.into_vec() })
-}
-
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let grammar = crate::langs::grammar_for("php").ok_or("no php grammar")?;
     let t0 = std::time::Instant::now();
@@ -1071,87 +1057,6 @@ impl<'t> Walker<'t> {
             }
         }
         out
-    }
-
-    /// AST-only rows for `bindings_only` (resolution-binding-model-plan.md §2.4).
-    fn collect_ast_rows(&mut self, root: Node<'t>) {
-        let mut stack: Vec<(Node<'t>, Option<(u32, u32)>)> = vec![(root, None)];
-        while let Some((node, scope)) = stack.pop() {
-            let kind = node.kind();
-            let mut child_scope = scope;
-            match kind {
-                "function_definition" | "class_declaration" | "interface_declaration" | "trait_declaration" | "enum_declaration" | "method_declaration" => {
-                    if let Some(name_node) = node.child_by_field_name("name") {
-                        let name = self.text(name_node).to_string();
-                        let line = self.line_of(node);
-                        match scope {
-                            None => self.file_level_decl_row(&name, NONE, line, None),
-                            Some(s) => self.push_binding_row(BINDING_LOCAL, &name, NONE, s, line, None, false, None),
-                        }
-                    }
-                    if matches!(kind, "function_definition" | "method_declaration") {
-                        self.emit_param_bindings(node);
-                    }
-                    child_scope = Some((self.line_of(node), node.end_position().row as u32 + 1));
-                }
-                "assignment_expression" => {
-                    if let Some(s) = scope {
-                        self.emit_local_rows_scoped(node, s);
-                    }
-                }
-                "namespace_use_declaration" => {
-                    self.use_rows_of(node);
-                    continue;
-                }
-                // The walk makes no nodes inside `new class { … }`.
-                "anonymous_class" => continue,
-                _ => {}
-            }
-            for i in (0..node.named_child_count()).rev() {
-                if let Some(c) = node.named_child(i) {
-                    stack.push((c, child_scope));
-                }
-            }
-        }
-    }
-
-    /// `use` rows without the import node and refs `extract_import` emits.
-    fn use_rows_of(&mut self, node: Node<'t>) {
-        let ns_prefix = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "namespace_name");
-        let use_group = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "namespace_use_group");
-        if let (Some(ns_prefix), Some(use_group)) = (ns_prefix, use_group) {
-            let prefix = self.text(ns_prefix).to_string();
-            let clauses: Vec<Node<'t>> = (0..use_group.named_child_count())
-                .filter_map(|i| use_group.named_child(i))
-                .filter(|c| matches!(c.kind(), "namespace_use_group_clause" | "namespace_use_clause"))
-                .collect();
-            for clause in clauses {
-                let ns_name = (0..clause.named_child_count()).filter_map(|i| clause.named_child(i)).find(|c| c.kind() == "namespace_name");
-                let name = match ns_name {
-                    Some(nn) => (0..nn.named_child_count()).filter_map(|i| nn.named_child(i)).find(|c| c.kind() == "name"),
-                    None => (0..clause.named_child_count()).filter_map(|i| clause.named_child(i)).find(|c| c.kind() == "name"),
-                };
-                if let Some(name) = name {
-                    let full = format!("{prefix}\\{}", self.text(name));
-                    let local = self.use_local_name(clause, &full);
-                    self.emit_import_binding(&local, &full, node);
-                }
-            }
-            return;
-        }
-        let use_clause = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "namespace_use_clause");
-        let Some(use_clause) = use_clause else { return };
-        let target = (0..use_clause.named_child_count())
-            .filter_map(|i| use_clause.named_child(i))
-            .find(|c| c.kind() == "qualified_name")
-            .or_else(|| (0..use_clause.named_child_count()).filter_map(|i| use_clause.named_child(i)).find(|c| c.kind() == "name"));
-        let Some(target) = target else { return };
-        let module_name = self.text(target).to_string();
-        if module_name.is_empty() {
-            return;
-        }
-        let local = self.use_local_name(use_clause, &module_name);
-        self.emit_import_binding(&local, &module_name, node);
     }
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: PHP) --------------------

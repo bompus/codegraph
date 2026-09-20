@@ -724,6 +724,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_lua_table_functions(&mut self, table: Node<'t>, receiver: String) {
+        stack_guard!();
         let mut cursor = table.walk();
         let fields: Vec<Node<'t>> = table.named_children(&mut cursor).collect();
         for field in fields {
