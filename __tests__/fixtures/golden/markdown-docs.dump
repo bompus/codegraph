@@ -34,12 +34,12 @@
 {"source":"file:69f63e0581b8138f256b63d2aac60e8a","target":"module:bc9526603e93800e3878b4bb9c7df885","kind":"contains","metadata":null,"line":null,"col":null,"provenance":"heuristic"}
 {"source":"file:914fe32b3a0d75f7511e2a95be52a777","target":"module:83e978e8d17285d0aabfe68bededb889","kind":"contains","metadata":null,"line":null,"col":null,"provenance":"heuristic"}
 {"source":"file:ffed4984556e7088396af9ff50608120","target":"module:13463891cc717f750931f6b02aec4840","kind":"contains","metadata":null,"line":null,"col":null,"provenance":"heuristic"}
+{"source":"file:src/widget.test.ts","target":"file:src/widget.ts","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"./widget\"}","line":1,"col":0,"provenance":null}
 {"source":"file:src/widget.test.ts","target":"function:3fcd88d75bb6b2eadaaa3fc892131772","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"createWidget\"}","line":2,"col":31,"provenance":null}
 {"source":"file:src/widget.test.ts","target":"function:3fcd88d75bb6b2eadaaa3fc892131772","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"createWidget\"}","line":1,"col":9,"provenance":null}
 {"source":"file:src/widget.test.ts","target":"function:604b4956dd7a65b6dbce17af7d610c5f","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"render\"}","line":2,"col":24,"provenance":null}
 {"source":"file:src/widget.test.ts","target":"function:604b4956dd7a65b6dbce17af7d610c5f","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"render\"}","line":1,"col":23,"provenance":null}
 {"source":"file:src/widget.test.ts","target":"import:be6d7f5cfe0b2c93c93338a6218ef943","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:src/widget.test.ts","target":"import:be6d7f5cfe0b2c93c93338a6218ef943","kind":"imports","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"./widget\"}","line":1,"col":0,"provenance":null}
 {"source":"file:src/widget.ts","target":"function:3fcd88d75bb6b2eadaaa3fc892131772","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:src/widget.ts","target":"function:604b4956dd7a65b6dbce17af7d610c5f","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:src/widget.ts","target":"function:e78917dda989e6051383586a18681419","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}

@@ -66,6 +66,11 @@ export interface ExploreCandidateMeta {
   central: boolean;
   entry: boolean;
   spine: boolean;
+  /**
+   * Reached only through path-vocab/importer-spine injection — the file
+   * survives the score floor, graph gate and cliff on that evidence alone.
+   */
+  injected?: boolean;
   lowValue: boolean;
   generated: boolean;
   /**
@@ -586,6 +591,7 @@ export class ExploreDiagnostics {
           central: r.central,
           entry: r.entry,
           spine: r.spine,
+          injected: r.injected ?? false,
           lowValue: r.lowValue,
           generated: r.generated,
           ambientDeclaration: r.ambientDeclaration,
@@ -805,6 +811,7 @@ function flagString(f: ExploreDiagnosticFile): string {
   if (f.entry) flags.push('entry');
   if (f.central) flags.push('central');
   if (f.spine) flags.push('spine');
+  if (f.injected) flags.push('injected');
   if (f.lowValue) flags.push('low-value');
   if (f.generated) flags.push('generated');
   if (f.ambientDeclaration) flags.push('ambient-decl');

@@ -7271,6 +7271,36 @@ impl KernelResolver {
     /// include arm lives in resolve_c_include_import_ref; module-file is
     /// dot-gated inside its own function.
     fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Result<ViaImport> {
+        // TS/JS path-shaped `imports` ref whose referenceName IS the module
+        // specifier — the module ref of `import … from './x'` or a dynamic
+        // `import('./x')` call site. Resolve the specifier (extension- and
+        // alias-aware) straight to the file node like the c/cpp include arm:
+        // name-match would bind the file's own `import` STATEMENT node —
+        // `./cmd.config` literally matches that node's name — or a same-named
+        // file elsewhere. Needs no binding rows, so it precedes the empty-
+        // imports early return, mirroring the TS-side arm's position ahead of
+        // the mappings lookup (import-resolver.ts resolveViaImport).
+        if r.reference_kind == "imports"
+            && is_esm_import_language(&r.language)
+            && r.reference_name.contains('/')
+        {
+            if let Some(resolved) =
+                self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)?
+            {
+                if let Some(file_node) = self
+                    .nodes_in_file(&resolved)?
+                    .iter()
+                    .find(|n| n.kind == "file")
+                    .cloned()
+                {
+                    return Ok(ViaImport::Hit(KCand {
+                        node: Rc::new(file_node),
+                        confidence: 0.9,
+                        resolved_by: "import",
+                    }));
+                }
+            }
+        }
         let imports = self.import_mappings(&r.file_path)?;
         if imports.is_empty() && self.read_file(&r.file_path).is_none() {
             return Ok(ViaImport::Miss);

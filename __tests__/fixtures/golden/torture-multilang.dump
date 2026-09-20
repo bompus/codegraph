@@ -3628,6 +3628,7 @@
 {"from_node_id":"file:torture.scala","reference_name":"xs.drop","reference_kind":"calls","line":117,"col":54,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"drop"}
 {"from_node_id":"file:torture.swift","reference_name":"Foundation","reference_kind":"imports","line":1,"col":0,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"Foundation"}
 {"from_node_id":"file:torture.swift","reference_name":"TortureKit","reference_kind":"imports","line":206,"col":0,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"TortureKit"}
+{"from_node_id":"file:torture.tsx","reference_name":"./dynamic-module","reference_kind":"imports","line":211,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"/dynamic-module"}
 {"from_node_id":"file:torture.tsx","reference_name":"CONFIG_TABLE","reference_kind":"imports","line":8,"col":19,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"CONFIG_TABLE"}
 {"from_node_id":"file:torture.tsx","reference_name":"DefaultThing","reference_kind":"function_ref","line":201,"col":31,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"DefaultThing"}
 {"from_node_id":"file:torture.tsx","reference_name":"DefaultThing","reference_kind":"imports","line":6,"col":7,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"DefaultThing"}
@@ -3640,7 +3641,6 @@
 {"from_node_id":"file:torture.tsx","reference_name":"forwardRef","reference_kind":"imports","line":4,"col":16,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"forwardRef"}
 {"from_node_id":"file:torture.tsx","reference_name":"helperFn","reference_kind":"function_ref","line":198,"col":16,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"helperFn"}
 {"from_node_id":"file:torture.tsx","reference_name":"helperFn","reference_kind":"imports","line":8,"col":9,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"helperFn"}
-{"from_node_id":"file:torture.tsx","reference_name":"import","reference_kind":"calls","line":211,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"import"}
 {"from_node_id":"file:torture.tsx","reference_name":"loadDoc","reference_kind":"calls","line":226,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"loadDoc"}
 {"from_node_id":"file:torture.tsx","reference_name":"makeArg","reference_kind":"calls","line":212,"col":14,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"makeArg"}
 {"from_node_id":"file:torture.tsx","reference_name":"memo","reference_kind":"imports","line":4,"col":28,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"memo"}
