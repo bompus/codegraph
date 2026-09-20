@@ -37,10 +37,14 @@ use std::sync::LazyLock;
 // import-resolver}.ts.
 // ---------------------------------------------------------------------------
 
-/// Kernel pipeline eligibility. Mirrors BINDINGS_LANGUAGES
-/// (src/extraction/kernel/index.ts) — `rust` included since it joined the
-/// binding-emitting languages; its `use`-path handling was ported ahead of
-/// the gate while it still resolved bindings-free.
+/// Kernel pipeline eligibility: every language with a native walker. The
+/// first thirteen are BINDINGS_LANGUAGES (src/extraction/kernel/index.ts);
+/// the last eight emit no binding rows, so — exactly like rust before its
+/// `use` rows landed — their import mappings are empty on both engines and
+/// every arm they reach is a bindings-free join or a ported source scan.
+/// Their language-specific TS arms (receiver-type patterns, the lua `:` /
+/// r `$` receiver shapes, lua `require`) are ported below; anything else
+/// they touch punts by the same gates the migrated set uses.
 fn is_migrated_language(lang: &str) -> bool {
     matches!(
         lang,
@@ -57,6 +61,14 @@ fn is_migrated_language(lang: &str) -> bool {
             | "c"
             | "cpp"
             | "rust"
+            | "csharp"
+            | "ruby"
+            | "swift"
+            | "scala"
+            | "dart"
+            | "lua"
+            | "luau"
+            | "r"
     )
 }
 
@@ -463,11 +475,12 @@ fn strip_line_comments(line: &str) -> String {
 /// buildLocalReceiverTypePatterns for the migrated set (name-matcher.ts).
 /// Each entry is (pattern, guard): guard 1 reproduces the TS annotation
 /// pattern's `(?![\w.$]|\s*(?:<[^>]*>)?\s*[\[|&])` lookahead in
-/// infer_match_line; the go param-type lookahead `(?=\s*[,)]|\s*$)` is folded
-/// into its pattern as a consuming suffix (equivalent — the capture cannot
-/// absorb `[,)]`/EOL, and shrinking it can never satisfy the suffix either).
-/// Languages outside the switch (c, cpp, unmigrated) get no patterns, same
-/// as the TS `default: return []`.
+/// infer_match_line, guard 2 the lua annotation pattern's
+/// `(?![\w.]|\s*[({"'\[])`; the go param-type lookahead `(?=\s*[,)]|\s*$)` is
+/// folded into its pattern as a consuming suffix (equivalent — the capture
+/// cannot absorb `[,)]`/EOL, and shrinking it can never satisfy the suffix
+/// either). Languages outside the switch (cpp, pascal, cfml — the latter two
+/// unrouted) get no patterns, same as the TS `default: return []`.
 fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
     let pats: Vec<(&str, u8)> = match language {
         "typescript" | "javascript" | "tsx" | "jsx" | "arkts" => vec![
@@ -522,6 +535,31 @@ fn local_receiver_type_patterns(language: &str, r: &str) -> Vec<(String, u8)> {
             r"\b(?:(?:struct|union)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*?\s*\bR\b\s*(?:[,)=;]|\[)",
             0,
         )],
+        "csharp" => vec![
+            (r"\bR\b\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", 0),
+            (r"\b([A-Z][A-Za-z0-9_.]*)\s+R\b\s*[=;,)]", 0),
+        ],
+        "swift" => vec![
+            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+        ],
+        "ruby" => vec![(r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new\b", 0)],
+        "scala" => vec![
+            (r"\bR\b\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)", 0),
+            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 0),
+        ],
+        "dart" => vec![
+            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", 0),
+            (r"\b([A-Z][A-Za-z0-9_.]*)\s+R\b\s*[=;,)]", 0),
+        ],
+        // The annotation arm's lookahead rejects Lua's `receiver:Name(` /
+        // `"s"` / `{t}` call forms (#1124) — guard 2 in infer_match_line.
+        "lua" | "luau" => vec![
+            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_]*)\.new\b", 0),
+            (r"\bR\b\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(", 0),
+            (r"\bR\b\s*:\s*([A-Z][A-Za-z0-9_.]*)", 2),
+        ],
+        "r" => vec![(r"\bR\b\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new\b", 0)],
         _ => vec![],
     };
     pats.into_iter()
@@ -1449,6 +1487,9 @@ pub struct KernelResolver {
     root_import_memo: HashMap<String, bool>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
     rust_rs_dir_index: Option<Rc<HashMap<String, Rc<Vec<String>>>>>,
+    /// luaBasenameIndex (import-resolver.ts): basename → indexed paths in
+    /// `getAllFiles()` order (`ORDER BY path`), built once on first use.
+    lua_basename_index: Option<Rc<HashMap<String, Rc<Vec<String>>>>>,
     file_cache: FileCache,
     regex_cache: HashMap<String, Rc<Regex>>,
 }
@@ -1519,6 +1560,7 @@ impl KernelResolver {
             root_import_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
             rust_rs_dir_index: None,
+            lua_basename_index: None,
             file_cache: FileCache::new(1024),
             regex_cache: HashMap::new(),
         };
@@ -3110,7 +3152,12 @@ impl KernelResolver {
             }
         }
         // resolvePythonModuleMember / resolvePythonAbsoluteModule need a '.'
-        // in the name — dead. Rust path refs: rust is unmigrated.
+        // in the name — dead. Rust `::` paths take resolve_rust_path_ref
+        // ahead of the gate. Lua `require(script.Parent.Signal)` leaves a
+        // bare leaf — the module-file arm still applies.
+        if let Some(c) = self.resolve_lua_require(r)? {
+            return Ok(Some(c));
+        }
         if matches!(
             r.language.as_str(),
             "python" | "typescript" | "tsx" | "javascript" | "jsx" | "arkts"
@@ -4324,6 +4371,22 @@ impl KernelResolver {
                         continue;
                     }
                     let tail = self.cached_regex(r"^\s*(?:<[^>]*>)?\s*[\[|&]")?;
+                    if tail.is_match(rest) {
+                        continue;
+                    }
+                } else if *guard == 2 {
+                    // `(?![\w.]|\s*[({"'\[])` — the greedy capture already
+                    // consumed every `[\w.]`, and a shrunk capture would be
+                    // followed by one, so the call-form tail is the whole gate.
+                    let rest = &line[caps.get(0).unwrap().end()..];
+                    if rest
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+                    {
+                        continue;
+                    }
+                    let tail = self.cached_regex(r#"^\s*[({"'\[]"#)?;
                     if tail.is_match(rest) {
                         continue;
                     }
@@ -6614,16 +6677,22 @@ impl KernelResolver {
             )?;
             dot_match = op_re.captures(&r.reference_name);
         }
-        let colon_re = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?;
-        let colon_match = colon_re.captures(&r.reference_name);
-        // lua `:`/r `$` shapes are unmigrated-language only — dead here.
-        let matched = dot_match.as_ref().or(colon_match.as_ref());
-        let Some(m) = matched else {
+        let colon_match = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?
+            .captures(&r.reference_name);
+        // `match = dotMatch || colonMatch || luaColonMatch || rDollarMatch`;
+        // every shape but `::` is a receiver whose type the local declaration
+        // can name (`inferableReceiver`).
+        let (object_or_class, method_name, inferable) = if let Some(m) = dot_match.as_ref() {
+            (m[1].to_string(), m[2].to_string(), true)
+        } else if let Some(m) = colon_match.as_ref() {
+            (m[1].to_string(), m[2].to_string(), false)
+        } else if let Some((recv, method)) =
+            self.lua_colon_shape(r)?.or(self.r_dollar_shape(r)?)
+        {
+            (recv, method, true)
+        } else {
             return Ok(McRes::Null);
         };
-        let object_or_class = m[1].to_string();
-        let method_name = m[2].to_string();
-        let inferable = dot_match.is_some();
 
         let bindings = self.bindings(&r.file_path)?;
         let binding =
@@ -6827,16 +6896,19 @@ impl KernelResolver {
             )?;
             dot_match = op_re.captures(&r.reference_name);
         }
-        let colon_re = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?;
-        let colon_match = colon_re.captures(&r.reference_name);
-        // lua `:`/r `$` shapes are unmigrated-language only — dead here.
-        let matched = dot_match.as_ref().or(colon_match.as_ref());
-        let Some(m) = matched else {
+        let colon_match = self.cached_regex(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")?
+            .captures(&r.reference_name);
+        let (object_or_class, method_name, inferable) = if let Some(m) = dot_match.as_ref() {
+            (m[1].to_string(), m[2].to_string(), true)
+        } else if let Some(m) = colon_match.as_ref() {
+            (m[1].to_string(), m[2].to_string(), false)
+        } else if let Some((recv, method)) =
+            self.lua_colon_shape(r)?.or(self.r_dollar_shape(r)?)
+        {
+            (recv, method, true)
+        } else {
             return Ok(McRes::Null);
         };
-        let object_or_class = m[1].to_string();
-        let method_name = m[2].to_string();
-        let inferable = dot_match.is_some();
 
         if inferable {
             // No binding anchor under requireReceiverEvidence=false — the
@@ -7116,6 +7188,30 @@ impl KernelResolver {
         Ok(McRes::Null)
     }
 
+    /// matchMethodCall's `luaColonMatch` — Lua/Luau method calls use a single
+    /// colon (`lg:log`); recognized so receiver-type inference applies to
+    /// them (#1108). `(receiver, method)`; `None` for every other language.
+    fn lua_colon_shape(&mut self, r: &ResolveRefIn) -> Result<Option<(String, String)>> {
+        if r.language != "lua" && r.language != "luau" {
+            return Ok(None);
+        }
+        let re = self.cached_regex(r"^([A-Za-z0-9_.]+):([A-Za-z0-9_]+)$")?;
+        Ok(re
+            .captures(&r.reference_name)
+            .map(|c| (c[1].to_string(), c[2].to_string())))
+    }
+
+    /// matchMethodCall's `rDollarMatch` — R member access is `lg$log`.
+    fn r_dollar_shape(&mut self, r: &ResolveRefIn) -> Result<Option<(String, String)>> {
+        if r.language != "r" {
+            return Ok(None);
+        }
+        let re = self.cached_regex(r"^([A-Za-z0-9_.]+)\$([A-Za-z0-9_]+)$")?;
+        Ok(re
+            .captures(&r.reference_name)
+            .map(|c| (c[1].to_string(), c[2].to_string())))
+    }
+
     fn bound_receiver_claim(&mut self, r: &ResolveRefIn) -> Result<BoundClaim> {
         // `^(.+)\.([\w$]+)$` is guaranteed by the gate — split at the LAST dot.
         let dot = r.reference_name.rfind('.').unwrap();
@@ -7328,6 +7424,11 @@ impl KernelResolver {
                 return Ok(ViaImport::Hit(c));
             }
         }
+        // (Rust `::` paths never reach here — resolve_rust_path_ref runs
+        // ahead of the gate and `::`+`.` names punt.)
+        if let Some(c) = self.resolve_lua_require(r)? {
+            return Ok(ViaImport::Hit(c));
+        }
         if matches!(
             r.language.as_str(),
             "python" | "typescript" | "tsx" | "javascript" | "jsx" | "arkts"
@@ -7433,6 +7534,82 @@ impl KernelResolver {
             }));
         }
         Ok(ViaImport::Miss)
+    }
+
+    /// resolveLuaRequire (import-resolver.ts): a Lua/Luau `imports` ref is a
+    /// dotted module path (`a.b.c` from `require("a.b.c")`) or an
+    /// instance-path leaf (`Signal` from `require(script.Parent.Signal)`).
+    /// No static import statement exists, so the path-matcher can't bridge
+    /// the dot↔slash / leaf↔basename gap: try `<base>.lua`, `.luau`,
+    /// `/init.lua`, `/init.luau` as path suffixes over the files sharing the
+    /// basename, prefer the longest common prefix with the ref's file (a
+    /// stable sort — `getAllFiles()` order breaks ties), and link the file
+    /// node @0.9 so the deterministic match beats a same-name self-match.
+    fn resolve_lua_require(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        if (r.language != "lua" && r.language != "luau") || r.reference_kind != "imports" {
+            return Ok(None);
+        }
+        let name = r.reference_name.as_str();
+        if name.is_empty() {
+            return Ok(None);
+        }
+        let base = if name.contains('.') { name.replace('.', "/") } else { name.to_string() };
+        // JS `a[i] === b[i]` — shared UTF-16 code units from the start.
+        let shared = |a: &str, b: &str| -> usize {
+            a.encode_utf16().zip(b.encode_utf16()).take_while(|(x, y)| x == y).count()
+        };
+        for suffix in [
+            format!("{base}.lua"),
+            format!("{base}.luau"),
+            format!("{base}/init.lua"),
+            format!("{base}/init.luau"),
+        ] {
+            let basename = suffix.rsplit('/').next().unwrap_or("");
+            let bucket = self.lua_basename_bucket(basename);
+            let mut matches: Vec<&String> = bucket
+                .iter()
+                .filter(|f| **f == suffix || f.ends_with(&format!("/{suffix}")))
+                .collect();
+            if matches.is_empty() {
+                continue;
+            }
+            matches.sort_by_key(|f| std::cmp::Reverse(shared(f, &r.file_path)));
+            let best = matches[0].clone();
+            if best == r.file_path {
+                continue;
+            }
+            if let Some(file_node) = self.nodes_in_file(&best)?.iter().find(|n| n.kind == "file") {
+                return Ok(Some(KCand {
+                    node: Rc::new(file_node.clone()),
+                    confidence: 0.9,
+                    resolved_by: "import",
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The `getAllFiles()`-ordered paths sharing `basename` (luaBasenameIndex).
+    /// `ORDER BY path` is byte order — the same order `sort()` gives.
+    fn lua_basename_bucket(&mut self, basename: &str) -> Rc<Vec<String>> {
+        if self.lua_basename_index.is_none() {
+            let mut paths: Vec<&String> = self.known_files.iter().collect();
+            paths.sort();
+            let mut m: HashMap<String, Vec<String>> = HashMap::new();
+            for f in paths {
+                let base = f.rsplit('/').next().unwrap_or("").to_string();
+                m.entry(base).or_default().push(f.clone());
+            }
+            self.lua_basename_index = Some(Rc::new(
+                m.into_iter().map(|(k, v)| (k, Rc::new(v))).collect(),
+            ));
+        }
+        self.lua_basename_index
+            .as_ref()
+            .unwrap()
+            .get(basename)
+            .cloned()
+            .unwrap_or_else(|| Rc::new(Vec::new()))
     }
 
     /// resolveGoCrossPackageReference (import-resolver.ts): `pkg.Member` via

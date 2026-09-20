@@ -802,6 +802,29 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.38 Resolution — the eight bindings-free walker languages enter the kernel (Phase 5c, 2026-09-20)
+
+C#, Ruby, Swift, Scala, Dart, Lua, Luau and R have native walkers but emit no binding rows, and none had ever entered `is_migrated_language`: on a C# corpus the kernel settled 25 refs and punted 3,126 (`ineligible:lang`, **0.8% native** — eShop at `8c3eba03`). Like Rust before its `use` rows (§5.24), the flip is bindings-free on both engines; what was ported is the languages' own TypeScript arms — the receiver-type patterns (plus the Lua annotation pattern's call-form lookahead as a second inference guard), the Lua `receiver:method` / R `receiver$method` receiver shapes in both `matchMethodCall` arms, and `resolveLuaRequire` with its basename index in `getAllFiles()` order. Everything else those refs reach was already language-neutral or punts through the existing gates.
+
+**Gate**: per corpus, kernel-on (`CODEGRAPH_RESOLVE_SHADOW=1`, `CODEGRAPH_RESOLVE_PROFILE=1`) vs `CODEGRAPH_KERNEL_RESOLVE=0`, `scripts/dump-graph.mjs` dumps compared with `cmp`. All eight dumps **byte-identical**, 0 shadow divergences (the shadow covers main-thread-settled refs only; the dump is the whole-graph check).
+
+| corpus | language | nodes | native share | kernel handled / passthrough | top punts |
+|---|---|---:|---:|---:|---|
+| eShop | C# | 7,372 | 0.8% → **66.9%** | 5,455 / 2,696 | member-tail 2,043 · ineligible:lang 412 (razor/markdown/yaml) · rmot-supers 183 |
+| Alamofire | Swift | 5,577 | **90.1%** | 11,528 / 1,264 | member-tail 789 · ineligible:lang 292 (markdown) · chain 116 |
+| os-lib | Scala | 1,157 | **84.9%** | 5,645 / 1,004 | member-tail 944 · rmot-supers 48 · jvm 12 |
+| bloc | Dart | 17,376 | **85.7%** | 17,894 / 2,974 | ineligible:lang 1,231 · member-tail 995 · rmot-supers 613 · jvm 116 |
+| lazy.nvim | Lua | 1,495 | **74.7%** | 2,583 / 873 | member-tail 836 · rmot-supers 27 |
+| lune | Luau | 4,622 | **72.5%** | 8,136 / 3,086 | member-tail 2,603 · rmot-supers 482 |
+| dplyr | R | 7,498 | **98.2%** | 13,137 / 241 | ineligible:lang 179 (markdown) · member-tail 62 |
+| discourse | Ruby | 167,753 | **63.7%** | 260,226 / 148,237 | member-tail 135,876 · chain 7,632 · store-bind 1,367 · rmot-supers 1,339 |
+
+The remaining `ineligible:lang` refs on every corpus are markdown, razor and yaml — extractors without a walker, by design. `member-tail` is the unported nameMatch tail (exactName/fuzzy on receiver shapes the inferrers miss), verdict by delegation as before.
+
+**Cost** (`/usr/bin/time`, `nice -n 10`, idle host, clean runs without shadow/profile, n=2): the seven small corpora index within ±0.3 s and ±70 MB of the TS-only arm. discourse: kernel-on **23.9 / 24.1 s, 5.70 / 5.75 GB** vs TS-only 20.9 / 21.0 s, 3.42 / 3.54 GB — and vs the pre-phase kernel-on record of 20.8 s / 4.57 GB (§5.36). The 260k newly native Ruby refs fill the kernel resolver's per-worker caches (`name_cache`, `file_nodes`, `qname_cache`, `node_by_id` — each an uncapped map of owned `KNode` rows, duplicated per pool worker), which is the whole-codebase perf pass's first target; the verdicts are identical either way.
+
+**Gates**: parity fixture +8 files (one `lg = <Type>…; lg.<method>()` per language + a Lua `require`) with a pin block asserting the native `instance-method`@0.9 / `import`@0.9 verdicts and the kernel-vs-TS byte-identity leg over the extended fixture — 7/7; kernel 27/27 + clippy `-D warnings` + ast-grep rules clean.
+
 ### 5.37 Retrieval — dynamic `import()` edges + path-vocabulary seeds / importer spine (2026-10)
 
 Follow-up to §5.36's least-sufficient shape (warp-drive's registry flow: 5 explores/run). Two legs, both engines mirrored.
