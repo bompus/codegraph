@@ -245,6 +245,56 @@ const FIXTURE: Record<string, string> = {
   'kmod/node/inner.rs': 'pub fn nested_inner_fn() {}\n',
   // Orphan file: no declarant, no `sub.rs` sibling — `crate::sub` must miss.
   'other/lonely.rs': 'fn lonely_fn() {}\n',
+  // Bindings-free walker languages (csharp, ruby, swift, scala, dart,
+  // lua/luau, r): the kernel gate admits them; their language-specific arms
+  // are the receiver-type patterns (mc-infer-local → rmot), the lua `:` /
+  // r `$` receiver shapes, and lua `require`. One `lg = <Type>…;
+  // lg.<method>()` per language pins each pattern natively. Method names are
+  // per-language so the name-strategy pools never overlap across files.
+  'src/Lg.cs': [
+    'class LoggerCs { public void LogCs() {} }',
+    'class AppCs { void RunCs() { var lg = new LoggerCs(); lg.LogCs(); } }',
+  ].join('\n'),
+  'src/lg.swift': [
+    'class LoggerSw { func logSw() {} }',
+    'func runSw() { let lg = LoggerSw(); lg.logSw() }',
+  ].join('\n'),
+  'src/lg.rb': [
+    'class LoggerRb',
+    '  def log_rb; end',
+    'end',
+    'def run_rb',
+    '  lg = LoggerRb.new',
+    '  lg.log_rb',
+    'end',
+  ].join('\n'),
+  'src/Lg.scala': [
+    'class LoggerSc { def logSc(): Unit = {} }',
+    'object AppSc { def runSc(): Unit = { val lg = new LoggerSc(); lg.logSc() } }',
+  ].join('\n'),
+  'src/lg.dart': [
+    'class LoggerDt { void logDt() {} }',
+    'void runDt() { var lg = LoggerDt(); lg.logDt(); }',
+  ].join('\n'),
+  'src/lg.lua': [
+    'local LoggerLua = {}',
+    'LoggerLua.__index = LoggerLua',
+    'function LoggerLua.new() return setmetatable({}, LoggerLua) end',
+    'function LoggerLua:logLua() end',
+    'local sub = require("mod.sub")',
+    'local function runLua()',
+    '  local lg = LoggerLua.new()',
+    '  lg:logLua()',
+    'end',
+  ].join('\n'),
+  'src/mod/sub.lua': 'local M = {}\nreturn M\n',
+  'src/lg.R': [
+    'LoggerR <- R6::R6Class("LoggerR", public = list(logR = function() {}))',
+    'runR <- function() {',
+    '  lg <- LoggerR$new()',
+    '  lg$logR()',
+    '}',
+  ].join('\n'),
 };
 
 let tempDir: string | null = null;
@@ -1037,6 +1087,90 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const localInh = atPre('Local', 'src/inh.rs', 'implements');
     expect(localInh.status).toBe('resolved');
     expect(localInh.targetNodeId).toBe(nodeId('Local', 'inh.rs', 'trait'));
+  });
+
+  it('admits the bindings-free walker languages and ports their receiver arms', async () => {
+    const kernel = getKernel();
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-kresolve-'));
+    for (const [rel, content] of Object.entries(FIXTURE)) {
+      fs.mkdirSync(path.dirname(path.join(tempDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, rel), content);
+    }
+    cg = await CodeGraph.init(tempDir, { index: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (cg as any).db.db as import('node:sqlite').DatabaseSync;
+    const nodeId = (name: string, file: string, kind = 'function') =>
+      cg!.getNodesByKind(kind).find((n) => n.name === name && n.filePath.endsWith(file))!.id;
+    const ins = db.prepare(
+      "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, file_path, language, status) VALUES (?,?,?,?,?,?,?,'pending')",
+    );
+    const seed = (from: string, name: string, file: string, lang: string, kind: string, line: number) =>
+      ins.run(from, name, kind, line, 0, file, lang);
+
+    seed(nodeId('RunCs', 'Lg.cs', 'method'), 'lg.LogCs', 'src/Lg.cs', 'csharp', 'calls', 2);
+    seed(nodeId('runSw', 'lg.swift'), 'lg.logSw', 'src/lg.swift', 'swift', 'calls', 2);
+    seed(nodeId('run_rb', 'lg.rb'), 'lg.log_rb', 'src/lg.rb', 'ruby', 'calls', 6);
+    seed(nodeId('runSc', 'Lg.scala', 'method'), 'lg.logSc', 'src/Lg.scala', 'scala', 'calls', 2);
+    seed(nodeId('runDt', 'lg.dart'), 'lg.logDt', 'src/lg.dart', 'dart', 'calls', 2);
+    const luaRun = nodeId('runLua', 'lg.lua');
+    seed(luaRun, 'lg:logLua', 'src/lg.lua', 'lua', 'calls', 8);
+    seed(luaRun, 'LoggerLua.new', 'src/lg.lua', 'lua', 'calls', 7);
+    seed(nodeId('lg.lua', 'lg.lua', 'file'), 'mod.sub', 'src/lg.lua', 'lua', 'imports', 5);
+    const rRun = nodeId('runR', 'lg.R');
+    seed(rRun, 'lg$logR', 'src/lg.R', 'r', 'calls', 4);
+    seed(rRun, 'LoggerR$new', 'src/lg.R', 'r', 'calls', 3);
+
+    const resolver = new kernel!.KernelResolver!({
+      dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
+      projectRoot: tempDir,
+      cppIncludeDirs: [],
+      nodeBuiltinSpecifiers: [...builtinModules],
+      frameworksActive: false,
+    });
+    const batch = resolver.readPendingBatch(0, 200, false);
+    const outcomes = resolver.resolveChunk(batch);
+    const idx = new Map(batch.map((r, i) => [`${r.referenceName}@${r.filePath}`, i]));
+    const at = (name: string, file: string) => outcomes[idx.get(`${name}@${file}`)!]!;
+    const method = (name: string, file: string) => nodeId(name, file, 'method');
+
+    // Each language's receiver-type pattern names the declared type; rmot
+    // then proves the method → instance-method @0.9, the TS verdict.
+    const pins: Array<[string, string, string]> = [
+      ['lg.LogCs', 'src/Lg.cs', method('LogCs', 'Lg.cs')],
+      ['lg.logSw', 'src/lg.swift', method('logSw', 'lg.swift')],
+      ['lg.log_rb', 'src/lg.rb', method('log_rb', 'lg.rb')],
+      ['lg.logSc', 'src/Lg.scala', method('logSc', 'Lg.scala')],
+      ['lg.logDt', 'src/lg.dart', method('logDt', 'lg.dart')],
+      ['lg:logLua', 'src/lg.lua', method('logLua', 'lg.lua')],
+      ['lg$logR', 'src/lg.R', method('logR', 'lg.R')],
+    ];
+    for (const [name, file, target] of pins) {
+      const o = at(name, file);
+      expect(o.status, name).toBe('resolved');
+      expect(o.resolvedBy, name).toBe('instance-method');
+      expect(o.confidence, name).toBe(0.9);
+      expect(o.targetNodeId, name).toBe(target);
+    }
+    // `LoggerLua.new`: no receiver pattern fires on the table itself, so
+    // strategy 3's unique same-language method resolves it @0.7 like TS.
+    const luaNew = at('LoggerLua.new', 'src/lg.lua');
+    expect(luaNew.status).toBe('resolved');
+    expect(luaNew.confidence).toBe(0.7);
+    expect(luaNew.targetNodeId).toBe(method('new', 'lg.lua'));
+    // `LoggerR$new`: the R6 class declares no `new`; the name strategies
+    // decline and the ref goes back to the TS spine, where exactName/fuzzy
+    // fail the same way (verdict by delegation).
+    expect(at('LoggerR$new', 'src/lg.R').status).toBe('passthrough');
+    // lua `require("mod.sub")` is an `imports` ref (prerequisite batch):
+    // the suffix match links the module file node @0.9.
+    const pre = resolver.readPendingBatch(0, 200, true);
+    const preOut = resolver.resolveChunk(pre);
+    const req = preOut[pre.findIndex((r) => r.referenceName === 'mod.sub' && r.filePath === 'src/lg.lua')]!;
+    expect(req.status).toBe('resolved');
+    expect(req.resolvedBy).toBe('import');
+    expect(req.confidence).toBe(0.9);
+    expect(req.targetNodeId).toBe(nodeId('sub.lua', 'mod/sub.lua', 'file'));
+    resolver.close();
   });
 
   it('settles unclaimed prefilter misses natively under active frameworks', async () => {
