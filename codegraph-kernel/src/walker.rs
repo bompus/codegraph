@@ -45,6 +45,48 @@ impl Cand {
     }
 }
 
+/// `node`'s children in order — `child(0..child_count())`. `child(i)` scans
+/// from the first child, so a wide node is walked with one cursor instead;
+/// a narrow one (most of them) keeps the lookups and skips the cursor's
+/// allocation.
+pub(crate) fn kids<'t>(node: Node<'t>) -> Kids<'t> {
+    Kids { node, index: 0, count: node.child_count(), cursor: None }
+}
+
+/// Child count from which `kids` switches to a cursor.
+const CURSOR_MIN_CHILDREN: usize = 16;
+
+pub(crate) struct Kids<'t> {
+    node: Node<'t>,
+    index: usize,
+    count: usize,
+    cursor: Option<tree_sitter::TreeCursor<'t>>,
+}
+
+impl<'t> Iterator for Kids<'t> {
+    type Item = Node<'t>;
+
+    fn next(&mut self) -> Option<Node<'t>> {
+        if self.index >= self.count {
+            return None;
+        }
+        let i = self.index;
+        self.index += 1;
+        if self.count < CURSOR_MIN_CHILDREN {
+            return self.node.child(i);
+        }
+        let node = self.node;
+        let cursor = self.cursor.get_or_insert_with(|| node.walk());
+        let moved = if i == 0 { cursor.goto_first_child() } else { cursor.goto_next_sibling() };
+        moved.then(|| cursor.node())
+    }
+}
+
+/// `node`'s named children in order — `named_child(0..named_child_count())`.
+pub(crate) fn named_kids<'t>(node: Node<'t>) -> impl Iterator<Item = Node<'t>> {
+    kids(node).filter(|c| c.is_named())
+}
+
 /// The node cap on every value-reference DFS (shadow prune and emission),
 /// matching the TS side's MAX_VALUE_REF_NODES.
 pub(crate) const MAX_VALUE_REF_NODES: usize = 20_000;
@@ -96,10 +138,8 @@ pub(crate) fn emit_value_refs(
                     }
                 }
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    stack.push(c);
-                }
+            for c in named_kids(n) {
+                stack.push(c);
             }
         }
     }

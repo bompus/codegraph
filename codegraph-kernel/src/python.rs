@@ -13,6 +13,7 @@ use crate::buffers::{
     node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_ASYNC, FLAG_IS_STATIC, NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::is_literal_receiver;
 use crate::docstring::preceding_docstring;
@@ -258,10 +259,8 @@ impl<'t> Walker<'t> {
         }
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -301,10 +300,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -380,10 +377,8 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "class", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -503,8 +498,7 @@ impl<'t> Walker<'t> {
                 let local = name.split('.').next().unwrap_or(&name).to_string();
                 self.emit_import_binding(&local, &name, "*", child);
             } else if child.kind() == "aliased_import" {
-                let dotted = (0..child.named_child_count())
-                    .filter_map(|j| child.named_child(j))
+                let dotted = named_kids(child)
                     .find(|c| c.kind() == "dotted_name");
                 if let Some(dotted) = dotted {
                     let name = self.text(dotted).to_string();
@@ -612,7 +606,7 @@ impl<'t> Walker<'t> {
             let (dotted, alias) = match child.kind() {
                 "dotted_name" => (Some(child), None),
                 "aliased_import" => (
-                    (0..child.named_child_count()).filter_map(|j| child.named_child(j)).find(|c| c.kind() == "dotted_name"),
+                    named_kids(child).find(|c| c.kind() == "dotted_name"),
                     child.child_by_field_name("alias"),
                 ),
                 _ => (None, None),
@@ -715,10 +709,8 @@ impl<'t> Walker<'t> {
     /// (python's `call` kind isn't `call_expression`, and `attribute` isn't in
     /// the target-kind list — mirrored exactly).
     fn extract_decorators_for(&mut self, decl: Node<'t>, decorated_row: u32) {
-        for i in 0..decl.named_child_count() {
-            if let Some(child) = decl.named_child(i) {
-                self.consider_decorator(child, decorated_row);
-            }
+        for child in named_kids(decl) {
+            self.consider_decorator(child, decorated_row);
         }
         let Some(parent) = decl.parent() else { return };
         let decl_start = decl.start_byte();
@@ -798,10 +790,8 @@ impl<'t> Walker<'t> {
         let mut values: Vec<Node> = Vec::new();
         match mode {
             "args" | "list" => {
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        values.push(c);
-                    }
+                for c in named_kids(node) {
+                    values.push(c);
                 }
             }
             "rhs" => {
@@ -865,10 +855,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 
@@ -908,23 +896,19 @@ impl<'t> Walker<'t> {
                             *decl_counts.entry(nm).or_insert(0) += 1;
                         }
                     } else {
-                        for i in 0..left.named_child_count() {
-                            if let Some(c) = left.named_child(i) {
-                                if c.kind() == "identifier" {
-                                    let nm = self.text(c);
-                                    if targets.contains_key(nm) {
-                                        *decl_counts.entry(nm).or_insert(0) += 1;
-                                    }
+                        for c in named_kids(left) {
+                            if c.kind() == "identifier" {
+                                let nm = self.text(c);
+                                if targets.contains_key(nm) {
+                                    *decl_counts.entry(nm).or_insert(0) += 1;
                                 }
                             }
                         }
                     }
                 }
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
+            for c in named_kids(n) {
+                dstack.push(c);
             }
         }
         let shadowed: Vec<String> = decl_counts

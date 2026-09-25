@@ -28,6 +28,7 @@ use crate::buffers::{
     RefRow, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_builtin_type, is_literal_receiver, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
@@ -128,10 +129,8 @@ fn first_simple_identifier<'t>(node: Option<Node<'t>>) -> Option<Node<'t>> {
         if n.kind() == "simple_identifier" {
             return Some(n);
         }
-        for i in 0..n.named_child_count() {
-            if let Some(c) = n.named_child(i) {
-                q.push_back(c);
-            }
+        for c in named_kids(n) {
+            q.push_back(c);
         }
     }
     None
@@ -271,8 +270,7 @@ impl<'t> Walker<'t> {
         if node.kind() == "class_declaration" {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if name_node.kind() == "user_type" {
-                    let ids: Vec<Node> = (0..name_node.named_child_count())
-                        .filter_map(|i| name_node.named_child(i))
+                    let ids: Vec<Node> = named_kids(name_node)
                         .filter(|c| c.kind() == "type_identifier")
                         .collect();
                     if ids.len() > 1 {
@@ -284,11 +282,9 @@ impl<'t> Walker<'t> {
         if let Some(name_node) = node.child_by_field_name("name") {
             return self.text(name_node).to_string();
         }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                    return self.text(c).to_string();
-                }
+        for c in named_kids(node) {
+            if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
+                return self.text(c).to_string();
             }
         }
         "<anonymous>".to_string()
@@ -357,8 +353,7 @@ impl<'t> Walker<'t> {
             }
             let type_node = match child.kind() {
                 "user_type" => Some(child),
-                "optional_type" => (0..child.named_child_count())
-                    .filter_map(|j| child.named_child(j))
+                "optional_type" => named_kids(child)
                     .find(|c| c.kind() == "user_type"),
                 _ => None,
             };
@@ -380,18 +375,15 @@ impl<'t> Walker<'t> {
     /// swiftPropertyInfo (tree-sitter.ts:277).
     fn swift_property_info(&self, node: Node<'t>) -> SwiftPropInfo<'t> {
         let pattern = node.child_by_field_name("name").or_else(|| {
-            (0..node.named_child_count())
-                .filter_map(|i| node.named_child(i))
+            named_kids(node)
                 .find(|c| matches!(c.kind(), "value_binding_pattern" | "pattern"))
         });
-        let binding = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let binding = named_kids(node)
             .find(|c| c.kind() == "value_binding_pattern");
         let is_let = binding
             .map(|b| self.text(b).trim_start().starts_with("let"))
             .unwrap_or(false);
-        let is_computed = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let is_computed = named_kids(node)
             .any(|c| matches!(c.kind(), "computed_property" | "protocol_property_requirements"));
         SwiftPropInfo { name_node: first_simple_identifier(pattern), is_let, is_computed }
     }
@@ -440,10 +432,8 @@ impl<'t> Walker<'t> {
         // emit NOTHING (the pass is body-walker-only).
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -495,24 +485,21 @@ impl<'t> Walker<'t> {
         // All three ref passes attach to the ENCLOSING TYPE (ownerId).
         self.extract_decorators_for(node, owner_row);
         // extractVariableTypeAnnotation: the direct type_annotation child.
-        let ta = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let ta = named_kids(node)
             .find(|c| c.kind() == "type_annotation");
         if let Some(ta) = ta {
             self.extract_type_refs_from_subtree(ta, owner_row);
         }
         // walkAttrArgs: extractStaticMemberRef over the whole modifiers subtree
         // (`@Siblings(through: Pivot.self)` metatype args).
-        let mods = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let mods = named_kids(node)
             .find(|c| c.kind() == "modifiers");
         if let Some(mods) = mods {
             self.walk_attr_args(mods);
         }
 
         if let Some((row, name)) = computed_prop {
-            let getter = (0..node.named_child_count())
-                .filter_map(|i| node.named_child(i))
+            let getter = named_kids(node)
                 .find(|c| matches!(c.kind(), "computed_property" | "protocol_property_requirements"));
             if let Some(getter) = getter {
                 self.stack.push(Scope { row, kind: "property", name });
@@ -529,10 +516,8 @@ impl<'t> Walker<'t> {
     fn walk_attr_args(&mut self, n: Node<'t>) {
         stack_guard!();
         self.extract_static_member_ref(n);
-        for i in 0..n.named_child_count() {
-            if let Some(c) = n.named_child(i) {
-                self.walk_attr_args(c);
-            }
+        for c in named_kids(n) {
+            self.walk_attr_args(c);
         }
     }
 
@@ -564,10 +549,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -641,10 +624,8 @@ impl<'t> Walker<'t> {
         self.extract_decorators_for(node, row);
         self.stack.push(Scope { row, kind: "class", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -663,10 +644,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         // NO extractDecoratorsFor for structs (`@main struct` emits nothing).
         self.stack.push(Scope { row, kind: "struct", name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -717,10 +696,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "interface", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -769,8 +746,7 @@ impl<'t> Walker<'t> {
 
     fn extract_import(&mut self, node: Node<'t>) {
         let import_text = self.text(node).trim().to_string();
-        let identifier = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let identifier = named_kids(node)
             .find(|c| c.kind() == "identifier");
         let Some(identifier) = identifier else { return }; // hook null → nothing
         let module_name = self.text(identifier).to_string();

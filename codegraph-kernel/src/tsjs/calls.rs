@@ -1,5 +1,6 @@
 //! Calls, instantiations, decorators, inheritance and type references.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -189,10 +190,8 @@ impl<'t> Walker<'t> {
             let Some(child) = decl.named_child(i) else { continue };
             self.consider_decorator(child, decorated_row);
             if child.kind() == "modifiers" {
-                for j in 0..child.named_child_count() {
-                    if let Some(m) = child.named_child(j) {
-                        self.consider_decorator(m, decorated_row);
-                    }
+                for m in named_kids(child) {
+                    self.consider_decorator(m, decorated_row);
                 }
             }
         }
@@ -271,11 +270,9 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "implements_clause" | "class_interface_clause" | "super_interfaces" | "interfaces" => {
-                    for j in 0..child.named_child_count() {
-                        if let Some(iface) = child.named_child(j) {
-                            let name = self.text(iface).to_string();
-                            self.push_ref(class_row, &name, implements_kind, iface);
-                        }
+                    for iface in named_kids(child) {
+                        let name = self.text(iface).to_string();
+                        self.push_ref(class_row, &name, implements_kind, iface);
                     }
                 }
                 // JS `class Foo extends Bar` — class_heritage holds a bare
@@ -303,8 +300,7 @@ impl<'t> Walker<'t> {
         if let Some(ret) = node.child_by_field_name("return_type") {
             self.extract_type_refs_from_subtree(ret, from_row);
         }
-        let type_annotation = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let type_annotation = named_kids(node)
             .find(|c| c.kind() == "type_annotation");
         if let Some(ta) = type_annotation {
             self.extract_type_refs_from_subtree(ta, from_row);
@@ -315,8 +311,7 @@ impl<'t> Walker<'t> {
         if !self.variant.is_ts() {
             return;
         }
-        let type_annotation = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let type_annotation = named_kids(node)
             .find(|c| c.kind() == "type_annotation");
         if let Some(ta) = type_annotation {
             self.extract_type_refs_from_subtree(ta, from_row);
@@ -332,10 +327,8 @@ impl<'t> Walker<'t> {
             }
             return;
         }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.extract_type_refs_from_subtree(c, from_row);
-            }
+        for c in named_kids(node) {
+            self.extract_type_refs_from_subtree(c, from_row);
         }
     }
 }

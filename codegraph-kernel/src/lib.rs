@@ -160,11 +160,9 @@ macro_rules! extract_name_impl {
             if let Some(name_node) = node.child_by_field_name("name") {
                 return self.text(name_node).to_string();
             }
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                        return self.text(c).to_string();
-                    }
+            for c in $crate::walker::named_kids(node) {
+                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
+                    return self.text(c).to_string();
                 }
             }
             "<anonymous>".to_string()
@@ -181,10 +179,8 @@ macro_rules! decorators_impl {
                 let Some(child) = decl.named_child(i) else { continue };
                 self.consider_decorator(child, decorated_row);
                 if child.kind() == "modifiers" {
-                    for j in 0..child.named_child_count() {
-                        if let Some(m) = child.named_child(j) {
-                            self.consider_decorator(m, decorated_row);
-                        }
+                    for m in $crate::walker::named_kids(child) {
+                        self.consider_decorator(m, decorated_row);
                     }
                 }
             }
@@ -260,10 +256,8 @@ macro_rules! type_refs_from_subtree_impl {
                 }
                 return;
             }
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.extract_type_refs_from_subtree(c, from_row);
-                }
+            for c in $crate::walker::named_kids(node) {
+                self.extract_type_refs_from_subtree(c, from_row);
             }
         }
     };
@@ -370,10 +364,8 @@ macro_rules! markdown_refs_impl {
         fn markdown_refs_from_subtree(&mut self, node: Node<'t>, owner_row: u32) {
             stack_guard!();
             self.markdown_refs_from_string(node, owner_row);
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.markdown_refs_from_subtree(c, owner_row);
-                }
+            for c in $crate::walker::named_kids(node) {
+                self.markdown_refs_from_subtree(c, owner_row);
             }
         }
     };

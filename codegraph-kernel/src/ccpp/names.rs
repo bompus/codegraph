@@ -1,5 +1,6 @@
 //! C/C++ names: declarator unwrapping, qualified method names, macro-defined names and receiver types.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -41,11 +42,9 @@ impl<'t> Walker<'t> {
             }
             return self.text(resolved).to_string();
         }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                    return self.text(c).to_string();
-                }
+        for c in named_kids(node) {
+            if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
+                return self.text(c).to_string();
             }
         }
         "<anonymous>".to_string()
@@ -133,8 +132,7 @@ impl<'t> Walker<'t> {
 
     /// cExtractor.isConst: any named `type_qualifier` child reading "const".
     pub(super) fn is_const_declaration(&self, node: Node) -> bool {
-        (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        named_kids(node)
             .any(|c| c.kind() == "type_qualifier" && self.text(c) == "const")
     }
 
@@ -162,8 +160,7 @@ impl<'t> Walker<'t> {
         if declarator.kind() != "function_declarator" {
             return false;
         }
-        (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        named_kids(node)
             .any(|c| c.kind() == "number_literal" && self.text(c) == "0")
     }
 

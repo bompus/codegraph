@@ -1,5 +1,6 @@
 //! Calls, instantiations, static member references, inheritance and type references.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -22,8 +23,7 @@ impl<'t> Walker<'t> {
                 .or_else(|| {
                     let c1 = func.named_child(1);
                     match c1 {
-                        Some(c) if c.kind() == "navigation_suffix" => (0..c.named_child_count())
-                            .filter_map(|i| c.named_child(i))
+                        Some(c) if c.kind() == "navigation_suffix" => named_kids(c)
                             .find(|g| g.kind() == "simple_identifier")
                             .or(Some(c)),
                         other => other,
@@ -136,12 +136,10 @@ impl<'t> Walker<'t> {
             if child.kind() != "inheritance_specifier" {
                 continue;
             }
-            let user_type = (0..child.named_child_count())
-                .filter_map(|j| child.named_child(j))
+            let user_type = named_kids(child)
                 .find(|c| c.kind() == "user_type");
             let Some(user_type) = user_type else { continue };
-            let type_id = (0..user_type.named_child_count())
-                .filter_map(|j| user_type.named_child(j))
+            let type_id = named_kids(user_type)
                 .find(|c| c.kind() == "type_identifier");
             let Some(type_id) = type_id else { continue };
             let name = self.text(type_id).to_string();
@@ -160,8 +158,7 @@ impl<'t> Walker<'t> {
         if let Some(ret) = node.child_by_field_name("return_type") {
             self.extract_type_refs_from_subtree(ret, from_row);
         }
-        let ta = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let ta = named_kids(node)
             .find(|c| c.kind() == "type_annotation");
         if let Some(ta) = ta {
             self.extract_type_refs_from_subtree(ta, from_row);

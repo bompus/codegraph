@@ -20,6 +20,7 @@ use crate::buffers::{
     RefRow, Tables, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -275,8 +276,7 @@ impl<'t> Walker<'t> {
             if let Some(method) = node.child_by_field_name("method") {
                 if matches!(self.text(method), "include" | "extend" | "prepend") {
                     let args = node.child_by_field_name("arguments").or_else(|| {
-                        (0..node.named_child_count())
-                            .filter_map(|i| node.named_child(i))
+                        named_kids(node)
                             .find(|c| c.kind() == "argument_list")
                     });
                     // (nodeStack is never empty — the file node is pushed.)
@@ -325,10 +325,8 @@ impl<'t> Walker<'t> {
         };
         self.stack.push(Scope { row, kind: "module", name });
         if let Some(body) = node.child_by_field_name("body") {
-            for i in 0..body.named_child_count() {
-                if let Some(c) = body.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(body) {
+                self.visit_node(c);
             }
         }
         self.stack.pop();
@@ -395,10 +393,8 @@ impl<'t> Walker<'t> {
         // `uninterpreted`, operator_assignment: no branch — recursed.
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -449,10 +445,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -553,10 +547,8 @@ impl<'t> Walker<'t> {
         // Bodiless `class X; end` has no body field → the class node itself
         // is walked (name/superclass children revisit harmlessly).
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -592,24 +584,20 @@ impl<'t> Walker<'t> {
     /// string_content → moduleName. Then the generic imports ref and
     /// emitRubyRequireRefs' path ref.
     fn extract_import(&mut self, node: Node<'t>) {
-        let ident = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let ident = named_kids(node)
             .find(|c| c.kind() == "identifier");
         let Some(ident) = ident else { return };
         let mname = self.text(ident);
         if mname != "require" && mname != "require_relative" {
             return;
         }
-        let arg_list = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let arg_list = named_kids(node)
             .find(|c| c.kind() == "argument_list");
         let Some(arg_list) = arg_list else { return };
-        let string = (0..arg_list.named_child_count())
-            .filter_map(|i| arg_list.named_child(i))
+        let string = named_kids(arg_list)
             .find(|c| c.kind() == "string");
         let Some(string) = string else { return };
-        let content = (0..string.named_child_count())
-            .filter_map(|i| string.named_child(i))
+        let content = named_kids(string)
             .find(|c| c.kind() == "string_content");
         let Some(content) = content else { return };
 
@@ -736,10 +724,8 @@ impl<'t> Walker<'t> {
         let mut values: Vec<Node> = Vec::new();
         match mode {
             Mode::Args => {
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        values.push(c);
-                    }
+                for c in named_kids(node) {
+                    values.push(c);
                 }
             }
             Mode::PairValue => {
@@ -771,10 +757,8 @@ impl<'t> Walker<'t> {
         }
         match v.kind() {
             "block_argument" => {
-                for i in 0..v.named_child_count() {
-                    if let Some(c) = v.named_child(i) {
-                        self.normalize_fn_ref_value(c, from, depth + 1);
-                    }
+                for c in named_kids(v) {
+                    self.normalize_fn_ref_value(c, from, depth + 1);
                 }
             }
             "call" => {
@@ -835,10 +819,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 
@@ -881,23 +863,19 @@ impl<'t> Walker<'t> {
                             *decl_counts.entry(nm).or_insert(0) += 1;
                         }
                     } else {
-                        for i in 0..left.named_child_count() {
-                            if let Some(c) = left.named_child(i) {
-                                if c.kind() == "identifier" {
-                                    let nm = self.text(c);
-                                    if targets.contains_key(nm) {
-                                        *decl_counts.entry(nm).or_insert(0) += 1;
-                                    }
+                        for c in named_kids(left) {
+                            if c.kind() == "identifier" {
+                                let nm = self.text(c);
+                                if targets.contains_key(nm) {
+                                    *decl_counts.entry(nm).or_insert(0) += 1;
                                 }
                             }
                         }
                     }
                 }
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
+            for c in named_kids(n) {
+                dstack.push(c);
             }
         }
         let shadowed: Vec<String> = decl_counts

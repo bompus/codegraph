@@ -1,5 +1,6 @@
 //! Module exports and the binding rows they produce: later `export` statements, CommonJS exports, default exports, declaration/import/re-export rows.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -27,8 +28,7 @@ impl<'t> Walker<'t> {
                 continue;
             }
             // `export { a, b as c, d as default }`
-            let clause = (0..stmt.named_child_count())
-                .filter_map(|k| stmt.named_child(k))
+            let clause = named_kids(stmt)
                 .find(|c| c.kind() == "export_clause");
             let Some(clause) = clause else { continue };
             for j in 0..clause.named_child_count() {

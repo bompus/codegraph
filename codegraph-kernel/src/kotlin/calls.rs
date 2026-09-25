@@ -1,5 +1,6 @@
 //! Calls, instantiations, static member references, inheritance and type references.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -21,8 +22,7 @@ impl<'t> Walker<'t> {
                 .or_else(|| {
                     let c1 = func.named_child(1);
                     match c1 {
-                        Some(c) if c.kind() == "navigation_suffix" => (0..c.named_child_count())
-                            .filter_map(|i| c.named_child(i))
+                        Some(c) if c.kind() == "navigation_suffix" => named_kids(c)
                             .find(|g| g.kind() == "simple_identifier")
                             .or(Some(c)),
                         other => other,
@@ -138,27 +138,22 @@ impl<'t> Walker<'t> {
             if child.kind() != "delegation_specifier" {
                 continue;
             }
-            let user_type = (0..child.named_child_count())
-                .filter_map(|j| child.named_child(j))
+            let user_type = named_kids(child)
                 .find(|c| c.kind() == "user_type");
-            let ctor_inv = (0..child.named_child_count())
-                .filter_map(|j| child.named_child(j))
+            let ctor_inv = named_kids(child)
                 .find(|c| c.kind() == "constructor_invocation");
             let target = user_type.or(ctor_inv);
             let Some(target) = target else { continue };
             let type_id: Node = if target.kind() == "user_type" {
-                (0..target.named_child_count())
-                    .filter_map(|j| target.named_child(j))
+                named_kids(target)
                     .find(|c| c.kind() == "type_identifier")
                     .unwrap_or(target)
             } else {
                 // constructor_invocation → its user_type → first type_identifier
-                let ut = (0..target.named_child_count())
-                    .filter_map(|j| target.named_child(j))
+                let ut = named_kids(target)
                     .find(|c| c.kind() == "user_type");
                 match ut {
-                    Some(ut) => (0..ut.named_child_count())
-                        .filter_map(|j| ut.named_child(j))
+                    Some(ut) => named_kids(ut)
                         .find(|c| c.kind() == "type_identifier")
                         .unwrap_or(ut),
                     None => target,

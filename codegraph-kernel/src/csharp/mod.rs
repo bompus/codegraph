@@ -23,6 +23,7 @@ use crate::buffers::{
     RefRow, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_builtin_type, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
@@ -120,8 +121,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         // csharpExtractor.extractPackage: `name` field ?? first
         // qualified_name/identifier named child. No trim.
         let name_node = child.child_by_field_name("name").or_else(|| {
-            (0..child.named_child_count())
-                .filter_map(|j| child.named_child(j))
+            named_kids(child)
                 .find(|c| matches!(c.kind(), "qualified_name" | "identifier"))
         });
         if let Some(name_node) = name_node {
@@ -366,10 +366,8 @@ impl<'t> Walker<'t> {
         // attribute to the enclosing scope (checklist §dispatch).
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -405,10 +403,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -451,10 +447,8 @@ impl<'t> Walker<'t> {
         // children falls through (base-arg identifiers still feed fn-ref
         // capture, mirroring the TS walk).
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         // no synthesizeMembers for C#
         self.stack.pop();
@@ -481,10 +475,8 @@ impl<'t> Walker<'t> {
         // NOTE: extractStruct does NOT call extractDecoratorsFor (TS parity).
         if let Some(body) = body {
             self.stack.push(Scope { row, kind: "struct", name });
-            for i in 0..body.named_child_count() {
-                if let Some(c) = body.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(body) {
+                self.visit_node(c);
             }
             self.stack.pop();
         }
@@ -501,10 +493,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "interface", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -556,8 +546,7 @@ impl<'t> Walker<'t> {
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property"))
             .or_else(|| {
-                (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                named_kids(node)
                     .find(|c| c.kind() == "identifier")
             });
         let Some(name_node) = name_node else { return };
@@ -571,8 +560,7 @@ impl<'t> Walker<'t> {
         // (`public Widget Parent {get;}`) is excluded by the `identifier`
         // filter → the signature loses its type (QUIRK, preserve); the type
         // ref below still fires via the `type` FIELD.
-        let type_node = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let type_node = named_kids(node)
             .find(|c| {
                 !matches!(
                     c.kind(),
@@ -615,17 +603,14 @@ impl<'t> Walker<'t> {
         let field_kind: &'static str = if self.is_const(node) { "constant" } else { "field" };
 
         // Direct declarators (Java shape) — none for C#; the wrapper path:
-        let mut declarators: Vec<Node> = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let mut declarators: Vec<Node> = named_kids(node)
             .filter(|c| c.kind() == "variable_declarator")
             .collect();
-        let var_decl = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let var_decl = named_kids(node)
             .find(|c| c.kind() == "variable_declaration");
         if declarators.is_empty() {
             if let Some(vd) = var_decl {
-                declarators = (0..vd.named_child_count())
-                    .filter_map(|i| vd.named_child(i))
+                declarators = named_kids(vd)
                     .filter(|c| c.kind() == "variable_declarator")
                     .collect();
             }
@@ -634,8 +619,7 @@ impl<'t> Walker<'t> {
 
         if !declarators.is_empty() {
             let type_search = var_decl.unwrap_or(node);
-            let type_node = (0..type_search.named_child_count())
-                .filter_map(|i| type_search.named_child(i))
+            let type_node = named_kids(type_search)
                 .find(|c| {
                     !matches!(
                         c.kind(),
@@ -647,8 +631,7 @@ impl<'t> Walker<'t> {
 
             for decl in declarators {
                 let name_node = decl.child_by_field_name("name").or_else(|| {
-                    (0..decl.named_child_count())
-                        .filter_map(|i| decl.named_child(i))
+                    named_kids(decl)
                         .find(|c| c.kind() == "identifier")
                 });
                 let Some(name_node) = name_node else { continue };
@@ -682,8 +665,7 @@ impl<'t> Walker<'t> {
         } else {
             // Bare fallback (unreachable on non-erroring C#; ported for shape).
             let name_node = node.child_by_field_name("name").or_else(|| {
-                (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                named_kids(node)
                     .find(|c| c.kind() == "identifier")
             });
             if let Some(name_node) = name_node {
@@ -796,12 +778,10 @@ impl<'t> Walker<'t> {
     /// alias-to-identifier captures the ALIAS name) preserved verbatim.
     fn extract_import(&mut self, node: Node<'t>) {
         let import_text = self.text(node).trim().to_string();
-        let target = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let target = named_kids(node)
             .find(|c| c.kind() == "qualified_name")
             .or_else(|| {
-                (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                named_kids(node)
                     .find(|c| c.kind() == "identifier")
             });
         let Some(target) = target else { return }; // hook declined → no node, no ref
@@ -832,11 +812,9 @@ impl<'t> Walker<'t> {
 }
 
 fn find_anonymous_class_body(node: Node) -> Option<Node> {
-    for i in 0..node.named_child_count() {
-        if let Some(child) = node.named_child(i) {
-            if matches!(child.kind(), "class_body" | "declaration_list") {
-                return Some(child);
-            }
+    for child in named_kids(node) {
+        if matches!(child.kind(), "class_body" | "declaration_list") {
+            return Some(child);
         }
     }
     None

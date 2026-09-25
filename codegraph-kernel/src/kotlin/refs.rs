@@ -1,5 +1,6 @@
 //! Function-reference candidates and value references: capture during the walk, flush at its end.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -18,10 +19,8 @@ impl<'t> Walker<'t> {
         let mut values: Vec<Node> = Vec::new();
         match mode {
             Mode::Args => {
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        values.push(c);
-                    }
+                for c in named_kids(node) {
+                    values.push(c);
                 }
             }
             Mode::Rhs => {
@@ -65,10 +64,8 @@ impl<'t> Walker<'t> {
             // value_argument layer with NO field resolution (zero fields) —
             // the label-forward skip is DEAD for kotlin; fan out namedChildren.
             "value_argument" => {
-                for i in 0..v.named_child_count() {
-                    if let Some(c) = v.named_child(i) {
-                        self.normalize_fn_ref_value(c, from, depth + 1);
-                    }
+                for c in named_kids(v) {
+                    self.normalize_fn_ref_value(c, from, depth + 1);
                 }
             }
             // `::topLevel` / `OtherClass::handle` — receiver = LAST
@@ -141,10 +138,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 
@@ -196,12 +191,10 @@ impl<'t> Walker<'t> {
                 }
             }
             if n.kind() == "property_declaration" {
-                let vd = (0..n.named_child_count())
-                    .filter_map(|i| n.named_child(i))
+                let vd = named_kids(n)
                     .find(|c| c.kind() == "variable_declaration");
                 if let Some(vd) = vd {
-                    let id = (0..vd.named_child_count())
-                        .filter_map(|i| vd.named_child(i))
+                    let id = named_kids(vd)
                         .find(|c| c.kind() == "simple_identifier");
                     if let Some(id) = id {
                         let nm = self.text(id);
@@ -213,10 +206,8 @@ impl<'t> Walker<'t> {
                 // (the Swift name-field half of the shared case is a null
                 // path for kotlin — variable_declaration always present)
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
+            for c in named_kids(n) {
+                dstack.push(c);
             }
         }
         let shadowed: Vec<String> = decl_counts

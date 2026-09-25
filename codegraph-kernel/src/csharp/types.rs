@@ -1,5 +1,6 @@
 //! C# type references: declared types, primary-constructor parameters and generic positions.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -12,8 +13,7 @@ impl<'t> Walker<'t> {
             self.walk_type_position(t, from_row);
         }
         // Field declarations: the variable_declaration wrapper's `type` field.
-        let var_decl = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let var_decl = named_kids(node)
             .find(|c| c.kind() == "variable_declaration");
         if let Some(vd) = var_decl {
             if let Some(t) = vd.child_by_field_name("type") {
@@ -37,8 +37,7 @@ impl<'t> Walker<'t> {
     /// extractCsharpPrimaryCtorParamRefs (5938) — the class/struct/record
     /// primary constructor's parameter_list (an unnamed-field child).
     pub(super) fn extract_primary_ctor_param_refs(&mut self, node: Node<'t>, owner_row: u32) {
-        let param_list = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let param_list = named_kids(node)
             .find(|c| c.kind() == "parameter_list");
         let Some(param_list) = param_list else { return };
         for i in 0..param_list.named_child_count() {
@@ -78,10 +77,8 @@ impl<'t> Walker<'t> {
                 }
             }
             _ => {
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        self.walk_type_position(c, from_row);
-                    }
+                for c in named_kids(node) {
+                    self.walk_type_position(c, from_row);
                 }
             }
         }

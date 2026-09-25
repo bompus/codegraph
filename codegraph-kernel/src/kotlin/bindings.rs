@@ -1,18 +1,19 @@
 //! Binding rows (docs/design/resolution-binding-model-plan.md): declarations, parameters, locals and imports, with their scopes.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
     pub(super) fn parameter_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
         let mut out = Vec::new();
-        let params = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "function_value_parameters");
+        let params = named_kids(node).find(|c| c.kind() == "function_value_parameters");
         let Some(params) = params else { return out };
         for i in 0..params.named_child_count() {
             let Some(p) = params.named_child(i) else { continue };
             if p.kind() != "parameter" {
                 continue;
             }
-            if let Some(n) = (0..p.named_child_count()).filter_map(|j| p.named_child(j)).find(|c| c.kind() == "simple_identifier") {
+            if let Some(n) = named_kids(p).find(|c| c.kind() == "simple_identifier") {
                 out.push(n);
             }
         }
@@ -21,9 +22,9 @@ impl<'t> Walker<'t> {
 
     pub(super) fn local_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
         let mut out = Vec::new();
-        let decl = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "variable_declaration");
+        let decl = named_kids(node).find(|c| c.kind() == "variable_declaration");
         if let Some(decl) = decl {
-            if let Some(n) = (0..decl.named_child_count()).filter_map(|j| decl.named_child(j)).find(|c| c.kind() == "simple_identifier") {
+            if let Some(n) = named_kids(decl).find(|c| c.kind() == "simple_identifier") {
                 out.push(n);
             }
         }
@@ -101,10 +102,9 @@ impl<'t> Walker<'t> {
             self.emit_import_binding("*", &format!("{fqn}.*"), node);
             return;
         }
-        let alias = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let alias = named_kids(node)
             .find(|c| c.kind() == "import_alias")
-            .and_then(|a| (0..a.named_child_count()).filter_map(|j| a.named_child(j)).find(|c| c.kind() == "type_identifier" || c.kind() == "simple_identifier"))
+            .and_then(|a| named_kids(a).find(|c| c.kind() == "type_identifier" || c.kind() == "simple_identifier"))
             .map(|n| self.text(n).to_string());
         let local = alias.unwrap_or_else(|| fqn.rsplit('.').next().unwrap_or(fqn).to_string());
         self.emit_import_binding(&local, fqn, node);

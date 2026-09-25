@@ -1,5 +1,6 @@
 //! Function-reference candidates and value references: capture during the walk, flush at its end.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -8,10 +9,8 @@ impl<'t> Walker<'t> {
             return;
         }
         let from = self.top_row();
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.normalize_fn_ref_value(c, from, 0);
-            }
+        for c in named_kids(node) {
+            self.normalize_fn_ref_value(c, from, 0);
         }
     }
 
@@ -22,10 +21,8 @@ impl<'t> Walker<'t> {
         }
         match v.kind() {
             "argument" => {
-                for i in 0..v.named_child_count() {
-                    if let Some(c) = v.named_child(i) {
-                        self.normalize_fn_ref_value(c, from, depth + 1);
-                    }
+                for c in named_kids(v) {
+                    self.normalize_fn_ref_value(c, from, depth + 1);
                 }
             }
             // String callable — trustworthy ONLY as an argument to a known
@@ -100,10 +97,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 

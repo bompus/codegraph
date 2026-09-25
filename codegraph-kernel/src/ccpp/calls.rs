@@ -1,5 +1,6 @@
 //! Calls, instantiations, static member references and inheritance.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -20,12 +21,10 @@ impl<'t> Walker<'t> {
                     if child.kind() != "ERROR" {
                         continue;
                     }
-                    for j in 0..child.named_child_count() {
-                        if let Some(op) = child.named_child(j) {
-                            if op.kind() == "operator_name" {
-                                operator_name = self.text(op).to_string();
-                                break 'err;
-                            }
+                    for op in named_kids(child) {
+                        if op.kind() == "operator_name" {
+                            operator_name = self.text(op).to_string();
+                            break 'err;
                         }
                     }
                 }
@@ -252,12 +251,10 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "field_declaration" => {
-                    let has_field_identifier = (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    let has_field_identifier = named_kids(child)
                         .any(|c| c.kind() == "field_identifier");
                     if !has_field_identifier {
-                        let type_id = (0..child.named_child_count())
-                            .filter_map(|j| child.named_child(j))
+                        let type_id = named_kids(child)
                             .find(|c| c.kind() == "type_identifier");
                         if let Some(type_id) = type_id {
                             let name = self.text(type_id).to_string();

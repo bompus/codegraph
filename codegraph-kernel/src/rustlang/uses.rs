@@ -1,5 +1,6 @@
 //! `use` declarations: import refs and the binding rows each `use` tree leaf produces.
 
+use crate::walker::named_kids;
 use super::*;
 
 /// `prefix::seg`, or `seg` at the root.
@@ -12,7 +13,7 @@ fn scoped_use_list_parts<'t>(w: &Walker<'t>, n: Node<'t>, prefix: &str) -> (Stri
     let seg = n.child_by_field_name("path").map(|p| w.text(p).trim()).unwrap_or("");
     let new_prefix = if seg.is_empty() { prefix.to_string() } else { join_path(prefix, seg) };
     let list = n.child_by_field_name("list").or_else(|| {
-        (0..n.named_child_count()).filter_map(|i| n.named_child(i)).find(|c| c.kind() == "use_list")
+        named_kids(n).find(|c| c.kind() == "use_list")
     });
     (new_prefix, list)
 }
@@ -22,8 +23,7 @@ impl<'t> Walker<'t> {
     /// one generic root `imports` ref + per-binding FULL-path refs.
     /// `use x::*;` (use_wildcard) → hook returns null → nothing at all.
     pub(super) fn extract_import(&mut self, node: Node<'t>) {
-        let use_arg = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let use_arg = named_kids(node)
             .find(|c| matches!(c.kind(), "scoped_use_list" | "scoped_identifier" | "use_list" | "identifier"));
         let Some(use_arg) = use_arg else { return };
 
@@ -73,10 +73,8 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "use_list" => {
-                    for i in 0..n.named_child_count() {
-                        if let Some(c) = n.named_child(i) {
-                            collect(w, c, prefix, paths);
-                        }
+                    for c in named_kids(n) {
+                        collect(w, c, prefix, paths);
                     }
                 }
                 "use_as_clause" => {
@@ -88,10 +86,8 @@ impl<'t> Walker<'t> {
                 _ => {} // visibility_modifier, use_wildcard, bare crate/self/super
             }
         }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                collect(self, c, "", &mut paths);
-            }
+        for c in named_kids(node) {
+            collect(self, c, "", &mut paths);
         }
         let imports_kind = crate::buffers::EDGE_IMPORTS;
         for (text, n) in paths {
@@ -163,10 +159,8 @@ impl<'t> Walker<'t> {
                     out.push((prefix.to_string(), last_seg(prefix).to_string(), n));
                 }
                 "use_list" => {
-                    for i in 0..n.named_child_count() {
-                        if let Some(c) = n.named_child(i) {
-                            collect(w, c, prefix, out);
-                        }
+                    for c in named_kids(n) {
+                        collect(w, c, prefix, out);
                     }
                 }
                 "scoped_use_list" => {
@@ -179,8 +173,7 @@ impl<'t> Walker<'t> {
                 // path under the never-matching name `*`; the resolver
                 // declines it, so the wildcard binds nothing.
                 "use_wildcard" => {
-                    let path_text = (0..n.named_child_count())
-                        .filter_map(|i| n.named_child(i))
+                    let path_text = named_kids(n)
                         .map(|c| w.text(c).trim().to_string())
                         .next()
                         .unwrap_or_default();
@@ -193,8 +186,7 @@ impl<'t> Walker<'t> {
             }
         }
 
-        let is_pub = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let is_pub = named_kids(node)
             .any(|c| c.kind() == "visibility_modifier");
         let parent = node.parent().unwrap_or(node);
         let scope = (

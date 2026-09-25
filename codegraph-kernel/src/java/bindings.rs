@@ -1,5 +1,6 @@
 //! Binding rows (docs/design/resolution-binding-model-plan.md): declarations, parameters, locals and imports, with their scopes.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -9,7 +10,7 @@ impl<'t> Walker<'t> {
         for i in 0..params.named_child_count() {
             let Some(p) = params.named_child(i) else { continue };
             if matches!(p.kind(), "formal_parameter" | "spread_parameter") {
-                if let Some(n) = p.child_by_field_name("name").or_else(|| (0..p.named_child_count()).filter_map(|j| p.named_child(j)).find(|c| c.kind() == "identifier" || c.kind() == "variable_declarator")) {
+                if let Some(n) = p.child_by_field_name("name").or_else(|| named_kids(p).find(|c| c.kind() == "identifier" || c.kind() == "variable_declarator")) {
                     if n.kind() == "variable_declarator" {
                         if let Some(id) = n.child_by_field_name("name") { out.push(id); }
                     } else {

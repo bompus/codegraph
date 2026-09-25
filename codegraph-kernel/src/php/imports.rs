@@ -1,5 +1,6 @@
 //! PHP `use` and `include`/`require`: import refs and the names they bind.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -62,11 +63,9 @@ impl<'t> Walker<'t> {
         }
 
         // namespace_use_declaration.
-        let ns_prefix = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let ns_prefix = named_kids(node)
             .find(|c| c.kind() == "namespace_name");
-        let use_group = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let use_group = named_kids(node)
             .find(|c| c.kind() == "namespace_use_group");
         if let (Some(ns_prefix), Some(use_group)) = (ns_prefix, use_group) {
             // Grouped `use A\{B, C as D, Sub\E}` — hook declines, the inline
@@ -75,22 +74,18 @@ impl<'t> Walker<'t> {
             // no direct `name` → SKIPPED, grammar-bump delta #2). All nodes
             // and refs sit at the whole declaration's position.
             let prefix = self.text(ns_prefix).to_string();
-            let clauses: Vec<Node> = (0..use_group.named_child_count())
-                .filter_map(|i| use_group.named_child(i))
+            let clauses: Vec<Node> = named_kids(use_group)
                 .filter(|c| {
                     matches!(c.kind(), "namespace_use_group_clause" | "namespace_use_clause")
                 })
                 .collect();
             for clause in clauses {
-                let ns_name = (0..clause.named_child_count())
-                    .filter_map(|i| clause.named_child(i))
+                let ns_name = named_kids(clause)
                     .find(|c| c.kind() == "namespace_name");
                 let name = match ns_name {
-                    Some(nn) => (0..nn.named_child_count())
-                        .filter_map(|i| nn.named_child(i))
+                    Some(nn) => named_kids(nn)
                         .find(|c| c.kind() == "name"),
-                    None => (0..clause.named_child_count())
-                        .filter_map(|i| clause.named_child(i))
+                    None => named_kids(clause)
                         .find(|c| c.kind() == "name"),
                 };
                 if let Some(name) = name {
@@ -112,16 +107,13 @@ impl<'t> Walker<'t> {
 
         // Single use (incl. `use function`/`use const`/aliased): the hook's
         // qualified_name-else-name read; alias never included.
-        let use_clause = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let use_clause = named_kids(node)
             .find(|c| c.kind() == "namespace_use_clause");
         let Some(use_clause) = use_clause else { return };
-        let target = (0..use_clause.named_child_count())
-            .filter_map(|i| use_clause.named_child(i))
+        let target = named_kids(use_clause)
             .find(|c| c.kind() == "qualified_name")
             .or_else(|| {
-                (0..use_clause.named_child_count())
-                    .filter_map(|i| use_clause.named_child(i))
+                named_kids(use_clause)
                     .find(|c| c.kind() == "name")
             });
         let Some(target) = target else { return }; // hook null → nothing
@@ -149,8 +141,8 @@ impl<'t> Walker<'t> {
     /// `name` child after the target (`qualified_name` or, in a group, the
     /// first `name`).
     pub(super) fn use_local_name(&self, clause: Node<'t>, full: &str) -> String {
-        let names: Vec<Node<'t>> = (0..clause.named_child_count()).filter_map(|i| clause.named_child(i)).filter(|c| c.kind() == "name").collect();
-        let has_qualified = (0..clause.named_child_count()).filter_map(|i| clause.named_child(i)).any(|c| c.kind() == "qualified_name");
+        let names: Vec<Node<'t>> = named_kids(clause).filter(|c| c.kind() == "name").collect();
+        let has_qualified = named_kids(clause).any(|c| c.kind() == "qualified_name");
         let alias = if has_qualified { names.first() } else { names.get(1) };
         match alias {
             Some(a) => self.text(*a).to_string(),

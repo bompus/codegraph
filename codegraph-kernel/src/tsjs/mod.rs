@@ -16,6 +16,7 @@ mod tstypes;
 mod frameworks;
 mod extractors;
 mod fnref;
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::textutil as util;
@@ -472,10 +473,8 @@ impl<'t> Walker<'t> {
         }
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -539,10 +538,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -622,11 +619,9 @@ impl<'t> Walker<'t> {
         if matches!(node.kind(), "arrow_function" | "function_expression" | "generator_function") {
             return "<anonymous>".to_string();
         }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                    return self.text(c).to_string();
-                }
+        for c in named_kids(node) {
+            if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
+                return self.text(c).to_string();
             }
         }
         "<anonymous>".to_string()
@@ -771,11 +766,9 @@ fn classify_ts_class_member(node: Node) -> Member {
         }
         if child.kind() == "call_expression" {
             if let Some(args) = child.child_by_field_name("arguments") {
-                for j in 0..args.named_child_count() {
-                    if let Some(arg) = args.named_child(j) {
-                        if matches!(arg.kind(), "arrow_function" | "function_expression") {
-                            return Member::Method;
-                        }
+                for arg in named_kids(args) {
+                    if matches!(arg.kind(), "arrow_function" | "function_expression") {
+                        return Member::Method;
                     }
                 }
             }
@@ -797,11 +790,9 @@ fn resolve_field_body(node: Node) -> Option<Node> {
         }
         if child.kind() == "call_expression" {
             if let Some(args) = child.child_by_field_name("arguments") {
-                for j in 0..args.named_child_count() {
-                    if let Some(arg) = args.named_child(j) {
-                        if matches!(arg.kind(), "arrow_function" | "function_expression") {
-                            return arg.child_by_field_name("body");
-                        }
+                for arg in named_kids(args) {
+                    if matches!(arg.kind(), "arrow_function" | "function_expression") {
+                        return arg.child_by_field_name("body");
                     }
                 }
             }

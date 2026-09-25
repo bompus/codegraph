@@ -1,11 +1,12 @@
 //! Binding rows (docs/design/resolution-binding-model-plan.md): declarations, parameters, locals and imports, with their scopes.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
     pub(super) fn parameter_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
         let mut out = Vec::new();
-        let params = (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "formal_parameters");
+        let params = named_kids(node).find(|c| c.kind() == "formal_parameters");
         let Some(params) = params else { return out };
         for i in 0..params.named_child_count() {
             let Some(p) = params.named_child(i) else { continue };

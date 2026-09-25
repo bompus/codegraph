@@ -26,6 +26,7 @@ use crate::buffers::{
     RefRow, Tables, FLAG_IS_STATIC, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
+use crate::walker::named_kids;
 use crate::walker::{Cand, Scope, ValueScope};
 use crate::textutil::{strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
@@ -139,11 +140,9 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         if child.kind() != "namespace_definition" {
             continue;
         }
-        let ns_name = (0..child.named_child_count())
-            .filter_map(|j| child.named_child(j))
+        let ns_name = named_kids(child)
             .find(|c| c.kind() == "namespace_name");
-        let has_body = (0..child.named_child_count())
-            .filter_map(|j| child.named_child(j))
+        let has_body = named_kids(child)
             .any(|c| matches!(c.kind(), "compound_statement" | "declaration_list"));
         if let Some(ns_name) = ns_name {
             if !has_body {
@@ -359,13 +358,11 @@ impl<'t> Walker<'t> {
             // Class/interface/trait/enum/top-level constants: one `constant`
             // node per const_element, NO extras, values never walked.
             "const_declaration" => {
-                let elements: Vec<Node> = (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                let elements: Vec<Node> = named_kids(node)
                     .filter(|c| c.kind() == "const_element")
                     .collect();
                 for elem in elements {
-                    let name_node = (0..elem.named_child_count())
-                        .filter_map(|i| elem.named_child(i))
+                    let name_node = named_kids(elem)
                         .find(|c| c.kind() == "name");
                     let Some(name_node) = name_node else { continue };
                     let name = self.text(name_node).to_string();
@@ -377,8 +374,7 @@ impl<'t> Walker<'t> {
             // used name (full qualified text), all at the use_declaration's
             // position — WITH filePath (the hook sets ctx.filePath; v2 flag).
             "use_declaration" => {
-                let names: Vec<Node> = (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                let names: Vec<Node> = named_kids(node)
                     .filter(|c| matches!(c.kind(), "name" | "qualified_name"))
                     .collect();
                 let parent = self.top_row();
@@ -480,10 +476,8 @@ impl<'t> Walker<'t> {
         // match / attributes: no branch — children visited.
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -546,10 +540,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -615,10 +607,8 @@ impl<'t> Walker<'t> {
         // decorators: none.
         self.stack.push(Scope { row, kind, name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -634,10 +624,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "interface", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -684,8 +672,7 @@ impl<'t> Walker<'t> {
         let visibility = Some(self.visibility_of(node));
         let is_static = Some(self.is_static(node));
 
-        let prop_elements: Vec<Node> = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let prop_elements: Vec<Node> = named_kids(node)
             .filter(|c| c.kind() == "property_element")
             .collect();
         if prop_elements.is_empty() {
@@ -695,8 +682,7 @@ impl<'t> Walker<'t> {
         // The type node: first namedChild that isn't a modifier or element.
         // QUIRK: final_modifier/abstract_modifier are NOT excluded — a
         // `final public Foo $x` takes `final` as the type text. PRESERVE.
-        let type_node = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let type_node = named_kids(node)
             .find(|c| {
                 !matches!(
                     c.kind(),
@@ -707,12 +693,10 @@ impl<'t> Walker<'t> {
         let type_text = type_node.map(|t| self.text(t).to_string());
 
         for elem in prop_elements {
-            let var_name = (0..elem.named_child_count())
-                .filter_map(|i| elem.named_child(i))
+            let var_name = named_kids(elem)
                 .find(|c| c.kind() == "variable_name");
             let Some(var_name) = var_name else { continue };
-            let name_node = (0..var_name.named_child_count())
-                .filter_map(|i| var_name.named_child(i))
+            let name_node = named_kids(var_name)
                 .find(|c| c.kind() == "name");
             let Some(name_node) = name_node else { continue };
             let name = self.text(name_node).to_string();
@@ -774,11 +758,9 @@ fn php_enclosing_call_name(node: Node) -> Option<Node> {
 }
 
 fn find_anonymous_class_body(node: Node) -> Option<Node> {
-    for i in 0..node.named_child_count() {
-        if let Some(child) = node.named_child(i) {
-            if matches!(child.kind(), "class_body" | "declaration_list") {
-                return Some(child);
-            }
+    for child in named_kids(node) {
+        if matches!(child.kind(), "class_body" | "declaration_list") {
+            return Some(child);
         }
     }
     None

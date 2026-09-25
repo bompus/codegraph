@@ -31,6 +31,7 @@ use crate::buffers::{
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_literal_receiver, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
@@ -164,8 +165,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         if child.kind() != "package_header" {
             continue;
         }
-        let id_node = (0..child.named_child_count())
-            .filter_map(|j| child.named_child(j))
+        let id_node = named_kids(child)
             .find(|c| c.kind() == "identifier");
         if let Some(id_node) = id_node {
             let pkg = w.text(id_node).trim().to_string();
@@ -380,11 +380,9 @@ impl<'t> Walker<'t> {
             // (mirrored for shape; the grammar has zero fields).
             return self.text(name_node).to_string();
         }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                    return self.text(c).to_string();
-                }
+        for c in named_kids(node) {
+            if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
+                return self.text(c).to_string();
             }
         }
         "<anonymous>".to_string()
@@ -475,15 +473,13 @@ impl<'t> Walker<'t> {
             }
             if matches!(child.kind(), "user_type" | "nullable_type") {
                 let ut = if child.kind() == "nullable_type" {
-                    (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    named_kids(child)
                         .find(|c| c.kind() == "user_type")
                         .unwrap_or(child)
                 } else {
                     child
                 };
-                let type_id = (0..ut.named_child_count())
-                    .filter_map(|j| ut.named_child(j))
+                let type_id = named_kids(ut)
                     .find(|c| c.kind() == "type_identifier");
                 let name = self.text(type_id.unwrap_or(ut)).trim();
                 if name.is_empty() || !crate::textutil::ascii_ident_re().is_match(name) {
@@ -509,8 +505,7 @@ impl<'t> Walker<'t> {
                 "user_type" => found_user_type = Some(child),
                 "." => {
                     if let Some(ut) = found_user_type {
-                        let type_id = (0..ut.named_child_count())
-                            .filter_map(|j| ut.named_child(j))
+                        let type_id = named_kids(ut)
                             .find(|c| c.kind() == "type_identifier");
                         return Some(self.text(type_id.unwrap_or(ut)).to_string());
                     }
@@ -590,10 +585,8 @@ impl<'t> Walker<'t> {
         // top level: no branch — recursed (calls attribute to the stack top).
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -652,10 +645,8 @@ impl<'t> Walker<'t> {
         // `fun`s hit the function branch above and leak out as FUNCTIONS
         // under the enclosing fn; its properties mint nothing (quirk).
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -760,10 +751,8 @@ impl<'t> Walker<'t> {
         // visited → ctor default-value + super-arg calls attribute to the
         // CLASS (the asymmetry, pinned).
         let body = resolved_body.unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -779,10 +768,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "interface", name });
         let body = self.resolve_body(node).unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -845,8 +832,7 @@ impl<'t> Walker<'t> {
         // include trailing comment lines — the trimmed FULL text is the
         // signature; the ref stays at the header start.
         let import_text = self.text(node).trim().to_string();
-        let identifier = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let identifier = named_kids(node)
             .find(|c| c.kind() == "identifier");
         let Some(identifier) = identifier else { return };
         let module_name = self.text(identifier).to_string();

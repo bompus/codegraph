@@ -15,6 +15,7 @@
 //! pre-walk is iterative; the destructuring-pattern descent recurses under
 //! the stack guard like every other recursive walker function.
 
+use crate::walker::named_kids;
 use super::{is_function_type, is_scope_block, Walker};
 use crate::buffers::{BindingRow, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE, NONE, NONE_STR};
 use tree_sitter::Node;
@@ -41,10 +42,8 @@ impl<'t> Walker<'t> {
         if is_function_type(kind) || kind == "method_definition" {
             let range = self.line_range(node);
             if let Some(params) = node.child_by_field_name("parameters") {
-                for i in 0..params.named_child_count() {
-                    if let Some(p) = params.named_child(i) {
-                        self.emit_pattern_bindings(p, BINDING_PARAM, range);
-                    }
+                for p in named_kids(params) {
+                    self.emit_pattern_bindings(p, BINDING_PARAM, range);
                 }
             } else if let Some(p) = node.child_by_field_name("parameter") {
                 self.emit_pattern_bindings(p, BINDING_PARAM, range);
