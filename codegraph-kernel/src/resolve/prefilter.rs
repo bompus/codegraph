@@ -56,8 +56,8 @@ impl KernelResolver {
 
     /// hasAnyPossibleMatch (index.ts) — the full check: direct name, then the
     /// receiver/member segments around `.`/`::`/`:`/`$`, then the path tail.
-    /// Every separator branch is dead for bare names (the previous callers'
-    /// slice); the non-bare c/cpp imports arm needs them.
+    /// A bare name only reaches the direct check; the separator branches
+    /// serve the non-bare callers (the member slice, C/C++ include paths).
     pub(super) fn has_any_possible_match(&self, name: &str) -> bool {
         let path_name = name.replace('\\', "/");
         let path_name = path_name.split('#').next().unwrap_or("");
@@ -134,8 +134,8 @@ impl KernelResolver {
         false
     }
 
-    /// matchesAnyImport — `localName === name` or the `localName.` prefix arm
-    /// (the latter is dead for bare names).
+    /// matchesAnyImport — `localName === name`, or the `localName.` prefix
+    /// arm for member names.
     pub(super) fn matches_any_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
         let imports = self.import_mappings(&r.file_path)?;
         Ok(imports.iter().any(|i| {

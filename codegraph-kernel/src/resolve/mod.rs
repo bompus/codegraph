@@ -367,7 +367,8 @@ pub struct KernelResolver {
     conn: Option<Connection>,
     project_root: String,
     root_abs: String,
-    aliases: Option<AliasMapK>,
+    /// AliasMap (project-aliases.ts), as the TS side passes it.
+    aliases: Option<KernelAliasMapIn>,
     workspaces: Option<WorkspaceK>,
     go_module_path: Option<String>,
     cpp_include_dirs: Vec<String>,
@@ -386,7 +387,7 @@ pub struct KernelResolver {
     bindings_cache: HashMap<String, Rc<Vec<KBinding>>>,
     import_map_cache: HashMap<String, Rc<Vec<KImport>>>,
     reexport_cache: HashMap<String, Rc<Vec<KReExport>>>,
-    export_index: HashMap<String, Option<Rc<FileExportIndexK>>>,
+    export_index: HashMap<String, Rc<FileExportIndexK>>,
     import_path_memo: HashMap<String, Option<String>>,
     exported_symbol_memo: HashMap<String, Option<Arc<KNode>>>,
     sealed_memo: HashMap<String, bool>,
@@ -430,19 +431,7 @@ impl KernelResolver {
             generation: config.generation,
             project_root: config.project_root,
             root_abs,
-            aliases: config.aliases.map(|a| AliasMapK {
-                base_url: a.base_url,
-                patterns: a
-                    .patterns
-                    .into_iter()
-                    .map(|p| AliasPatternK {
-                        prefix: p.prefix,
-                        suffix: p.suffix,
-                        has_wildcard: p.has_wildcard,
-                        replacements: p.replacements,
-                    })
-                    .collect(),
-            }),
+            aliases: config.aliases,
             workspaces,
             go_module_path: config.go_module_path,
             cpp_include_dirs,

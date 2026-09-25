@@ -11,7 +11,7 @@ impl<'t> Walker<'t> {
         let func = node
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
-        let calls_kind = edge_kind_index("calls").unwrap();
+        let calls_kind = crate::buffers::EDGE_CALLS;
 
         // C++ explicit operator call `a.operator+(b)` (#1247): the
         // operator_name hides in an ERROR child.
@@ -164,7 +164,7 @@ impl<'t> Walker<'t> {
 
         let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            self.push_ref_at(from, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -235,7 +235,7 @@ impl<'t> Walker<'t> {
         if capitalized_re().is_match(text) {
             let owner = self.top_row();
             let name = text.to_string();
-            self.push_ref_at(owner, &name, edge_kind_index("references").unwrap(), recv);
+            self.push_ref_at(owner, &name, crate::buffers::EDGE_REFERENCES, recv);
         }
     }
 
@@ -244,7 +244,7 @@ impl<'t> Walker<'t> {
     /// shape, and the field_declaration_list recursion that reaches it.
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
-        let extends_kind = edge_kind_index("extends").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {

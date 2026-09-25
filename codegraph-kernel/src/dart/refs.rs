@@ -184,7 +184,7 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        let refs_kind = edge_kind_index("references").unwrap();
+        let refs_kind = crate::buffers::EDGE_REFERENCES;
         // One arena string for every value-ref edge of the file (unchanged when none).
         let mut value_ref_meta: Option<StrRef> = None;
         for scope in &scopes {

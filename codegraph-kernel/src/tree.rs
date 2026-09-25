@@ -62,7 +62,6 @@ use napi_derive::napi;
 use tree_sitter::{Node, Parser};
 
 use crate::langs::grammar_for;
-use crate::stack;
 
 pub const TREE_ROW_SIZE: usize = 64;
 
@@ -324,10 +323,9 @@ pub fn tree_names(language: String) -> Option<TreeNames> {
 }
 
 /// Parse `content` with the native grammar for `language` and return the
-/// whole tree. Errors (no grammar, deep nesting) surface as napi errors; the
-/// TS facade falls back to the wasm parser on any error.
+/// whole tree. The walk is a cursor loop, not recursion, so deep nesting
+/// needs no stack guard; a missing grammar surfaces as a napi error.
 #[napi]
 pub fn parse_tree(content: String, language: String) -> Result<TreeBuffers> {
-    stack::run_guarded(|| parse_tree_inner(&content, &language).map_err(|e| e.reason.clone()))
-        .map_err(Error::from_reason)
+    parse_tree_inner(&content, &language)
 }

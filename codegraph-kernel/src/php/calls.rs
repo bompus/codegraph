@@ -32,7 +32,7 @@ impl<'t> Walker<'t> {
                     _ => method_name.to_string(),
                 };
                 if !callee.is_empty() {
-                    self.push_ref_at(caller, &callee, edge_kind_index("calls").unwrap(), node);
+                    self.push_ref_at(caller, &callee, crate::buffers::EDGE_CALLS, node);
                 }
                 return;
             }
@@ -67,7 +67,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name, crate::buffers::EDGE_CALLS, node);
         }
     }
 
@@ -89,7 +89,7 @@ impl<'t> Walker<'t> {
         let class_name = strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            self.push_ref_at(from, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -117,7 +117,7 @@ impl<'t> Walker<'t> {
             Some(t) => (t.start_position().row as u32, self.col_of(t)),
             None => (node.start_position().row as u32, self.col_of(node)),
         };
-        self.push_ref(row, &type_name, edge_kind_index("extends").unwrap(), line, column);
+        self.push_ref(row, &type_name, crate::buffers::EDGE_EXTENDS, line, column);
         self.stack.push(Scope { row, kind: "class", name: anon_name });
         for i in 0..body.named_child_count() {
             if let Some(c) = body.named_child(i) {
@@ -170,7 +170,7 @@ impl<'t> Walker<'t> {
         ) {
             let text = self.text(recv);
             if capitalized_re().is_match(text) {
-                self.push_ref_at(owner, text, edge_kind_index("references").unwrap(), recv);
+                self.push_ref_at(owner, text, crate::buffers::EDGE_REFERENCES, recv);
             }
         }
     }
@@ -179,8 +179,8 @@ impl<'t> Walker<'t> {
     /// multi-extends drops the rest); class_interface_clause takes ALL
     /// children unfiltered (full text, incl. leading `\`).
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
-        let extends_kind = edge_kind_index("extends").unwrap();
-        let implements_kind = edge_kind_index("implements").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
+        let implements_kind = crate::buffers::EDGE_IMPLEMENTS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             if child.kind() == "base_clause" {
@@ -228,14 +228,14 @@ impl<'t> Walker<'t> {
             "name" => {
                 let name = self.text(node);
                 if !name.is_empty() && !is_php_pseudo_type(name) {
-                    self.push_ref_at(from_row, name, edge_kind_index("references").unwrap(), node);
+                    self.push_ref_at(from_row, name, crate::buffers::EDGE_REFERENCES, node);
                 }
             }
             "qualified_name" => {
                 let text = self.text(node);
                 let last = text.rsplit('\\').next().unwrap_or("");
                 if !last.is_empty() && !is_php_pseudo_type(last) {
-                    self.push_ref_at(from_row, last, edge_kind_index("references").unwrap(), node);
+                    self.push_ref_at(from_row, last, crate::buffers::EDGE_REFERENCES, node);
                 }
             }
             _ => {

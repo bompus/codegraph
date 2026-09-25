@@ -10,7 +10,7 @@
 //! refs anywhere. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_ASYNC, FLAG_IS_STATIC, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
@@ -157,7 +157,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -363,7 +363,7 @@ impl<'t> Walker<'t> {
         let Some(row) = self.create_node("class", &name, node, extra) else { return };
 
         // Inheritance: `class Flask(Scaffold, Mixin):` — argument_list children.
-        let extends_kind = edge_kind_index("extends").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             if child.kind() == "argument_list" {
@@ -430,7 +430,7 @@ impl<'t> Walker<'t> {
 
     fn extract_import(&mut self, node: Node<'t>) {
         let import_text = self.text(node).trim().to_string();
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
 
         if node.kind() == "import_from_statement" {
             // Hook path: module_name field → import node + module ref, then
@@ -693,7 +693,7 @@ impl<'t> Walker<'t> {
                 callee_name = c[1].to_string();
             }
             let from = self.top_row();
-            self.push_ref_at(from, &callee_name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(from, &callee_name, crate::buffers::EDGE_CALLS, node);
         }
     }
 
@@ -777,7 +777,7 @@ impl<'t> Walker<'t> {
         if name.is_empty() {
             return;
         }
-        self.push_ref_at(decorated_row, &name, edge_kind_index("decorates").unwrap(), n);
+        self.push_ref_at(decorated_row, &name, crate::buffers::EDGE_DECORATES, n);
     }
 
     // --- fn refs (PYTHON_SPEC) ------------------------------------------------------

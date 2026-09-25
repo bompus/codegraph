@@ -175,7 +175,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -286,7 +286,7 @@ impl<'t> Walker<'t> {
             // signature: whole call text .trim().slice(0, 100) — UTF-16 slice.
             // (A call node's text starts at the callee and ends at `)`, so
             // trim() never has anything to strip on reachable inputs.)
-            let (sig, _) = util::slice_utf16(self.text(node).trim(), 100);
+            let sig = util::slice_utf16(self.text(node).trim(), 100);
             let module = module.to_string();
             let imp = self.create_node("import", &module, node, Some(&sig));
             if imp.is_some() && !self.stack.is_empty() {

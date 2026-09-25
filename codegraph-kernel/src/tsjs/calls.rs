@@ -57,7 +57,7 @@ impl<'t> Walker<'t> {
                             self.text(first).chars().filter(|c| *c != '\'' && *c != '"').collect();
                         if !spec.is_empty() {
                             let from_row = self.top_row();
-                            self.push_ref(from_row, &spec, edge_kind_index("imports").unwrap(), node);
+                            self.push_ref(from_row, &spec, crate::buffers::EDGE_IMPORTS, node);
                         }
                     }
                 }
@@ -185,7 +185,7 @@ impl<'t> Walker<'t> {
         let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            self.push_ref(from, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -259,13 +259,13 @@ impl<'t> Walker<'t> {
         if name.is_empty() {
             return;
         }
-        self.push_ref(decorated_row, &name, edge_kind_index("decorates").unwrap(), n);
+        self.push_ref(decorated_row, &name, crate::buffers::EDGE_DECORATES, n);
     }
 
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
-        let extends_kind = edge_kind_index("extends").unwrap();
-        let implements_kind = edge_kind_index("implements").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
+        let implements_kind = crate::buffers::EDGE_IMPLEMENTS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {
@@ -334,7 +334,7 @@ impl<'t> Walker<'t> {
         if node.kind() == "type_identifier" {
             let type_name = self.text(node).to_string();
             if !type_name.is_empty() && !is_builtin_type(&type_name) {
-                self.push_ref(from_row, &type_name, edge_kind_index("references").unwrap(), node);
+                self.push_ref(from_row, &type_name, crate::buffers::EDGE_REFERENCES, node);
             }
             return;
         }

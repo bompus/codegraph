@@ -15,7 +15,7 @@
 mod bindings;
 mod refs;
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
@@ -206,7 +206,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -431,7 +431,7 @@ impl<'t> Walker<'t> {
                     self.tables.push_edge(&EdgeRow {
                         source_idx: owner_row,
                         target_idx: row,
-                        kind: edge_kind_index("contains").unwrap(),
+                        kind: crate::buffers::EDGE_CONTAINS,
                         provenance: 0,
                         line: NONE,
                         column: NONE,
@@ -600,7 +600,7 @@ impl<'t> Walker<'t> {
     /// extractImport's Go branch: one import node + ref per import_spec.
     fn extract_import(&mut self, node: Node<'t>) {
         let parent = self.top_row();
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
         let handle_spec = |w: &mut Self, spec: Node<'t>| {
             let lit = (0..spec.named_child_count())
                 .filter_map(|i| spec.named_child(i))
@@ -761,7 +761,7 @@ impl<'t> Walker<'t> {
                 callee_name = c[1].to_string();
             }
             let from = self.top_row();
-            self.push_ref_at(from, &callee_name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(from, &callee_name, crate::buffers::EDGE_CALLS, node);
         }
     }
 
@@ -789,7 +789,7 @@ impl<'t> Walker<'t> {
         }
         if !go_type.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &go_type, edge_kind_index("instantiates").unwrap(), node);
+            self.push_ref_at(from, &go_type, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -798,7 +798,7 @@ impl<'t> Walker<'t> {
     /// field_identifier), plus the field_declaration_list recursion.
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
-        let extends_kind = edge_kind_index("extends").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {

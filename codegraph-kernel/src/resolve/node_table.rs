@@ -396,24 +396,6 @@ pub(super) struct FileExportIndexK {
     pub(super) default_binding: Option<Arc<KNode>>,
 }
 
-/// AliasPattern (project-aliases.ts).
-#[derive(Clone, Debug)]
-pub(super) struct AliasPatternK {
-    pub(super) prefix: String,
-    pub(super) suffix: String,
-    pub(super) has_wildcard: bool,
-    pub(super) replacements: Vec<String>,
-}
-
-
-
-/// AliasMap (project-aliases.ts).
-#[derive(Clone, Debug)]
-pub(super) struct AliasMapK {
-    pub(super) base_url: Option<String>,
-    pub(super) patterns: Vec<AliasPatternK>,
-}
-
 /// WorkspacePackages (workspace-packages.ts).
 #[derive(Clone, Debug, Default)]
 pub(super) struct WorkspaceK {

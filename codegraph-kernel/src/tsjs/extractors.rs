@@ -8,7 +8,6 @@ use super::{
     body_of, is_react_hoc,
     is_vue_collection_name, Extra, Scope, Walker,
 };
-use crate::buffers::edge_kind_index;
 use tree_sitter::Node;
 
 impl<'t> Walker<'t> {
@@ -546,7 +545,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(import_text), ..Extra::default() },
         );
         let parent = self.top_row();
-        self.push_ref(parent, &module_name, edge_kind_index("imports").unwrap(), node);
+        self.push_ref(parent, &module_name, crate::buffers::EDGE_IMPORTS, node);
         self.emit_import_binding_refs(node, parent);
     }
 
@@ -556,7 +555,7 @@ impl<'t> Walker<'t> {
             .find(|c| c.kind() == "import_clause");
         let Some(clause) = clause else { return }; // side-effect import
 
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
         let spec_text: String = node
             .child_by_field_name("source")
             .map(|s| self.text(s).chars().filter(|c| *c != '\'' && *c != '"').collect())
@@ -621,7 +620,7 @@ impl<'t> Walker<'t> {
             }
             return;
         };
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
         for i in 0..clause.named_child_count() {
             let Some(spec) = clause.named_child(i) else { continue };
             if spec.kind() != "export_specifier" {

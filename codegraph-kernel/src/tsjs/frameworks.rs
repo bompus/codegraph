@@ -47,7 +47,7 @@ impl<'t> Walker<'t> {
             .or_else(|| value_node.named_child(0));
         // `.slice(0, 60)` counts UTF-16 units, not scalar values.
         let callee_text: String = callee
-            .map(|c| util::slice_utf16(self.text(c), 60).0)
+            .map(|c| util::slice_utf16(self.text(c), 60))
             .unwrap_or_default();
         let signature = format!("= {}(…)", callee_text);
         for i in 0..pattern.named_child_count() {
@@ -250,7 +250,7 @@ impl<'t> Walker<'t> {
                 self.extract_function(handler, Some(key_name));
             } else {
                 // Config-only endpoint: bare node spanning the builder call.
-                let (sig, _) = util::slice_utf16(self.text(value), 80);
+                let sig = util::slice_utf16(self.text(value), 80);
                 let row = self.create_node(
                     "function",
                     &key_name,

@@ -146,28 +146,24 @@ impl KernelResolver {
     // Bindings → import mappings / re-exports (import-resolver.ts)
     // -----------------------------------------------------------------------
 
-    /// importMappingsFromBindings. Returns None when the file has no binding
-    /// rows — same as TS, where a null result falls through to
-    /// extractImportMappings, which now always yields `[]`.
-    pub(super) fn import_mappings_from_bindings(&self, rows: &[KBinding]) -> Option<Vec<KImport>> {
-        if rows.is_empty() {
-            return None;
-        }
-        let mut out = Vec::new();
-        for r in rows {
-            if r.kind != "import" || r.target_spec.is_none() {
-                continue;
-            }
-            let exported_name = r.target_name.clone().unwrap_or_else(|| r.name.clone());
-            out.push(KImport {
-                local_name: r.name.clone(),
-                is_default: exported_name == "default",
-                is_namespace: exported_name == "*",
-                exported_name,
-                source: r.target_spec.clone().unwrap(),
-            });
-        }
-        Some(out)
+    /// importMappingsFromBindings: one mapping per `import` row with a
+    /// specifier. (TS falls through to extractImportMappings for a file with
+    /// no rows, which always yields `[]` — the same empty list.)
+    pub(super) fn import_mappings_from_bindings(&self, rows: &[KBinding]) -> Vec<KImport> {
+        rows.iter()
+            .filter(|r| r.kind == "import")
+            .filter_map(|r| {
+                let source = r.target_spec.clone()?;
+                let exported_name = r.target_name.clone().unwrap_or_else(|| r.name.clone());
+                Some(KImport {
+                    local_name: r.name.clone(),
+                    is_default: exported_name == "default",
+                    is_namespace: exported_name == "*",
+                    exported_name,
+                    source,
+                })
+            })
+            .collect()
     }
 
     /// getImportMappings equivalent — bindings-backed, no source fallback
@@ -177,7 +173,7 @@ impl KernelResolver {
             return Ok(v.clone());
         }
         let rows = self.bindings(file_path)?;
-        let v = Rc::new(self.import_mappings_from_bindings(&rows).unwrap_or_default());
+        let v = Rc::new(self.import_mappings_from_bindings(&rows));
         self.import_map_cache.insert(file_path.to_string(), v.clone());
         Ok(v)
     }
@@ -224,7 +220,7 @@ impl KernelResolver {
 
     /// getFileExportIndex (import-resolver.ts).
     pub(super) fn file_export_index(&mut self, file_path: &str) -> Result<Rc<FileExportIndexK>> {
-        if let Some(Some(v)) = self.export_index.get(file_path) {
+        if let Some(v) = self.export_index.get(file_path) {
             return Ok(v.clone());
         }
         let nodes = self.nodes_in_file(file_path)?;
@@ -281,7 +277,7 @@ impl KernelResolver {
             default_fn_class,
             default_binding,
         });
-        self.export_index.insert(file_path.to_string(), Some(idx.clone()));
+        self.export_index.insert(file_path.to_string(), idx.clone());
         Ok(idx)
     }
 

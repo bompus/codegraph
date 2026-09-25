@@ -11,7 +11,7 @@ mod lombok;
 mod bindings;
 mod refs;
 use crate::buffers::{
-    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_STATIC, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
@@ -257,7 +257,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -707,7 +707,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(import_text), ..Extra::default() },
         );
         let parent = self.top_row();
-        self.push_ref_at(parent, &module_name, edge_kind_index("imports").unwrap(), node);
+        self.push_ref_at(parent, &module_name, crate::buffers::EDGE_IMPORTS, node);
         self.import_row_of(node, &module_name);
     }
 
@@ -739,7 +739,7 @@ impl<'t> Walker<'t> {
                 let inner_name = object_field.child_by_field_name("name");
                 if let (Some(io), Some(inm)) = (inner_obj, inner_name) {
                     let callee = format!("{}.{}().{}", self.text(io), self.text(inm), method_name);
-                    self.push_ref_at(caller, &callee, edge_kind_index("calls").unwrap(), node);
+                    self.push_ref_at(caller, &callee, crate::buffers::EDGE_CALLS, node);
                     return;
                 }
             }
@@ -782,7 +782,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name, crate::buffers::EDGE_CALLS, node);
         }
     }
 
@@ -799,7 +799,7 @@ impl<'t> Walker<'t> {
         let class_name = strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            self.push_ref_at(from, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -827,7 +827,7 @@ impl<'t> Walker<'t> {
             Some(t) => (t.start_position().row as u32, self.col_of(t)),
             None => (node.start_position().row as u32, self.col_of(node)),
         };
-        self.push_ref(row, &type_name, edge_kind_index("extends").unwrap(), line, column);
+        self.push_ref(row, &type_name, crate::buffers::EDGE_EXTENDS, line, column);
 
         self.stack.push(Scope { row, kind: "class", name: anon_name });
         for i in 0..body.named_child_count() {
@@ -873,15 +873,15 @@ impl<'t> Walker<'t> {
         ) {
             let text = self.text(recv);
             if capitalized_re().is_match(text) {
-                self.push_ref_at(owner, text, edge_kind_index("references").unwrap(), recv);
+                self.push_ref_at(owner, text, crate::buffers::EDGE_REFERENCES, recv);
             }
         }
     }
 
     /// extractInheritance — the Java clauses (type_list-aware).
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
-        let extends_kind = edge_kind_index("extends").unwrap();
-        let implements_kind = edge_kind_index("implements").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
+        let implements_kind = crate::buffers::EDGE_IMPLEMENTS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {

@@ -118,7 +118,7 @@ impl<'t> Walker<'t> {
                         continue;
                     }
                     let collapsed = collapse_ws(self.text(entry));
-                    let (signature, _) = util::slice_utf16(collapsed.trim(), 120);
+                    let signature = util::slice_utf16(collapsed.trim(), 120);
                     let extra = Extra {
                         signature: Some(signature),
                         qualified_name: Some(format!("{alias_name}::{name}")),

@@ -188,6 +188,16 @@ pub fn edge_kind_index(kind: &str) -> Option<u8> {
     })
 }
 
+/// Edge kind codes (EDGE_KINDS order) for the kinds a walker emits by name.
+pub const EDGE_CONTAINS: u8 = 0;
+pub const EDGE_CALLS: u8 = 1;
+pub const EDGE_IMPORTS: u8 = 2;
+pub const EDGE_EXTENDS: u8 = 4;
+pub const EDGE_IMPLEMENTS: u8 = 5;
+pub const EDGE_REFERENCES: u8 = 6;
+pub const EDGE_INSTANTIATES: u8 = 9;
+pub const EDGE_DECORATES: u8 = 11;
+
 /// (offset, len) arena reference. `NONE_STR` encodes an absent field.
 pub type StrRef = (u32, u32);
 pub const NONE_STR: StrRef = (NONE, 0);
@@ -652,5 +662,27 @@ pub fn finish(mut arena: Arena, tables: Tables, has_error: bool, file_path: &str
         refs: tables.refs,
         bindings: tables.bindings,
         arena: arena.into_vec(),
+    }
+}
+
+#[cfg(test)]
+mod kind_const_tests {
+    use super::*;
+
+    #[test]
+    fn edge_consts_match_table() {
+        for (name, code) in [
+            ("contains", EDGE_CONTAINS),
+            ("calls", EDGE_CALLS),
+            ("imports", EDGE_IMPORTS),
+            ("extends", EDGE_EXTENDS),
+            ("implements", EDGE_IMPLEMENTS),
+            ("references", EDGE_REFERENCES),
+            ("instantiates", EDGE_INSTANTIATES),
+            ("decorates", EDGE_DECORATES),
+        ] {
+            assert_eq!(edge_kind_index(name), Some(code), "{name}");
+            assert_eq!(EDGE_KINDS[code as usize], name);
+        }
     }
 }

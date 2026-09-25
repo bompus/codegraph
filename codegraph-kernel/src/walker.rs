@@ -47,8 +47,8 @@ pub(crate) fn emit_value_refs(
     scopes: &[ValueScope],
     targets: &std::collections::HashMap<String, u32>,
 ) {
-    use crate::buffers::{edge_kind_index, EdgeRow, NONE, NONE_STR};
-    let refs_kind = edge_kind_index("references").unwrap();
+    use crate::buffers::{EdgeRow, NONE, NONE_STR};
+    let refs_kind = crate::buffers::EDGE_REFERENCES;
     // One arena string for every value-ref edge of the file (unchanged when none).
     let mut value_ref_meta = None;
     for scope in scopes {

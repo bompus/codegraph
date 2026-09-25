@@ -492,10 +492,12 @@ impl KernelResolver {
         }
         Ok(false)
     }
-    /// resolveViaImport's non-bare slice (import-resolver.ts): the go/java/
-    /// python language arms plus the `localName.member` descent. The c/cpp
-    /// include arm lives in resolve_c_include_import_ref; module-file is
-    /// dot-gated inside its own function.
+
+    /// resolveViaImport (import-resolver.ts): the C/C++ include arm, the ESM
+    /// `import('./x')`-path arm, the go/java/python/lua/module-file arms, and
+    /// the imports loop with the `localName.member` descent. Returns Punt
+    /// where TS would read source the kernel doesn't port (the member descent
+    /// only).
     pub(super) fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Result<ViaImport> {
         // C/C++ `#include` path refs: the including file's own directory first
         // (via a same-named file NODE, not just existence), then the include
