@@ -53,59 +53,69 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
 // passthrough, never a wrong verdict.
 // ---------------------------------------------------------------------------
 
-pub(super) static DRUPAL_CLAIM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*::?[A-Za-z0-9_]+$").unwrap());
-pub(super) static EXPO_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\.)(?:push|replace|navigate|dismissTo)$|^[a-z][A-Za-z]*(?:Push|Replace|Navigate)$")
-        .unwrap()
-});
-pub(super) static LARAVEL_CLAIM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*Controller@[A-Za-z0-9_]+$").unwrap());
-pub(super) static NEXT_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\.)(?:push|replace|prefetch)$|^(?:redirect|permanentRedirect)$|^(?:NextResponse|Response)\.redirect$").unwrap()
-});
-pub(super) static PLAY_CLAIM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$").unwrap());
-pub(super) static RR_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:history|navigate|router)\.(?:push|replace|navigate)$|^(?:navigate|redirect)$")
-        .unwrap()
-});
-pub(super) static RAILS_CLAIM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_/]+#[A-Za-z0-9_]+$").unwrap());
-pub(super) static TANSTACK_NAV_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:navigate|redirect)$|^(?:router|Route)\.navigate$").unwrap()
-});
-pub(super) static TERRA_CLAIM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^module\.[^.:\s]+:(?:file$|var\.|output\.|remote-output\.)").unwrap()
-});
-pub(super) static VUE_NAV_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\$?router\.(?:push|replace)$|^navigateTo$").unwrap());
+pub(super) fn drupal_claim_re() -> Rc<Regex> {
+    re!(r"^[A-Za-z_][A-Za-z0-9_]*::?[A-Za-z0-9_]+$")
+}
+pub(super) fn expo_nav_re() -> Rc<Regex> {
+    re!(r"(?:^|\.)(?:push|replace|navigate|dismissTo)$|^[a-z][A-Za-z]*(?:Push|Replace|Navigate)$")
+}
+pub(super) fn laravel_claim_re() -> Rc<Regex> {
+    re!(r"^[A-Za-z_][A-Za-z0-9_]*Controller@[A-Za-z0-9_]+$")
+}
+pub(super) fn next_nav_re() -> Rc<Regex> {
+    re!(r"(?:^|\.)(?:push|replace|prefetch)$|^(?:redirect|permanentRedirect)$|^(?:NextResponse|Response)\.redirect$")
+}
+pub(super) fn play_claim_re() -> Rc<Regex> {
+    re!(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+}
+pub(super) fn rr_nav_re() -> Rc<Regex> {
+    re!(r"^(?:history|navigate|router)\.(?:push|replace|navigate)$|^(?:navigate|redirect)$")
+}
+pub(super) fn rails_claim_re() -> Rc<Regex> {
+    re!(r"^[A-Za-z0-9_/]+#[A-Za-z0-9_]+$")
+}
+pub(super) fn tanstack_nav_re() -> Rc<Regex> {
+    re!(r"^(?:navigate|redirect)$|^(?:router|Route)\.navigate$")
+}
+pub(super) fn terra_claim_re() -> Rc<Regex> {
+    re!(r"^module\.[^.:\s]+:(?:file$|var\.|output\.|remote-output\.)")
+}
+pub(super) fn vue_nav_re() -> Rc<Regex> {
+    re!(r"^\$?router\.(?:push|replace)$|^navigateTo$")
+}
 /// matchByFilePath's shape gate — `\.ext` (1–4 chars) or `.markdown` tail.
-pub(super) static FILE_PATH_EXT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(?:\.[A-Za-z][A-Za-z0-9]{0,3}|\.markdown)$").unwrap());
+pub(super) fn file_path_ext_re() -> Rc<Regex> {
+    re!(r"(?i)(?:\.[A-Za-z][A-Za-z0-9]{0,3}|\.markdown)$")
+}
 /// hasAnyPossibleMatch's bare-filename tail check (`\.[A-Za-z0-9]+$`).
-pub(super) static EXT_TAIL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.[A-Za-z0-9]+$").unwrap());
+pub(super) fn ext_tail_re() -> Rc<Regex> {
+    re!(r"\.[A-Za-z0-9]+$")
+}
 /// isBindingReceiverCall's name shape — `^.+\.[\w$]+$` (JS `\w` is ASCII).
-pub(super) static BOUND_RECEIVER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^.+\.[A-Za-z0-9_$]+$").unwrap());
+pub(super) fn bound_receiver_re() -> Rc<Regex> {
+    re!(r"^.+\.[A-Za-z0-9_$]+$")
+}
 /// isBindingReceiverCall's excluded receiver roots — `^(this|self|super|cls)(\.|$)`.
-pub(super) static BOUND_ROOT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:this|self|super|cls)(?:\.|$)").unwrap());
+pub(super) fn bound_root_re() -> Rc<Regex> {
+    re!(r"^(?:this|self|super|cls)(?:\.|$)")
+}
 /// isUnresolvedJsMemberCall's retained chain — `^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*){2,}$`.
-pub(super) static JS_MEMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){2,}$").unwrap()
-});
+pub(super) fn js_member_re() -> Rc<Regex> {
+    re!(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){2,}$")
+}
 /// isUnresolvedJsMemberCall's excluded roots — `^(?:this|window)\.`.
-pub(super) static JS_MEMBER_ROOT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:this|window)\.").unwrap());
+pub(super) fn js_member_root_re() -> Rc<Regex> {
+    re!(r"^(?:this|window)\.")
+}
 /// CHAIN_SHAPE (index.ts) — `^(.+)\(\)\.(\w+)$`: a call-receiver chain.
-pub(super) static CHAIN_SHAPE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^.+\(\)\.[A-Za-z0-9_]+$").unwrap());
+pub(super) fn chain_shape_re() -> Rc<Regex> {
+    re!(r"^.+\(\)\.[A-Za-z0-9_]+$")
+}
 /// The chain arms' `<inner>().<method>` capture — `^(.+)\(\)\.(\w+)$`
 /// with TS's ASCII `\w`.
-pub(super) static CALL_CHAIN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.+)\(\)\.([A-Za-z0-9_]+)$").unwrap());
+pub(super) fn call_chain_re() -> Rc<Regex> {
+    re!(r"^(.+)\(\)\.([A-Za-z0-9_]+)$")
+}
 /// CONSTRUCTS_VIA_BARE_CALL (name-matcher.ts) — languages where an
 /// unprefixed capitalized `Foo(args)` constructs the class.
 pub(super) static CONSTRUCTS_VIA_BARE_CALL: LazyLock<HashSet<&'static str>> =
@@ -113,8 +123,9 @@ pub(super) static CONSTRUCTS_VIA_BARE_CALL: LazyLock<HashSet<&'static str>> =
         ["kotlin", "swift", "scala", "dart", "pascal"].into_iter().collect()
     });
 /// resolvePhpImportedStaticCall's receiver shape — `^(\w+)\.(\w+)$`.
-pub(super) static PHP_STATIC_CALL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$").unwrap());
+pub(super) fn php_static_call_re() -> Rc<Regex> {
+    re!(r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$")
+}
 
 /// RUST_NON_PROJECT_FIELD_TYPES (name-matcher.ts): primitives and prelude
 /// types — a field of one never names a project type.
@@ -132,12 +143,13 @@ pub(super) static RUST_STDLIB_ROOTS: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| ["std", "core", "alloc", "proc_macro"].into_iter().collect());
 /// collectRustUseBindings' `use` statement matcher —
 /// `(^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);`.
-pub(super) static RUST_USE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);").unwrap()
-});
+pub(super) fn rust_use_re() -> Rc<Regex> {
+    re!(r"(?:^|\n)\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);")
+}
 /// `use` alias tail — `^(.*?)\s+as\s+([A-Za-z_][0-9A-Za-z_]*)$`.
-pub(super) static RUST_USE_ALIAS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.*?)\s+as\s+([A-Za-z_][0-9A-Za-z_]*)$").unwrap());
+pub(super) fn rust_use_alias_re() -> Rc<Regex> {
+    re!(r"^(.*?)\s+as\s+([A-Za-z_][0-9A-Za-z_]*)$")
+}
 
 /// rustFieldTypeName (name-matcher.ts): reduce a field's declared type text
 /// to the simple name a method call auto-derefs to. Unwraps only the layers
@@ -148,30 +160,38 @@ pub(super) fn rust_field_type_name(raw: &str) -> Option<String> {
     let mut t = raw.trim().to_string();
     loop {
         let before = t.clone();
-        static REF_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"^&\s*(?:'[0-9A-Za-z_]+\s+)?(?:mut\s+)?").unwrap());
-        static PTR_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"^(?:Box|Rc|Arc)\s*<\s*").unwrap());
-        static DYN_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"^(?:dyn|impl)\s+").unwrap());
-        t = thread_regex(&REF_RE).replace(&t, "").into_owned();
-        t = thread_regex(&PTR_RE).replace(&t, "").into_owned();
-        t = thread_regex(&DYN_RE).replace(&t, "").into_owned();
+        fn ref_re() -> Rc<Regex> {
+            re!(r"^&\s*(?:'[0-9A-Za-z_]+\s+)?(?:mut\s+)?")
+        }
+        fn ptr_re() -> Rc<Regex> {
+            re!(r"^(?:Box|Rc|Arc)\s*<\s*")
+        }
+        fn dyn_re() -> Rc<Regex> {
+            re!(r"^(?:dyn|impl)\s+")
+        }
+        t = ref_re().replace(&t, "").into_owned();
+        t = ptr_re().replace(&t, "").into_owned();
+        t = dyn_re().replace(&t, "").into_owned();
         if t == before {
             break;
         }
     }
     // Drop generic args, closing `>`s of unwrapped pointers, and trait-object
     // bounds (`dyn Source + Send`); keep the last path segment.
-    static TRIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[<>+].*$").unwrap());
-    let t = thread_regex(&TRIM_RE).replace(&t, "").trim().to_string();
+    fn trim_re() -> Rc<Regex> {
+        re!(r"[<>+].*$")
+    }
+    let t = trim_re().replace(&t, "").trim().to_string();
     let seg = t.split("::").filter(|s| !s.is_empty()).last()?;
-    static IDENT_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap());
-    static GENERIC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]$").unwrap());
-    if !thread_regex(&IDENT_RE).is_match(seg)
+    fn ident_re() -> Rc<Regex> {
+        re!(r"^[A-Za-z_][0-9A-Za-z_]*$")
+    }
+    fn generic_re() -> Rc<Regex> {
+        re!(r"^[A-Z]$")
+    }
+    if !ident_re().is_match(seg)
         || RUST_NON_PROJECT_FIELD_TYPES.contains(seg)
-        || thread_regex(&GENERIC_RE).is_match(seg)
+        || generic_re().is_match(seg)
     {
         return None;
     }
@@ -230,11 +250,13 @@ pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::Hash
     }
 
     let mut out = std::collections::HashMap::new();
-    static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-    for m in thread_regex(&RUST_USE_RE).captures_iter(content) {
-        let spec = thread_regex(&WS_RE).replace_all(&m[1], " ");
+    fn ws_re() -> Rc<Regex> {
+        re!(r"\s+")
+    }
+    for m in rust_use_re().captures_iter(content) {
+        let spec = ws_re().replace_all(&m[1], " ");
         for flat in expand(&spec) {
-            let alias = thread_regex(&RUST_USE_ALIAS_RE).captures(&flat);
+            let alias = rust_use_alias_re().captures(&flat);
             let raw_path = alias
                 .as_ref()
                 .map(|a| a[1].trim())
@@ -264,23 +286,23 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "cics" => name.starts_with("cics-transid:"),
         "django" => name == "_iterable_class" || name.ends_with(".urls"),
         "drupal" => {
-            name.starts_with("hook_") || name.contains('\\') || thread_regex(&DRUPAL_CLAIM_RE).is_match(name)
+            name.starts_with("hook_") || name.contains('\\') || drupal_claim_re().is_match(name)
         }
-        "expo-router" => thread_regex(&EXPO_NAV_RE).is_match(name),
-        "laravel" => thread_regex(&LARAVEL_CLAIM_RE).is_match(name),
-        "nextjs" => thread_regex(&NEXT_NAV_RE).is_match(name),
-        "play" => thread_regex(&PLAY_CLAIM_RE).is_match(name),
+        "expo-router" => expo_nav_re().is_match(name),
+        "laravel" => laravel_claim_re().is_match(name),
+        "nextjs" => next_nav_re().is_match(name),
+        "play" => play_claim_re().is_match(name),
         // react-native-bridge's claimsReference returns false — JS-visible
         // method names reach the resolver through the name-exists arm.
         "react-native-bridge" => false,
-        "react-router" => thread_regex(&RR_NAV_RE).is_match(name),
-        "rails" => thread_regex(&RAILS_CLAIM_RE).is_match(name),
+        "react-router" => rr_nav_re().is_match(name),
+        "rails" => rails_claim_re().is_match(name),
         "spring" => name.ends_with(":prefix"),
         "sveltekit-router" => matches!(name, "goto" | "redirect"),
         "swift-objc-bridge" => name.contains(':'),
-        "tanstack-router" => thread_regex(&TANSTACK_NAV_RE).is_match(name),
-        "terraform" => thread_regex(&TERRA_CLAIM_RE).is_match(name),
-        "vue-router" => thread_regex(&VUE_NAV_RE).is_match(name),
+        "tanstack-router" => tanstack_nav_re().is_match(name),
+        "terraform" => terra_claim_re().is_match(name),
+        "vue-router" => vue_nav_re().is_match(name),
         "aspnet" | "astro" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "nestjs" | "react" | "rust" | "svelte" | "swiftui" | "uikit"
         | "vapor" | "vue" => false,
@@ -346,9 +368,9 @@ pub(super) fn is_binding_receiver_call(r: &ResolveRefIn) -> bool {
                 r.language.as_str(),
                 "python" | "go" | "java" | "kotlin" | "php" | "c" | "cpp"
             ))
-        && thread_regex(&BOUND_RECEIVER_RE).is_match(&r.reference_name)
+        && bound_receiver_re().is_match(&r.reference_name)
         && !r.reference_name.contains("()")
-        && !thread_regex(&BOUND_ROOT_RE).is_match(&r.reference_name)
+        && !bound_root_re().is_match(&r.reference_name)
 }
 
 /// isUnresolvedJsMemberCall (name-matcher.ts): an untyped 2+-level member
@@ -359,8 +381,8 @@ pub(super) fn is_unresolved_js_member_call(r: &ResolveRefIn) -> bool {
             r.language.as_str(),
             "typescript" | "tsx" | "javascript" | "jsx"
         )
-        && !thread_regex(&JS_MEMBER_ROOT_RE).is_match(&r.reference_name)
-        && thread_regex(&JS_MEMBER_RE).is_match(&r.reference_name)
+        && !js_member_root_re().is_match(&r.reference_name)
+        && js_member_re().is_match(&r.reference_name)
 }
 
 /// preferCallSiteFile (name-matcher.ts): same-file candidates first,
@@ -594,37 +616,44 @@ pub(super) const FALLBACK_ALIASES: &[(&str, &str)] = &[
 ];
 
 /// MARKDOWN_PATH_REF (resolution/index.ts isBuiltInOrExternal).
-pub(super) static MARKDOWN_PATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.(?i:md|markdown)(?:$|[#?]|::)").unwrap());
+pub(super) fn markdown_path_re() -> Rc<Regex> {
+    re!(r"\.(?i:md|markdown)(?:$|[#?]|::)")
+}
 
 /// C_SOURCE_EXT (name-matcher.ts).
-pub(super) static C_SOURCE_EXT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.(?i:c|cc|cpp|cxx|c\+\+|m|mm)$").unwrap());
+pub(super) fn c_source_ext_re() -> Rc<Regex> {
+    re!(r"\.(?i:c|cc|cpp|cxx|c\+\+|m|mm)$")
+}
 
 /// BARE_ALIAS_RE (alias-binding.ts): `= foo` / `= foo as T` / `= foo;`.
-pub(super) static BARE_ALIAS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:as\s+[A-Za-z0-9_.<>\[\]]+\s*)?;?$").unwrap()
-});
+pub(super) fn bare_alias_re() -> Rc<Regex> {
+    re!(r"^=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:as\s+[A-Za-z0-9_.<>\[\]]+\s*)?;?$")
+}
 
-pub(super) static IMPL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(pub(\([^)]*\))?\s+)?(unsafe\s+)?impl(?-u:\b)").unwrap()
-});
-pub(super) static IMPL_FOR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\sfor\s").unwrap());
-pub(super) static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(pub(\([^)]*\))?\s+)?(fn|struct|enum|mod|trait|const|static|type)(?-u:\b)").unwrap()
-});
-pub(super) static JS_CALL_PREFIX_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[.A-Za-z0-9_$\]\)]\s*$").unwrap());
-pub(super) static JS_CALL_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?-u:\b)(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$")
-        .unwrap()
-});
-pub(super) static CPP_THIS_DOT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[^A-Za-z0-9_])this\.$").unwrap());
-pub(super) static CPP_THIS_ARROW_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[^A-Za-z0-9_])this->$").unwrap());
-pub(super) static AFTER_NAME_PAREN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*\)").unwrap());
+pub(super) fn impl_re() -> Rc<Regex> {
+    re!(r"^\s*(pub(\([^)]*\))?\s+)?(unsafe\s+)?impl(?-u:\b)")
+}
+pub(super) fn impl_for_re() -> Rc<Regex> {
+    re!(r"\sfor\s")
+}
+pub(super) fn item_re() -> Rc<Regex> {
+    re!(r"^(pub(\([^)]*\))?\s+)?(fn|struct|enum|mod|trait|const|static|type)(?-u:\b)")
+}
+pub(super) fn js_call_prefix_re() -> Rc<Regex> {
+    re!(r"[.A-Za-z0-9_$\]\)]\s*$")
+}
+pub(super) fn js_call_keyword_re() -> Rc<Regex> {
+    re!(r"(?-u:\b)(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$")
+}
+pub(super) fn cpp_this_dot_re() -> Rc<Regex> {
+    re!(r"(?:^|[^A-Za-z0-9_])this\.$")
+}
+pub(super) fn cpp_this_arrow_re() -> Rc<Regex> {
+    re!(r"(?:^|[^A-Za-z0-9_])this->$")
+}
+pub(super) fn after_name_paren_re() -> Rc<Regex> {
+    re!(r"^\s*\)")
+}
 
 /// NON_TYPE_RECEIVER_TOKENS (name-matcher.ts) — loose captures that are never
 /// a user-defined type.

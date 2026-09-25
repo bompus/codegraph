@@ -121,7 +121,7 @@ impl KernelResolver {
 
     /// context.getFileLines — `readFile` content split on /\r?\n/,
     /// LRU-cached (nulls cached too).
-    pub(super) fn read_file(&mut self, rel: &str) -> Option<Rc<Vec<String>>> {
+    pub(super) fn read_file(&mut self, rel: &str) -> Option<Rc<SourceFile>> {
         if let Some(v) = self.file_cache.get(rel) {
             return v.clone();
         }
@@ -129,17 +129,10 @@ impl KernelResolver {
             .ok()
             .map(|s| {
                 let normalized = s.replace("\r\n", "\n");
-                Rc::new(normalized.split('\n').map(|l| l.to_string()).collect::<Vec<String>>())
+                Rc::new(SourceFile::new(normalized.split('\n').map(str::to_string).collect()))
             });
         self.file_cache.put(rel.to_string(), v.clone());
         v
-    }
-
-    /// A name-parameterized regex from the bounded process-wide cache. Only
-    /// the C++ declarator pattern still needs one (its greedy type-capture
-    /// prefix has no `Affix` split); every other per-name pattern is an Affix.
-    pub(super) fn cached_regex(&mut self, pattern: &str) -> Res<Arc<Regex>> {
-        Ok(shared_regex(pattern)?)
     }
 
     // -----------------------------------------------------------------------

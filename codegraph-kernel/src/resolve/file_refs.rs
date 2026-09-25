@@ -9,7 +9,7 @@ impl KernelResolver {
         let normalized = r.reference_name.replace('\\', "/");
         let (path_and_symbol, anchor) = split_anchor(&normalized);
         let (path_wo_anchor, symbol_name) = split_file_symbol(path_and_symbol);
-        if !path_wo_anchor.contains('/') && !thread_regex(&FILE_PATH_EXT_RE).is_match(path_wo_anchor) {
+        if !path_wo_anchor.contains('/') && !file_path_ext_re().is_match(path_wo_anchor) {
             return Ok(None);
         }
         let file_name = pos_basename(path_wo_anchor);

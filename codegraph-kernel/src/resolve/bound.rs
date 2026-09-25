@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Node kinds a bound receiver type can resolve to.
+const TYPE_OWNER_KINDS: [&str; 6] = ["class", "struct", "interface", "component", "type_alias", "union"];
+
 impl KernelResolver {
     /// resolveBoundType — the declared type's owner node: Java type-parameter
     /// bounds first, then its lexical binding, then (non-ESM) the visible
@@ -16,189 +19,177 @@ impl KernelResolver {
             return Ok(None);
         }
         if r.language == "java" {
-            let in_file = self.nodes_in_file(&r.file_path)?;
-            let mut scopes: Vec<&Arc<KNode>> = in_file
-                .iter()
-                .filter(|n| {
-                    matches!(n.kind.as_str(), "class" | "interface" | "method")
-                        && n.start_line <= r.line
-                        && n.end_line >= r.line
-                        && (n.start_line != r.line || n.start_column <= r.column)
-                        && (n.end_line != r.line || n.end_column >= r.column)
-                })
-                .collect();
-            scopes.sort_by(|a, b| {
-                (a.end_line - a.start_line)
-                    .cmp(&(b.end_line - b.start_line))
-                    .then(b.start_column.cmp(&a.start_column))
-            });
-            let bound_re =
-                re!(r"^[A-Za-z0-9_]+\s+extends\s+([A-Za-z0-9_.]+)$");
-            for scope in scopes {
-                let decl = scope.type_parameters.as_ref().and_then(|tps| {
-                    tps.iter().find(|p| {
-                        // split(/\s+/)[0] — leading whitespace yields ''.
-                        p.split(|c: char| c.is_whitespace()).next() == Some(ty)
-                    })
-                });
-                let Some(declaration) = decl else { continue };
+            if let Some((declaration, site)) = self.java_type_parameter(ty, r)? {
                 // An unbounded or self declaration shadows any outer bound.
-                return match bound_re.captures(declaration) {
-                    Some(m) if &m[1] != ty => {
-                        let mut site = r.clone();
-                        site.line = scope.start_line;
-                        site.column = scope.start_column;
-                        self.resolve_bound_type(&m[1], &site, depth + 1)
-                    }
+                let bound_re = re!(r"^[A-Za-z0-9_]+\s+extends\s+([A-Za-z0-9_.]+)$");
+                return match bound_re.captures(&declaration) {
+                    Some(m) if &m[1] != ty => self.resolve_bound_type(&m[1], &site, depth + 1),
                     _ => Ok(None),
                 };
             }
         }
         let bindings = self.bindings(&r.file_path)?;
-        let binding = innermost_binding(
-            &bindings,
-            ty.split('.').next().unwrap_or(ty),
-            Some(r.line),
-        );
-        let mut owner_id: Option<String> = None;
-        if let Some(b) = binding {
-            if b.kind == "import" {
-                let mut ref2 = r.clone();
-                ref2.reference_name = ty.to_string();
-                ref2.reference_kind = "references".to_string();
-                let hit = if ty.contains('.') {
-                    self.resolve_via_import_member(&ref2)?
-                } else {
-                    self.resolve_via_import(&ref2)?
-                };
-                owner_id = hit.map(|c| c.node.id.clone());
-                if owner_id.is_none() {
-                    let mut ref3 = r.clone();
-                    ref3.reference_name =
-                        b.target_spec.clone().unwrap_or_else(|| ty.to_string());
-                    ref3.reference_kind = "imports".to_string();
-                    if let Some(c) = self.resolve_jvm_import(&ref3)? {
-                        owner_id = Some(c.node.id.clone());
-                    }
-                }
-            } else {
-                owner_id = b.node_id.clone();
-            }
-        }
-        let mut owner: Option<Arc<KNode>> = self.node_by_opt_id(owner_id.as_deref())?;
-        if binding.is_some_and(|b| b.kind == "import") && r.language == "php" {
-            if let Some(spec) = binding.and_then(|b| b.target_spec.clone()) {
-                let stripped = spec.strip_prefix('\\').unwrap_or(&spec);
-                let qualified = match stripped.rfind('\\') {
-                    Some(pos) if pos + 1 < stripped.len() => {
-                        format!("{}::{}", &stripped[..pos], &stripped[pos + 1..])
-                    }
-                    _ => stripped.to_string(),
-                };
-                let owners: Vec<Arc<KNode>> = self
-                    .nodes_by_qualified_name(&qualified)?
-                    .iter()
-                    .filter(|n| {
-                        n.language == "php"
-                            && matches!(n.kind.as_str(), "class" | "interface" | "trait")
-                    })
-                    .cloned()
-                    .collect();
-                owner = if owners.len() == 1 {
-                    Some(owners[0].clone())
-                } else {
-                    None
-                };
-            }
-        }
-        if binding.is_none() && !is_esm_family(&r.language) {
-            let raw = if ty.contains("::") {
-                self.nodes_by_qualified_name(ty)?
-            } else {
-                self.nodes_by_name(ty)?
-            };
-            let mut candidates: Vec<Arc<KNode>> = Vec::new();
-            for n in raw.iter() {
-                if !matches!(
-                    n.kind.as_str(),
-                    "class" | "struct" | "interface" | "component" | "type_alias" | "union"
-                ) || n.language != r.language {
-                    continue;
-                }
-                if !self.is_visible_across_files(n, r)? {
-                    continue;
-                }
-                candidates.push(n.clone());
-            }
-            let local: Vec<Arc<KNode>> = candidates
-                .iter()
-                .filter(|n| n.file_path == r.file_path)
-                .cloned()
-                .collect();
-            let namespace = self
-                .nodes_in_file(&r.file_path)?
-                .iter()
-                .find(|n| n.kind == "namespace")
-                .map(|n| n.qualified_name.clone());
-            let mut packages: Vec<String> = Vec::new();
-            if r.language == "java" || r.language == "kotlin" {
-                packages = self
-                    .import_mappings(&r.file_path)?
-                    .iter()
-                    .filter(|i| i.is_namespace && i.source.ends_with(".*"))
-                    .map(|i| i.source[..i.source.len() - 2].to_string())
-                    .collect();
-                if let Some(ns) = &namespace {
-                    packages.insert(0, ns.clone());
-                }
-            }
-            let package_candidates: Vec<Arc<KNode>> = candidates
-                .into_iter()
-                .filter(|n| {
-                    if r.language == "python" {
-                        return false;
-                    }
-                    if r.language == "go" {
-                        return pos_dirname(&n.file_path) == pos_dirname(&r.file_path);
-                    }
-                    if r.language == "php" {
-                        return n.qualified_name
-                            == match &namespace {
-                                Some(ns) => format!("{}::{}", ns, ty),
-                                None => ty.to_string(),
-                            };
-                    }
-                    if r.language == "java" || r.language == "kotlin" {
-                        if namespace.is_none() && n.qualified_name == ty {
-                            return true;
-                        }
-                        return packages
-                            .iter()
-                            .any(|pkg| n.qualified_name == format!("{}::{}", pkg, ty));
-                    }
-                    true
+        let binding = innermost_binding(&bindings, ty.split('.').next().unwrap_or(ty), Some(r.line));
+        let owner = match binding {
+            Some(b) => self.bound_type_from_binding(ty, b, r)?,
+            None if !is_esm_family(&r.language) => self.visible_unique_type(ty, r)?,
+            None => None,
+        };
+        Ok(owner.filter(|o| TYPE_OWNER_KINDS.contains(&o.kind.as_str())))
+    }
+
+    /// The innermost enclosing Java class/interface/method declaring `ty` as
+    /// a type parameter: that declaration and the declaring scope's site.
+    fn java_type_parameter(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<(String, ResolveRefIn)>> {
+        let in_file = self.nodes_in_file(&r.file_path)?;
+        let mut scopes: Vec<&Arc<KNode>> = in_file
+            .iter()
+            .filter(|n| {
+                matches!(n.kind.as_str(), "class" | "interface" | "method")
+                    && n.start_line <= r.line
+                    && n.end_line >= r.line
+                    && (n.start_line != r.line || n.start_column <= r.column)
+                    && (n.end_line != r.line || n.end_column >= r.column)
+            })
+            .collect();
+        scopes.sort_by(|a, b| {
+            (a.end_line - a.start_line)
+                .cmp(&(b.end_line - b.start_line))
+                .then(b.start_column.cmp(&a.start_column))
+        });
+        for scope in scopes {
+            let decl = scope.type_parameters.as_ref().and_then(|tps| {
+                tps.iter().find(|p| {
+                    // split(/\s+/)[0] — leading whitespace yields ''.
+                    p.split(|c: char| c.is_whitespace()).next() == Some(ty)
                 })
+            });
+            if let Some(declaration) = decl {
+                let mut site = r.clone();
+                site.line = scope.start_line;
+                site.column = scope.start_column;
+                return Ok(Some((declaration.clone(), site)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The node `ty`'s lexical binding names: an import resolved through the
+    /// import resolver (then the JVM import path), or the declaration itself.
+    /// A PHP `use` then re-picks the owner by its fully qualified name.
+    fn bound_type_from_binding(&mut self, ty: &str, b: &KBinding, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if b.kind != "import" {
+            return self.node_by_opt_id(b.node_id.as_deref());
+        }
+        let ref2 = r.clone().naming(ty, "references");
+        let hit = if ty.contains('.') {
+            self.resolve_via_import_member(&ref2)?
+        } else {
+            self.resolve_via_import(&ref2)?
+        };
+        let mut owner_id = hit.map(|c| c.node.id.clone());
+        if owner_id.is_none() {
+            let spec = b.target_spec.as_deref().unwrap_or(ty);
+            if let Some(c) = self.resolve_jvm_import(&r.clone().naming(spec, "imports"))? {
+                owner_id = Some(c.node.id.clone());
+            }
+        }
+        let owner = self.node_by_opt_id(owner_id.as_deref())?;
+        let (true, Some(spec)) = (r.language == "php", &b.target_spec) else {
+            return Ok(owner);
+        };
+        let stripped = spec.strip_prefix('\\').unwrap_or(spec);
+        let qualified = match stripped.rfind('\\') {
+            Some(pos) if pos + 1 < stripped.len() => {
+                format!("{}::{}", &stripped[..pos], &stripped[pos + 1..])
+            }
+            _ => stripped.to_string(),
+        };
+        let owners: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(&qualified)?
+            .iter()
+            .filter(|n| {
+                n.language == "php" && matches!(n.kind.as_str(), "class" | "interface" | "trait")
+            })
+            .cloned()
+            .collect();
+        Ok(if owners.len() == 1 { Some(owners[0].clone()) } else { None })
+    }
+
+    /// An unbound type name's owner: the single visible candidate, preferring
+    /// the ref's own file, else its package (Go directory, PHP namespace,
+    /// JVM package or wildcard import).
+    fn visible_unique_type(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let raw = if ty.contains("::") {
+            self.nodes_by_qualified_name(ty)?
+        } else {
+            self.nodes_by_name(ty)?
+        };
+        let mut candidates: Vec<Arc<KNode>> = Vec::new();
+        for n in raw.iter() {
+            if !TYPE_OWNER_KINDS.contains(&n.kind.as_str()) || n.language != r.language {
+                continue;
+            }
+            if !self.is_visible_across_files(n, r)? {
+                continue;
+            }
+            candidates.push(n.clone());
+        }
+        let local: Vec<Arc<KNode>> = candidates
+            .iter()
+            .filter(|n| n.file_path == r.file_path)
+            .cloned()
+            .collect();
+        let namespace = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .find(|n| n.kind == "namespace")
+            .map(|n| n.qualified_name.clone());
+        let mut packages: Vec<String> = Vec::new();
+        if r.language == "java" || r.language == "kotlin" {
+            packages = self
+                .import_mappings(&r.file_path)?
+                .iter()
+                .filter(|i| i.is_namespace && i.source.ends_with(".*"))
+                .map(|i| i.source[..i.source.len() - 2].to_string())
                 .collect();
-            let visible = if !local.is_empty() {
-                local
-            } else {
-                package_candidates
-            };
-            if visible.len() == 1 {
-                owner = Some(visible[0].clone());
+            if let Some(ns) = &namespace {
+                packages.insert(0, ns.clone());
             }
         }
-        match owner {
-            Some(o)
-                if matches!(
-                    o.kind.as_str(),
-                    "class" | "struct" | "interface" | "component" | "type_alias" | "union"
-                ) =>
-            {
-                Ok(Some(o))
-            }
-            _ => Ok(None),
-        }
+        let package_candidates: Vec<Arc<KNode>> = candidates
+            .into_iter()
+            .filter(|n| {
+                if r.language == "python" {
+                    return false;
+                }
+                if r.language == "go" {
+                    return pos_dirname(&n.file_path) == pos_dirname(&r.file_path);
+                }
+                if r.language == "php" {
+                    return n.qualified_name
+                        == match &namespace {
+                            Some(ns) => format!("{}::{}", ns, ty),
+                            None => ty.to_string(),
+                        };
+                }
+                if r.language == "java" || r.language == "kotlin" {
+                    if namespace.is_none() && n.qualified_name == ty {
+                        return true;
+                    }
+                    return packages
+                        .iter()
+                        .any(|pkg| n.qualified_name == format!("{}::{}", pkg, ty));
+                }
+                true
+            })
+            .collect();
+        let visible = if !local.is_empty() {
+            local
+        } else {
+            package_candidates
+        };
+        Ok(if visible.len() == 1 { Some(visible[0].clone()) } else { None })
     }
 
     /// matchBoundTypeMember — owner's own `QName::method` member. A miss is a
@@ -284,10 +275,7 @@ impl KernelResolver {
             if let Some(fqn) = preferred_fqn {
                 let ext = if r.language == "kotlin" { ".kt" } else { ".java" };
                 let fqn_path = format!("{}{}", fqn.replace('.', "/"), ext);
-                if let Some(chosen) = matches.iter().find(|m| {
-                    let fp = m.file_path.replace('\\', "/");
-                    fp.ends_with(&fqn_path) || fp.ends_with(&format!("/{}", fqn_path))
-                }) {
+                if let Some(chosen) = matches.iter().find(|m| m.file_path.ends_with(&fqn_path)) {
                     return Ok(Some(KCand {
                         node: chosen.clone(),
                         confidence,
@@ -509,10 +497,7 @@ impl KernelResolver {
             let callee = callee.unwrap();
             let ret = callee.return_type.clone().unwrap();
             let stripped = ret.strip_prefix('*').unwrap_or(&ret);
-            let mut tsite = r.clone();
-            tsite.file_path = callee.file_path.clone();
-            tsite.line = callee.start_line;
-            return self.match_bound_type_member(stripped, method, &tsite);
+            return self.match_bound_type_member(stripped, method, &r.clone().at(&callee));
         }
         Ok(None)
     }

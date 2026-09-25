@@ -371,11 +371,19 @@ pub(super) static PHP_PROPERTY_TYPE_PATTERNS: LazyLock<Vec<ReceiverPattern>> = L
 });
 
 /// The lookahead tails of infer_match_line's guards 1 and 2.
-pub(super) static GUARD1_TAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:<[^>]*>)?\s*[\[|&]").unwrap());
-pub(super) static GUARD2_TAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^\s*[({"'\[]"#).unwrap());
+pub(super) fn guard1_tail_re() -> Rc<Regex> {
+    re!(r"^\s*(?:<[^>]*>)?\s*[\[|&]")
+}
+pub(super) fn guard2_tail_re() -> Rc<Regex> {
+    re!(r#"^\s*[({"'\[]"#)
+}
 /// `^NAME\s*[(<]` / `(^|[^A-Za-z0-9_])NAME\s*\(` after the literal name.
-pub(super) static BARE_CALL_OPENER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*[(<]").unwrap());
-pub(super) static CPP_CALL_OPENER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\(").unwrap());
+pub(super) fn bare_call_opener_re() -> Rc<Regex> {
+    re!(r"^\s*[(<]")
+}
+pub(super) fn cpp_call_opener_re() -> Rc<Regex> {
+    re!(r"^\s*\(")
+}
 
 /// The TypeScript class-field type shapes matchTsFieldCall reads off an
 /// owner's body — `field?: Type`, `field: typeof Ns` (the bool: a value

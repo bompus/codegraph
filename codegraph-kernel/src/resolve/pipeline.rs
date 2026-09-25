@@ -102,7 +102,7 @@ impl KernelResolver {
         if r.language != "php" || r.reference_kind != "calls" {
             return Ok(None);
         }
-        let Some(call) = thread_regex(&PHP_STATIC_CALL_RE).captures(&r.reference_name) else {
+        let Some(call) = php_static_call_re().captures(&r.reference_name) else {
             return Ok(None);
         };
         let receiver = call.get(1).unwrap().as_str();
@@ -269,7 +269,7 @@ impl KernelResolver {
         // The chain guard routes `x().y` calls through matchReference only —
         // the chain matchers there (storeAccessorChain et al.) are unported.
         if r.reference_kind == "calls"
-            && thread_regex(&CHAIN_SHAPE_RE).is_match(&r.reference_name)
+            && chain_shape_re().is_match(&r.reference_name)
             && matches!(
                 r.language.as_str(),
                 "typescript" | "javascript" | "tsx" | "jsx" | "python"
@@ -400,7 +400,7 @@ impl KernelResolver {
                     None => SHORTHAND.is_match(sig, m).then(|| m.to_string()),
                 }
             }
-            _ => BARE_ALIAS_RE
+            _ => bare_alias_re()
                 .captures(sig)
                 .map(|c| c.get(1).unwrap().as_str().to_string()),
         };
@@ -451,8 +451,7 @@ impl KernelResolver {
             return Ok(false);
         }
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
-        let text = lines.join("\n");
-        Ok(js_const_binds(&text, &r.reference_name))
+        Ok(js_const_binds(lines.text(), &r.reference_name))
     }
 
     /// The `function_ref` block of resolveOneInner (index.ts). TS order:

@@ -89,8 +89,10 @@ impl KernelResolver {
             }
         }
         let joined = format!("{}{}", dir, subpath);
-        static MULTI_SLASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/{2,}").unwrap());
-        Some(thread_regex(&MULTI_SLASH).replace_all(&joined, "/").to_string())
+        fn multi_slash() -> Rc<Regex> {
+            re!(r"/{2,}")
+        }
+        Some(multi_slash().replace_all(&joined, "/").to_string())
     }
 
     /// applyAliases (path-aliases.ts): candidate paths relative to
@@ -294,21 +296,15 @@ impl KernelResolver {
         let rel = module.replace('.', "/");
         let last_seg = module.split('.').next_back().unwrap_or(module);
         let mut candidates: Vec<Arc<KNode>> = Vec::new();
+        let want = format!("{}.py", rel);
         for n in self.nodes_by_name(&format!("{}.py", last_seg))?.iter() {
-            let want = format!("{}.py", rel);
-            if n.kind == "file"
-                && n.file_path != exclude_file
-                && (n.file_path == want || n.file_path.ends_with(&format!("/{}", want)))
-            {
+            if n.kind == "file" && n.file_path != exclude_file && is_path_or_tail(&n.file_path, &want) {
                 candidates.push(n.clone());
             }
         }
+        let want = format!("{}/__init__.py", rel);
         for n in self.nodes_by_name("__init__.py")?.iter() {
-            let want = format!("{}/__init__.py", rel);
-            if n.kind == "file"
-                && n.file_path != exclude_file
-                && (n.file_path == want || n.file_path.ends_with(&format!("/{}", want)))
-            {
+            if n.kind == "file" && n.file_path != exclude_file && is_path_or_tail(&n.file_path, &want) {
                 candidates.push(n.clone());
             }
         }
@@ -410,8 +406,8 @@ impl KernelResolver {
                 if node.language != r.language {
                     continue;
                 }
-                let fp = node.file_path.replace('\\', "/");
-                if fp.ends_with(&fqn_path) || fp.ends_with(&format!("/{}", fqn_path)) {
+                let fp = &node.file_path;
+                if fp.ends_with(&fqn_path) {
                     return Ok(Some(node.clone()));
                 }
             }
@@ -427,10 +423,8 @@ impl KernelResolver {
                             if node.language != r.language {
                                 continue;
                             }
-                            let fp = node.file_path.replace('\\', "/");
-                            if fp.ends_with(&owner_path)
-                                || fp.ends_with(&format!("/{}", owner_path))
-                            {
+                            let fp = &node.file_path;
+                            if fp.ends_with(&owner_path) {
                                 return Ok(Some(node.clone()));
                             }
                         }
@@ -468,8 +462,7 @@ impl KernelResolver {
             let Some(content) = self.read_file(&r.file_path) else {
                 return Ok(false);
             };
-            let bindings = collect_rust_use_bindings(&content.join("\n"));
-            let Some(use_path) = bindings.get(&r.reference_name) else {
+            let Some(use_path) = content.rust_uses().get(&r.reference_name) else {
                 return Ok(false);
             };
             let segments: Vec<&str> = use_path.split("::").collect();
@@ -740,7 +733,7 @@ impl KernelResolver {
             let bucket = self.lua_basename_bucket(basename);
             let mut matches: Vec<&String> = bucket
                 .iter()
-                .filter(|f| **f == suffix || f.ends_with(&format!("/{suffix}")))
+                .filter(|f| is_path_or_tail(f, &suffix))
                 .collect();
             if matches.is_empty() {
                 continue;
@@ -804,7 +797,7 @@ impl KernelResolver {
                 if node.language != "go" || !node.is_exported {
                     continue;
                 }
-                let fp = node.file_path.replace('\\', "/");
+                let fp = &node.file_path;
                 let file_dir = fp.rfind('/').map(|i| &fp[..i]).unwrap_or("");
                 if file_dir == pkg_dir {
                     return Ok(Some(KCand {

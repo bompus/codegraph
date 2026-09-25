@@ -126,7 +126,7 @@ impl KernelResolver {
             }
         }
         if !path_name.contains('/')
-            && thread_regex(&EXT_TAIL_RE).is_match(path_name)
+            && ext_tail_re().is_match(path_name)
             && self.known_name(path_name)
         {
             return true;
