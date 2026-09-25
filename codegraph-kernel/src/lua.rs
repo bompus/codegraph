@@ -25,7 +25,7 @@
 //! Files with parse errors defer to wasm (lua ~0%; luau 1.4–7.1% both-arm).
 
 use crate::buffers::{
-    build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
 use crate::walker::{Scope, Cand};
@@ -92,31 +92,8 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     };
 
     // File node (tree-sitter.ts:508-521).
-    let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
-    let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
-    let mut flags = BoolFlags::default();
-    flags.set(FLAG_IS_EXPORTED, false);
-    let file_id = w.arena.put(&ids::file_node_id(file_path));
-    let name_ref = w.arena.put(base_name);
-    let qn_ref = w.arena.put(file_path);
-    w.tables.push_node(&NodeRow {
-        kind: node_kind_index("file").unwrap(),
-        visibility: 0,
-        flags,
-        start_line: 1,
-        end_line: line_count,
-        start_column: 0,
-        end_column: 0,
-        name: name_ref,
-        qualified_name: qn_ref,
-        id: file_id,
-        docstring: NONE_STR,
-        signature: NONE_STR,
-        decorators: NONE_STR,
-        type_parameters: NONE_STR,
-        return_type: NONE_STR,
-        extra_json: NONE_STR,
-    });
+    let line_count = w.cols.line_count();
+    let base_name = crate::buffers::push_file_node(&mut w.arena, &mut w.tables, file_path, line_count);
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
@@ -125,22 +102,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     w.flush_fn_ref_candidates();
     w.stack.pop();
 
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let errors_json = crate::buffers::parse_collapse_warning(
-        &mut w.arena,
-        &w.tables,
-        tree.root_node().has_error(),
-        file_path,
-    );
-    let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
-    Ok(EmitOut {
-        meta,
-        nodes: w.tables.nodes,
-        edges: w.tables.edges,
-        refs: w.tables.refs,
-        bindings: w.tables.bindings,
-        arena: w.arena.into_vec(),
-    })
+    Ok(crate::buffers::finish(w.arena, w.tables, tree.root_node().has_error(), file_path, t0))
 }
 
 impl<'t> Walker<'t> {

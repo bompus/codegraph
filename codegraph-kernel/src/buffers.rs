@@ -603,3 +603,53 @@ mod tests {
         assert_eq!(meta.len(), META_SIZE);
     }
 }
+
+/// The file node every walker emits first (TreeSitterExtractor.extract): id
+/// `file:<path>`, name = the basename, qualified name = the path, lines
+/// 1..=`line_count`, isExported explicitly false. Returns the basename (the
+/// file scope's name). The three arena puts keep their order — arena bytes
+/// are part of the golden output.
+pub fn push_file_node<'p>(arena: &mut Arena, tables: &mut Tables, file_path: &'p str, line_count: u32) -> &'p str {
+    let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
+    let mut flags = BoolFlags::default();
+    flags.set(FLAG_IS_EXPORTED, false);
+    let file_id = arena.put(&crate::ids::file_node_id(file_path));
+    let name_ref = arena.put(base_name);
+    let qn_ref = arena.put(file_path);
+    tables.push_node(&NodeRow {
+        kind: node_kind_index("file").unwrap(),
+        visibility: 0,
+        flags,
+        start_line: 1,
+        end_line: line_count,
+        start_column: 0,
+        end_column: 0,
+        name: name_ref,
+        qualified_name: qn_ref,
+        id: file_id,
+        docstring: NONE_STR,
+        signature: NONE_STR,
+        decorators: NONE_STR,
+        type_parameters: NONE_STR,
+        return_type: NONE_STR,
+        extra_json: NONE_STR,
+    });
+    base_name
+}
+
+/// A walker's tables as the finished extraction: the parse-collapse warning
+/// (when the tree has errors), the meta block with the walk's duration since
+/// `t0`, and the five buffers.
+pub fn finish(mut arena: Arena, tables: Tables, has_error: bool, file_path: &str, t0: std::time::Instant) -> EmitOut {
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let errors_json = parse_collapse_warning(&mut arena, &tables, has_error, file_path);
+    let meta = build_meta(&tables, arena.len(), errors_json, duration_ms);
+    EmitOut {
+        meta,
+        nodes: tables.nodes,
+        edges: tables.edges,
+        refs: tables.refs,
+        bindings: tables.bindings,
+        arena: arena.into_vec(),
+    }
+}
