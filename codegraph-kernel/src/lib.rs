@@ -30,6 +30,30 @@ macro_rules! stack_guard {
     };
 }
 
+/// The position helpers every walker shares: source text of a node, its
+/// 1-based line, its UTF-16 start/end columns (via the walker's `cols`), and
+/// the row of the innermost scope (0 = the file node). Expects `src: &'t str`,
+/// `cols: textutil::Cols` and `stack: Vec<Scope>` with a `row: u32`.
+macro_rules! walker_pos_impl {
+    () => {
+        fn text(&self, node: Node) -> &'t str {
+            &self.src[node.byte_range()]
+        }
+        fn line_of(&self, node: Node) -> u32 {
+            node.start_position().row as u32 + 1
+        }
+        fn col_of(&self, node: Node) -> u32 {
+            self.cols.col(self.src, node.start_position().row, node.start_byte())
+        }
+        fn end_col_of(&self, node: Node) -> u32 {
+            self.cols.col(self.src, node.end_position().row, node.end_byte())
+        }
+        fn top_row(&self) -> u32 {
+            self.stack.last().map(|s| s.row).unwrap_or(0)
+        }
+    };
+}
+
 /// The markdown path-reference pair, for a walker with the usual shape
 /// (`text`, `line_of`, `col_of`, `arena`, `tables`, `file_path`). Every routed
 /// language needs the same two methods, and the wasm arm they must match is
@@ -343,7 +367,7 @@ fn read_lossy(path: &str) -> Option<String> {
 /// cores instead of riding one worker thread. A chunk thread that panics pads
 /// its slots with `pad()` so alignment survives; per-item panics are the
 /// caller's to catch when it wants finer padding.
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync, pad: impl Fn() -> R) -> Vec<R> {
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync, pad: impl Fn() -> R) -> Vec<R> {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)

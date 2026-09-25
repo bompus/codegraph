@@ -33,6 +33,7 @@ use crate::buffers::{
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
     NONE, NONE_STR,
 };
+use crate::textutil::{is_stoplisted, is_builtin_type};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -43,30 +44,7 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
-/// NAME_STOPLIST (function-ref.ts).
-fn is_stoplisted(name: &str) -> bool {
-    matches!(
-        name,
-        "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
-            | "NULL" | "nullptr" | "None"
-    )
-}
 
-/// BUILTIN_TYPES (tree-sitter.ts:5768-5782).
-fn is_builtin_type(name: &str) -> bool {
-    matches!(
-        name,
-        "string" | "number" | "boolean" | "void" | "null" | "undefined" | "never" | "any"
-            | "unknown" | "object" | "symbol" | "bigint" | "true" | "false"
-            | "str" | "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" | "char"
-            | "int" | "long" | "short" | "byte" | "float" | "double"
-            | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
-            | "float32" | "float64" | "complex64" | "complex128" | "rune" | "error"
-            | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
-            | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
-    )
-}
 
 /// extractDartReturnType's simple-name gate + the static-member receiver gate.
 fn simple_type_name_re() -> &'static Regex {
@@ -221,21 +199,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
     fn inside_class_like(&self) -> bool {
         self.stack
             .last()
@@ -302,9 +266,9 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
-        let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
-        let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
-        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
+        let doc_ref = self.arena.put_opt(extra.docstring.as_deref());
+        let sig_ref = self.arena.put_opt(extra.signature.as_deref());
+        let ret_ref = self.arena.put_opt(extra.return_type.as_deref());
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_async {
             flags.set(FLAG_IS_ASYNC, v);
@@ -1552,9 +1516,3 @@ impl<'t> Walker<'t> {
     }
 }
 
-fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
-    match s {
-        Some(s) => arena.put(s),
-        None => NONE_STR,
-    }
-}

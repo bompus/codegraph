@@ -26,22 +26,15 @@
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, Tables, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR, StrRef,
+    RefRow, Tables, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
+use crate::textutil::{is_stoplisted};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
 use std::collections::{HashSet, VecDeque};
 use tree_sitter::{Node, Parser};
 
-/// NAME_STOPLIST (function-ref.ts).
-fn is_stoplisted(name: &str) -> bool {
-    matches!(
-        name,
-        "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
-            | "NULL" | "nullptr" | "None"
-    )
-}
 
 struct Scope {
     row: u32,
@@ -58,7 +51,7 @@ struct Cand {
 }
 
 #[derive(Default)]
-struct Extra<'a> {
+struct Extra {
     docstring: Option<String>,
     signature: Option<String>,
     /// Some(_) sets the present bit (luau functions/type_aliases, variables
@@ -66,7 +59,6 @@ struct Extra<'a> {
     /// methods, imports).
     is_exported: Option<bool>,
     qualified_name_override: Option<String>,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
 pub struct Walker<'t> {
@@ -165,21 +157,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
 impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
 
     fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
         let name_ref = self.arena.put(name);
@@ -236,8 +214,8 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
-        let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
-        let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
+        let doc_ref = self.arena.put_opt(extra.docstring.as_deref());
+        let sig_ref = self.arena.put_opt(extra.signature.as_deref());
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_exported {
             flags.set(FLAG_IS_EXPORTED, v);
@@ -711,7 +689,6 @@ impl<'t> Walker<'t> {
                 signature,
                 qualified_name_override,
                 is_exported,
-                ..Default::default()
             },
         );
         let Some(row) = row else { return };
@@ -979,9 +956,3 @@ impl<'t> Walker<'t> {
     }
 }
 
-fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
-    match s {
-        Some(s) => arena.put(s),
-        None => NONE_STR,
-    }
-}

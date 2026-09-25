@@ -2264,37 +2264,6 @@ fn read_text(abs: &str) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// Chunked scoped-thread map over files — the scan_paths pattern. Output is
-/// chunk-concatenated in input order; a panicking chunk contributes nothing.
-fn threaded_files<F, R>(files: &[&LinkFile], work: F) -> Vec<R>
-where
-    F: Fn(&LinkFile) -> R + Sync,
-    R: Send,
-{
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(16)
-        .min(files.len().max(1));
-    if threads <= 1 {
-        return files.iter().map(|f| work(f)).collect();
-    }
-    let chunk_len = files.len().div_ceil(threads);
-    let chunks: Vec<&[&LinkFile]> = files.chunks(chunk_len).collect();
-    let mut parts: Vec<Vec<R>> = Vec::with_capacity(chunks.len());
-    std::thread::scope(|sc| {
-        let work = &work;
-        let handles: Vec<_> = chunks
-            .iter()
-            .map(|c| sc.spawn(move || c.iter().map(|f| work(f)).collect::<Vec<_>>()))
-            .collect();
-        for h in handles {
-            parts.push(h.join().unwrap_or_default());
-        }
-    });
-    parts.into_iter().flatten().collect()
-}
-
 /// Stage D+E for the whole survivor set. Propagation pairs are gathered per
 /// file across scoped threads (file order preserved), merged into `reg` to
 /// the 3-pass fixpoint, then the dispatch scan runs the same way. The TS side
@@ -2305,13 +2274,13 @@ pub fn cfnptr_link(files: &[LinkFile], tables: &LinkTables) -> Vec<LinkEdge> {
     // ---- D: field←field propagations (tables read-only here) ----
     let prop: Vec<&LinkFile> = files.iter().filter(|f| f.prop).collect();
     let tabs_ref = &tabs;
-    let propagations: Vec<(String, String)> = threaded_files(&prop, |f| {
+    let propagations: Vec<(String, String)> = crate::par_map(&prop, |f| {
         let mut v = Vec::new();
         if let Some(t) = read_text(&f.abs) {
             link_propagate_file(&t, f, tabs_ref, &mut v);
         }
         v
-    })
+    }, Vec::new)
     .into_iter()
     .flatten()
     .collect();
@@ -2343,13 +2312,13 @@ pub fn cfnptr_link(files: &[LinkFile], tables: &LinkTables) -> Vec<LinkEdge> {
     // ---- E: dispatch sites → edges ----
     let disp: Vec<&LinkFile> = files.iter().filter(|f| f.dispatch).collect();
     let tabs_ref = &tabs;
-    threaded_files(&disp, |f| {
+    crate::par_map(&disp, |f| {
         let mut v = Vec::new();
         if let Some(t) = read_text(&f.abs) {
             link_dispatch_file(&t, f, tabs_ref, &mut v);
         }
         v
-    })
+    }, Vec::new)
     .into_iter()
     .flatten()
     .collect()

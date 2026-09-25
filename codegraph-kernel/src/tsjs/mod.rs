@@ -12,6 +12,7 @@
 mod bindings;
 mod extractors;
 mod fnref;
+use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::textutil as util;
 
 use crate::buffers::{
@@ -114,39 +115,7 @@ fn is_variable_type(kind: &str) -> bool {
     matches!(kind, "lexical_declaration" | "variable_declaration")
 }
 
-/// LITERAL_RECEIVER_TYPES (tree-sitter.ts) — full set; only a handful occur in
-/// TS/JS grammars but membership is what the TS code tests.
-fn is_literal_receiver(kind: &str) -> bool {
-    matches!(
-        kind,
-        "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal"
-            | "template_string" | "concatenated_string" | "formatted_string" | "f_string"
-            | "line_string_literal" | "string_content" | "heredoc_body"
-            | "number" | "number_literal" | "integer" | "integer_literal" | "float"
-            | "float_literal" | "int_literal" | "decimal_integer_literal" | "real_literal"
-            | "char_literal" | "character_literal" | "rune_literal" | "regex" | "regex_literal"
-            | "true" | "false" | "boolean_literal" | "bool_literal" | "none" | "null" | "nil"
-            | "null_literal" | "undefined"
-            | "list" | "list_literal" | "array" | "array_literal" | "array_creation_expression"
-            | "dictionary" | "dict_literal" | "object" | "tuple" | "set"
-    )
-}
 
-/// BUILTIN_TYPES (tree-sitter.ts) — names that never become type references.
-fn is_builtin_type(name: &str) -> bool {
-    matches!(
-        name,
-        "string" | "number" | "boolean" | "void" | "null" | "undefined" | "never" | "any"
-            | "unknown" | "object" | "symbol" | "bigint" | "true" | "false"
-            | "str" | "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" | "char"
-            | "int" | "long" | "short" | "byte" | "float" | "double"
-            | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
-            | "float32" | "float64" | "complex64" | "complex128" | "rune" | "error"
-            | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
-            | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
-    )
-}
 
 /// REACT_COMPONENT_HOCS (tree-sitter.ts, #841).
 fn is_react_hoc(callee: &str) -> bool {
@@ -343,25 +312,7 @@ impl<'t> Walker<'t> {
 
     // --- small helpers --------------------------------------------------------
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
 
     /// isInsideClassLikeNode.
     fn inside_class_like(&self) -> bool {
@@ -453,8 +404,8 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
-        let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
-        let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
+        let doc_ref = self.arena.put_opt(extra.docstring.as_deref());
+        let sig_ref = self.arena.put_opt(extra.signature.as_deref());
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: extra.visibility.unwrap_or(0),
@@ -712,7 +663,7 @@ impl<'t> Walker<'t> {
             }
         }
         let name_ref = self.arena.put(name);
-        let exported_ref = opt_str(&mut self.arena, exported_as.as_deref());
+        let exported_ref = self.arena.put_opt(exported_as.as_deref());
         let (kind_code, target_spec, target_name) = match require_spec {
             Some(spec) => (BINDING_IMPORT, self.arena.put(&spec), self.arena.put("default")),
             None => (if at_module_scope { BINDING_DECL } else { BINDING_LOCAL }, NONE_STR, NONE_STR),
@@ -1401,9 +1352,3 @@ fn body_of(node: Node) -> Option<Node> {
     resolve_field_body(node).or_else(|| node.child_by_field_name("body"))
 }
 
-fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
-    match s {
-        Some(s) => arena.put(s),
-        None => NONE_STR,
-    }
-}

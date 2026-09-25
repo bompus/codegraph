@@ -23,6 +23,7 @@ use crate::buffers::{
     RefRow, StrRef, Tables, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
+use crate::textutil::{is_stoplisted, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -33,14 +34,6 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
-/// NAME_STOPLIST (function-ref.ts).
-fn is_stoplisted(name: &str) -> bool {
-    matches!(
-        name,
-        "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
-            | "NULL" | "nullptr" | "None"
-    )
-}
 
 /// PHP_NON_CLASS_RETURN (languages/php.ts:37).
 fn is_php_non_class_return(lc: &str) -> bool {
@@ -102,11 +95,6 @@ fn qualified_callable_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[0-9A-Za-z_]+::[0-9A-Za-z_]+$").unwrap())
 }
-/// extractStaticMemberRef's capitalized-receiver test.
-fn capitalized_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
-}
 
 struct Scope {
     row: u32,
@@ -151,7 +139,6 @@ pub struct Walker<'t> {
     imported_names: HashSet<String>,
     fn_ref_cands: Vec<Cand>,
     fs_values: HashMap<String, u32>,
-    fs_value_counts: HashMap<String, u32>,
     value_scopes: Vec<ValueScope<'t>>,
     line_count: u32,
 }
@@ -270,28 +257,13 @@ impl<'t> Walker<'t> {
             imported_names: HashSet::new(),
             fn_ref_cands: Vec::new(),
             fs_values: HashMap::new(),
-            fs_value_counts: HashMap::new(),
             value_scopes: Vec::new(),
             line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
         }
     }
     markdown_refs_impl!();
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
     fn inside_class_like(&self) -> bool {
         self.stack
             .last()
@@ -355,9 +327,9 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
-        let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
-        let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
-        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
+        let doc_ref = self.arena.put_opt(extra.docstring.as_deref());
+        let sig_ref = self.arena.put_opt(extra.signature.as_deref());
+        let ret_ref = self.arena.put_opt(extra.return_type.as_deref());
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: extra.visibility.unwrap_or(0),
@@ -409,7 +381,6 @@ impl<'t> Walker<'t> {
                 .unwrap_or(false);
             if parent_ok {
                 self.fs_values.insert(name.to_string(), row);
-                *self.fs_value_counts.entry(name.to_string()).or_insert(0) += 1;
             }
         }
         if matches!(kind, "function" | "method" | "constant" | "variable") {
@@ -1574,7 +1545,6 @@ impl<'t> Walker<'t> {
     fn flush_value_refs(&mut self) {
         let scopes = std::mem::take(&mut self.value_scopes);
         let targets = std::mem::take(&mut self.fs_values);
-        let _counts = std::mem::take(&mut self.fs_value_counts);
         if std::env::var("CODEGRAPH_VALUE_REFS").as_deref() == Ok("0") {
             return;
         }
@@ -1665,34 +1635,4 @@ fn find_anonymous_class_body(node: Node) -> Option<Node> {
     None
 }
 
-/// The shared `new ns.Foo<T>()` normalization: strip `<...` from the first
-/// `<` (index > 0), keep the segment after the last `.`/`::`, strip ONE
-/// leading `:` or `.`, trim. Backslashes are NOT handled — php qualified
-/// names pass through whole.
-fn strip_generic_and_qualifier(raw: &str) -> String {
-    let mut name = raw.to_string();
-    if let Some(lt) = name.find('<') {
-        if lt > 0 {
-            name.truncate(lt);
-        }
-    }
-    let last_dot = name
-        .rfind('.')
-        .map(|i| i as isize)
-        .unwrap_or(-1)
-        .max(name.rfind("::").map(|i| i as isize).unwrap_or(-1));
-    if last_dot >= 0 {
-        name = name[(last_dot as usize + 1)..].to_string();
-        if name.starts_with(':') || name.starts_with('.') {
-            name.remove(0);
-        }
-    }
-    name.trim().to_string()
-}
 
-fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
-    match s {
-        Some(s) => arena.put(s),
-        None => NONE_STR,
-    }
-}

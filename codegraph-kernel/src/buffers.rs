@@ -205,9 +205,7 @@ impl Arena {
         (off, s.len() as u32)
     }
 
-    /// Not used by the seed emitter yet — R2 (docstring/signature/etc.). Kept
-    /// so the arena API is complete alongside the layout it feeds.
-    #[allow(dead_code)]
+    /// `put`, or NONE_STR for an absent string.
     pub fn put_opt(&mut self, s: Option<&str>) -> StrRef {
         match s {
             Some(s) => self.put(s),
@@ -215,9 +213,8 @@ impl Arena {
         }
     }
 
-    /// NUL-joined list; absent when the list is empty. (R2 surface: decorators,
-    /// typeParameters, candidates.)
-    #[allow(dead_code)]
+    /// NUL-joined list; absent when the list is empty (decorators,
+    /// typeParameters, candidates).
     pub fn put_list(&mut self, items: &[String]) -> StrRef {
         if items.is_empty() {
             return NONE_STR;
@@ -249,11 +246,8 @@ impl BoolFlags {
 }
 
 pub const FLAG_IS_EXPORTED: u16 = 0;
-#[allow(dead_code)] // R2 surface — part of the v1 wire contract
 pub const FLAG_IS_ASYNC: u16 = 1;
-#[allow(dead_code)] // R2 surface — part of the v1 wire contract
 pub const FLAG_IS_STATIC: u16 = 2;
-#[allow(dead_code)] // R2 surface — part of the v1 wire contract
 pub const FLAG_IS_ABSTRACT: u16 = 3;
 
 pub struct NodeRow {
@@ -291,9 +285,8 @@ pub struct EdgeRow {
 pub const BINDING_DECL: u8 = 0;
 pub const BINDING_IMPORT: u8 = 1;
 pub const BINDING_REEXPORT: u8 = 2;
-#[allow(dead_code)]
+#[allow(dead_code)] // pins the layout.ts numbering; no walker emits it yet
 pub const BINDING_ALIAS: u8 = 3;
-#[allow(dead_code)]
 pub const BINDING_PARAM: u8 = 4;
 pub const BINDING_LOCAL: u8 = 5;
 
@@ -303,9 +296,7 @@ pub const EXPORT_ESM: u8 = 1;
 pub const EXPORT_ESM_LATER: u8 = 2;
 pub const EXPORT_ESM_DEFAULT: u8 = 3;
 pub const EXPORT_CJS: u8 = 4;
-#[allow(dead_code)]
 pub const EXPORT_CJS_OBJECT: u8 = 5;
-#[allow(dead_code)]
 pub const EXPORT_PUBLIC: u8 = 6;
 
 /// One binding of a name in a file (docs/design/resolution-binding-model-plan.md
