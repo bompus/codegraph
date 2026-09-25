@@ -30,12 +30,12 @@
 mod calls;
 mod refs;
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_builtin_type};
+use crate::textutil::is_builtin_type;
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -120,28 +120,7 @@ impl<'t> Walker<'t> {
     walker_pos_impl!();
     inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: edge_kind_index(kind).unwrap(),
-            line: self.line_of(node),
-            column: self.col_of(node),
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        // Dart import names are URIs (`package:x/y.dart`) — they match neither
-        // SIMPLE_NAME nor QUALIFIED_IMPORT, so importedNames stays empty in
-        // practice; ported for fidelity.
-        if kind == "imports" {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
     // --- createNode (tree-sitter.ts:1308) ---------------------------------
 
@@ -783,7 +762,7 @@ impl<'t> Walker<'t> {
         );
         if created.is_some() {
             let parent_row = self.top_row();
-            self.push_ref_at(parent_row, &module, "imports", node);
+            self.push_ref_at(parent_row, &module, crate::buffers::EDGE_IMPORTS, node);
         }
     }
 
@@ -864,7 +843,7 @@ impl<'t> Walker<'t> {
         if name.is_empty() {
             return;
         }
-        self.push_ref_at(decorated_row, &name, "decorates", n);
+        self.push_ref_at(decorated_row, &name, crate::buffers::EDGE_DECORATES, n);
     }
 
     // --- extractInheritance — the dart rows (:5368-5393, :5437-5459) ------
@@ -883,12 +862,12 @@ impl<'t> Walker<'t> {
                         for m in mixins {
                             if m.kind() == "type_identifier" {
                                 let name = self.text(m).to_string();
-                                self.push_ref_at(class_row, &name, "implements", m);
+                                self.push_ref_at(class_row, &name, crate::buffers::EDGE_IMPLEMENTS, m);
                             }
                         }
                     } else if t.kind() == "type_identifier" {
                         let name = self.text(t).to_string();
-                        self.push_ref_at(class_row, &name, "extends", t);
+                        self.push_ref_at(class_row, &name, crate::buffers::EDGE_EXTENDS, t);
                     }
                 }
             } else if child.kind() == "interfaces" {
@@ -897,7 +876,7 @@ impl<'t> Walker<'t> {
                 let targets: Vec<Node<'t>> = child.named_children(&mut cc).collect();
                 for iface in targets {
                     let name = self.text(iface).to_string();
-                    self.push_ref_at(class_row, &name, "implements", iface);
+                    self.push_ref_at(class_row, &name, crate::buffers::EDGE_IMPLEMENTS, iface);
                 }
             }
         }
@@ -928,7 +907,7 @@ impl<'t> Walker<'t> {
             let name = self.text(node);
             if !name.is_empty() && !is_builtin_type(name) {
                 let name = name.to_string();
-                self.push_ref_at(from_row, &name, "references", node);
+                self.push_ref_at(from_row, &name, crate::buffers::EDGE_REFERENCES, node);
             }
             return;
         }
@@ -954,7 +933,7 @@ impl<'t> Walker<'t> {
         } else if let Some(callee) = self.bare_call_name(node) {
             // extractBareCall (:5159-5173) — ref at the MATCHED node.
             let caller_row = self.top_row();
-            self.push_ref_at(caller_row, &callee, "calls", node);
+            self.push_ref_at(caller_row, &callee, crate::buffers::EDGE_CALLS, node);
         }
 
         self.extract_static_member_ref(node);

@@ -24,7 +24,7 @@ use crate::buffers::{
     NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_builtin_type, strip_generic_and_qualifier, capitalized_re};
+use crate::textutil::{is_builtin_type, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -326,25 +326,10 @@ impl<'t> Walker<'t> {
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
 
-        if kind == "class_declaration" || kind == "record_declaration" {
-            // classifyClassNode: `record struct` → extractStruct, else class.
-            if kind == "record_declaration" && record_is_struct(node) {
-                self.extract_struct(node);
-            } else {
-                self.extract_class(node);
-            }
+        if self.extract_type_decl(node) {
             skip_children = true;
         } else if kind == "method_declaration" || kind == "constructor_declaration" {
             self.extract_method(node);
-            skip_children = true;
-        } else if kind == "interface_declaration" {
-            self.extract_interface(node);
-            skip_children = true;
-        } else if kind == "struct_declaration" || kind == "record_struct_declaration" {
-            self.extract_struct(node);
-            skip_children = true;
-        } else if kind == "enum_declaration" {
-            self.extract_enum(node);
             skip_children = true;
         } else if kind == "property_declaration" && self.inside_class_like() {
             // Property accessor/expression bodies are NEVER walked (calls
@@ -416,24 +401,7 @@ impl<'t> Walker<'t> {
         // `type_annotation` child node — structurally inert, not ported.
         // functionTypes is empty — no nested-function branch.)
 
-        if kind == "class_declaration" || kind == "record_declaration" {
-            if kind == "record_declaration" && record_is_struct(node) {
-                self.extract_struct(node);
-            } else {
-                self.extract_class(node);
-            }
-            return;
-        }
-        if kind == "struct_declaration" || kind == "record_struct_declaration" {
-            self.extract_struct(node);
-            return;
-        }
-        if kind == "enum_declaration" {
-            self.extract_enum(node);
-            return;
-        }
-        if kind == "interface_declaration" {
-            self.extract_interface(node);
+        if self.extract_type_decl(node) {
             return;
         }
 
@@ -445,6 +413,21 @@ impl<'t> Walker<'t> {
     }
 
     // --- extractors --------------------------------------------------------------
+
+    /// A class/record/struct/interface/enum declaration, extracted fully
+    /// (children skipped); false for any other node. classifyClassNode: a
+    /// `record struct` is a struct.
+    fn extract_type_decl(&mut self, node: Node<'t>) -> bool {
+        match node.kind() {
+            "record_declaration" if record_is_struct(node) => self.extract_struct(node),
+            "class_declaration" | "record_declaration" => self.extract_class(node),
+            "struct_declaration" | "record_struct_declaration" => self.extract_struct(node),
+            "interface_declaration" => self.extract_interface(node),
+            "enum_declaration" => self.extract_enum(node),
+            _ => return false,
+        }
+        true
+    }
 
     fn extract_class(&mut self, node: Node<'t>) {
         stack_guard!();

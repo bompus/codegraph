@@ -21,7 +21,6 @@ use crate::buffers::{
     REF_FLAG_FILE_PATH,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -796,7 +795,7 @@ impl<'t> Walker<'t> {
                 }
                 let name = self.text(sym).strip_prefix(':').unwrap_or(self.text(sym));
                 if !name.is_empty() {
-                    self.push_fn_ref_cand(from, name, sym);
+                    self.fn_ref_cands.extend(Cand::at(from, name, sym));
                 }
             }
             "simple_symbol" => {
@@ -812,25 +811,12 @@ impl<'t> Walker<'t> {
                     return;
                 }
                 let name = format!("this.{sym}");
-                self.push_fn_ref_cand(from, &name, v);
+                self.fn_ref_cands.extend(Cand::at(from, &name, v));
             }
             _ => {}
         }
     }
 
-    fn push_fn_ref_cand(&mut self, from: u32, name: &str, node: Node) {
-        if name.is_empty() || is_stoplisted(name) {
-            return;
-        }
-        let p = node.start_position();
-        self.fn_ref_cands.push(Cand {
-            from,
-            name: name.to_string(),
-            line: p.row as u32 + 1,
-            column_byte: node.start_byte(),
-            row: p.row,
-        });
-    }
 
     fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
         stack_guard!();

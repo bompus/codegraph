@@ -19,7 +19,7 @@ use crate::buffers::{
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver};
+use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;

@@ -92,7 +92,7 @@ impl<'t> Walker<'t> {
         match v.kind() {
             "identifier" => {
                 let name = self.text(v);
-                self.push_fn_ref_cand(from, name, v);
+                self.fn_ref_cands.extend(Cand::at(from, name, v));
             }
             "argument" => {
                 // Transparent layer (field=null) → recurse all named children.
@@ -114,26 +114,13 @@ impl<'t> Walker<'t> {
                 };
                 if is_this {
                     let name = self.text(name_node);
-                    self.push_fn_ref_cand(from, name, name_node);
+                    self.fn_ref_cands.extend(Cand::at(from, name, name_node));
                 }
             }
             _ => {}
         }
     }
 
-    pub(super) fn push_fn_ref_cand(&mut self, from: u32, name: &str, node: Node) {
-        if name.is_empty() || is_stoplisted(name) {
-            return;
-        }
-        let p = node.start_position();
-        self.fn_ref_cands.push(Cand {
-            from,
-            name: name.to_string(),
-            line: p.row as u32 + 1,
-            column_byte: node.start_byte(),
-            row: p.row,
-        });
-    }
 
     pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
         stack_guard!();

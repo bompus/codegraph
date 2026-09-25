@@ -134,7 +134,7 @@ impl<'t> Walker<'t> {
         if class_name.is_empty() {
             return;
         }
-        self.push_ref_at(from_row, &class_name, "instantiates", node);
+        self.push_ref_at(from_row, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
     }
 
     pub(super) fn extract_static_member_ref(&mut self, node: Node<'t>) {
@@ -151,7 +151,7 @@ impl<'t> Walker<'t> {
             let name = self.text(prev).to_string();
             // NO callee-of-call skip — `ConfigT.load()` double-emits
             // (references + calls). Position = the IDENTIFIER (receiver).
-            self.push_ref_at(owner_row, &name, "references", prev);
+            self.push_ref_at(owner_row, &name, crate::buffers::EDGE_REFERENCES, prev);
         }
     }
 }

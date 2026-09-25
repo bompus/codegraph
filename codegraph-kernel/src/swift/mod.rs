@@ -29,7 +29,7 @@ use crate::buffers::{
     NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver, strip_generic_and_qualifier, capitalized_re};
+use crate::textutil::{is_builtin_type, is_literal_receiver, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -409,35 +409,12 @@ impl<'t> Walker<'t> {
 
         if kind == "function_declaration" {
             if self.inside_class_like() {
-                self.extract_method(node);
+                self.extract_callable(node, "method");
             } else {
-                self.extract_function(node);
+                self.extract_callable(node, "function");
             }
             skip_children = true;
-        } else if kind == "class_declaration" {
-            // classifyClassNode: `struct`/`enum` keyword children; actor and
-            // extension fall through to 'class'.
-            let mut classified = "class";
-            for i in 0..node.child_count() {
-                if let Some(c) = node.child(i) {
-                    if c.kind() == "struct" {
-                        classified = "struct";
-                        break;
-                    }
-                    if c.kind() == "enum" {
-                        classified = "enum";
-                        break;
-                    }
-                }
-            }
-            match classified {
-                "struct" => self.extract_struct(node),
-                "enum" => self.extract_enum(node),
-                _ => self.extract_class(node),
-            }
-            skip_children = true;
-        } else if kind == "protocol_declaration" {
-            self.extract_interface(node);
+        } else if self.extract_type_decl(node) {
             skip_children = true;
         } else if kind == "typealias_declaration" {
             skip_children = self.extract_type_alias(node);
@@ -579,33 +556,11 @@ impl<'t> Walker<'t> {
         if kind == "function_declaration" {
             let name = self.extract_name(node);
             if name != "<anonymous>" {
-                self.extract_function(node);
+                self.extract_callable(node, "function");
                 return;
             }
         }
-        if kind == "class_declaration" {
-            let mut classified = "class";
-            for i in 0..node.child_count() {
-                if let Some(c) = node.child(i) {
-                    if c.kind() == "struct" {
-                        classified = "struct";
-                        break;
-                    }
-                    if c.kind() == "enum" {
-                        classified = "enum";
-                        break;
-                    }
-                }
-            }
-            match classified {
-                "struct" => self.extract_struct(node),
-                "enum" => self.extract_enum(node),
-                _ => self.extract_class(node),
-            }
-            return;
-        }
-        if kind == "protocol_declaration" {
-            self.extract_interface(node);
+        if self.extract_type_decl(node) {
             return;
         }
 
@@ -618,10 +573,12 @@ impl<'t> Walker<'t> {
 
     // --- extractors -----------------------------------------------------------------
 
-    fn extract_function(&mut self, node: Node<'t>) {
+    /// extractFunction / extractMethod: identical but for the node kind and
+    /// the function-only `<anonymous>` bail (walk the body, mint nothing).
+    fn extract_callable(&mut self, node: Node<'t>, kind: &'static str) {
         stack_guard!();
         let name = self.extract_name(node);
-        if name == "<anonymous>" {
+        if kind == "function" && name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
                 self.visit_for_calls_and_structure(body);
             }
@@ -636,36 +593,37 @@ impl<'t> Walker<'t> {
             return_type: self.return_type_of(node),
             ..Extra::default()
         };
-        let Some(row) = self.create_node("function", &name, node, extra) else { return };
+        let Some(row) = self.create_node(kind, &name, node, extra) else { return };
         self.extract_type_annotations(node, row);
         self.extract_decorators_for(node, row);
-        self.stack.push(Scope { row, kind: "function", name });
+        self.stack.push(Scope { row, kind, name });
         if let Some(body) = node.child_by_field_name("body") {
             self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
 
-    fn extract_method(&mut self, node: Node<'t>) {
-        stack_guard!();
-        let name = self.extract_name(node);
-        let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
-            signature: None,
-            visibility: Some(self.visibility_of(node)),
-            is_async: Some(self.is_async(node)),
-            is_static: Some(self.is_static(node)),
-            return_type: self.return_type_of(node),
-            ..Extra::default()
-        };
-        let Some(row) = self.create_node("method", &name, node, extra) else { return };
-        self.extract_type_annotations(node, row);
-        self.extract_decorators_for(node, row);
-        self.stack.push(Scope { row, kind: "method", name });
-        if let Some(body) = node.child_by_field_name("body") {
-            self.visit_for_calls_and_structure(body);
+    /// A class/struct/enum/protocol declaration, extracted fully (children
+    /// skipped); false for any other node. classifyClassNode: a `struct` or
+    /// `enum` keyword child picks the kind; actor and extension fall through
+    /// to class.
+    fn extract_type_decl(&mut self, node: Node<'t>) -> bool {
+        match node.kind() {
+            "class_declaration" => {
+                let keyword = (0..node.child_count())
+                    .filter_map(|i| node.child(i))
+                    .map(|c| c.kind())
+                    .find(|k| matches!(*k, "struct" | "enum"));
+                match keyword {
+                    Some("struct") => self.extract_struct(node),
+                    Some(_) => self.extract_enum(node),
+                    None => self.extract_class(node),
+                }
+            }
+            "protocol_declaration" => self.extract_interface(node),
+            _ => return false,
         }
-        self.stack.pop();
+        true
     }
 
     fn extract_class(&mut self, node: Node<'t>) {

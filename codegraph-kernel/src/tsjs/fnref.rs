@@ -88,11 +88,7 @@ pub fn capture(container: Node, mode: Mode, src: &str, from: u32) -> Vec<Cand> {
     let mut out = Vec::new();
     for v in value_nodes {
         for (name, node) in normalize(v, src) {
-            if name.is_empty() || crate::textutil::is_stoplisted(&name) {
-                continue;
-            }
-            let p = node.start_position();
-            out.push(Cand { from, name, line: p.row as u32 + 1, column_byte: node.start_byte(), row: p.row });
+            out.extend(Cand::at(from, name, node));
         }
     }
     out

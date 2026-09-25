@@ -25,11 +25,10 @@
 //! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
 use crate::walker::{Scope, Cand};
-use crate::textutil::{is_stoplisted};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -103,28 +102,7 @@ impl<'t> Walker<'t> {
 
     walker_pos_impl!();
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: edge_kind_index(kind).unwrap(),
-            line: self.line_of(node),
-            column: self.col_of(node),
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        // flushFnRefCandidates' importedNames gate (tree-sitter.ts:661-675):
-        // dotted lua module paths contribute their LAST segment; simple names
-        // (Roblox leaves) pass whole.
-        if kind == "imports" {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
     // --- createNode (tree-sitter.ts:1308) ---------------------------------
 
@@ -276,7 +254,7 @@ impl<'t> Walker<'t> {
         );
         if imp.is_some() {
             let parent_row = self.top_row();
-            self.push_ref_at(parent_row, module, "imports", call);
+            self.push_ref_at(parent_row, module, crate::buffers::EDGE_IMPORTS, call);
         }
     }
 
@@ -706,7 +684,7 @@ impl<'t> Walker<'t> {
             return;
         }
         let callee = callee.to_string();
-        self.push_ref_at(caller_row, &callee, "calls", node);
+        self.push_ref_at(caller_row, &callee, crate::buffers::EDGE_CALLS, node);
     }
 
     // --- visitFunctionBody (5129-5286) — the hook-free body walk ----------
@@ -814,17 +792,7 @@ impl<'t> Walker<'t> {
         match v.kind() {
             "identifier" => {
                 let name = self.text(v).to_string();
-                if name.is_empty() || is_stoplisted(&name) {
-                    return;
-                }
-                let p = v.start_position();
-                self.fn_ref_cands.push(Cand {
-                    from,
-                    name,
-                    line: p.row as u32 + 1,
-                    column_byte: v.start_byte(),
-                    row: p.row,
-                });
+                self.fn_ref_cands.extend(Cand::at(from, name, v));
             }
             "expression_list" => {
                 let mut cursor = v.walk();

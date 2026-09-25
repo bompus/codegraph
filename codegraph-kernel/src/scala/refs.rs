@@ -78,17 +78,7 @@ impl<'t> Walker<'t> {
         match v.kind() {
             "identifier" => {
                 let name = self.text(v).to_string();
-                if name.is_empty() || is_stoplisted(&name) {
-                    return;
-                }
-                let p = v.start_position();
-                self.fn_ref_cands.push(Cand {
-                    from,
-                    name,
-                    line: p.row as u32 + 1,
-                    column_byte: v.start_byte(),
-                    row: p.row,
-                });
+                self.fn_ref_cands.extend(Cand::at(from, name, v));
             }
             "postfix_expression" => {
                 if let Some(inner) = v.named_child(0) {

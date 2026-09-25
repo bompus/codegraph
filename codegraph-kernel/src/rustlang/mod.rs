@@ -50,7 +50,7 @@ use crate::buffers::{
     FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver};
+use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -879,21 +879,15 @@ impl<'t> Walker<'t> {
     }
 
     /// extractTypeAnnotations — parameters + return_type subtrees, one
-    /// `references` ref per type_identifier leaf not in BUILTIN_TYPES. The
-    /// trailing `type_annotation` child lookup is included for fidelity (the
-    /// rust grammar has no such node — always a no-op).
+    /// `references` ref per type_identifier leaf not in BUILTIN_TYPES. (The
+    /// TS hook's trailing `type_annotation` lookup is omitted: the rust
+    /// grammar has no such node.)
     fn extract_type_annotations(&mut self, node: Node<'t>, from_row: u32) {
         if let Some(params) = node.child_by_field_name("parameters") {
             self.extract_type_refs_from_subtree(params, from_row);
         }
         if let Some(ret) = node.child_by_field_name("return_type") {
             self.extract_type_refs_from_subtree(ret, from_row);
-        }
-        let type_annotation = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
-            .find(|c| c.kind() == "type_annotation");
-        if let Some(ta) = type_annotation {
-            self.extract_type_refs_from_subtree(ta, from_row);
         }
     }
 

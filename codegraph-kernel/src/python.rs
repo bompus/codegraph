@@ -14,7 +14,7 @@ use crate::buffers::{
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_ASYNC, FLAG_IS_STATIC, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_literal_receiver};
+use crate::textutil::is_literal_receiver;
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -844,17 +844,7 @@ impl<'t> Walker<'t> {
                 }
                 _ => continue,
             };
-            if name.is_empty() || is_stoplisted(&name) {
-                continue;
-            }
-            let p = anchor.start_position();
-            self.fn_ref_cands.push(Cand {
-                from,
-                name,
-                line: p.row as u32 + 1,
-                column_byte: anchor.start_byte(),
-                row: p.row,
-            });
+            self.fn_ref_cands.extend(Cand::at(from, name, anchor));
         }
     }
 

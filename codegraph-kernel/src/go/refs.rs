@@ -77,17 +77,7 @@ impl<'t> Walker<'t> {
         match v.kind() {
             "identifier" => {
                 let name = self.text(v).to_string();
-                if name.is_empty() || is_stoplisted(&name) {
-                    return;
-                }
-                let p = v.start_position();
-                self.fn_ref_cands.push(Cand {
-                    from,
-                    name,
-                    line: p.row as u32 + 1,
-                    column_byte: v.start_byte(),
-                    row: p.row,
-                });
+                self.fn_ref_cands.extend(Cand::at(from, name, v));
             }
             "literal_element" | "expression_list" => {
                 for i in 0..v.named_child_count() {
