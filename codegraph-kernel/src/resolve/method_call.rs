@@ -223,15 +223,7 @@ impl KernelResolver {
             return Ok(false);
         }
         let bindings = self.bindings(&r.file_path)?;
-        let mut best: Option<&KBinding> = None;
-        for b in bindings.iter() {
-            if b.name != receiver || b.scope_start > r.line || b.scope_end < r.line {
-                continue;
-            }
-            if best.is_none_or(|x| b.scope_end - b.scope_start < x.scope_end - x.scope_start) {
-                best = Some(b);
-            }
-        }
+        let best = Self::innermost_binding(&bindings, receiver, Some(r.line));
         let declaration = match best {
             Some(b) => self
                 .read_file(&r.file_path)

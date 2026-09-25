@@ -635,4 +635,288 @@ impl KernelResolver {
         }
         self.match_fuzzy(r)
     }
+
+    /// resolveObjectLiteralMember (name-matcher.ts): an imported object
+    /// literal used as a namespace — find the member by containment.
+    pub(super) fn resolve_object_literal_member(
+        &mut self,
+        container: &KNode,
+        member: &str,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+    ) -> Result<Option<KCand>> {
+        if container.kind != "constant" && container.kind != "variable" {
+            return Ok(None);
+        }
+        if !is_object_literal_language(&container.language) {
+            return Ok(None);
+        }
+        if !same_language_family(&container.language, &r.language) {
+            return Ok(None);
+        }
+        let in_file = self.nodes_in_file(&container.file_path)?;
+        let callable =
+            |n: &KNode| n.kind == "function" || n.kind == "method";
+        let accepts = |n: &KNode| {
+            if r.reference_kind == "calls" {
+                callable(n)
+            } else {
+                callable(n)
+                    || n.kind == "property"
+                    || n.kind == "variable"
+                    || n.kind == "constant"
+            }
+        };
+        // rangeWithin / sameRange (name-matcher.ts).
+        let range_within = |inner: &KNode, outer: &KNode| {
+            !(inner.start_line < outer.start_line
+                || inner.end_line > outer.end_line
+                || (inner.start_line == outer.start_line
+                    && inner.start_column < outer.start_column)
+                || (inner.end_line == outer.end_line && inner.end_column > outer.end_column))
+        };
+        let same_range = |a: &KNode, b: &KNode| {
+            a.start_line == b.start_line
+                && a.start_column == b.start_column
+                && a.end_line == b.end_line
+                && a.end_column == b.end_column
+        };
+        let inside: Vec<Arc<KNode>> = in_file
+            .iter()
+            .filter(|n| n.id != container.id && range_within(n, container))
+            .cloned()
+            .collect();
+        let mut candidates: Vec<Arc<KNode>> = inside
+            .iter()
+            .filter(|n| n.name == member && accepts(n))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        // Drop members nested inside another callable's body in the literal.
+        let bodies: Vec<&Arc<KNode>> = inside.iter().filter(|n| callable(n)).collect();
+        candidates.retain(|c| {
+            !bodies
+                .iter()
+                .any(|b| b.id != c.id && !same_range(b, c) && range_within(c, b))
+        });
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        candidates.sort_by(|a, b| {
+            let ca = if callable(a) { 0 } else { 1 };
+            let cb = if callable(b) { 0 } else { 1 };
+            ca.cmp(&cb)
+                .then(a.start_line.cmp(&b.start_line))
+                .then(a.start_column.cmp(&b.start_column))
+        });
+        Ok(Some(KCand {
+            node: candidates[0].clone(),
+            confidence,
+            resolved_by,
+        }))
+    }
+
+    /// matchByQualifiedName (name-matcher.ts) — exact `qualifiedName` lookup,
+    /// then the last-segment suffix match. Erlang's arity arms are dead (not
+    /// a migrated language).
+    pub(super) fn match_by_qualified_name(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        if !r.reference_name.contains("::") && !r.reference_name.contains('.') {
+            return Ok(None);
+        }
+        // A `calls` ref never resolves to a yaml/properties config key (#1180).
+        let keep_for_ref = |nodes: &[Arc<KNode>]| -> Vec<Arc<KNode>> {
+            nodes
+                .iter()
+                .filter(|n| {
+                    r.reference_kind != "calls"
+                        || !(n.kind == "constant"
+                            && (n.language == "yaml" || n.language == "properties"))
+                })
+                .cloned()
+                .collect()
+        };
+
+        let candidates = keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?);
+        if candidates.len() == 1 {
+            return Ok(Some(KCand {
+                node: candidates[0].clone(),
+                confidence: 0.95,
+                resolved_by: "qualified-name",
+            }));
+        }
+        if candidates.len() > 1 {
+            let ordered = prefer_call_site_file(candidates, &r.file_path);
+            if ordered[0].file_path == r.file_path {
+                return Ok(Some(KCand {
+                    node: ordered[0].clone(),
+                    confidence: 0.95,
+                    resolved_by: "qualified-name",
+                }));
+            }
+        }
+
+        // Partial match — the last `:`/`.` segment, then the suffix filter.
+        let last_name = r
+            .reference_name
+            .rsplit([':', '.'])
+            .next()
+            .unwrap_or("");
+        if !last_name.is_empty() {
+            let partial = keep_for_ref(&self.nodes_by_name(last_name)?)
+                .into_iter()
+                .filter(|n| n.qualified_name.ends_with(&r.reference_name))
+                .collect();
+            let chosen = prefer_call_site_file(partial, &r.file_path);
+            if let Some(first) = chosen.into_iter().next() {
+                return Ok(Some(KCand {
+                    node: first,
+                    confidence: 0.85,
+                    resolved_by: "qualified-name",
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+
+    /// matchFunctionRef, bare arm (name-matcher.ts): name-exact
+    /// function/method nodes in the ref's language family — plus Python
+    /// classes — excluding the origin node; JS/TS/ArkTS/C++/Python/PHP match
+    /// functions only (a bare identifier there is never a method value).
+    /// Same-file wins by earliest line; cross-file is unique-or-drop.
+    pub(super) fn match_function_ref_bare(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let bare_fn_only = matches!(
+            r.language.as_str(),
+            "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "cpp" | "python" | "php"
+        );
+        let bare_class_ok = r.language == "python";
+        let mut candidates: Vec<Arc<KNode>> = self
+            .nodes_by_name(&r.reference_name)?
+            .iter()
+            .filter(|n| {
+                (n.kind == "function"
+                    || (!bare_fn_only && n.kind == "method")
+                    || (bare_class_ok && n.kind == "class"))
+                    && same_language_family(&n.language, &r.language)
+                    && n.id != r.from_node_id
+            })
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        // Swift implicit-self: a bare identifier names a method only of the
+        // enclosing type; same-named methods elsewhere are parameter
+        // collisions. Free functions are unaffected; top-level code has no
+        // implicit self, so method targets drop entirely there.
+        if r.language == "swift" && candidates.iter().any(|n| n.kind == "method") {
+            let class_prefix = match self.node_by_id(&r.from_node_id)? {
+                Some(from) => match from.qualified_name.rfind("::") {
+                    Some(sep) if sep > 0 => Some(from.qualified_name[..sep].to_string()),
+                    _ => None,
+                },
+                None => None,
+            };
+            candidates.retain(|n| {
+                if n.kind != "method" {
+                    return true;
+                }
+                let Some(cp) = &class_prefix else { return false };
+                match n.qualified_name.rfind("::") {
+                    Some(msep) if msep > 0 => {
+                        let mp = &n.qualified_name[..msep];
+                        mp == cp.as_str()
+                            || mp.ends_with(&format!("::{cp}"))
+                            || cp.ends_with(&format!("::{mp}"))
+                    }
+                    _ => false,
+                }
+            });
+            if candidates.is_empty() {
+                return Ok(None);
+            }
+        }
+        // Same-file definition wins; same-name overloads in one file are the
+        // same conceptual symbol — first by position for determinism
+        // (min_by_key keeps the first minimum, matching TS's `<=` reduce).
+        let same_file: Vec<Arc<KNode>> = candidates
+            .iter()
+            .filter(|n| n.file_path == r.file_path)
+            .cloned()
+            .collect();
+        if !same_file.is_empty() {
+            // Swift: several same-named METHODS in one file are an overload
+            // family — a bare identifier is a same-named parameter, not a
+            // method value. A single method still resolves.
+            if r.language == "swift"
+                && same_file.len() > 1
+                && same_file.iter().all(|n| n.kind == "method")
+            {
+                return Ok(None);
+            }
+            let target = same_file.iter().min_by_key(|n| n.start_line).unwrap().clone();
+            return Ok(Some(KCand {
+                node: target,
+                confidence: if same_file.len() == 1 { 0.95 } else { 0.9 },
+                resolved_by: "function-ref",
+            }));
+        }
+        // Cross-file: only an unambiguous match resolves.
+        if candidates.len() == 1 {
+            return Ok(Some(KCand {
+                node: candidates[0].clone(),
+                confidence: 0.8,
+                resolved_by: "function-ref",
+            }));
+        }
+        Ok(None)
+    }
+
+    /// matchFunctionRef's `::` member-pointer arm (name-matcher.ts): an
+    /// explicit `Cls::member` shape (`&Widget::on_click` emitted as
+    /// `Widget::on_click`) resolves the member ON THAT SCOPE — exempt from
+    /// bareFnOnly, origin excluded, qualified-name equality or `::`-suffix.
+    /// Same-file pool wins by earliest line @0.9; cross-file unique-or-drop.
+    pub(super) fn match_function_ref_scoped(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+        let Some(sep) = r.reference_name.rfind("::") else {
+            return Ok(None);
+        };
+        let member = &r.reference_name[sep + 2..];
+        let suffix = format!("::{}", r.reference_name);
+        let scoped: Vec<Arc<KNode>> = self
+            .nodes_by_name(member)?
+            .iter()
+            .filter(|n| {
+                matches!(n.kind.as_str(), "function" | "method")
+                    && same_language_family(&n.language, &r.language)
+                    && n.id != r.from_node_id
+                    && (n.qualified_name == r.reference_name
+                        || n.qualified_name.ends_with(&suffix))
+            })
+            .cloned()
+            .collect();
+        if scoped.is_empty() {
+            return Ok(None);
+        }
+        let same_file: Vec<Arc<KNode>> = scoped
+            .iter()
+            .filter(|n| n.file_path == r.file_path)
+            .cloned()
+            .collect();
+        if same_file.is_empty() && scoped.len() > 1 {
+            return Ok(None);
+        }
+        let pool = if same_file.is_empty() { scoped } else { same_file };
+        // `<=` reduce keeps the first minimum — min_by_key does the same.
+        let target = pool.iter().min_by_key(|n| n.start_line).unwrap().clone();
+        Ok(Some(KCand {
+            node: target,
+            confidence: 0.9,
+            resolved_by: "function-ref",
+        }))
+    }
+
 }
