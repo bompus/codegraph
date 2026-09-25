@@ -1395,27 +1395,7 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
 
-        let mut class_name = self.text(ctor).to_string();
-        // `new Map<K, V>()` → Map.
-        if let Some(lt) = class_name.find('<') {
-            if lt > 0 {
-                class_name.truncate(lt);
-            }
-        }
-        // `new ns.Foo()` → Foo.
-        let last_dot = class_name
-            .rfind('.')
-            .map(|i| i as isize)
-            .unwrap_or(-1)
-            .max(class_name.rfind("::").map(|i| i as isize).unwrap_or(-1));
-        if last_dot >= 0 {
-            class_name = class_name[(last_dot as usize + 1)..].to_string();
-            // TS: .replace(/^[:.]/, '') — one leading colon-or-dot.
-            if class_name.starts_with(':') || class_name.starts_with('.') {
-                class_name.remove(0);
-            }
-        }
-        let class_name = class_name.trim().to_string();
+        let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
             self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
@@ -1490,24 +1470,7 @@ impl<'t> Walker<'t> {
             }
         }
         let Some(target) = target else { return };
-        let mut name = self.text(target).to_string();
-        if let Some(lt) = name.find('<') {
-            if lt > 0 {
-                name.truncate(lt);
-            }
-        }
-        let last_dot = name
-            .rfind('.')
-            .map(|i| i as isize)
-            .unwrap_or(-1)
-            .max(name.rfind("::").map(|i| i as isize).unwrap_or(-1));
-        if last_dot >= 0 {
-            name = name[(last_dot as usize + 1)..].to_string();
-            if name.starts_with(':') || name.starts_with('.') {
-                name.remove(0);
-            }
-        }
-        let name = name.trim().to_string();
+        let name = crate::textutil::strip_generic_and_qualifier(self.text(target));
         if name.is_empty() {
             return;
         }

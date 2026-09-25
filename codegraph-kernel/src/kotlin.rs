@@ -32,33 +32,14 @@ use crate::textutil::{is_stoplisted, is_literal_receiver, strip_generic_and_qual
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
 
 
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w` (getReturnType's ident test).
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 
-/// JS `\s` for the #750 inner-callee strip.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' ' | '\u{00A0}' | '\u{1680}'
-            | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}'
-            | '\u{3000}' | '\u{FEFF}'
-    )
-}
-fn strip_js_ws(s: &str) -> String {
-    s.chars().filter(|c| !is_js_space(*c)).collect()
-}
 
 /// A property's CODE children: the named child right after the `=` token, a
 /// `property_delegate` (`by lazy { … }`), and an accessor the grammar nested
@@ -162,15 +143,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("kotlin").ok_or("no kotlin grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(kotlin) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("kotlin", source)?;
 
     let mut w = Walker::new(source, file_path);
 
@@ -526,7 +500,7 @@ impl<'t> Walker<'t> {
                     .filter_map(|j| ut.named_child(j))
                     .find(|c| c.kind() == "type_identifier");
                 let name = self.text(type_id.unwrap_or(ut)).trim();
-                if name.is_empty() || !ascii_ident_re().is_match(name) {
+                if name.is_empty() || !crate::textutil::ascii_ident_re().is_match(name) {
                     return None;
                 }
                 if matches!(name, "Unit" | "Nothing") {
@@ -1351,7 +1325,7 @@ impl<'t> Walker<'t> {
                     // (NOT a function field), ws-stripped, /^[A-Z]/ gate.
                     let inner = recv.named_child(0);
                     let inner_callee =
-                        inner.map(|n| strip_js_ws(self.text(n))).unwrap_or_default();
+                        inner.map(|n| crate::textutil::strip_js_ws(self.text(n))).unwrap_or_default();
                     let reencode = inner_callee
                         .as_bytes()
                         .first()

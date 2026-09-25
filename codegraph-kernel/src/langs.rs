@@ -124,3 +124,13 @@ pub fn grammar_for(language: &str) -> Option<Language> {
         _ => None,
     }
 }
+
+/// Parses `source` with `language`'s grammar — every walker's first step.
+pub fn parse(language: &str, source: &str) -> Result<tree_sitter::Tree, String> {
+    let grammar = grammar_for(language).ok_or_else(|| format!("no grammar for language: {language}"))?;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&grammar)
+        .map_err(|e| format!("set_language({language}) failed: {e}"))?;
+    parser.parse(source, None).ok_or_else(|| "parser returned null tree".to_string())
+}

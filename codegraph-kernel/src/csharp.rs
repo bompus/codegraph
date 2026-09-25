@@ -28,7 +28,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -39,33 +39,7 @@ fn trailing_nullable_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\?+$").unwrap())
 }
-/// extractCsharpReturnType's generics strip (`/<[^>]*>/g`) — deliberately
-/// non-nesting: `Task<List<Foo>>` → `Task>` → the ident test fails →
-/// returnType undefined (same class of quirk as rust; PRESERVE).
-fn generic_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w` (Rust's default `\w` is Unicode).
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 
-/// JS `\s` (WhiteSpace ∪ LineTerminator) — differs from Rust's `\p{White_Space}`
-/// on U+FEFF (JS: yes) and U+0085 (JS: no). The chained-call inner-callee strip
-/// (`.replace(/\s+/g, '')`) runs on arbitrary source slices, so match JS exactly.
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' ' | '\u{00A0}' | '\u{1680}'
-            | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}'
-            | '\u{3000}' | '\u{FEFF}'
-    )
-}
-fn strip_js_ws(s: &str) -> String {
-    s.chars().filter(|c| !is_js_space(*c)).collect()
-}
 
 
 #[derive(Default)]
@@ -100,15 +74,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("csharp").ok_or("no csharp grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(csharp) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("csharp", source)?;
 
     let mut w = Walker {
         src: source,
@@ -378,9 +345,9 @@ impl<'t> Walker<'t> {
         }
         let mut s = self.text(t).trim().to_string();
         s = trailing_nullable_re().replace(&s, "").into_owned();
-        s = generic_args_re().replace_all(&s, "").into_owned();
+        s = crate::textutil::generic_args_re().replace_all(&s, "").into_owned();
         let last = s.rsplit('.').next().unwrap_or("").trim().to_string();
-        if last.is_empty() || !ascii_ident_re().is_match(&last) {
+        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(&last) {
             return None;
         }
         Some(last)
@@ -693,7 +660,7 @@ impl<'t> Walker<'t> {
             let raw = self.text(t);
             // TS `.replace(/^:\s*/, '')` — inert for C# type text; mirrored.
             match raw.strip_prefix(':') {
-                Some(rest) => rest.trim_start_matches(is_js_space).to_string(),
+                Some(rest) => rest.trim_start_matches(crate::textutil::is_js_space).to_string(),
                 None => raw.to_string(),
             }
         });
@@ -954,7 +921,7 @@ impl<'t> Walker<'t> {
                 // (inner whitespace stripped, EVERY call-receiver re-encodes —
                 // no capitalization gate, unlike kotlin/scala).
                 let inner_func = recv.unwrap().child_by_field_name("function");
-                let inner_callee = inner_func.map(|f| strip_js_ws(self.text(f))).unwrap_or_default();
+                let inner_callee = inner_func.map(|f| crate::textutil::strip_js_ws(self.text(f))).unwrap_or_default();
                 callee_name = if inner_callee.is_empty() {
                     method_name.to_string()
                 } else {

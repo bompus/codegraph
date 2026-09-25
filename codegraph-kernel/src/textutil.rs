@@ -294,6 +294,39 @@ pub fn capitalized_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
 }
 
+
+/// `^[A-Za-z_][0-9A-Za-z_]*$` — an ASCII identifier (JS `\w` spelling).
+pub fn ascii_ident_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
+}
+
+/// `<[^>]*>` — one generic-argument group, for stripping type arguments.
+pub fn generic_args_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
+}
+
+/// `^[A-Z]` — starts with an ASCII capital.
+pub fn starts_upper_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Z]").unwrap())
+}
+
+/// JavaScript's `\s` set (String.prototype.trim / `/\s/`).
+pub fn is_js_space(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' ' | '\u{00A0}' | '\u{1680}'
+            | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}'
+            | '\u{3000}' | '\u{FEFF}'
+    )
+}
+/// The string with every JS `\s` character removed.
+pub fn strip_js_ws(s: &str) -> String {
+    s.chars().filter(|c| !is_js_space(*c)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

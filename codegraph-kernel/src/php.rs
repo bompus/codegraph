@@ -30,7 +30,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -80,16 +80,6 @@ fn is_php_callable_hof(name: &str) -> bool {
     )
 }
 
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w`.
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-/// String-callable simple-name shape (`/^[A-Za-z_][A-Za-z0-9_]*$/`).
-fn simple_callable_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap())
-}
 /// String-callable qualified shape (`/^\w+::\w+$/`, JS ASCII `\w`).
 fn qualified_callable_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -134,15 +124,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("php").ok_or("no php grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(php) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("php", source)?;
 
     let mut w = Walker::new(source, file_path);
 
@@ -403,7 +386,7 @@ impl<'t> Walker<'t> {
         if is_php_non_class_return(&lc) {
             return None;
         }
-        if !ascii_ident_re().is_match(last) {
+        if !crate::textutil::ascii_ident_re().is_match(last) {
             return None; // unions/intersections/complex
         }
         Some(last.to_string())
@@ -1339,7 +1322,7 @@ impl<'t> Walker<'t> {
                     return;
                 }
                 let Some(content) = self.php_string_content(v) else { return };
-                if simple_callable_re().is_match(&content) || qualified_callable_re().is_match(&content)
+                if crate::textutil::ascii_ident_re().is_match(&content) || qualified_callable_re().is_match(&content)
                 {
                     self.push_fn_ref_cand(from, &content, v, true);
                 }
@@ -1357,7 +1340,7 @@ impl<'t> Walker<'t> {
                     return;
                 }
                 let Some(member) = self.php_string_content(str_el) else { return };
-                if !simple_callable_re().is_match(&member) {
+                if !crate::textutil::ascii_ident_re().is_match(&member) {
                     return;
                 }
                 if recv.kind() == "variable_name" && self.text(recv) == "$this" {

@@ -23,9 +23,8 @@ use crate::buffers::{
     NONE, NONE_STR,
 };
 use crate::ids;
-use crate::langs;
 use std::collections::{HashMap, HashSet};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
@@ -191,17 +190,8 @@ const MAX_VALUE_REF_NODES: usize = 20_000;
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
     let variant = Variant::from_language(language)
         .ok_or_else(|| format!("tsjs walker does not handle language: {language}"))?;
-    let grammar = langs::grammar_for(language)
-        .ok_or_else(|| format!("no grammar for language: {language}"))?;
-
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language({language}) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse(language, source)?;
 
     // Files with parse ERRORS are extracted natively like any other file. Error
     // RECOVERY differs between UTF-8 (native) and UTF-16 (web-tree-sitter)

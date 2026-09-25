@@ -19,7 +19,7 @@ use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
 use std::collections::{HashMap, HashSet};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -54,15 +54,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("python").ok_or("no python grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(python) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("python", source)?;
 
     let mut w = Walker::new(source, file_path);
 
@@ -822,24 +815,7 @@ impl<'t> Walker<'t> {
             }
         }
         let Some(target) = target else { return };
-        let mut name = self.text(target).to_string();
-        if let Some(lt) = name.find('<') {
-            if lt > 0 {
-                name.truncate(lt);
-            }
-        }
-        let last_dot = name
-            .rfind('.')
-            .map(|i| i as isize)
-            .unwrap_or(-1)
-            .max(name.rfind("::").map(|i| i as isize).unwrap_or(-1));
-        if last_dot >= 0 {
-            name = name[(last_dot as usize + 1)..].to_string();
-            if name.starts_with(':') || name.starts_with('.') {
-                name.remove(0);
-            }
-        }
-        let name = name.trim().to_string();
+        let name = crate::textutil::strip_generic_and_qualifier(self.text(target));
         if name.is_empty() {
             return;
         }

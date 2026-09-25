@@ -34,7 +34,7 @@ use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
 use std::collections::{HashSet, VecDeque};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 
 
@@ -66,15 +66,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for(language).ok_or("no lua/luau grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language({language}) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse(language, source)?;
 
     let mut w = Walker {
         src: source,

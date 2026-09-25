@@ -52,24 +52,11 @@ use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
-/// JS `/<[^>]*>/g` — the non-nested generic strip (breaks on nested generics
-/// by design: `Result<Vec<Foo>, E>` → `Result, E>` → returnType undefined).
-fn generic_angle_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
-/// JS `/^[A-Za-z_]\w*$/` (ASCII \w — the regex crate's \w is Unicode).
-fn simple_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 
 
 #[derive(Default)]
@@ -135,15 +122,8 @@ impl<'t> Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("rust").ok_or("no rust grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(rust) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("rust", source)?;
 
     let mut w = Walker::new(source, file_path);
 
@@ -338,9 +318,9 @@ impl<'t> Walker<'t> {
             return None;
         }
         let text = self.text(rt).trim();
-        let stripped = generic_angle_re().replace_all(text, "");
+        let stripped = crate::textutil::generic_args_re().replace_all(text, "");
         let last = stripped.rsplit("::").next().unwrap_or("").trim();
-        if last.is_empty() || !simple_ident_re().is_match(last) {
+        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(last) {
             return None;
         }
         Some(if last == "Self" { "self".to_string() } else { last.to_string() })
@@ -1054,22 +1034,7 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
 
-        let mut class_name = self.text(ctor).to_string();
-        if let Some(lt) = class_name.find('<') {
-            if lt > 0 {
-                class_name.truncate(lt);
-            }
-        }
-        let last_dot = class_name.rfind('.').map(|i| i as i64).unwrap_or(-1);
-        let last_colon = class_name.rfind("::").map(|i| i as i64).unwrap_or(-1);
-        let last = last_dot.max(last_colon);
-        if last >= 0 {
-            class_name = class_name[(last + 1) as usize..].to_string();
-            if let Some(rest) = class_name.strip_prefix(&[':', '.'][..]) {
-                class_name = rest.to_string();
-            }
-        }
-        let class_name = class_name.trim().to_string();
+        let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
 
         if !class_name.is_empty() {
             let from = self.top_row();

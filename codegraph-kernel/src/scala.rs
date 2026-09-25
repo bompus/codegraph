@@ -38,7 +38,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -54,25 +54,10 @@ fn is_scala_builtin(name: &str) -> bool {
     )
 }
 
-/// extractScalaReturnType's simple-name gate (`/^[A-Za-z_][0-9A-Za-z_]*$/`).
-fn simple_type_name_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 /// extractScalaReturnType's generic-args strip (`/\[[^\]]*\]/g`).
 fn bracket_args_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").unwrap())
-}
-/// Static-member receiver gate (`/^[A-Z][A-Za-z0-9_]*$/`).
-fn cap_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
-}
-/// The #750 re-encode gate (`/^[A-Z]/`).
-fn starts_upper_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z]").unwrap())
 }
 /// JS `\s+` for the re-encode/return-type strips (Unicode whitespace).
 fn ws_re() -> &'static Regex {
@@ -113,15 +98,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("scala").ok_or("no scala grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(scala) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("scala", source)?;
 
     let mut w = Walker {
         src: source,
@@ -356,7 +334,7 @@ impl<'t> Walker<'t> {
         let base = bracket_args_re().replace_all(raw, "");
         let base = ws_re().replace_all(&base, "");
         let last = base.split('.').next_back()?;
-        if last.is_empty() || !simple_type_name_re().is_match(last) {
+        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(last) {
             return None;
         }
         Some(last.to_string())
@@ -802,7 +780,7 @@ impl<'t> Walker<'t> {
                                 ws_re().replace_all(&t, "").into_owned()
                             })
                             .unwrap_or_default();
-                        let reencode = starts_upper_re().is_match(&inner_callee);
+                        let reencode = crate::textutil::starts_upper_re().is_match(&inner_callee);
                         callee = Some(if reencode {
                             format!("{inner_callee}().{method_name}")
                         } else {
@@ -894,7 +872,7 @@ impl<'t> Walker<'t> {
             "identifier" | "type_identifier" | "simple_identifier" | "name" | "scoped_type_identifier"
         ) {
             let text = self.text(recv);
-            if cap_ident_re().is_match(text) {
+            if crate::textutil::capitalized_re().is_match(text) {
                 let text = text.to_string();
                 self.push_ref_at(owner_row, &text, "references", recv);
             }
@@ -971,20 +949,7 @@ impl<'t> Walker<'t> {
             }
         }
         let Some(target) = target else { return };
-        let mut name = self.text(target).to_string();
-        if let Some(lt) = name.find('<') {
-            if lt > 0 {
-                name.truncate(lt);
-            }
-        }
-        let last_dot = name.rfind('.').map(|i| i as i64).unwrap_or(-1);
-        let last_colons = name.rfind("::").map(|i| (i + 1) as i64).unwrap_or(-1);
-        let last = last_dot.max(last_colons);
-        if last >= 0 {
-            name = name[(last as usize + 1)..].to_string();
-            name = name.trim_start_matches([':', '.']).to_string();
-        }
-        let name = name.trim().to_string();
+        let name = crate::textutil::strip_generic_and_qualifier(self.text(target));
         if name.is_empty() {
             return;
         }
