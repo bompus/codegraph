@@ -6,7 +6,7 @@ message: >-
   std::fs::read_to_string bypasses the per-file line cache every other
   check shares.
 files:
-  - src/resolve.rs
+  - src/resolve/**/*.rs
 rule:
   all:
     - pattern: std::fs::read_to_string($$$)

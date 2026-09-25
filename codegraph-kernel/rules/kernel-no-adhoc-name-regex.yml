@@ -8,7 +8,7 @@ message: >-
   no split form, route it through KernelResolver::cached_regex, the bounded
   process-wide cache.
 files:
-  - src/resolve.rs
+  - src/resolve/**/*.rs
 rule:
   kind: call_expression
   regex: 'Regex::new\s*\(\s*&?\s*format!'
