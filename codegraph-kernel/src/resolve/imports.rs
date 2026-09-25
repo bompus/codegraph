@@ -173,16 +173,19 @@ impl KernelResolver {
         }
         let base_path = pos_resolve(from_dir, import_path);
         let relative_path = pos_relative(&self.root_abs, &base_path);
-        for ext in extensions {
-            let candidate = format!("{}{}", relative_path, ext);
-            if self.file_exists(&candidate) {
-                return Ok(Some(candidate));
-            }
-        }
-        if self.file_exists(&relative_path) {
-            return Ok(Some(relative_path));
-        }
-        Ok(self.find_source_for_emitted(&relative_path, language))
+        Ok(self.probe_extensions(&relative_path, language))
+    }
+
+    /// The first existing file among `base` + each of the language's
+    /// extensions, then `base` itself, then the source an emitted `.js`/`.d.ts`
+    /// path was compiled from.
+    pub(super) fn probe_extensions(&self, base: &str, language: &str) -> Option<String> {
+        extension_resolution(language)
+            .iter()
+            .map(|ext| format!("{base}{ext}"))
+            .find(|candidate| self.file_exists(candidate))
+            .or_else(|| self.file_exists(base).then(|| base.to_string()))
+            .or_else(|| self.find_source_for_emitted(base, language))
     }
 
     /// resolveAliasedImport (import-resolver.ts): tsconfig paths → workspace
@@ -192,38 +195,16 @@ impl KernelResolver {
         import_path: &str,
         language: &str,
     ) -> Result<Option<String>> {
-        let extensions = extension_resolution(language);
-        macro_rules! try_with_ext {
-            ($base:expr) => {{
-                let base: &str = $base;
-                let mut hit: Option<String> = None;
-                for ext in extensions {
-                    let candidate = format!("{}{}", base, ext);
-                    if self.file_exists(&candidate) {
-                        hit = Some(candidate);
-                        break;
-                    }
-                }
-                if hit.is_none() && self.file_exists(base) {
-                    hit = Some(base.to_string());
-                }
-                if hit.is_none() {
-                    hit = self.find_source_for_emitted(base, language);
-                }
-                hit
-            }};
-        }
-
         if self.aliases.is_some() {
             for c in self.apply_aliases(import_path) {
-                if let Some(hit) = try_with_ext!(&c) {
+                if let Some(hit) = self.probe_extensions(&c, language) {
                     return Ok(Some(hit));
                 }
             }
         }
         if self.workspaces.is_some() {
             if let Some(base) = self.resolve_workspace_import(import_path) {
-                if let Some(hit) = try_with_ext!(&base) {
+                if let Some(hit) = self.probe_extensions(&base, language) {
                     return Ok(Some(hit));
                 }
             }
@@ -231,12 +212,12 @@ impl KernelResolver {
         for (alias, replacement) in FALLBACK_ALIASES {
             if let Some(rest) = import_path.strip_prefix(alias) {
                 let rewritten = format!("{}{}", replacement, rest);
-                if let Some(hit) = try_with_ext!(&rewritten) {
+                if let Some(hit) = self.probe_extensions(&rewritten, language) {
                     return Ok(Some(hit));
                 }
             }
         }
-        Ok(try_with_ext!(import_path))
+        Ok(self.probe_extensions(import_path, language))
     }
 
     /// resolveCppIncludePath (import-resolver.ts): -I dir scan with the
@@ -460,125 +441,15 @@ impl KernelResolver {
         Ok(None)
     }
 
-    /// resolveViaImport restricted to the bare-name slice.
+    /// resolveViaImport for a name with no `.` or `/` (a bare name, a C++
+    /// `::` type, a C/C++ include path): the member variant's `.`/`/`-gated
+    /// arms cannot fire for it, so this is that function without the punt,
+    /// which only the member descent raises.
     pub(super) fn resolve_via_import(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
-        if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
-            // Quoted-include search order: the including file's own directory
-            // first, via a same-named file NODE (not just existence).
-            let from_dir = pos_dirname(&r.file_path);
-            let sibling_path = pos_join(from_dir, &r.reference_name);
-            let sibling_base = pos_basename(&sibling_path).to_string();
-            if let Some(sibling) = self
-                .nodes_by_name(&sibling_base)?
-                .iter()
-                .find(|n| n.kind == "file" && n.file_path == sibling_path)
-            {
-                return Ok(Some(KCand {
-                    node: sibling.clone(),
-                    confidence: 0.92,
-                    resolved_by: "import",
-                }));
-            }
-            let Some(resolved_path) =
-                self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)?
-            else {
-                return Ok(None);
-            };
-            let basename = pos_basename(&resolved_path).to_string();
-            if let Some(file_node) = self
-                .nodes_by_name(&basename)?
-                .iter()
-                .find(|n| n.kind == "file" && n.file_path == resolved_path)
-            {
-                return Ok(Some(KCand {
-                    node: file_node.clone(),
-                    confidence: 0.9,
-                    resolved_by: "import",
-                }));
-            }
-            return Ok(None);
-        }
-        // isPhpIncludePathRef / isCobolCopybookRef / isNixPathImportRef are
-        // dead here: the first needs '/' or '.' in the name (non-bare), the
-        // other two name unmigrated languages.
-
-        let imports = self.import_mappings(&r.file_path)?;
-        if imports.is_empty() && self.read_file(&r.file_path).is_none() {
-            return Ok(None);
-        }
-
-        // resolveGoCrossPackageReference needs `pkg.Member` — non-bare, dead.
-        if r.language == "java" || r.language == "kotlin" {
-            if let Some(node) = self.resolve_java_imported_reference(r, &imports)? {
-                return Ok(Some(KCand {
-                    node,
-                    confidence: 0.9,
-                    resolved_by: "import",
-                }));
-            }
-        }
-        // resolvePythonModuleMember / resolvePythonAbsoluteModule need a '.'
-        // in the name — dead. Rust `::` paths take resolve_rust_path_ref
-        // ahead of the gate. Lua `require(script.Parent.Signal)` leaves a
-        // bare leaf — the module-file arm still applies.
-        if let Some(c) = self.resolve_lua_require(r)? {
-            return Ok(Some(c));
-        }
-        if matches!(
-            r.language.as_str(),
-            "python" | "typescript" | "tsx" | "javascript" | "jsx" | "arkts"
-        ) {
-            if let Some(node) = self.resolve_module_import_to_file(r, &imports)? {
-                return Ok(Some(KCand {
-                    node,
-                    confidence: 0.9,
-                    resolved_by: "import",
-                }));
-            }
-        }
-
-        for imp in imports.iter() {
-            // `name.startsWith(localName + '.')` is dead for a bare name.
-            if imp.local_name != r.reference_name {
-                continue;
-            }
-            let mut resolved_path =
-                self.resolve_import_path(&imp.source, &r.file_path, &r.language)?;
-            if resolved_path.is_none() && r.language == "python" {
-                resolved_path = self
-                    .find_python_module_file(&imp.source, &r.file_path)?
-                    .map(|n| n.file_path.clone());
-            }
-            let Some(resolved_path) = resolved_path else { continue };
-            let want = ExportWant {
-                is_default: imp.is_default,
-                is_namespace: imp.is_namespace,
-                exported_name: if imp.is_default {
-                    "default".to_string()
-                } else {
-                    imp.exported_name.clone()
-                },
-                // Namespace import + bare localName: the TS `.replace` finds
-                // no `localName.` in a bare name, so memberName = the name.
-                member_name: if imp.is_namespace {
-                    Some(r.reference_name.replacen(&format!("{}.", imp.local_name), "", 1))
-                } else {
-                    None
-                },
-            };
-            let mut visited = HashSet::new();
-            if let Some(target) =
-                self.find_exported_symbol(&resolved_path, &want, &r.language, &mut visited, 0)?
-            {
-                // The member-descent block is dead for a bare name.
-                return Ok(Some(KCand {
-                    node: target,
-                    confidence: 0.9,
-                    resolved_by: "import",
-                }));
-            }
-        }
-        Ok(None)
+        Ok(match self.resolve_via_import_member(r)? {
+            ViaImport::Hit(c) => Some(c),
+            ViaImport::Miss | ViaImport::Punt(_) => None,
+        })
     }
 
     /// isBoundToOutOfRepoImport (import-resolver.ts): for a bare name in a
@@ -626,6 +497,46 @@ impl KernelResolver {
     /// include arm lives in resolve_c_include_import_ref; module-file is
     /// dot-gated inside its own function.
     pub(super) fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Result<ViaImport> {
+        // C/C++ `#include` path refs: the including file's own directory first
+        // (via a same-named file NODE, not just existence), then the include
+        // search path. isPhpIncludePathRef / isCobolCopybookRef /
+        // isNixPathImportRef name unmigrated languages.
+        if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
+            // Quoted-include search order: the including file's own directory
+            // first, via a same-named file NODE (not just existence).
+            let from_dir = pos_dirname(&r.file_path);
+            let sibling_path = pos_join(from_dir, &r.reference_name);
+            let sibling_base = pos_basename(&sibling_path).to_string();
+            if let Some(sibling) = self
+                .nodes_by_name(&sibling_base)?
+                .iter()
+                .find(|n| n.kind == "file" && n.file_path == sibling_path)
+            {
+                return Ok(ViaImport::Hit(KCand {
+                    node: sibling.clone(),
+                    confidence: 0.92,
+                    resolved_by: "import",
+                }));
+            }
+            let Some(resolved_path) =
+                self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)?
+            else {
+                return Ok(ViaImport::Miss);
+            };
+            let basename = pos_basename(&resolved_path).to_string();
+            if let Some(file_node) = self
+                .nodes_by_name(&basename)?
+                .iter()
+                .find(|n| n.kind == "file" && n.file_path == resolved_path)
+            {
+                return Ok(ViaImport::Hit(KCand {
+                    node: file_node.clone(),
+                    confidence: 0.9,
+                    resolved_by: "import",
+                }));
+            }
+            return Ok(ViaImport::Miss);
+        }
         // TS/JS path-shaped `imports` ref whose referenceName IS the module
         // specifier — the module ref of `import … from './x'` or a dynamic
         // `import('./x')` call site. Resolve the specifier (extension- and

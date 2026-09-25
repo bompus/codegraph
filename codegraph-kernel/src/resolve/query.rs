@@ -135,9 +135,9 @@ impl KernelResolver {
         v
     }
 
-    /// Compile-once-per-pattern regexes — the bare-call and store-bind
-    /// matchers build name-parameterized patterns per ref, and identical
-    /// names recur across thousands of refs.
+    /// A name-parameterized regex from the bounded process-wide cache. Only
+    /// the C++ declarator pattern still needs one (its greedy type-capture
+    /// prefix has no `Affix` split); every other per-name pattern is an Affix.
     pub(super) fn cached_regex(&mut self, pattern: &str) -> Result<Arc<Regex>> {
         shared_regex(pattern)
     }

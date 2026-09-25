@@ -353,6 +353,8 @@ mod bound;
 mod fields;
 mod method_call;
 mod pipeline;
+mod file_refs;
+mod rust_modules;
 use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
@@ -610,52 +612,6 @@ impl KernelResolver {
     }
 }
 
-
-impl KernelResolver {
-    /// First-max on strict `>` over `cands` (non-empty), the TS
-    /// candidates.reduce, then the target-kind gate and `finish`. Under active
-    /// frameworks the reported list keeps the ORIGINAL candidate order so the
-    /// TS merge can re-run the reduce with framework candidates prepended; a
-    /// gated-out winner still reports it, since a framework candidate may win
-    /// the merged first-max on the TS side.
-    fn settle(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>) -> Result<ResolveOutcome> {
-        let reported = self
-            .frameworks_active
-            .then(|| cands.iter().map(KernelCandidateOut::from).collect::<Vec<_>>());
-        let mut bi = 0usize;
-        for i in 1..cands.len() {
-            if cands[i].confidence > cands[bi].confidence {
-                bi = i;
-            }
-        }
-        let winner = cands.remove(bi);
-        match self.gate_target_kind(winner, r)? {
-            Some(w) => self.finish(r, w, reported, false),
-            None => Ok(ResolveOutcome { candidates: reported, ..ResolveOutcome::unresolved() }),
-        }
-    }
-
-    /// No kernel verdict: framework candidates may still exist on the TS
-    /// side, so report an empty list when frameworks are active.
-    fn refused(&self) -> ResolveOutcome {
-        if self.frameworks_active {
-            ResolveOutcome::no_candidates()
-        } else {
-            ResolveOutcome::unresolved()
-        }
-    }
-
-    /// A gated-out ≥0.9 import: only the full TS spine can tell whether a
-    /// ≥0.9 framework hit would have pre-empted it, so hand it back when
-    /// frameworks are live.
-    fn gated_import(&self) -> ResolveOutcome {
-        if self.frameworks_active {
-            ResolveOutcome::passthrough("gated-import")
-        } else {
-            ResolveOutcome::unresolved()
-        }
-    }
-}
 
 impl From<&KCand> for KernelCandidateOut {
     fn from(c: &KCand) -> Self {
