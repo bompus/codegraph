@@ -10,9 +10,6 @@ impl<'t> Walker<'t> {
             "val_definition" => ("varinit", "value"),
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node<'t>> = Vec::new();

@@ -289,7 +289,7 @@ impl<'t> Walker<'t> {
             let sig = util::slice_utf16(self.text(node).trim(), 100);
             let module = module.to_string();
             let imp = self.create_node("import", &module, node, Some(&sig));
-            if imp.is_some() && !self.stack.is_empty() {
+            if imp.is_some() {
                 let parent_row = self.top_row();
                 self.push_ref_at(parent_row, &module, "imports", node);
             }
@@ -520,9 +520,6 @@ impl<'t> Walker<'t> {
     // are visited by the ladder's recursion afterward.
 
     fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller_row = self.top_row();
         let func = node
             .child_by_field_name("function")

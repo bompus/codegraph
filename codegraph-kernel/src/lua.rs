@@ -274,7 +274,7 @@ impl<'t> Walker<'t> {
             call,
             Extra { signature: Some(sig), ..Default::default() },
         );
-        if imp.is_some() && !self.stack.is_empty() {
+        if imp.is_some() {
             let parent_row = self.top_row();
             self.push_ref_at(parent_row, module, "imports", call);
         }
@@ -688,9 +688,6 @@ impl<'t> Walker<'t> {
     // --- extractCall (3684; generic tail 4313, 4518-4532, 4572-4580) ------
 
     fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller_row = self.top_row();
         // The `function` field is NULL in this grammar → namedChild(0) (the
         // `name:` child). Member branch never fires (dot/method_index aren't
@@ -756,9 +753,6 @@ impl<'t> Walker<'t> {
             "field" => "value",
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node<'t>> = Vec::new();

@@ -73,13 +73,6 @@ struct Extra {
 
 
 
-/// Per-node metadata for the receiver-method owner lookup and
-/// findNodeByName (mirrors the TS scans over `this.nodes` — FIRST match
-/// wins, earlier-in-file only).
-struct NodeMeta {
-    kind: &'static str,
-    name: String,
-}
 
 pub struct Walker<'t> {
     src: &'t str,
@@ -88,7 +81,10 @@ pub struct Walker<'t> {
     arena: Arena,
     tables: Tables,
     stack: Vec<Scope>,
-    nodes_meta: Vec<NodeMeta>,
+    /// Type-like rows (struct/union/class/enum/trait) by name, in creation
+    /// order: the TS owner lookups scan `this.nodes` for the FIRST
+    /// earlier-in-file match of a kind set.
+    type_rows: HashMap<String, Vec<(u32, &'static str)>>,
     node_ids: Vec<String>,
     defined_fn_names: HashSet<String>,
     imported_names: HashSet<String>,
@@ -101,6 +97,11 @@ pub struct Walker<'t> {
 }
 
 impl<'t> Walker<'t> {
+    /// The first row named `name` whose kind is in `kinds`.
+    fn first_type_row(&self, name: &str, kinds: &[&str]) -> Option<u32> {
+        self.type_rows.get(name)?.iter().find(|(_, k)| kinds.contains(k)).map(|(row, _)| *row)
+    }
+
     fn new(src: &'t str, file_path: &'t str) -> Self {
         Walker {
             src,
@@ -109,7 +110,7 @@ impl<'t> Walker<'t> {
             arena: Arena::default(),
             tables: Tables::default(),
             stack: Vec::new(),
-            nodes_meta: Vec::new(),
+            type_rows: HashMap::new(),
             node_ids: Vec::new(),
             defined_fn_names: HashSet::new(),
             imported_names: HashSet::new(),
@@ -130,7 +131,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 
     let line_count = source.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
     let base_name = crate::buffers::push_file_node(&mut w.arena, &mut w.tables, file_path, line_count);
-    w.nodes_meta.push(NodeMeta { kind: "file", name: base_name.to_string() });
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
@@ -205,7 +205,9 @@ impl<'t> Walker<'t> {
             return_type: ret_ref,
             extra_json: NONE_STR,
         });
-        self.nodes_meta.push(NodeMeta { kind, name: name.to_string() });
+        if matches!(kind, "struct" | "union" | "class" | "enum" | "trait") {
+            self.type_rows.entry(name.to_string()).or_default().push((row, kind));
+        }
         self.node_ids.push(id);
 
         let parent_row = self.top_row();
@@ -429,14 +431,8 @@ impl<'t> Walker<'t> {
         // FIRST earlier-in-file struct/class/enum/trait of the receiver's name.
         if as_method && !self.inside_class_like() {
             if let Some(receiver) = &receiver {
-                let owner_row = self
-                    .nodes_meta
-                    .iter()
-                    .position(|m| {
-                        m.name == *receiver
-                            && matches!(m.kind, "struct" | "union" | "class" | "enum" | "trait")
-                    })
-                    .map(|i| i as u32);
+                let owner_row =
+                    self.first_type_row(receiver, &["struct", "union", "class", "enum", "trait"]);
                 if let Some(owner_row) = owner_row {
                     self.tables.push_edge(&EdgeRow {
                         source_idx: owner_row,
@@ -608,9 +604,6 @@ impl<'t> Walker<'t> {
 
     /// extractCall — the rust paths of the generic else-branch (4312+).
     fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let func = node
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
@@ -729,9 +722,6 @@ impl<'t> Walker<'t> {
     /// semantics: slice(lastDot+1) after a `::` leaves one `:`, then ONE
     /// leading `[:.]` is stripped).
     fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let ctor = node
             .child_by_field_name("constructor")
             .or_else(|| node.child_by_field_name("type"))
@@ -760,9 +750,6 @@ impl<'t> Walker<'t> {
             .filter_map(|i| node.named_child(i))
             .find(|c| c.kind() == "token_tree");
         let Some(token_tree) = token_tree else { return };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
         let refs_kind = crate::buffers::EDGE_REFERENCES;
 
@@ -885,11 +872,7 @@ impl<'t> Walker<'t> {
             return;
         };
 
-        let target_row = self
-            .nodes_meta
-            .iter()
-            .position(|m| m.name == type_name && matches!(m.kind, "struct" | "union" | "enum" | "class"))
-            .map(|i| i as u32);
+        let target_row = self.first_type_row(&type_name, &["struct", "union", "enum", "class"]);
         if let Some(target_row) = target_row {
             self.push_ref_at(target_row, &trait_name, crate::buffers::EDGE_IMPLEMENTS, trait_node);
         }

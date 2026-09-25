@@ -5,9 +5,6 @@ use super::*;
 impl<'t> Walker<'t> {
     /// extractCall — the C# branch (tree-sitter.ts:4502) + shared tail.
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller = self.top_row();
         let func = node
             .child_by_field_name("function")
@@ -61,9 +58,6 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let ctor = node
             .child_by_field_name("constructor")
             .or_else(|| node.child_by_field_name("type"))
@@ -123,9 +117,6 @@ impl<'t> Walker<'t> {
     /// member-access node with the `expression` receiver field.
     pub(super) fn extract_static_member_ref(&mut self, node: Node<'t>) {
         if node.kind() != "member_access_expression" {
-            return;
-        }
-        if self.stack.is_empty() {
             return;
         }
         let owner = self.top_row();

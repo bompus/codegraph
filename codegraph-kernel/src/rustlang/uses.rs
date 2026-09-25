@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// `prefix::seg`, or `seg` at the root.
+fn join_path(prefix: &str, seg: &str) -> String {
+    if prefix.is_empty() { seg.to_string() } else { format!("{prefix}::{seg}") }
+}
+
+/// A `scoped_use_list`'s prefix extended by its `path`, and its `use_list`.
+fn scoped_use_list_parts<'t>(w: &Walker<'t>, n: Node<'t>, prefix: &str) -> (String, Option<Node<'t>>) {
+    let seg = n.child_by_field_name("path").map(|p| w.text(p).trim()).unwrap_or("");
+    let new_prefix = if seg.is_empty() { prefix.to_string() } else { join_path(prefix, seg) };
+    let list = n.child_by_field_name("list").or_else(|| {
+        (0..n.named_child_count()).filter_map(|i| n.named_child(i)).find(|c| c.kind() == "use_list")
+    });
+    (new_prefix, list)
+}
+
 impl<'t> Walker<'t> {
     /// extractImport via the rust hook: import node named by the ROOT module +
     /// one generic root `imports` ref + per-binding FULL-path refs.
@@ -46,31 +61,13 @@ impl<'t> Walker<'t> {
     /// only `self`/`super`/`crate`/`*` are skipped.
     pub(super) fn emit_use_binding_refs(&mut self, node: Node<'t>, from_row: u32) {
         let mut paths: Vec<(String, Node)> = Vec::new();
-        fn join(prefix: &str, seg: &str) -> String {
-            if prefix.is_empty() { seg.to_string() } else { format!("{prefix}::{seg}") }
-        }
         fn collect<'t>(w: &Walker<'t>, n: Node<'t>, prefix: &str, paths: &mut Vec<(String, Node<'t>)>) {
             stack_guard!();
             match n.kind() {
-                "identifier" => paths.push((join(prefix, w.text(n)), n)),
-                "scoped_identifier" => {
-                    let full = w.text(n).trim();
-                    paths.push((
-                        if prefix.is_empty() { full.to_string() } else { format!("{prefix}::{full}") },
-                        n,
-                    ));
-                }
+                "identifier" => paths.push((join_path(prefix, w.text(n)), n)),
+                "scoped_identifier" => paths.push((join_path(prefix, w.text(n).trim()), n)),
                 "scoped_use_list" => {
-                    let seg = n
-                        .child_by_field_name("path")
-                        .map(|p| w.text(p).trim().to_string())
-                        .unwrap_or_default();
-                    let new_prefix = if seg.is_empty() { prefix.to_string() } else { join(prefix, &seg) };
-                    let list = n.child_by_field_name("list").or_else(|| {
-                        (0..n.named_child_count())
-                            .filter_map(|i| n.named_child(i))
-                            .find(|c| c.kind() == "use_list")
-                    });
+                    let (new_prefix, list) = scoped_use_list_parts(w, n, prefix);
                     if let Some(list) = list {
                         collect(w, list, &new_prefix, paths);
                     }
@@ -123,13 +120,6 @@ impl<'t> Walker<'t> {
     /// walk for function bodies): the row is the whole contribution — a
     /// function-local `use` still emits no import node or `imports` refs.
     pub(super) fn emit_use_bindings(&mut self, node: Node<'t>) {
-        fn join(prefix: &str, seg: &str) -> String {
-            if prefix.is_empty() {
-                seg.to_string()
-            } else {
-                format!("{prefix}::{seg}")
-            }
-        }
         fn last_seg(p: &str) -> &str {
             p.rsplit("::").next().unwrap_or(p)
         }
@@ -145,15 +135,10 @@ impl<'t> Walker<'t> {
             match n.kind() {
                 "identifier" => {
                     let seg = w.text(n);
-                    out.push((join(prefix, seg), seg.to_string(), n));
+                    out.push((join_path(prefix, seg), seg.to_string(), n));
                 }
                 "scoped_identifier" => {
-                    let full = w.text(n).trim();
-                    let spec = if prefix.is_empty() {
-                        full.to_string()
-                    } else {
-                        format!("{prefix}::{full}")
-                    };
+                    let spec = join_path(prefix, w.text(n).trim());
                     let local = last_seg(&spec).to_string();
                     out.push((spec, local, n));
                 }
@@ -166,12 +151,7 @@ impl<'t> Walker<'t> {
                         let spec = if p.kind() == "self" && !prefix.is_empty() {
                             prefix.to_string()
                         } else {
-                            let ptext = w.text(p).trim();
-                            if prefix.is_empty() {
-                                ptext.to_string()
-                            } else {
-                                format!("{prefix}::{ptext}")
-                            }
+                            join_path(prefix, w.text(p).trim())
                         };
                         out.push((spec, w.text(a).trim().to_string(), a));
                     } else if let Some(p) = p {
@@ -190,20 +170,7 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "scoped_use_list" => {
-                    let seg = n
-                        .child_by_field_name("path")
-                        .map(|p| w.text(p).trim().to_string())
-                        .unwrap_or_default();
-                    let new_prefix = if seg.is_empty() {
-                        prefix.to_string()
-                    } else {
-                        join(prefix, &seg)
-                    };
-                    let list = n.child_by_field_name("list").or_else(|| {
-                        (0..n.named_child_count())
-                            .filter_map(|i| n.named_child(i))
-                            .find(|c| c.kind() == "use_list")
-                    });
+                    let (new_prefix, list) = scoped_use_list_parts(w, n, prefix);
                     if let Some(list) = list {
                         collect(w, list, &new_prefix, out);
                     }
@@ -217,7 +184,7 @@ impl<'t> Walker<'t> {
                         .map(|c| w.text(c).trim().to_string())
                         .next()
                         .unwrap_or_default();
-                    let spec = join(prefix, &path_text);
+                    let spec = join_path(prefix, &path_text);
                     if !spec.is_empty() {
                         out.push((format!("{spec}::*"), "*".to_string(), n));
                     }

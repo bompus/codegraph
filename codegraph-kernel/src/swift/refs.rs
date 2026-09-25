@@ -17,9 +17,6 @@ impl<'t> Walker<'t> {
             "property_declaration" => Mode::Varinit, // field 'value'
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();

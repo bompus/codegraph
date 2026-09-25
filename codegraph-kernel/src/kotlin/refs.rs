@@ -13,9 +13,6 @@ impl<'t> Walker<'t> {
             "assignment" => Mode::Rhs, // NO field — RHS = LAST named child
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();

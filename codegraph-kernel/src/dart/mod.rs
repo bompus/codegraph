@@ -781,7 +781,7 @@ impl<'t> Walker<'t> {
             node,
             Extra { signature: Some(signature), ..Default::default() },
         );
-        if created.is_some() && !self.stack.is_empty() {
+        if created.is_some() {
             let parent_row = self.top_row();
             self.push_ref_at(parent_row, &module, "imports", node);
         }
@@ -953,10 +953,8 @@ impl<'t> Walker<'t> {
             self.extract_instantiation(node);
         } else if let Some(callee) = self.bare_call_name(node) {
             // extractBareCall (:5159-5173) — ref at the MATCHED node.
-            if !self.stack.is_empty() {
-                let caller_row = self.top_row();
-                self.push_ref_at(caller_row, &callee, "calls", node);
-            }
+            let caller_row = self.top_row();
+            self.push_ref_at(caller_row, &callee, "calls", node);
         }
 
         self.extract_static_member_ref(node);

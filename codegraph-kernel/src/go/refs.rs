@@ -13,9 +13,6 @@ impl<'t> Walker<'t> {
             "literal_value" => ("list", ""),
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();

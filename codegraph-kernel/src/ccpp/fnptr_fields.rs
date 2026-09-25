@@ -206,9 +206,6 @@ impl<'t> Walker<'t> {
         if !matches!(arg.kind(), "identifier" | "template_function" | "qualified_identifier") {
             return;
         }
-        if self.stack.is_empty() {
-            return;
-        }
         let caller_row = self.top_row();
         let target = strip_cpp_template_args(self.text(arg));
         if target.is_empty() || target == local_name {

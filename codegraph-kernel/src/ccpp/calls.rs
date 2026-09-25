@@ -4,9 +4,6 @@ use super::*;
 
 impl<'t> Walker<'t> {
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller_row = self.top_row();
         let func = node
             .child_by_field_name("function")
@@ -151,9 +148,6 @@ impl<'t> Walker<'t> {
     /// extractInstantiation: `new Foo(...)` and stack constructions (both
     /// read the type from the `type` field; template args + qualifiers strip).
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
         let ctor = node
             .child_by_field_name("constructor")
@@ -197,9 +191,6 @@ impl<'t> Walker<'t> {
     /// simple receiver's value read.
     pub(super) fn extract_static_member_ref(&mut self, node: Node<'t>) {
         if self.variant != Variant::Cpp {
-            return;
-        }
-        if self.stack.is_empty() {
             return;
         }
         if !matches!(node.kind(), "field_expression" | "qualified_identifier") {

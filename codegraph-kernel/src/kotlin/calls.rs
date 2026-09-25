@@ -7,9 +7,6 @@ impl<'t> Walker<'t> {
     /// re-encode) and the raw-text else (paren-then-lambda / glued-invoke
     /// garbage preserved).
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller = self.top_row();
         let func = node
             .child_by_field_name("function")
@@ -96,9 +93,6 @@ impl<'t> Walker<'t> {
     /// — not a member-access kind — and emit nothing).
     pub(super) fn extract_static_member_ref(&mut self, node: Node<'t>) {
         if node.kind() != "navigation_expression" {
-            return;
-        }
-        if self.stack.is_empty() {
             return;
         }
         let owner = self.top_row();

@@ -4,9 +4,6 @@ use super::*;
 
 impl<'t> Walker<'t> {
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller_row = self.top_row();
         let func = node
             .child_by_field_name("function")
@@ -82,9 +79,6 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let from_row = self.top_row();
         let ctor = node
             .child_by_field_name("constructor")
@@ -98,9 +92,6 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_static_member_ref(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let owner_row = self.top_row();
         // MEMBER_ACCESS_TYPES — only field_expression occurs in scala trees.
         if !matches!(

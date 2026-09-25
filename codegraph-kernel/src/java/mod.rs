@@ -719,9 +719,6 @@ impl<'t> Walker<'t> {
 
     /// extractCall — the Java method_invocation paths.
     fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller = self.top_row();
         let name_field = node.child_by_field_name("name");
         let object_field = node
@@ -787,9 +784,6 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let ctor = node
             .child_by_field_name("constructor")
             .or_else(|| node.child_by_field_name("type"))
@@ -841,9 +835,6 @@ impl<'t> Walker<'t> {
     /// extractStaticMemberRef — `Type.CONST` value reads (java: field_access).
     fn extract_static_member_ref(&mut self, node: Node<'t>) {
         if node.kind() != "field_access" {
-            return;
-        }
-        if self.stack.is_empty() {
             return;
         }
         let owner = self.top_row();
