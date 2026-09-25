@@ -45,7 +45,7 @@ impl KernelResolver {
                 // An unbounded or self declaration shadows any outer bound.
                 return match bound_re.captures(declaration) {
                     Some(m) if &m[1] != ty => {
-                        let mut site = Self::ref_clone(r);
+                        let mut site = r.clone();
                         site.line = scope.start_line;
                         site.column = scope.start_column;
                         self.resolve_bound_type(&m[1], &site, depth + 1)
@@ -63,7 +63,7 @@ impl KernelResolver {
         let mut owner_id: Option<String> = None;
         if let Some(b) = binding {
             if b.kind == "import" {
-                let mut ref2 = Self::ref_clone(r);
+                let mut ref2 = r.clone();
                 ref2.reference_name = ty.to_string();
                 ref2.reference_kind = "references".to_string();
                 let hit = if ty.contains('.') {
@@ -77,7 +77,7 @@ impl KernelResolver {
                 };
                 owner_id = hit.map(|c| c.node.id.clone());
                 if owner_id.is_none() {
-                    let mut ref3 = Self::ref_clone(r);
+                    let mut ref3 = r.clone();
                     ref3.reference_name =
                         b.target_spec.clone().unwrap_or_else(|| ty.to_string());
                     ref3.reference_kind = "imports".to_string();
@@ -89,10 +89,7 @@ impl KernelResolver {
                 owner_id = b.node_id.clone();
             }
         }
-        let mut owner: Option<Arc<KNode>> = match &owner_id {
-            Some(id) => self.node_by_id(id)?,
-            None => None,
-        };
+        let mut owner: Option<Arc<KNode>> = self.node_by_opt_id(owner_id.as_deref())?;
         if binding.is_some_and(|b| b.kind == "import") && r.language == "php" {
             if let Some(spec) = binding.and_then(|b| b.target_spec.clone()) {
                 let stripped = spec.strip_prefix('\\').unwrap_or(&spec);
@@ -385,7 +382,7 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Result<McRes> {
-        let mut site = Self::ref_clone(r);
+        let mut site = r.clone();
         let bindings = self.bindings(&r.file_path)?;
         let mut binding = Self::innermost_binding(&bindings, receiver, Some(r.line)).cloned();
         if binding.is_none() {
@@ -425,10 +422,7 @@ impl KernelResolver {
             LazyLock::new(|| Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)", true, false, false));
         static VAR_TYPE: LazyLock<Affix> =
             LazyLock::new(|| Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", true, false, false));
-        let value = match &binding.node_id {
-            Some(id) => self.node_by_id(id)?,
-            None => None,
-        };
+        let value = self.node_by_opt_id(binding.node_id.as_deref())?;
         let ty = if binding.kind == "param" {
             PARAM_TYPE.capture(&declaration, receiver).map(str::to_string)
         } else {
@@ -444,7 +438,7 @@ impl KernelResolver {
             }
         };
         if let Some(ty) = ty {
-            let mut bsite = Self::ref_clone(&site);
+            let mut bsite = site.clone();
             bsite.line = binding.line;
             return self.match_bound_type_member(&ty, method, &bsite);
         }
@@ -462,7 +456,7 @@ impl KernelResolver {
                 continue;
             }
             let name = caps[2].to_string();
-            let mut factory_site = Self::ref_clone(&site);
+            let mut factory_site = site.clone();
             factory_site.line = binding.line;
             factory_site.reference_name = name.clone();
             let factory_binding = Self::innermost_binding(
@@ -524,7 +518,7 @@ impl KernelResolver {
             let callee = callee.unwrap();
             let ret = callee.return_type.clone().unwrap();
             let stripped = ret.strip_prefix('*').unwrap_or(&ret);
-            let mut tsite = Self::ref_clone(r);
+            let mut tsite = r.clone();
             tsite.file_path = callee.file_path.clone();
             tsite.line = callee.start_line;
             return self.match_bound_type_member(stripped, method, &tsite);

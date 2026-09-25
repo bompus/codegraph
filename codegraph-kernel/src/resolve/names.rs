@@ -400,17 +400,7 @@ impl KernelResolver {
 
     /// pathProximityFromDirs + computePathProximity (name-matcher.ts).
     pub(super) fn path_proximity_from_dirs(dir1: &[String], file_path2: &str) -> i64 {
-        let mut dir2: Vec<&str> = file_path2.split('/').collect();
-        dir2.pop();
-        let mut shared = 0i64;
-        for i in 0..dir1.len().min(dir2.len()) {
-            if dir1[i] == dir2[i] {
-                shared += 1;
-            } else {
-                break;
-            }
-        }
-        (shared * 15).min(80)
+        (shared_dir_prefix(dir1, file_path2) as i64 * 15).min(80)
     }
 
     pub(super) fn compute_path_proximity(file_path1: &str, file_path2: &str) -> i64 {

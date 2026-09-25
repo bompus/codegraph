@@ -129,6 +129,7 @@ pub struct KernelResolverConfig {
 /// One unresolved_refs row — mirrors UnresolvedReference/rowId shape so the
 /// TS side can feed passthrough refs straight into the existing pipeline.
 #[napi(object)]
+#[derive(Clone)]
 pub struct ResolveRefIn {
     pub row_id: Option<i64>,
     pub from_node_id: String,
