@@ -1153,7 +1153,6 @@ struct KNode {
     start_line: i64,
     end_line: i64,
     start_column: i64,
-    #[allow(dead_code)]
     end_column: i64,
     signature: Option<String>,
     visibility: Option<String>,
@@ -1496,8 +1495,6 @@ struct KBinding {
     target_spec: Option<String>,
     target_name: Option<String>,
     exported_as: Option<String>,
-    #[allow(dead_code)]
-    export_form: Option<String>,
     scope_start: i64,
     scope_end: i64,
     storage: Option<String>,
@@ -1964,6 +1961,14 @@ enum BoundClaim {
     Punt(&'static str),
 }
 
+/// method_call_shape's answer: settled already, or the parsed receiver
+/// shape for the caller's own arm.
+enum McShape {
+    Done(McRes),
+    /// `dotted`: the `recv.method` shape (dotMatch) matched.
+    Parsed { receiver: String, method: String, inferable: bool, dotted: bool },
+}
+
 /// Tri-state inside the ported matchMethodCall helpers: a positive match, a
 /// provable `null` (the caller maps it to continue/refuse exactly like TS), or
 /// a punt when the next step needs state the snapshot can't see — live
@@ -1975,9 +1980,8 @@ enum McRes {
 }
 
 /// resolveBoundType outcome: the resolved owner node, a provable no-owner, or
-/// a punt when a reachable sub-arm is unported (e.g. the JVM FQN fallback
-/// needs a qualified-name lookup the enclosing call can't reach — kept for
-/// symmetry; resolveJvmImport is ported so this is currently unused-defensive).
+/// a punt when a reachable sub-arm is unported (the JVM FQN fallback needs a
+/// qualified-name lookup the enclosing call can't reach).
 enum BtRes {
     Owner(Arc<KNode>),
     Null,
@@ -2425,7 +2429,7 @@ impl KernelResolver {
             .conn()?
             .prepare(
                 "SELECT file_path, name, kind, node_id, target_spec, target_name, \
-                 exported_as, export_form, scope_start, scope_end, storage, line \
+                 exported_as, scope_start, scope_end, storage, line \
                  FROM bindings WHERE file_path = ?1 ORDER BY rowid",
             )
             .map_err(|e| Error::from_reason(e.to_string()))?;
@@ -2438,7 +2442,6 @@ impl KernelResolver {
                     target_spec: row.get("target_spec")?,
                     target_name: row.get("target_name")?,
                     exported_as: row.get("exported_as")?,
-                    export_form: row.get("export_form")?,
                     scope_start: row.get("scope_start")?,
                     scope_end: row.get("scope_end")?,
                     storage: row.get("storage")?,
@@ -2682,14 +2685,14 @@ impl KernelResolver {
                 .or_else(|| export_index.default_binding.clone())
                 .or_else(|| export_index.default_fn_class.clone());
             if let Some(d) = direct {
-                return self.memo_symbol(memo_key, d.clone());
+                return self.memo_symbol_opt(memo_key, Some(d.clone()));
             }
         } else if want.is_namespace && want.member_name.is_some() {
             if let Some(d) = export_index.by_name.get(want.member_name.as_deref().unwrap()) {
-                return self.memo_symbol(memo_key, d.clone());
+                return self.memo_symbol_opt(memo_key, Some(d.clone()));
             }
         } else if let Some(d) = export_index.by_name.get(&want.exported_name) {
-            return self.memo_symbol(memo_key, d.clone());
+            return self.memo_symbol_opt(memo_key, Some(d.clone()));
         }
 
         // Python module-level imports are public bindings — same walk.
@@ -2798,9 +2801,6 @@ impl KernelResolver {
         self.memo_symbol_opt(memo_key, None)
     }
 
-    fn memo_symbol(&mut self, key: Option<String>, n: Arc<KNode>) -> Result<Option<Arc<KNode>>> {
-        self.memo_symbol_opt(key, Some(n))
-    }
     fn memo_symbol_opt(
         &mut self,
         key: Option<String>,
@@ -3021,9 +3021,6 @@ impl KernelResolver {
         false
     }
 
-    /// hasAnyPossibleMatch reduced to the bare-name form: every separator-
-    /// dependent arm (dot/colon/slash/`$`/path) is dead by definition of
-    /// `is_bare_name`, leaving the direct known-name check.
     /// hasAnyPossibleMatch (index.ts) — the full check: direct name, then the
     /// receiver/member segments around `.`/`::`/`:`/`$`, then the path tail.
     /// Every separator branch is dead for bare names (the previous callers'
@@ -4011,10 +4008,7 @@ impl KernelResolver {
             .unwrap_or_else(|| Rc::new(Vec::new()));
         let mut is_trait = false;
         let mut i = candidate.start_line.saturating_sub(2);
-        loop {
-            if i < 0 {
-                break;
-            }
+        while i >= 0 {
             let line = lines.get(i as usize).map(|s| s.as_str()).unwrap_or("");
             if thread_regex(&IMPL_RE).is_match(line) {
                 let stripped = line.split("//").next().unwrap_or("");
@@ -4025,9 +4019,6 @@ impl KernelResolver {
                 break;
             }
             i -= 1;
-            if i < 0 {
-                break;
-            }
         }
         self.rust_trait_memo.insert(candidate.id.clone(), is_trait);
         Ok(is_trait)
@@ -4560,11 +4551,7 @@ impl KernelResolver {
                 None => {
                     // A gated-out ≥0.9 import can still lose to a ≥0.9
                     // framework hit — only the full TS spine distinguishes.
-                    return Ok(if self.frameworks_active {
-                        ResolveOutcome::passthrough("gated-import")
-                    } else {
-                        ResolveOutcome::unresolved()
-                    });
+                    return Ok(self.gated_import());
                 }
             };
             return self.finish(r, winner, None, true);
@@ -4601,11 +4588,7 @@ impl KernelResolver {
         // in TS, it first-maxes against framework candidates. Under active
         // frameworks report it for the merge instead of verdicting.
         if self.frameworks_active {
-            let reported = vec![KernelCandidateOut {
-                target_node_id: winner.node.id.clone(),
-                confidence: winner.confidence,
-                resolved_by: winner.resolved_by.to_string(),
-            }];
+            let reported = vec![KernelCandidateOut::from(&winner)];
             return self.finish(r, winner, Some(reported), false);
         }
         self.finish(r, winner, None, false)
@@ -6012,11 +5995,7 @@ impl KernelResolver {
         if let Some(ty) = ty {
             let mut bsite = Self::ref_clone(&site);
             bsite.line = binding.line;
-            return Ok(match self.match_bound_type_member(&ty, method, &bsite)? {
-                McRes::Hit(c) => McRes::Hit(c),
-                McRes::Null => McRes::Null,
-                McRes::Punt(p) => McRes::Punt(p),
-            });
+            return self.match_bound_type_member(&ty, method, &bsite);
         }
         if binding.kind == "param" {
             return Ok(McRes::Null);
@@ -6097,11 +6076,7 @@ impl KernelResolver {
             let mut tsite = Self::ref_clone(r);
             tsite.file_path = callee.file_path.clone();
             tsite.line = callee.start_line;
-            return Ok(match self.match_bound_type_member(stripped, method, &tsite)? {
-                McRes::Hit(c) => McRes::Hit(c),
-                McRes::Null => McRes::Null,
-                McRes::Punt(p) => McRes::Punt(p),
-            });
+            return self.match_bound_type_member(stripped, method, &tsite);
         }
         Ok(McRes::Null)
     }
@@ -6274,15 +6249,11 @@ impl KernelResolver {
                 let mut bsite = Self::ref_clone(r);
                 bsite.file_path = owner.file_path.clone();
                 bsite.line = owner.start_line;
-                return Ok(match self.match_bound_type_member(
+                return self.match_bound_type_member(
                     m1,
                     method,
                     &bsite,
-                )? {
-                    McRes::Hit(c) => McRes::Hit(c),
-                    McRes::Null => McRes::Null,
-                    McRes::Punt(p) => McRes::Punt(p),
-                });
+                );
             }
         }
         Ok(McRes::Null)
@@ -7087,11 +7058,7 @@ impl KernelResolver {
         let mut site = Self::ref_clone(r);
         site.file_path = callee.file_path.clone();
         site.line = callee.start_line;
-        Ok(match self.match_bound_type_member(&ty, method, &site)? {
-            McRes::Hit(c) => McRes::Hit(c),
-            McRes::Null => McRes::Null,
-            McRes::Punt(p) => McRes::Punt(p),
-        })
+        self.match_bound_type_member(&ty, method, &site)
     }
 
     /// Cheap raw-source gate for inferEsmAwaitedCallType — the awaited arm can
@@ -7167,11 +7134,13 @@ impl KernelResolver {
         })
     }
 
-    /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
-    /// boundReceiver evidence slice. Punt points: php instanceof guards,
-    /// go/kotlin iteration constructs, ESM awaited inference, and every
-    /// member-miss that would walk live supertype edges.
-    fn match_method_call(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    /// The shared head of matchMethodCall's two arms: the PHP
+    /// `$this->prop.method` declared-type path and the Rust `Self::item` path
+    /// (both settle here), then the receiver/method split —
+    /// `dotMatch || colonMatch || luaColonMatch || rDollarMatch`. Every shape
+    /// but `::` is a receiver whose type the local declaration can name
+    /// (`inferable`).
+    fn method_call_shape(&mut self, r: &ResolveRefIn) -> Result<McShape> {
         // PHP `$this->prop->method()` — exclusive declared-type path.
         if r.language == "php" {
             let re = re!(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$");
@@ -7181,17 +7150,17 @@ impl KernelResolver {
                 let Some(inferred) =
                     self.infer_local_receiver_type(&receiver, r, false)?
                 else {
-                    return Ok(McRes::Null);
+                    return Ok(McShape::Done(McRes::Null));
                 };
                 let fqn = self.imported_fqn_of(&inferred, r)?;
-                return self.resolve_method_on_type(
+                return Ok(McShape::Done(self.resolve_method_on_type(
                     &inferred,
                     &php_method,
                     r,
                     0.9,
                     "instance-method",
                     fqn.as_deref(),
-                );
+                )?));
             }
         }
 
@@ -7199,7 +7168,7 @@ impl KernelResolver {
         // caller's impl owner. Before the `!matched` bail so deeper paths
         // (`Self::Assoc::m`) reach it; a miss falls through like TS.
         if let McRes::Hit(c) = self.match_rust_self_path(r)? {
-            return Ok(McRes::Hit(c));
+            return Ok(McShape::Done(McRes::Hit(c)));
         }
 
         let dot_re = re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
@@ -7213,7 +7182,7 @@ impl KernelResolver {
         // `match = dotMatch || colonMatch || luaColonMatch || rDollarMatch`;
         // every shape but `::` is a receiver whose type the local declaration
         // can name (`inferableReceiver`).
-        let (object_or_class, method_name, inferable) = if let Some(m) = dot_match.as_ref() {
+        let (receiver, method, inferable) = if let Some(m) = dot_match.as_ref() {
             (m[1].to_string(), m[2].to_string(), true)
         } else if let Some(m) = colon_match.as_ref() {
             (m[1].to_string(), m[2].to_string(), false)
@@ -7222,7 +7191,19 @@ impl KernelResolver {
         {
             (recv, method, true)
         } else {
-            return Ok(McRes::Null);
+            return Ok(McShape::Done(McRes::Null));
+        };
+        Ok(McShape::Parsed { receiver, method, inferable, dotted: dot_match.is_some() })
+    }
+
+    /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
+    /// boundReceiver evidence slice. Punt points: php instanceof guards,
+    /// go/kotlin iteration constructs, ESM awaited inference, and every
+    /// member-miss that would walk live supertype edges.
+    fn match_method_call(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+        let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {
+            McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
+            McShape::Done(res) => return Ok(res),
         };
 
         let bindings = self.bindings(&r.file_path)?;
@@ -7288,23 +7269,19 @@ impl KernelResolver {
                 if let Some(b) = &binding {
                     bsite.line = b.line;
                 }
-                return Ok(match self.match_bound_type_member(&t, &method_name, &bsite)? {
-                    McRes::Hit(c) => McRes::Hit(c),
-                    McRes::Null => McRes::Null,
-                    McRes::Punt(p) => McRes::Punt(p),
-                });
+                return self.match_bound_type_member(&t, &method_name, &bsite);
             }
         }
 
         // Go 2-hop field chain — exclusive branch.
-        if r.language == "go" && dot_match.is_some() && object_or_class.contains('.') {
+        if r.language == "go" && dotted && object_or_class.contains('.') {
             return self.match_go_field_chain_call(&object_or_class, &method_name, r);
         }
         // rust field/self arms: rust is unmigrated — dead.
         // this.field arms: `this.` receivers are excluded by the claim gate —
         // dead inside boundReceiver.
 
-        if (r.language == "java" || r.language == "kotlin") && dot_match.is_some() {
+        if (r.language == "java" || r.language == "kotlin") && dotted {
             if let Some(inferred) =
                 self.infer_java_field_receiver_type(&object_or_class, r)?
             {
@@ -7325,7 +7302,7 @@ impl KernelResolver {
         }
 
         // mc-literal — OBJECT_LITERAL_LANGUAGES is the ESM set.
-        if dot_match.is_some()
+        if dotted
             && !object_or_class.contains('.')
             && is_object_literal_language(&r.language)
         {
@@ -7387,55 +7364,11 @@ impl KernelResolver {
     /// the btm terminal) never run here — inferred types terminal-match via
     /// rmot, and the name-similarity strategies close the arm.
     fn match_method_call_free(&mut self, r: &ResolveRefIn) -> Result<McRes> {
-        // PHP `$this->prop.method` — exclusive declared-type path,
-        // unconditional in both modes.
-        if r.language == "php" {
-            let re = re!(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$");
-            if let Some(m) = re.captures(&r.reference_name) {
-                let receiver = m[1].to_string();
-                let php_method = m[2].to_string();
-                let Some(inferred) =
-                    self.infer_local_receiver_type(&receiver, r, false)?
-                else {
-                    return Ok(McRes::Null);
-                };
-                let fqn = self.imported_fqn_of(&inferred, r)?;
-                return self.resolve_method_on_type(
-                    &inferred,
-                    &php_method,
-                    r,
-                    0.9,
-                    "instance-method",
-                    fqn.as_deref(),
-                );
-            }
-        }
-
-        // Rust `Self::item` — associated-item path binding `Self` to the
-        // caller's impl owner. Before the `!matched` bail so deeper paths
-        // (`Self::Assoc::m`) reach it; a miss falls through like TS.
-        if let McRes::Hit(c) = self.match_rust_self_path(r)? {
-            return Ok(McRes::Hit(c));
-        }
-
-        let dot_re = re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
-        let mut dot_match = dot_re.captures(&r.reference_name);
-        if dot_match.is_none() && r.language == "cpp" {
-            let op_re = re!(r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$");
-            dot_match = op_re.captures(&r.reference_name);
-        }
-        let colon_match = re!(r"^([A-Za-z0-9_]+)::([A-Za-z0-9_]+)$")
-            .captures(&r.reference_name);
-        let (object_or_class, method_name, inferable) = if let Some(m) = dot_match.as_ref() {
-            (m[1].to_string(), m[2].to_string(), true)
-        } else if let Some(m) = colon_match.as_ref() {
-            (m[1].to_string(), m[2].to_string(), false)
-        } else if let Some((recv, method)) =
-            self.lua_colon_shape(r)?.or(self.r_dollar_shape(r)?)
-        {
-            (recv, method, true)
-        } else {
-            return Ok(McRes::Null);
+        // PHP `$this->prop.method` takes the declared-type path in both
+        // modes (inside method_call_shape).
+        let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {
+            McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
+            McShape::Done(res) => return Ok(res),
         };
 
         if inferable {
@@ -7496,13 +7429,13 @@ impl KernelResolver {
         }
 
         // Go 2-hop field chain — EXCLUSIVE for chained Go receivers.
-        if r.language == "go" && dot_match.is_some() && object_or_class.contains('.') {
+        if r.language == "go" && dotted && object_or_class.contains('.') {
             return self.match_go_field_chain_call(&object_or_class, &method_name, r);
         }
         // Rust `self.<field>.<method>` — EXCLUSIVE: validated field-type
         // inference or nothing (a null is the ref's verdict, not a fall-
         // through — the bare-name strategies fabricate this shape).
-        if r.language == "rust" && dot_match.is_some() && object_or_class.starts_with("self.") {
+        if r.language == "rust" && dotted && object_or_class.starts_with("self.") {
             return self.match_rust_self_field_call(
                 &object_or_class["self.".len()..],
                 &method_name,
@@ -7511,14 +7444,14 @@ impl KernelResolver {
         }
         // Rust `self.<method>` — EXCLUSIVE for the same reason: the owner
         // is the enclosing impl type on the caller's qualified name.
-        if r.language == "rust" && dot_match.is_some() && object_or_class == "self" {
+        if r.language == "rust" && dotted && object_or_class == "self" {
             return self.match_rust_self_call(&method_name, r);
         }
 
         // TS/JS `this.field.method` — EXCLUSIVE; the field's declared type
         // off the enclosing class, validated by rmot, or nothing.
         if matches!(r.language.as_str(), "typescript" | "javascript" | "tsx" | "jsx")
-            && dot_match.is_some()
+            && dotted
             && object_or_class.starts_with("this.")
         {
             return self.match_ts_this_field_call(
@@ -7530,7 +7463,7 @@ impl KernelResolver {
 
         // Java/Kotlin field receiver inference — non-exclusive (a miss still
         // reaches the name strategies, exactly like TS).
-        if (r.language == "java" || r.language == "kotlin") && dot_match.is_some() {
+        if (r.language == "java" || r.language == "kotlin") && dotted {
             if let Some(inferred) =
                 self.infer_java_field_receiver_type(&object_or_class, r)?
             {
@@ -7553,7 +7486,7 @@ impl KernelResolver {
         // Object-literal namespace receiver — same-file const/variable
         // holders; under requireReceiverEvidence=false there is no binding
         // filter — every holder gets its object-literal member scan.
-        if dot_match.is_some()
+        if dotted
             && !object_or_class.contains('.')
             && is_object_literal_language(&r.language)
         {
@@ -8562,41 +8495,25 @@ impl KernelResolver {
                     return Ok(ResolveOutcome::passthrough(reason));
                 }
                 BoundClaim::Refused => {
-                    return Ok(if self.frameworks_active {
-                        ResolveOutcome::no_candidates()
-                    } else {
-                        ResolveOutcome::unresolved()
-                    });
+                    return Ok(self.refused());
                 }
                 BoundClaim::Hit(c) => {
                     let gated = self.gate_language(Some(c), r);
                     return match gated {
                         Some(cand) => {
                             let Some(winner) = self.gate_target_kind(cand, r)? else {
-                                return Ok(if self.frameworks_active {
-                                    ResolveOutcome::no_candidates()
-                                } else {
-                                    ResolveOutcome::unresolved()
-                                });
+                                return Ok(self.refused());
                             };
                             if self.frameworks_active {
                                 // Framework <0.9 candidates merge first-max;
                                 // a ≥0.9 framework hit would have pre-empted.
-                                let reported = vec![KernelCandidateOut {
-                                    target_node_id: winner.node.id.clone(),
-                                    confidence: winner.confidence,
-                                    resolved_by: winner.resolved_by.to_string(),
-                                }];
+                                let reported = vec![KernelCandidateOut::from(&winner)];
                                 self.finish(r, winner, Some(reported), false)
                             } else {
                                 self.finish(r, winner, None, true)
                             }
                         }
-                        None => Ok(if self.frameworks_active {
-                            ResolveOutcome::no_candidates()
-                        } else {
-                            ResolveOutcome::unresolved()
-                        }),
+                        None => Ok(self.refused()),
                     };
                 }
             }
@@ -8628,11 +8545,7 @@ impl KernelResolver {
                 if let Some(c) = self.gate_language(Some(c), r) {
                     if c.confidence >= 0.9 {
                         let Some(winner) = self.gate_target_kind(c, r)? else {
-                            return Ok(if self.frameworks_active {
-                                ResolveOutcome::passthrough("gated-import")
-                            } else {
-                                ResolveOutcome::unresolved()
-                            });
+                            return Ok(self.gated_import());
                         };
                         return self.finish(r, winner, None, true);
                     }
@@ -8678,33 +8591,7 @@ impl KernelResolver {
             // nameMatch's remaining arms may still hit — the ref goes back.
             return Ok(ResolveOutcome::passthrough("member-tail"));
         }
-        let reported = self.frameworks_active.then(|| {
-            cands
-                .iter()
-                .map(|c| KernelCandidateOut {
-                    target_node_id: c.node.id.clone(),
-                    confidence: c.confidence,
-                    resolved_by: c.resolved_by.to_string(),
-                })
-                .collect::<Vec<_>>()
-        });
-        let mut bi = 0usize;
-        for i in 1..cands.len() {
-            if cands[i].confidence > cands[bi].confidence {
-                bi = i;
-            }
-        }
-        let winner = cands.remove(bi);
-        let winner = match self.gate_target_kind(winner, r)? {
-            Some(w) => w,
-            None => {
-                return Ok(ResolveOutcome {
-                    candidates: reported,
-                    ..ResolveOutcome::unresolved()
-                });
-            }
-        };
-        self.finish(r, winner, reported, false)
+        self.settle(r, cands)
     }
 
     // -----------------------------------------------------------------------
@@ -9415,11 +9302,7 @@ impl KernelResolver {
                     // the early return — but a ≥0.9 framework hit would have
                     // pre-empted the import entirely. Only the full TS spine
                     // can distinguish; hand it back when frameworks are live.
-                    return Ok(if self.frameworks_active {
-                        ResolveOutcome::passthrough("gated-import")
-                    } else {
-                        ResolveOutcome::unresolved()
-                    });
+                    return Ok(self.gated_import());
                 }
             };
             return self.finish(r, winner, None, true);
@@ -9437,48 +9320,10 @@ impl KernelResolver {
 
         if cands.is_empty() {
             // The chain/php-prop defer arms need `().`/`this->` — dead.
-            return Ok(if self.frameworks_active {
-                // Framework candidates may still exist on the TS side —
-                // report an empty candidate list rather than a verdict.
-                ResolveOutcome::no_candidates()
-            } else {
-                ResolveOutcome::unresolved()
-            });
+            return Ok(self.refused());
         }
-
-        // First-max on strict `>` — matches the TS candidates.reduce. The
-        // reported list keeps the ORIGINAL candidate order [import?, name?]
-        // so the TS merge can re-run the reduce with framework candidates
-        // prepended.
-        let reported = self.frameworks_active.then(|| {
-            cands
-                .iter()
-                .map(|c| KernelCandidateOut {
-                    target_node_id: c.node.id.clone(),
-                    confidence: c.confidence,
-                    resolved_by: c.resolved_by.to_string(),
-                })
-                .collect::<Vec<_>>()
-        });
-        let mut bi = 0usize;
-        for i in 1..cands.len() {
-            if cands[i].confidence > cands[bi].confidence {
-                bi = i;
-            }
-        }
-        let winner = cands.remove(bi);
-        let winner = match self.gate_target_kind(winner, r)? {
-            Some(w) => w,
-            None => {
-                // A gated-out kernel winner does not preclude a framework
-                // candidate winning the merged first-max on the TS side.
-                return Ok(ResolveOutcome {
-                    candidates: reported,
-                    ..ResolveOutcome::unresolved()
-                });
-            }
-        };
-        self.finish(r, winner, reported, false)
+        // Candidate order is [import?, name?] — see settle.
+        self.settle(r, cands)
     }
 
     /// Apply resolveOne's tail — the `calls` alias forward — and emit the
@@ -9517,6 +9362,62 @@ impl KernelResolver {
             is_final,
             candidates,
         ))
+    }
+}
+
+impl KernelResolver {
+    /// First-max on strict `>` over `cands` (non-empty), the TS
+    /// candidates.reduce, then the target-kind gate and `finish`. Under active
+    /// frameworks the reported list keeps the ORIGINAL candidate order so the
+    /// TS merge can re-run the reduce with framework candidates prepended; a
+    /// gated-out winner still reports it, since a framework candidate may win
+    /// the merged first-max on the TS side.
+    fn settle(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>) -> Result<ResolveOutcome> {
+        let reported = self
+            .frameworks_active
+            .then(|| cands.iter().map(KernelCandidateOut::from).collect::<Vec<_>>());
+        let mut bi = 0usize;
+        for i in 1..cands.len() {
+            if cands[i].confidence > cands[bi].confidence {
+                bi = i;
+            }
+        }
+        let winner = cands.remove(bi);
+        match self.gate_target_kind(winner, r)? {
+            Some(w) => self.finish(r, w, reported, false),
+            None => Ok(ResolveOutcome { candidates: reported, ..ResolveOutcome::unresolved() }),
+        }
+    }
+
+    /// No kernel verdict: framework candidates may still exist on the TS
+    /// side, so report an empty list when frameworks are active.
+    fn refused(&self) -> ResolveOutcome {
+        if self.frameworks_active {
+            ResolveOutcome::no_candidates()
+        } else {
+            ResolveOutcome::unresolved()
+        }
+    }
+
+    /// A gated-out ≥0.9 import: only the full TS spine can tell whether a
+    /// ≥0.9 framework hit would have pre-empted it, so hand it back when
+    /// frameworks are live.
+    fn gated_import(&self) -> ResolveOutcome {
+        if self.frameworks_active {
+            ResolveOutcome::passthrough("gated-import")
+        } else {
+            ResolveOutcome::unresolved()
+        }
+    }
+}
+
+impl From<&KCand> for KernelCandidateOut {
+    fn from(c: &KCand) -> Self {
+        KernelCandidateOut {
+            target_node_id: c.node.id.clone(),
+            confidence: c.confidence,
+            resolved_by: c.resolved_by.to_string(),
+        }
     }
 }
 

@@ -13,6 +13,7 @@ use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
+use crate::textutil::{is_builtin_type, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -35,22 +36,6 @@ fn is_non_class_return(kind: &str) -> bool {
     matches!(kind, "void_type" | "integral_type" | "floating_point_type" | "boolean_type")
 }
 
-/// BUILTIN_TYPES (tree-sitter.ts) — shared table; only the Java-relevant names
-/// fire here but membership is what the TS code tests.
-fn is_builtin_type(name: &str) -> bool {
-    matches!(
-        name,
-        "string" | "number" | "boolean" | "void" | "null" | "undefined" | "never" | "any"
-            | "unknown" | "object" | "symbol" | "bigint" | "true" | "false"
-            | "str" | "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" | "char"
-            | "int" | "long" | "short" | "byte" | "float" | "double"
-            | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
-            | "float32" | "float64" | "complex64" | "complex128" | "rune" | "error"
-            | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
-            | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
-    )
-}
 
 /// LOMBOK_LOG_ANNOTATIONS (languages/java.ts).
 fn has_ann(anns: &[String], name: &str) -> bool {
@@ -72,10 +57,6 @@ fn generic_args_re() -> &'static Regex {
 fn simple_ident_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-fn capitalized_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
 }
 fn method_ref_type_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -266,21 +247,7 @@ impl<'t> Walker<'t> {
     }
     markdown_refs_impl!();
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
 
     fn inside_class_like(&self) -> bool {
         self.stack
@@ -345,9 +312,9 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
-        let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
-        let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
-        let ret_ref = opt_str(&mut self.arena, extra.return_type.as_deref());
+        let doc_ref = self.arena.put_opt(extra.docstring.as_deref());
+        let sig_ref = self.arena.put_opt(extra.signature.as_deref());
+        let ret_ref = self.arena.put_opt(extra.return_type.as_deref());
         let dec_ref: StrRef = match &extra.decorators {
             Some(list) if !list.is_empty() => self.arena.put_list(list),
             _ => NONE_STR,
@@ -1770,30 +1737,6 @@ fn find_anonymous_class_body(node: Node) -> Option<Node> {
     None
 }
 
-/// The `new ns.Foo<T>()` name normalization shared by instantiation /
-/// anonymous-class / decorator extraction: strip `<...` from the first `<`
-/// (index > 0), keep the segment after the last `.`/`::`, strip ONE leading
-/// `:` or `.`, trim.
-fn strip_generic_and_qualifier(raw: &str) -> String {
-    let mut name = raw.to_string();
-    if let Some(lt) = name.find('<') {
-        if lt > 0 {
-            name.truncate(lt);
-        }
-    }
-    let last_dot = name
-        .rfind('.')
-        .map(|i| i as isize)
-        .unwrap_or(-1)
-        .max(name.rfind("::").map(|i| i as isize).unwrap_or(-1));
-    if last_dot >= 0 {
-        name = name[(last_dot as usize + 1)..].to_string();
-        if name.starts_with(':') || name.starts_with('.') {
-            name.remove(0);
-        }
-    }
-    name.trim().to_string()
-}
 
 fn capitalize(name: &str) -> String {
     let mut chars = name.chars();
@@ -1814,9 +1757,3 @@ fn word_re(word: &'static str) -> &'static Regex {
     }
 }
 
-fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
-    match s {
-        Some(s) => arena.put(s),
-        None => NONE_STR,
-    }
-}

@@ -149,21 +149,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
 
     fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
         let name_ref = self.arena.put(name);

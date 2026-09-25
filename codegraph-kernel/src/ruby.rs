@@ -20,6 +20,7 @@ use crate::buffers::{
     RefRow, StrRef, Tables, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
+use crate::textutil::{is_stoplisted};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -30,14 +31,6 @@ use tree_sitter::{Node, Parser};
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
-/// NAME_STOPLIST (function-ref.ts).
-fn is_stoplisted(name: &str) -> bool {
-    matches!(
-        name,
-        "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
-            | "NULL" | "nullptr" | "None"
-    )
-}
 
 /// isRubyHookCall (function-ref.ts:282-286).
 fn is_ruby_hook_call(name: &str) -> bool {
@@ -212,21 +205,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
-    fn text(&self, node: Node) -> &'t str {
-        &self.src[node.byte_range()]
-    }
-    fn line_of(&self, node: Node) -> u32 {
-        node.start_position().row as u32 + 1
-    }
-    fn col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.start_position().row, node.start_byte())
-    }
-    fn end_col_of(&self, node: Node) -> u32 {
-        self.cols.col(self.src, node.end_position().row, node.end_byte())
-    }
-    fn top_row(&self) -> u32 {
-        self.stack.last().map(|s| s.row).unwrap_or(0)
-    }
+    walker_pos_impl!();
     fn inside_class_like(&self) -> bool {
         self.stack
             .last()
@@ -286,8 +265,8 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
         let id_ref = self.arena.put(&id);
-        let doc_ref = opt_str(&mut self.arena, extra.docstring.as_deref());
-        let sig_ref = opt_str(&mut self.arena, extra.signature.as_deref());
+        let doc_ref = self.arena.put_opt(extra.docstring.as_deref());
+        let sig_ref = self.arena.put_opt(extra.signature.as_deref());
         let row = self.tables.push_node(&NodeRow {
             kind: node_kind_index(kind).unwrap(),
             visibility: extra.visibility.unwrap_or(0),
@@ -1152,12 +1131,6 @@ fn ruby_enclosing_call(node: Node) -> Option<Node> {
     None
 }
 
-fn opt_str(arena: &mut Arena, s: Option<&str>) -> StrRef {
-    match s {
-        Some(s) => arena.put(s),
-        None => NONE_STR,
-    }
-}
 
 #[cfg(test)]
 mod tests {

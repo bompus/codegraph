@@ -1,6 +1,7 @@
-//! Shared utilities for the TS/JS walker: compiled regexes, UTF-16 position
-//! conversion, generated-file detection, and small text helpers — each
-//! mirroring a specific helper in src/extraction/tree-sitter.ts (noted inline).
+//! Utilities shared by the language walkers: compiled regexes, UTF-16 column
+//! conversion, generated-file detection, the walker predicates, and small
+//! text helpers — each mirroring a helper in src/extraction/tree-sitter.ts
+//! (noted inline).
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -211,6 +212,86 @@ pub fn init_signature(value_text: &str) -> String {
     } else {
         format!("= {sliced}")
     }
+}
+
+
+// Walker predicates shared by every language that needs them (each was
+// once a byte-identical copy per walker).
+
+/// NAME_STOPLIST (function-ref.ts).
+pub fn is_stoplisted(name: &str) -> bool {
+    matches!(
+        name,
+        "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
+            | "NULL" | "nullptr" | "None"
+    )
+}
+
+/// BUILTIN_TYPES (tree-sitter.ts) — the full shared table; membership is what
+/// the TS code tests, so every row is ported even where only the Java/C# row
+/// can fire (a C# type named `String`/`error` IS suppressed via other rows).
+pub fn is_builtin_type(name: &str) -> bool {
+    matches!(
+        name,
+        "string" | "number" | "boolean" | "void" | "null" | "undefined" | "never" | "any"
+            | "unknown" | "object" | "symbol" | "bigint" | "true" | "false"
+            | "str" | "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" | "char"
+            | "int" | "long" | "short" | "byte" | "float" | "double"
+            | "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
+            | "float32" | "float64" | "complex64" | "complex128" | "rune" | "error"
+            | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double" | "Boolean" | "Char"
+            | "Unit" | "String" | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
+    )
+}
+
+/// LITERAL_RECEIVER_TYPES (tree-sitter.ts) — full set; membership is what the
+/// TS code tests even though only a few kinds occur in the c/cpp grammars.
+pub fn is_literal_receiver(kind: &str) -> bool {
+    matches!(
+        kind,
+        "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal"
+            | "template_string" | "concatenated_string" | "formatted_string" | "f_string"
+            | "line_string_literal" | "string_content" | "heredoc_body"
+            | "number" | "number_literal" | "integer" | "integer_literal" | "float"
+            | "float_literal" | "int_literal" | "decimal_integer_literal" | "real_literal"
+            | "char_literal" | "character_literal" | "rune_literal" | "regex" | "regex_literal"
+            | "true" | "false" | "boolean_literal" | "bool_literal" | "none" | "null" | "nil"
+            | "null_literal" | "undefined"
+            | "list" | "list_literal" | "array" | "array_literal" | "array_creation_expression"
+            | "dictionary" | "dict_literal" | "object" | "tuple" | "set"
+    )
+}
+
+/// The `new ns.Foo<T>()` name normalization shared by instantiation /
+/// anonymous-class extraction: strip `<...` from the first `<` (index > 0),
+/// keep the segment after the last `.`/`::`, strip ONE leading `:` or `.`,
+/// trim. (The vbnet paren strip in the TS path is vbnet-gated — inert here.)
+pub fn strip_generic_and_qualifier(raw: &str) -> String {
+    let mut name = raw.to_string();
+    if let Some(lt) = name.find('<') {
+        if lt > 0 {
+            name.truncate(lt);
+        }
+    }
+    let last_dot = name
+        .rfind('.')
+        .map(|i| i as isize)
+        .unwrap_or(-1)
+        .max(name.rfind("::").map(|i| i as isize).unwrap_or(-1));
+    if last_dot >= 0 {
+        name = name[(last_dot as usize + 1)..].to_string();
+        if name.starts_with(':') || name.starts_with('.') {
+            name.remove(0);
+        }
+    }
+    name.trim().to_string()
+}
+
+/// extractStaticMemberRef's capitalized-receiver test.
+pub fn capitalized_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
 }
 
 #[cfg(test)]
