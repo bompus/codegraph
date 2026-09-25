@@ -210,14 +210,6 @@ impl KernelResolver {
         Ok(v)
     }
 
-    /// defaultExportBinding (import-resolver.ts): the identifier
-    /// `export default NAME` names, from the file's binding rows.
-    pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<String> {
-        rows.iter()
-            .find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
-            .map(|r| r.name.clone())
-    }
-
     /// getFileExportIndex (import-resolver.ts).
     pub(super) fn file_export_index(&mut self, file_path: &str) -> Res<Rc<FileExportIndexK>> {
         if let Some(v) = self.export_index.get(file_path) {
@@ -241,7 +233,7 @@ impl KernelResolver {
         }
         let rows = self.bindings(file_path)?;
         let mut default_binding: Option<Arc<KNode>> = None;
-        if let Some(bound) = Self::default_export_binding(&rows) {
+        if let Some(bound) = default_export_binding(&rows) {
             let mut candidates: Vec<&Arc<KNode>> = nodes
                 .iter()
                 .filter(|n| n.name == bound && is_default_binding_kind(&n.kind))
@@ -455,4 +447,12 @@ impl KernelResolver {
         }
         Ok(v)
     }
+}
+
+/// defaultExportBinding (import-resolver.ts): the identifier
+/// `export default NAME` names, from the file's binding rows.
+pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<String> {
+    rows.iter()
+        .find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
+        .map(|r| r.name.clone())
 }

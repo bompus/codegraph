@@ -73,7 +73,7 @@ impl KernelResolver {
         pats: &'static [ReceiverPattern],
         preserve: bool,
     ) -> Res<Option<String>> {
-        if Self::utf16_len(line) > 10_000 {
+        if utf16_len(line) > 10_000 {
             return Ok(None);
         }
         for pat in pats {
@@ -204,7 +204,7 @@ impl KernelResolver {
         let mut var_name: Option<String> = None;
         for i in (0..=call_idx).rev() {
             let line = &lines[i];
-            if line.is_empty() || Self::utf16_len(line) > 10_000 {
+            if line.is_empty() || utf16_len(line) > 10_000 {
                 continue;
             }
             if let Some(var) = ASSIGN.capture(line, prop) {
@@ -215,7 +215,7 @@ impl KernelResolver {
         }
         if var_name.is_none() {
             for (i, line) in lines.iter().enumerate().skip(call_idx + 1) {
-                if line.is_empty() || Self::utf16_len(line) > 10_000 {
+                if line.is_empty() || utf16_len(line) > 10_000 {
                     continue;
                 }
                 if let Some(var) = ASSIGN.capture(line, prop) {
@@ -231,7 +231,7 @@ impl KernelResolver {
         let pats = local_receiver_type_patterns("php");
         for i in (0..=ai).rev() {
             let line = &lines[i];
-            if !line.is_empty() && Self::utf16_len(line) <= 10_000 {
+            if !line.is_empty() && utf16_len(line) <= 10_000 {
                 if let Some(t) = self.infer_match_line(line, &vn, pats, false)? {
                     return Ok(Some(t));
                 }
@@ -264,11 +264,6 @@ impl KernelResolver {
         } else {
             last.to_string()
         }))
-    }
-
-    pub(super) fn cpp_last_segment(name: &str) -> String {
-        let parts: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
-        parts.last().map(|s| s.to_string()).unwrap_or_else(|| name.to_string())
     }
 
     /// buildDeclaratorRegex — `Type receiver` requiring a declarator
@@ -380,7 +375,7 @@ impl KernelResolver {
         };
         let neu = re!(r"^new\s+([A-Za-z_][A-Za-z0-9_:]*)");
         if let Some(n) = neu.captures(&init) {
-            return Ok(Some(Self::cpp_last_segment(&n[1])));
+            return Ok(Some(cpp_last_segment(&n[1])));
         }
         let call = re!(r"^([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^>;]*>)?)\s*\(");
         if let Some(c) = call.captures(&init) {
@@ -425,7 +420,7 @@ impl KernelResolver {
             return Ok(Some(ret));
         }
         if self.cpp_class_exists(expr, r)? {
-            return Ok(Some(Self::cpp_last_segment(expr)));
+            return Ok(Some(cpp_last_segment(expr)));
         }
         Ok(None)
     }
@@ -473,7 +468,7 @@ impl KernelResolver {
 
     /// cppClassExists — an aggregate type with this last `::` segment exists.
     pub(super) fn cpp_class_exists(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
-        let last = Self::cpp_last_segment(name);
+        let last = cpp_last_segment(name);
         Ok(self.nodes_by_name(&last)?.iter().any(|n| {
             matches!(n.kind.as_str(), "class" | "struct" | "union") && n.language == r.language
         }))
@@ -635,7 +630,7 @@ impl KernelResolver {
         let best = if candidates.len() == 1 {
             candidates[0].clone()
         } else {
-            Self::pick_closest_jvm_candidate(&candidates, &r.file_path)
+            pick_closest_jvm_candidate(&candidates, &r.file_path)
         };
         Ok(Some(KCand {
             node: best,
@@ -644,26 +639,32 @@ impl KernelResolver {
         }))
     }
 
-    /// pickClosestJvmCandidate — shared-directory-prefix proximity, Kotlin
-    /// Multiplatform `expect` preferred on a tie.
-    pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &str) -> Arc<KNode> {
-        let from_dirs: Vec<&str> = from_path.split('/').collect();
-        let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
-        let shared = |p: &str| shared_dir_prefix(from_dirs, p);
-        let is_expect = |n: &KNode| {
-            n.decorators
-                .as_ref()
-                .is_some_and(|ds| ds.iter().any(|d| d == "expect"))
-        };
-        let mut best = &candidates[0];
-        let mut best_prox = shared(&best.file_path);
-        for c in &candidates[1..] {
-            let prox = shared(&c.file_path);
-            if prox > best_prox || (prox == best_prox && is_expect(c) && !is_expect(best)) {
-                best = c;
-                best_prox = prox;
-            }
+}
+
+pub(super) fn cpp_last_segment(name: &str) -> String {
+    let parts: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
+    parts.last().map(|s| s.to_string()).unwrap_or_else(|| name.to_string())
+}
+
+/// pickClosestJvmCandidate — shared-directory-prefix proximity, Kotlin
+/// Multiplatform `expect` preferred on a tie.
+pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &str) -> Arc<KNode> {
+    let from_dirs: Vec<&str> = from_path.split('/').collect();
+    let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
+    let shared = |p: &str| shared_dir_prefix(from_dirs, p);
+    let is_expect = |n: &KNode| {
+        n.decorators
+            .as_ref()
+            .is_some_and(|ds| ds.iter().any(|d| d == "expect"))
+    };
+    let mut best = &candidates[0];
+    let mut best_prox = shared(&best.file_path);
+    for c in &candidates[1..] {
+        let prox = shared(&c.file_path);
+        if prox > best_prox || (prox == best_prox && is_expect(c) && !is_expect(best)) {
+            best = c;
+            best_prox = prox;
         }
-        best.clone()
     }
+    best.clone()
 }

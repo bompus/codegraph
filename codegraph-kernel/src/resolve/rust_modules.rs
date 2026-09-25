@@ -237,30 +237,8 @@ impl KernelResolver {
 
     /// `.rs` files indexed under `dir` (exact parent dir, sorted for
     /// determinism), built once from `known_files`.
-    pub(super) fn rust_rs_files_in_dir(&mut self, dir: &str) -> Rc<Vec<String>> {
-        if self.rust_rs_dir_index.is_none() {
-            let mut m: HashMap<String, Vec<String>> = HashMap::new();
-            for f in self.table().map(|t| &t.files).into_iter().flatten() {
-                let normalized = pos_normalize(f);
-                if normalized.ends_with(".rs") {
-                    m.entry(pos_dirname(&normalized).to_string())
-                        .or_default()
-                        .push(normalized);
-                }
-            }
-            for v in m.values_mut() {
-                v.sort();
-            }
-            self.rust_rs_dir_index = Some(Rc::new(
-                m.into_iter().map(|(k, v)| (k, Rc::new(v))).collect(),
-            ));
-        }
-        self.rust_rs_dir_index
-            .as_ref()
-            .unwrap()
-            .get(dir)
-            .cloned()
-            .unwrap_or_else(|| Rc::new(Vec::new()))
+    pub(super) fn rust_rs_files_in_dir(&self, dir: &str) -> Arc<Vec<String>> {
+        self.table().map(|t| t.rust_rs_files_in_dir(dir)).unwrap_or_default()
     }
 
     /// Whether `rel_file` contains a `mod <stem>;` declaration (comment-

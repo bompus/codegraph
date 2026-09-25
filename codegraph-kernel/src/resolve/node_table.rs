@@ -122,6 +122,11 @@ pub(super) struct NodeTable {
     /// built-in `lower()` folds ASCII only, as `to_ascii_lowercase` does.
     /// Built on first use: only the fuzzy matcher asks.
     pub(super) by_lower: std::sync::OnceLock<HashMap<String, NodeList>>,
+    /// luaBasenameIndex (import-resolver.ts): basename → indexed paths in
+    /// `getAllFiles()` order (`ORDER BY path`, byte order). Built on first use.
+    lua_basenames: std::sync::OnceLock<HashMap<String, Arc<Vec<String>>>>,
+    /// `.rs` files by exact parent directory, sorted. Built on first use.
+    rust_rs_dirs: std::sync::OnceLock<HashMap<String, Arc<Vec<String>>>>,
     /// Every node in rowid order — the source for the lazy indexes.
     pub(super) nodes: Vec<Arc<KNode>>,
     /// getNodesByQualifiedName — rowid order.
@@ -202,6 +207,8 @@ impl NodeTable {
         let table = NodeTable {
             by_name: freeze(by_name),
             by_lower: std::sync::OnceLock::new(),
+            lua_basenames: std::sync::OnceLock::new(),
+            rust_rs_dirs: std::sync::OnceLock::new(),
             nodes,
             by_qname: freeze(by_qname),
             by_file: freeze(by_file),
@@ -214,6 +221,41 @@ impl NodeTable {
             eprintln!("[node-table] verify: {mismatches} mismatches");
         }
         Ok(table)
+    }
+
+    /// The indexed paths sharing `basename`, in `ORDER BY path` order.
+    pub(super) fn lua_basename_bucket(&self, basename: &str) -> Arc<Vec<String>> {
+        let index = self.lua_basenames.get_or_init(|| {
+            let mut paths: Vec<&String> = self.files.iter().collect();
+            paths.sort();
+            let mut m: HashMap<String, Vec<String>> = HashMap::new();
+            for f in paths {
+                let base = f.rsplit('/').next().unwrap_or("").to_string();
+                m.entry(base).or_default().push(f.clone());
+            }
+            m.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
+        });
+        index.get(basename).cloned().unwrap_or_default()
+    }
+
+    /// The `.rs` files directly under `dir`, sorted.
+    pub(super) fn rust_rs_files_in_dir(&self, dir: &str) -> Arc<Vec<String>> {
+        let index = self.rust_rs_dirs.get_or_init(|| {
+            let mut m: HashMap<String, Vec<String>> = HashMap::new();
+            for f in &self.files {
+                let normalized = pos_normalize(f);
+                if normalized.ends_with(".rs") {
+                    m.entry(pos_dirname(&normalized).to_string()).or_default().push(normalized);
+                }
+            }
+            m.into_iter()
+                .map(|(k, mut v)| {
+                    v.sort();
+                    (k, Arc::new(v))
+                })
+                .collect()
+        });
+        index.get(dir).cloned().unwrap_or_default()
     }
 
     /// The lowercase-name index, built on first use.

@@ -89,74 +89,72 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
-        let Some(source) = self.read_file(&owner.file_path) else {
+        let Some(decl) = self.ts_field_decl(owner, field) else {
             return Ok(None);
         };
-        let tail_re = re!(r"^[\s]*(?:<[^>]*>)?\s*[\[|&]");
+        // An array/union/intersection-typed field names no single owner.
+        if decl.typed_collection {
+            return Ok(None);
+        }
+        let m1 = decl.ty.as_str();
+        if decl.value_type {
+            let cls_bindings = self.bindings(&owner.file_path)?;
+            let row = innermost_binding(
+                &cls_bindings,
+                m1,
+                Some(owner.start_line),
+            )
+            .cloned();
+            let holder_id = self.binding_target_id(row.as_ref(), |s| {
+                let mut ref2 = r.clone();
+                ref2.file_path = owner.file_path.clone();
+                ref2.line = owner.start_line;
+                ref2.reference_name = m1.to_string();
+                ref2.reference_kind = "references".to_string();
+                s.resolve_via_import_member(&ref2)
+            })?;
+            let holder = self.node_by_opt_id(holder_id.as_deref())?;
+            return match holder {
+                Some(h) => self.resolve_object_literal_member(&h, method, r, 0.85, "instance-method"),
+                None => Ok(None),
+            };
+        }
+        let type_name = m1.split('.').next_back().unwrap_or("");
+        if !type_name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+        {
+            return Ok(None);
+        }
+        let mut bsite = r.clone();
+        bsite.file_path = owner.file_path.clone();
+        bsite.line = owner.start_line;
+        self.match_bound_type_member(m1, method, &bsite)
+    }
+
+    /// The first field declaration of `field` in `owner`'s body lines
+    /// (comment-stripped), in TS_FIELD_TYPE_PATTERNS order per line.
+    pub(super) fn ts_field_decl(&mut self, owner: &KNode, field: &str) -> Option<TsFieldDecl> {
+        let source = self.read_file(&owner.file_path)?;
         let start = (owner.start_line - 1).max(0) as usize;
         let end = (owner.end_line as usize).min(source.len());
         for raw in &source[start..end] {
             let line = strip_line_comments(raw);
             for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
-                let Some(m) = affix.find_from(&line, field, 0) else {
-                    continue;
-                };
+                let Some(m) = affix.find_from(&line, field, 0) else { continue };
                 let Some((gs, ge)) = m.group else { continue };
-                let m1 = &line[gs..ge];
-                if m1.is_empty() {
+                if gs == ge {
                     continue;
                 }
-                if tail_re.is_match(&line[m.end..]) {
-                    return Ok(None);
-                }
-                if *value_type {
-                    let cls_bindings = self.bindings(&owner.file_path)?;
-                    let row = Self::innermost_binding(
-                        &cls_bindings,
-                        m1,
-                        Some(owner.start_line),
-                    )
-                    .cloned();
-                    let holder_id = match &row {
-                        Some(b) if b.kind == "import" => {
-                            let mut ref2 = r.clone();
-                            ref2.file_path = owner.file_path.clone();
-                            ref2.line = owner.start_line;
-                            ref2.reference_name = m1.to_string();
-                            ref2.reference_kind = "references".to_string();
-                            match self.resolve_via_import_member(&ref2)? {
-                                Some(c) => Some(c.node.id.clone()),
-                                None => None,
-                            }
-                        }
-                        Some(b) => b.node_id.clone(),
-                        None => None,
-                    };
-                    let holder = self.node_by_opt_id(holder_id.as_deref())?;
-                    return match holder {
-                        Some(h) => self.resolve_object_literal_member(&h, method, r, 0.85, "instance-method"),
-                        None => Ok(None),
-                    };
-                }
-                let type_name = m1.split('.').next_back().unwrap_or("");
-                if !type_name
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_uppercase())
-                {
-                    return Ok(None);
-                }
-                let mut bsite = r.clone();
-                bsite.file_path = owner.file_path.clone();
-                bsite.line = owner.start_line;
-                return self.match_bound_type_member(
-                    m1,
-                    method,
-                    &bsite,
-                );
+                return Some(TsFieldDecl {
+                    ty: line[gs..ge].to_string(),
+                    value_type: *value_type,
+                    typed_collection: thread_regex(&GUARD1_TAIL_RE).is_match(&line[m.end..]),
+                });
             }
         }
-        Ok(None)
+        None
     }
 
     /// matchRustSelfCall (name-matcher.ts): `self.method()` — the method on
@@ -598,112 +596,106 @@ impl KernelResolver {
             &r.file_path,
         );
         for cls in &owners {
-            let Some(source) = self.read_file(&cls.file_path) else {
-                continue;
-            };
-            let start = (cls.start_line - 1).max(0) as usize;
-            let end = (cls.end_line as usize).min(source.len());
-            for raw in &source[start..end] {
-                let line = strip_line_comments(raw);
-                for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
-                    let Some(m) = affix.find_from(&line, field, 0) else {
-                        continue;
-                    };
-                    let Some((gs, ge)) = m.group else { continue };
-                    let m1 = &line[gs..ge];
-                    if m1.is_empty() {
-                        continue;
-                    }
-                    // No tail_re check — that guard is `boundOwner &&` in TS.
-                    if *value_type {
-                        // `field: typeof Ns` — the namespace value's members
-                        // are bare-named functions inside a const/variable.
-                        let holder_name =
-                            m1.split('.').next_back().unwrap_or("");
-                        let holders = prefer_call_site_file(
-                            self.nodes_by_name(holder_name)?
-                                .iter()
-                                .filter(|n| {
-                                    matches!(n.kind.as_str(), "constant" | "variable")
-                                        && same_language_family(&n.language, &r.language)
-                                })
-                                .cloned()
-                                .collect(),
-                            &r.file_path,
-                        );
-                        for holder in &holders {
-                            if let Some(hit) = self.resolve_object_literal_member(
-                                holder,
-                                method,
-                                r,
-                                0.85,
-                                "instance-method",
-                            )? {
-                                return Ok(Some(hit));
-                            }
-                        }
-                        return Ok(None);
-                    }
-                    // `ns.Mailer` → `Mailer`; a primitive or builtin names no
-                    // project type.
-                    let type_name = m1.split('.').next_back().unwrap_or("");
-                    if !type_name
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_uppercase())
-                    {
-                        return Ok(None);
-                    }
-                    // Two apps in one repo may each declare the type. Among
-                    // its declarations of the method prefer the one closest
-                    // to the call site's directory — never index order.
-                    let declared: Vec<Arc<KNode>> = self
-                        .nodes_by_name(method)?
+            // No typed-collection check here — that guard is `boundOwner &&` in TS.
+            let Some(decl) = self.ts_field_decl(cls, field) else { continue };
+            let m1 = decl.ty.as_str();
+            if decl.value_type {
+                // `field: typeof Ns` — the namespace value's members
+                // are bare-named functions inside a const/variable.
+                let holder_name =
+                    m1.split('.').next_back().unwrap_or("");
+                let holders = prefer_call_site_file(
+                    self.nodes_by_name(holder_name)?
                         .iter()
                         .filter(|n| {
-                            n.kind == "method"
+                            matches!(n.kind.as_str(), "constant" | "variable")
                                 && same_language_family(&n.language, &r.language)
-                                && (n.qualified_name == format!("{type_name}::{method}")
-                                    || n.qualified_name
-                                        .ends_with(&format!("::{type_name}::{method}")))
                         })
                         .cloned()
-                        .collect();
-                    if declared.len() > 1 {
-                        let call_dirs: Vec<&str> = {
-                            let mut v: Vec<&str> = r.file_path.split('/').collect();
-                            v.pop();
-                            v
-                        };
-                        let shared = |fp: &str| shared_dir_prefix(&call_dirs, fp);
-                        let max_shared =
-                            declared.iter().map(|n| shared(&n.file_path)).max().unwrap_or(0);
-                        let nearest: Vec<&Arc<KNode>> = declared
-                            .iter()
-                            .filter(|n| shared(&n.file_path) == max_shared)
-                            .collect();
-                        if nearest.len() > 1 {
-                            // TS tiebreaks by localeCompare, which this port
-                            // cannot model exactly — let the TS spine pick.
-                            return Err(Halt::Punt("mc-tfield-ambig"));
-                        }
-                        return Ok(Some(KCand {
-                            node: nearest[0].clone(),
-                            confidence: 0.85,
-                            resolved_by: "instance-method",
-                        }));
-                    }
-                    return self.resolve_method_on_type(
-                        type_name,
+                        .collect(),
+                    &r.file_path,
+                );
+                for holder in &holders {
+                    if let Some(hit) = self.resolve_object_literal_member(
+                        holder,
                         method,
                         r,
                         0.85,
                         "instance-method",
-                        None,
-                    );
+                    )? {
+                        return Ok(Some(hit));
+                    }
                 }
+                return Ok(None);
             }
+            // `ns.Mailer` → `Mailer`; a primitive or builtin names no
+            // project type.
+            let type_name = m1.split('.').next_back().unwrap_or("");
+            if !type_name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+            {
+                return Ok(None);
+            }
+            // Two apps in one repo may each declare the type. Among
+            // its declarations of the method prefer the one closest
+            // to the call site's directory — never index order.
+            let declared: Vec<Arc<KNode>> = self
+                .nodes_by_name(method)?
+                .iter()
+                .filter(|n| {
+                    n.kind == "method"
+                        && same_language_family(&n.language, &r.language)
+                        && (n.qualified_name == format!("{type_name}::{method}")
+                            || n.qualified_name
+                                .ends_with(&format!("::{type_name}::{method}")))
+                })
+                .cloned()
+                .collect();
+            if declared.len() > 1 {
+                let call_dirs: Vec<&str> = {
+                    let mut v: Vec<&str> = r.file_path.split('/').collect();
+                    v.pop();
+                    v
+                };
+                let shared = |fp: &str| shared_dir_prefix(&call_dirs, fp);
+                let max_shared =
+                    declared.iter().map(|n| shared(&n.file_path)).max().unwrap_or(0);
+                let nearest: Vec<&Arc<KNode>> = declared
+                    .iter()
+                    .filter(|n| shared(&n.file_path) == max_shared)
+                    .collect();
+                if nearest.len() > 1 {
+                    // TS tiebreaks by localeCompare, which this port
+                    // cannot model exactly — let the TS spine pick.
+                    return Err(Halt::Punt("mc-tfield-ambig"));
+                }
+                return Ok(Some(KCand {
+                    node: nearest[0].clone(),
+                    confidence: 0.85,
+                    resolved_by: "instance-method",
+                }));
+            }
+            return self.resolve_method_on_type(
+                type_name,
+                method,
+                r,
+                0.85,
+                "instance-method",
+                None,
+            );
         }
         Ok(None)
     }
+}
+
+/// A TypeScript class-field declaration found by `ts_field_decl`.
+pub(super) struct TsFieldDecl {
+    /// The declared type text (`Mailer`, `ns.Mailer`, the `typeof` operand).
+    pub(super) ty: String,
+    /// `field: typeof Ns` — a value type, not a class.
+    pub(super) value_type: bool,
+    /// The type continues into `[]`, `|` or `&` (GUARD1_TAIL_RE).
+    pub(super) typed_collection: bool,
 }

@@ -91,7 +91,7 @@ impl KernelResolver {
         else {
             return false;
         };
-        Self::js_slice(line, r.column.max(0) as usize).starts_with('$')
+        js_slice(line, r.column.max(0) as usize).starts_with('$')
     }
 
     /// resolvePhpImportedStaticCall (import-resolver.ts): `Alias.method()`
@@ -439,16 +439,6 @@ impl KernelResolver {
     // resolveOne's gateTargetKind + calls alias-forward.
     // -----------------------------------------------------------------------
 
-    /// is_bare_name: the eligibility shape — no separator any skipped
-    /// strategy keys on. Leading `$` stays (arkts `$r` builtins are handled);
-    /// a `$` elsewhere could feed the R method pattern's `[\w.]+\$` arm.
-    pub(super) fn name_is_bare(name: &str) -> bool {
-        !name.is_empty()
-            && !name
-                .char_indices()
-                .any(|(i, c)| matches!(c, '.' | ':' | '/' | '\\' | '#' | '(' | ')') || (c == '$' && i > 0))
-    }
-
     /// Necessary condition for matchJsStoreBindingCall (name-matcher.ts):
     /// both store-binding arms bind the ref's own name through `const` — a
     /// destructure (`const {a} = X.getState()`) or a selector alias
@@ -497,62 +487,33 @@ impl KernelResolver {
         }
     }
 
+    /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which
         // needs no bindings rows — run it ahead of the eligibility gate.
         // A miss falls through for migrated rust (qualified-name/exact arms
         // mirror matchReference's continuation) and punts otherwise.
-        // Dot-bearing `::` names stay punted (the boundReceiver claim can
-        // own a `a::b.c` receiver in TS), and `function_ref` keeps its own
-        // block — a module-path hit on a non-callable leaf is DISCARDED
-        // there, not returned.
-        if r.language == "rust"
-            && r.reference_kind != "function_ref"
-            && r.reference_name.contains("::")
-            && !r.reference_name.contains('.')
-        {
+        if is_rust_path_ref(r) {
             match self.resolve_rust_path_ref(r)? {
                 Some(o) => return Ok(o),
                 None if is_migrated_language(&r.language) => {}
                 None => return Ok(ResolveOutcome::passthrough("ineligible:lang")),
             }
         }
-        // ref_is_eligible, split so the passthrough reason names the gate.
-        if !is_migrated_language(&r.language) {
-            return Ok(ResolveOutcome::passthrough("ineligible:lang"));
-        }
-        if !Self::name_is_bare(&r.reference_name) {
-            // The measured-dominant slice of the non-bare tail (§5.14):
-            // C/C++ `#include` path refs resolve through their own arm.
-            if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
-                return self.resolve_c_include_import_ref(r);
-            }
-            // Rust dotted receivers: `calls` names without `::`/`()` ride the
-            // ported pipeline — inferLocalReceiverType (`let ctx: Ctx`) is
-            // native for rust now, and the self.-arms/strategies that follow
-            // reproduce TS's tail (§5.25's confidence-drift class is exactly
-            // what the inference arm resolves natively). `a::b.c`/`x::y().z`
-            // (::+.), `x().y`, and non-call `x.y`/`self.x` stay punted — TS
-            // verdicts by delegation.
-            if r.language == "rust"
-                && r.reference_name.contains('.')
-                && !(r.reference_kind == "calls"
-                    && (r.reference_name.starts_with("self.")
-                        || (!r.reference_name.contains("::")
-                            && !r.reference_name.contains("()"))))
-            {
-                return Ok(ResolveOutcome::passthrough("member-tail"));
-            }
+        match route(r) {
+            Route::Passthrough(reason) => Ok(ResolveOutcome::passthrough(reason)),
+            Route::CInclude => self.resolve_c_include_import_ref(r),
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
             // import member descent, filePath and qualifiedName — the rest
             // of the member matchers punt back to the TS spine.
-            return probe!(r, "resolve_nonbare_ref", self.resolve_nonbare_ref(r));
+            Route::NonBare => probe!(r, "resolve_nonbare_ref", self.resolve_nonbare_ref(r)),
+            Route::Bare => self.resolve_bare_ref(r),
         }
-        if r.file_path.is_empty() {
-            return Ok(ResolveOutcome::passthrough("ineligible:path"));
-        }
+    }
 
+    /// resolveOneInner's bare slice (a name with no separator).
+    pub(super) fn resolve_bare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         // resolveOneInner, bare slice:
         //   builtin/external → CFML/jvm/razor/phpStatic arms all dead →
         //   prefilter → frameworks (TS) → boundReceiver (dead) → chain guard
@@ -727,4 +688,68 @@ impl KernelResolver {
             ResolveOutcome::unresolved()
         }
     }
+}
+
+/// Rust pure-`::` path refs take resolveRustPathReference ahead of every gate.
+/// Dot-bearing `::` names stay out (the boundReceiver claim can own an
+/// `a::b.c` receiver in TS), and `function_ref` keeps its own block — a
+/// module-path hit on a non-callable leaf is DISCARDED there, not returned.
+fn is_rust_path_ref(r: &ResolveRefIn) -> bool {
+    r.language == "rust"
+        && r.reference_kind != "function_ref"
+        && r.reference_name.contains("::")
+        && !r.reference_name.contains('.')
+}
+
+/// Where a ref goes once the Rust path arm has missed.
+enum Route {
+    /// Back to the TS spine, with the reason for the profile.
+    Passthrough(&'static str),
+    /// C/C++ `#include` path refs — the measured-dominant slice of the
+    /// non-bare tail (§5.14).
+    CInclude,
+    NonBare,
+    Bare,
+}
+
+/// ref_is_eligible, split so a passthrough names its gate.
+fn route(r: &ResolveRefIn) -> Route {
+    if !is_migrated_language(&r.language) {
+        return Route::Passthrough("ineligible:lang");
+    }
+    if !name_is_bare(&r.reference_name) {
+        if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
+            return Route::CInclude;
+        }
+        // Rust dotted receivers: `calls` names without `::`/`()` ride the
+        // ported pipeline — inferLocalReceiverType (`let ctx: Ctx`) is
+        // native for rust now, and the self.-arms/strategies that follow
+        // reproduce TS's tail (§5.25's confidence-drift class is exactly
+        // what the inference arm resolves natively). `a::b.c`/`x::y().z`
+        // (::+.), `x().y`, and non-call `x.y`/`self.x` stay punted — TS
+        // verdicts by delegation.
+        if r.language == "rust"
+            && r.reference_name.contains('.')
+            && !(r.reference_kind == "calls"
+                && (r.reference_name.starts_with("self.")
+                    || (!r.reference_name.contains("::") && !r.reference_name.contains("()"))))
+        {
+            return Route::Passthrough("member-tail");
+        }
+        return Route::NonBare;
+    }
+    if r.file_path.is_empty() {
+        return Route::Passthrough("ineligible:path");
+    }
+    Route::Bare
+}
+
+/// is_bare_name: the eligibility shape — no separator any skipped
+/// strategy keys on. Leading `$` stays (arkts `$r` builtins are handled);
+/// a `$` elsewhere could feed the R method pattern's `[\w.]+\$` arm.
+pub(super) fn name_is_bare(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .char_indices()
+            .any(|(i, c)| matches!(c, '.' | ':' | '/' | '\\' | '#' | '(' | ')') || (c == '$' && i > 0))
 }

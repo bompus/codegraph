@@ -220,7 +220,7 @@ pub(super) fn pick_closest_file_node(candidates: &[Arc<KNode>], r: &ResolveRefIn
     let mut best = pool[0].clone();
     let mut best_score = i64::MIN;
     for c in pool {
-        let score = KernelResolver::compute_path_proximity(&r.file_path, &c.file_path)
+        let score = compute_path_proximity(&r.file_path, &c.file_path)
             + if same_language_family(&c.language, &r.language) { 5 } else { 0 };
         if score > best_score {
             best_score = score;

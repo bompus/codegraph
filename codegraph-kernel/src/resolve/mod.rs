@@ -352,6 +352,8 @@ use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
 use self::paths::*;
+use self::names::*;
+use self::prefilter::*;
 
 #[napi]
 pub struct KernelResolver {
@@ -388,10 +390,6 @@ pub struct KernelResolver {
     rust_trait_memo: HashMap<String, bool>,
     root_import_memo: HashMap<String, bool>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
-    rust_rs_dir_index: Option<Rc<HashMap<String, Rc<Vec<String>>>>>,
-    /// luaBasenameIndex (import-resolver.ts): basename → indexed paths in
-    /// `getAllFiles()` order (`ORDER BY path`), built once on first use.
-    lua_basename_index: Option<Rc<HashMap<String, Rc<Vec<String>>>>>,
     file_cache: FileCache,
 }
 
@@ -443,8 +441,6 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
-            rust_rs_dir_index: None,
-            lua_basename_index: None,
             file_cache: FileCache::new(1024),
         })
     }

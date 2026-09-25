@@ -72,7 +72,7 @@ impl KernelResolver {
             if call_end < 0 {
                 return false;
             }
-            let tail = Self::js_slice(init_s, call_end as usize);
+            let tail = js_slice(init_s, call_end as usize);
             if tail.is_empty() {
                 return true;
             }
@@ -96,7 +96,7 @@ impl KernelResolver {
         let factory_re =
             re!(r"^=\s*(await\s+)?([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(");
         if let Some(fm) = factory_re.captures(&init) {
-            let end = parens_end(&init, Self::utf16_len(&init[..fm.get(0).unwrap().end()]));
+            let end = parens_end(&init, utf16_len(&init[..fm.get(0).unwrap().end()]));
             if ends_initializer(&init, end) {
                 callee_name = fm.get(2).map(|g| g.as_str().to_string());
             }
@@ -105,15 +105,15 @@ impl KernelResolver {
             let ctor_re = re!(r"^=\s*(?:await\s+)?new\s+([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(");
             if let Some(cm) = ctor_re.captures(&init) {
                 let ctor_end =
-                    parens_end(&init, Self::utf16_len(&init[..cm.get(0).unwrap().end()]));
+                    parens_end(&init, utf16_len(&init[..cm.get(0).unwrap().end()]));
                 if ctor_end >= 0 {
                     let member_re = re!(r"^\s*\.\s*([A-Za-z0-9_$]+)\s*(?:<[^>]+>)?\s*\(");
-                    let tail = Self::js_slice(&init, ctor_end as usize);
+                    let tail = js_slice(&init, ctor_end as usize);
                     if let Some(mm) = member_re.captures(tail) {
                         let m_end = parens_end(
                             &init,
                             ctor_end as usize
-                                + Self::utf16_len(&tail[..mm.get(0).unwrap().end()]),
+                                + utf16_len(&tail[..mm.get(0).unwrap().end()]),
                         );
                         if ends_initializer(&init, m_end) {
                             owner_name = cm.get(1).map(|g| g.as_str().to_string());
@@ -129,21 +129,14 @@ impl KernelResolver {
         let bindings = self.bindings(&r.file_path)?;
         let callee: Option<Arc<KNode>> = if let Some(owner_name) = owner_name {
             let owner_binding =
-                Self::innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
-            let owner_id = match &owner_binding {
-                Some(b) if b.kind == "import" => {
-                    let mut ref2 = r.clone();
-                    ref2.line = binding.line;
-                    ref2.reference_name = owner_name.clone();
-                    ref2.reference_kind = "references".to_string();
-                    match self.resolve_via_import(&ref2)? {
-                        Some(c) => Some(c.node.id.clone()),
-                        None => None,
-                    }
-                }
-                Some(b) => b.node_id.clone(),
-                None => None,
-            };
+                innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
+            let owner_id = self.binding_target_id(owner_binding.as_ref(), |s| {
+                let mut ref2 = r.clone();
+                ref2.line = binding.line;
+                ref2.reference_name = owner_name.clone();
+                ref2.reference_kind = "references".to_string();
+                s.resolve_via_import(&ref2)
+            })?;
             let owner = self.node_by_opt_id(owner_id.as_deref())?;
             let Some(owner) = owner else { return Ok(None) };
             if !matches!(owner.kind.as_str(), "class" | "interface" | "component") {
@@ -158,21 +151,14 @@ impl KernelResolver {
             .cloned()
         } else {
             let factory_binding =
-                Self::innermost_binding(&bindings, &callee_name, Some(binding.line))
+                innermost_binding(&bindings, &callee_name, Some(binding.line))
                     .cloned();
-            let callee_id = match &factory_binding {
-                Some(b) if b.kind == "import" => {
-                    let mut ref2 = r.clone();
-                    ref2.line = binding.line;
-                    ref2.reference_name = callee_name.clone();
-                    match self.resolve_via_import(&ref2)? {
-                        Some(c) => Some(c.node.id.clone()),
-                        None => None,
-                    }
-                }
-                Some(b) => b.node_id.clone(),
-                None => None,
-            };
+            let callee_id = self.binding_target_id(factory_binding.as_ref(), |s| {
+                let mut ref2 = r.clone();
+                ref2.line = binding.line;
+                ref2.reference_name = callee_name.clone();
+                s.resolve_via_import(&ref2)
+            })?;
             self.node_by_opt_id(callee_id.as_deref())?
         };
         let Some(callee) = callee else { return Ok(None) };
@@ -223,7 +209,7 @@ impl KernelResolver {
             return Ok(false);
         }
         let bindings = self.bindings(&r.file_path)?;
-        let best = Self::innermost_binding(&bindings, receiver, Some(r.line));
+        let best = innermost_binding(&bindings, receiver, Some(r.line));
         let declaration = match best {
             Some(b) => self
                 .read_file(&r.file_path)
@@ -340,7 +326,7 @@ impl KernelResolver {
 
         let bindings = self.bindings(&r.file_path)?;
         let binding =
-            Self::innermost_binding(&bindings, &object_or_class, Some(r.line)).cloned();
+            innermost_binding(&bindings, &object_or_class, Some(r.line)).cloned();
 
         if inferable {
             // inferGuardedReceiver is php-only and needs a tree parse — punt
@@ -770,7 +756,7 @@ impl KernelResolver {
         let method = &r.reference_name[dot + 1..];
         let root = receiver.split('.').next().unwrap_or(receiver);
         let bindings = self.bindings(&r.file_path)?;
-        let binding = Self::innermost_binding(&bindings, root, Some(r.line)).cloned();
+        let binding = innermost_binding(&bindings, root, Some(r.line)).cloned();
 
         if !is_esm_family(&r.language) {
             // `binding?.kind === 'import' && !phpVariable` → br:import;
@@ -841,29 +827,24 @@ impl KernelResolver {
             let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else {
                 return Ok(None);
             };
-            let type_binding = Self::innermost_binding(
+            let type_binding = innermost_binding(
                 &bindings,
                 ty.split('.').next().unwrap_or(&ty),
                 Some(binding.line),
             )
             .cloned();
-            let owner_id = match &type_binding {
-                Some(b) if b.kind == "import" => {
-                    // `{ ...ref, referenceName: type, 'references' }` — the
-                    // ORIGINAL ref, not the anchored site.
-                    let mut ref2 = r.clone();
-                    ref2.reference_name = ty.clone();
-                    ref2.reference_kind = "references".to_string();
-                    let via = if ty.contains('.') {
-                        self.resolve_via_import_member(&ref2)?
-                    } else {
-                        self.resolve_via_import(&ref2)?
-                    };
-                    via.map(|c| c.node.id.clone())
+            let owner_id = self.binding_target_id(type_binding.as_ref(), |s| {
+                // `{ ...ref, referenceName: type, 'references' }` — the
+                // ORIGINAL ref, not the anchored site.
+                let mut ref2 = r.clone();
+                ref2.reference_name = ty.clone();
+                ref2.reference_kind = "references".to_string();
+                if ty.contains('.') {
+                    s.resolve_via_import_member(&ref2)
+                } else {
+                    s.resolve_via_import(&ref2)
                 }
-                Some(b) => b.node_id.clone(),
-                None => None,
-            };
+            })?;
             let owner = self.node_by_opt_id(owner_id.as_deref())?;
             return Ok(match owner {
                 Some(o)
