@@ -32,7 +32,7 @@ use crate::buffers::{
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
-use crate::walker::{Scope, ValueScope, Cand};
+use crate::walker::{Scope, ValueScope, Cand, scope_qualified_name};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -153,20 +153,7 @@ impl<'t> Walker<'t> {
 
         // buildQualifiedName (:1447-1460) — non-file stack names, `::`-joined;
         // namespacePrefix always empty (no C++ namespaces, no scala namespace).
-        let qualified = {
-            let mut parts: Vec<&str> = Vec::new();
-            for s in &self.stack {
-                if s.kind != "file" {
-                    parts.push(&s.name);
-                }
-            }
-            let mut qn = parts.join("::");
-            if !qn.is_empty() {
-                qn.push_str("::");
-            }
-            qn.push_str(name);
-            qn
-        };
+        let qualified = scope_qualified_name(&self.stack, name);
 
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
@@ -205,17 +192,7 @@ impl<'t> Walker<'t> {
         }
 
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         // captureValueRefScope (:735-767).
         if (kind == "constant" || kind == "variable")

@@ -10,11 +10,11 @@
 //! refs anywhere. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
-    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_ASYNC, FLAG_IS_STATIC, NONE, NONE_STR,
 };
 use crate::walker::named_kids;
-use crate::walker::{Scope, ValueScope, Cand};
+use crate::walker::{Scope, ValueScope, Cand, scope_qualified_name};
 use crate::textutil::is_literal_receiver;
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -107,20 +107,7 @@ impl<'t> Walker<'t> {
         let id = ids::node_id(self.file_path, kind, name, start_line);
         let end_line = node.end_position().row as u32 + 1;
 
-        let qualified = {
-            let mut parts: Vec<&str> = Vec::new();
-            for s in &self.stack {
-                if s.kind != "file" {
-                    parts.push(&s.name);
-                }
-            }
-            let mut qn = parts.join("::");
-            if !qn.is_empty() {
-                qn.push_str("::");
-            }
-            qn.push_str(name);
-            qn
-        };
+        let qualified = scope_qualified_name(&self.stack, name);
 
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_async {
@@ -155,17 +142,7 @@ impl<'t> Walker<'t> {
         self.node_ids.push(id);
 
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         // Classes join the fn-ref gate for Python (#1478): class-as-value is
         // a first-class idiom (mirrors flushFnRefCandidates' python branch).
