@@ -152,7 +152,7 @@ impl KernelResolver {
         import_path: &str,
         from_dir: &str,
         language: &str,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         let extensions = extension_resolution(language);
         if language == "python" && import_path.starts_with('.') {
             let dots = import_path.len() - import_path.trim_start_matches('.').len();
@@ -194,7 +194,7 @@ impl KernelResolver {
         &mut self,
         import_path: &str,
         language: &str,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         if self.aliases.is_some() {
             for c in self.apply_aliases(import_path) {
                 if let Some(hit) = self.probe_extensions(&c, language) {
@@ -247,7 +247,7 @@ impl KernelResolver {
         import_path: &str,
         from_file: &str,
         language: &str,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         let key = format!("{}\0{}\0{}", language, from_file, import_path);
         if let Some(hit) = self.import_path_memo.get(&key) {
             return Ok(hit.clone());
@@ -262,7 +262,7 @@ impl KernelResolver {
         import_path: &str,
         from_file: &str,
         language: &str,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         // (COBOL copybook arm omitted: `cobol` is not a migrated language.)
         if self.is_external_import(import_path, language) {
             return Ok(None);
@@ -287,7 +287,7 @@ impl KernelResolver {
         &mut self,
         module: &str,
         exclude_file: &str,
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         if module.is_empty() || module.starts_with('.') {
             return Ok(None);
         }
@@ -330,7 +330,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         imports: &[KImport],
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         if r.reference_kind != "imports" {
             return Ok(None);
         }
@@ -385,7 +385,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         imports: &[KImport],
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         if imports.is_empty() {
             return Ok(None);
         }
@@ -445,16 +445,16 @@ impl KernelResolver {
     /// `::` type, a C/C++ include path): the member variant's `.`/`/`-gated
     /// arms cannot fire for it, so this is that function without the punt,
     /// which only the member descent raises.
-    pub(super) fn resolve_via_import(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
-        Ok(match self.resolve_via_import_member(r)? {
-            ViaImport::Hit(c) => Some(c),
-            ViaImport::Miss | ViaImport::Punt(_) => None,
-        })
+    pub(super) fn resolve_via_import(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        match self.resolve_via_import_member(r) {
+            Err(Halt::Punt(_)) => Ok(None),
+            other => other,
+        }
     }
 
     /// isBoundToOutOfRepoImport (import-resolver.ts): for a bare name in a
     /// migrated language only the ESM arm can fire.
-    pub(super) fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn is_bound_to_out_of_repo_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
         // Qualified refs resolve by path, not through a bare import binding.
         if r.reference_name.contains("::") || r.reference_name.contains('.') {
             return Ok(false);
@@ -498,7 +498,7 @@ impl KernelResolver {
     /// the imports loop with the `localName.member` descent. Returns Punt
     /// where TS would read source the kernel doesn't port (the member descent
     /// only).
-    pub(super) fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Result<ViaImport> {
+    pub(super) fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         // C/C++ `#include` path refs: the including file's own directory first
         // (via a same-named file NODE, not just existence), then the include
         // search path. isPhpIncludePathRef / isCobolCopybookRef /
@@ -514,7 +514,7 @@ impl KernelResolver {
                 .iter()
                 .find(|n| n.kind == "file" && n.file_path == sibling_path)
             {
-                return Ok(ViaImport::Hit(KCand {
+                return Ok(Some(KCand {
                     node: sibling.clone(),
                     confidence: 0.92,
                     resolved_by: "import",
@@ -523,7 +523,7 @@ impl KernelResolver {
             let Some(resolved_path) =
                 self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)?
             else {
-                return Ok(ViaImport::Miss);
+                return Ok(None);
             };
             let basename = pos_basename(&resolved_path).to_string();
             if let Some(file_node) = self
@@ -531,13 +531,13 @@ impl KernelResolver {
                 .iter()
                 .find(|n| n.kind == "file" && n.file_path == resolved_path)
             {
-                return Ok(ViaImport::Hit(KCand {
+                return Ok(Some(KCand {
                     node: file_node.clone(),
                     confidence: 0.9,
                     resolved_by: "import",
                 }));
             }
-            return Ok(ViaImport::Miss);
+            return Ok(None);
         }
         // TS/JS path-shaped `imports` ref whose referenceName IS the module
         // specifier — the module ref of `import … from './x'` or a dynamic
@@ -561,7 +561,7 @@ impl KernelResolver {
                     .find(|n| n.kind == "file")
                     .cloned()
                 {
-                    return Ok(ViaImport::Hit(KCand {
+                    return Ok(Some(KCand {
                         node: file_node,
                         confidence: 0.9,
                         resolved_by: "import",
@@ -571,17 +571,17 @@ impl KernelResolver {
         }
         let imports = self.import_mappings(&r.file_path)?;
         if imports.is_empty() && self.read_file(&r.file_path).is_none() {
-            return Ok(ViaImport::Miss);
+            return Ok(None);
         }
 
         if r.language == "go" {
             if let Some(c) = self.resolve_go_cross_package(r, &imports)? {
-                return Ok(ViaImport::Hit(c));
+                return Ok(Some(c));
             }
         }
         if r.language == "java" || r.language == "kotlin" {
             if let Some(node) = self.resolve_java_imported_reference(r, &imports)? {
-                return Ok(ViaImport::Hit(KCand {
+                return Ok(Some(KCand {
                     node,
                     confidence: 0.9,
                     resolved_by: "import",
@@ -590,23 +590,23 @@ impl KernelResolver {
         }
         if r.language == "python" {
             if let Some(c) = self.resolve_python_module_member(r, &imports)? {
-                return Ok(ViaImport::Hit(c));
+                return Ok(Some(c));
             }
             if let Some(c) = self.resolve_python_absolute_module(r)? {
-                return Ok(ViaImport::Hit(c));
+                return Ok(Some(c));
             }
         }
         // (Rust `::` paths never reach here — resolve_rust_path_ref runs
         // ahead of the gate and `::`+`.` names punt.)
         if let Some(c) = self.resolve_lua_require(r)? {
-            return Ok(ViaImport::Hit(c));
+            return Ok(Some(c));
         }
         if matches!(
             r.language.as_str(),
             "python" | "typescript" | "tsx" | "javascript" | "jsx" | "arkts"
         ) {
             if let Some(node) = self.resolve_module_import_to_file(r, &imports)? {
-                return Ok(ViaImport::Hit(KCand {
+                return Ok(Some(KCand {
                     node,
                     confidence: 0.9,
                     resolved_by: "import",
@@ -663,7 +663,7 @@ impl KernelResolver {
             };
             if !imp.is_namespace && is_member {
                 if let Some(member_node) = self.resolve_static_member(&target, r, &imp.local_name)? {
-                    return Ok(ViaImport::Hit(KCand {
+                    return Ok(Some(KCand {
                         node: member_node,
                         confidence: 0.9,
                         resolved_by: "import",
@@ -683,11 +683,11 @@ impl KernelResolver {
                         if let Some(lit) = self
                             .resolve_object_literal_member(&target, member0, r, 0.9, "import")?
                         {
-                            return Ok(ViaImport::Hit(lit));
+                            return Ok(Some(lit));
                         }
                         // resolveObjectLiteralAlias + resolveImportedInstanceMember
                         // read the exporting file — unported.
-                        return Ok(ViaImport::Punt("via-src"));
+                        return Err(Halt::Punt("via-src"));
                     }
                 }
                 // resolveImportedInstanceMember returns null for non-const/var
@@ -696,16 +696,16 @@ impl KernelResolver {
                 if r.reference_kind == "calls"
                     && (target.kind == "function" || target.kind == "method")
                 {
-                    return Ok(ViaImport::Miss);
+                    return Ok(None);
                 }
             }
-            return Ok(ViaImport::Hit(KCand {
+            return Ok(Some(KCand {
                 node: target,
                 confidence: 0.9,
                 resolved_by: "import",
             }));
         }
-        Ok(ViaImport::Miss)
+        Ok(None)
     }
 
     /// resolveLuaRequire (import-resolver.ts): a Lua/Luau `imports` ref is a
@@ -717,7 +717,7 @@ impl KernelResolver {
     /// basename, prefer the longest common prefix with the ref's file (a
     /// stable sort — `getAllFiles()` order breaks ties), and link the file
     /// node @0.9 so the deterministic match beats a same-name self-match.
-    pub(super) fn resolve_lua_require(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn resolve_lua_require(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if (r.language != "lua" && r.language != "luau") || r.reference_kind != "imports" {
             return Ok(None);
         }
@@ -792,7 +792,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         imports: &[KImport],
-    ) -> Result<Option<KCand>> {
+    ) -> Res<Option<KCand>> {
         let Some(mod_path) = self.go_module_path.clone() else {
             return Ok(None);
         };
@@ -843,7 +843,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         imports: &[KImport],
-    ) -> Result<Option<KCand>> {
+    ) -> Res<Option<KCand>> {
         let Some(dot_idx) = r.reference_name.find('.') else {
             return Ok(None);
         };
@@ -924,7 +924,7 @@ impl KernelResolver {
     pub(super) fn resolve_python_absolute_module(
         &mut self,
         r: &ResolveRefIn,
-    ) -> Result<Option<KCand>> {
+    ) -> Res<Option<KCand>> {
         if r.reference_kind != "imports" || !r.reference_name.contains('.') {
             return Ok(None);
         }
@@ -945,7 +945,7 @@ impl KernelResolver {
         container: &KNode,
         r: &ResolveRefIn,
         local_name: &str,
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         if !is_static_member_container(&container.kind) {
             return Ok(None);
         }

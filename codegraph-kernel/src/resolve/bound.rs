@@ -11,9 +11,9 @@ impl KernelResolver {
         ty: &str,
         r: &ResolveRefIn,
         depth: u32,
-    ) -> Result<BtRes> {
+    ) -> Res<Option<Arc<KNode>>> {
         if depth > 4 {
-            return Ok(BtRes::Null);
+            return Ok(None);
         }
         if r.language == "java" {
             let in_file = self.nodes_in_file(&r.file_path)?;
@@ -50,7 +50,7 @@ impl KernelResolver {
                         site.column = scope.start_column;
                         self.resolve_bound_type(&m[1], &site, depth + 1)
                     }
-                    _ => Ok(BtRes::Null),
+                    _ => Ok(None),
                 };
             }
         }
@@ -67,11 +67,7 @@ impl KernelResolver {
                 ref2.reference_name = ty.to_string();
                 ref2.reference_kind = "references".to_string();
                 let hit = if ty.contains('.') {
-                    match self.resolve_via_import_member(&ref2)? {
-                        ViaImport::Hit(c) => Some(c),
-                        ViaImport::Miss => None,
-                        ViaImport::Punt(p) => return Ok(BtRes::Punt(p)),
-                    }
+                    self.resolve_via_import_member(&ref2)?
                 } else {
                     self.resolve_via_import(&ref2)?
                 };
@@ -199,9 +195,9 @@ impl KernelResolver {
                     "class" | "struct" | "interface" | "component" | "type_alias" | "union"
                 ) =>
             {
-                Ok(BtRes::Owner(o))
+                Ok(Some(o))
             }
-            _ => Ok(BtRes::Null),
+            _ => Ok(None),
         }
     }
 
@@ -213,11 +209,10 @@ impl KernelResolver {
         ty: &str,
         method: &str,
         site: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let owner = match self.resolve_bound_type(ty, site, 0)? {
-            BtRes::Owner(o) => o,
-            BtRes::Null => return Ok(McRes::Null),
-            BtRes::Punt(p) => return Ok(McRes::Punt(p)),
+            Some(o) => o,
+            None => return Ok(None),
         };
         let members: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method))?
@@ -245,7 +240,7 @@ impl KernelResolver {
                 .find(|n| n.file_path == owner.file_path)
         };
         match member {
-            Some(m) => Ok(McRes::Hit(KCand {
+            Some(m) => Ok(Some(KCand {
                 resolved_by: if m.kind == "field" {
                     "field-call"
                 } else {
@@ -254,7 +249,7 @@ impl KernelResolver {
                 node: m,
                 confidence: 0.9,
             })),
-            None => Ok(McRes::Punt("btm-supers")),
+            None => Err(Halt::Punt("btm-supers")),
         }
     }
 
@@ -269,7 +264,7 @@ impl KernelResolver {
         confidence: f64,
         resolved_by: &'static str,
         preferred_fqn: Option<&str>,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let want = format!("{}::{}", type_name, method);
         let matches: Vec<Arc<KNode>> = self
             .nodes_by_name(method)?
@@ -283,7 +278,7 @@ impl KernelResolver {
             .cloned()
             .collect();
         if matches.is_empty() {
-            return Ok(McRes::Punt("rmot-supers"));
+            return Err(Halt::Punt("rmot-supers"));
         }
         if matches.len() > 1 {
             if let Some(fqn) = preferred_fqn {
@@ -293,7 +288,7 @@ impl KernelResolver {
                     let fp = m.file_path.replace('\\', "/");
                     fp.ends_with(&fqn_path) || fp.ends_with(&format!("/{}", fqn_path))
                 }) {
-                    return Ok(McRes::Hit(KCand {
+                    return Ok(Some(KCand {
                         node: chosen.clone(),
                         confidence,
                         resolved_by,
@@ -302,7 +297,7 @@ impl KernelResolver {
             }
         }
         let ordered = prefer_call_site_file(matches, &r.file_path);
-        Ok(McRes::Hit(KCand {
+        Ok(Some(KCand {
             node: ordered[0].clone(),
             confidence,
             resolved_by,
@@ -315,7 +310,7 @@ impl KernelResolver {
         &mut self,
         receiver: &str,
         r: &ResolveRefIn,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         let in_file = self.nodes_in_file(&r.file_path)?;
         if in_file.is_empty() {
             return Ok(None);
@@ -381,7 +376,7 @@ impl KernelResolver {
         receiver: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let mut site = r.clone();
         let bindings = self.bindings(&r.file_path)?;
         let mut binding = Self::innermost_binding(&bindings, receiver, Some(r.line)).cloned();
@@ -403,7 +398,7 @@ impl KernelResolver {
                 }
             }
             if values.len() != 1 {
-                return Ok(McRes::Null);
+                return Ok(None);
             }
             let value = values[0].clone();
             site.file_path = value.file_path.clone();
@@ -412,7 +407,7 @@ impl KernelResolver {
             binding =
                 Self::innermost_binding(&site_bindings, receiver, Some(site.line)).cloned();
         }
-        let Some(binding) = binding else { return Ok(McRes::Null) };
+        let Some(binding) = binding else { return Ok(None) };
         let declaration = self
             .read_file(&site.file_path)
             .and_then(|ls| ls.get((binding.line - 1) as usize).cloned())
@@ -443,7 +438,7 @@ impl KernelResolver {
             return self.match_bound_type_member(&ty, method, &bsite);
         }
         if binding.kind == "param" {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let assign_re = re!(r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=\s*([A-Za-z0-9_.]+)\s*\(");
         let site_bindings = self.bindings(&site.file_path)?;
@@ -469,11 +464,7 @@ impl KernelResolver {
             match &factory_binding {
                 Some(b) if b.kind == "import" => {
                     let via = if name.contains('.') {
-                        match self.resolve_via_import_member(&factory_site)? {
-                            ViaImport::Hit(c) => Some(c),
-                            ViaImport::Miss => None,
-                            ViaImport::Punt(p) => return Ok(McRes::Punt(p)),
-                        }
+                        self.resolve_via_import_member(&factory_site)?
                     } else {
                         self.resolve_via_import(&factory_site)?
                     };
@@ -513,7 +504,7 @@ impl KernelResolver {
                         .is_some_and(|t| ret_shape.is_match(t))
             });
             if !valid {
-                return Ok(McRes::Null);
+                return Ok(None);
             }
             let callee = callee.unwrap();
             let ret = callee.return_type.clone().unwrap();
@@ -523,6 +514,6 @@ impl KernelResolver {
             tsite.line = callee.start_line;
             return self.match_bound_type_member(stripped, method, &tsite);
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 }

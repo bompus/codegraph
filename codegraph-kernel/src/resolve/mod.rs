@@ -225,49 +225,42 @@ struct KCand {
     resolved_by: &'static str,
 }
 
-/// Tri-state for the non-bare import slice: a mid-arm source read (alias /
-/// imported-instance inference) is not a miss — the ref must go back through
-/// the TS spine, which re-derives everything natively evaluated so far.
-enum ViaImport {
-    Hit(KCand),
-    Miss,
+/// Why a ref leaves the native resolver before a verdict: a punt (the next
+/// step needs state the snapshot can't see — a source read, live supertype
+/// edges, tree-sitter parsing, an unported arm — so the TS spine takes the
+/// ref, with the reason for the profile), or a napi error. The punt is the
+/// only concept the kernel adds to the TS matchers, which just return null:
+/// every native matcher returns `Res<Option<_>>`, where `Ok(None)` is TS's
+/// provable null and `?` carries a punt up to `resolve_chunk`, which turns
+/// it into a `passthrough` outcome.
+enum Halt {
     Punt(&'static str),
+    Napi(Error),
 }
 
-/// matchBoundReceiverCall's claim contract: `undefined` (unclaimed) is
-/// filtered by the `is_binding_receiver_call` gate before this is consulted,
-/// so a claimed ref is always Hit/Refused/Punt — terminal either way.
-enum BoundClaim {
-    Hit(KCand),
-    Refused,
-    Punt(&'static str),
+type Res<T> = std::result::Result<T, Halt>;
+
+impl From<Error> for Halt {
+    fn from(e: Error) -> Self {
+        Halt::Napi(e)
+    }
+}
+
+impl From<Halt> for Error {
+    fn from(h: Halt) -> Self {
+        match h {
+            Halt::Napi(e) => e,
+            Halt::Punt(reason) => Error::from_reason(format!("unexpected punt outside resolve_ref: {reason}")),
+        }
+    }
 }
 
 /// method_call_shape's answer: settled already, or the parsed receiver
 /// shape for the caller's own arm.
 enum McShape {
-    Done(McRes),
+    Done(Option<KCand>),
     /// `dotted`: the `recv.method` shape (dotMatch) matched.
     Parsed { receiver: String, method: String, inferable: bool, dotted: bool },
-}
-
-/// Tri-state inside the ported matchMethodCall helpers: a positive match, a
-/// provable `null` (the caller maps it to continue/refuse exactly like TS), or
-/// a punt when the next step needs state the snapshot can't see — live
-/// supertype edges, tree-sitter parsing, or an unported arm.
-enum McRes {
-    Hit(KCand),
-    Null,
-    Punt(&'static str),
-}
-
-/// resolveBoundType outcome: the resolved owner node, a provable no-owner, or
-/// a punt when a reachable sub-arm is unported (the JVM FQN fallback needs a
-/// qualified-name lookup the enclosing call can't reach).
-enum BtRes {
-    Owner(Arc<KNode>),
-    Null,
-    Punt(&'static str),
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +579,11 @@ impl KernelResolver {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             let t0 = PROF_ON.then(std::time::Instant::now);
-            let o = self.resolve_ref(&r)?;
+            let o = match self.resolve_ref(&r) {
+                Ok(o) => o,
+                Err(Halt::Punt(reason)) => ResolveOutcome::passthrough(reason),
+                Err(Halt::Napi(e)) => return Err(e),
+            };
             if let Some(t0) = t0 {
                 let key = match o.status.as_str() {
                     "passthrough" => format!("punt:{}|{}|{}", o.reason.as_deref().unwrap_or(""), r.reference_kind, r.language),

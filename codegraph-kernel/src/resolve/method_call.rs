@@ -12,7 +12,7 @@ impl KernelResolver {
         root: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let value = self.node_by_opt_id(binding.node_id.as_deref())?;
         // `\b(?:const|let|var)\s+ROOT\s*=` and its `(=…)` capture form.
         static DECLARES: LazyLock<Affix> =
@@ -124,7 +124,7 @@ impl KernelResolver {
             }
         }
         let Some(callee_name) = callee_name else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let bindings = self.bindings(&r.file_path)?;
         let callee: Option<Arc<KNode>> = if let Some(owner_name) = owner_name {
@@ -145,9 +145,9 @@ impl KernelResolver {
                 None => None,
             };
             let owner = self.node_by_opt_id(owner_id.as_deref())?;
-            let Some(owner) = owner else { return Ok(McRes::Null) };
+            let Some(owner) = owner else { return Ok(None) };
             if !matches!(owner.kind.as_str(), "class" | "interface" | "component") {
-                return Ok(McRes::Null);
+                return Ok(None);
             }
             self.nodes_by_qualified_name(&format!(
                 "{}::{}",
@@ -175,7 +175,7 @@ impl KernelResolver {
             };
             self.node_by_opt_id(callee_id.as_deref())?
         };
-        let Some(callee) = callee else { return Ok(McRes::Null) };
+        let Some(callee) = callee else { return Ok(None) };
         let ret_re = re!(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$");
         let return_type = callee.return_type.clone().or_else(|| {
             callee
@@ -185,7 +185,7 @@ impl KernelResolver {
         });
         // `!returnType` — an empty annotation/returnType fails the same way.
         let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let promise_re = re!(r"^Promise<(.+)>$");
         let ty = if awaited {
@@ -205,7 +205,7 @@ impl KernelResolver {
     /// only engage when the file binds `receiver` in an `= await x(` shape.
     /// True → punt (the arm needs sanitized scope parsing); false → provable
     /// null, continue natively.
-    pub(super) fn mc_await_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn mc_await_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(false);
         };
@@ -218,7 +218,7 @@ impl KernelResolver {
 
     /// Cheap gate for inferIterationReceiver — kotlin/go only, fires only
     /// when its declaration preconditions can hold; tree-sitter stays in TS.
-    pub(super) fn mc_iteration_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn mc_iteration_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "kotlin" && r.language != "go" {
             return Ok(false);
         }
@@ -246,7 +246,7 @@ impl KernelResolver {
         &mut self,
         member: &str,
         r: &ResolveRefIn,
-    ) -> Result<Option<KCand>> {
+    ) -> Res<Option<KCand>> {
         let fields: Vec<Arc<KNode>> = self
             .nodes_by_name(member)?
             .iter()
@@ -272,7 +272,7 @@ impl KernelResolver {
     /// `dotMatch || colonMatch || luaColonMatch || rDollarMatch`. Every shape
     /// but `::` is a receiver whose type the local declaration can name
     /// (`inferable`).
-    pub(super) fn method_call_shape(&mut self, r: &ResolveRefIn) -> Result<McShape> {
+    pub(super) fn method_call_shape(&mut self, r: &ResolveRefIn) -> Res<McShape> {
         // PHP `$this->prop->method()` — exclusive declared-type path.
         if r.language == "php" {
             let re = re!(r"^(this->[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$");
@@ -282,7 +282,7 @@ impl KernelResolver {
                 let Some(inferred) =
                     self.infer_local_receiver_type(&receiver, r, false)?
                 else {
-                    return Ok(McShape::Done(McRes::Null));
+                    return Ok(McShape::Done(None));
                 };
                 let fqn = self.imported_fqn_of(&inferred, r)?;
                 return Ok(McShape::Done(self.resolve_method_on_type(
@@ -299,8 +299,8 @@ impl KernelResolver {
         // Rust `Self::item` — associated-item path binding `Self` to the
         // caller's impl owner. Before the `!matched` bail so deeper paths
         // (`Self::Assoc::m`) reach it; a miss falls through like TS.
-        if let McRes::Hit(c) = self.match_rust_self_path(r)? {
-            return Ok(McShape::Done(McRes::Hit(c)));
+        if let Some(c) = self.match_rust_self_path(r)? {
+            return Ok(McShape::Done(Some(c)));
         }
 
         let dot_re = re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
@@ -323,7 +323,7 @@ impl KernelResolver {
         {
             (recv, method, true)
         } else {
-            return Ok(McShape::Done(McRes::Null));
+            return Ok(McShape::Done(None));
         };
         Ok(McShape::Parsed { receiver, method, inferable, dotted: dot_match.is_some() })
     }
@@ -332,7 +332,7 @@ impl KernelResolver {
     /// boundReceiver evidence slice. Punt points: php instanceof guards,
     /// go/kotlin iteration constructs, ESM awaited inference, and every
     /// member-miss that would walk live supertype edges.
-    pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
@@ -350,7 +350,7 @@ impl KernelResolver {
                     .read_file(&r.file_path)
                     .is_some_and(|ls| ls.iter().any(|l| l.contains("instanceof")));
                 if guarded {
-                    return Ok(McRes::Punt("mc-guarded"));
+                    return Err(Halt::Punt("mc-guarded"));
                 }
             }
             let mut site = r.clone();
@@ -370,20 +370,18 @@ impl KernelResolver {
                 self.infer_local_receiver_type(&object_or_class, &site, true)?
             };
             if inferred.is_none() && r.language == "go" {
-                match self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
-                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
-                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
-                    McRes::Null => {}
+                if let Some(c) = self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
+                    return Ok(Some(c));
                 }
             }
             if inferred.is_none() {
                 if self.mc_iteration_gate(&object_or_class, r)? {
-                    return Ok(McRes::Punt("mc-iteration"));
+                    return Err(Halt::Punt("mc-iteration"));
                 }
                 if is_esm_family(&r.language)
                     && self.mc_await_gate(&object_or_class, r)?
                 {
-                    return Ok(McRes::Punt("mc-await"));
+                    return Err(Halt::Punt("mc-await"));
                 }
                 // `recv->fp(...)` / `x.fp(...)` with an unrecoverable
                 // receiver type: the member is still provable when exactly
@@ -392,7 +390,7 @@ impl KernelResolver {
                 // ultimately unresolved), never a guess.
                 if r.language == "c" || r.language == "cpp" {
                     if let Some(hit) = self.unique_field_candidate(&method_name, r)? {
-                        return Ok(McRes::Hit(hit));
+                        return Ok(Some(hit));
                     }
                 }
             }
@@ -414,8 +412,8 @@ impl KernelResolver {
         // dead inside boundReceiver.
 
         if (r.language == "java" || r.language == "kotlin") && dotted {
-            if let Some(res) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
-                return Ok(res);
+            if let Some(hit) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
+                return Ok(Some(hit));
             }
         }
 
@@ -449,7 +447,7 @@ impl KernelResolver {
                     0.85,
                     "instance-method",
                 )? {
-                    return Ok(McRes::Hit(hit));
+                    return Ok(Some(hit));
                 }
             }
         }
@@ -471,7 +469,7 @@ impl KernelResolver {
             }
             return self.match_bound_type_member(&object_or_class, &method_name, r);
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 
     /// matchMethodCall(ref, context, requireReceiverEvidence=false) — the
@@ -481,7 +479,7 @@ impl KernelResolver {
     /// bound path; the evidence-gated arms (mc-guarded, gofactory, iteration,
     /// the btm terminal) never run here — inferred types terminal-match via
     /// rmot, and the name-similarity strategies close the arm.
-    pub(super) fn match_method_call_free(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_method_call_free(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         // PHP `$this->prop.method` takes the declared-type path in both
         // modes (inside method_call_shape).
         let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {
@@ -504,13 +502,13 @@ impl KernelResolver {
                 && is_esm_family(&r.language)
                 && self.mc_await_gate(&object_or_class, r)?
             {
-                return Ok(McRes::Punt("mc-await"));
+                return Err(Halt::Punt("mc-await"));
             }
             // Same unique-field fallback as the bound arm — `recv->fp(...)`
             // proves its field member when exactly one exists.
             if inferred.is_none() && (r.language == "c" || r.language == "cpp") {
                 if let Some(hit) = self.unique_field_candidate(&method_name, r)? {
-                    return Ok(McRes::Hit(hit));
+                    return Ok(Some(hit));
                 }
             }
             if let Some(t) = inferred {
@@ -528,9 +526,8 @@ impl KernelResolver {
                     "instance-method",
                     fqn.as_deref(),
                 )? {
-                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
-                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
-                    McRes::Null => {
+                    Some(c) => return Ok(Some(c)),
+                    None => {
                         // A known builtin/primitive receiver is external when
                         // it has no project method — TS returns null here
                         // rather than letting Strategy 3 guess an unrelated
@@ -539,7 +536,7 @@ impl KernelResolver {
                             && (JS_BUILT_INS.contains(t.as_str())
                                 || TS_PRIMITIVE_TYPES.contains(t.as_str()))
                         {
-                            return Ok(McRes::Null);
+                            return Ok(None);
                         }
                     }
                 }
@@ -582,8 +579,8 @@ impl KernelResolver {
         // Java/Kotlin field receiver inference — non-exclusive (a miss still
         // reaches the name strategies, exactly like TS).
         if (r.language == "java" || r.language == "kotlin") && dotted {
-            if let Some(res) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
-                return Ok(res);
+            if let Some(hit) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
+                return Ok(Some(hit));
             }
         }
 
@@ -613,14 +610,14 @@ impl KernelResolver {
                     0.85,
                     "instance-method",
                 )? {
-                    return Ok(McRes::Hit(hit));
+                    return Ok(Some(hit));
                 }
             }
         }
 
         // Strategy 1 — direct class-name match, call site's file first.
         if let Some(hit) = self.class_method_scan(&object_or_class, &method_name, r, 0.85, "qualified-name")? {
-            return Ok(McRes::Hit(hit));
+            return Ok(Some(hit));
         }
 
         // Strategy 2 — capitalized receiver (`permissionEngine` →
@@ -632,7 +629,7 @@ impl KernelResolver {
         let capitalized = String::from_utf8(cap_bytes).unwrap_or_default();
         if capitalized != object_or_class {
             if let Some(hit) = self.class_method_scan(&capitalized, &method_name, r, 0.8, "instance-method")? {
-                return Ok(McRes::Hit(hit));
+                return Ok(Some(hit));
             }
         }
 
@@ -642,7 +639,7 @@ impl KernelResolver {
             let method_candidates = self.nodes_by_name(&method_name)?;
             // Ubiquitous-method ceiling: bail before the O(K) work.
             if method_candidates.len() as i64 > self.ambiguous_ceiling {
-                return Ok(McRes::Null);
+                return Ok(None);
             }
             let methods: Vec<Arc<KNode>> = method_candidates
                 .iter()
@@ -660,7 +657,7 @@ impl KernelResolver {
                 &methods
             };
             if target.len() == 1 && target[0].language == r.language {
-                return Ok(McRes::Hit(KCand {
+                return Ok(Some(KCand {
                     node: target[0].clone(),
                     confidence: 0.7,
                     resolved_by: "instance-method",
@@ -693,7 +690,7 @@ impl KernelResolver {
                 }
                 if let Some(bm) = best {
                     if best_score >= 2 {
-                        return Ok(McRes::Hit(KCand {
+                        return Ok(Some(KCand {
                             node: bm,
                             confidence: 0.65,
                             resolved_by: "instance-method",
@@ -702,20 +699,17 @@ impl KernelResolver {
                 }
             }
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 
     /// Java/Kotlin field receiver inference — non-exclusive: `Some` settles
     /// the ref, `None` lets the name strategies run, exactly like TS.
-    pub(super) fn jvm_field_receiver(&mut self, receiver: &str, method: &str, r: &ResolveRefIn) -> Result<Option<McRes>> {
+    pub(super) fn jvm_field_receiver(&mut self, receiver: &str, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(inferred) = self.infer_java_field_receiver_type(receiver, r)? else {
             return Ok(None);
         };
         let fqn = self.imported_fqn_of(&inferred, r)?;
-        Ok(match self.resolve_method_on_type(&inferred, method, r, 0.9, "instance-method", fqn.as_deref())? {
-            McRes::Null => None,
-            res => Some(res),
-        })
+        self.resolve_method_on_type(&inferred, method, r, 0.9, "instance-method", fqn.as_deref())
     }
 
     /// matchMethodCall's class scan (Strategies 1 and 2): a same-language
@@ -728,7 +722,7 @@ impl KernelResolver {
         r: &ResolveRefIn,
         confidence: f64,
         resolved_by: &'static str,
-    ) -> Result<Option<KCand>> {
+    ) -> Res<Option<KCand>> {
         let candidates = prefer_call_site_file(self.nodes_by_name(class_name)?.iter().cloned().collect(), &r.file_path);
         for c in &candidates {
             if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") || c.language != r.language {
@@ -748,7 +742,7 @@ impl KernelResolver {
     /// matchMethodCall's `luaColonMatch` — Lua/Luau method calls use a single
     /// colon (`lg:log`); recognized so receiver-type inference applies to
     /// them (#1108). `(receiver, method)`; `None` for every other language.
-    pub(super) fn lua_colon_shape(&mut self, r: &ResolveRefIn) -> Result<Option<(String, String)>> {
+    pub(super) fn lua_colon_shape(&mut self, r: &ResolveRefIn) -> Res<Option<(String, String)>> {
         if r.language != "lua" && r.language != "luau" {
             return Ok(None);
         }
@@ -759,7 +753,7 @@ impl KernelResolver {
     }
 
     /// matchMethodCall's `rDollarMatch` — R member access is `lg$log`.
-    pub(super) fn r_dollar_shape(&mut self, r: &ResolveRefIn) -> Result<Option<(String, String)>> {
+    pub(super) fn r_dollar_shape(&mut self, r: &ResolveRefIn) -> Res<Option<(String, String)>> {
         if r.language != "r" {
             return Ok(None);
         }
@@ -769,7 +763,7 @@ impl KernelResolver {
             .map(|c| (c[1].to_string(), c[2].to_string())))
     }
 
-    pub(super) fn bound_receiver_claim(&mut self, r: &ResolveRefIn) -> Result<BoundClaim> {
+    pub(super) fn bound_receiver_claim(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         // `^(.+)\.([\w$]+)$` is guaranteed by the gate — split at the LAST dot.
         let dot = r.reference_name.rfind('.').unwrap();
         let receiver = &r.reference_name[..dot];
@@ -787,69 +781,55 @@ impl KernelResolver {
                 // java/kotlin bound-type resolution runs before the import
                 // descent: an owner means btm owns the ref (or refuses a
                 // deeper receiver); a miss falls through to br:import.
-                if r.language == "java" || r.language == "kotlin" {
-                    match self.resolve_bound_type(root, r, 0)? {
-                        BtRes::Owner(_) => {
-                            return Ok(if receiver == root {
-                                Self::mc_to_claim(
-                                    self.match_bound_type_member(root, method, r)?,
-                                )
-                            } else {
-                                BoundClaim::Refused
-                            });
-                        }
-                        BtRes::Null => {}
-                        BtRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
-                    }
+                if (r.language == "java" || r.language == "kotlin") && self.resolve_bound_type(root, r, 0)?.is_some() {
+                    return if receiver == root { self.match_bound_type_member(root, method, r) } else { Ok(None) };
                 }
                 return Ok(match self.resolve_via_import_member(r)? {
-                    ViaImport::Hit(c) => {
+                    Some(c) => {
                         if matches!(
                             c.node.kind.as_str(),
                             "function" | "method" | "class" | "component"
                         ) {
-                            BoundClaim::Hit(c)
+                            Some(c)
                         } else {
-                            BoundClaim::Refused
+                            None
                         }
                     }
-                    ViaImport::Miss => BoundClaim::Refused,
-                    ViaImport::Punt(reason) => BoundClaim::Punt(reason),
+                    None => None,
                 });
             }
-            return Ok(Self::mc_to_claim(probe!(r, "brc:match_method_call", self.match_method_call(r)?)));
+            return Ok(probe!(r, "brc:match_method_call", self.match_method_call(r)?));
         }
 
         if binding.as_ref().is_some_and(|b| b.kind == "import") {
             // The import resolver descends one member — a deeper receiver
             // must not mistake the first member for the call.
             if receiver.contains('.') {
-                return Ok(BoundClaim::Refused);
+                return Ok(None);
             }
             return Ok(match self.resolve_via_import_member(r)? {
-                ViaImport::Hit(c) => {
+                Some(c) => {
                     if matches!(
                         c.node.kind.as_str(),
                         "function" | "method" | "class" | "component"
                     ) || ((c.node.kind == "constant" || c.node.kind == "variable")
                         && method == "getState")
                     {
-                        BoundClaim::Hit(c)
+                        Some(c)
                     } else {
-                        BoundClaim::Refused
+                        None
                     }
                 }
-                ViaImport::Miss => BoundClaim::Refused,
-                ViaImport::Punt(reason) => BoundClaim::Punt(reason),
+                None => None,
             });
         }
         let Some(binding) = binding else {
-            return Ok(BoundClaim::Refused);
+            return Ok(None);
         };
         if receiver.contains('.') {
             let parts: Vec<&str> = receiver.split('.').collect();
             if parts.len() != 2 {
-                return Ok(BoundClaim::Refused);
+                return Ok(None);
             }
             // br:fieldinfer — root's declared type anchored at the binding
             // site (preserve qualified names), then the field on that owner.
@@ -859,7 +839,7 @@ impl KernelResolver {
                 site.from_node_id = nid.clone();
             }
             let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else {
-                return Ok(BoundClaim::Refused);
+                return Ok(None);
             };
             let type_binding = Self::innermost_binding(
                 &bindings,
@@ -875,11 +855,7 @@ impl KernelResolver {
                     ref2.reference_name = ty.clone();
                     ref2.reference_kind = "references".to_string();
                     let via = if ty.contains('.') {
-                        match self.resolve_via_import_member(&ref2)? {
-                            ViaImport::Hit(c) => Some(c),
-                            ViaImport::Miss => None,
-                            ViaImport::Punt(p) => return Ok(BoundClaim::Punt(p)),
-                        }
+                        self.resolve_via_import_member(&ref2)?
                     } else {
                         self.resolve_via_import(&ref2)?
                     };
@@ -896,23 +872,17 @@ impl KernelResolver {
                         "class" | "interface" | "component" | "type_alias"
                     ) =>
                 {
-                    Self::mc_to_claim(
-                        self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?,
-                    )
+                    self.match_ts_field_call_bound(o.as_ref(), parts[1], method, r)?
                 }
-                _ => BoundClaim::Refused,
+                _ => None,
             });
         }
-        match probe!(r, "brc:match_method_call", self.match_method_call(r)?) {
-            McRes::Hit(c) => return Ok(BoundClaim::Hit(c)),
-            McRes::Punt(p) => return Ok(BoundClaim::Punt(p)),
-            McRes::Null => {}
+        if let Some(c) = probe!(r, "brc:match_method_call", self.match_method_call(r)?) {
+            return Ok(Some(c));
         }
         if binding.kind == "param" {
-            return Ok(BoundClaim::Refused);
+            return Ok(None);
         }
-        Ok(Self::mc_to_claim(
-            self.esm_factory_tail(&binding, root, method, r)?,
-        ))
+        self.esm_factory_tail(&binding, root, method, r)
     }
 }
