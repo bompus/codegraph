@@ -54,6 +54,99 @@ macro_rules! walker_pos_impl {
     };
 }
 
+/// isInsideClassLikeNode — the innermost scope only (the file never
+/// counts), over the walker's class-like kinds (C/C++ and Rust add `union`).
+macro_rules! inside_class_like_impl {
+    ($($kind:literal)|+) => {
+        fn inside_class_like(&self) -> bool {
+            self.stack.last().map(|s| matches!(s.kind, $($kind)|+)).unwrap_or(false)
+        }
+    };
+}
+
+/// Emits the function-reference candidates held during the walk, now that
+/// the file's defined and imported names are known: a candidate survives
+/// when it is `this.`-rooted, `::`-qualified, or names a function this file
+/// defines or imports; one ref per (owner node id, name). Expects
+/// `fn_ref_cands: Vec<walker::Cand>`, `defined_fn_names`, `imported_names`,
+/// `node_ids`, `file_path`, `cols`, `src`, `arena`, `tables`.
+macro_rules! flush_fn_ref_candidates_impl {
+    () => {
+        fn flush_fn_ref_candidates(&mut self) {
+            let cands = std::mem::take(&mut self.fn_ref_cands);
+            if cands.is_empty() || $crate::textutil::is_generated_file(self.file_path) {
+                return;
+            }
+            // The TS side keys on `${fromNodeId}|${name}`; ids can collide
+            // across rows, so the key is the id string, not the row.
+            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            for c in cands {
+                if !c.name.starts_with("this.")
+                    && !c.name.contains("::")
+                    && !self.defined_fn_names.contains(&c.name)
+                    && !self.imported_names.contains(&c.name)
+                {
+                    continue;
+                }
+                if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
+                    continue;
+                }
+                let column = self.cols.col(self.src, c.row, c.column_byte);
+                let name_ref = self.arena.put(&c.name);
+                self.tables.push_ref(&$crate::buffers::RefRow {
+                    from_idx: c.from,
+                    kind: $crate::buffers::FUNCTION_REF_CODE,
+                    line: c.line,
+                    column,
+                    reference_name: name_ref,
+                    candidates: $crate::buffers::NONE_STR,
+                    from_id_str: $crate::buffers::NONE_STR,
+                });
+            }
+        }
+    };
+}
+
+/// One binding row from the walker's arena and tables; an `exported` row is
+/// `EXPORT_PUBLIC` under its own name.
+macro_rules! push_binding_row_impl {
+    () => {
+        #[allow(clippy::too_many_arguments)]
+        fn push_binding_row(
+            &mut self,
+            kind: u8,
+            name: &str,
+            node_idx: u32,
+            scope: (u32, u32),
+            line: u32,
+            target: Option<(&str, &str)>,
+            exported: bool,
+            storage: Option<&str>,
+        ) {
+            use $crate::buffers::{BindingRow, EXPORT_NONE, EXPORT_PUBLIC, NONE_STR};
+            let name_ref = self.arena.put(name);
+            let (target_spec, target_name) = match target {
+                Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
+                None => (NONE_STR, NONE_STR),
+            };
+            let storage_ref = self.arena.put_opt(storage);
+            self.tables.push_binding(&BindingRow {
+                kind,
+                export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
+                node_idx,
+                scope_start: scope.0,
+                scope_end: scope.1,
+                name: name_ref,
+                target_spec,
+                target_name,
+                exported_as: if exported { name_ref } else { NONE_STR },
+                storage: storage_ref,
+                line,
+            });
+        }
+    };
+}
+
 /// The markdown path-reference pair, for a walker with the usual shape
 /// (`text`, `line_of`, `col_of`, `arena`, `tables`, `file_path`). Every routed
 /// language needs the same two methods, and the wasm arm they must match is
@@ -144,6 +237,7 @@ mod stack;
 mod swift;
 mod textutil;
 mod tree;
+mod walker;
 mod python;
 mod tsjs;
 

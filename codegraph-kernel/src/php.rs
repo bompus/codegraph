@@ -18,11 +18,12 @@
 //! UTF-16 code units. Files with parse errors defer to wasm (≈0–0.1%).
 
 use crate::buffers::{
-    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE, EXPORT_PUBLIC,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
+use crate::walker::{Scope, ValueScope};
 use crate::textutil::{is_stoplisted, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -96,11 +97,6 @@ fn qualified_callable_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[0-9A-Za-z_]+::[0-9A-Za-z_]+$").unwrap())
 }
 
-struct Scope {
-    row: u32,
-    kind: &'static str,
-    name: String,
-}
 
 #[derive(Default)]
 struct Extra {
@@ -111,11 +107,6 @@ struct Extra {
     return_type: Option<String>,
 }
 
-struct ValueScope<'t> {
-    row: u32,
-    node: Node<'t>,
-    name: String,
-}
 
 struct Cand {
     from: u32,
@@ -264,12 +255,7 @@ impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
     walker_pos_impl!();
-    fn inside_class_like(&self) -> bool {
-        self.stack
-            .last()
-            .map(|s| matches!(s.kind, "class" | "struct" | "interface" | "trait" | "enum" | "module"))
-            .unwrap_or(false)
-    }
+    inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
     fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, line: u32, column: u32) {
         let name_ref = self.arena.put(name);
@@ -1043,28 +1029,7 @@ impl<'t> Walker<'t> {
         Some(self.tables.node_lines(top.row))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
-        let name_ref = self.arena.put(name);
-        let (target_spec, target_name) = match target {
-            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
-            None => (NONE_STR, NONE_STR),
-        };
-        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
-        self.tables.push_binding(&BindingRow {
-            kind,
-            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
-            node_idx,
-            scope_start: scope.0,
-            scope_end: scope.1,
-            name: name_ref,
-            target_spec,
-            target_name,
-            exported_as: if exported { name_ref } else { NONE_STR },
-            storage: storage_ref,
-            line,
-        });
-    }
+    push_binding_row_impl!();
 
     /// A file-level declaration is `public` unless its modifier narrows it:
     /// `private` and `internal` are not visible across files; `protected` is,

@@ -12,6 +12,7 @@
 mod bindings;
 mod extractors;
 mod fnref;
+use crate::walker::{Scope, ValueScope};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::textutil as util;
 
@@ -126,12 +127,6 @@ fn is_vue_collection_name(name: &str) -> bool {
     matches!(name, "actions" | "mutations" | "getters")
 }
 
-/// One scope-stack entry (TS keeps node IDs; rows are our equivalent).
-struct Scope {
-    row: u32,
-    kind: &'static str,
-    name: String,
-}
 
 /// Extra node properties, per-extract-site (mirrors createNode's `extra`).
 #[derive(Default)]
@@ -145,11 +140,6 @@ struct Extra {
     qualified_name: Option<String>,
 }
 
-struct ValueScope<'t> {
-    row: u32,
-    node: Node<'t>,
-    name: String,
-}
 
 pub struct Walker<'t> {
     src: &'t str,
@@ -314,13 +304,7 @@ impl<'t> Walker<'t> {
 
     walker_pos_impl!();
 
-    /// isInsideClassLikeNode.
-    fn inside_class_like(&self) -> bool {
-        self.stack
-            .last()
-            .map(|s| matches!(s.kind, "class" | "struct" | "interface" | "trait" | "enum" | "module"))
-            .unwrap_or(false)
-    }
+    inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
     fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
         let name_ref = self.arena.put(name);

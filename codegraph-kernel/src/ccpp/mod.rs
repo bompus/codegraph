@@ -73,10 +73,11 @@
 //! is canonical (kernel-only-extraction-plan.md, Phase 1).
 
 use crate::buffers::{
-    BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, EXPORT_NONE, EXPORT_PUBLIC,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM,
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
+use crate::walker::{Scope, ValueScope};
 use crate::textutil::{is_stoplisted, is_literal_receiver, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -257,11 +258,6 @@ pub enum Variant {
     Cpp,
 }
 
-struct Scope {
-    row: u32,
-    kind: &'static str,
-    name: String,
-}
 
 #[derive(Default)]
 struct Extra {
@@ -274,11 +270,6 @@ struct Extra {
     qualified_name: Option<String>,
 }
 
-struct ValueScope<'t> {
-    row: u32,
-    node: Node<'t>,
-    name: String,
-}
 
 /// Capture mode for a fn-ref candidate (gate policy keys on it).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -439,12 +430,7 @@ impl<'t> Walker<'t> {
 
     walker_pos_impl!();
 
-    fn inside_class_like(&self) -> bool {
-        self.stack
-            .last()
-            .map(|s| matches!(s.kind, "class" | "struct" | "union" | "interface" | "trait" | "enum" | "module"))
-            .unwrap_or(false)
-    }
+    inside_class_like_impl!("class" | "struct" | "union" | "interface" | "trait" | "enum" | "module");
 
     fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
         let name_ref = self.arena.put(name);
@@ -1529,28 +1515,7 @@ impl<'t> Walker<'t> {
         Some(self.tables.node_lines(top.row))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn push_binding_row(&mut self, kind: u8, name: &str, node_idx: u32, scope: (u32, u32), line: u32, target: Option<(&str, &str)>, exported: bool, storage: Option<&str>) {
-        let name_ref = self.arena.put(name);
-        let (target_spec, target_name) = match target {
-            Some((spec, imported)) => (self.arena.put(spec), self.arena.put(imported)),
-            None => (NONE_STR, NONE_STR),
-        };
-        let storage_ref = match storage { Some(s) => self.arena.put(s), None => NONE_STR };
-        self.tables.push_binding(&BindingRow {
-            kind,
-            export_form: if exported { EXPORT_PUBLIC } else { EXPORT_NONE },
-            node_idx,
-            scope_start: scope.0,
-            scope_end: scope.1,
-            name: name_ref,
-            target_spec,
-            target_name,
-            exported_as: if exported { name_ref } else { NONE_STR },
-            storage: storage_ref,
-            line,
-        });
-    }
+    push_binding_row_impl!();
 
     /// A file-level definition is reachable from every unit that includes or
     /// links it (`public`); `static` narrows it to its own translation unit,
