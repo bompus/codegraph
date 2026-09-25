@@ -7,9 +7,6 @@ impl<'t> Walker<'t> {
         if node.kind() != "arguments" {
             return;
         }
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
         for i in 0..node.named_child_count() {
             if let Some(c) = node.named_child(i) {

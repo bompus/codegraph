@@ -4,9 +4,6 @@ use super::*;
 
 impl<'t> Walker<'t> {
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller = self.top_row();
         let mut callee_name = String::new();
 
@@ -72,9 +69,6 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         // php has no constructor/type/name FIELDS → namedChild(0). Backslashes
         // are NOT split by the suffix logic → `new \App\Models\User()` keeps
         // the full qualified text; `new $cls()` keeps the `$`; an
@@ -136,9 +130,6 @@ impl<'t> Walker<'t> {
             "class_constant_access_expression" | "scoped_property_access_expression"
                 | "member_access_expression"
         ) {
-            return;
-        }
-        if self.stack.is_empty() {
             return;
         }
         let owner = self.top_row();

@@ -788,7 +788,7 @@ impl<'t> Walker<'t> {
         }
 
         // C++ local fn-pointer bindings: declarations and branch reassignments.
-        if self.variant == Variant::Cpp && !self.stack.is_empty() {
+        if self.variant == Variant::Cpp {
             if kind == "declaration" {
                 for i in 0..node.named_child_count() {
                     let Some(child) = node.named_child(i) else { continue };

@@ -658,9 +658,6 @@ impl<'t> Walker<'t> {
     /// extractCall — the bespoke ruby branch (tree-sitter.ts:3905-3960),
     /// reached only from the body walker.
     fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller = self.top_row();
         let method_name = match node.child_by_field_name("method") {
             Some(m) => self.text(m),
@@ -735,9 +732,6 @@ impl<'t> Walker<'t> {
             "pair" => Mode::PairValue,
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();

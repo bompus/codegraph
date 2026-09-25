@@ -105,11 +105,6 @@ fn following_accessors<'t>(node: Node<'t>) -> Vec<Node<'t>> {
 }
 
 
-/// Per-node metadata for the extension-fn owner-contains lookup.
-struct NodeMeta {
-    kind: &'static str,
-    name: String,
-}
 
 #[derive(Default)]
 struct Extra {
@@ -135,7 +130,10 @@ pub struct Walker<'t> {
     md_ref_keys: HashSet<String>,
     stack: Vec<Scope>,
     node_ids: Vec<String>,
-    nodes_meta: Vec<NodeMeta>,
+    /// Type-like rows (struct/union/class/enum/trait) by name, in creation
+    /// order: the TS owner lookups scan `this.nodes` for the FIRST
+    /// earlier-in-file match of a kind set.
+    type_rows: HashMap<String, Vec<(u32, &'static str)>>,
     defined_fn_names: HashSet<String>,
     imported_names: HashSet<String>,
     fn_ref_cands: Vec<Cand>,
@@ -154,7 +152,6 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     let line_count = w.line_count;
     let base_name = crate::buffers::push_file_node(&mut w.arena, &mut w.tables, file_path, line_count);
     w.node_ids.push(ids::file_node_id(file_path));
-    w.nodes_meta.push(NodeMeta { kind: "file", name: base_name.to_string() });
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
     // extractFilePackage: the FIRST package_header among root's direct named
@@ -194,6 +191,11 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
 }
 
 impl<'t> Walker<'t> {
+    /// The first row named `name` whose kind is in `kinds`.
+    fn first_type_row(&self, name: &str, kinds: &[&str]) -> Option<u32> {
+        self.type_rows.get(name)?.iter().find(|(_, k)| kinds.contains(k)).map(|(row, _)| *row)
+    }
+
     fn new(source: &'t str, file_path: &'t str) -> Walker<'t> {
         Walker {
             src: source,
@@ -204,7 +206,7 @@ impl<'t> Walker<'t> {
             md_ref_keys: HashSet::new(),
             stack: Vec::new(),
             node_ids: Vec::new(),
-            nodes_meta: Vec::new(),
+            type_rows: HashMap::new(),
             defined_fn_names: HashSet::new(),
             imported_names: HashSet::new(),
             fn_ref_cands: Vec::new(),
@@ -320,7 +322,9 @@ impl<'t> Walker<'t> {
             extra_json: NONE_STR,
         });
         self.node_ids.push(id);
-        self.nodes_meta.push(NodeMeta { kind, name: name.to_string() });
+        if matches!(kind, "struct" | "union" | "class" | "enum" | "trait") {
+            self.type_rows.entry(name.to_string()).or_default().push((row, kind));
+        }
 
         let parent_row = self.top_row();
         self.tables.push_edge(&EdgeRow {
@@ -712,13 +716,7 @@ impl<'t> Walker<'t> {
         // dependent — both quirks preserved). Additive to the normal edge.
         if let Some(recv) = &receiver {
             if !self.inside_class_like() {
-                let owner = self
-                    .nodes_meta
-                    .iter()
-                    .position(|m| {
-                        m.name == *recv && matches!(m.kind, "struct" | "class" | "enum" | "trait")
-                    })
-                    .map(|i| i as u32);
+                let owner = self.first_type_row(recv, &["struct", "class", "enum", "trait"]);
                 if let Some(owner_row) = owner {
                     self.tables.push_edge(&EdgeRow {
                         source_idx: owner_row,

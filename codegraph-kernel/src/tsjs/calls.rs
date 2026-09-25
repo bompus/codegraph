@@ -36,9 +36,6 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let func = node
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
@@ -172,9 +169,6 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let ctor = node
             .child_by_field_name("constructor")
             .or_else(|| node.child_by_field_name("type"))

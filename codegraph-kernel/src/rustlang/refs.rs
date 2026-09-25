@@ -24,9 +24,6 @@ impl<'t> Walker<'t> {
             "static_item" | "let_declaration" => Mode::Varinit,
             _ => return,
         };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();

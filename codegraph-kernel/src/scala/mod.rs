@@ -727,7 +727,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(signature), ..Default::default() },
         );
         // Generic imports ref (:3183-3194) — hook sets no handledRefs.
-        if created.is_some() && !module.is_empty() && !self.stack.is_empty() {
+        if created.is_some() && !module.is_empty() {
             let parent_row = self.top_row();
             self.push_ref_at(parent_row, &module, "imports", node);
         }

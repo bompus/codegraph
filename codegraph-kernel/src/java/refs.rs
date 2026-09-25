@@ -11,9 +11,6 @@ impl<'t> Walker<'t> {
             _ => None,
         };
         let Some(field) = mode_field else { return };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
 
         let mut values: Vec<Node> = Vec::new();

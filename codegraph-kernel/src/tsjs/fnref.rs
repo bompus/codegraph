@@ -198,9 +198,6 @@ impl<'t> Walker<'t> {
 
     pub(super) fn maybe_capture_fn_refs(&mut self, node: Node<'t>) {
         let Some(mode) = fnref::dispatch(node.kind()) else { return };
-        if self.stack.is_empty() {
-            return;
-        }
         let from = self.top_row();
         for cand in fnref::capture(node, mode, self.src, from) {
             self.fn_ref_cands.push(cand);

@@ -6,9 +6,6 @@ impl<'t> Walker<'t> {
     /// extractCall — swift rides the generic member branch (navigation) and
     /// the raw-text else; the full matrix is in the checklist.
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() {
-            return;
-        }
         let caller = self.top_row();
         let func = node
             .child_by_field_name("function")
@@ -95,9 +92,6 @@ impl<'t> Walker<'t> {
     /// body walker + walkAttrArgs only.
     pub(super) fn extract_static_member_ref(&mut self, node: Node<'t>) {
         if node.kind() != "navigation_expression" {
-            return;
-        }
-        if self.stack.is_empty() {
             return;
         }
         let owner = self.top_row();
