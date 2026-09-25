@@ -7,35 +7,6 @@ impl KernelResolver {
     // Name machinery (name-matcher.ts)
     // -----------------------------------------------------------------------
 
-    /// JS `string.slice(i)` over UTF-16 code units — `column` values are
-    /// extraction offsets consumed as JS string indices, so replicate that
-    /// indexing (round a mid-surrogate boundary up to the next char).
-    pub(super) fn js_slice(s: &str, start: usize) -> &str {
-        &s[Self::js_unit_to_byte(s, start)..]
-    }
-
-    /// JS `string.slice(0, i)` over UTF-16 code units.
-    pub(super) fn js_prefix(s: &str, end: usize) -> &str {
-        &s[..Self::js_unit_to_byte(s, end)]
-    }
-
-    /// UTF-16 unit offset → byte offset (clamped to the next char boundary).
-    pub(super) fn js_unit_to_byte(s: &str, units: usize) -> usize {
-        let mut seen = 0usize;
-        for (byte_idx, ch) in s.char_indices() {
-            if seen >= units {
-                return byte_idx;
-            }
-            seen += ch.len_utf16();
-        }
-        s.len()
-    }
-
-    /// UTF-16 length — the `.length` JS sees.
-    pub(super) fn utf16_len(s: &str) -> usize {
-        s.chars().map(|c| c.len_utf16()).sum()
-    }
-
     /// applyLanguageGate (name-matcher.ts).
     pub(super) fn apply_language_gate(&self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
         if r.reference_kind == "references" || r.reference_kind == "function_ref" {
@@ -115,16 +86,6 @@ impl KernelResolver {
         Ok(is_static)
     }
 
-    /// rustModuleDir (name-matcher.ts).
-    pub(super) fn rust_module_dir(file_path: &str) -> String {
-        let base = pos_basename(file_path);
-        let dir = pos_dirname(file_path);
-        if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
-            return dir.to_string();
-        }
-        pos_join(dir, base.strip_suffix(".rs").unwrap_or(base))
-    }
-
     /// isRustTraitImplMethod (name-matcher.ts) — scan upward for the nearest
     /// `impl` header; `impl Trait for` wins, a top-level item ends the scan.
     pub(super) fn is_rust_trait_impl_method(&mut self, candidate: &KNode) -> Res<bool> {
@@ -155,37 +116,6 @@ impl KernelResolver {
         Ok(is_trait)
     }
 
-    /// The `= require("….json")` signature guard (isCrossFileReachable).
-    /// Hand-rolled because the JS pattern uses a backreference.
-    pub(super) fn is_json_require_signature(sig: &str) -> bool {
-        // ^=\s*require\s*\(\s*(['"])[^'"]+\.json\1\s*\)\s*;?\s*$
-        let s = sig.trim();
-        let Some(s) = s.strip_prefix('=') else { return false };
-        let s = s.trim_start();
-        let Some(s) = s.strip_prefix("require") else { return false };
-        let s = s.trim_start();
-        let Some(s) = s.strip_prefix('(') else { return false };
-        let s = s.trim_start();
-        let Some(q) = s.chars().next() else { return false };
-        if q != '\'' && q != '"' {
-            return false;
-        }
-        let Some(end) = s[1..].find(q) else { return false };
-        let content = &s[1..1 + end];
-        // `[^'"]+\.json` — at least one non-quote char, then literal `.json`.
-        if content.len() <= ".json".len()
-            || !content.ends_with(".json")
-            || content.contains(['\'', '"'])
-        {
-            return false;
-        }
-        let s = s[1 + end + 1..].trim_start();
-        let Some(s) = s.strip_prefix(')') else { return false };
-        let s = s.trim_start();
-        let s = s.strip_prefix(';').unwrap_or(s);
-        s.trim().is_empty()
-    }
-
     /// isCrossFileReachable (name-matcher.ts).
     pub(super) fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "markdown"
@@ -197,7 +127,7 @@ impl KernelResolver {
         if r.reference_kind == "calls"
             && is_esm_family(&candidate.language)
             && (candidate.kind == "constant" || candidate.kind == "variable")
-            && Self::is_json_require_signature(candidate.signature.as_deref().unwrap_or(""))
+            && is_json_require_signature(candidate.signature.as_deref().unwrap_or(""))
         {
             return Ok(false);
         }
@@ -233,7 +163,7 @@ impl KernelResolver {
             if self.is_rust_trait_impl_method(candidate)? {
                 return Ok(true);
             }
-            let owner = Self::rust_module_dir(&candidate.file_path);
+            let owner = rust_module_dir(&candidate.file_path);
             return Ok(r.file_path.starts_with(&format!("{}/", owner)));
         }
         if private_is_file_local(lang) {
@@ -254,7 +184,7 @@ impl KernelResolver {
         }
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
         let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(false) };
-        let at = Self::js_slice(line, r.column as usize);
+        let at = js_slice(line, r.column as usize);
         // `new RegExp('^' + nameEsc + '\\s*[(<]')` — the name is a literal
         // prefix, then the call opener.
         let is_call = at
@@ -263,7 +193,7 @@ impl KernelResolver {
         if !is_call {
             return Ok(false);
         }
-        let before = Self::js_prefix(line, r.column as usize);
+        let before = js_prefix(line, r.column as usize);
         Ok(!thread_regex(&JS_CALL_PREFIX_RE).is_match(before) || thread_regex(&JS_CALL_KEYWORD_RE).is_match(before))
     }
 
@@ -281,8 +211,8 @@ impl KernelResolver {
         // `name.includes('.') || includes('::')` — dead for bare names.
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
         let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(None) };
-        let from = (r.column as usize).min(Self::utf16_len(line));
-        let hay = Self::js_slice(line, from);
+        let from = (r.column as usize).min(utf16_len(line));
+        let hay = js_slice(line, from);
         // `(^|[^A-Za-z0-9_])NAME\s*\(` — the literal name, not preceded by a
         // word byte, then the call opener.
         let name = r.reference_name.as_str();
@@ -293,8 +223,8 @@ impl KernelResolver {
             return Ok(None);
         };
         // m.index + m[1].length in TS: the name's UTF-16 offset in `hay`.
-        let name_at = from + Self::utf16_len(&hay[..at]);
-        let before: String = Self::js_prefix(line, name_at)
+        let name_at = from + utf16_len(&hay[..at]);
+        let before: String = js_prefix(line, name_at)
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
@@ -307,7 +237,7 @@ impl KernelResolver {
         if before.ends_with("->") || before.ends_with('.') {
             return Ok(Some("explicit-member"));
         }
-        let after_name = Self::js_slice(line, name_at + Self::utf16_len(&r.reference_name));
+        let after_name = js_slice(line, name_at + utf16_len(&r.reference_name));
         let Some(open) = after_name.find('(') else { return Ok(Some("implicit-this")) };
         Ok(Some(
             if thread_regex(&AFTER_NAME_PAREN_RE).is_match(&after_name[open + 1..]) {
@@ -316,29 +246,6 @@ impl KernelResolver {
                 "free-args"
             },
         ))
-    }
-
-    /// enclosingTypePrefix + callableOnType + applyCppCallSiteForm
-    /// (name-matcher.ts).
-    pub(super) fn enclosing_type_prefix(node: Option<&KNode>) -> Option<String> {
-        let node = node?;
-        let sep = node.qualified_name.rfind("::")?;
-        if sep == 0 {
-            return None;
-        }
-        Some(node.qualified_name[..sep].to_string())
-    }
-
-    pub(super) fn callable_on_type(candidate: &KNode, type_prefix: &str) -> bool {
-        if candidate.kind != "method" && candidate.kind != "function" {
-            return false;
-        }
-        let qn = &candidate.qualified_name;
-        if !qn.contains("::") {
-            return false;
-        }
-        let want = format!("{}::{}", type_prefix, candidate.name);
-        *qn == want || qn.ends_with(&format!("::{}", want)) || want.ends_with(&format!("::{}", qn))
     }
 
     /// isImplicitThisFieldCall (name-matcher.ts): the one case a bare `calls`
@@ -352,10 +259,10 @@ impl KernelResolver {
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
             return Ok(false);
         };
-        let Some(prefix) = Self::enclosing_type_prefix(Some(caller.as_ref())) else {
+        let Some(prefix) = enclosing_type_prefix(Some(caller.as_ref())) else {
             return Ok(false);
         };
-        Ok(Self::enclosing_type_prefix(Some(field)).as_deref() == Some(prefix.as_str()))
+        Ok(enclosing_type_prefix(Some(field)).as_deref() == Some(prefix.as_str()))
     }
 
     /// Returns `Ok(None)` when the call-site form vetoes every candidate
@@ -372,13 +279,13 @@ impl KernelResolver {
             "qualified" | "explicit-member" => Ok(None),
             "this-member" => {
                 let origin = self.node_by_id(&r.from_node_id)?;
-                let Some(prefix) = Self::enclosing_type_prefix(origin.as_deref()) else {
+                let Some(prefix) = enclosing_type_prefix(origin.as_deref()) else {
                     return Ok(None);
                 };
                 Ok(Some(
                     candidates
                         .into_iter()
-                        .filter(|n| Self::callable_on_type(n, &prefix))
+                        .filter(|n| callable_on_type(n, &prefix))
                         .collect(),
                 ))
             }
@@ -391,17 +298,6 @@ impl KernelResolver {
             }
             _ => Ok(Some(candidates)),
         }
-    }
-
-    /// pathProximityFromDirs + computePathProximity (name-matcher.ts).
-    pub(super) fn path_proximity_from_dirs(dir1: &[String], file_path2: &str) -> i64 {
-        (shared_dir_prefix(dir1, file_path2) as i64 * 15).min(80)
-    }
-
-    pub(super) fn compute_path_proximity(file_path1: &str, file_path2: &str) -> i64 {
-        let mut dir1: Vec<String> = file_path1.split('/').map(|s| s.to_string()).collect();
-        dir1.pop();
-        Self::path_proximity_from_dirs(&dir1, file_path2)
     }
 
     /// findBestMatch (name-matcher.ts) — strict `>` first-max scoring.
@@ -420,7 +316,7 @@ impl KernelResolver {
             if candidate.file_path == r.file_path {
                 score += 100.0;
             }
-            score += Self::path_proximity_from_dirs(&ref_dirs, &candidate.file_path) as f64;
+            score += path_proximity_from_dirs(&ref_dirs, &candidate.file_path) as f64;
             if candidate.language == r.language {
                 score += 50.0;
             } else {
@@ -563,7 +459,7 @@ impl KernelResolver {
             return Ok(None);
         }
         if self.is_cross_file_reachable(&best, r)? {
-            let proximity = Self::compute_path_proximity(&r.file_path, &best.file_path);
+            let proximity = compute_path_proximity(&r.file_path, &best.file_path);
             return Ok(Some(KCand {
                 node: best,
                 confidence: if proximity >= 30 { 0.7 } else { 0.4 },
@@ -919,4 +815,108 @@ impl KernelResolver {
         }))
     }
 
+}
+
+/// JS `string.slice(i)` over UTF-16 code units — `column` values are
+/// extraction offsets consumed as JS string indices, so replicate that
+/// indexing (round a mid-surrogate boundary up to the next char).
+pub(super) fn js_slice(s: &str, start: usize) -> &str {
+    &s[js_unit_to_byte(s, start)..]
+}
+
+/// JS `string.slice(0, i)` over UTF-16 code units.
+pub(super) fn js_prefix(s: &str, end: usize) -> &str {
+    &s[..js_unit_to_byte(s, end)]
+}
+
+/// UTF-16 unit offset → byte offset (clamped to the next char boundary).
+pub(super) fn js_unit_to_byte(s: &str, units: usize) -> usize {
+    let mut seen = 0usize;
+    for (byte_idx, ch) in s.char_indices() {
+        if seen >= units {
+            return byte_idx;
+        }
+        seen += ch.len_utf16();
+    }
+    s.len()
+}
+
+/// UTF-16 length — the `.length` JS sees.
+pub(super) fn utf16_len(s: &str) -> usize {
+    s.chars().map(|c| c.len_utf16()).sum()
+}
+
+/// rustModuleDir (name-matcher.ts).
+pub(super) fn rust_module_dir(file_path: &str) -> String {
+    let base = pos_basename(file_path);
+    let dir = pos_dirname(file_path);
+    if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
+        return dir.to_string();
+    }
+    pos_join(dir, base.strip_suffix(".rs").unwrap_or(base))
+}
+
+/// The `= require("….json")` signature guard (isCrossFileReachable).
+/// Hand-rolled because the JS pattern uses a backreference.
+pub(super) fn is_json_require_signature(sig: &str) -> bool {
+    // ^=\s*require\s*\(\s*(['"])[^'"]+\.json\1\s*\)\s*;?\s*$
+    let s = sig.trim();
+    let Some(s) = s.strip_prefix('=') else { return false };
+    let s = s.trim_start();
+    let Some(s) = s.strip_prefix("require") else { return false };
+    let s = s.trim_start();
+    let Some(s) = s.strip_prefix('(') else { return false };
+    let s = s.trim_start();
+    let Some(q) = s.chars().next() else { return false };
+    if q != '\'' && q != '"' {
+        return false;
+    }
+    let Some(end) = s[1..].find(q) else { return false };
+    let content = &s[1..1 + end];
+    // `[^'"]+\.json` — at least one non-quote char, then literal `.json`.
+    if content.len() <= ".json".len()
+        || !content.ends_with(".json")
+        || content.contains(['\'', '"'])
+    {
+        return false;
+    }
+    let s = s[1 + end + 1..].trim_start();
+    let Some(s) = s.strip_prefix(')') else { return false };
+    let s = s.trim_start();
+    let s = s.strip_prefix(';').unwrap_or(s);
+    s.trim().is_empty()
+}
+
+/// enclosingTypePrefix + callableOnType + applyCppCallSiteForm
+/// (name-matcher.ts).
+pub(super) fn enclosing_type_prefix(node: Option<&KNode>) -> Option<String> {
+    let node = node?;
+    let sep = node.qualified_name.rfind("::")?;
+    if sep == 0 {
+        return None;
+    }
+    Some(node.qualified_name[..sep].to_string())
+}
+
+pub(super) fn callable_on_type(candidate: &KNode, type_prefix: &str) -> bool {
+    if candidate.kind != "method" && candidate.kind != "function" {
+        return false;
+    }
+    let qn = &candidate.qualified_name;
+    if !qn.contains("::") {
+        return false;
+    }
+    let want = format!("{}::{}", type_prefix, candidate.name);
+    *qn == want || qn.ends_with(&format!("::{}", want)) || want.ends_with(&format!("::{}", qn))
+}
+
+/// pathProximityFromDirs + computePathProximity (name-matcher.ts).
+pub(super) fn path_proximity_from_dirs(dir1: &[String], file_path2: &str) -> i64 {
+    (shared_dir_prefix(dir1, file_path2) as i64 * 15).min(80)
+}
+
+pub(super) fn compute_path_proximity(file_path1: &str, file_path2: &str) -> i64 {
+    let mut dir1: Vec<String> = file_path1.split('/').map(|s| s.to_string()).collect();
+    dir1.pop();
+    path_proximity_from_dirs(&dir1, file_path2)
 }

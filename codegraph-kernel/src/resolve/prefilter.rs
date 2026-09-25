@@ -165,37 +165,18 @@ impl KernelResolver {
     // (name-matcher.ts)
     // -----------------------------------------------------------------------
 
-    /// innermostBinding: the row for `name` whose scope contains `line`,
-    /// narrowest scope first (first-wins on ties, matching the TS loop).
-    pub(super) fn innermost_binding<'a>(
-        rows: &'a [KBinding],
-        name: &str,
-        line: Option<i64>,
-    ) -> Option<&'a KBinding> {
-        let mut best: Option<&KBinding> = None;
-        for r in rows {
-            if r.name != name {
-                continue;
-            }
-            if let Some(l) = line {
-                if l < r.scope_start || l > r.scope_end {
-                    continue;
-                }
-            }
-            if best.is_none_or(|b| r.scope_end - r.scope_start < b.scope_end - b.scope_start) {
-                best = Some(r);
-            }
-        }
-        best
-    }
-
-    /// packageNameOf — `@scope/pkg/sub` → `@scope/pkg`, `pkg/sub` → `pkg`.
-    pub(super) fn package_name_of(source: &str) -> &str {
-        let mut parts = source.split('/');
-        match (source.starts_with('@'), parts.next(), parts.next()) {
-            (true, Some(scope), Some(pkg)) => &source[..scope.len() + 1 + pkg.len()],
-            (_, Some(first), _) => first,
-            _ => source,
+    /// The node a binding row names: an `import` row through the import
+    /// resolver (`via_import`, the caller's ref shape), any other row through
+    /// its own `node_id`, no row → none.
+    pub(super) fn binding_target_id(
+        &mut self,
+        binding: Option<&KBinding>,
+        via_import: impl FnOnce(&mut Self) -> Res<Option<KCand>>,
+    ) -> Res<Option<String>> {
+        match binding {
+            Some(b) if b.kind == "import" => Ok(via_import(self)?.map(|c| c.node.id.clone())),
+            Some(b) => Ok(b.node_id.clone()),
+            None => Ok(None),
         }
     }
 
@@ -208,7 +189,7 @@ impl KernelResolver {
         }
         let rows = self.bindings(&r.file_path)?;
         let source: Option<String> = if !rows.is_empty() {
-            match Self::innermost_binding(&rows, &r.reference_name, Some(r.line)) {
+            match innermost_binding(&rows, &r.reference_name, Some(r.line)) {
                 Some(b) if b.kind == "import" => b.target_spec.clone(),
                 _ => None,
             }
@@ -237,12 +218,12 @@ impl KernelResolver {
             if self.resolve_workspace_import(&source).is_some() {
                 return Ok(false);
             }
-            if ws.local_link_names.contains(Self::package_name_of(&source)) {
+            if ws.local_link_names.contains(package_name_of(&source)) {
                 return Ok(false);
             }
         }
         if !source.starts_with("node:") && !self.node_builtins.contains(&source) {
-            let head = Self::package_name_of(&source).to_string();
+            let head = package_name_of(&source).to_string();
             let local = match self.root_import_memo.get(&head) {
                 Some(&v) => v,
                 None => {
@@ -270,9 +251,43 @@ impl KernelResolver {
         if rows.is_empty() {
             return Ok(false);
         }
-        Ok(match Self::innermost_binding(&rows, name, line) {
+        Ok(match innermost_binding(&rows, name, line) {
             Some(b) => matches!(b.kind.as_str(), "decl" | "local" | "param"),
             None => false,
         })
+    }
+}
+
+/// innermostBinding: the row for `name` whose scope contains `line`,
+/// narrowest scope first (first-wins on ties, matching the TS loop).
+pub(super) fn innermost_binding<'a>(
+    rows: &'a [KBinding],
+    name: &str,
+    line: Option<i64>,
+) -> Option<&'a KBinding> {
+    let mut best: Option<&KBinding> = None;
+    for r in rows {
+        if r.name != name {
+            continue;
+        }
+        if let Some(l) = line {
+            if l < r.scope_start || l > r.scope_end {
+                continue;
+            }
+        }
+        if best.is_none_or(|b| r.scope_end - r.scope_start < b.scope_end - b.scope_start) {
+            best = Some(r);
+        }
+    }
+    best
+}
+
+/// packageNameOf — `@scope/pkg/sub` → `@scope/pkg`, `pkg/sub` → `pkg`.
+pub(super) fn package_name_of(source: &str) -> &str {
+    let mut parts = source.split('/');
+    match (source.starts_with('@'), parts.next(), parts.next()) {
+        (true, Some(scope), Some(pkg)) => &source[..scope.len() + 1 + pkg.len()],
+        (_, Some(first), _) => first,
+        _ => source,
     }
 }

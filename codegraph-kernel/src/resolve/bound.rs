@@ -55,7 +55,7 @@ impl KernelResolver {
             }
         }
         let bindings = self.bindings(&r.file_path)?;
-        let binding = Self::innermost_binding(
+        let binding = innermost_binding(
             &bindings,
             ty.split('.').next().unwrap_or(ty),
             Some(r.line),
@@ -346,7 +346,7 @@ impl KernelResolver {
         // slice(0, lastIndexOf(name)) — a -1 index drops the last UTF-16 unit.
         let before = match sig.rfind(&field.name) {
             Some(i) => &sig[..i],
-            None => Self::js_prefix(sig, Self::utf16_len(sig).saturating_sub(1)),
+            None => js_prefix(sig, utf16_len(sig).saturating_sub(1)),
         };
         let type_raw = before.trim();
         if type_raw.is_empty() {
@@ -379,7 +379,7 @@ impl KernelResolver {
     ) -> Res<Option<KCand>> {
         let mut site = r.clone();
         let bindings = self.bindings(&r.file_path)?;
-        let mut binding = Self::innermost_binding(&bindings, receiver, Some(r.line)).cloned();
+        let mut binding = innermost_binding(&bindings, receiver, Some(r.line)).cloned();
         if binding.is_none() {
             let mut values: Vec<Arc<KNode>> = Vec::new();
             for n in self.nodes_by_name(receiver)?.iter() {
@@ -405,7 +405,7 @@ impl KernelResolver {
             site.line = value.start_line;
             let site_bindings = self.bindings(&site.file_path)?;
             binding =
-                Self::innermost_binding(&site_bindings, receiver, Some(site.line)).cloned();
+                innermost_binding(&site_bindings, receiver, Some(site.line)).cloned();
         }
         let Some(binding) = binding else { return Ok(None) };
         let declaration = self
@@ -454,7 +454,7 @@ impl KernelResolver {
             let mut factory_site = site.clone();
             factory_site.line = binding.line;
             factory_site.reference_name = name.clone();
-            let factory_binding = Self::innermost_binding(
+            let factory_binding = innermost_binding(
                 &site_bindings,
                 name.split('.').next().unwrap_or(&name),
                 Some(binding.line),

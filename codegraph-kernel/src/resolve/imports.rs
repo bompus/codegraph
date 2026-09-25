@@ -401,7 +401,7 @@ impl KernelResolver {
             let member_name = if matches_bare {
                 imp.local_name.clone()
             } else {
-                Self::js_slice(&r.reference_name, Self::utf16_len(&imp.local_name) + 1)
+                js_slice(&r.reference_name, utf16_len(&imp.local_name) + 1)
                     .to_string()
             };
             let fqn_path = format!("{}{}", imp.source.replace('.', "/"), ext);
@@ -672,9 +672,9 @@ impl KernelResolver {
                 if target.kind == "constant" || target.kind == "variable" {
                     // `if (member)` — an empty first segment skips the
                     // literal/alias arms entirely in TS.
-                    let member0 = Self::js_slice(
+                    let member0 = js_slice(
                         &r.reference_name,
-                        Self::utf16_len(&imp.local_name) + 1,
+                        utf16_len(&imp.local_name) + 1,
                     )
                     .split('.')
                     .next()
@@ -763,27 +763,8 @@ impl KernelResolver {
 
     /// The `getAllFiles()`-ordered paths sharing `basename` (luaBasenameIndex).
     /// `ORDER BY path` is byte order — the same order `sort()` gives.
-    pub(super) fn lua_basename_bucket(&mut self, basename: &str) -> Rc<Vec<String>> {
-        if self.lua_basename_index.is_none() {
-            let mut m: HashMap<String, Vec<String>> = HashMap::new();
-            if let Ok(t) = self.table() {
-                let mut paths: Vec<&String> = t.files.iter().collect();
-                paths.sort();
-                for f in paths {
-                    let base = f.rsplit('/').next().unwrap_or("").to_string();
-                    m.entry(base).or_default().push(f.clone());
-                }
-            }
-            self.lua_basename_index = Some(Rc::new(
-                m.into_iter().map(|(k, v)| (k, Rc::new(v))).collect(),
-            ));
-        }
-        self.lua_basename_index
-            .as_ref()
-            .unwrap()
-            .get(basename)
-            .cloned()
-            .unwrap_or_else(|| Rc::new(Vec::new()))
+    pub(super) fn lua_basename_bucket(&self, basename: &str) -> Arc<Vec<String>> {
+        self.table().map(|t| t.lua_basename_bucket(basename)).unwrap_or_default()
     }
 
     /// resolveGoCrossPackageReference (import-resolver.ts): `pkg.Member` via
@@ -877,7 +858,7 @@ impl KernelResolver {
             if imp.is_namespace && imp.source.starts_with(&format!("{}.", receiver)) {
                 // JS slice counts UTF-16 units — receiver may not be ASCII.
                 let suffix: Vec<&str> =
-                    Self::js_slice(&imp.source, Self::utf16_len(receiver) + 1)
+                    js_slice(&imp.source, utf16_len(receiver) + 1)
                         .split('.')
                         .collect();
                 if !suffix.iter().enumerate().all(|(i, s)| remaining.get(i) == Some(s)) {
@@ -949,7 +930,7 @@ impl KernelResolver {
         if !is_static_member_container(&container.kind) {
             return Ok(None);
         }
-        let member = Self::js_slice(&r.reference_name, Self::utf16_len(local_name) + 1)
+        let member = js_slice(&r.reference_name, utf16_len(local_name) + 1)
             .split('.')
             .next()
             .unwrap_or("");
