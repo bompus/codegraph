@@ -25,6 +25,7 @@ use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
+use crate::walker::{Scope};
 use crate::ids;
 use crate::textutil as util;
 use regex::Regex;
@@ -58,11 +59,6 @@ fn is_generic_fn(name: &str) -> bool {
     matches!(name, "setGeneric" | "setMethod")
 }
 
-struct Scope {
-    row: u32,
-    kind: &'static str,
-    name: String,
-}
 
 pub struct Walker<'t> {
     src: &'t str,

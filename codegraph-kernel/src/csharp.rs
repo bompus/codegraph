@@ -17,9 +17,10 @@
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
+    RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
+use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_stoplisted, is_builtin_type, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -66,11 +67,6 @@ fn strip_js_ws(s: &str) -> String {
     s.chars().filter(|c| !is_js_space(*c)).collect()
 }
 
-struct Scope {
-    row: u32,
-    kind: &'static str,
-    name: String,
-}
 
 #[derive(Default)]
 struct Extra {
@@ -82,19 +78,7 @@ struct Extra {
     return_type: Option<String>,
 }
 
-struct ValueScope<'t> {
-    row: u32,
-    node: Node<'t>,
-    name: String,
-}
 
-struct Cand {
-    from: u32,
-    name: String,
-    line: u32,
-    column_byte: usize,
-    row: usize,
-}
 
 pub struct Walker<'t> {
     src: &'t str,
@@ -244,12 +228,7 @@ impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
     walker_pos_impl!();
-    fn inside_class_like(&self) -> bool {
-        self.stack
-            .last()
-            .map(|s| matches!(s.kind, "class" | "struct" | "interface" | "trait" | "enum" | "module"))
-            .unwrap_or(false)
-    }
+    inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
     fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, line: u32, column: u32) {
         let name_ref = self.arena.put(name);
@@ -1422,39 +1401,7 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn flush_fn_ref_candidates(&mut self) {
-        let cands = std::mem::take(&mut self.fn_ref_cands);
-        if cands.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        for c in cands {
-            // C# candidates are always bare names (its this-forms normalize to
-            // the bare member), so the `this.`/`::` bypasses are inert — kept
-            // for shared-shape parity. Gate: definedHere ∪ importedNames.
-            if !c.name.starts_with("this.")
-                && !c.name.contains("::")
-                && !self.defined_fn_names.contains(&c.name)
-                && !self.imported_names.contains(&c.name)
-            {
-                continue;
-            }
-            if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
-                continue;
-            }
-            let column = self.cols.col(self.src, c.row, c.column_byte);
-            let name_ref = self.arena.put(&c.name);
-            self.tables.push_ref(&RefRow {
-                from_idx: c.from,
-                kind: FUNCTION_REF_CODE,
-                line: c.line,
-                column,
-                reference_name: name_ref,
-                candidates: NONE_STR,
-                from_id_str: NONE_STR,
-            });
-        }
-    }
+    flush_fn_ref_candidates_impl!();
 
     // --- value references --------------------------------------------------------
 

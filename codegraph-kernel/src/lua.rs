@@ -26,8 +26,9 @@
 
 use crate::buffers::{
     build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, Tables, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
+    RefRow, Tables, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
+use crate::walker::{Scope, Cand};
 use crate::textutil::{is_stoplisted};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -36,19 +37,7 @@ use std::collections::{HashSet, VecDeque};
 use tree_sitter::{Node, Parser};
 
 
-struct Scope {
-    row: u32,
-    kind: &'static str,
-    name: String,
-}
 
-struct Cand {
-    from: u32,
-    name: String,
-    line: u32,
-    column_byte: usize,
-    row: usize,
-}
 
 #[derive(Default)]
 struct Extra {
@@ -922,37 +911,6 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn flush_fn_ref_candidates(&mut self) {
-        let cands = std::mem::take(&mut self.fn_ref_cands);
-        if cands.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        for c in cands {
-            // Gate: same-file function/method names ∪ imported names (lua
-            // candidates are always bare identifiers — no `this.`/`::`).
-            if !c.name.starts_with("this.")
-                && !c.name.contains("::")
-                && !self.defined_fn_names.contains(&c.name)
-                && !self.imported_names.contains(&c.name)
-            {
-                continue;
-            }
-            if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
-                continue;
-            }
-            let column = self.cols.col(self.src, c.row, c.column_byte);
-            let name_ref = self.arena.put(&c.name);
-            self.tables.push_ref(&RefRow {
-                from_idx: c.from,
-                kind: FUNCTION_REF_CODE,
-                line: c.line,
-                column,
-                reference_name: name_ref,
-                candidates: NONE_STR,
-                from_id_str: NONE_STR,
-            });
-        }
-    }
+    flush_fn_ref_candidates_impl!();
 }
 
