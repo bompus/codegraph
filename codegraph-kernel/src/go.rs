@@ -14,7 +14,7 @@
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, NONE, NONE_STR,
+    RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver};
@@ -26,7 +26,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use tree_sitter::Node;
 
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 fn receiver_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -1138,7 +1137,7 @@ impl<'t> Walker<'t> {
         let mut dstack: Vec<Node> = vec![root];
         let mut dvisited = 0usize;
         while let Some(n) = dstack.pop() {
-            if dvisited >= MAX_VALUE_REF_NODES {
+            if dvisited >= crate::walker::MAX_VALUE_REF_NODES {
                 break;
             }
             dvisited += 1;
@@ -1179,49 +1178,7 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        let refs_kind = edge_kind_index("references").unwrap();
-        // One arena string for every value-ref edge of the file (unchanged when none).
-        let mut value_ref_meta: Option<StrRef> = None;
-        for scope in &scopes {
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<Node> = vec![scope.node];
-            let mut visited = 0usize;
-            while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
-                    break;
-                }
-                visited += 1;
-                if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
-                    let ref_name = self.text(n);
-                    if let Some(&target_row) = targets.get(ref_name) {
-                        let target_id = self.node_ids[target_row as usize].as_str();
-                        if target_id != self.node_ids[scope.row as usize]
-                            && ref_name != scope.name
-                            && !seen.contains(&target_id)
-                        {
-                            seen.insert(target_id);
-                            let meta = *value_ref_meta.get_or_insert_with(|| self.arena.put(r#"{"valueRef":true}"#));
-                            self.tables.push_edge(&EdgeRow {
-                                source_idx: scope.row,
-                                target_idx: target_row,
-                                kind: refs_kind,
-                                provenance: 0,
-                                line: NONE,
-                                column: NONE,
-                                metadata_json: meta,
-                                source_id_str: NONE_STR,
-                                target_id_str: NONE_STR,
-                            });
-                        }
-                    }
-                }
-                for i in 0..n.named_child_count() {
-                    if let Some(c) = n.named_child(i) {
-                        stack.push(c);
-                    }
-                }
-            }
-        }
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
     }
 }
 

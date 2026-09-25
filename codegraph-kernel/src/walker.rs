@@ -28,3 +28,63 @@ pub(crate) struct Cand {
     pub column_byte: usize,
     pub row: usize,
 }
+
+/// The node cap on every value-reference DFS (shadow prune and emission),
+/// matching the TS side's MAX_VALUE_REF_NODES.
+pub(crate) const MAX_VALUE_REF_NODES: usize = 20_000;
+
+/// The emission half of flushValueRefs: for each captured scope, a
+/// `references` edge (metadata `{"valueRef":true}`) to every file-scope
+/// value target an identifier in its body names — once per target per
+/// scope, never to itself or to a same-named target. `targets` is the
+/// shadow-pruned name → row map; `node_ids` compares by id string, as the TS
+/// side does (ids collide).
+pub(crate) fn emit_value_refs(
+    src: &str,
+    node_ids: &[String],
+    arena: &mut crate::buffers::Arena,
+    tables: &mut crate::buffers::Tables,
+    scopes: &[ValueScope],
+    targets: &std::collections::HashMap<String, u32>,
+) {
+    use crate::buffers::{edge_kind_index, EdgeRow, NONE, NONE_STR};
+    let refs_kind = edge_kind_index("references").unwrap();
+    // One arena string for every value-ref edge of the file (unchanged when none).
+    let mut value_ref_meta = None;
+    for scope in scopes {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut stack: Vec<Node> = vec![scope.node];
+        let mut visited = 0usize;
+        while let Some(n) = stack.pop() {
+            if visited >= MAX_VALUE_REF_NODES {
+                break;
+            }
+            visited += 1;
+            if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
+                let ref_name = &src[n.byte_range()];
+                if let Some(&target_row) = targets.get(ref_name) {
+                    let target_id = node_ids[target_row as usize].as_str();
+                    if target_id != node_ids[scope.row as usize] && ref_name != scope.name && seen.insert(target_id) {
+                        let meta = *value_ref_meta.get_or_insert_with(|| arena.put(r#"{"valueRef":true}"#));
+                        tables.push_edge(&EdgeRow {
+                            source_idx: scope.row,
+                            target_idx: target_row,
+                            kind: refs_kind,
+                            provenance: 0,
+                            line: NONE,
+                            column: NONE,
+                            metadata_json: meta,
+                            source_id_str: NONE_STR,
+                            target_id_str: NONE_STR,
+                        });
+                    }
+                }
+            }
+            for i in 0..n.named_child_count() {
+                if let Some(c) = n.named_child(i) {
+                    stack.push(c);
+                }
+            }
+        }
+    }
+}

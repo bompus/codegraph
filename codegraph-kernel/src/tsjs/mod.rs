@@ -19,7 +19,7 @@ use crate::textutil as util;
 use crate::buffers::{
     BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_REEXPORT, EXPORT_CJS, EXPORT_CJS_OBJECT, EXPORT_ESM,
     EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE, EXPORT_PUBLIC, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC, FUNCTION_REF_CODE,
+    RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
 use crate::ids;
@@ -156,7 +156,7 @@ pub struct Walker<'t> {
     defined_fn_names: HashSet<String>,
     /// Simple names from `imports` refs (fn-ref flush gate).
     imported_names: HashSet<String>,
-    fn_ref_cands: Vec<(u32, fnref::Candidate)>,
+    fn_ref_cands: Vec<crate::walker::Cand>,
     // Value-reference bookkeeping (flushValueRefs).
     fs_values: HashMap<String, u32>,
     fs_value_counts: HashMap<String, u32>,
@@ -185,7 +185,6 @@ pub struct Walker<'t> {
     cjs_fn_exports: Vec<(String, u32)>,
 }
 
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
     let variant = Variant::from_language(language)
@@ -706,7 +705,7 @@ impl<'t> Walker<'t> {
         let mut dstack: Vec<Node> = vec![root];
         let mut dvisited = 0usize;
         while let Some(n) = dstack.pop() {
-            if dvisited >= MAX_VALUE_REF_NODES {
+            if dvisited >= crate::walker::MAX_VALUE_REF_NODES {
                 break;
             }
             dvisited += 1;
@@ -738,51 +737,7 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        let refs_kind = edge_kind_index("references").unwrap();
-        // One arena string for every value-ref edge of the file (unchanged when none).
-        let mut value_ref_meta: Option<StrRef> = None;
-        for scope in &scopes {
-            // Self-skip and per-scope dedupe compare node ID STRINGS (which
-            // collide for same-(kind, name, line) nodes), matching the TS side.
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<Node> = vec![scope.node];
-            let mut visited = 0usize;
-            while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
-                    break;
-                }
-                visited += 1;
-                if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
-                    let ref_name = self.text(n);
-                    if let Some(&target_row) = targets.get(ref_name) {
-                        let target_id = self.node_ids[target_row as usize].as_str();
-                        if target_id != self.node_ids[scope.row as usize]
-                            && ref_name != scope.name
-                            && !seen.contains(&target_id)
-                        {
-                            seen.insert(target_id);
-                            let meta = *value_ref_meta.get_or_insert_with(|| self.arena.put(r#"{"valueRef":true}"#));
-                            self.tables.push_edge(&EdgeRow {
-                                source_idx: scope.row,
-                                target_idx: target_row,
-                                kind: refs_kind,
-                                provenance: 0,
-                                line: NONE,
-                                column: NONE,
-                                metadata_json: meta,
-                                source_id_str: NONE_STR,
-                                target_id_str: NONE_STR,
-                            });
-                        }
-                    }
-                }
-                for i in 0..n.named_child_count() {
-                    if let Some(c) = n.named_child(i) {
-                        stack.push(c);
-                    }
-                }
-            }
-        }
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
     }
 
     // --- function-as-value refs (#756) -----------------------------------------
@@ -793,8 +748,8 @@ impl<'t> Walker<'t> {
             return;
         }
         let from = self.top_row();
-        for (cand, _mode) in fnref::capture(node, mode, self.src) {
-            self.fn_ref_cands.push((from, cand));
+        for cand in fnref::capture(node, mode, self.src, from) {
+            self.fn_ref_cands.push(cand);
         }
     }
 
@@ -818,42 +773,7 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn flush_fn_ref_candidates(&mut self) {
-        let cands = std::mem::take(&mut self.fn_ref_cands);
-        if cands.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        for (from, c) in cands {
-            // Gate: `this.<member>` always flushes; everything else must match
-            // a same-file function/method or an imported name. (The `::` and
-            // ungated-mode policies belong to other languages' specs.)
-            if !c.name.starts_with("this.")
-                && !c.name.contains("::")
-                && !self.defined_fn_names.contains(&c.name)
-                && !self.imported_names.contains(&c.name)
-            {
-                continue;
-            }
-            // Dedupe on the node ID STRING, not the row — ids collide for
-            // same-(kind, name, line) nodes (minified one-liners) and the TS
-            // side keys its dedupe on `${fromNodeId}|${name}`.
-            if !seen.insert((self.node_ids[from as usize].clone(), c.name.clone())) {
-                continue;
-            }
-            let column = self.cols.col(self.src, c.row, c.column_byte);
-            let name_ref = self.arena.put(&c.name);
-            self.tables.push_ref(&RefRow {
-                from_idx: from,
-                kind: FUNCTION_REF_CODE,
-                line: c.line,
-                column,
-                reference_name: name_ref,
-                candidates: NONE_STR,
-                from_id_str: NONE_STR,
-            });
-        }
-    }
+    flush_fn_ref_candidates_impl!();
 
     // --- the dispatcher (visitNode) --------------------------------------------
 

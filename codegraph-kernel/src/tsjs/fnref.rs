@@ -3,6 +3,7 @@
 //! normalization, and the `this.member` special form. The flush-time gate
 //! lives in the walker (it needs the file's nodes and import refs).
 
+use crate::walker::Cand;
 use tree_sitter::Node;
 
 /// CaptureMode (function-ref.ts) — gate policy keys on it.
@@ -15,21 +16,6 @@ pub enum Mode {
     VarInit,
 }
 
-pub struct Candidate {
-    pub name: String,
-    pub line: u32,
-    pub column_byte: usize, // converted to UTF-16 at emit time
-    pub row: usize,
-}
-
-/// NAME_STOPLIST (function-ref.ts).
-fn stoplisted(name: &str) -> bool {
-    matches!(
-        name,
-        "this" | "self" | "super" | "null" | "nil" | "true" | "false" | "undefined" | "new"
-            | "NULL" | "nullptr" | "None"
-    )
-}
 
 /// TS_JS_SPEC.dispatch: container node type → capture mode.
 pub fn dispatch(kind: &str) -> Option<Mode> {
@@ -48,8 +34,9 @@ pub fn dispatch(kind: &str) -> Option<Mode> {
     }
 }
 
-/// captureFnRefCandidates for the TS/JS spec. Returns (candidate, mode) pairs.
-pub fn capture(container: Node, mode: Mode, src: &str) -> Vec<(Candidate, Mode)> {
+/// captureFnRefCandidates for the TS/JS spec: the candidates `container`
+/// holds, attributed to row `from`.
+pub fn capture(container: Node, mode: Mode, src: &str, from: u32) -> Vec<Cand> {
     let mut value_nodes: Vec<Node> = Vec::new();
 
     match mode {
@@ -100,19 +87,11 @@ pub fn capture(container: Node, mode: Mode, src: &str) -> Vec<(Candidate, Mode)>
     let mut out = Vec::new();
     for v in value_nodes {
         for (name, node) in normalize(v, src) {
-            if name.is_empty() || stoplisted(&name) {
+            if name.is_empty() || crate::textutil::is_stoplisted(&name) {
                 continue;
             }
             let p = node.start_position();
-            out.push((
-                Candidate {
-                    name,
-                    line: p.row as u32 + 1,
-                    column_byte: node.start_byte(),
-                    row: p.row,
-                },
-                mode,
-            ));
+            out.push(Cand { from, name, line: p.row as u32 + 1, column_byte: node.start_byte(), row: p.row });
         }
     }
     out
