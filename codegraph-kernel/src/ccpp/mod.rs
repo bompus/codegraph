@@ -1465,12 +1465,11 @@ impl<'t> Walker<'t> {
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: C/C++) --------------------
 
-    /// The enclosing node's lines, or None at file level. The package
-    /// declaration's `namespace` node wraps every top-level declaration for
-    /// qualified names; it is not a scope.
+    /// The enclosing node's lines, or None at file level. C++ namespaces are
+    /// a qualified-name prefix (`namespace_prefix`), never a scope node.
     fn enclosing_scope(&self) -> Option<(u32, u32)> {
         let top = self.stack.last()?;
-        if top.kind == "file" || top.kind == "namespace" {
+        if top.kind == "file" {
             return None;
         }
         Some(self.tables.node_lines(top.row))

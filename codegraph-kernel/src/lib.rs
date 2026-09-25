@@ -18,8 +18,9 @@
 
 /// First statement of every recursive walker function (see stack.rs, #1581):
 /// once the stack pointer is inside the red zone, stop descending — the
-/// latched flag makes `stack::run_guarded` discard the walk and defer the
-/// file to wasm. `Default::default()` covers every walker return type in use
+/// latched flag makes `stack::run_guarded` discard the walk and return a
+/// `defer:` error (the TS side then serves the file with the generic
+/// extractor). `Default::default()` covers every walker return type in use
 /// (`()`, `bool`, `Option<_>`, `String`); a hook returning `false` just sends
 /// its caller down the generic child walk, whose own guard returns at once.
 macro_rules! stack_guard {
@@ -762,9 +763,26 @@ fn field_in(f: CfnptrLinkField) -> cfnptr::LinkField {
 /// The per-language walk, under the stack guard (stack.rs, #1581): a file
 /// nested deeply enough to overflow this thread's stack comes back as a
 /// `defer:` error — the TS side's routine "serve this one file another way"
-/// signal — instead of a SIGSEGV that kills the entire indexer process.
+/// signal — instead of a SIGSEGV that kills the entire indexer process. A
+/// walker panic is caught here too and returned as an error, which the TS
+/// side answers the same way (generic extractor for that file); the crate
+/// must therefore never build with `panic = "abort"`.
 fn walk_file(file_path: &str, content: &str, language: &str) -> std::result::Result<buffers::EmitOut, String> {
-    stack::run_guarded(|| match language {
+    stack::run_guarded(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch_walker(file_path, content, language)))
+            .unwrap_or_else(|panic| {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                Err(format!("kernel walker panicked on {file_path}: {msg}"))
+            })
+    })
+}
+
+fn dispatch_walker(file_path: &str, content: &str, language: &str) -> std::result::Result<buffers::EmitOut, String> {
+    match language {
         "java" => java::extract(file_path, content),
         "python" => python::extract(file_path, content),
         "go" => go::extract(file_path, content),
@@ -779,8 +797,10 @@ fn walk_file(file_path: &str, content: &str, language: &str) -> std::result::Res
         "lua" | "luau" => lua::extract(file_path, content, language),
         "scala" => scala::extract(file_path, content),
         "dart" => dart::extract(file_path, content),
-        _ => tsjs::extract(file_path, content, language),
-    })
+        // ArkTS rides the TypeScript walker over its own grammar (bindings only).
+        "typescript" | "tsx" | "javascript" | "jsx" | "arkts" => tsjs::extract(file_path, content, language),
+        _ => Err(format!("no native walker for {language}")),
+    }
 }
 
 fn to_buffers(out: buffers::EmitOut) -> ExtractBuffers {

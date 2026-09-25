@@ -122,12 +122,7 @@ impl KernelResolver {
         if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
             return dir.to_string();
         }
-        let stem = base.strip_suffix(".rs").unwrap_or(base);
-        if dir.is_empty() {
-            stem.to_string()
-        } else {
-            format!("{}/{}", dir, stem)
-        }
+        pos_join(dir, base.strip_suffix(".rs").unwrap_or(base))
     }
 
     /// isRustTraitImplMethod (name-matcher.ts) — scan upward for the nearest

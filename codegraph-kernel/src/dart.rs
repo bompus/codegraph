@@ -25,8 +25,7 @@
 //! bug, preserved); enum `with` mixins emit nothing while enum `implements`
 //! works; deferred imports are invisible; named-argument callbacks are NOT
 //! fn-ref-captured; `async*`/`sync*` are NOT async. Positions in UTF-16
-//! code units. Files with parse errors defer to wasm (3.4–20.7% both-arm
-//! incidence — empty object patterns and unnamed `library;` dominate).
+//! code units. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,

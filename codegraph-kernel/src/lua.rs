@@ -22,7 +22,7 @@
 //! divergence (lua functions: flag ABSENT; luau functions: present-false;
 //! methods: absent in both; variables: present-false in both), and duplicate
 //! same-(kind,name,line) ids emitted twice. Positions in UTF-16 code units.
-//! Files with parse errors defer to wasm (lua ~0%; luau 1.4–7.1% both-arm).
+//! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,

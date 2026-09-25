@@ -175,14 +175,10 @@ pub struct Walker<'t> {
     /// (docs/design/resolution-binding-model-plan.md, Phase 1).
     later_exports: HashMap<String, (String, u8)>,
     line_count: u32,
-    /// (name, line) → specifier for a module-level `const x = require(..)`
-    /// declarator: the walk emits its row as an `import` row (node-backed, so
-    /// a later `module.exports = { x }` can still export it).
     /// Line → (name, spec) of module-level `require()` declarators, so the
     /// walk's decl row becomes an `import` row. Keyed by line: the lookup is
     /// per declaration and a `(String, u32)` key would cost an allocation each.
     import_decls: HashMap<u32, Vec<(String, String)>>,
-    /// (name, line) of `param`/`local` rows the pre-walk emitted (dedupe).
     /// Line → names whose binding row the pre-walk already emitted.
     scoped_rows: HashMap<u32, Vec<String>>,
     /// `exports.x = function () {}` / `module.exports.x = () => …`: (x, line),
@@ -962,6 +958,7 @@ impl<'t> Walker<'t> {
     // --- visitFunctionBody ------------------------------------------------------
 
     fn visit_function_body(&mut self, body: Node<'t>) {
+        stack_guard!();
         self.visit_for_calls_and_structure(body);
     }
 

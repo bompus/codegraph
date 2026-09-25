@@ -15,6 +15,7 @@ impl<'t> Walker<'t> {
     // --- extractFunction --------------------------------------------------------
 
     pub(super) fn extract_function(&mut self, node: Node<'t>, name_override: Option<String>) {
+        stack_guard!();
         let mut name = name_override
             .clone()
             .unwrap_or_else(|| self.extract_name(node));
@@ -149,6 +150,7 @@ impl<'t> Walker<'t> {
     // --- extractClass ------------------------------------------------------------
 
     pub(super) fn extract_class(&mut self, node: Node<'t>) {
+        stack_guard!();
         let resolved_body = body_of(node); // skipBodilessClass unset for TS/JS
         let name = self.extract_name(node);
         let extra = Extra {
@@ -177,6 +179,7 @@ impl<'t> Walker<'t> {
     // --- extractMethod -------------------------------------------------------------
 
     pub(super) fn extract_method(&mut self, node: Node<'t>) {
+        stack_guard!();
         if !self.inside_class_like() {
             // Object-literal methods are ephemeral: walk the body only.
             if let Some(parent) = node.parent() {
@@ -217,6 +220,7 @@ impl<'t> Walker<'t> {
     // --- extractInterface / extractEnum / members -----------------------------------
 
     pub(super) fn extract_interface(&mut self, node: Node<'t>) {
+        stack_guard!();
         let name = self.extract_name(node);
         let extra = Extra {
             docstring: crate::docstring::preceding_docstring(node, self.src),
@@ -238,6 +242,7 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_enum(&mut self, node: Node<'t>) {
+        stack_guard!();
         let Some(body) = body_of(node) else { return };
         let name = self.extract_name(node);
         let extra = Extra {

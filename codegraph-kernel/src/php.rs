@@ -15,7 +15,7 @@
 //! machinery is resolution-side); nullsafe `?->` emits nothing; literal
 //! receivers are not suppressed; interface multi-extends drops all but the
 //! first base; property type-hints emit no refs from field nodes. Positions in
-//! UTF-16 code units. Files with parse errors defer to wasm (≈0–0.1%).
+//! UTF-16 code units. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,

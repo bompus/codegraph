@@ -156,6 +156,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Rust files at the top of a project now resolve `self::` and `crate::` paths to their submodules, which previously went unresolved when the module file had no parent directory.
+
 - Indexing a large repository uses much less memory and resolves names faster: the native resolver no longer keeps a compiled search pattern per reference name in every worker, and its workers share one read-only copy of the symbol table. On a 20,000-file corpus peak memory fell from 5.6 GB to 3.5 GB and name resolution ran about a quarter faster; results are unchanged.
 
 - Go exploration includes grouped variable declarations and better follows JSON rendering methods; re-index Go projects to include the newly extracted declarations.

@@ -4,9 +4,8 @@
 //!
 //! Same porting contract as tsjs/: behavior parity with the wasm path,
 //! bug-for-bug, verified by scripts/kernel-parity.mjs and the full-index
-//! dump-diff gate. Positions in UTF-16 code units. Files whose parse tree
-//! contains ERRORS defer to the wasm extractor (encoding-dependent recovery —
-//! see tsjs/mod.rs).
+//! dump-diff gate. Positions in UTF-16 code units. Files with parse errors
+//! are walked like any other (tree-sitter's recovery is canonical).
 
 use crate::buffers::{
     BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,

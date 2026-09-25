@@ -10,7 +10,7 @@
 //! top-level var/const specs walk their initializers ATTRIBUTED to the
 //! declared symbol (#693), 2-hop field chains (`t.conn.Exec`) keep the chain
 //! (#1276), and `New().Method()` re-encodes as `New().Method` (#645/#608)
-//! only for bare-identifier factories. Files with parse errors defer to wasm.
+//! only for bare-identifier factories. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
@@ -450,6 +450,7 @@ impl<'t> Walker<'t> {
     }
 
     fn extract_method(&mut self, node: Node<'t>) {
+        stack_guard!();
         // methodsAreTopLevel: always a method. Receiver-qualified name +
         // a contains edge from the FIRST earlier struct/class/enum/trait
         // node of the receiver's name (mirrors the this.nodes.find scan).
