@@ -41,7 +41,10 @@ impl<'t> Walker<'t> {
                 let Some(content) = self.php_string_content(v) else { return };
                 if crate::textutil::ascii_ident_re().is_match(&content) || qualified_callable_re().is_match(&content)
                 {
-                    self.push_fn_ref_cand(from, &content, v, true);
+                    if let Some(mut c) = Cand::at(from, content, v) {
+                        c.ungated = true;
+                        self.fn_ref_cands.push(c);
+                    }
                 }
             }
             // Array callables in ANY call's arguments: `[$this, 'm']` →
@@ -62,14 +65,14 @@ impl<'t> Walker<'t> {
                 }
                 if recv.kind() == "variable_name" && self.text(recv) == "$this" {
                     let name = format!("this.{member}");
-                    self.push_fn_ref_cand(from, &name, str_el, false);
+                    self.fn_ref_cands.extend(Cand::at(from, &name, str_el));
                 } else if recv.kind() == "class_constant_access_expression" {
                     let cls = recv.named_child(0);
                     let kw = recv.named_child(1);
                     if let (Some(cls), Some(kw)) = (cls, kw) {
                         if self.text(kw) == "class" {
                             let name = format!("{}::{member}", self.text(cls));
-                            self.push_fn_ref_cand(from, &name, str_el, false);
+                            self.fn_ref_cands.extend(Cand::at(from, &name, str_el));
                         }
                     }
                 }
@@ -78,20 +81,6 @@ impl<'t> Walker<'t> {
         }
     }
 
-    pub(super) fn push_fn_ref_cand(&mut self, from: u32, name: &str, node: Node, skip_gate: bool) {
-        if name.is_empty() || is_stoplisted(name) {
-            return;
-        }
-        let p = node.start_position();
-        self.fn_ref_cands.push(Cand {
-            from,
-            name: name.to_string(),
-            line: p.row as u32 + 1,
-            column_byte: node.start_byte(),
-            row: p.row,
-            skip_gate,
-        });
-    }
 
     pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
         stack_guard!();

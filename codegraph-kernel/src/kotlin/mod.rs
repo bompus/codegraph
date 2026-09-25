@@ -32,7 +32,7 @@ use crate::buffers::{
     NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_literal_receiver, strip_generic_and_qualifier, capitalized_re};
+use crate::textutil::{is_literal_receiver, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;

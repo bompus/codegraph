@@ -26,8 +26,8 @@ use crate::buffers::{
     RefRow, Tables, FLAG_IS_STATIC, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
-use crate::walker::{Scope, ValueScope};
-use crate::textutil::{is_stoplisted, strip_generic_and_qualifier, capitalized_re};
+use crate::walker::{Cand, Scope, ValueScope};
+use crate::textutil::{strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -97,16 +97,6 @@ struct Extra {
     visibility: Option<u8>,
     is_static: Option<bool>,
     return_type: Option<String>,
-}
-
-
-struct Cand {
-    from: u32,
-    name: String,
-    line: u32,
-    column_byte: usize,
-    row: usize,
-    skip_gate: bool,
 }
 
 pub struct Walker<'t> {
@@ -759,7 +749,7 @@ impl<'t> Walker<'t> {
 
     // --- function-as-value refs (PHP_SPEC, function-ref.ts:360) --------------------
 
-    flush_fn_ref_candidates_impl!(skip_gate);
+    flush_fn_ref_candidates_impl!();
 
     // --- value references ------------------------------------------------------------
 

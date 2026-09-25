@@ -70,11 +70,10 @@ macro_rules! inside_class_like_impl {
 /// when it is `this.`-rooted, `::`-qualified, or names a function this file
 /// defines or imports; one ref per (owner node id, name). Expects
 /// `fn_ref_cands: Vec<walker::Cand>`, `defined_fn_names`, `imported_names`,
-/// `node_ids`, `file_path`, `cols`, `src`, `arena`, `tables`. A bool field
-/// named as the argument (PHP's `skip_gate`: HOF-position string callables)
-/// exempts a candidate from the defined/imported gate.
+/// `node_ids`, `file_path`, `cols`, `src`, `arena`, `tables`. An `ungated`
+/// candidate skips the defined/imported check.
 macro_rules! flush_fn_ref_candidates_impl {
-    ($($skip_gate:ident)?) => {
+    () => {
         fn flush_fn_ref_candidates(&mut self) {
             let cands = std::mem::take(&mut self.fn_ref_cands);
             if cands.is_empty() || $crate::textutil::is_generated_file(self.file_path) {
@@ -86,7 +85,7 @@ macro_rules! flush_fn_ref_candidates_impl {
             for c in cands {
                 if !c.name.starts_with("this.")
                     && !c.name.contains("::")
-                    $(&& !c.$skip_gate)?
+                    && !c.ungated
                     && !self.defined_fn_names.contains(&c.name)
                     && !self.imported_names.contains(&c.name)
                 {

@@ -90,12 +90,12 @@ impl<'t> Walker<'t> {
                 let Some(member) = member else { return };
                 let m = self.text(member);
                 match receiver {
-                    None => self.push_fn_ref_cand(from, m, member),
+                    None => self.fn_ref_cands.extend(Cand::at(from, m, member)),
                     Some(recv) => {
                         let recv_text = self.text(recv);
                         if recv_text.as_bytes().first().map(|b| b.is_ascii_uppercase()).unwrap_or(false) {
                             let name = format!("{recv_text}::{m}");
-                            self.push_fn_ref_cand(from, &name, member);
+                            self.fn_ref_cands.extend(Cand::at(from, &name, member));
                         }
                     }
                 }
@@ -111,7 +111,7 @@ impl<'t> Walker<'t> {
                         if child.named_child_count() > 0 {
                             if let Some(id) = child.named_child(child.named_child_count() - 1) {
                                 let name = format!("this.{}", self.text(id));
-                                self.push_fn_ref_cand(from, &name, id);
+                                self.fn_ref_cands.extend(Cand::at(from, &name, id));
                             }
                         }
                         return;
@@ -122,19 +122,6 @@ impl<'t> Walker<'t> {
         }
     }
 
-    pub(super) fn push_fn_ref_cand(&mut self, from: u32, name: &str, node: Node) {
-        if name.is_empty() || is_stoplisted(name) {
-            return;
-        }
-        let p = node.start_position();
-        self.fn_ref_cands.push(Cand {
-            from,
-            name: name.to_string(),
-            line: p.row as u32 + 1,
-            column_byte: node.start_byte(),
-            row: p.row,
-        });
-    }
 
     pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
         stack_guard!();

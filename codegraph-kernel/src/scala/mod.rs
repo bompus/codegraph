@@ -28,12 +28,12 @@
 mod calls;
 mod refs;
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope, Cand};
-use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver};
+use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -140,27 +140,7 @@ impl<'t> Walker<'t> {
     walker_pos_impl!();
     inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: edge_kind_index(kind).unwrap(),
-            line: self.line_of(node),
-            column: self.col_of(node),
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        // flushFnRefCandidates' importedNames (tree-sitter.ts:661-675). Scala
-        // import refs are named the FIRST path segment — always SIMPLE_NAME.
-        if kind == "imports" {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
     // --- createNode (tree-sitter.ts:1308) ---------------------------------
 
@@ -373,7 +353,7 @@ impl<'t> Walker<'t> {
             let name = self.text(type_node);
             if !name.is_empty() && !is_scala_builtin(name) {
                 let name = name.to_string();
-                self.push_ref_at(from_row, &name, "references", type_node);
+                self.push_ref_at(from_row, &name, crate::buffers::EDGE_REFERENCES, type_node);
             }
             return;
         }
@@ -414,24 +394,15 @@ impl<'t> Walker<'t> {
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
 
+        if self.extract_type_def(node) {
+            return;
+        }
         let kind = node.kind();
         match kind {
             // methodTypes (functionTypes is EMPTY — :994 never fires).
             "function_definition" | "function_declaration" => {
                 self.extract_method_or_function(node);
                 return; // skipChildren
-            }
-            "class_definition" | "object_definition" => {
-                self.extract_class(node, "class");
-                return;
-            }
-            "trait_definition" => {
-                self.extract_class(node, "trait");
-                return;
-            }
-            "enum_definition" => {
-                self.extract_enum(node);
-                return;
             }
             "type_definition" => {
                 let skip = self.extract_type_alias(node);
@@ -476,38 +447,18 @@ impl<'t> Walker<'t> {
                     _ => return false,
                 };
                 // Enclosing-definition NODE-TYPE walk (scala.ts:146-156).
-                let mut enclosing: Option<&'static str> = None;
-                let mut p = node.parent();
-                while let Some(parent) = p {
-                    match parent.kind() {
-                        "class_definition" => {
-                            enclosing = Some("class_definition");
-                            break;
-                        }
-                        "trait_definition" => {
-                            enclosing = Some("trait_definition");
-                            break;
-                        }
-                        "enum_definition" => {
-                            enclosing = Some("enum_definition");
-                            break;
-                        }
-                        "given_definition" => {
-                            enclosing = Some("given_definition");
-                            break;
-                        }
-                        "object_definition" => {
-                            enclosing = Some("object_definition");
-                            break;
-                        }
-                        _ => p = parent.parent(),
-                    }
-                }
-                let is_instance_field = matches!(
-                    enclosing,
-                    Some("class_definition") | Some("trait_definition") | Some("enum_definition")
-                        | Some("given_definition")
-                );
+                // An object's val is a module constant; any other definition
+                // makes it an instance field.
+                let enclosing = std::iter::successors(node.parent(), |n| n.parent())
+                    .map(|n| n.kind())
+                    .find(|k| {
+                        matches!(
+                            *k,
+                            "class_definition" | "trait_definition" | "enum_definition"
+                                | "given_definition" | "object_definition"
+                        )
+                    });
+                let is_instance_field = enclosing.is_some_and(|k| k != "object_definition");
                 let kind: &'static str = if is_instance_field {
                     "field"
                 } else if is_val {
@@ -582,7 +533,7 @@ impl<'t> Walker<'t> {
         // No receiver hook, no methodsAreTopLevel: inside class-like → method,
         // else → function (the object/object_expression parent check never
         // matches scala node kinds).
-        let is_method = self.inside_class_like();
+        let kind = if self.inside_class_like() { "method" } else { "function" };
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             // Unreachable for scala defs (name field required) — preserved:
@@ -598,7 +549,7 @@ impl<'t> Walker<'t> {
         let is_static = self.is_static_of(node);
         let return_type = self.return_type_of(node);
         let row = self.create_node(
-            if is_method { "method" } else { "function" },
+            kind,
             &name,
             node,
             Extra {
@@ -613,7 +564,7 @@ impl<'t> Walker<'t> {
         let Some(row) = row else { return };
         self.extract_type_annotations(node, row);
         self.extract_decorators_for(node, row);
-        self.stack.push(Scope { row, kind: if is_method { "method" } else { "function" }, name });
+        self.stack.push(Scope { row, kind, name });
         if let Some(body) = node.child_by_field_name("body") {
             self.visit_body(body);
         }
@@ -621,6 +572,18 @@ impl<'t> Walker<'t> {
     }
 
     // --- extractClass (:1679) — classes, objects, traits ------------------
+
+    /// A class/object/trait/enum definition, extracted fully (children
+    /// skipped); false for any other node.
+    fn extract_type_def(&mut self, node: Node<'t>) -> bool {
+        match node.kind() {
+            "class_definition" | "object_definition" => self.extract_class(node, "class"),
+            "trait_definition" => self.extract_class(node, "trait"),
+            "enum_definition" => self.extract_enum(node),
+            _ => return false,
+        }
+        true
+    }
 
     fn extract_class(&mut self, node: Node<'t>, kind: &'static str) {
         stack_guard!();
@@ -729,7 +692,7 @@ impl<'t> Walker<'t> {
         // Generic imports ref (:3183-3194) — hook sets no handledRefs.
         if created.is_some() && !module.is_empty() {
             let parent_row = self.top_row();
-            self.push_ref_at(parent_row, &module, "imports", node);
+            self.push_ref_at(parent_row, &module, crate::buffers::EDGE_IMPORTS, node);
         }
     }
 
@@ -770,20 +733,8 @@ impl<'t> Walker<'t> {
         // Nested named defs mint NOTHING (:5245 checks functionTypes — EMPTY;
         // the inverse of kotlin). Body-local classes/objects/traits/enums DO
         // extract fully.
-        match kind {
-            "class_definition" | "object_definition" => {
-                self.extract_class(node, "class");
-                return;
-            }
-            "trait_definition" => {
-                self.extract_class(node, "trait");
-                return;
-            }
-            "enum_definition" => {
-                self.extract_enum(node);
-                return;
-            }
-            _ => {}
+        if self.extract_type_def(node) {
+            return;
         }
 
         let mut cursor = node.walk();

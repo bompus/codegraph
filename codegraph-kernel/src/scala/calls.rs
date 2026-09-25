@@ -75,7 +75,7 @@ impl<'t> Walker<'t> {
         if callee.is_empty() {
             return;
         }
-        self.push_ref_at(caller_row, &callee, "calls", node);
+        self.push_ref_at(caller_row, &callee, crate::buffers::EDGE_CALLS, node);
     }
 
     pub(super) fn extract_instantiation(&mut self, node: Node<'t>) {
@@ -87,7 +87,7 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
         if let Some(name) = self.scala_base_type_name(Some(ctor)) {
-            self.push_ref_at(from_row, &name, "instantiates", node);
+            self.push_ref_at(from_row, &name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -130,7 +130,7 @@ impl<'t> Walker<'t> {
             let text = self.text(recv);
             if crate::textutil::capitalized_re().is_match(text) {
                 let text = text.to_string();
-                self.push_ref_at(owner_row, &text, "references", recv);
+                self.push_ref_at(owner_row, &text, crate::buffers::EDGE_REFERENCES, recv);
             }
         }
     }
@@ -207,7 +207,7 @@ impl<'t> Walker<'t> {
         if name.is_empty() {
             return;
         }
-        self.push_ref_at(decorated_row, &name, "decorates", n);
+        self.push_ref_at(decorated_row, &name, crate::buffers::EDGE_DECORATES, n);
     }
 
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
@@ -224,7 +224,7 @@ impl<'t> Walker<'t> {
                 let targets: Vec<Node<'t>> = child.named_children(&mut cc).collect();
                 for target in targets {
                     if let Some(name) = self.scala_base_type_name(Some(target)) {
-                        self.push_ref_at(class_row, &name, "extends", target);
+                        self.push_ref_at(class_row, &name, crate::buffers::EDGE_EXTENDS, target);
                     }
                 }
             }
@@ -260,7 +260,7 @@ impl<'t> Walker<'t> {
             let name = self.text(node);
             if !name.is_empty() && !is_builtin_type(name) {
                 let name = name.to_string();
-                self.push_ref_at(from_row, &name, "references", node);
+                self.push_ref_at(from_row, &name, crate::buffers::EDGE_REFERENCES, node);
             }
             return;
         }

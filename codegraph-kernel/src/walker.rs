@@ -19,14 +19,30 @@ pub(crate) struct ValueScope<'t> {
 }
 
 /// A function-reference candidate held until the walk ends, when the file's
-/// defined and imported names are known (flush_fn_ref_candidates). PHP and
-/// C/C++ carry extra per-candidate flags and keep their own type.
+/// defined and imported names are known (flush_fn_ref_candidates). C/C++
+/// carries extra per-candidate modes and keeps its own type.
 pub(crate) struct Cand {
     pub from: u32,
     pub name: String,
     pub line: u32,
     pub column_byte: usize,
     pub row: usize,
+    /// Exempt from the defined/imported gate (PHP's HOF-position string
+    /// callables).
+    pub ungated: bool,
+}
+
+impl Cand {
+    /// A gated candidate at `node`'s start, or None for an empty or
+    /// stoplisted name (never a function reference).
+    pub fn at(from: u32, name: impl Into<String>, node: Node) -> Option<Cand> {
+        let name = name.into();
+        if name.is_empty() || crate::textutil::is_stoplisted(&name) {
+            return None;
+        }
+        let p = node.start_position();
+        Some(Cand { from, name, line: p.row as u32 + 1, column_byte: node.start_byte(), row: p.row, ungated: false })
+    }
 }
 
 /// The node cap on every value-reference DFS (shadow prune and emission),

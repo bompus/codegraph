@@ -84,7 +84,7 @@ impl<'t> Walker<'t> {
         match v.kind() {
             "simple_identifier" => {
                 let name = self.text(v);
-                self.push_fn_ref_cand(from, name, v);
+                self.fn_ref_cands.extend(Cand::at(from, name, v));
             }
             "value_argument" => {
                 // Layer with field 'value' + the label-forward skip (the
@@ -112,34 +112,21 @@ impl<'t> Walker<'t> {
                 let Some(inner) = v.named_child(0) else { return };
                 if matches!(inner.kind(), "identifier" | "simple_identifier") {
                     let name = self.text(inner);
-                    self.push_fn_ref_cand(from, name, inner);
+                    self.fn_ref_cands.extend(Cand::at(from, name, inner));
                     return;
                 }
                 if let Some(last) = last_simple_identifier(v) {
                     let name = self.text(last);
-                    self.push_fn_ref_cand(from, name, last);
+                    self.fn_ref_cands.extend(Cand::at(from, name, last));
                     return;
                 }
                 let name = self.text(inner).trim().to_string();
-                self.push_fn_ref_cand(from, &name, inner);
+                self.fn_ref_cands.extend(Cand::at(from, &name, inner));
             }
             _ => {}
         }
     }
 
-    pub(super) fn push_fn_ref_cand(&mut self, from: u32, name: &str, node: Node) {
-        if name.is_empty() || is_stoplisted(name) {
-            return;
-        }
-        let p = node.start_position();
-        self.fn_ref_cands.push(Cand {
-            from,
-            name: name.to_string(),
-            line: p.row as u32 + 1,
-            column_byte: node.start_byte(),
-            row: p.row,
-        });
-    }
 
     pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
         stack_guard!();
