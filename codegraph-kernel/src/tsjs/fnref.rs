@@ -3,6 +3,7 @@
 //! normalization, and the `this.member` special form. The flush-time gate
 //! lives in the walker (it needs the file's nodes and import refs).
 
+use super::*;
 use crate::walker::Cand;
 use tree_sitter::Node;
 
@@ -113,5 +114,116 @@ fn normalize<'t>(node: Node<'t>, src: &str) -> Vec<(String, Node<'t>)> {
             vec![]
         }
         _ => vec![],
+    }
+}
+
+impl<'t> Walker<'t> {
+    pub(super) fn capture_value_ref_scope(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
+        if !self.variant.value_refs() {
+            return;
+        }
+        let target_kind_ok = kind == "constant" || kind == "variable";
+        if target_kind_ok
+            && util::utf16_len(name) >= 3
+            && util::has_upper_or_underscore().is_match(name)
+        {
+            let parent_ok = self
+                .stack
+                .last()
+                .map(|s| matches!(s.kind, "file" | "class" | "module" | "struct" | "enum"))
+                .unwrap_or(false);
+            if parent_ok {
+                self.fs_values.insert(name.to_string(), row);
+                *self.fs_value_counts.entry(name.to_string()).or_insert(0) += 1;
+            }
+        }
+        if matches!(kind, "function" | "method" | "constant" | "variable") {
+            self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
+        }
+    }
+
+    pub(super) fn flush_value_refs(&mut self, root: Node<'t>) {
+        let scopes = std::mem::take(&mut self.value_scopes);
+        let mut targets = std::mem::take(&mut self.fs_values);
+        let counts = std::mem::take(&mut self.fs_value_counts);
+        if !self.variant.value_refs() || std::env::var("CODEGRAPH_VALUE_REFS").as_deref() == Ok("0") {
+            return;
+        }
+        if targets.is_empty() || scopes.is_empty() || util::is_generated_file(self.file_path) {
+            return;
+        }
+
+        // Shadow prune: count declarators of each target name across the whole
+        // tree; more declarators than file-scope nodes ⇒ an inner re-binding
+        // shadows the target. (TS/JS declarators are `variable_declarator`;
+        // the other kinds in the TS switch belong to other grammars.)
+        let mut decl_counts: HashMap<&str, u32> = HashMap::new();
+        let mut dstack: Vec<Node> = vec![root];
+        let mut dvisited = 0usize;
+        while let Some(n) = dstack.pop() {
+            if dvisited >= crate::walker::MAX_VALUE_REF_NODES {
+                break;
+            }
+            dvisited += 1;
+            if n.kind() == "variable_declarator" {
+                if let Some(first) = n.named_child(0) {
+                    if first.kind() == "identifier" {
+                        let nm = self.text(first);
+                        if targets.contains_key(nm) {
+                            *decl_counts.entry(nm).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            for i in 0..n.named_child_count() {
+                if let Some(c) = n.named_child(i) {
+                    dstack.push(c);
+                }
+            }
+        }
+        let shadowed: Vec<String> = decl_counts
+            .iter()
+            .filter(|(nm, c)| **c > counts.get(**nm).copied().unwrap_or(1))
+            .map(|(nm, _)| nm.to_string())
+            .collect();
+        for nm in shadowed {
+            targets.remove(&nm);
+        }
+        if targets.is_empty() {
+            return;
+        }
+
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
+    }
+
+    pub(super) fn maybe_capture_fn_refs(&mut self, node: Node<'t>) {
+        let Some(mode) = fnref::dispatch(node.kind()) else { return };
+        if self.stack.is_empty() {
+            return;
+        }
+        let from = self.top_row();
+        for cand in fnref::capture(node, mode, self.src, from) {
+            self.fn_ref_cands.push(cand);
+        }
+    }
+
+    /// scanFnRefSubtree: capture-only walk of subtrees the main walkers skip.
+    pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {
+        stack_guard!();
+        if depth > 12 {
+            return;
+        }
+        let kind = node.kind();
+        if depth > 0
+            && (is_function_type(kind) || matches!(kind, "lambda_literal" | "lambda_expression"))
+        {
+            return;
+        }
+        self.maybe_capture_fn_refs(node);
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                self.scan_fn_ref_subtree(c, depth + 1);
+            }
+        }
     }
 }
