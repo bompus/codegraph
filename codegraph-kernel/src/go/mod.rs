@@ -18,6 +18,7 @@ use crate::buffers::{
     node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
@@ -52,7 +53,7 @@ fn declaration_specs(node: Node<'_>) -> Vec<Node<'_>> {
         if matches!(child.kind(), "var_spec" | "const_spec") {
             specs.push(child);
         } else if child.kind() == "var_spec_list" {
-            specs.extend((0..child.named_child_count()).filter_map(|j| child.named_child(j))
+            specs.extend(named_kids(child)
                 .filter(|n| n.kind() == "var_spec"));
         }
     }
@@ -269,14 +270,12 @@ impl<'t> Walker<'t> {
     fn return_type_of(&self, node: Node) -> Option<String> {
         let mut result = node.child_by_field_name("result")?;
         if result.kind() == "parameter_list" {
-            let first = (0..result.named_child_count())
-                .filter_map(|i| result.named_child(i))
+            let first = named_kids(result)
                 .find(|c| c.kind() == "parameter_declaration")?;
             result = first.child_by_field_name("type").unwrap_or(first);
         }
         if result.kind() == "pointer_type" {
-            result = (0..result.named_child_count())
-                .filter_map(|i| result.named_child(i))
+            result = named_kids(result)
                 .find(|c| matches!(c.kind(), "type_identifier" | "qualified_type" | "generic_type"))
                 .unwrap_or(result);
         }
@@ -332,10 +331,8 @@ impl<'t> Walker<'t> {
         }
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -365,10 +362,8 @@ impl<'t> Walker<'t> {
             }
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -478,10 +473,8 @@ impl<'t> Walker<'t> {
                 // field_identifier), reached via the inheritance recursion.
                 self.extract_inheritance(type_child, row);
                 let body = type_child.child_by_field_name("body").unwrap_or(type_child);
-                for i in 0..body.named_child_count() {
-                    if let Some(c) = body.named_child(i) {
-                        self.visit_node(c);
-                    }
+                for c in named_kids(body) {
+                    self.visit_node(c);
                 }
             }
             self.stack.pop();
@@ -576,8 +569,7 @@ impl<'t> Walker<'t> {
             let right = node.child_by_field_name("right");
             if let Some(left) = left {
                 let identifiers: Vec<Node> = if left.kind() == "expression_list" {
-                    (0..left.named_child_count())
-                        .filter_map(|i| left.named_child(i))
+                    named_kids(left)
                         .filter(|c| c.kind() == "identifier")
                         .collect()
                 } else {
@@ -602,8 +594,7 @@ impl<'t> Walker<'t> {
         let parent = self.top_row();
         let imports_kind = crate::buffers::EDGE_IMPORTS;
         let handle_spec = |w: &mut Self, spec: Node<'t>| {
-            let lit = (0..spec.named_child_count())
-                .filter_map(|i| spec.named_child(i))
+            let lit = named_kids(spec)
                 .find(|c| c.kind() == "interpreted_string_literal");
             let Some(lit) = lit else { return };
             let import_path: String = w
@@ -626,20 +617,16 @@ impl<'t> Walker<'t> {
             w.emit_import_binding(&local, &import_path, spec);
         };
 
-        let spec_list = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let spec_list = named_kids(node)
             .find(|c| c.kind() == "import_spec_list");
         if let Some(list) = spec_list {
-            for i in 0..list.named_child_count() {
-                if let Some(spec) = list.named_child(i) {
-                    if spec.kind() == "import_spec" {
-                        handle_spec(self, spec);
-                    }
+            for spec in named_kids(list) {
+                if spec.kind() == "import_spec" {
+                    handle_spec(self, spec);
                 }
             }
         } else {
-            let spec = (0..node.named_child_count())
-                .filter_map(|i| node.named_child(i))
+            let spec = named_kids(node)
                 .find(|c| c.kind() == "import_spec");
             if let Some(spec) = spec {
                 handle_spec(self, spec);
@@ -797,8 +784,7 @@ impl<'t> Walker<'t> {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {
                 "constraint_elem" => {
-                    let type_id = (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    let type_id = named_kids(child)
                         .find(|c| c.kind() == "type_identifier");
                     if let Some(type_id) = type_id {
                         let name = self.text(type_id).to_string();
@@ -806,12 +792,10 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "field_declaration" => {
-                    let has_field_identifier = (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    let has_field_identifier = named_kids(child)
                         .any(|c| c.kind() == "field_identifier");
                     if !has_field_identifier {
-                        let type_id = (0..child.named_child_count())
-                            .filter_map(|j| child.named_child(j))
+                        let type_id = named_kids(child)
                             .find(|c| c.kind() == "type_identifier");
                         if let Some(type_id) = type_id {
                             let name = self.text(type_id).to_string();
@@ -835,8 +819,7 @@ impl<'t> Walker<'t> {
         if let Some(ret) = node.child_by_field_name("result") {
             self.extract_type_refs_from_subtree(ret, from_row);
         }
-        let type_annotation = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let type_annotation = named_kids(node)
             .find(|c| c.kind() == "type_annotation");
         if let Some(ta) = type_annotation {
             self.extract_type_refs_from_subtree(ta, from_row);

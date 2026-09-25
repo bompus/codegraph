@@ -3,6 +3,7 @@
 //! src/extraction/tree-sitter.ts; TS-file line references are as of the R2
 //! port. Bug-for-bug fidelity is deliberate — fix the TS side first.
 
+use crate::walker::named_kids;
 use crate::textutil as util;
 use super::{
     body_of, is_react_hoc,
@@ -116,12 +117,10 @@ impl<'t> Walker<'t> {
         }
         let mut inner: Option<Node> = None;
         if let Some(args) = value.child_by_field_name("arguments") {
-            for i in 0..args.named_child_count() {
-                if let Some(a) = args.named_child(i) {
-                    if matches!(a.kind(), "arrow_function" | "function_expression") {
-                        inner = Some(a);
-                        break;
-                    }
+            for a in named_kids(args) {
+                if matches!(a.kind(), "arrow_function" | "function_expression") {
+                    inner = Some(a);
+                    break;
                 }
             }
         }
@@ -167,10 +166,8 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "class", name });
         let body = resolved_body.unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -232,10 +229,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "interface", name });
         let body = body_of(node).unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -273,13 +268,11 @@ impl<'t> Walker<'t> {
             return;
         }
         let mut found = false;
-        for i in 0..node.named_child_count() {
-            if let Some(child) = node.named_child(i) {
-                if matches!(child.kind(), "simple_identifier" | "identifier" | "property_identifier") {
-                    let name = self.text(child).to_string();
-                    self.create_node("enum_member", &name, child, Extra::default());
-                    found = true;
-                }
+        for child in named_kids(node) {
+            if matches!(child.kind(), "simple_identifier" | "identifier" | "property_identifier") {
+                let name = self.text(child).to_string();
+                self.create_node("enum_member", &name, child, Extra::default());
+                found = true;
             }
         }
         if !found && node.named_child_count() == 0 {
@@ -299,8 +292,7 @@ impl<'t> Walker<'t> {
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property"))
             .or_else(|| {
-                (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                named_kids(node)
                     .find(|c| c.kind() == "identifier")
             })?;
         let name = self.text(name_node).to_string();
@@ -320,7 +312,7 @@ impl<'t> Walker<'t> {
         let type_node = if is_ts_js_field {
             node.child_by_field_name("type")
         } else {
-            (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| {
+            named_kids(node).find(|c| {
                 !matches!(
                     c.kind(),
                     "modifier"
@@ -550,8 +542,7 @@ impl<'t> Walker<'t> {
     }
 
     fn emit_import_binding_refs(&mut self, node: Node<'t>, from_row: u32) {
-        let clause = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let clause = named_kids(node)
             .find(|c| c.kind() == "import_clause");
         let Some(clause) = clause else { return }; // side-effect import
 
@@ -587,8 +578,7 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "namespace_import" => {
-                    let n = (0..child.named_child_count())
-                        .filter_map(|k| child.named_child(k))
+                    let n = named_kids(child)
                         .find(|c| c.kind() == "identifier")
                         .or_else(|| child.named_child(0));
                     push(self, n, "*");
@@ -600,8 +590,7 @@ impl<'t> Walker<'t> {
 
     pub(super) fn emit_re_export_refs(&mut self, node: Node<'t>) {
         let from_row = self.top_row();
-        let clause = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let clause = named_kids(node)
             .find(|c| c.kind() == "export_clause");
         let spec_text: String = node
             .child_by_field_name("source")
@@ -611,10 +600,9 @@ impl<'t> Walker<'t> {
             // `export * from './y'` / `export * as ns from './y'`: a wildcard
             // `reexport` row, exported as `*` or as the namespace name.
             if !spec_text.is_empty() {
-                let ns = (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                let ns = named_kids(node)
                     .find(|c| c.kind() == "namespace_export")
-                    .and_then(|ne| (0..ne.named_child_count()).filter_map(|k| ne.named_child(k)).find(|c| c.kind() == "identifier"))
+                    .and_then(|ne| named_kids(ne).find(|c| c.kind() == "identifier"))
                     .map(|id| self.text(id).to_string());
                 self.emit_reexport_binding("*", ns.as_deref().unwrap_or("*"), &spec_text, node);
             }

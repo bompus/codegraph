@@ -1,5 +1,6 @@
 //! Function-reference candidates and value references: capture during the walk, flush at its end.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -22,10 +23,8 @@ impl<'t> Walker<'t> {
         let mut values: Vec<Node> = Vec::new();
         match mode {
             Mode::Args | Mode::List => {
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        values.push(c);
-                    }
+                for c in named_kids(node) {
+                    values.push(c);
                 }
             }
             Mode::Rhs => {
@@ -145,10 +144,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 
@@ -203,16 +200,13 @@ impl<'t> Walker<'t> {
                 }
             }
             if n.kind() == "property_declaration" {
-                let vd = (0..n.named_child_count())
-                    .filter_map(|i| n.named_child(i))
+                let vd = named_kids(n)
                     .find(|c| c.kind() == "variable_declaration"); // kotlin shape — None for swift
                 let id = match vd {
-                    Some(vd) => (0..vd.named_child_count())
-                        .filter_map(|i| vd.named_child(i))
+                    Some(vd) => named_kids(vd)
                         .find(|c| c.kind() == "simple_identifier"),
                     None => first_simple_identifier(n.child_by_field_name("name").or_else(|| {
-                        (0..n.named_child_count())
-                            .filter_map(|i| n.named_child(i))
+                        named_kids(n)
                             .find(|c| matches!(c.kind(), "value_binding_pattern" | "pattern"))
                     })),
                 };
@@ -225,10 +219,8 @@ impl<'t> Walker<'t> {
                     }
                 }
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
+            for c in named_kids(n) {
+                dstack.push(c);
             }
         }
         let shadowed: Vec<String> = decl_counts

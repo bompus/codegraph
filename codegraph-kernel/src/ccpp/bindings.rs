@@ -1,5 +1,6 @@
 //! Binding rows (docs/design/resolution-binding-model-plan.md): declarations, parameters, locals and imports, with their scopes.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -71,11 +72,9 @@ impl<'t> Walker<'t> {
     pub(super) fn has_static_storage(&self, node: Node<'t>) -> bool {
         let mut cur = Some(node);
         while let Some(n) = cur {
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    if c.kind() == "storage_class_specifier" && self.text(c) == "static" {
-                        return true;
-                    }
+            for c in named_kids(n) {
+                if c.kind() == "storage_class_specifier" && self.text(c) == "static" {
+                    return true;
                 }
             }
             if matches!(n.kind(), "function_definition" | "declaration" | "type_definition") {

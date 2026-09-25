@@ -1,5 +1,6 @@
 //! Type declarations: classes, structs/unions, enums and their members, typedefs and aliases.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -16,10 +17,8 @@ impl<'t> Walker<'t> {
         let Some(row) = self.create_node("class", &name, node, extra) else { return };
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "class", name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -37,10 +36,8 @@ impl<'t> Walker<'t> {
         let Some(row) = self.create_node(kind, &name, node, extra) else { return };
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind, name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -125,10 +122,8 @@ impl<'t> Walker<'t> {
             if let Some(tc) = type_child {
                 self.extract_inheritance(tc, row);
                 let body = tc.child_by_field_name("body").unwrap_or(tc);
-                for i in 0..body.named_child_count() {
-                    if let Some(c) = body.named_child(i) {
-                        self.visit_node(c);
-                    }
+                for c in named_kids(body) {
+                    self.visit_node(c);
                 }
             }
             self.stack.pop();
@@ -167,8 +162,7 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn find_child_by_kind(&self, node: Node<'t>, kind: &str) -> Option<Node<'t>> {
-        (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        named_kids(node)
             .find(|c| c.kind() == kind)
     }
 }

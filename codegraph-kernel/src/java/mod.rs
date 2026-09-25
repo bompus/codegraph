@@ -14,6 +14,7 @@ use crate::buffers::{
     BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_STATIC, NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_builtin_type, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
@@ -129,8 +130,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         if child.kind() != "package_declaration" {
             continue;
         }
-        let id_node = (0..child.named_child_count())
-            .filter_map(|j| child.named_child(j))
+        let id_node = named_kids(child)
             .find(|c| matches!(c.kind(), "scoped_identifier" | "identifier"));
         if let Some(id_node) = id_node {
             let pkg = w.text(id_node).trim().to_string();
@@ -280,8 +280,7 @@ impl<'t> Walker<'t> {
     // --- modifiers / hooks (languages/java.ts) -----------------------------------
 
     fn modifiers_child(&self, node: Node<'t>) -> Option<Node<'t>> {
-        (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        named_kids(node)
             .find(|c| c.kind() == "modifiers")
     }
 
@@ -397,10 +396,8 @@ impl<'t> Walker<'t> {
         }
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -444,10 +441,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -467,10 +462,8 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "class", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         // Lombok member synthesis (#912) — class still on the stack.
         self.synthesize_lombok_members(node, row);
@@ -543,10 +536,8 @@ impl<'t> Walker<'t> {
         self.extract_inheritance(node, row);
         self.stack.push(Scope { row, kind: "interface", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -590,14 +581,12 @@ impl<'t> Walker<'t> {
         let is_static = Some(self.is_static(node));
         let field_kind: &'static str = if self.is_const(node) { "constant" } else { "field" };
 
-        let declarators: Vec<Node> = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let declarators: Vec<Node> = named_kids(node)
             .filter(|c| c.kind() == "variable_declarator")
             .collect();
 
         if !declarators.is_empty() {
-            let type_node = (0..node.named_child_count())
-                .filter_map(|i| node.named_child(i))
+            let type_node = named_kids(node)
                 .find(|c| {
                     !matches!(
                         c.kind(),
@@ -609,8 +598,7 @@ impl<'t> Walker<'t> {
 
             for decl in declarators {
                 let name_node = decl.child_by_field_name("name").or_else(|| {
-                    (0..decl.named_child_count())
-                        .filter_map(|i| decl.named_child(i))
+                    named_kids(decl)
                         .find(|c| c.kind() == "identifier")
                 });
                 let Some(name_node) = name_node else { continue };
@@ -648,8 +636,7 @@ impl<'t> Walker<'t> {
             }
         } else {
             let name_node = node.child_by_field_name("name").or_else(|| {
-                (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
+                named_kids(node)
                     .find(|c| c.kind() == "identifier")
             });
             if let Some(name_node) = name_node {
@@ -692,8 +679,7 @@ impl<'t> Walker<'t> {
 
     fn extract_import(&mut self, node: Node<'t>) {
         let import_text = self.text(node).trim().to_string();
-        let scoped = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let scoped = named_kids(node)
             .find(|c| c.kind() == "scoped_identifier");
         let Some(scoped) = scoped else { return }; // hook declined
         let module_name = self.text(scoped).to_string();
@@ -824,10 +810,8 @@ impl<'t> Walker<'t> {
         self.push_ref(row, &type_name, crate::buffers::EDGE_EXTENDS, line, column);
 
         self.stack.push(Scope { row, kind: "class", name: anon_name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -877,11 +861,10 @@ impl<'t> Walker<'t> {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {
                 "superclass" | "extends_interfaces" => {
-                    let type_list = (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    let type_list = named_kids(child)
                         .find(|c| c.kind() == "type_list");
                     let targets: Vec<Node> = match type_list {
-                        Some(tl) => (0..tl.named_child_count()).filter_map(|j| tl.named_child(j)).collect(),
+                        Some(tl) => named_kids(tl).collect(),
                         None => child.named_child(0).into_iter().collect(),
                     };
                     for target in targets {
@@ -890,12 +873,11 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "super_interfaces" => {
-                    let type_list = (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    let type_list = named_kids(child)
                         .find(|c| c.kind() == "type_list");
                     let targets: Vec<Node> = match type_list {
-                        Some(tl) => (0..tl.named_child_count()).filter_map(|j| tl.named_child(j)).collect(),
-                        None => (0..child.named_child_count()).filter_map(|j| child.named_child(j)).collect(),
+                        Some(tl) => named_kids(tl).collect(),
+                        None => named_kids(child).collect(),
                     };
                     for iface in targets {
                         let name = self.text(iface).to_string();
@@ -918,8 +900,7 @@ impl<'t> Walker<'t> {
         if let Some(ret) = node.child_by_field_name("type") {
             self.extract_type_refs_from_subtree(ret, from_row);
         }
-        let type_annotation = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let type_annotation = named_kids(node)
             .find(|c| c.kind() == "type_annotation");
         if let Some(ta) = type_annotation {
             self.extract_type_refs_from_subtree(ta, from_row);
@@ -939,11 +920,9 @@ impl<'t> Walker<'t> {
 }
 
 fn find_anonymous_class_body(node: Node) -> Option<Node> {
-    for i in 0..node.named_child_count() {
-        if let Some(child) = node.named_child(i) {
-            if matches!(child.kind(), "class_body" | "declaration_list") {
-                return Some(child);
-            }
+    for child in named_kids(node) {
+        if matches!(child.kind(), "class_body" | "declaration_list") {
+            return Some(child);
         }
     }
     None

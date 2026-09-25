@@ -1,5 +1,6 @@
 //! Binding rows (docs/design/resolution-binding-model-plan.md): declarations, parameters, locals and imports, with their scopes.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -49,7 +50,7 @@ impl<'t> Walker<'t> {
             "short_var_declaration" | "range_clause" => {
                 if let Some(left) = node.child_by_field_name("left") {
                     if left.kind() == "expression_list" {
-                        names.extend((0..left.named_child_count()).filter_map(|i| left.named_child(i)).filter(|c| c.kind() == "identifier"));
+                        names.extend(named_kids(left).filter(|c| c.kind() == "identifier"));
                     } else if left.kind() == "identifier" {
                         names.push(left);
                     }
@@ -57,7 +58,7 @@ impl<'t> Walker<'t> {
             }
             "var_declaration" => {
                 for spec in declaration_specs(node) {
-                    names.extend((0..spec.named_child_count()).filter_map(|j| spec.named_child(j)).filter(|c| c.kind() == "identifier"));
+                    names.extend(named_kids(spec).filter(|c| c.kind() == "identifier"));
                 }
             }
             _ => {}

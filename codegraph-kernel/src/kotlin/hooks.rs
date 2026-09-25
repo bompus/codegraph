@@ -1,5 +1,6 @@
 //! Kotlin declaration hooks: properties and their accessors, `fun interface` recovery, and modifier reads.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -36,11 +37,9 @@ impl<'t> Walker<'t> {
     /// `const val` is just a val); a class/interface/enum instance `val`/`var`
     /// is per-instance state → `field`.
     pub(super) fn property_kind(&self, node: Node<'t>) -> Option<&'static str> {
-        let var_decl = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let var_decl = named_kids(node)
             .find(|c| c.kind() == "variable_declaration")?;
-        let name_node = (0..var_decl.named_child_count())
-            .filter_map(|i| var_decl.named_child(i))
+        let name_node = named_kids(var_decl)
             .find(|c| c.kind() == "simple_identifier")?;
         if self.text(name_node).is_empty() {
             return None;
@@ -69,8 +68,7 @@ impl<'t> Walker<'t> {
         if scope == "local" {
             return None;
         }
-        let binding = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let binding = named_kids(node)
             .find(|c| c.kind() == "binding_pattern_kind");
         let is_val = binding.map(|b| self.text(b) == "val").unwrap_or(false);
         Some(if scope == "instance" {
@@ -87,8 +85,7 @@ impl<'t> Walker<'t> {
     /// an ERROR child.
     pub(super) fn is_fun_interface_node(&self, node: Node<'t>) -> bool {
         let user_type_is_interface = |ut: Node<'t>| -> bool {
-            (0..ut.named_child_count())
-                .filter_map(|i| ut.named_child(i))
+            named_kids(ut)
                 .any(|c| c.kind() == "type_identifier" && self.text(c) == "interface")
         };
         let mut has_fun = false;
@@ -189,10 +186,8 @@ impl<'t> Walker<'t> {
                                 if child.kind() != "statements" {
                                     continue;
                                 }
-                                for j in 0..child.named_child_count() {
-                                    if let Some(stmt) = child.named_child(j) {
-                                        self.visit_node(stmt);
-                                    }
+                                for stmt in named_kids(child) {
+                                    self.visit_node(stmt);
                                 }
                             }
                         }
@@ -205,12 +200,10 @@ impl<'t> Walker<'t> {
         if node.kind() != "property_declaration" {
             return false;
         }
-        let var_decl = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let var_decl = named_kids(node)
             .find(|c| c.kind() == "variable_declaration");
         let name_node = var_decl.and_then(|vd| {
-            (0..vd.named_child_count())
-                .filter_map(|i| vd.named_child(i))
+            named_kids(vd)
                 .find(|c| c.kind() == "simple_identifier")
         });
         // Destructuring (`val (a, b) = makePair()`): NEITHER arm mints a symbol

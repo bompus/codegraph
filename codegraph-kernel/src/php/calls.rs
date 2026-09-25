@@ -1,5 +1,6 @@
 //! Calls, instantiations, static member references, inheritance and type references.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -113,10 +114,8 @@ impl<'t> Walker<'t> {
         };
         self.push_ref(row, &type_name, crate::buffers::EDGE_EXTENDS, line, column);
         self.stack.push(Scope { row, kind: "class", name: anon_name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -190,8 +189,7 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn extract_php_type_refs(&mut self, node: Node<'t>, from_row: u32) {
-        let params = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let params = named_kids(node)
             .find(|c| c.kind() == "formal_parameters");
         if let Some(params) = params {
             for i in 0..params.named_child_count() {
@@ -230,10 +228,8 @@ impl<'t> Walker<'t> {
                 }
             }
             _ => {
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        self.walk_php_type_position(c, from_row);
-                    }
+                for c in named_kids(node) {
+                    self.walk_php_type_position(c, from_row);
                 }
             }
         }

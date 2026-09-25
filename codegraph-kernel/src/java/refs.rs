@@ -1,5 +1,6 @@
 //! Function-reference candidates and value references: capture during the walk, flush at its end.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -15,10 +16,8 @@ impl<'t> Walker<'t> {
 
         let mut values: Vec<Node> = Vec::new();
         if field.is_empty() {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    values.push(c);
-                }
+            for c in named_kids(node) {
+                values.push(c);
             }
         } else if field == "right" {
             if let Some(rhs) = node.child_by_field_name("right") {
@@ -44,11 +43,9 @@ impl<'t> Walker<'t> {
                 continue; // idTypes is EMPTY for Java — only method references
             }
             let mut last_ident: Option<Node> = None;
-            for i in 0..v.named_child_count() {
-                if let Some(c) = v.named_child(i) {
-                    if c.kind() == "identifier" {
-                        last_ident = Some(c);
-                    }
+            for c in named_kids(v) {
+                if c.kind() == "identifier" {
+                    last_ident = Some(c);
                 }
             }
             let Some(last) = last_ident else { continue };
@@ -78,10 +75,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 
@@ -114,10 +109,8 @@ impl<'t> Walker<'t> {
                     }
                 }
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
+            for c in named_kids(n) {
+                dstack.push(c);
             }
         }
         let shadowed: Vec<String> = decl_counts

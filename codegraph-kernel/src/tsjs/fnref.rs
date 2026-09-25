@@ -3,6 +3,7 @@
 //! normalization, and the `this.member` special form. The flush-time gate
 //! lives in the walker (it needs the file's nodes and import refs).
 
+use crate::walker::named_kids;
 use super::*;
 use crate::walker::Cand;
 use tree_sitter::Node;
@@ -42,10 +43,8 @@ pub fn capture(container: Node, mode: Mode, src: &str, from: u32) -> Vec<Cand> {
 
     match mode {
         Mode::Args | Mode::List => {
-            for i in 0..container.named_child_count() {
-                if let Some(c) = container.named_child(i) {
-                    value_nodes.push(c);
-                }
+            for c in named_kids(container) {
+                value_nodes.push(c);
             }
         }
         Mode::Rhs => {
@@ -171,10 +170,8 @@ impl<'t> Walker<'t> {
                     }
                 }
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    dstack.push(c);
-                }
+            for c in named_kids(n) {
+                dstack.push(c);
             }
         }
         let shadowed: Vec<String> = decl_counts
@@ -213,10 +210,8 @@ impl<'t> Walker<'t> {
             return;
         }
         self.maybe_capture_fn_refs(node);
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.scan_fn_ref_subtree(c, depth + 1);
-            }
+        for c in named_kids(node) {
+            self.scan_fn_ref_subtree(c, depth + 1);
         }
     }
 }

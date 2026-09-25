@@ -49,6 +49,7 @@ use crate::buffers::{
     NodeRow, RefRow, Tables, BINDING_IMPORT, EXPORT_NONE, EXPORT_PUBLIC, FLAG_IS_ASYNC,
     FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope, Cand};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::docstring::preceding_docstring;
@@ -278,8 +279,7 @@ impl<'t> Walker<'t> {
     fn return_type_of(&self, node: Node) -> Option<String> {
         let mut rt = node.child_by_field_name("return_type")?;
         if rt.kind() == "reference_type" {
-            rt = (0..rt.named_child_count())
-                .filter_map(|i| rt.named_child(i))
+            rt = named_kids(rt)
                 .find(|c| matches!(c.kind(), "type_identifier" | "scoped_type_identifier" | "generic_type"))
                 .unwrap_or(rt);
         }
@@ -386,10 +386,8 @@ impl<'t> Walker<'t> {
         }
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -473,10 +471,8 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "trait", name });
         let body = node.child_by_field_name("body").unwrap_or(node);
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -501,10 +497,8 @@ impl<'t> Walker<'t> {
         let Some(body) = node.child_by_field_name("body") else { return };
 
         self.stack.push(Scope { row, kind, name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -746,8 +740,7 @@ impl<'t> Walker<'t> {
         if name != "routes" && name != "catchers" {
             return;
         }
-        let token_tree = (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
+        let token_tree = named_kids(node)
             .find(|c| c.kind() == "token_tree");
         let Some(token_tree) = token_tree else { return };
         let from = self.top_row();
@@ -808,22 +801,18 @@ impl<'t> Walker<'t> {
                         let Some(bound) = child.named_child(j) else { continue };
                         let type_node: Option<Node> = match bound.kind() {
                             "type_identifier" => Some(bound),
-                            "generic_type" => (0..bound.named_child_count())
-                                .filter_map(|k| bound.named_child(k))
+                            "generic_type" => named_kids(bound)
                                 .find(|c| c.kind() == "type_identifier"),
                             "higher_ranked_trait_bound" => {
-                                let generic = (0..bound.named_child_count())
-                                    .filter_map(|k| bound.named_child(k))
+                                let generic = named_kids(bound)
                                     .find(|c| c.kind() == "generic_type");
                                 generic
                                     .and_then(|g| {
-                                        (0..g.named_child_count())
-                                            .filter_map(|k| g.named_child(k))
+                                        named_kids(g)
                                             .find(|c| c.kind() == "type_identifier")
                                     })
                                     .or_else(|| {
-                                        (0..bound.named_child_count())
-                                            .filter_map(|k| bound.named_child(k))
+                                        named_kids(bound)
                                             .find(|c| c.kind() == "type_identifier")
                                     })
                             }
@@ -836,12 +825,10 @@ impl<'t> Walker<'t> {
                     }
                 }
                 "field_declaration" => {
-                    let has_field_identifier = (0..child.named_child_count())
-                        .filter_map(|j| child.named_child(j))
+                    let has_field_identifier = named_kids(child)
                         .any(|c| c.kind() == "field_identifier");
                     if !has_field_identifier {
-                        let type_id = (0..child.named_child_count())
-                            .filter_map(|j| child.named_child(j))
+                        let type_id = named_kids(child)
                             .find(|c| c.kind() == "type_identifier");
                         if let Some(type_id) = type_id {
                             let name = self.text(type_id).to_string();
@@ -948,10 +935,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 

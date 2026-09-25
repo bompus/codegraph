@@ -1,5 +1,6 @@
 //! Lombok synthesis (languages/java.ts synthesizeLombokMembers, #912): the members Lombok annotations generate.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -37,8 +38,7 @@ impl<'t> Walker<'t> {
         let log_ann = class_anns.iter().find(|a| is_lombok_log_annotation(a)).cloned();
 
         let Some(body) = class_node.child_by_field_name("body") else { return };
-        let fields: Vec<Node> = (0..body.named_child_count())
-            .filter_map(|i| body.named_child(i))
+        let fields: Vec<Node> = named_kids(body)
             .filter(|c| c.kind() == "field_declaration")
             .collect();
 

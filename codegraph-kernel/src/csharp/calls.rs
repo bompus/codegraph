@@ -1,5 +1,6 @@
 //! Calls, instantiations, static member references, inheritance and type references.
 
+use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
@@ -105,10 +106,8 @@ impl<'t> Walker<'t> {
         self.push_ref(row, &type_name, crate::buffers::EDGE_EXTENDS, line, column);
 
         self.stack.push(Scope { row, kind: "class", name: anon_name });
-        for i in 0..body.named_child_count() {
-            if let Some(c) = body.named_child(i) {
-                self.visit_node(c);
-            }
+        for c in named_kids(body) {
+            self.visit_node(c);
         }
         self.stack.pop();
     }
@@ -165,8 +164,7 @@ impl<'t> Walker<'t> {
                 let Some(base) = child.named_child(j) else { continue };
                 let name = if base.kind() == "generic_name" {
                     // `ClientBase<T>` → head identifier; position = generic_name.
-                    let ident = (0..base.named_child_count())
-                        .filter_map(|k| base.named_child(k))
+                    let ident = named_kids(base)
                         .find(|c| c.kind() == "identifier");
                     match ident {
                         Some(idn) => self.text(idn).to_string(),

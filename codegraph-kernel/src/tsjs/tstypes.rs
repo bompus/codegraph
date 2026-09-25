@@ -1,5 +1,6 @@
 //! TypeScript type aliases, their members, tuple contracts and function-typed properties.
 
+use crate::walker::named_kids;
 use super::*;
 use super::extractors::*;
 
@@ -32,11 +33,9 @@ impl<'t> Walker<'t> {
         if value.kind() == "object_type" {
             object_types.push(value);
         } else if value.kind() == "intersection_type" {
-            for i in 0..value.named_child_count() {
-                if let Some(op) = value.named_child(i) {
-                    if op.kind() == "object_type" {
-                        object_types.push(op);
-                    }
+            for op in named_kids(value) {
+                if op.kind() == "object_type" {
+                    object_types.push(op);
                 }
             }
         } else {
@@ -85,10 +84,8 @@ impl<'t> Walker<'t> {
             if n.kind() == "tuple_type" {
                 out.push(n);
             }
-            for i in 0..n.named_child_count() {
-                if let Some(c) = n.named_child(i) {
-                    collect(c, depth + 1, out);
-                }
+            for c in named_kids(n) {
+                collect(c, depth + 1, out);
             }
         }
         collect(value, 0, &mut tuples);
@@ -135,11 +132,9 @@ impl<'t> Walker<'t> {
         let Some(type_anno) = property_signature.child_by_field_name("type") else {
             return false;
         };
-        for i in 0..type_anno.named_child_count() {
-            if let Some(inner) = type_anno.named_child(i) {
-                if inner.kind() == "function_type" {
-                    return true;
-                }
+        for inner in named_kids(type_anno) {
+            if inner.kind() == "function_type" {
+                return true;
             }
         }
         false

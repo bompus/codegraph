@@ -83,6 +83,7 @@ use crate::buffers::{
     BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
+use crate::walker::named_kids;
 use crate::walker::{Scope, ValueScope};
 use crate::textutil::{is_stoplisted, is_literal_receiver, capitalized_re};
 use crate::docstring::preceding_docstring;
@@ -537,10 +538,8 @@ impl<'t> Walker<'t> {
                 .unwrap_or_default();
             if !ns_name.is_empty() {
                 self.namespace_prefix.push(ns_name);
-                for i in 0..node.named_child_count() {
-                    if let Some(c) = node.named_child(i) {
-                        self.visit_node(c);
-                    }
+                for c in named_kids(node) {
+                    self.visit_node(c);
                 }
                 self.namespace_prefix.pop();
                 return;
@@ -610,10 +609,8 @@ impl<'t> Walker<'t> {
         }
 
         if !skip_children {
-            for i in 0..node.named_child_count() {
-                if let Some(c) = node.named_child(i) {
-                    self.visit_node(c);
-                }
+            for c in named_kids(node) {
+                self.visit_node(c);
             }
         }
     }
@@ -842,10 +839,8 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.visit_for_calls_and_structure(c);
-            }
+        for c in named_kids(node) {
+            self.visit_for_calls_and_structure(c);
         }
     }
 
@@ -869,11 +864,9 @@ fn find_declarator_qualified_id(declarator: Node) -> Option<Node> {
         if current.kind() == "qualified_identifier" {
             return Some(current);
         }
-        for i in 0..current.named_child_count() {
-            if let Some(child) = current.named_child(i) {
-                if child.kind() != "parameter_list" && child.kind() != "trailing_return_type" {
-                    queue.push_back(child);
-                }
+        for child in named_kids(current) {
+            if child.kind() != "parameter_list" && child.kind() != "trailing_return_type" {
+                queue.push_back(child);
             }
         }
     }
@@ -914,8 +907,7 @@ fn is_macro_misparsed_type_decl(node: Node) -> bool {
     if type_node.kind() != "class_specifier" && type_node.kind() != "struct_specifier" {
         return false;
     }
-    let has_body = (0..type_node.named_child_count())
-        .filter_map(|i| type_node.named_child(i))
+    let has_body = named_kids(type_node)
         .any(|c| c.kind() == "field_declaration_list");
     if has_body {
         return false;
