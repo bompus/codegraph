@@ -24,7 +24,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -32,17 +32,9 @@ fn receiver_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\(\s*(?:[A-Za-z_][0-9A-Za-z_]*\s+)?\*?\s*([A-Za-z_][0-9A-Za-z_]*)").unwrap())
 }
-fn simple_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 fn go_two_hop_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*\.[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-fn generic_angle_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
 }
 fn bracket_args_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -106,15 +98,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("go").ok_or("no go grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(go) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("go", source)?;
 
     let mut w = Walker::new(source, file_path);
 
@@ -326,10 +311,10 @@ impl<'t> Walker<'t> {
         }
         let text = self.text(result).trim();
         let text = text.strip_prefix('*').unwrap_or(text);
-        let text = generic_angle_re().replace_all(text, "");
+        let text = crate::textutil::generic_args_re().replace_all(text, "");
         let text = bracket_args_re().replace_all(&text, "");
         let last = text.rsplit('.').next().unwrap_or("").trim().to_string();
-        if last.is_empty() || !simple_ident_re().is_match(&last) {
+        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(&last) {
             return None;
         }
         Some(last)

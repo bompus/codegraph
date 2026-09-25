@@ -84,7 +84,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -111,10 +111,6 @@ fn ret_keyword_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?-u:\b)(?:const|volatile|typename|struct|class|enum)(?-u:\b)").unwrap())
 }
-fn angle_group_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
 fn ptr_ref_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"[*&]+").unwrap())
@@ -122,10 +118,6 @@ fn ptr_ref_re() -> &'static Regex {
 fn ws_run_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\s+").unwrap())
-}
-fn simple_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap())
 }
 /// recoverMangledCppName's `Ret (name)` idiom guard.
 fn ret_paren_name_re() -> &'static Regex {
@@ -211,7 +203,7 @@ fn recover_mangled_cpp_name(name: String) -> String {
     // ignores leading/trailing whitespace, so no explicit trim.)
     let candidate = before_params.split_whitespace().last().unwrap_or("");
     if candidate.is_empty()
-        || !simple_ident_re().is_match(candidate)
+        || !crate::textutil::ascii_ident_re().is_match(candidate)
         || is_cpp_primitive_name(candidate)
     {
         return name;
@@ -231,7 +223,7 @@ fn normalize_cpp_return_type(raw: &str) -> Option<String> {
         }
     }
     let t = ret_keyword_re().replace_all(&t, " ");
-    let t = angle_group_re().replace_all(&t, " ");
+    let t = crate::textutil::generic_args_re().replace_all(&t, " ");
     let t = ptr_ref_re().replace_all(&t, " ");
     let t = ws_run_re().replace_all(&t, " ");
     let t = t.trim();
@@ -240,7 +232,7 @@ fn normalize_cpp_return_type(raw: &str) -> Option<String> {
     }
     let parts: Vec<&str> = t.split("::").filter(|p| !p.is_empty()).collect();
     let last = *parts.last()?;
-    if is_non_class_return(last) || !simple_ident_re().is_match(last) {
+    if is_non_class_return(last) || !crate::textutil::ascii_ident_re().is_match(last) {
         return None;
     }
     Some(last.to_string())
@@ -336,15 +328,8 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         "cpp" => Variant::Cpp,
         other => return Err(format!("ccpp walker got language '{other}'")),
     };
-    let grammar = crate::langs::grammar_for(language).ok_or("no c/cpp grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language({language}) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse(language, source)?;
     let mut w = Walker::new(source, file_path, variant);
 
     let line_count = w.line_count;
@@ -1678,7 +1663,7 @@ impl<'t> Walker<'t> {
         // emits one calls ref PER recorded target (insertion order).
         if !callee_name.is_empty()
             && self.variant == Variant::Cpp
-            && simple_ident_re().is_match(&callee_name)
+            && crate::textutil::ascii_ident_re().is_match(&callee_name)
         {
             let targets = self
                 .local_fn_ptrs
@@ -1714,23 +1699,7 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
 
-        let mut class_name = self.text(ctor).to_string();
-        if let Some(lt) = class_name.find('<') {
-            if lt > 0 {
-                class_name.truncate(lt);
-            }
-        }
-        // Keep the trailing identifier of `ns::Foo` / `a.Foo`.
-        let last_dot = class_name.rfind('.').map(|i| i as isize).unwrap_or(-1);
-        let last_colons = class_name.rfind("::").map(|i| i as isize).unwrap_or(-1);
-        let cut = last_dot.max(last_colons);
-        if cut >= 0 {
-            class_name = class_name[(cut as usize + 1)..].to_string();
-            if class_name.starts_with(':') || class_name.starts_with('.') {
-                class_name.remove(0);
-            }
-        }
-        let class_name = class_name.trim().to_string();
+        let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
         }

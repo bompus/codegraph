@@ -37,34 +37,13 @@ use crate::textutil::{is_stoplisted, is_builtin_type};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
 
 
-/// extractDartReturnType's simple-name gate + the static-member receiver gate.
-fn simple_type_name_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-fn cap_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9_]*$").unwrap())
-}
-/// The chained-call re-encode gate (`/^[A-Z]/`).
-fn starts_upper_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Z]").unwrap())
-}
-/// extractDartReturnType's `<...>` strip (`/<[^>]*>/g`).
-fn angle_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
 
 
 
@@ -100,15 +79,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("dart").ok_or("no dart grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(dart) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("dart", source)?;
 
     let mut w = Walker {
         src: source,
@@ -346,10 +318,10 @@ impl<'t> Walker<'t> {
         let ret = sig
             .named_children(&mut cursor)
             .find(|c| c.kind() == "type_identifier")?;
-        let text = angle_args_re().replace_all(self.text(ret), "");
+        let text = crate::textutil::generic_args_re().replace_all(self.text(ret), "");
         let text = text.trim();
         let last = text.split('.').next_back()?;
-        if last.is_empty() || !simple_type_name_re().is_match(last) {
+        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(last) {
             return None;
         }
         Some(last.to_string())
@@ -827,20 +799,7 @@ impl<'t> Walker<'t> {
             .or_else(|| node.child_by_field_name("name"))
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
-        let mut class_name = self.text(ctor).to_string();
-        if let Some(lt) = class_name.find('<') {
-            if lt > 0 {
-                class_name.truncate(lt);
-            }
-        }
-        let last_dot = class_name.rfind('.').map(|i| i as i64).unwrap_or(-1);
-        let last_colons = class_name.rfind("::").map(|i| (i + 1) as i64).unwrap_or(-1);
-        let last = last_dot.max(last_colons);
-        if last >= 0 {
-            class_name = class_name[(last as usize + 1)..].to_string();
-            class_name = class_name.trim_start_matches([':', '.']).to_string();
-        }
-        let class_name = class_name.trim().to_string();
+        let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
         if class_name.is_empty() {
             return;
         }
@@ -884,7 +843,7 @@ impl<'t> Walker<'t> {
                                 let mut apc = ap.walk();
                                 if ap.named_children(&mut apc).any(|c| c.kind() == "argument_part") {
                                     if let Some(inner) = self.callee_of_arg_part(ap) {
-                                        if starts_upper_re().is_match(&inner) {
+                                        if crate::textutil::starts_upper_re().is_match(&inner) {
                                             return Some(format!("{}().{}", inner, self.text(method_id)));
                                         }
                                     }
@@ -983,7 +942,7 @@ impl<'t> Walker<'t> {
             return;
         }
         let Some(prev) = node.prev_named_sibling() else { return };
-        if prev.kind() == "identifier" && cap_ident_re().is_match(self.text(prev)) {
+        if prev.kind() == "identifier" && crate::textutil::capitalized_re().is_match(self.text(prev)) {
             let name = self.text(prev).to_string();
             // NO callee-of-call skip — `ConfigT.load()` double-emits
             // (references + calls). Position = the IDENTIFIER (receiver).
@@ -1058,20 +1017,7 @@ impl<'t> Walker<'t> {
             }
         }
         let Some(target) = target else { return };
-        let mut name = self.text(target).to_string();
-        if let Some(lt) = name.find('<') {
-            if lt > 0 {
-                name.truncate(lt);
-            }
-        }
-        let last_dot = name.rfind('.').map(|i| i as i64).unwrap_or(-1);
-        let last_colons = name.rfind("::").map(|i| (i + 1) as i64).unwrap_or(-1);
-        let last = last_dot.max(last_colons);
-        if last >= 0 {
-            name = name[(last as usize + 1)..].to_string();
-            name = name.trim_start_matches([':', '.']).to_string();
-        }
-        let name = name.trim().to_string();
+        let name = crate::textutil::strip_generic_and_qualifier(self.text(target));
         if name.is_empty() {
             return;
         }

@@ -19,7 +19,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -49,14 +49,6 @@ fn is_lombok_log_annotation(name: &str) -> bool {
     )
 }
 
-fn generic_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
-fn simple_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
 fn method_ref_type_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^([A-Z][A-Za-z0-9_]*)\s*::").unwrap())
@@ -110,15 +102,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("java").ok_or("no java grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(java) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("java", source)?;
 
     let mut w = Walker::new(source, file_path);
 
@@ -398,9 +383,9 @@ impl<'t> Walker<'t> {
         if is_non_class_return(t.kind()) || t.kind() == "array_type" {
             return None;
         }
-        let raw = generic_args_re().replace_all(self.text(t).trim(), "").into_owned();
+        let raw = crate::textutil::generic_args_re().replace_all(self.text(t).trim(), "").into_owned();
         let last = raw.rsplit('.').next().unwrap_or("").trim().to_string();
-        if last.is_empty() || !simple_ident_re().is_match(&last) {
+        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(&last) {
             return None;
         }
         Some(last)

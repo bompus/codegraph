@@ -28,7 +28,7 @@ use crate::textutil as util;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
@@ -108,15 +108,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("ruby").ok_or("no ruby grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(ruby) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("ruby", source)?;
 
     let mut w = Walker {
         src: source,

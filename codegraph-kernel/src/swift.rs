@@ -31,39 +31,15 @@ use crate::textutil::{is_stoplisted, is_builtin_type, is_literal_receiver, strip
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
-use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::OnceLock;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 const MAX_VALUE_REF_NODES: usize = 20_000;
 
 
 
 
-/// `/^[A-Za-z_]\w*$/` with JS's ASCII `\w`.
-fn ascii_ident_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*$").unwrap())
-}
-/// getReturnType's generics strip (`/<[^>]*>/g`) — non-nesting (rust-class quirk).
-fn generic_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
-}
 
-/// JS `\s` for the chained-call inner-callee strip (`.replace(/\s+/g, '')`).
-fn is_js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' ' | '\u{00A0}' | '\u{1680}'
-            | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}'
-            | '\u{3000}' | '\u{FEFF}'
-    )
-}
-fn strip_js_ws(s: &str) -> String {
-    s.chars().filter(|c| !is_js_space(*c)).collect()
-}
 
 
 #[derive(Default)]
@@ -103,15 +79,8 @@ pub struct Walker<'t> {
 }
 
 pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
-    let grammar = crate::langs::grammar_for("swift").ok_or("no swift grammar")?;
     let t0 = std::time::Instant::now();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&grammar)
-        .map_err(|e| format!("set_language(swift) failed: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "parser returned null tree".to_string())?;
+    let tree = crate::langs::parse("swift", source)?;
 
     let mut w = Walker {
         src: source,
@@ -415,11 +384,11 @@ impl<'t> Walker<'t> {
             };
             if child.kind() == "user_type" || child.kind() == "optional_type" {
                 let t = type_node?;
-                let name = generic_args_re()
+                let name = crate::textutil::generic_args_re()
                     .replace_all(self.text(t).trim(), "")
                     .into_owned();
                 let last = name.rsplit('.').next().unwrap_or("").trim();
-                if last.is_empty() || !ascii_ident_re().is_match(last) || last == "Void" {
+                if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(last) || last == "Void" {
                     return None;
                 }
                 return Some(last.to_string());
@@ -940,7 +909,7 @@ impl<'t> Walker<'t> {
                     // ws-stripped; capitalized chains only.
                     let inner = receiver.unwrap().named_child(0);
                     let inner_callee =
-                        inner.map(|n| strip_js_ws(self.text(n))).unwrap_or_default();
+                        inner.map(|n| crate::textutil::strip_js_ws(self.text(n))).unwrap_or_default();
                     let reencode = inner_callee
                         .as_bytes()
                         .first()
