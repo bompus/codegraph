@@ -377,25 +377,7 @@ impl<'t> Walker<'t> {
 
     inside_class_like_impl!("class" | "struct" | "union" | "interface" | "trait" | "enum" | "module");
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: kind_code,
-            line: self.line_of(node),
-            column: self.col_of(node),
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        if kind_code == edge_kind_index("imports").unwrap() {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
     fn create_node(&mut self, kind: &'static str, name: &str, node: Node<'t>, extra: Extra) -> Option<u32> {
         if name.is_empty() {
@@ -839,14 +821,14 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
         // Misparse artifacts: drop the node, still walk the body (#946/#1061).
         if self.is_misparsed_function(&name, node) {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
@@ -864,7 +846,7 @@ impl<'t> Walker<'t> {
         // grammars — `attribute` only occurs under attribute_declaration.)
         self.stack.push(Scope { row, kind: "function", name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -882,7 +864,7 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         if self.is_misparsed_function(&name, node) {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
@@ -933,7 +915,7 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "method", name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -1449,15 +1431,7 @@ impl<'t> Walker<'t> {
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: C/C++) --------------------
 
-    /// The enclosing node's lines, or None at file level. C++ namespaces are
-    /// a qualified-name prefix (`namespace_prefix`), never a scope node.
-    fn enclosing_scope(&self) -> Option<(u32, u32)> {
-        let top = self.stack.last()?;
-        if top.kind == "file" {
-            return None;
-        }
-        Some(self.tables.node_lines(top.row))
-    }
+    enclosing_scope_impl!("file");
 
     push_binding_row_impl!();
 
@@ -1812,10 +1786,6 @@ impl<'t> Walker<'t> {
 
     // --- function bodies -----------------------------------------------------
 
-    fn visit_function_body(&mut self, body: Node<'t>) {
-        stack_guard!();
-        self.visit_for_calls_and_structure(body);
-    }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();

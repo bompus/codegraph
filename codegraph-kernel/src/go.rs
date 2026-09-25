@@ -144,25 +144,7 @@ impl<'t> Walker<'t> {
 
     inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: kind_code,
-            line: self.line_of(node),
-            column: self.col_of(node),
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        if kind_code == edge_kind_index("imports").unwrap() {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
     fn create_node(&mut self, kind: &'static str, name: &str, node: Node<'t>, extra: Extra) -> Option<u32> {
         if name.is_empty() {
@@ -259,19 +241,7 @@ impl<'t> Walker<'t> {
         Some(row)
     }
 
-    fn extract_name(&self, node: Node) -> String {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            return self.text(name_node).to_string();
-        }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                    return self.text(c).to_string();
-                }
-            }
-        }
-        "<anonymous>".to_string()
-    }
+    extract_name_impl!();
 
     /// goExtractor.getSignature: params + ' ' + result.
     fn signature_of(&self, node: Node) -> Option<String> {
@@ -368,10 +338,6 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn visit_function_body(&mut self, body: Node<'t>) {
-        stack_guard!();
-        self.visit_for_calls_and_structure(body);
-    }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();
@@ -413,7 +379,7 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
@@ -428,7 +394,7 @@ impl<'t> Walker<'t> {
         self.extract_type_annotations(node, row);
         self.stack.push(Scope { row, kind: "function", name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -478,7 +444,7 @@ impl<'t> Walker<'t> {
         self.extract_type_annotations(node, row);
         self.stack.push(Scope { row, kind: "method", name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -595,10 +561,10 @@ impl<'t> Walker<'t> {
                 if let Some(row) = var_row {
                     let name = self.nodes_meta[row as usize].name.clone();
                     self.stack.push(Scope { row, kind: "variable", name });
-                    self.visit_function_body(value_field);
+                    self.visit_for_calls_and_structure(value_field);
                     self.stack.pop();
                 } else {
-                    self.visit_function_body(value_field);
+                    self.visit_for_calls_and_structure(value_field);
                 }
             }
         }
@@ -691,14 +657,7 @@ impl<'t> Walker<'t> {
         import_path.rsplit('/').next().unwrap_or(import_path).to_string()
     }
 
-    /// The enclosing node's lines, or None at package level.
-    fn enclosing_scope(&self) -> Option<(u32, u32)> {
-        let top = self.stack.last()?;
-        if top.kind == "file" {
-            return None;
-        }
-        Some(self.tables.node_lines(top.row))
-    }
+    enclosing_scope_impl!("file");
 
     push_binding_row_impl!();
 
@@ -966,21 +925,7 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn extract_type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
-        stack_guard!();
-        if node.kind() == "type_identifier" {
-            let type_name = self.text(node).to_string();
-            if !type_name.is_empty() && !is_builtin_type(&type_name) {
-                self.push_ref_at(from_row, &type_name, edge_kind_index("references").unwrap(), node);
-            }
-            return;
-        }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.extract_type_refs_from_subtree(c, from_row);
-            }
-        }
-    }
+    type_refs_from_subtree_impl!();
 
     // --- fn refs (GO_SPEC, with the literal_element/expression_list layers) --------
 

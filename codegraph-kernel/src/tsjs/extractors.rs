@@ -46,7 +46,7 @@ impl<'t> Walker<'t> {
             // Still walk the body: module wrappers hold named inner functions
             // and calls that would otherwise be lost (#528).
             if let Some(body) = body_of(node) {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
@@ -69,7 +69,7 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "function", name });
         if let Some(body) = body_of(node) {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -142,7 +142,7 @@ impl<'t> Walker<'t> {
         let Some(inner) = inner_fn else { return };
         self.stack.push(Scope { row, kind: "component", name: name.to_string() });
         if let Some(body) = body_of(inner) {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -185,7 +185,7 @@ impl<'t> Walker<'t> {
             if let Some(parent) = node.parent() {
                 if matches!(parent.kind(), "object" | "object_expression") {
                     if let Some(body) = body_of(node) {
-                        self.visit_function_body(body);
+                        self.visit_for_calls_and_structure(body);
                     }
                     return;
                 }
@@ -212,7 +212,7 @@ impl<'t> Walker<'t> {
 
         self.stack.push(Scope { row, kind: "method", name });
         if let Some(body) = body_of(node) {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -495,10 +495,10 @@ impl<'t> Walker<'t> {
                     match var_row {
                         Some(row) => {
                             self.stack.push(Scope { row, kind, name: name.clone() });
-                            self.visit_function_body(v);
+                            self.visit_for_calls_and_structure(v);
                             self.stack.pop();
                         }
-                        None => self.visit_function_body(v),
+                        None => self.visit_for_calls_and_structure(v),
                     }
                 }
             }
@@ -778,7 +778,7 @@ impl<'t> Walker<'t> {
                 );
                 if let Some(row) = row {
                     self.stack.push(Scope { row, kind: "function", name: key_name });
-                    self.visit_function_body(value);
+                    self.visit_for_calls_and_structure(value);
                     self.stack.pop();
                 }
             }

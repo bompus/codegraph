@@ -151,6 +151,168 @@ macro_rules! push_binding_row_impl {
     };
 }
 
+/// extractName for the walkers whose grammars carry a `name` field (or a first identifier child) — identical in seven languages.
+macro_rules! extract_name_impl {
+    () => {
+        /// extractName (tree-sitter.ts:90) — the C#-reachable paths: the `name`
+        /// field (always present on named declarations), else the shared
+        /// identifier scan, else `<anonymous>`.
+        fn extract_name(&self, node: Node) -> String {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                return self.text(name_node).to_string();
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(c) = node.named_child(i) {
+                    if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
+                        return self.text(c).to_string();
+                    }
+                }
+            }
+            "<anonymous>".to_string()
+        }
+    };
+}
+
+/// extractDecoratorsFor + considerDecorator for the annotation-modifier grammars (Java, Kotlin, Swift).
+macro_rules! decorators_impl {
+    () => {
+        /// extractDecoratorsFor — Java annotations live inside `modifiers`.
+        fn extract_decorators_for(&mut self, decl: Node<'t>, decorated_row: u32) {
+            for i in 0..decl.named_child_count() {
+                let Some(child) = decl.named_child(i) else { continue };
+                self.consider_decorator(child, decorated_row);
+                if child.kind() == "modifiers" {
+                    for j in 0..child.named_child_count() {
+                        if let Some(m) = child.named_child(j) {
+                            self.consider_decorator(m, decorated_row);
+                        }
+                    }
+                }
+            }
+            // Preceding-sibling scan (TS-style class decorators) — Java annotations
+            // are inside modifiers, so this is inert here; kept for parity of shape.
+            let Some(parent) = decl.parent() else { return };
+            let decl_start = decl.start_byte();
+            let mut decl_idx: isize = -1;
+            for i in 0..parent.named_child_count() {
+                if let Some(sib) = parent.named_child(i) {
+                    if sib.start_byte() == decl_start {
+                        decl_idx = i as isize;
+                        break;
+                    }
+                }
+            }
+            if decl_idx > 0 {
+                let mut j = decl_idx - 1;
+                while j >= 0 {
+                    let Some(sib) = parent.named_child(j as usize) else {
+                        j -= 1;
+                        continue;
+                    };
+                    if !matches!(sib.kind(), "decorator" | "annotation" | "marker_annotation") {
+                        break;
+                    }
+                    self.consider_decorator(sib, decorated_row);
+                    j -= 1;
+                }
+            }
+        }
+        fn consider_decorator(&mut self, n: Node<'t>, decorated_row: u32) {
+            if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation" | "attribute") {
+                return;
+            }
+            let mut target: Option<Node> = None;
+            for i in 0..n.named_child_count() {
+                let Some(child) = n.named_child(i) else { continue };
+                if child.kind() == "call_expression" {
+                    target = child.child_by_field_name("function").or_else(|| child.named_child(0));
+                    if target.is_some() {
+                        break;
+                    }
+                }
+                if matches!(
+                    child.kind(),
+                    "identifier" | "member_expression" | "scoped_identifier" | "navigation_expression"
+                        | "user_type" | "type_identifier"
+                ) {
+                    target = Some(child);
+                    break;
+                }
+            }
+            let Some(target) = target else { return };
+            let name = strip_generic_and_qualifier(self.text(target));
+            if name.is_empty() {
+                return;
+            }
+            self.push_ref_at(decorated_row, &name, edge_kind_index("decorates").unwrap(), n);
+        }
+    };
+}
+
+/// extractTypeRefsFromSubtree for the grammars whose type nodes are `type_identifier`s (Go, Java, Rust, Swift).
+macro_rules! type_refs_from_subtree_impl {
+    () => {
+        fn extract_type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
+            stack_guard!();
+            if node.kind() == "type_identifier" {
+                let type_name = self.text(node).to_string();
+                if !type_name.is_empty() && !is_builtin_type(&type_name) {
+                    self.push_ref_at(from_row, &type_name, edge_kind_index("references").unwrap(), node);
+                }
+                return;
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(c) = node.named_child(i) {
+                    self.extract_type_refs_from_subtree(c, from_row);
+                }
+            }
+        }
+    };
+}
+
+/// A reference row, plus the import feed: an `imports` ref's simple or qualified-import name joins `imported_names` (the fn-ref flush gate). `push_ref_at` positions it at a node.
+macro_rules! push_ref_impl {
+    () => {
+        fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, line: u32, column: u32) {
+            let name_ref = self.arena.put(name);
+            self.tables.push_ref(&RefRow {
+                from_idx: from_row,
+                kind: kind_code,
+                line,
+                column,
+                reference_name: name_ref,
+                candidates: NONE_STR,
+                from_id_str: NONE_STR,
+            });
+            if kind_code == edge_kind_index("imports").unwrap() {
+                if util::simple_name().is_match(name) {
+                    self.imported_names.insert(name.to_string());
+                } else if let Some(c) = util::qualified_import().captures(name) {
+                    self.imported_names.insert(c[1].to_string());
+                }
+            }
+        }
+        fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
+            self.push_ref(from_row, name, kind_code, self.line_of(node), self.col_of(node));
+        }
+    };
+}
+
+/// The enclosing node's lines, or None at file level. The listed scope kinds
+/// count as file level (Java/Kotlin/PHP add the package `namespace` node,
+/// which is qualified-name scaffolding, not a scope).
+macro_rules! enclosing_scope_impl {
+    ($($kind:literal)|+) => {
+        fn enclosing_scope(&self) -> Option<(u32, u32)> {
+            let top = self.stack.last()?;
+            if matches!(top.kind, $($kind)|+) {
+                return None;
+            }
+            Some(self.tables.node_lines(top.row))
+        }
+    };
+}
+
 /// The markdown path-reference pair, for a walker with the usual shape
 /// (`text`, `line_of`, `col_of`, `arena`, `tables`, `file_path`). Every routed
 /// language needs the same two methods, and the wasm arm they must match is
