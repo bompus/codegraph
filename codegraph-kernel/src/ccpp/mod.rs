@@ -73,8 +73,7 @@
 //! is canonical (kernel-only-extraction-plan.md, Phase 1).
 
 use crate::buffers::{
-    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM,
-    build_meta, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope};
@@ -349,30 +348,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     let mut w = Walker::new(source, file_path, variant);
 
     let line_count = w.line_count;
-    let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
-    let mut flags = BoolFlags::default();
-    flags.set(FLAG_IS_EXPORTED, false);
-    let file_id = w.arena.put(&ids::file_node_id(file_path));
-    let name_ref = w.arena.put(base_name);
-    let qn_ref = w.arena.put(file_path);
-    w.tables.push_node(&NodeRow {
-        kind: node_kind_index("file").unwrap(),
-        visibility: 0,
-        flags,
-        start_line: 1,
-        end_line: line_count,
-        start_column: 0,
-        end_column: 0,
-        name: name_ref,
-        qualified_name: qn_ref,
-        id: file_id,
-        docstring: NONE_STR,
-        signature: NONE_STR,
-        decorators: NONE_STR,
-        type_parameters: NONE_STR,
-        return_type: NONE_STR,
-        extra_json: NONE_STR,
-    });
+    let base_name = crate::buffers::push_file_node(&mut w.arena, &mut w.tables, file_path, line_count);
     w.nodes_meta.push(NodeMeta { kind: "file", name: base_name.to_string() });
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
@@ -382,22 +358,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     w.flush_value_refs(tree.root_node());
     w.stack.pop();
 
-    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let errors_json = crate::buffers::parse_collapse_warning(
-        &mut w.arena,
-        &w.tables,
-        tree.root_node().has_error(),
-        file_path,
-    );
-    let meta = build_meta(&w.tables, w.arena.len(), errors_json, duration_ms);
-    Ok(EmitOut {
-        meta,
-        nodes: w.tables.nodes,
-        edges: w.tables.edges,
-        refs: w.tables.refs,
-        bindings: w.tables.bindings,
-        arena: w.arena.into_vec(),
-    })
+    Ok(crate::buffers::finish(w.arena, w.tables, tree.root_node().has_error(), file_path, t0))
 }
 
 impl<'t> Walker<'t> {
