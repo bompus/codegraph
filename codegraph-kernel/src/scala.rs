@@ -40,7 +40,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use tree_sitter::Node;
 
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 
 
@@ -1213,7 +1212,7 @@ impl<'t> Walker<'t> {
         let mut dstack: Vec<Node> = vec![root];
         let mut dvisited = 0usize;
         while let Some(n) = dstack.pop() {
-            if dvisited >= MAX_VALUE_REF_NODES {
+            if dvisited >= crate::walker::MAX_VALUE_REF_NODES {
                 break;
             }
             dvisited += 1;
@@ -1261,7 +1260,7 @@ impl<'t> Walker<'t> {
             }
             let mut visited = 0usize;
             while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
+                if visited >= crate::walker::MAX_VALUE_REF_NODES {
                     break;
                 }
                 visited += 1;

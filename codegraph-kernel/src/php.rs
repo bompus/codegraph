@@ -19,7 +19,7 @@
 
 use crate::buffers::{
     BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, StrRef, Tables, FLAG_IS_STATIC, FUNCTION_REF_CODE, NONE, NONE_STR,
+    RefRow, Tables, FLAG_IS_STATIC, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
 use crate::walker::{Scope, ValueScope};
@@ -32,7 +32,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use tree_sitter::Node;
 
-const MAX_VALUE_REF_NODES: usize = 20_000;
 
 
 /// PHP_NON_CLASS_RETURN (languages/php.ts:37).
@@ -1412,42 +1411,7 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn flush_fn_ref_candidates(&mut self) {
-        let cands = std::mem::take(&mut self.fn_ref_cands);
-        if cands.is_empty() || util::is_generated_file(self.file_path) {
-            return;
-        }
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        for c in cands {
-            // `this.<m>` and `Cls::m` shapes always flush; HOF-position string
-            // callables skip the gate (unique-or-drop at resolution); the rest
-            // gate on defined-in-file ∪ bare single-segment `use` imports
-            // (path-shaped and `::`-shaped import refs match neither regex).
-            if !c.name.starts_with("this.") && !c.name.contains("::") {
-                let skip = c.skip_gate;
-                if !skip
-                    && !self.defined_fn_names.contains(&c.name)
-                    && !self.imported_names.contains(&c.name)
-                {
-                    continue;
-                }
-            }
-            if !seen.insert((self.node_ids[c.from as usize].clone(), c.name.clone())) {
-                continue;
-            }
-            let column = self.cols.col(self.src, c.row, c.column_byte);
-            let name_ref = self.arena.put(&c.name);
-            self.tables.push_ref(&RefRow {
-                from_idx: c.from,
-                kind: FUNCTION_REF_CODE,
-                line: c.line,
-                column,
-                reference_name: name_ref,
-                candidates: NONE_STR,
-                from_id_str: NONE_STR,
-            });
-        }
-    }
+    flush_fn_ref_candidates_impl!(skip_gate);
 
     // --- value references ------------------------------------------------------------
 
@@ -1466,52 +1430,7 @@ impl<'t> Walker<'t> {
         // Kotlin/Swift path yields null) → declCounts stays empty → no php
         // target is ever pruned. Skipping the scan is byte-identical.
 
-        let refs_kind = edge_kind_index("references").unwrap();
-        // One arena string for every value-ref edge of the file (unchanged when none).
-        let mut value_ref_meta: Option<StrRef> = None;
-        for scope in &scopes {
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<Node> = vec![scope.node];
-            let mut visited = 0usize;
-            while let Some(n) = stack.pop() {
-                if visited >= MAX_VALUE_REF_NODES {
-                    break;
-                }
-                visited += 1;
-                // `name` is the php-live reader kind — ANY textual occurrence
-                // of a target name in a reader's subtree emits (const reads,
-                // `self::MAX`, `$MAX` variable names, interpolated `$MAX`).
-                if matches!(n.kind(), "identifier" | "constant" | "name" | "simple_identifier") {
-                    let ref_name = self.text(n);
-                    if let Some(&target_row) = targets.get(ref_name) {
-                        let target_id = self.node_ids[target_row as usize].as_str();
-                        if target_id != self.node_ids[scope.row as usize]
-                            && ref_name != scope.name
-                            && !seen.contains(&target_id)
-                        {
-                            seen.insert(target_id);
-                            let meta = *value_ref_meta.get_or_insert_with(|| self.arena.put(r#"{"valueRef":true}"#));
-                            self.tables.push_edge(&EdgeRow {
-                                source_idx: scope.row,
-                                target_idx: target_row,
-                                kind: refs_kind,
-                                provenance: 0,
-                                line: NONE,
-                                column: NONE,
-                                metadata_json: meta,
-                                source_id_str: NONE_STR,
-                                target_id_str: NONE_STR,
-                            });
-                        }
-                    }
-                }
-                for i in 0..n.named_child_count() {
-                    if let Some(c) = n.named_child(i) {
-                        stack.push(c);
-                    }
-                }
-            }
-        }
+        crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
     }
 }
 
