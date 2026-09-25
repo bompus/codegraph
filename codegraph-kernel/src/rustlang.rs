@@ -147,28 +147,7 @@ impl<'t> Walker<'t> {
 
     inside_class_like_impl!("class" | "struct" | "union" | "interface" | "trait" | "enum" | "module");
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: kind_code,
-            line: self.line_of(node),
-            column: self.col_of(node),
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        if kind_code == edge_kind_index("imports").unwrap() {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                // `::`-separated rust paths match NEITHER regex (separators are
-                // `.`/`\`), so multi-segment use-imports contribute nothing to
-                // the fn-ref gate — the rust gate is effectively same-file-only.
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
     fn create_node(&mut self, kind: &'static str, name: &str, node: Node<'t>, extra: Extra) -> Option<u32> {
         if name.is_empty() {
@@ -265,20 +244,7 @@ impl<'t> Walker<'t> {
         Some(row)
     }
 
-    /// extractName — nameField `name`, else the identifier-like child scan.
-    fn extract_name(&self, node: Node) -> String {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            return self.text(name_node).to_string();
-        }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                if matches!(c.kind(), "identifier" | "type_identifier" | "simple_identifier" | "constant") {
-                    return self.text(c).to_string();
-                }
-            }
-        }
-        "<anonymous>".to_string()
-    }
+    extract_name_impl!();
 
     /// rustExtractor.getSignature: raw params text + ` -> ` + raw return type.
     fn signature_of(&self, node: Node) -> Option<String> {
@@ -438,7 +404,7 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
@@ -490,7 +456,7 @@ impl<'t> Walker<'t> {
         // decorator/annotation/attribute node types — complete no-op.
         self.stack.push(Scope { row, kind, name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -630,10 +596,10 @@ impl<'t> Walker<'t> {
             match declared {
                 Some((row, name)) => {
                     self.stack.push(Scope { row, kind: "variable", name });
-                    self.visit_function_body(value);
+                    self.visit_for_calls_and_structure(value);
                     self.stack.pop();
                 }
-                None => self.visit_function_body(value),
+                None => self.visit_for_calls_and_structure(value),
             }
         }
     }
@@ -1208,28 +1174,10 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn extract_type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
-        stack_guard!();
-        if node.kind() == "type_identifier" {
-            let type_name = self.text(node).to_string();
-            if !type_name.is_empty() && !is_builtin_type(&type_name) {
-                self.push_ref_at(from_row, &type_name, edge_kind_index("references").unwrap(), node);
-            }
-            return;
-        }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.extract_type_refs_from_subtree(c, from_row);
-            }
-        }
-    }
+    type_refs_from_subtree_impl!();
 
     // --- visitFunctionBody -----------------------------------------------------
 
-    fn visit_function_body(&mut self, body: Node<'t>) {
-        stack_guard!();
-        self.visit_for_calls_and_structure(body);
-    }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();

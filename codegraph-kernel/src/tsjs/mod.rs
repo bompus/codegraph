@@ -801,7 +801,7 @@ impl<'t> Walker<'t> {
                 let prop = self.extract_property(node);
                 if let (Some((row, name)), Some(value)) = (prop, node.child_by_field_name("value")) {
                     self.stack.push(Scope { row, kind: "property", name });
-                    self.visit_function_body(value);
+                    self.visit_for_calls_and_structure(value);
                     self.stack.pop();
                 }
                 self.scan_fn_ref_subtree(node, 0);
@@ -867,10 +867,6 @@ impl<'t> Walker<'t> {
 
     // --- visitFunctionBody ------------------------------------------------------
 
-    fn visit_function_body(&mut self, body: Node<'t>) {
-        stack_guard!();
-        self.visit_for_calls_and_structure(body);
-    }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();

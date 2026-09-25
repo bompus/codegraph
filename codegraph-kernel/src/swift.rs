@@ -158,29 +158,8 @@ impl<'t> Walker<'t> {
     walker_pos_impl!();
     inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
 
-    fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, line: u32, column: u32) {
-        let name_ref = self.arena.put(name);
-        self.tables.push_ref(&RefRow {
-            from_idx: from_row,
-            kind: kind_code,
-            line,
-            column,
-            reference_name: name_ref,
-            candidates: NONE_STR,
-            from_id_str: NONE_STR,
-        });
-        if kind_code == edge_kind_index("imports").unwrap() {
-            if util::simple_name().is_match(name) {
-                self.imported_names.insert(name.to_string());
-            } else if let Some(c) = util::qualified_import().captures(name) {
-                self.imported_names.insert(c[1].to_string());
-            }
-        }
-    }
+    push_ref_impl!();
 
-    fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
-        self.push_ref(from_row, name, kind_code, self.line_of(node), self.col_of(node));
-    }
 
     // --- createNode ------------------------------------------------------------
 
@@ -558,7 +537,7 @@ impl<'t> Walker<'t> {
                 .find(|c| matches!(c.kind(), "computed_property" | "protocol_property_requirements"));
             if let Some(getter) = getter {
                 self.stack.push(Scope { row, kind: "property", name });
-                self.visit_function_body(getter);
+                self.visit_for_calls_and_structure(getter);
                 self.stack.pop();
             }
             return true; // skipChildren — computed only
@@ -580,10 +559,6 @@ impl<'t> Walker<'t> {
 
     // --- visitFunctionBody ---------------------------------------------------------
 
-    fn visit_function_body(&mut self, body: Node<'t>) {
-        stack_guard!();
-        self.visit_for_calls_and_structure(body);
-    }
 
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();
@@ -646,7 +621,7 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_function_body(body);
+                self.visit_for_calls_and_structure(body);
             }
             return;
         }
@@ -664,7 +639,7 @@ impl<'t> Walker<'t> {
         self.extract_decorators_for(node, row);
         self.stack.push(Scope { row, kind: "function", name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -686,7 +661,7 @@ impl<'t> Walker<'t> {
         self.extract_decorators_for(node, row);
         self.stack.push(Scope { row, kind: "method", name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_function_body(body);
+            self.visit_for_calls_and_structure(body);
         }
         self.stack.pop();
     }
@@ -1023,94 +998,10 @@ impl<'t> Walker<'t> {
         }
     }
 
-    fn extract_type_refs_from_subtree(&mut self, node: Node<'t>, from_row: u32) {
-        stack_guard!();
-        if node.kind() == "type_identifier" {
-            let type_name = self.text(node).to_string();
-            if !type_name.is_empty() && !is_builtin_type(&type_name) {
-                self.push_ref_at(from_row, &type_name, edge_kind_index("references").unwrap(), node);
-            }
-            return;
-        }
-        for i in 0..node.named_child_count() {
-            if let Some(c) = node.named_child(i) {
-                self.extract_type_refs_from_subtree(c, from_row);
-            }
-        }
-    }
+    type_refs_from_subtree_impl!();
 
-    /// extractDecoratorsFor — swift `attribute` nodes inside `modifiers`.
-    /// Coverage: functions/methods/classes/dedicated-branch properties only.
-    fn extract_decorators_for(&mut self, decl: Node<'t>, decorated_row: u32) {
-        for i in 0..decl.named_child_count() {
-            let Some(child) = decl.named_child(i) else { continue };
-            self.consider_decorator(child, decorated_row);
-            if child.kind() == "modifiers" {
-                for j in 0..child.named_child_count() {
-                    if let Some(m) = child.named_child(j) {
-                        self.consider_decorator(m, decorated_row);
-                    }
-                }
-            }
-        }
-        // Preceding-sibling scan — swift attributes are never siblings; the
-        // scan stops at the first non-decorator sibling immediately.
-        let Some(parent) = decl.parent() else { return };
-        let decl_start = decl.start_byte();
-        let mut decl_idx: isize = -1;
-        for i in 0..parent.named_child_count() {
-            if let Some(sib) = parent.named_child(i) {
-                if sib.start_byte() == decl_start {
-                    decl_idx = i as isize;
-                    break;
-                }
-            }
-        }
-        if decl_idx > 0 {
-            let mut j = decl_idx - 1;
-            while j >= 0 {
-                let Some(sib) = parent.named_child(j as usize) else {
-                    j -= 1;
-                    continue;
-                };
-                if !matches!(sib.kind(), "decorator" | "annotation" | "marker_annotation") {
-                    break;
-                }
-                self.consider_decorator(sib, decorated_row);
-                j -= 1;
-            }
-        }
-    }
+    decorators_impl!();
 
-    fn consider_decorator(&mut self, n: Node<'t>, decorated_row: u32) {
-        if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation" | "attribute") {
-            return;
-        }
-        let mut target: Option<Node> = None;
-        for i in 0..n.named_child_count() {
-            let Some(child) = n.named_child(i) else { continue };
-            if child.kind() == "call_expression" {
-                target = child.child_by_field_name("function").or_else(|| child.named_child(0));
-                if target.is_some() {
-                    break;
-                }
-            }
-            if matches!(
-                child.kind(),
-                "identifier" | "member_expression" | "scoped_identifier" | "navigation_expression"
-                    | "user_type" | "type_identifier"
-            ) {
-                target = Some(child);
-                break;
-            }
-        }
-        let Some(target) = target else { return };
-        let name = strip_generic_and_qualifier(self.text(target));
-        if name.is_empty() {
-            return;
-        }
-        self.push_ref_at(decorated_row, &name, edge_kind_index("decorates").unwrap(), n);
-    }
 
     // --- function-as-value refs (SWIFT_SPEC, function-ref.ts:288) -------------------
 
