@@ -217,12 +217,17 @@ mod tests {
         on_small_stack(|| {
             let low = os_stack_low().expect("OS stack bounds available");
             let used = current_sp() - low;
-            // std/the OS round the requested size up a little (macOS reports
-            // 1,060,864 for a 1 MiB request); the point is that the bounds
-            // describe THIS thread's small stack, not the main thread's.
+            // The point is that the bounds describe THIS thread's stack, not
+            // the main thread's — a main-thread low end sits gigabytes away
+            // from a worker's mmap'd stack. The thread's own stack is not
+            // necessarily the 1 MiB requested: glibc hands a new thread any
+            // cached stack at least that large (the test harness's 2 MiB
+            // threads feed that cache, up to 40 MiB of it), and macOS rounds
+            // the request up; a bound tighter than the cache's ceiling was
+            // flaky for exactly that reason.
             assert!(
-                used <= SMALL_STACK + 128 * 1024,
-                "used {used} is not within the {SMALL_STACK}-byte stack"
+                used <= 64 << 20,
+                "used {used} bytes is not within a worker stack ({SMALL_STACK} requested)"
             );
         });
     }

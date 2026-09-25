@@ -3,8 +3,10 @@ language: Rust
 severity: error
 message: >-
   Regex::new(&format!(...)) compiles a name-parameterized regex on every
-  call — route it through KernelResolver::cached_regex, which memoizes on
-  the pattern text.
+  call. Split the pattern into an Affix (the name found as a literal, the
+  fixed head and tail compiled once, see resolve.rs) — or, for a shape with
+  no split form, route it through KernelResolver::cached_regex, the bounded
+  process-wide cache.
 files:
   - src/resolve.rs
 rule:
