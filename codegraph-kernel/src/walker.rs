@@ -45,6 +45,18 @@ impl Cand {
     }
 }
 
+/// `name` qualified by the enclosing non-file scopes, `::`-joined
+/// (createNode's default qualifiedName).
+pub(crate) fn scope_qualified_name(stack: &[Scope], name: &str) -> String {
+    let parts: Vec<&str> = stack.iter().filter(|s| s.kind != "file").map(|s| s.name.as_str()).collect();
+    let mut qn = parts.join("::");
+    if !qn.is_empty() {
+        qn.push_str("::");
+    }
+    qn.push_str(name);
+    qn
+}
+
 /// `node`'s children in order — `child(0..child_count())`. `child(i)` scans
 /// from the first child, so a wide node is walked with one cursor instead;
 /// a narrow one (most of them) keeps the lookups and skips the cursor's

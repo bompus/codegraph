@@ -19,12 +19,11 @@ mod calls;
 mod types;
 mod refs;
 use crate::buffers::{
-    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
-    NONE, NONE_STR,
+    node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
+    RefRow, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC, NONE_STR,
 };
 use crate::walker::named_kids;
-use crate::walker::{Scope, ValueScope, Cand};
+use crate::walker::{Scope, ValueScope, Cand, scope_qualified_name};
 use crate::textutil::{is_builtin_type, strip_generic_and_qualifier, capitalized_re};
 use crate::docstring::preceding_docstring;
 use crate::ids;
@@ -174,20 +173,7 @@ impl<'t> Walker<'t> {
         let id = ids::node_id(self.file_path, kind, name, start_line);
         let end_line = node.end_position().row as u32 + 1; // no resolveBody for csharp
 
-        let qualified = {
-            let mut parts: Vec<&str> = Vec::new();
-            for s in &self.stack {
-                if s.kind != "file" {
-                    parts.push(&s.name);
-                }
-            }
-            let mut qn = parts.join("::");
-            if !qn.is_empty() {
-                qn.push_str("::");
-            }
-            qn.push_str(name);
-            qn
-        };
+        let qualified = scope_qualified_name(&self.stack, name);
 
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_static {
@@ -223,17 +209,7 @@ impl<'t> Walker<'t> {
         self.node_ids.push(id);
 
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         if kind == "function" || kind == "method" {
             self.defined_fn_names.insert(name.to_string());

@@ -405,6 +405,22 @@ impl Tables {
         idx
     }
 
+    /// A structural `contains` edge from `parent` to `child` (no position,
+    /// metadata or provenance).
+    pub fn push_contains(&mut self, parent: u32, child: u32) {
+        self.push_edge(&EdgeRow {
+            source_idx: parent,
+            target_idx: child,
+            kind: EDGE_CONTAINS,
+            provenance: 0,
+            line: NONE,
+            column: NONE,
+            metadata_json: NONE_STR,
+            source_id_str: NONE_STR,
+            target_id_str: NONE_STR,
+        });
+    }
+
     pub fn push_edge(&mut self, r: &EdgeRow) {
         let buf = &mut self.edges;
         buf.extend_from_slice(&r.source_idx.to_le_bytes());

@@ -80,7 +80,7 @@ mod fnptr_fields;
 mod bindings;
 mod refs;
 use crate::buffers::{
-    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::walker::named_kids;
@@ -447,17 +447,7 @@ impl<'t> Walker<'t> {
         self.node_ids.push(id);
 
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         if kind == "function" || kind == "method" {
             self.defined_fn_names.insert(name.to_string());
@@ -705,17 +695,7 @@ impl<'t> Walker<'t> {
                     })
                     .map(|i| i as u32);
                 if let Some(owner_row) = owner_row {
-                    self.tables.push_edge(&EdgeRow {
-                        source_idx: owner_row,
-                        target_idx: row,
-                        kind: crate::buffers::EDGE_CONTAINS,
-                        provenance: 0,
-                        line: NONE,
-                        column: NONE,
-                        metadata_json: NONE_STR,
-                        source_id_str: NONE_STR,
-                        target_id_str: NONE_STR,
-                    });
+                    self.tables.push_contains(owner_row, row);
                 }
             }
         }

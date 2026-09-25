@@ -25,10 +25,10 @@
 //! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
-    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, Tables, FLAG_IS_EXPORTED, NONE, NONE_STR,
+    node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
+    RefRow, Tables, FLAG_IS_EXPORTED, NONE_STR,
 };
-use crate::walker::{Scope, Cand};
+use crate::walker::{Scope, Cand, scope_qualified_name};
 use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
@@ -117,20 +117,7 @@ impl<'t> Walker<'t> {
         // the receiver override (extractMethod:1790-1792) replaces it whole.
         let qualified = match &extra.qualified_name_override {
             Some(qn) => qn.clone(),
-            None => {
-                let mut parts: Vec<&str> = Vec::new();
-                for s in &self.stack {
-                    if s.kind != "file" {
-                        parts.push(&s.name);
-                    }
-                }
-                let mut qn = parts.join("::");
-                if !qn.is_empty() {
-                    qn.push_str("::");
-                }
-                qn.push_str(name);
-                qn
-            }
+            None => scope_qualified_name(&self.stack, name)
         };
 
         let name_ref = self.arena.put(name);
@@ -166,17 +153,7 @@ impl<'t> Walker<'t> {
         }
 
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         Some(row)
     }

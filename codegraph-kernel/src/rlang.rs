@@ -22,10 +22,10 @@
 //! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
-    RefRow, Tables, NONE, NONE_STR,
+    edge_kind_index, node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
+    RefRow, Tables, NONE_STR,
 };
-use crate::walker::{Scope};
+use crate::walker::{Scope, scope_qualified_name};
 use crate::ids;
 use crate::textutil as util;
 use regex::Regex;
@@ -129,20 +129,7 @@ impl<'t> Walker<'t> {
 
         // buildQualifiedName (tree-sitter.ts:1447-1460): non-file stack names
         // joined `::` (namespacePrefix is always empty for R).
-        let qualified = {
-            let mut parts: Vec<&str> = Vec::new();
-            for s in &self.stack {
-                if s.kind != "file" {
-                    parts.push(&s.name);
-                }
-            }
-            let mut qn = parts.join("::");
-            if !qn.is_empty() {
-                qn.push_str("::");
-            }
-            qn.push_str(name);
-            qn
-        };
+        let qualified = scope_qualified_name(&self.stack, name);
 
         let name_ref = self.arena.put(name);
         let qn_ref = self.arena.put(&qualified);
@@ -172,17 +159,7 @@ impl<'t> Walker<'t> {
 
         // Containment edge from the stack top (always non-empty — file node).
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         Some(row)
     }

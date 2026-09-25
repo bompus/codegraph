@@ -17,13 +17,13 @@ mod frameworks;
 mod extractors;
 mod fnref;
 use crate::walker::named_kids;
-use crate::walker::{Scope, ValueScope};
+use crate::walker::{Scope, ValueScope, scope_qualified_name};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::textutil as util;
 
 use crate::buffers::{
     BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_REEXPORT, EXPORT_CJS, EXPORT_CJS_OBJECT, EXPORT_ESM,
-    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE, EXPORT_PUBLIC, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE, EXPORT_PUBLIC, node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
@@ -310,20 +310,7 @@ impl<'t> Walker<'t> {
             }
         }
 
-        let qualified = extra.qualified_name.unwrap_or_else(|| {
-            let mut parts: Vec<&str> = Vec::new();
-            for s in &self.stack {
-                if s.kind != "file" {
-                    parts.push(&s.name);
-                }
-            }
-            let mut qn = parts.join("::");
-            if !qn.is_empty() {
-                qn.push_str("::");
-            }
-            qn.push_str(name);
-            qn
-        });
+        let qualified = extra.qualified_name.unwrap_or_else(|| scope_qualified_name(&self.stack, name));
 
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_exported {
@@ -362,17 +349,7 @@ impl<'t> Walker<'t> {
 
         // Containment edge from the current scope.
         let parent_row = self.top_row();
-        self.tables.push_edge(&EdgeRow {
-            source_idx: parent_row,
-            target_idx: row,
-            kind: crate::buffers::EDGE_CONTAINS,
-            provenance: 0,
-            line: NONE,
-            column: NONE,
-            metadata_json: NONE_STR,
-            source_id_str: NONE_STR,
-            target_id_str: NONE_STR,
-        });
+        self.tables.push_contains(parent_row, row);
 
         self.node_ids.push(id);
         if kind == "function" || kind == "method" {
