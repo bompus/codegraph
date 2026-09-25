@@ -136,7 +136,7 @@ impl KernelResolver {
 
     /// matchesAnyImport — `localName === name`, or the `localName.` prefix
     /// arm for member names.
-    pub(super) fn matches_any_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn matches_any_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
         let imports = self.import_mappings(&r.file_path)?;
         Ok(imports.iter().any(|i| {
             i.local_name == r.reference_name
@@ -202,7 +202,7 @@ impl KernelResolver {
     /// isBoundToBareImport (name-matcher.ts) — ESM languages only; the
     /// call-site name resolves to a bare external specifier, so no project
     /// node may claim it.
-    pub(super) fn is_bound_to_bare_import(&mut self, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn is_bound_to_bare_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if !is_esm_family(&r.language) {
             return Ok(false);
         }
@@ -265,7 +265,7 @@ impl KernelResolver {
         name: &str,
         file_path: &str,
         line: Option<i64>,
-    ) -> Result<bool> {
+    ) -> Res<bool> {
         let rows = self.bindings(file_path)?;
         if rows.is_empty() {
             return Ok(false);

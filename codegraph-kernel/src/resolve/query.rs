@@ -5,13 +5,13 @@ use super::*;
 impl KernelResolver {
     /// The live connection — errors once close() has run. Statements borrow
     /// it, so the Option indirection stays inside this accessor.
-    pub(super) fn conn(&self) -> Result<&Connection> {
+    pub(super) fn conn(&self) -> Res<&Connection> {
         self.conn
             .as_ref()
-            .ok_or_else(|| Error::from_reason("KernelResolver is closed"))
+            .ok_or_else(|| Error::from_reason("KernelResolver is closed").into())
     }
 
-    pub(super) fn table(&self) -> Result<&NodeTable> {
+    pub(super) fn table(&self) -> Res<&NodeTable> {
         if let Some(t) = self.table.get() {
             return Ok(t);
         }
@@ -20,32 +20,32 @@ impl KernelResolver {
     }
 
     /// queries.getNodesByName — ORDER BY file_path, start_line.
-    pub(super) fn nodes_by_name(&self, name: &str) -> Result<NodeList> {
+    pub(super) fn nodes_by_name(&self, name: &str) -> Res<NodeList> {
         let t = self.table()?;
         Ok(t.by_name.get(name).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesByLowerName — `WHERE lower(name) = lower(?)`, no
     /// ORDER BY (rowid order, same as the TS reader).
-    pub(super) fn nodes_by_lower_name(&self, name: &str) -> Result<NodeList> {
+    pub(super) fn nodes_by_lower_name(&self, name: &str) -> Res<NodeList> {
         let t = self.table()?;
         Ok(t.by_lower().get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesByQualifiedName — no ORDER BY (TS uses rowid order).
-    pub(super) fn nodes_by_qualified_name(&self, qname: &str) -> Result<NodeList> {
+    pub(super) fn nodes_by_qualified_name(&self, qname: &str) -> Res<NodeList> {
         let t = self.table()?;
         Ok(t.by_qname.get(qname).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesInFile — ORDER BY start_line.
-    pub(super) fn nodes_in_file(&self, file_path: &str) -> Result<NodeList> {
+    pub(super) fn nodes_in_file(&self, file_path: &str) -> Res<NodeList> {
         let t = self.table()?;
         Ok(t.by_file.get(file_path).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// getNodeById over an optional id (a binding row's `node_id`).
-    pub(super) fn node_by_opt_id(&self, id: Option<&str>) -> Result<Option<Arc<KNode>>> {
+    pub(super) fn node_by_opt_id(&self, id: Option<&str>) -> Res<Option<Arc<KNode>>> {
         match id {
             Some(id) => self.node_by_id(id),
             None => Ok(None),
@@ -53,7 +53,7 @@ impl KernelResolver {
     }
 
     /// queries.getNodeById.
-    pub(super) fn node_by_id(&self, id: &str) -> Result<Option<Arc<KNode>>> {
+    pub(super) fn node_by_id(&self, id: &str) -> Res<Option<Arc<KNode>>> {
         Ok(self.table()?.by_id.get(id).cloned())
     }
 
@@ -69,7 +69,7 @@ impl KernelResolver {
     }
 
     /// queries.getBindings — ORDER BY rowid.
-    pub(super) fn bindings(&mut self, file_path: &str) -> Result<Rc<Vec<KBinding>>> {
+    pub(super) fn bindings(&mut self, file_path: &str) -> Res<Rc<Vec<KBinding>>> {
         if let Some(v) = self.bindings_cache.get(file_path) {
             return Ok(v.clone());
         }
@@ -138,8 +138,8 @@ impl KernelResolver {
     /// A name-parameterized regex from the bounded process-wide cache. Only
     /// the C++ declarator pattern still needs one (its greedy type-capture
     /// prefix has no `Affix` split); every other per-name pattern is an Affix.
-    pub(super) fn cached_regex(&mut self, pattern: &str) -> Result<Arc<Regex>> {
-        shared_regex(pattern)
+    pub(super) fn cached_regex(&mut self, pattern: &str) -> Res<Arc<Regex>> {
+        Ok(shared_regex(pattern)?)
     }
 
     // -----------------------------------------------------------------------
@@ -168,7 +168,7 @@ impl KernelResolver {
 
     /// getImportMappings equivalent — bindings-backed, no source fallback
     /// needed (extractImportMappings is a stub returning []).
-    pub(super) fn import_mappings(&mut self, file_path: &str) -> Result<Rc<Vec<KImport>>> {
+    pub(super) fn import_mappings(&mut self, file_path: &str) -> Res<Rc<Vec<KImport>>> {
         if let Some(v) = self.import_map_cache.get(file_path) {
             return Ok(v.clone());
         }
@@ -179,7 +179,7 @@ impl KernelResolver {
     }
 
     /// reExportsFromBindings.
-    pub(super) fn reexports(&mut self, file_path: &str) -> Result<Rc<Vec<KReExport>>> {
+    pub(super) fn reexports(&mut self, file_path: &str) -> Res<Rc<Vec<KReExport>>> {
         if let Some(v) = self.reexport_cache.get(file_path) {
             return Ok(v.clone());
         }
@@ -219,7 +219,7 @@ impl KernelResolver {
     }
 
     /// getFileExportIndex (import-resolver.ts).
-    pub(super) fn file_export_index(&mut self, file_path: &str) -> Result<Rc<FileExportIndexK>> {
+    pub(super) fn file_export_index(&mut self, file_path: &str) -> Res<Rc<FileExportIndexK>> {
         if let Some(v) = self.export_index.get(file_path) {
             return Ok(v.clone());
         }
@@ -291,7 +291,7 @@ impl KernelResolver {
         language: &str,
         visited: &mut HashSet<String>,
         depth: usize,
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         const REEXPORT_MAX_DEPTH: usize = 8;
         if depth > REEXPORT_MAX_DEPTH {
             return Ok(None);
@@ -449,7 +449,7 @@ impl KernelResolver {
         &mut self,
         key: Option<String>,
         v: Option<Arc<KNode>>,
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         if let Some(k) = key {
             self.exported_symbol_memo.insert(k, v.clone());
         }

@@ -10,14 +10,14 @@ impl KernelResolver {
         chain: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let segs: Vec<&str> = chain.split('.').collect();
         if segs.len() != 2 || segs[0].is_empty() || segs[1].is_empty() {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let (base, field) = (segs[0], segs[1]);
         let Some(base_type) = self.infer_local_receiver_type(base, r, false)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         // `\bFIELD\s+\*?\[?\]?TYPE`
         static FIELD_TYPE: LazyLock<Affix> =
@@ -71,21 +71,12 @@ impl KernelResolver {
                 {
                     continue;
                 }
-                match self.resolve_method_on_type(
-                    field_type,
-                    method,
-                    r,
-                    0.85,
-                    "instance-method",
-                    None,
-                )? {
-                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
-                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
-                    McRes::Null => {}
+                if let Some(c) = self.resolve_method_on_type(field_type, method, r, 0.85, "instance-method", None)? {
+                    return Ok(Some(c));
                 }
             }
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 
     /// matchTsFieldCall restricted to the boundOwner path (br:fieldchain) —
@@ -97,9 +88,9 @@ impl KernelResolver {
         field: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let Some(source) = self.read_file(&owner.file_path) else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let tail_re = re!(r"^[\s]*(?:<[^>]*>)?\s*[\[|&]");
         let start = (owner.start_line - 1).max(0) as usize;
@@ -116,7 +107,7 @@ impl KernelResolver {
                     continue;
                 }
                 if tail_re.is_match(&line[m.end..]) {
-                    return Ok(McRes::Null);
+                    return Ok(None);
                 }
                 if *value_type {
                     let cls_bindings = self.bindings(&owner.file_path)?;
@@ -134,28 +125,18 @@ impl KernelResolver {
                             ref2.reference_name = m1.to_string();
                             ref2.reference_kind = "references".to_string();
                             match self.resolve_via_import_member(&ref2)? {
-                                ViaImport::Hit(c) => Some(c.node.id.clone()),
-                                ViaImport::Miss => None,
-                                ViaImport::Punt(p) => return Ok(McRes::Punt(p)),
+                                Some(c) => Some(c.node.id.clone()),
+                                None => None,
                             }
                         }
                         Some(b) => b.node_id.clone(),
                         None => None,
                     };
                     let holder = self.node_by_opt_id(holder_id.as_deref())?;
-                    return Ok(match holder {
-                        Some(h) => match self.resolve_object_literal_member(
-                            &h,
-                            method,
-                            r,
-                            0.85,
-                            "instance-method",
-                        )? {
-                            Some(c) => McRes::Hit(c),
-                            None => McRes::Null,
-                        },
-                        None => McRes::Null,
-                    });
+                    return match holder {
+                        Some(h) => self.resolve_object_literal_member(&h, method, r, 0.85, "instance-method"),
+                        None => Ok(None),
+                    };
                 }
                 let type_name = m1.split('.').next_back().unwrap_or("");
                 if !type_name
@@ -163,7 +144,7 @@ impl KernelResolver {
                     .next()
                     .is_some_and(|c| c.is_ascii_uppercase())
                 {
-                    return Ok(McRes::Null);
+                    return Ok(None);
                 }
                 let mut bsite = r.clone();
                 bsite.file_path = owner.file_path.clone();
@@ -175,7 +156,7 @@ impl KernelResolver {
                 );
             }
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 
     /// matchRustSelfCall (name-matcher.ts): `self.method()` — the method on
@@ -183,21 +164,20 @@ impl KernelResolver {
     /// qualified-name prefix; a free fn has no `self`. Exactly one candidate
     /// must belong to that owner — two same-named methods on the same type
     /// is the fabrication this declines instead of.
-    pub(super) fn match_rust_self_call(&mut self, method: &str, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_rust_self_call(&mut self, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let Some(sep) = caller.qualified_name.rfind("::") else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         if sep == 0 {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let owner = caller.qualified_name[..sep].to_string();
-        Ok(match self.resolve_rust_self_member(&owner, method, &caller, &["method"])? {
-            Some(node) => McRes::Hit(KCand { node, confidence: 0.9, resolved_by: "qualified-name" }),
-            None => McRes::Null,
-        })
+        Ok(self
+            .resolve_rust_self_member(&owner, method, &caller, &["method"])?
+            .map(|node| KCand { node, confidence: 0.9, resolved_by: "qualified-name" }))
     }
 
     /// matchRustSelfPath (name-matcher.ts): `Self::item` associated-item
@@ -211,26 +191,26 @@ impl KernelResolver {
     /// in the caller's enclosing impl block binds the middle segment, then
     /// `X::m` resolves like any owner path). A `Self::f().tail` leaf
     /// resolves through the receiver method's declared return type.
-    pub(super) fn match_rust_self_path(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_rust_self_path(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if r.language != "rust" || !r.reference_name.starts_with("Self::") {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
 
         let strip = re!(r"<[^>]*>");
         let name = strip.replace_all(&r.reference_name, "");
         let segs: Vec<&str> = name.split("::").filter(|s| !s.is_empty()).collect();
         if segs[0] != "Self" || (segs.len() != 2 && segs.len() != 3) {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let mut leaf = segs[segs.len() - 1].to_string();
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let Some(sep) = caller.qualified_name.rfind("::") else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         if sep == 0 {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         // `Self::Assoc::leaf` — the associated type binds in the caller's
         // enclosing `impl` block (`type Assoc = X`), not on the type.
@@ -239,7 +219,7 @@ impl KernelResolver {
         } else {
             match self.rust_assoc_type_binding(&caller, segs[1])? {
                 Some(bound) => bound,
-                None => return Ok(McRes::Null),
+                None => return Ok(None),
             }
         };
 
@@ -253,37 +233,37 @@ impl KernelResolver {
             const METHOD: &[&str] = &["method"];
             let Some(recv) = self.resolve_rust_self_member(&owner, &chained[1], &caller, METHOD)?
             else {
-                return Ok(McRes::Null);
+                return Ok(None);
             };
             let Some(sig) = recv.signature.as_deref() else {
-                return Ok(McRes::Null);
+                return Ok(None);
             };
             let Some(arrow) = sig.rfind("->") else {
-                return Ok(McRes::Null);
+                return Ok(None);
             };
             let raw_ret = sig[arrow + 2..].trim();
             owner = if raw_ret == "Self" {
                 match recv.qualified_name.rfind("::") {
                     Some(rs) => recv.qualified_name[..rs].to_string(),
-                    None => return Ok(McRes::Null),
+                    None => return Ok(None),
                 }
             } else {
                 match self.normalize_inferred_type_name(raw_ret)? {
                     Some(t) => t,
-                    None => return Ok(McRes::Null),
+                    None => return Ok(None),
                 }
             };
             leaf = chained[2].to_string();
         } else if !leaf.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
 
         const MEMBER_KINDS: &[&str] = &["method", "enum_member", "constant"];
         let Some(node) = self.resolve_rust_self_member(&owner, &leaf, &caller, MEMBER_KINDS)?
         else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
-        Ok(McRes::Hit(KCand {
+        Ok(Some(KCand {
             node,
             confidence: 0.9,
             resolved_by: "qualified-name",
@@ -301,7 +281,7 @@ impl KernelResolver {
         leaf: &str,
         caller: &Arc<KNode>,
         kinds: &[&str],
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         let want = format!("{}::{}", owner, leaf);
         let mut owned: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&want)?
@@ -344,7 +324,7 @@ impl KernelResolver {
     /// `trait` body `Self` is the abstract implementor and declines. A
     /// type-level caller (`struct S { next: Option<Self> }`) binds to
     /// itself. Same file-pin disambiguation as the member arms.
-    pub(super) fn match_rust_bare_self(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_rust_bare_self(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
             return Ok(None);
         };
@@ -392,7 +372,7 @@ impl KernelResolver {
         &mut self,
         caller: &Arc<KNode>,
         assoc_name: &str,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         let Some(lines) = self.read_file(&caller.file_path) else {
             return Ok(None);
         };
@@ -502,21 +482,21 @@ impl KernelResolver {
         field: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         if field.is_empty() || field.contains('.') {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let Some(sep) = caller.qualified_name.rfind("::") else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         if sep == 0 {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let Some(owner) = caller.qualified_name[..sep].split("::").last() else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let owners = prefer_call_site_file(
             self.nodes_by_name(owner)?
@@ -546,7 +526,7 @@ impl KernelResolver {
                 // The field is declared here; whether or not its type names a
                 // project symbol, this owner is the answer — terminal.
                 let Some(field_type) = rust_field_type_name(declared) else {
-                    return Ok(McRes::Null);
+                    return Ok(None);
                 };
                 return self.resolve_method_on_type(
                     &field_type,
@@ -558,7 +538,7 @@ impl KernelResolver {
                 );
             }
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 
     /// matchTsThisFieldCall — the `this.field.method` entry point of
@@ -570,25 +550,25 @@ impl KernelResolver {
         field: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         if field.is_empty() || field.contains('.') {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let Some(sep) = caller.qualified_name.rfind("::") else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         if sep == 0 {
-            return Ok(McRes::Null); // not inside a class
+            return Ok(None); // not inside a class
         }
         let owner = caller.qualified_name[..sep]
             .split("::")
             .last()
             .unwrap_or("");
         if owner.is_empty() {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         self.match_ts_field_call_free(owner, field, method, r)
     }
@@ -605,7 +585,7 @@ impl KernelResolver {
         field: &str,
         method: &str,
         r: &ResolveRefIn,
-    ) -> Result<McRes> {
+    ) -> Res<Option<KCand>> {
         let owners = prefer_call_site_file(
             self.nodes_by_name(owner)?
                 .iter()
@@ -659,10 +639,10 @@ impl KernelResolver {
                                 0.85,
                                 "instance-method",
                             )? {
-                                return Ok(McRes::Hit(hit));
+                                return Ok(Some(hit));
                             }
                         }
-                        return Ok(McRes::Null);
+                        return Ok(None);
                     }
                     // `ns.Mailer` → `Mailer`; a primitive or builtin names no
                     // project type.
@@ -672,7 +652,7 @@ impl KernelResolver {
                         .next()
                         .is_some_and(|c| c.is_ascii_uppercase())
                     {
-                        return Ok(McRes::Null);
+                        return Ok(None);
                     }
                     // Two apps in one repo may each declare the type. Among
                     // its declarations of the method prefer the one closest
@@ -705,9 +685,9 @@ impl KernelResolver {
                         if nearest.len() > 1 {
                             // TS tiebreaks by localeCompare, which this port
                             // cannot model exactly — let the TS spine pick.
-                            return Ok(McRes::Punt("mc-tfield-ambig"));
+                            return Err(Halt::Punt("mc-tfield-ambig"));
                         }
-                        return Ok(McRes::Hit(KCand {
+                        return Ok(Some(KCand {
                             node: nearest[0].clone(),
                             confidence: 0.85,
                             resolved_by: "instance-method",
@@ -724,6 +704,6 @@ impl KernelResolver {
                 }
             }
         }
-        Ok(McRes::Null)
+        Ok(None)
     }
 }

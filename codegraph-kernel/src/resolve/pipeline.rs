@@ -19,7 +19,7 @@ impl KernelResolver {
     /// The nameMatch tail (qualifiedName → cppChain → methodCall →
     /// exactName → fuzzy) stays in TS: a `member-tail` passthrough
     /// reproduces the full-spine verdict exactly.
-    pub(super) fn resolve_c_include_import_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+    pub(super) fn resolve_c_include_import_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
         }
@@ -50,17 +50,13 @@ impl KernelResolver {
         // then methodCall's unbound arm (an `a.h` name is a dot-shape
         // receiver). The chain arms can't fire — include names never carry
         // `()` — so they are skipped; exactName/fuzzy stay in TS.
-        let name_cand = match self.match_by_file_path(r)? {
-            Some(c) => Some(c),
-            None => match self.match_by_qualified_name(r)? {
-                Some(c) => Some(c),
-                None => match self.match_method_call_free(r)? {
-                    McRes::Hit(c) => Some(c),
-                    McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
-                    McRes::Null => None,
-                },
-            },
-        };
+        let mut name_cand = self.match_by_file_path(r)?;
+        if name_cand.is_none() {
+            name_cand = self.match_by_qualified_name(r)?;
+        }
+        if name_cand.is_none() {
+            name_cand = self.match_method_call_free(r)?;
+        }
         let Some(c) = self.gate_language(name_cand, r) else {
             return Ok(ResolveOutcome::passthrough("member-tail"));
         };
@@ -102,7 +98,7 @@ impl KernelResolver {
     /// where `Alias` is a PHP class import — resolves to the imported class's
     /// qualified member. Returns None when the arm does not claim the ref;
     /// Some carries the terminal outcome (this arm precedes frameworks).
-    pub(super) fn resolve_php_imported_static(&mut self, r: &ResolveRefIn) -> Result<Option<ResolveOutcome>> {
+    pub(super) fn resolve_php_imported_static(&mut self, r: &ResolveRefIn) -> Res<Option<ResolveOutcome>> {
         if r.language != "php" || r.reference_kind != "calls" {
             return Ok(None);
         }
@@ -168,7 +164,7 @@ impl KernelResolver {
     /// run in TS order; every unported arm punts so the TS spine re-derives
     /// the outcome. A bound-receiver claim is terminal — a refusal never
     /// falls through to name matching.
-    pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+    pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
         }
@@ -198,11 +194,8 @@ impl KernelResolver {
         // always miss in it). A miss punts back to that same block.
         if r.reference_kind == "function_ref" {
             match self.resolve_via_import_member(r)? {
-                ViaImport::Punt(reason) => {
-                    return Ok(ResolveOutcome::passthrough(reason));
-                }
-                ViaImport::Miss => {}
-                ViaImport::Hit(c) => {
+                None => {}
+                Some(c) => {
                     // An import resolving to a non-callable is discarded —
                     // the scoped arm still runs, exactly like the bare path.
                     if let Some(c) = self.gate_language(Some(c), r) {
@@ -244,13 +237,10 @@ impl KernelResolver {
         // matchBoundReceiverCall — claimed refs are terminal either way.
         if is_binding_receiver_call(r) {
             match probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?) {
-                BoundClaim::Punt(reason) => {
-                    return Ok(ResolveOutcome::passthrough(reason));
-                }
-                BoundClaim::Refused => {
+                None => {
                     return Ok(self.refused());
                 }
-                BoundClaim::Hit(c) => {
+                Some(c) => {
                     let gated = self.gate_language(Some(c), r);
                     return match gated {
                         Some(cand) => {
@@ -290,11 +280,8 @@ impl KernelResolver {
 
         let mut cands: Vec<KCand> = Vec::new();
         match self.resolve_via_import_member(r)? {
-            ViaImport::Punt(reason) => {
-                return Ok(ResolveOutcome::passthrough(reason));
-            }
-            ViaImport::Miss => {}
-            ViaImport::Hit(c) => {
+            None => {}
+            Some(c) => {
                 if let Some(c) = self.gate_language(Some(c), r) {
                     if c.confidence >= 0.9 {
                         let Some(winner) = self.gate_target_kind(c, r)? else {
@@ -319,21 +306,16 @@ impl KernelResolver {
         // methodCall's requireReceiverEvidence=false arm. Everything after
         // (exactName/fuzzy, then deferred drains) stays in TS behind the
         // member-tail punt.
-        let name_cand = match self.match_by_file_path(r)? {
-            Some(c) => Some(c),
-            None => match self.match_by_qualified_name(r)? {
-                Some(c) => Some(c),
-                None => match self.match_call_chain(r)? {
-                    McRes::Hit(c) => Some(c),
-                    McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
-                    McRes::Null => match self.match_method_call_free(r)? {
-                        McRes::Hit(c) => Some(c),
-                        McRes::Punt(p) => return Ok(ResolveOutcome::passthrough(p)),
-                        McRes::Null => None,
-                    },
-                },
-            },
-        };
+        let mut name_cand = self.match_by_file_path(r)?;
+        if name_cand.is_none() {
+            name_cand = self.match_by_qualified_name(r)?;
+        }
+        if name_cand.is_none() {
+            name_cand = self.match_call_chain(r)?;
+        }
+        if name_cand.is_none() {
+            name_cand = self.match_method_call_free(r)?;
+        }
         let name_result = self.gate_language(name_cand, r);
         if let Some(c) = name_result {
             if self.is_visible_across_files(&c.node, r)? {
@@ -372,7 +354,7 @@ impl KernelResolver {
 
     /// gateTargetKind (index.ts): the imports/inheritance target-kind gates
     /// plus the out-of-repo import check.
-    pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if r.reference_kind == "imports" {
             return Ok(if is_importable_kind(&cand.node.kind) {
                 Some(cand)
@@ -400,7 +382,7 @@ impl KernelResolver {
         &mut self,
         alias_node: &KNode,
         member_name: Option<&str>,
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         if !is_alias_binding_kind(&alias_node.kind) {
             return Ok(None);
         }
@@ -474,7 +456,7 @@ impl KernelResolver {
     /// fire, so the kernel may adjudicate the ref itself. The whole file is
     /// scanned (the destructure can span lines); false positives only cost a
     /// TS fallback, never a wrong verdict.
-    pub(super) fn file_could_store_bind(&mut self, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn file_could_store_bind(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.reference_kind != "calls" || !is_js_family(&r.language) {
             return Ok(false);
         }
@@ -489,7 +471,7 @@ impl KernelResolver {
     /// prefilter miss routes to matchJsStoreBindingCall, which is
     /// `calls`-gated — dead for function_ref — and frameworks never run on
     /// this path, so the miss is terminal either way.
-    pub(super) fn resolve_function_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+    pub(super) fn resolve_function_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         let pre_pass = probe!(r, "pre-pass",
             self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
         if !pre_pass {
@@ -515,7 +497,7 @@ impl KernelResolver {
         }
     }
 
-    pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Result<ResolveOutcome> {
+    pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which
         // needs no bindings rows — run it ahead of the eligibility gate.
@@ -673,7 +655,7 @@ impl KernelResolver {
         winner: KCand,
         candidates: Option<Vec<KernelCandidateOut>>,
         is_final: bool,
-    ) -> Result<ResolveOutcome> {
+    ) -> Res<ResolveOutcome> {
         let mut winner = winner;
         if r.reference_kind == "calls" {
             // memberName = the last `.` segment — `Cls::member` and bare
@@ -708,7 +690,7 @@ impl KernelResolver {
     /// TS merge can re-run the reduce with framework candidates prepended; a
     /// gated-out winner still reports it, since a framework candidate may win
     /// the merged first-max on the TS side.
-    pub(super) fn settle(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>) -> Result<ResolveOutcome> {
+    pub(super) fn settle(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>) -> Res<ResolveOutcome> {
         let reported = self
             .frameworks_active
             .then(|| cands.iter().map(KernelCandidateOut::from).collect::<Vec<_>>());

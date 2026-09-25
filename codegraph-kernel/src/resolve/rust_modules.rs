@@ -13,7 +13,7 @@ impl KernelResolver {
     /// `None` = the module-path arm missed; the caller hands migrated rust
     /// to the normal pipeline (qualified-name/exact arms mirror TS's
     /// matchReference continuation) and non-migrated rust back to TS.
-    pub(super) fn resolve_rust_path_ref(&mut self, r: &ResolveRefIn) -> Result<Option<ResolveOutcome>> {
+    pub(super) fn resolve_rust_path_ref(&mut self, r: &ResolveRefIn) -> Res<Option<ResolveOutcome>> {
         if self.is_built_in_or_external(r) {
             return Ok(Some(ResolveOutcome::unresolved()));
         }
@@ -47,7 +47,7 @@ impl KernelResolver {
     /// module prefix `A::B` + leaf `C`, map the prefix to a file, find the
     /// leaf symbol in it. `import` @0.9 — the analog of
     /// resolvePythonModuleMember for Rust module paths.
-    pub(super) fn match_rust_path_reference(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_rust_path_reference(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let segments: Vec<&str> = r
             .reference_name
             .split("::")
@@ -97,7 +97,7 @@ impl KernelResolver {
         &mut self,
         segments: &[&str],
         from_file: &str,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         if segments.is_empty() {
             return Ok(None);
         }
@@ -161,7 +161,7 @@ impl KernelResolver {
     /// no such anchor exists — kernel-style modules whose root file is
     /// named e.g. `rust_binder_main.rs` — falls back to climbing the `mod`
     /// declaration chain to the file no other file declares.
-    pub(super) fn rust_crate_root_dir(&mut self, from_file: &str) -> Result<Option<String>> {
+    pub(super) fn rust_crate_root_dir(&mut self, from_file: &str) -> Res<Option<String>> {
         if let Some(v) = self.rust_crate_root_memo.get(from_file) {
             return Ok(v.clone());
         }
@@ -198,7 +198,7 @@ impl KernelResolver {
     /// declarant is the crate root; its directory is the root dir.
     /// Declarants must be indexed `.rs` files (graph-scoped, same as
     /// `file_exists`'s fast path).
-    pub(super) fn rust_mod_chain_crate_root(&mut self, from_file: &str) -> Result<Option<String>> {
+    pub(super) fn rust_mod_chain_crate_root(&mut self, from_file: &str) -> Res<Option<String>> {
         let mut cur = pos_normalize(from_file);
         for _ in 0..64 {
             let base = pos_basename(&cur);
@@ -266,7 +266,7 @@ impl KernelResolver {
     /// Whether `rel_file` contains a `mod <stem>;` declaration (comment-
     /// stripped; `pub`/`pub(...)` qualifiers allowed). `mod <stem> {`
     /// inline modules end in `{`, not `;`, and do not match.
-    pub(super) fn rust_file_declares_mod(&mut self, rel_file: &str, stem: &str) -> Result<bool> {
+    pub(super) fn rust_file_declares_mod(&mut self, rel_file: &str, stem: &str) -> Res<bool> {
         let Some(lines) = self.read_file(rel_file) else {
             return Ok(false);
         };

@@ -55,7 +55,7 @@ impl KernelResolver {
 
     /// isLexicallyReachable (name-matcher.ts): a function nested in a
     /// same-file function/method is reachable only from inside the parent.
-    pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if candidate.kind != "function" {
             return Ok(true);
         }
@@ -87,7 +87,7 @@ impl KernelResolver {
 
     /// isSealedModule (name-matcher.ts): an ESM file with import statements
     /// and no export of any form offers nothing cross-file.
-    pub(super) fn is_sealed_module(&mut self, file_path: &str) -> Result<bool> {
+    pub(super) fn is_sealed_module(&mut self, file_path: &str) -> Res<bool> {
         if let Some(&hit) = self.sealed_memo.get(file_path) {
             return Ok(hit);
         }
@@ -102,7 +102,7 @@ impl KernelResolver {
     }
 
     /// isStaticCFunction (name-matcher.ts): binding row storage === 'static'.
-    pub(super) fn is_static_c_function(&mut self, candidate: &KNode) -> Result<bool> {
+    pub(super) fn is_static_c_function(&mut self, candidate: &KNode) -> Res<bool> {
         if let Some(&hit) = self.c_static_memo.get(&candidate.id) {
             return Ok(hit);
         }
@@ -127,7 +127,7 @@ impl KernelResolver {
 
     /// isRustTraitImplMethod (name-matcher.ts) — scan upward for the nearest
     /// `impl` header; `impl Trait for` wins, a top-level item ends the scan.
-    pub(super) fn is_rust_trait_impl_method(&mut self, candidate: &KNode) -> Result<bool> {
+    pub(super) fn is_rust_trait_impl_method(&mut self, candidate: &KNode) -> Res<bool> {
         if candidate.kind != "method" {
             return Ok(false);
         }
@@ -187,7 +187,7 @@ impl KernelResolver {
     }
 
     /// isCrossFileReachable (name-matcher.ts).
-    pub(super) fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "markdown"
             && candidate.language == "markdown"
             && !thread_regex(&MARKDOWN_PATH_RE).is_match(&r.reference_name.replace('\\', "/"))
@@ -211,7 +211,7 @@ impl KernelResolver {
     }
 
     /// isVisibleAcrossFiles (name-matcher.ts).
-    pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if candidate.file_path == r.file_path {
             return Ok(true);
         }
@@ -243,7 +243,7 @@ impl KernelResolver {
     }
 
     /// isBareJsCall (name-matcher.ts): a receiver-less JS/TS `calls` ref.
-    pub(super) fn is_bare_js_call(&mut self, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn is_bare_js_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.reference_kind != "calls" || !is_js_family(&r.language) {
             return Ok(false);
         }
@@ -268,7 +268,7 @@ impl KernelResolver {
     }
 
     /// cppBareCallForm (name-matcher.ts) — only the ADL range names.
-    pub(super) fn cpp_bare_call_form(&mut self, r: &ResolveRefIn) -> Result<Option<&'static str>> {
+    pub(super) fn cpp_bare_call_form(&mut self, r: &ResolveRefIn) -> Res<Option<&'static str>> {
         if r.reference_kind != "calls" {
             return Ok(None);
         }
@@ -345,7 +345,7 @@ impl KernelResolver {
     /// name can be a `field` — C++ `this->fp(...)` arrives as a bare ref (the
     /// extractor drops `this`), so allow it only when the field's owner is
     /// the call site's enclosing type.
-    pub(super) fn is_implicit_this_field_call(&mut self, r: &ResolveRefIn, field: &KNode) -> Result<bool> {
+    pub(super) fn is_implicit_this_field_call(&mut self, r: &ResolveRefIn, field: &KNode) -> Res<bool> {
         if r.language != "cpp" {
             return Ok(false);
         }
@@ -364,7 +364,7 @@ impl KernelResolver {
         &mut self,
         r: &ResolveRefIn,
         candidates: Vec<Arc<KNode>>,
-    ) -> Result<Option<Vec<Arc<KNode>>>> {
+    ) -> Res<Option<Vec<Arc<KNode>>>> {
         let Some(form) = self.cpp_bare_call_form(r)? else {
             return Ok(Some(candidates));
         };
@@ -459,7 +459,7 @@ impl KernelResolver {
     }
 
     /// matchByExactName (name-matcher.ts).
-    pub(super) fn match_by_exact_name(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_by_exact_name(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let bare_js = self.is_bare_js_call(r)?;
         let all_named: Vec<Arc<KNode>> = self
             .nodes_by_name(&r.reference_name)?
@@ -574,7 +574,7 @@ impl KernelResolver {
     }
 
     /// matchFuzzy (name-matcher.ts).
-    pub(super) fn match_fuzzy(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_fuzzy(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if self.is_bound_to_bare_import(r)? {
             return Ok(None);
         }
@@ -629,7 +629,7 @@ impl KernelResolver {
     /// matchReference restricted to the bare-name slice: every strategy
     /// before exact-name keys on a separator a bare name cannot carry, so
     /// the pipeline is exact → fuzzy.
-    pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));
         }
@@ -645,7 +645,7 @@ impl KernelResolver {
         r: &ResolveRefIn,
         confidence: f64,
         resolved_by: &'static str,
-    ) -> Result<Option<KCand>> {
+    ) -> Res<Option<KCand>> {
         if container.kind != "constant" && container.kind != "variable" {
             return Ok(None);
         }
@@ -722,7 +722,7 @@ impl KernelResolver {
     /// matchByQualifiedName (name-matcher.ts) — exact `qualifiedName` lookup,
     /// then the last-segment suffix match. Erlang's arity arms are dead (not
     /// a migrated language).
-    pub(super) fn match_by_qualified_name(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_by_qualified_name(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if !r.reference_name.contains("::") && !r.reference_name.contains('.') {
             return Ok(None);
         }
@@ -787,7 +787,7 @@ impl KernelResolver {
     /// classes — excluding the origin node; JS/TS/ArkTS/C++/Python/PHP match
     /// functions only (a bare identifier there is never a method value).
     /// Same-file wins by earliest line; cross-file is unique-or-drop.
-    pub(super) fn match_function_ref_bare(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_function_ref_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let bare_fn_only = matches!(
             r.language.as_str(),
             "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "cpp" | "python" | "php"
@@ -880,7 +880,7 @@ impl KernelResolver {
     /// `Widget::on_click`) resolves the member ON THAT SCOPE — exempt from
     /// bareFnOnly, origin excluded, qualified-name equality or `::`-suffix.
     /// Same-file pool wins by earliest line @0.9; cross-file unique-or-drop.
-    pub(super) fn match_function_ref_scoped(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_function_ref_scoped(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(sep) = r.reference_name.rfind("::") else {
             return Ok(None);
         };

@@ -5,7 +5,7 @@ use super::*;
 impl KernelResolver {
     /// matchByFilePath (name-matcher.ts): path-shaped (`a/b.h`) or
     /// extension-bearing bare (`Foo.h`) names → `file` nodes.
-    pub(super) fn match_by_file_path(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn match_by_file_path(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let normalized = r.reference_name.replace('\\', "/");
         let (path_and_symbol, anchor) = split_anchor(&normalized);
         let (path_wo_anchor, symbol_name) = split_file_symbol(path_and_symbol);
@@ -88,7 +88,7 @@ impl KernelResolver {
         path_wo_anchor: &str,
         symbol_name: &str,
         file_nodes: &[Arc<KNode>],
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         let candidate_files: Vec<Arc<KNode>> = file_nodes
             .iter()
             .filter(|n| {
@@ -144,7 +144,7 @@ impl KernelResolver {
         path_wo_anchor: &str,
         anchor: &str,
         file_nodes: &[Arc<KNode>],
-    ) -> Result<Option<Arc<KNode>>> {
+    ) -> Res<Option<Arc<KNode>>> {
         let normalized_anchor = normalize_markdown_anchor(anchor);
         for file_node in file_nodes.iter().filter(|n| {
             n.qualified_name == path_wo_anchor

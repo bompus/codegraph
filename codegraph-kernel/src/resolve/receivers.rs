@@ -6,19 +6,12 @@ impl KernelResolver {
     // -----------------------------------------------------------------------
     // Stage-2 member-access arms — matchMethodCall(requireReceiverEvidence)
     // and its source-backed inference helpers (name-matcher.ts). Every helper
-    // returns McRes: Hit for a proven edge, Null for a provable TS `null`, and
-    // Punt when the next step needs state the snapshot can't see — live
-    // supertype edges (getSupertypes/getSupertypeNodes), tree-sitter parsing
-    // (inferGuardedReceiver / inferIterationReceiver), or unported arms.
+    // returns `Some` for a proven edge, `None` for a provable TS `null`, and
+    // punts (Halt::Punt) when the next step needs state the snapshot can't
+    // see — live supertype edges (getSupertypes/getSupertypeNodes),
+    // tree-sitter parsing (inferGuardedReceiver / inferIterationReceiver), or
+    // unported arms.
     // -----------------------------------------------------------------------
-
-    pub(super) fn mc_to_claim(res: McRes) -> BoundClaim {
-        match res {
-            McRes::Hit(c) => BoundClaim::Hit(c),
-            McRes::Null => BoundClaim::Refused,
-            McRes::Punt(p) => BoundClaim::Punt(p),
-        }
-    }
 
     /// enclosingScopeStartLine — 1-based start line of the tightest
     /// function/method node enclosing `line` in `file_path`.
@@ -27,7 +20,7 @@ impl KernelResolver {
         file_path: &str,
         language: &str,
         line: i64,
-    ) -> Result<i64> {
+    ) -> Res<i64> {
         let mut start = 1i64;
         for n in self.nodes_in_file(file_path)?.iter() {
             if n.kind != "function" && n.kind != "method" {
@@ -45,7 +38,7 @@ impl KernelResolver {
 
     /// normalizeInferredTypeName — strip generics + `&`/`*`, take the last
     /// `.`/`:`-separated segment, reject non-type tokens.
-    pub(super) fn normalize_inferred_type_name(&mut self, raw: &str) -> Result<Option<String>> {
+    pub(super) fn normalize_inferred_type_name(&mut self, raw: &str) -> Res<Option<String>> {
         let generics = re!("<[^>]*>");
         let cleaned = generics.replace_all(raw, "");
         let cleaned: String = cleaned
@@ -79,7 +72,7 @@ impl KernelResolver {
         receiver: &str,
         pats: &'static [ReceiverPattern],
         preserve: bool,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         if Self::utf16_len(line) > 10_000 {
             return Ok(None);
         }
@@ -139,7 +132,7 @@ impl KernelResolver {
         receiver: &str,
         site: &ResolveRefIn,
         preserve: bool,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         // CFML scope prefixes are dead — cfml/cfscript aren't claim-eligible.
         let mut scan_receiver = receiver.to_string();
         let mut component_scoped = false;
@@ -202,7 +195,7 @@ impl KernelResolver {
         prop: &str,
         lines: &[String],
         call_idx: usize,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         // `\$this->PROP\b\s*=\s*\$([A-Za-z0-9_]+)\b`
         static ASSIGN: LazyLock<Affix> =
             LazyLock::new(|| Affix::new(r"\$this->", r"\s*=\s*\$([A-Za-z0-9_]+)(?-u:\b)", false, true, false));
@@ -252,7 +245,7 @@ impl KernelResolver {
 
     /// normalizeCppTypeName — strip cv-qualifiers/keywords, refs, generics;
     /// take the last `::` segment (or the qualified name when preserving).
-    pub(super) fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Result<Option<String>> {
+    pub(super) fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Res<Option<String>> {
         let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")
             .replace_all(raw, " ");
         let no_ref = re!(r"[&*]+").replace_all(&kw, " ");
@@ -281,7 +274,7 @@ impl KernelResolver {
     /// buildDeclaratorRegex — `Type receiver` requiring a declarator
     /// terminator. The JS lookahead `(?=[;=,)\[{(]|$)` is post-checked on the
     /// remainder: the greedy `\s*` tail can't shrink into a passing position.
-    pub(super) fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Result<Option<String>> {
+    pub(super) fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Res<Option<String>> {
         let re = self.cached_regex(&format!(
             r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*(?-u:\b){}(?-u:\b)\s*",
             escaped_receiver
@@ -310,7 +303,7 @@ impl KernelResolver {
         r: &ResolveRefIn,
         depth: u32,
         preserve: bool,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
@@ -379,7 +372,7 @@ impl KernelResolver {
         receiver: &str,
         r: &ResolveRefIn,
         depth: u32,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         // `\bRECV\b\s*=\s*([^;]+)`
         static INIT: LazyLock<Affix> = LazyLock::new(|| Affix::new("", r"\s*=\s*([^;]+)", true, true, false).lead(b"="));
         let Some(init) = INIT.capture(line, receiver).map(|s| s.trim().to_string()) else {
@@ -404,7 +397,7 @@ impl KernelResolver {
         inner: &str,
         r: &ResolveRefIn,
         depth: u32,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         if depth > 3 {
             return Ok(None);
         }
@@ -443,7 +436,7 @@ impl KernelResolver {
         &mut self,
         callee: &str,
         r: &ResolveRefIn,
-    ) -> Result<Option<String>> {
+    ) -> Res<Option<String>> {
         let (method, cls) = if callee.contains("::") {
             let parts: Vec<&str> = callee.split("::").filter(|s| !s.is_empty()).collect();
             let m = parts.last().copied().unwrap_or(callee);
@@ -479,7 +472,7 @@ impl KernelResolver {
     }
 
     /// cppClassExists — an aggregate type with this last `::` segment exists.
-    pub(super) fn cpp_class_exists(&mut self, name: &str, r: &ResolveRefIn) -> Result<bool> {
+    pub(super) fn cpp_class_exists(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
         let last = Self::cpp_last_segment(name);
         Ok(self.nodes_by_name(&last)?.iter().any(|n| {
             matches!(n.kind.as_str(), "class" | "struct" | "union") && n.language == r.language
@@ -487,7 +480,7 @@ impl KernelResolver {
     }
 
     /// importedFqnOf — the import mapping whose localName is the type.
-    pub(super) fn imported_fqn_of(&mut self, type_name: &str, r: &ResolveRefIn) -> Result<Option<String>> {
+    pub(super) fn imported_fqn_of(&mut self, type_name: &str, r: &ResolveRefIn) -> Res<Option<String>> {
         Ok(self
             .import_mappings(&r.file_path)?
             .iter()
@@ -499,27 +492,27 @@ impl KernelResolver {
     /// per language: cppChain (c/cpp), scopedChain (php/rust), dottedChain
     /// (the dot-notation list). A provable `null` lets the member-tail punt
     /// reproduce the unported TS tail exactly.
-    pub(super) fn match_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         match r.language.as_str() {
             "c" | "cpp" => self.match_cpp_call_chain(r),
             "php" | "rust" => self.match_scoped_call_chain(r),
             "java" | "kotlin" | "csharp" | "swift" | "go" | "scala" | "dart" | "objc"
             | "pascal" => self.match_dotted_call_chain(r),
-            _ => Ok(McRes::Null),
+            _ => Ok(None),
         }
     }
 
     /// matchCppCallChain — `<inner>().<method>` where the inner call's
     /// return type is the receiver's type (#645); resolveMethodOnType
     /// validates, so a wrong inference yields no edge.
-    pub(super) fn match_cpp_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_cpp_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let inner = m.get(1).unwrap().as_str();
         let method = m.get(2).unwrap().as_str();
         let Some(cls) = self.resolve_cpp_call_result_type(inner, r, 0)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         self.resolve_method_on_type(&cls, method, r, 0.85, "instance-method", None)
     }
@@ -527,18 +520,18 @@ impl KernelResolver {
     /// matchScopedCallChain — `Cls::factory().method` static-factory chains
     /// (PHP `Cls::for($x)->m()`, Rust `Foo::new().bar()`); a `self` return
     /// marker resolves to the factory's own class (#608).
-    pub(super) fn match_scoped_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_scoped_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let inner = m.get(1).unwrap().as_str();
         let method = m.get(2).unwrap().as_str();
         if !inner.contains("::") {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let factory_class = &inner[..inner.rfind("::").unwrap()];
         let Some(ret) = self.lookup_callee_return_type(inner, r)? else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let resolved = if ret == "self" { factory_class } else { ret.as_str() };
         self.resolve_method_on_type(resolved, method, r, 0.85, "instance-method", None)
@@ -548,9 +541,9 @@ impl KernelResolver {
     /// Go's bare `New().Method`, and the objc/pascal convention arms
     /// (#645/#608). The Go bare-name fallback (exactName/fuzzy) is unported —
     /// the member-tail punt reproduces it.
-    pub(super) fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Result<McRes> {
+    pub(super) fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let inner = m.get(1).unwrap().as_str();
         let method = m.get(2).unwrap().as_str();
@@ -569,12 +562,12 @@ impl KernelResolver {
                         fqn.as_deref(),
                     );
                 }
-                return Ok(McRes::Punt("member-tail"));
+                return Err(Halt::Punt("member-tail"));
             }
             if !CONSTRUCTS_VIA_BARE_CALL.contains(r.language.as_str())
                 || !inner.as_bytes()[0].is_ascii_uppercase()
             {
-                return Ok(McRes::Null);
+                return Ok(None);
             }
             let fqn = self.imported_fqn_of(inner, r)?;
             return self.resolve_method_on_type(
@@ -590,7 +583,7 @@ impl KernelResolver {
         let factory_class = inner[..last_dot].split('.').next_back().unwrap();
         let factory_method = &inner[last_dot + 1..];
         if factory_class.is_empty() || factory_method.is_empty() {
-            return Ok(McRes::Null);
+            return Ok(None);
         }
         let want = format!("{}::{}", factory_class, factory_method);
         let Some(ret) = self.lookup_callee_return_type(&want, r)? else {
@@ -611,7 +604,7 @@ impl KernelResolver {
                     fqn.as_deref(),
                 );
             }
-            return Ok(McRes::Null);
+            return Ok(None);
         };
         let fqn = self.imported_fqn_of(&ret, r)?;
         self.resolve_method_on_type(&ret, method, r, 0.85, "instance-method", fqn.as_deref())
@@ -619,7 +612,7 @@ impl KernelResolver {
 
     /// resolveJvmImport (import-resolver.ts) — `imports`-kind java/kotlin FQN
     /// to a qualified-name node, KMP `expect` preferred on ties.
-    pub(super) fn resolve_jvm_import(&mut self, r: &ResolveRefIn) -> Result<Option<KCand>> {
+    pub(super) fn resolve_jvm_import(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if r.reference_kind != "imports" {
             return Ok(None);
         }
