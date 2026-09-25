@@ -85,6 +85,8 @@ napi-build = "2"
 cc = "1"
 
 [profile.release]
+# Never `panic = "abort"`: lib.rs walk_file turns a walker panic into a
+# per-file error the TS side recovers from; abort would kill the indexer.
 lto = true
 codegen-units = 1
 strip = "symbols"

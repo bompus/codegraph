@@ -251,6 +251,11 @@ const FIXTURE: Record<string, string> = {
   'kmod/node/inner.rs': 'pub fn nested_inner_fn() {}\n',
   // Orphan file: no declarant, no `sub.rs` sibling — `crate::sub` must miss.
   'other/lonely.rs': 'fn lonely_fn() {}\n',
+  // A module file at the project root: its submodules live in `rootmod/`,
+  // a project-relative directory (TS joins against the absolute root; a
+  // naive `${dir}/${stem}` join made it `/rootmod` and missed).
+  'rootmod.rs': 'mod child;\nfn rootmod_user() {}\n',
+  'rootmod/child.rs': 'pub fn root_child_fn() {}\n',
   // Bindings-free walker languages (csharp, ruby, swift, scala, dart,
   // lua/luau, r): the kernel gate admits them; their language-specific arms
   // are the receiver-type patterns (mc-infer-local → rmot), the lua `:` /
@@ -585,6 +590,7 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(kmodUserFn, 'crate::node::inner::nested_inner_fn', 'kmod/user.rs', 'rust', 'calls', 4);
     seed(kmodInnerFn, 'crate::sub::mod_leaf_fn', 'kmod/node/inner.rs', 'rust', 'calls', 2);
     seed(lonelyFn, 'crate::sub::mod_leaf_fn', 'other/lonely.rs', 'rust', 'calls', 2);
+    seed(nodeId('rootmod_user', 'rootmod.rs'), 'self::child::root_child_fn', 'rootmod.rs', 'rust', 'calls', 2);
     // Rust `self.` receiver arms — `self.m` (enclosing impl via caller
     // qname), `self.f.m` (field type off the struct decl), and a decline.
     seed(nodeId('again', 'sub.rs', 'method'), 'self.new', 'src/sub.rs', 'rust', 'calls', 5);
@@ -982,6 +988,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `::`+`.` names are receiver-shaped — dot-gated punt back to TS
     // (rust's non-self receiver inference is source-reading, unported).
     expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // Root-level module file: `self::child` resolves under `rootmod/`.
+    const rootChild = at('self::child::root_child_fn', 'rootmod.rs', 'calls');
+    expect(rootChild.status).toBe('resolved');
+    expect(rootChild.targetNodeId).toBe(nodeId('root_child_fn', 'rootmod/child.rs'));
     // `mod`-chain crate roots — `kmod/` has no lib.rs/main.rs; the fallback
     // climbs `user.rs`'s `mod user;` decl to `mymod_main.rs` (the root) and
     // resolves `crate::` under `kmod/`.

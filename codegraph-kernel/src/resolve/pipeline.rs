@@ -1118,8 +1118,8 @@ impl KernelResolver {
             if *seg == "self" || *seg == "crate" || *seg == "super" {
                 continue;
             }
-            let as_file = pos_normalize(&format!("{}/{}.rs", dir, seg));
-            let as_mod = pos_normalize(&format!("{}/{}/mod.rs", dir, seg));
+            let as_file = pos_join(&dir, &format!("{seg}.rs"));
+            let as_mod = pos_join(&dir, &format!("{seg}/mod.rs"));
             if self.file_exists(&as_file) {
                 target = Some(as_file);
             } else if self.file_exists(&as_mod) {
@@ -1127,7 +1127,7 @@ impl KernelResolver {
             } else {
                 return None;
             }
-            dir = pos_normalize(&format!("{}/{}", dir, seg));
+            dir = pos_join(&dir, seg);
         }
         target
     }
@@ -1144,8 +1144,8 @@ impl KernelResolver {
         let mut dir = pos_dirname(from_file).to_string();
         let mut found = None;
         for _ in 0..64 {
-            if self.file_exists(&pos_normalize(&format!("{}/lib.rs", dir)))
-                || self.file_exists(&pos_normalize(&format!("{}/main.rs", dir)))
+            if self.file_exists(&pos_join(&dir, "lib.rs"))
+                || self.file_exists(&pos_join(&dir, "main.rs"))
             {
                 found = Some(dir);
                 break;
@@ -1190,11 +1190,7 @@ impl KernelResolver {
             // 2018 nested-module declarant: `<up>/<basename(parent)>.rs`
             // owns `<parent>/` as its module dir (e.g. `binder/node.rs`
             // declares `mod wrapper` for `binder/node/wrapper.rs`).
-            let nested = pos_normalize(&format!(
-                "{}/{}.rs",
-                pos_dirname(&parent_dir),
-                pos_basename(&parent_dir)
-            ));
+            let nested = pos_join(pos_dirname(&parent_dir), &format!("{}.rs", pos_basename(&parent_dir)));
             let mut declarant = None;
             if nested != cur && self.rust_file_declares_mod(&nested, &stem)? {
                 declarant = Some(nested);

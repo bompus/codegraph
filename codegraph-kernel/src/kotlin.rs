@@ -1254,12 +1254,10 @@ impl<'t> Walker<'t> {
         if matches!(kind, "file" | "import" | "namespace") {
             return;
         }
-        // A property node is created from its `variable_declaration`, whose
-        // modifiers sit on the enclosing `property_declaration`.
-        let visibility = visibility.or_else(|| {
-            let decl = if node.kind() == "variable_declaration" { node.parent().unwrap_or(node) } else { node };
-            Some(self.visibility_of(decl))
-        });
+        // A node minted without a visibility (properties, enum members, type
+        // aliases, interfaces) takes its binding row's from the declaring
+        // node's own modifiers; its node row keeps 0.
+        let visibility = visibility.or_else(|| Some(self.visibility_of(node)));
         let line = self.line_of(node);
         match self.enclosing_scope() {
             None => self.file_level_decl_row(name, row, line, visibility),

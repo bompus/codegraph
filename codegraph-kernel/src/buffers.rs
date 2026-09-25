@@ -1,16 +1,16 @@
 //! Flat buffer contract — the ONE boundary crossing per file.
 //!
-//! The kernel returns five Buffers: meta, nodes, edges, refs, arena. All rows
+//! The kernel returns six Buffers: meta, nodes, edges, refs, bindings, arena. All rows
 //! are fixed-width little-endian; every string is an (offset, len) pair into
 //! the UTF-8 arena. `OFFSET == NONE (0xFFFF_FFFF)` means "field absent".
 //!
 //! THIS FILE AND `src/extraction/kernel/layout.ts` MUST MATCH BYTE FOR BYTE.
 //! Any layout change bumps `KERNEL_ABI_VERSION` — the TS loader refuses a
-//! version it doesn't know and falls back to the wasm path.
+//! version it doesn't know and refuses to load the kernel.
 //!
-//! Layout (v1):
+//! Layout (ABI v3):
 //!
-//! meta (36 bytes):
+//! meta (40 bytes):
 //!   0   u8   KERNEL_ABI_VERSION
 //!   1   [3]  pad
 //!   4   u32  node count
@@ -61,7 +61,8 @@
 //!   5   u8   flags — bit 0: ref carries the extracting file's path (v2; the
 //!            ruby/php visitNode hooks set `filePath: ctx.filePath` on their
 //!            mixin/trait `implements` refs — decode re-attaches the decode
-//!            call's own filePath, which is byte-identical)
+//!            call's own filePath, which is byte-identical); bit 1: ref
+//!            carries the extracting file's language (markdown path refs)
 //!   6   [2]  pad
 //!   8   u32  line (1-based)
 //!   12  u32  column (0-based)

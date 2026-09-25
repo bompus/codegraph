@@ -40,7 +40,7 @@
 //! - An `attribute_item` between a doc comment and its item breaks the
 //!   docstring sibling chain (`#[derive(..)]` kills the docstring).
 //!
-//! Files with parse errors defer to wasm.
+//! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BindingRow, BoolFlags, EdgeRow, EmitOut,

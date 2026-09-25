@@ -22,8 +22,7 @@ pub(super) fn pos_basename(p: &str) -> &str {
 }
 
 /// path.posix.normalize semantics for a joined path: collapse `.`, `..`,
-/// duplicate slashes. `keep_relative` mirrors normalize on relative inputs
-/// (leading `..` segments are preserved).
+/// duplicate slashes; a relative input keeps its leading `..` segments.
 pub(super) fn pos_normalize(p: &str) -> String {
     let absolute = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
@@ -59,11 +58,18 @@ pub(super) fn rust_self_module_dir(from_file: &str) -> String {
     if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
         return dir.to_string();
     }
-    pos_normalize(&format!(
-        "{}/{}",
-        dir,
-        base.strip_suffix(".rs").unwrap_or(base)
-    ))
+    pos_join(dir, base.strip_suffix(".rs").unwrap_or(base))
+}
+
+/// path.posix.join for a project-relative directory: the project root is
+/// `""` here (where TS has the absolute root), so an empty `dir` joins to
+/// `name` alone rather than to an absolute `/name`.
+pub(super) fn pos_join(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        pos_normalize(name)
+    } else {
+        pos_normalize(&format!("{dir}/{name}"))
+    }
 }
 
 /// path.resolve(dir, p): join + normalize; absolute `p` wins.

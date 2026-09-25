@@ -126,9 +126,6 @@ pub(super) static RUST_NON_PROJECT_FIELD_TYPES: LazyLock<HashSet<&'static str>> 
     .into_iter()
     .collect()
 });
-/// Per-line comment stripper for rust decl scans — `//.*$` and `/\*.*?\*/`.
-pub(super) static RUST_LINE_COMMENTS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"//.*$|/\*.*?\*/").unwrap());
 /// RUST_STDLIB_ROOTS (import-resolver.ts): `use` roots that by definition
 /// ship outside the repository.
 pub(super) static RUST_STDLIB_ROOTS: LazyLock<HashSet<&'static str>> =

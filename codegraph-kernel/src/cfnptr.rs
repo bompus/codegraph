@@ -1121,32 +1121,6 @@ fn split_top_level(body: &[u8], sep: u8) -> Vec<Range> {
     out
 }
 
-/// JS String.prototype.trim over bytes (the JS set == our jsws set).
-fn jsws_trim(s: &[u8], mut a: usize, mut b: usize) -> (usize, usize) {
-    loop {
-        let l = jsws_len(s, a);
-        if l == 0 || a + l > b {
-            break;
-        }
-        a += l;
-    }
-    // Trailing: walk from the front to find the last non-ws position (ws
-    // lengths vary, so scan forward tracking the end of the last non-ws char).
-    let mut i = a;
-    let mut last_end = a;
-    while i < b {
-        let l = jsws_len(s, i);
-        if l == 0 {
-            i += 1;
-            last_end = i;
-        } else {
-            i += l;
-        }
-    }
-    b = last_end;
-    (a, b)
-}
-
 /// /(\w+)\s+\**\s*(\w+)\s*$/ — leftmost match whose tail reaches the end.
 /// Deterministic per start (greedy words/ws cannot backtrack usefully);
 /// candidate starts advance one byte at a time like the JS engine.
@@ -1200,7 +1174,7 @@ pub fn parse_struct_fields_raw(inner: &[u8]) -> Vec<RawField> {
     let mut fields = Vec::new();
     let mut idx: u32 = 0;
     for (ds, de) in split_top_level(inner, b';') {
-        let (ds, de) = jsws_trim(inner, ds, de);
+        let (ds, de) = js_trim(inner, ds, de);
         if ds >= de {
             continue;
         }
@@ -1212,7 +1186,7 @@ pub fn parse_struct_fields_raw(inner: &[u8]) -> Vec<RawField> {
             None => b"",
         };
         for (pi, &(ps, pe)) in parts.iter().enumerate() {
-            let (ps2, pe2) = jsws_trim(decl, ps, pe);
+            let (ps2, pe2) = js_trim(decl, ps, pe);
             let p = &decl[ps2..pe2];
             let mut name: &[u8] = b"";
             let mut ty: &[u8] = b"";

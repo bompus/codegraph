@@ -8,8 +8,8 @@
 //! emission hole (property/accessor bodies, constructor initializers,
 //! delegates/events/operators/indexers, top-level locals) and garbage ref
 //! (`(repo)` primary-ctor extends, `: byte` enum extends, `nameof` calls)
-//! this file preserves on purpose. Positions in UTF-16 code units. Files whose
-//! parse tree contains ERRORS defer to the wasm extractor.
+//! this file preserves on purpose. Positions in UTF-16 code units.
+//! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 //!
 //! preParse (#237 `#if` blanking) stays TS-side: the route point hoists it, so
 //! the kernel receives pre-blanked bytes — port NOTHING of it here (its regex

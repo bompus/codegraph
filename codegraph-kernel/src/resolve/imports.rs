@@ -466,11 +466,7 @@ impl KernelResolver {
             // Quoted-include search order: the including file's own directory
             // first, via a same-named file NODE (not just existence).
             let from_dir = pos_dirname(&r.file_path);
-            let sibling_path = if from_dir.is_empty() {
-                pos_normalize(&r.reference_name)
-            } else {
-                pos_normalize(&format!("{}/{}", from_dir, r.reference_name))
-            };
+            let sibling_path = pos_join(from_dir, &r.reference_name);
             let sibling_base = pos_basename(&sibling_path).to_string();
             if let Some(sibling) = self
                 .nodes_by_name(&sibling_base)?

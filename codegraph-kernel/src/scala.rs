@@ -22,9 +22,8 @@
 //! keep only the FIRST parameter list and type params win the `parameters`
 //! field; static-member WRITES emit (unlike kotlin); infix calls are
 //! invisible; `derives` emits nothing; value-ref same-name targets take the
-//! LAST registration. Positions in UTF-16 code units. Files with parse errors
-//! defer to wasm — including scala-3 PHANTOM hasError files (flag-true, zero
-//! ERROR nodes): trust the flag.
+//! LAST registration. Positions in UTF-16 code units.
+//! Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,

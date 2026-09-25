@@ -539,7 +539,7 @@ impl KernelResolver {
             let start = (s.start_line - 1).max(0) as usize;
             let end = (s.end_line as usize).min(source.len());
             for raw in &source[start..end] {
-                let line = thread_regex(&RUST_LINE_COMMENTS).replace_all(raw, "");
+                let line = strip_line_comments(raw);
                 let Some(declared) = RUST_FIELD_TYPE.capture(&line, field) else {
                     continue;
                 };

@@ -13,7 +13,7 @@
 //! `private def` stays public), brace-block bodies (`block_body`) are
 //! invisible to bare-call extraction while `do…end` bodies emit, and the
 //! value-ref DFS visits statements in REVERSE source order. Positions in
-//! UTF-16 code units. Files with parse errors defer to wasm (~0% incidence).
+//! UTF-16 code units. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,

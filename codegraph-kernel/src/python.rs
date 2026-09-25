@@ -7,7 +7,7 @@
 //! kind isn't `call_expression`), module-level assignments always extract as
 //! `variable` (no isConst hook), and `self.method` fn-ref candidates carry the
 //! BARE attribute name. Python is not a TYPE_ANNOTATION language — no type
-//! refs anywhere. Files with parse errors defer to wasm.
+//! refs anywhere. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
