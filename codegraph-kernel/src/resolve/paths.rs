@@ -64,6 +64,11 @@ pub(super) fn rust_self_module_dir(from_file: &str) -> String {
 /// path.posix.join for a project-relative directory: the project root is
 /// `""` here (where TS has the absolute root), so an empty `dir` joins to
 /// `name` alone rather than to an absolute `/name`.
+/// `path` is `tail` or ends in `/tail` (`p === t || p.endsWith('/' + t)`).
+pub(super) fn is_path_or_tail(path: &str, tail: &str) -> bool {
+    path.strip_suffix(tail).is_some_and(|head| head.is_empty() || head.ends_with('/'))
+}
+
 pub(super) fn pos_join(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         pos_normalize(name)

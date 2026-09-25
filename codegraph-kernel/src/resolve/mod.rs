@@ -28,7 +28,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
@@ -52,11 +52,12 @@ fn thread_regex(re: &'static Regex) -> Rc<Regex> {
 }
 
 /// A fixed pattern as this thread's own regex (see thread_regex for why
-/// per thread), compiled on the thread's first use of the site.
+/// per thread): compiled once on first use, cloned once per thread.
 macro_rules! re {
     ($pattern:expr) => {{
+        static SHARED: LazyLock<Regex> = LazyLock::new(|| Regex::new($pattern).unwrap());
         thread_local! {
-            static RE: Rc<Regex> = Rc::new(Regex::new($pattern).unwrap());
+            static RE: Rc<Regex> = Rc::new(SHARED.clone());
         }
         RE.with(Rc::clone)
     }};
@@ -141,6 +142,22 @@ pub struct ResolveRefIn {
     pub file_path: String,
     pub language: String,
     pub failure_reason: Option<String>,
+}
+
+impl ResolveRefIn {
+    /// This ref re-sited at `node`'s declaration (file and first line).
+    fn at(mut self, node: &KNode) -> Self {
+        self.file_path = node.file_path.clone();
+        self.line = node.start_line;
+        self
+    }
+
+    /// This ref asking for `name` as a `kind` reference instead.
+    fn naming(mut self, name: &str, kind: &str) -> Self {
+        self.reference_name = name.to_string();
+        self.reference_kind = kind.to_string();
+        self
+    }
 }
 
 #[napi(object)]
@@ -267,8 +284,39 @@ enum McShape {
 // Tiny LRU for file contents (queries.fileCache equivalent).
 // ---------------------------------------------------------------------------
 
+/// A cached source file: its lines (what the TS fileCache holds), plus
+/// whole-file derivations computed on first use instead of once per ref.
+pub(super) struct SourceFile {
+    lines: Vec<String>,
+    text: OnceCell<String>,
+    rust_uses: OnceCell<HashMap<String, String>>,
+}
+
+impl SourceFile {
+    fn new(lines: Vec<String>) -> Self {
+        SourceFile { lines, text: OnceCell::new(), rust_uses: OnceCell::new() }
+    }
+
+    /// The lines rejoined with `\n` (CRLF already normalized).
+    pub(super) fn text(&self) -> &str {
+        self.text.get_or_init(|| self.lines.join("\n"))
+    }
+
+    /// The file's Rust `use` bindings (collectRustUseBindings).
+    pub(super) fn rust_uses(&self) -> &HashMap<String, String> {
+        self.rust_uses.get_or_init(|| collect_rust_use_bindings(self.text()))
+    }
+}
+
+impl std::ops::Deref for SourceFile {
+    type Target = Vec<String>;
+    fn deref(&self) -> &Vec<String> {
+        &self.lines
+    }
+}
+
 struct FileCache {
-    map: HashMap<String, Option<Rc<Vec<String>>>>,
+    map: HashMap<String, Option<Rc<SourceFile>>>,
     order: VecDeque<String>,
     cap: usize,
 }
@@ -277,10 +325,10 @@ impl FileCache {
     fn new(cap: usize) -> Self {
         FileCache { map: HashMap::new(), order: VecDeque::new(), cap }
     }
-    fn get(&self, k: &str) -> Option<&Option<Rc<Vec<String>>>> {
+    fn get(&self, k: &str) -> Option<&Option<Rc<SourceFile>>> {
         self.map.get(k)
     }
-    fn put(&mut self, k: String, v: Option<Rc<Vec<String>>>) {
+    fn put(&mut self, k: String, v: Option<Rc<SourceFile>>) {
         if self.map.contains_key(&k) {
             self.order.retain(|x| x != &k);
         } else if self.map.len() >= self.cap {
@@ -615,6 +663,14 @@ impl Drop for KernelResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_or_tail_needs_a_segment_boundary() {
+        assert!(is_path_or_tail("pkg/mod.py", "pkg/mod.py"));
+        assert!(is_path_or_tail("src/pkg/mod.py", "pkg/mod.py"));
+        assert!(!is_path_or_tail("src/xpkg/mod.py", "pkg/mod.py"));
+        assert!(!is_path_or_tail("mod.py", "pkg/mod.py"));
+    }
 
     /// Rows inserted out of every query's order, with ties on each ORDER BY
     /// key, so the table's stable sorts are checked against SQLite's own

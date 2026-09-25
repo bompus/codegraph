@@ -93,7 +93,7 @@ impl KernelResolver {
                     }) {
                         continue;
                     }
-                    if thread_regex(&GUARD1_TAIL_RE).is_match(rest) {
+                    if guard1_tail_re().is_match(rest) {
                         continue;
                     }
                 } else if pat.guard == 2 {
@@ -108,7 +108,7 @@ impl KernelResolver {
                     {
                         continue;
                     }
-                    if thread_regex(&GUARD2_TAIL_RE).is_match(rest) {
+                    if guard2_tail_re().is_match(rest) {
                         continue;
                     }
                 }
@@ -270,7 +270,7 @@ impl KernelResolver {
     /// terminator. The JS lookahead `(?=[;=,)\[{(]|$)` is post-checked on the
     /// remainder: the greedy `\s*` tail can't shrink into a passing position.
     pub(super) fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Res<Option<String>> {
-        let re = self.cached_regex(&format!(
+        let re = shared_regex(&format!(
             r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*(?-u:\b){}(?-u:\b)\s*",
             escaped_receiver
         ))?;
@@ -501,7 +501,7 @@ impl KernelResolver {
     /// return type is the receiver's type (#645); resolveMethodOnType
     /// validates, so a wrong inference yields no edge.
     pub(super) fn match_cpp_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
-        let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
+        let Some(m) = call_chain_re().captures(&r.reference_name) else {
             return Ok(None);
         };
         let inner = m.get(1).unwrap().as_str();
@@ -516,7 +516,7 @@ impl KernelResolver {
     /// (PHP `Cls::for($x)->m()`, Rust `Foo::new().bar()`); a `self` return
     /// marker resolves to the factory's own class (#608).
     pub(super) fn match_scoped_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
-        let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
+        let Some(m) = call_chain_re().captures(&r.reference_name) else {
             return Ok(None);
         };
         let inner = m.get(1).unwrap().as_str();
@@ -537,7 +537,7 @@ impl KernelResolver {
     /// (#645/#608). The Go bare-name fallback (exactName/fuzzy) is unported —
     /// the member-tail punt reproduces it.
     pub(super) fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
-        let Some(m) = thread_regex(&CALL_CHAIN_RE).captures(&r.reference_name) else {
+        let Some(m) = call_chain_re().captures(&r.reference_name) else {
             return Ok(None);
         };
         let inner = m.get(1).unwrap().as_str();

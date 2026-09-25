@@ -106,12 +106,7 @@ impl KernelResolver {
             )
             .cloned();
             let holder_id = self.binding_target_id(row.as_ref(), |s| {
-                let mut ref2 = r.clone();
-                ref2.file_path = owner.file_path.clone();
-                ref2.line = owner.start_line;
-                ref2.reference_name = m1.to_string();
-                ref2.reference_kind = "references".to_string();
-                s.resolve_via_import_member(&ref2)
+                s.resolve_via_import_member(&r.clone().at(owner).naming(m1, "references"))
             })?;
             let holder = self.node_by_opt_id(holder_id.as_deref())?;
             return match holder {
@@ -127,10 +122,7 @@ impl KernelResolver {
         {
             return Ok(None);
         }
-        let mut bsite = r.clone();
-        bsite.file_path = owner.file_path.clone();
-        bsite.line = owner.start_line;
-        self.match_bound_type_member(m1, method, &bsite)
+        self.match_bound_type_member(m1, method, &r.clone().at(owner))
     }
 
     /// The first field declaration of `field` in `owner`'s body lines
@@ -150,7 +142,7 @@ impl KernelResolver {
                 return Some(TsFieldDecl {
                     ty: line[gs..ge].to_string(),
                     value_type: *value_type,
-                    typed_collection: thread_regex(&GUARD1_TAIL_RE).is_match(&line[m.end..]),
+                    typed_collection: guard1_tail_re().is_match(&line[m.end..]),
                 });
             }
         }

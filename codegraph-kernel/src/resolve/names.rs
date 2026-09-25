@@ -97,17 +97,17 @@ impl KernelResolver {
         }
         let lines = self
             .read_file(&candidate.file_path)
-            .unwrap_or_else(|| Rc::new(Vec::new()));
+            .unwrap_or_else(|| Rc::new(SourceFile::new(Vec::new())));
         let mut is_trait = false;
         let mut i = candidate.start_line.saturating_sub(2);
         while i >= 0 {
             let line = lines.get(i as usize).map(|s| s.as_str()).unwrap_or("");
-            if thread_regex(&IMPL_RE).is_match(line) {
+            if impl_re().is_match(line) {
                 let stripped = line.split("//").next().unwrap_or("");
-                is_trait = thread_regex(&IMPL_FOR_RE).is_match(stripped);
+                is_trait = impl_for_re().is_match(stripped);
                 break;
             }
-            if thread_regex(&ITEM_RE).is_match(line) {
+            if item_re().is_match(line) {
                 break;
             }
             i -= 1;
@@ -120,7 +120,7 @@ impl KernelResolver {
     pub(super) fn is_cross_file_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "markdown"
             && candidate.language == "markdown"
-            && !thread_regex(&MARKDOWN_PATH_RE).is_match(&r.reference_name.replace('\\', "/"))
+            && !markdown_path_re().is_match(&r.reference_name.replace('\\', "/"))
         {
             return Ok(false);
         }
@@ -148,7 +148,7 @@ impl KernelResolver {
         let lang = candidate.language.as_str();
         if lang == "c" || lang == "cpp" {
             return Ok(candidate.kind != "function"
-                || !thread_regex(&C_SOURCE_EXT_RE).is_match(&candidate.file_path)
+                || !c_source_ext_re().is_match(&candidate.file_path)
                 || !self.is_static_c_function(candidate)?);
         }
         if lang == "go" {
@@ -189,12 +189,12 @@ impl KernelResolver {
         // prefix, then the call opener.
         let is_call = at
             .strip_prefix(r.reference_name.as_str())
-            .is_some_and(|rest| thread_regex(&BARE_CALL_OPENER_RE).is_match(rest));
+            .is_some_and(|rest| bare_call_opener_re().is_match(rest));
         if !is_call {
             return Ok(false);
         }
         let before = js_prefix(line, r.column as usize);
-        Ok(!thread_regex(&JS_CALL_PREFIX_RE).is_match(before) || thread_regex(&JS_CALL_KEYWORD_RE).is_match(before))
+        Ok(!js_call_prefix_re().is_match(before) || js_call_keyword_re().is_match(before))
     }
 
     /// cppBareCallForm (name-matcher.ts) — only the ADL range names.
@@ -218,7 +218,7 @@ impl KernelResolver {
         let name = r.reference_name.as_str();
         let Some(at) = occurrences(hay, name, 0).find(|&at| {
             (at == 0 || !is_word_byte(hay.as_bytes()[at - 1]))
-                && thread_regex(&CPP_CALL_OPENER_RE).is_match(&hay[at + name.len()..])
+                && cpp_call_opener_re().is_match(&hay[at + name.len()..])
         }) else {
             return Ok(None);
         };
@@ -231,7 +231,7 @@ impl KernelResolver {
         if before.ends_with("::") {
             return Ok(Some("qualified"));
         }
-        if thread_regex(&CPP_THIS_ARROW_RE).is_match(&before) || thread_regex(&CPP_THIS_DOT_RE).is_match(&before) {
+        if cpp_this_arrow_re().is_match(&before) || cpp_this_dot_re().is_match(&before) {
             return Ok(Some("this-member"));
         }
         if before.ends_with("->") || before.ends_with('.') {
@@ -240,7 +240,7 @@ impl KernelResolver {
         let after_name = js_slice(line, name_at + utf16_len(&r.reference_name));
         let Some(open) = after_name.find('(') else { return Ok(Some("implicit-this")) };
         Ok(Some(
-            if thread_regex(&AFTER_NAME_PAREN_RE).is_match(&after_name[open + 1..]) {
+            if after_name_paren_re().is_match(&after_name[open + 1..]) {
                 "implicit-this"
             } else {
                 "free-args"

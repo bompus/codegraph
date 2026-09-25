@@ -40,55 +40,6 @@ impl KernelResolver {
                 .and_then(|d| DECLARED_INIT.capture(d, root).map(str::to_string)),
         };
         let init = signature.unwrap_or_default();
-        // parensEnd — UTF-16 unit index one past the ')' that closes the '('
-        // at `from - 1`, or -1 when it never closes (JS string indexing).
-        let parens_end = |s: &str, from: usize| -> i64 {
-            let mut depth = 1i64;
-            let mut i = from;
-            let mut units = 0usize;
-            for ch in s.chars() {
-                let start = units;
-                units += ch.len_utf16();
-                if start < from || depth == 0 {
-                    continue;
-                }
-                if ch == '(' {
-                    depth += 1;
-                } else if ch == ')' {
-                    depth -= 1;
-                }
-                i = units;
-            }
-            if depth != 0 {
-                -1
-            } else {
-                i as i64
-            }
-        };
-        // ^[ \t]*(?:;|\r?\n(?![ \t]*[.(\[?])) — the lookahead is emulated:
-        // `;` always ends the initializer; a newline does unless a chained
-        // `.`/`(`/`[`/`?` follows its leading whitespace.
-        let ends_initializer = |init_s: &str, call_end: i64| -> bool {
-            if call_end < 0 {
-                return false;
-            }
-            let tail = js_slice(init_s, call_end as usize);
-            if tail.is_empty() {
-                return true;
-            }
-            let t = tail.trim_start_matches([' ', '\t']);
-            if t.starts_with(';') {
-                return true;
-            }
-            if let Some(rest) = t.strip_prefix("\r\n").or_else(|| t.strip_prefix('\n')) {
-                return !rest
-                    .trim_start_matches([' ', '\t'])
-                    .chars()
-                    .next()
-                    .is_some_and(|c| matches!(c, '.' | '(' | '[' | '?'));
-            }
-            false
-        };
         let awaited_re = re!(r"^=\s*await(?-u:\b)");
         let awaited = awaited_re.is_match(&init);
         let mut callee_name: Option<String> = None;
@@ -131,10 +82,8 @@ impl KernelResolver {
             let owner_binding =
                 innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
             let owner_id = self.binding_target_id(owner_binding.as_ref(), |s| {
-                let mut ref2 = r.clone();
+                let mut ref2 = r.clone().naming(&owner_name, "references");
                 ref2.line = binding.line;
-                ref2.reference_name = owner_name.clone();
-                ref2.reference_kind = "references".to_string();
                 s.resolve_via_import(&ref2)
             })?;
             let owner = self.node_by_opt_id(owner_id.as_deref())?;
@@ -181,10 +130,7 @@ impl KernelResolver {
         } else {
             return_type
         };
-        let mut site = r.clone();
-        site.file_path = callee.file_path.clone();
-        site.line = callee.start_line;
-        self.match_bound_type_member(&ty, method, &site)
+        self.match_bound_type_member(&ty, method, &r.clone().at(&callee))
     }
 
     /// Cheap raw-source gate for inferEsmAwaitedCallType — the awaited arm can
@@ -836,9 +782,7 @@ impl KernelResolver {
             let owner_id = self.binding_target_id(type_binding.as_ref(), |s| {
                 // `{ ...ref, referenceName: type, 'references' }` — the
                 // ORIGINAL ref, not the anchored site.
-                let mut ref2 = r.clone();
-                ref2.reference_name = ty.clone();
-                ref2.reference_kind = "references".to_string();
+                let ref2 = r.clone().naming(&ty, "references");
                 if ty.contains('.') {
                     s.resolve_via_import_member(&ref2)
                 } else {
@@ -866,4 +810,54 @@ impl KernelResolver {
         }
         self.esm_factory_tail(&binding, root, method, r)
     }
+}
+
+/// parensEnd — UTF-16 unit index one past the ')' that closes the '('
+/// at `from - 1`, or -1 when it never closes (JS string indexing).
+fn parens_end(s: &str, from: usize) -> i64 {
+    let mut depth = 1i64;
+    let mut i = from;
+    let mut units = 0usize;
+    for ch in s.chars() {
+        let start = units;
+        units += ch.len_utf16();
+        if start < from || depth == 0 {
+            continue;
+        }
+        if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+        }
+        i = units;
+    }
+    if depth != 0 {
+        -1
+    } else {
+        i as i64
+    }
+}
+/// ^[ \t]*(?:;|\r?\n(?![ \t]*[.(\[?])) — the lookahead is emulated:
+/// `;` always ends the initializer; a newline does unless a chained
+/// `.`/`(`/`[`/`?` follows its leading whitespace.
+fn ends_initializer(init_s: &str, call_end: i64) -> bool {
+    if call_end < 0 {
+        return false;
+    }
+    let tail = js_slice(init_s, call_end as usize);
+    if tail.is_empty() {
+        return true;
+    }
+    let t = tail.trim_start_matches([' ', '\t']);
+    if t.starts_with(';') {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("\r\n").or_else(|| t.strip_prefix('\n')) {
+        return !rest
+            .trim_start_matches([' ', '\t'])
+            .chars()
+            .next()
+            .is_some_and(|c| matches!(c, '.' | '(' | '[' | '?'));
+    }
+    false
 }
