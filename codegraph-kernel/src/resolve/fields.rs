@@ -128,7 +128,7 @@ impl KernelResolver {
                     .cloned();
                     let holder_id = match &row {
                         Some(b) if b.kind == "import" => {
-                            let mut ref2 = Self::ref_clone(r);
+                            let mut ref2 = r.clone();
                             ref2.file_path = owner.file_path.clone();
                             ref2.line = owner.start_line;
                             ref2.reference_name = m1.to_string();
@@ -142,10 +142,7 @@ impl KernelResolver {
                         Some(b) => b.node_id.clone(),
                         None => None,
                     };
-                    let holder = match &holder_id {
-                        Some(id) => self.node_by_id(id)?,
-                        None => None,
-                    };
+                    let holder = self.node_by_opt_id(holder_id.as_deref())?;
                     return Ok(match holder {
                         Some(h) => match self.resolve_object_literal_member(
                             &h,
@@ -168,7 +165,7 @@ impl KernelResolver {
                 {
                     return Ok(McRes::Null);
                 }
-                let mut bsite = Self::ref_clone(r);
+                let mut bsite = r.clone();
                 bsite.file_path = owner.file_path.clone();
                 bsite.line = owner.start_line;
                 return self.match_bound_type_member(
@@ -196,46 +193,11 @@ impl KernelResolver {
         if sep == 0 {
             return Ok(McRes::Null);
         }
-        let owner = &caller.qualified_name[..sep];
-        let want = format!("{}::{}", owner, method);
-        let mut owned: Vec<Arc<KNode>> = self
-            .nodes_by_qualified_name(&want)?
-            .iter()
-            .filter(|n| {
-                n.kind == "method" && n.language == "rust" && n.qualified_name == want
-            })
-            .cloned()
-            .collect();
-        // Rust qualified names omit module paths — two modules can declare
-        // the same `Target`. Require one owner declaration in the caller's
-        // file and the method there too; a unique owner still permits impl
-        // blocks split across files.
-        let owners: Vec<Arc<KNode>> = self
-            .nodes_by_qualified_name(owner)?
-            .iter()
-            .filter(|n| {
-                n.language == "rust"
-                    && matches!(
-                        n.kind.as_str(),
-                        "struct" | "enum" | "union" | "trait" | "class"
-                    )
-            })
-            .cloned()
-            .collect();
-        if owners.len() > 1 {
-            if owners.iter().filter(|n| n.file_path == caller.file_path).count() != 1 {
-                return Ok(McRes::Null);
-            }
-            owned.retain(|n| n.file_path == caller.file_path);
-        }
-        if owned.len() != 1 {
-            return Ok(McRes::Null);
-        }
-        Ok(McRes::Hit(KCand {
-            node: owned[0].clone(),
-            confidence: 0.9,
-            resolved_by: "qualified-name",
-        }))
+        let owner = caller.qualified_name[..sep].to_string();
+        Ok(match self.resolve_rust_self_member(&owner, method, &caller, &["method"])? {
+            Some(node) => McRes::Hit(KCand { node, confidence: 0.9, resolved_by: "qualified-name" }),
+            None => McRes::Null,
+        })
     }
 
     /// matchRustSelfPath (name-matcher.ts): `Self::item` associated-item
@@ -733,18 +695,7 @@ impl KernelResolver {
                             v.pop();
                             v
                         };
-                        let shared = |fp: &str| -> usize {
-                            let mut dirs: Vec<&str> = fp.split('/').collect();
-                            dirs.pop();
-                            let mut i = 0;
-                            while i < dirs.len()
-                                && i < call_dirs.len()
-                                && dirs[i] == call_dirs[i]
-                            {
-                                i += 1;
-                            }
-                            i
-                        };
+                        let shared = |fp: &str| shared_dir_prefix(&call_dirs, fp);
                         let max_shared =
                             declared.iter().map(|n| shared(&n.file_path)).max().unwrap_or(0);
                         let nearest: Vec<&Arc<KNode>> = declared

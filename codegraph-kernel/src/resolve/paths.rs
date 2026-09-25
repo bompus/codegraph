@@ -223,3 +223,12 @@ pub(super) fn pick_closest_file_node(candidates: &[Arc<KNode>], r: &ResolveRefIn
     }
     best
 }
+
+/// How many leading directory segments `dirs` shares with `file`'s directory
+/// (every '/'-segment of `file` but the last) — the proximity measure the
+/// name matchers use to prefer a nearby candidate.
+pub(super) fn shared_dir_prefix<S: AsRef<str>>(dirs: &[S], file: &str) -> usize {
+    let mut other: Vec<&str> = file.split('/').collect();
+    other.pop();
+    dirs.iter().zip(other).take_while(|(a, b)| a.as_ref() == *b).count()
+}

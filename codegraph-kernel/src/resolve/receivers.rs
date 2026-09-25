@@ -12,21 +12,6 @@ impl KernelResolver {
     // (inferGuardedReceiver / inferIterationReceiver), or unported arms.
     // -----------------------------------------------------------------------
 
-    pub(super) fn ref_clone(r: &ResolveRefIn) -> ResolveRefIn {
-        ResolveRefIn {
-            row_id: r.row_id,
-            from_node_id: r.from_node_id.clone(),
-            reference_name: r.reference_name.clone(),
-            reference_kind: r.reference_kind.clone(),
-            line: r.line,
-            column: r.column,
-            candidates: r.candidates.clone(),
-            file_path: r.file_path.clone(),
-            language: r.language.clone(),
-            failure_reason: r.failure_reason.clone(),
-        }
-    }
-
     pub(super) fn mc_to_claim(res: McRes) -> BoundClaim {
         match res {
             McRes::Hit(c) => BoundClaim::Hit(c),
@@ -671,15 +656,7 @@ impl KernelResolver {
     pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &str) -> Arc<KNode> {
         let from_dirs: Vec<&str> = from_path.split('/').collect();
         let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
-        let shared = |p: &str| -> usize {
-            let d: Vec<&str> = p.split('/').collect();
-            let d = &d[..d.len().saturating_sub(1)];
-            let mut n = 0;
-            while n < from_dirs.len() && n < d.len() && from_dirs[n] == d[n] {
-                n += 1;
-            }
-            n
-        };
+        let shared = |p: &str| shared_dir_prefix(from_dirs, p);
         let is_expect = |n: &KNode| {
             n.decorators
                 .as_ref()

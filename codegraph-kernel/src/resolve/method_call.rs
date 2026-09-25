@@ -13,10 +13,7 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Result<McRes> {
-        let value = match &binding.node_id {
-            Some(id) => self.node_by_id(id)?,
-            None => None,
-        };
+        let value = self.node_by_opt_id(binding.node_id.as_deref())?;
         // `\b(?:const|let|var)\s+ROOT\s*=` and its `(=…)` capture form.
         static DECLARES: LazyLock<Affix> =
             LazyLock::new(|| Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=", false, false, false));
@@ -135,7 +132,7 @@ impl KernelResolver {
                 Self::innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
             let owner_id = match &owner_binding {
                 Some(b) if b.kind == "import" => {
-                    let mut ref2 = Self::ref_clone(r);
+                    let mut ref2 = r.clone();
                     ref2.line = binding.line;
                     ref2.reference_name = owner_name.clone();
                     ref2.reference_kind = "references".to_string();
@@ -147,10 +144,7 @@ impl KernelResolver {
                 Some(b) => b.node_id.clone(),
                 None => None,
             };
-            let owner = match &owner_id {
-                Some(id) => self.node_by_id(id)?,
-                None => None,
-            };
+            let owner = self.node_by_opt_id(owner_id.as_deref())?;
             let Some(owner) = owner else { return Ok(McRes::Null) };
             if !matches!(owner.kind.as_str(), "class" | "interface" | "component") {
                 return Ok(McRes::Null);
@@ -168,7 +162,7 @@ impl KernelResolver {
                     .cloned();
             let callee_id = match &factory_binding {
                 Some(b) if b.kind == "import" => {
-                    let mut ref2 = Self::ref_clone(r);
+                    let mut ref2 = r.clone();
                     ref2.line = binding.line;
                     ref2.reference_name = callee_name.clone();
                     match self.resolve_via_import(&ref2)? {
@@ -179,10 +173,7 @@ impl KernelResolver {
                 Some(b) => b.node_id.clone(),
                 None => None,
             };
-            match &callee_id {
-                Some(id) => self.node_by_id(id)?,
-                None => None,
-            }
+            self.node_by_opt_id(callee_id.as_deref())?
         };
         let Some(callee) = callee else { return Ok(McRes::Null) };
         let ret_re = re!(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$");
@@ -204,7 +195,7 @@ impl KernelResolver {
         } else {
             return_type
         };
-        let mut site = Self::ref_clone(r);
+        let mut site = r.clone();
         site.file_path = callee.file_path.clone();
         site.line = callee.start_line;
         self.match_bound_type_member(&ty, method, &site)
@@ -370,7 +361,7 @@ impl KernelResolver {
                     return Ok(McRes::Punt("mc-guarded"));
                 }
             }
-            let mut site = Self::ref_clone(r);
+            let mut site = r.clone();
             if let Some(b) = &binding {
                 if b.kind != "import" {
                     site.line = b.line;
@@ -414,7 +405,7 @@ impl KernelResolver {
                 }
             }
             if let Some(t) = inferred.take() {
-                let mut bsite = Self::ref_clone(r);
+                let mut bsite = r.clone();
                 if let Some(b) = &binding {
                     bsite.line = b.line;
                 }
@@ -431,22 +422,8 @@ impl KernelResolver {
         // dead inside boundReceiver.
 
         if (r.language == "java" || r.language == "kotlin") && dotted {
-            if let Some(inferred) =
-                self.infer_java_field_receiver_type(&object_or_class, r)?
-            {
-                let fqn = self.imported_fqn_of(&inferred, r)?;
-                match self.resolve_method_on_type(
-                    &inferred,
-                    &method_name,
-                    r,
-                    0.9,
-                    "instance-method",
-                    fqn.as_deref(),
-                )? {
-                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
-                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
-                    McRes::Null => {}
-                }
+            if let Some(res) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
+                return Ok(res);
             }
         }
 
@@ -613,22 +590,8 @@ impl KernelResolver {
         // Java/Kotlin field receiver inference — non-exclusive (a miss still
         // reaches the name strategies, exactly like TS).
         if (r.language == "java" || r.language == "kotlin") && dotted {
-            if let Some(inferred) =
-                self.infer_java_field_receiver_type(&object_or_class, r)?
-            {
-                let fqn = self.imported_fqn_of(&inferred, r)?;
-                match self.resolve_method_on_type(
-                    &inferred,
-                    &method_name,
-                    r,
-                    0.9,
-                    "instance-method",
-                    fqn.as_deref(),
-                )? {
-                    McRes::Hit(c) => return Ok(McRes::Hit(c)),
-                    McRes::Punt(p) => return Ok(McRes::Punt(p)),
-                    McRes::Null => {}
-                }
+            if let Some(res) = self.jvm_field_receiver(&object_or_class, &method_name, r)? {
+                return Ok(res);
             }
         }
 
@@ -664,32 +627,8 @@ impl KernelResolver {
         }
 
         // Strategy 1 — direct class-name match, call site's file first.
-        let class_candidates = prefer_call_site_file(
-            self.nodes_by_name(&object_or_class)?
-                .iter()
-                .cloned()
-                .collect(),
-            &r.file_path,
-        );
-        for c in &class_candidates {
-            if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") {
-                continue;
-            }
-            if c.language != r.language {
-                continue;
-            }
-            let in_file = self.nodes_in_file(&c.file_path)?;
-            if let Some(mn) = in_file.iter().find(|n| {
-                n.kind == "method"
-                    && n.name == method_name
-                    && n.qualified_name.contains(c.name.as_str())
-            }) {
-                return Ok(McRes::Hit(KCand {
-                    node: mn.clone(),
-                    confidence: 0.85,
-                    resolved_by: "qualified-name",
-                }));
-            }
+        if let Some(hit) = self.class_method_scan(&object_or_class, &method_name, r, 0.85, "qualified-name")? {
+            return Ok(McRes::Hit(hit));
         }
 
         // Strategy 2 — capitalized receiver (`permissionEngine` →
@@ -700,32 +639,8 @@ impl KernelResolver {
         }
         let capitalized = String::from_utf8(cap_bytes).unwrap_or_default();
         if capitalized != object_or_class {
-            let fuzzy_candidates = prefer_call_site_file(
-                self.nodes_by_name(&capitalized)?
-                    .iter()
-                    .cloned()
-                    .collect(),
-                &r.file_path,
-            );
-            for c in &fuzzy_candidates {
-                if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") {
-                    continue;
-                }
-                if c.language != r.language {
-                    continue;
-                }
-                let in_file = self.nodes_in_file(&c.file_path)?;
-                if let Some(mn) = in_file.iter().find(|n| {
-                    n.kind == "method"
-                        && n.name == method_name
-                        && n.qualified_name.contains(c.name.as_str())
-                }) {
-                    return Ok(McRes::Hit(KCand {
-                        node: mn.clone(),
-                        confidence: 0.8,
-                        resolved_by: "instance-method",
-                    }));
-                }
+            if let Some(hit) = self.class_method_scan(&capitalized, &method_name, r, 0.8, "instance-method")? {
+                return Ok(McRes::Hit(hit));
             }
         }
 
@@ -796,6 +711,46 @@ impl KernelResolver {
             }
         }
         Ok(McRes::Null)
+    }
+
+    /// Java/Kotlin field receiver inference — non-exclusive: `Some` settles
+    /// the ref, `None` lets the name strategies run, exactly like TS.
+    pub(super) fn jvm_field_receiver(&mut self, receiver: &str, method: &str, r: &ResolveRefIn) -> Result<Option<McRes>> {
+        let Some(inferred) = self.infer_java_field_receiver_type(receiver, r)? else {
+            return Ok(None);
+        };
+        let fqn = self.imported_fqn_of(&inferred, r)?;
+        Ok(match self.resolve_method_on_type(&inferred, method, r, 0.9, "instance-method", fqn.as_deref())? {
+            McRes::Null => None,
+            res => Some(res),
+        })
+    }
+
+    /// matchMethodCall's class scan (Strategies 1 and 2): a same-language
+    /// class, struct, union or interface named `class_name`, call site's file
+    /// first, whose file holds a method `method` qualified under it.
+    pub(super) fn class_method_scan(
+        &mut self,
+        class_name: &str,
+        method: &str,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+    ) -> Result<Option<KCand>> {
+        let candidates = prefer_call_site_file(self.nodes_by_name(class_name)?.iter().cloned().collect(), &r.file_path);
+        for c in &candidates {
+            if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") || c.language != r.language {
+                continue;
+            }
+            let in_file = self.nodes_in_file(&c.file_path)?;
+            if let Some(mn) = in_file
+                .iter()
+                .find(|n| n.kind == "method" && n.name == method && n.qualified_name.contains(c.name.as_str()))
+            {
+                return Ok(Some(KCand { node: mn.clone(), confidence, resolved_by }));
+            }
+        }
+        Ok(None)
     }
 
     /// matchMethodCall's `luaColonMatch` — Lua/Luau method calls use a single
@@ -906,7 +861,7 @@ impl KernelResolver {
             }
             // br:fieldinfer — root's declared type anchored at the binding
             // site (preserve qualified names), then the field on that owner.
-            let mut site = Self::ref_clone(r);
+            let mut site = r.clone();
             site.line = binding.line;
             if let Some(nid) = &binding.node_id {
                 site.from_node_id = nid.clone();
@@ -924,7 +879,7 @@ impl KernelResolver {
                 Some(b) if b.kind == "import" => {
                     // `{ ...ref, referenceName: type, 'references' }` — the
                     // ORIGINAL ref, not the anchored site.
-                    let mut ref2 = Self::ref_clone(r);
+                    let mut ref2 = r.clone();
                     ref2.reference_name = ty.clone();
                     ref2.reference_kind = "references".to_string();
                     let via = if ty.contains('.') {
@@ -941,10 +896,7 @@ impl KernelResolver {
                 Some(b) => b.node_id.clone(),
                 None => None,
             };
-            let owner = match &owner_id {
-                Some(id) => self.node_by_id(id)?,
-                None => None,
-            };
+            let owner = self.node_by_opt_id(owner_id.as_deref())?;
             return Ok(match owner {
                 Some(o)
                     if matches!(

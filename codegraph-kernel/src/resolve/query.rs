@@ -44,6 +44,14 @@ impl KernelResolver {
         Ok(t.by_file.get(file_path).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
+    /// getNodeById over an optional id (a binding row's `node_id`).
+    pub(super) fn node_by_opt_id(&self, id: Option<&str>) -> Result<Option<Arc<KNode>>> {
+        match id {
+            Some(id) => self.node_by_id(id),
+            None => Ok(None),
+        }
+    }
+
     /// queries.getNodeById.
     pub(super) fn node_by_id(&self, id: &str) -> Result<Option<Arc<KNode>>> {
         Ok(self.table()?.by_id.get(id).cloned())
