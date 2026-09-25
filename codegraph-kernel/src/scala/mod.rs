@@ -228,7 +228,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,

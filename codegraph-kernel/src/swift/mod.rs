@@ -24,7 +24,7 @@
 mod calls;
 mod refs;
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
@@ -228,7 +228,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -826,7 +826,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(import_text), ..Extra::default() },
         );
         let parent = self.top_row();
-        self.push_ref_at(parent, &module_name, edge_kind_index("imports").unwrap(), node);
+        self.push_ref_at(parent, &module_name, crate::buffers::EDGE_IMPORTS, node);
     }
 
     type_refs_from_subtree_impl!();

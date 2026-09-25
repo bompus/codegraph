@@ -216,7 +216,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -490,7 +490,7 @@ impl<'t> Walker<'t> {
                 // signature = first value sibling's text, sliced to 100
                 // UTF-16 units (a flattened chain captures just its head).
                 let signature = name_node.next_named_sibling().map(|v| {
-                    let (sliced, _) = util::slice_utf16(self.text(v), 100);
+                    let sliced = util::slice_utf16(self.text(v), 100);
                     if util::utf16_len(&sliced) >= 100 {
                         format!("= {sliced}...")
                     } else {

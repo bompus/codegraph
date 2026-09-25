@@ -60,7 +60,7 @@ impl<'t> Walker<'t> {
             "identifier" => {
                 let name = self.text(node);
                 if !name.is_empty() && !is_builtin_type(name) {
-                    self.push_ref_at(from_row, name, edge_kind_index("references").unwrap(), node);
+                    self.push_ref_at(from_row, name, crate::buffers::EDGE_REFERENCES, node);
                 }
             }
             "qualified_name" => {
@@ -68,7 +68,7 @@ impl<'t> Walker<'t> {
                 let text = self.text(node);
                 let last = text.rsplit('.').next().unwrap_or(text);
                 if !last.is_empty() && !is_builtin_type(last) {
-                    self.push_ref_at(from_row, last, edge_kind_index("references").unwrap(), node);
+                    self.push_ref_at(from_row, last, crate::buffers::EDGE_REFERENCES, node);
                 }
             }
             "tuple_element" => {

@@ -19,7 +19,7 @@ mod calls;
 mod types;
 mod refs;
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_ASYNC, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
@@ -226,7 +226,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -835,7 +835,7 @@ impl<'t> Walker<'t> {
         // One generic `imports` ref from the stack top (the namespace node in
         // a namespaced file, else the file node). No per-binding emitter.
         let parent = self.top_row();
-        self.push_ref_at(parent, &module_name, edge_kind_index("imports").unwrap(), node);
+        self.push_ref_at(parent, &module_name, crate::buffers::EDGE_IMPORTS, node);
     }
 
     // --- C# type-reference engine (extractCsharpTypeRefs, 5893) -----------------

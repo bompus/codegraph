@@ -22,7 +22,7 @@ use crate::textutil as util;
 
 use crate::buffers::{
     BindingRow, BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_REEXPORT, EXPORT_CJS, EXPORT_CJS_OBJECT, EXPORT_ESM,
-    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE, EXPORT_PUBLIC, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    EXPORT_ESM_DEFAULT, EXPORT_ESM_LATER, EXPORT_NONE, EXPORT_PUBLIC, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, StrRef, Tables, FLAG_IS_ASYNC, FLAG_IS_EXPORTED, FLAG_IS_STATIC,
     NONE, NONE_STR,
 };
@@ -267,7 +267,7 @@ impl<'t> Walker<'t> {
             candidates: NONE_STR,
             from_id_str: NONE_STR,
         });
-        if kind_code == edge_kind_index("imports").unwrap() {
+        if kind_code == crate::buffers::EDGE_IMPORTS {
             // Feed the fn-ref flush gate the same way flushFnRefCandidates
             // derives importedNames from `imports` refs.
             if util::simple_name().is_match(name) {
@@ -280,7 +280,7 @@ impl<'t> Walker<'t> {
 
 
     fn push_call_ref(&mut self, name: &str, node: Node) {
-        self.push_ref(self.top_row(), name, edge_kind_index("calls").unwrap(), node);
+        self.push_ref(self.top_row(), name, crate::buffers::EDGE_CALLS, node);
     }
 
     markdown_refs_impl!();
@@ -364,7 +364,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,

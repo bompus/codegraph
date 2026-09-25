@@ -80,7 +80,7 @@ mod fnptr_fields;
 mod bindings;
 mod refs;
 use crate::buffers::{
-    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_ABSTRACT, FLAG_IS_EXPORTED, FUNCTION_REF_CODE, NONE, NONE_STR,
 };
 use crate::walker::{Scope, ValueScope};
@@ -449,7 +449,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -711,7 +711,7 @@ impl<'t> Walker<'t> {
                     self.tables.push_edge(&EdgeRow {
                         source_idx: owner_row,
                         target_idx: row,
-                        kind: edge_kind_index("contains").unwrap(),
+                        kind: crate::buffers::EDGE_CONTAINS,
                         provenance: 0,
                         line: NONE,
                         column: NONE,

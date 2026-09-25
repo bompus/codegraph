@@ -147,10 +147,10 @@ pub fn begin() {
 /// lazily from the current position.
 #[inline(always)]
 pub fn exhausted() -> bool {
-    let threshold = THRESHOLD.with(|t| t.get());
+    let mut threshold = THRESHOLD.with(|t| t.get());
     if threshold == 0 {
         begin();
-        return exhausted();
+        threshold = THRESHOLD.with(|t| t.get());
     }
     if current_sp() < threshold {
         OVERFLOWED.with(|o| o.set(true));

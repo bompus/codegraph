@@ -16,7 +16,7 @@
 //! UTF-16 code units. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
@@ -203,7 +203,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -283,7 +283,7 @@ impl<'t> Walker<'t> {
                     // (nodeStack is never empty — the file node is pushed.)
                     if let Some(args) = args {
                         let parent = self.top_row();
-                        let implements = edge_kind_index("implements").unwrap();
+                        let implements = crate::buffers::EDGE_IMPLEMENTS;
                         let line = self.line_of(node);
                         let col = self.col_of(node);
                         for i in 0..args.named_child_count() {
@@ -428,7 +428,7 @@ impl<'t> Walker<'t> {
             // NOT in the set, so `5.times { beep }` emits nothing for beep).
             let name = bare.to_string();
             let from = self.top_row();
-            self.push_ref_at(from, &name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(from, &name, crate::buffers::EDGE_CALLS, node);
         }
 
         // (No INSTANTIATION_KINDS for ruby — `.new` is handled in extract_call;
@@ -539,7 +539,7 @@ impl<'t> Walker<'t> {
         // extractInheritance: the `superclass` clause — ONE extends ref, FULL
         // text (scope_resolution / even `Struct.new(:a)` expressions verbatim),
         // positioned at the type child.
-        let extends_kind = edge_kind_index("extends").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             if child.kind() == "superclass" {
@@ -628,7 +628,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(import_text), ..Extra::default() },
         );
         let parent = self.top_row();
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
         self.push_ref_at(parent, &module_name, imports_kind, node);
 
         // emitRubyRequireRefs (3532): the file-path ref. Bare gem/stdlib
@@ -671,7 +671,7 @@ impl<'t> Walker<'t> {
         }
         let line = self.line_of(node);
         let col = self.col_of(node);
-        let calls_kind = edge_kind_index("calls").unwrap();
+        let calls_kind = crate::buffers::EDGE_CALLS;
 
         let Some(receiver) = node.child_by_field_name("receiver") else {
             // Bare `foo(...)` — just the method name.
@@ -692,7 +692,7 @@ impl<'t> Walker<'t> {
                 self.push_ref(
                     caller,
                     class_name,
-                    edge_kind_index("instantiates").unwrap(),
+                    crate::buffers::EDGE_INSTANTIATES,
                     line,
                     col,
                 );
@@ -717,7 +717,7 @@ impl<'t> Walker<'t> {
             self.push_ref_at(
                 caller,
                 receiver_name,
-                edge_kind_index("references").unwrap(),
+                crate::buffers::EDGE_REFERENCES,
                 receiver,
             );
         }

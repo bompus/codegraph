@@ -45,7 +45,7 @@
 mod uses;
 mod refs;
 use crate::buffers::{
-    edge_kind_index, node_kind_index, Arena, BindingRow, BoolFlags, EdgeRow, EmitOut,
+    node_kind_index, Arena, BindingRow, BoolFlags, EdgeRow, EmitOut,
     NodeRow, RefRow, Tables, BINDING_IMPORT, EXPORT_NONE, EXPORT_PUBLIC, FLAG_IS_ASYNC,
     FLAG_IS_EXPORTED, NONE, NONE_STR,
 };
@@ -212,7 +212,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -441,7 +441,7 @@ impl<'t> Walker<'t> {
                     self.tables.push_edge(&EdgeRow {
                         source_idx: owner_row,
                         target_idx: row,
-                        kind: edge_kind_index("contains").unwrap(),
+                        kind: crate::buffers::EDGE_CONTAINS,
                         provenance: 0,
                         line: NONE,
                         column: NONE,
@@ -720,7 +720,7 @@ impl<'t> Walker<'t> {
                 callee_name = c[1].to_string();
             }
             let from = self.top_row();
-            self.push_ref_at(from, &callee_name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(from, &callee_name, crate::buffers::EDGE_CALLS, node);
         }
     }
 
@@ -743,7 +743,7 @@ impl<'t> Walker<'t> {
 
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            self.push_ref_at(from, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -764,7 +764,7 @@ impl<'t> Walker<'t> {
             return;
         }
         let from = self.top_row();
-        let refs_kind = edge_kind_index("references").unwrap();
+        let refs_kind = crate::buffers::EDGE_REFERENCES;
 
         let mut parts: Vec<&str> = Vec::new();
         let mut line = 0u32;
@@ -812,7 +812,7 @@ impl<'t> Walker<'t> {
     /// recursion that reaches it.
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
-        let extends_kind = edge_kind_index("extends").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             match child.kind() {
@@ -891,7 +891,7 @@ impl<'t> Walker<'t> {
             .position(|m| m.name == type_name && matches!(m.kind, "struct" | "union" | "enum" | "class"))
             .map(|i| i as u32);
         if let Some(target_row) = target_row {
-            self.push_ref_at(target_row, &trait_name, edge_kind_index("implements").unwrap(), trait_node);
+            self.push_ref_at(target_row, &trait_name, crate::buffers::EDGE_IMPLEMENTS, trait_node);
         }
     }
 

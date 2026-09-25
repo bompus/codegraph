@@ -165,24 +165,19 @@ impl Cols {
 /// JS `String.prototype.slice(0, n)` in UTF-16 units, without splitting a
 /// surrogate pair (when the cut would split one, we stop one code unit short —
 /// a lone surrogate isn't representable in Rust and never round-trips through
-/// SQLite anyway). Returns (sliced, was_truncated_at_or_beyond_n).
-pub fn slice_utf16(s: &str, n: usize) -> (String, bool) {
+/// SQLite anyway).
+pub fn slice_utf16(s: &str, n: usize) -> String {
     let mut used = 0usize;
     let mut out = String::new();
     for c in s.chars() {
         let w = c.len_utf16();
         if used + w > n {
-            return (out, true);
+            break;
         }
         used += w;
         out.push(c);
-        if used == n {
-            // Exactly at the limit: truncated iff any source remains.
-            let truncated = out.len() < s.len();
-            return (out, truncated);
-        }
     }
-    (out, false)
+    out
 }
 
 /// objectKeyName (tree-sitter.ts): strip ONE leading and ONE trailing quote
@@ -206,7 +201,7 @@ pub fn object_key_name(s: &str) -> String {
 /// extractVariable (its `.length >= 100` check fires exactly when the slice
 /// hit the cap).
 pub fn init_signature(value_text: &str) -> String {
-    let (sliced, _) = slice_utf16(value_text, 100);
+    let sliced = slice_utf16(value_text, 100);
     if utf16_len(&sliced) >= 100 {
         format!("= {sliced}...")
     } else {

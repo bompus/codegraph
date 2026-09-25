@@ -191,7 +191,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -267,7 +267,7 @@ impl<'t> Walker<'t> {
     /// The hook's `emit` (lua.ts:108-126): import node at the CALL node +
     /// imports ref from the stack top.
     fn emit_require(&mut self, call: Node<'t>, module: &str) {
-        let (sig, _) = util::slice_utf16(self.text(call).trim(), 100);
+        let sig = util::slice_utf16(self.text(call).trim(), 100);
         let imp = self.create_node(
             "import",
             module,

@@ -574,7 +574,7 @@ pub fn cfnptr_link(files: &[LinkFile], tables: &LinkTables) -> Vec<LinkEdge> {
     // ---- D: field←field propagations (tables read-only here) ----
     let prop: Vec<&LinkFile> = files.iter().filter(|f| f.prop).collect();
     let tabs_ref = &tabs;
-    let propagations: Vec<(String, String)> = crate::par_map(&prop, |f| {
+    let propagations: Vec<(String, String)> = par_map(&prop, |f| {
         let mut v = Vec::new();
         if let Some(t) = read_text(&f.abs) {
             link_propagate_file(&t, f, tabs_ref, &mut v);
@@ -612,7 +612,7 @@ pub fn cfnptr_link(files: &[LinkFile], tables: &LinkTables) -> Vec<LinkEdge> {
     // ---- E: dispatch sites → edges ----
     let disp: Vec<&LinkFile> = files.iter().filter(|f| f.dispatch).collect();
     let tabs_ref = &tabs;
-    crate::par_map(&disp, |f| {
+    par_map(&disp, |f| {
         let mut v = Vec::new();
         if let Some(t) = read_text(&f.abs) {
             link_dispatch_file(&t, f, tabs_ref, &mut v);

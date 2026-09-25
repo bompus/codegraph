@@ -87,7 +87,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name, edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name, crate::buffers::EDGE_CALLS, node);
         }
     }
 
@@ -127,7 +127,7 @@ impl<'t> Walker<'t> {
         ) {
             let text = self.text(recv);
             if capitalized_re().is_match(text) {
-                self.push_ref_at(owner, text, edge_kind_index("references").unwrap(), recv);
+                self.push_ref_at(owner, text, crate::buffers::EDGE_REFERENCES, recv);
             }
         }
     }
@@ -136,7 +136,7 @@ impl<'t> Walker<'t> {
     /// type_identifier of each specifier's user_type, everything as `extends`
     /// (conformances included; `: Module.Base` takes `Module`).
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
-        let extends_kind = edge_kind_index("extends").unwrap();
+        let extends_kind = crate::buffers::EDGE_EXTENDS;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
             if child.kind() != "inheritance_specifier" {

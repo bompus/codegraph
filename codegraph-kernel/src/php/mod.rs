@@ -22,7 +22,7 @@ mod calls;
 mod bindings;
 mod refs;
 use crate::buffers::{
-    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, edge_kind_index, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
+    BINDING_DECL, BINDING_IMPORT, BINDING_LOCAL, BINDING_PARAM, node_kind_index, Arena, BoolFlags, EdgeRow, EmitOut, NodeRow,
     RefRow, Tables, FLAG_IS_STATIC, NONE, NONE_STR,
     REF_FLAG_FILE_PATH,
 };
@@ -266,7 +266,7 @@ impl<'t> Walker<'t> {
         self.tables.push_edge(&EdgeRow {
             source_idx: parent_row,
             target_idx: row,
-            kind: edge_kind_index("contains").unwrap(),
+            kind: crate::buffers::EDGE_CONTAINS,
             provenance: 0,
             line: NONE,
             column: NONE,
@@ -392,7 +392,7 @@ impl<'t> Walker<'t> {
                     .filter(|c| matches!(c.kind(), "name" | "qualified_name"))
                     .collect();
                 let parent = self.top_row();
-                let implements = edge_kind_index("implements").unwrap();
+                let implements = crate::buffers::EDGE_IMPLEMENTS;
                 let line = self.line_of(node);
                 let col = self.col_of(node);
                 for n in names {

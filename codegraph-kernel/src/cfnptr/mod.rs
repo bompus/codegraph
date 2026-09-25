@@ -94,6 +94,7 @@ mod strip;
 mod scan;
 mod env;
 mod link;
+mod napi;
 use self::jsre::*;
 use self::scan::*;
 use self::env::*;
@@ -102,6 +103,38 @@ pub use self::strip::strip_c;
 pub use self::scan::scan_file;
 pub use self::env::file_env;
 pub use self::link::{cfnptr_link, LinkArrEntry, LinkField, LinkFile, LinkFn, LinkTables};
+
+/// Fan `f` over `items` on scoped threads (≤16, ≤ items), output 1:1 with
+/// input order. Per-item work is independent, so the batch scales with
+/// cores instead of riding one worker thread. A chunk thread that panics pads
+/// its slots with `pad()` so alignment survives; per-item panics are the
+/// caller's to catch when it wants finer padding.
+pub(super) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync, pad: impl Fn() -> R) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16)
+        .min(items.len().max(1));
+    if threads <= 1 {
+        return items.iter().map(&f).collect();
+    }
+    let chunk_len = items.len().div_ceil(threads);
+    let chunks: Vec<&[T]> = items.chunks(chunk_len).collect();
+    let mut parts: Vec<Vec<R>> = Vec::with_capacity(chunks.len());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| s.spawn(|| chunk.iter().map(&f).collect::<Vec<_>>()))
+            .collect();
+        for (i, h) in handles.into_iter().enumerate() {
+            match h.join() {
+                Ok(v) => parts.push(v),
+                Err(_) => parts.push(chunks[i].iter().map(|_| pad()).collect()),
+            }
+        }
+    });
+    parts.into_iter().flatten().collect()
+}
 
 #[cfg(test)]
 mod tests {

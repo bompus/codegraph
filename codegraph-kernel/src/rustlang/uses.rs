@@ -21,7 +21,7 @@ impl<'t> Walker<'t> {
             Extra { signature: Some(signature), ..Extra::default() },
         );
         let parent = self.top_row();
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
         if !module_name.is_empty() {
             self.push_ref_at(parent, &module_name, imports_kind, node);
         }
@@ -96,7 +96,7 @@ impl<'t> Walker<'t> {
                 collect(self, c, "", &mut paths);
             }
         }
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
         for (text, n) in paths {
             let leaf = text.rsplit("::").next().unwrap_or("");
             if leaf.is_empty() || matches!(leaf, "self" | "super" | "crate" | "*") {

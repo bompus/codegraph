@@ -10,13 +10,13 @@ impl<'t> Walker<'t> {
         let clean = fqn.strip_prefix('\\').unwrap_or(fqn);
         let Some(last_sep) = clean.rfind('\\') else { return };
         let name = format!("{}::{}", &clean[..last_sep], &clean[last_sep + 1..]);
-        self.push_ref_at(from_row, &name, edge_kind_index("imports").unwrap(), node);
+        self.push_ref_at(from_row, &name, crate::buffers::EDGE_IMPORTS, node);
     }
 
     pub(super) fn extract_import(&mut self, node: Node<'t>) {
         let kind = node.kind();
         let import_text = self.text(node).trim().to_string();
-        let imports_kind = edge_kind_index("imports").unwrap();
+        let imports_kind = crate::buffers::EDGE_IMPORTS;
 
         if matches!(
             kind,

@@ -93,7 +93,7 @@ impl<'t> Walker<'t> {
         );
         if !module_name.is_empty() {
             let parent = self.top_row();
-            self.push_ref_at(parent, &module_name, edge_kind_index("imports").unwrap(), node);
+            self.push_ref_at(parent, &module_name, crate::buffers::EDGE_IMPORTS, node);
             let local = include_local_name(&module_name);
             self.emit_import_binding(&local, &module_name, node);
         }
