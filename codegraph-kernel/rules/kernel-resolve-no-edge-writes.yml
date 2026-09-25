@@ -6,7 +6,7 @@ message: >-
   read-only; persistence happens TS-side on snapshot-isolated connections
   (the -shm isolation contract).
 files:
-  - src/resolve.rs
+  - src/resolve/**/*.rs
 rule:
   any:
     - kind: string_literal
