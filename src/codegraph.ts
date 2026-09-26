@@ -1057,7 +1057,7 @@ export class CodeGraph {
           // first makes that pass the refresh, instead of synthesizing twice.
           const synthesisRuns = this.resolver.synthesisRuns;
           if (this.synthesisDirty.size > 0) {
-            this.queries.deleteSynthesizedEdgesRegisteredIn([...this.synthesisDirty]);
+            this.queries.deleteAllSynthesizedEdges();
           }
           options.onProgress?.({
             phase: 'resolving',
@@ -1405,9 +1405,15 @@ export class CodeGraph {
    * Processes chunks of unresolved refs, persisting results after each batch.
    */
   /**
-   * Recompute synthesized edges for the files marked dirty: drop the ones
-   * wired up in those files, then re-run synthesis (idempotent inserts restore
-   * whatever still holds). Caller holds the index mutex and file lock.
+   * Recompute synthesized edges after files changed: drop every synthesized
+   * edge, then re-run synthesis over the whole graph, so the result is exactly
+   * what a fresh index would hold. A pass's edges can depend on files other
+   * than the ones they name (a function-pointer edge records its dispatch
+   * site, not the registration that moved), and the Go passes read the
+   * contains/implements edges they synthesized earlier in the run, so stale
+   * edges must be gone first. Until the refresh finishes, readers see fewer
+   * synthesized edges, never wrong ones. Caller holds the index mutex and
+   * file lock.
    */
   private async refreshSynthesis(): Promise<void> {
     if (this.synthesisDirty.size === 0) return;
@@ -1415,7 +1421,7 @@ export class CodeGraph {
     this.synthesisDirty.clear();
     const t = Date.now();
     try {
-      const dropped = this.queries.deleteSynthesizedEdgesRegisteredIn(files);
+      const dropped = this.queries.deleteAllSynthesizedEdges();
       const edges = await this.resolver.resynthesize();
       this.lastSynthesisMs = Date.now() - t;
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${dropped} dropped, ${edges} synthesized)`);

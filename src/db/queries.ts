@@ -3798,25 +3798,18 @@ export class QueryBuilder {
    * Get a metadata value by key
    */
   /**
-   * Delete synthesized edges whose wiring site (`metadata.registeredAt`,
-   * `file:line`) is in one of `filePaths` — the edges a sync must recompute
-   * because the registration that justified them may be gone. Edges whose
-   * source or target lives in those files already went with their nodes.
+   * Delete every synthesized edge ahead of a full resynthesis, so the refresh
+   * leaves exactly the edges a fresh index would. Deleting only the edges
+   * registered in changed files was not enough: a function-pointer edge
+   * records its DISPATCH site, so moving a registration left the old edge in
+   * place. Heuristic provenance narrows the scan through its index; markdown
+   * and resolver heuristics carry no `synthesizedBy` and stay.
    */
-  deleteSynthesizedEdgesRegisteredIn(filePaths: readonly string[]): number {
-    if (filePaths.length === 0) return 0;
-    const stmt = this.db.prepare(
-      `DELETE FROM edges WHERE provenance = 'heuristic'
-         AND json_extract(metadata, '$.registeredAt') LIKE ? ESCAPE '\\'`,
-    );
-    let deleted = 0;
-    this.db.transaction(() => {
-      for (const file of filePaths) {
-        const pattern = file.replace(/[\\%_]/g, (c) => `\\${c}`) + ':%';
-        deleted += Number(stmt.run(pattern).changes ?? 0);
-      }
-    })();
-    return deleted;
+  deleteAllSynthesizedEdges(): number {
+    const r = this.db.prepare(
+      `DELETE FROM edges WHERE provenance = 'heuristic' AND json_extract(metadata, '$.synthesizedBy') IS NOT NULL`,
+    ).run();
+    return Number(r.changes ?? 0);
   }
 
   // ===========================================================================

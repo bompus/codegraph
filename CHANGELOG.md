@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- After a `codegraph sync`, C function-pointer calls could still point at a handler that had been removed from its dispatch table, until the next full index. A sync now rebuilds these inferred links from scratch, so it ends with the same graph a full index would.
+
 - A sync that changes a few files no longer re-scores every near-duplicate pair in the project: pair scores are kept between runs, and only the pairs a changed function is in are compared again.
 
 - With the managed launcher, `codegraph_explore` and the other tools stopped answering for the rest of a session with `CodeGraph child exited` once a deployment update had stopped the project's daemon and changed the tool descriptions. The launcher now starts the new build in that case and keeps serving; the host picks up the new descriptions on its next reconnect.
