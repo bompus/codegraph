@@ -401,6 +401,17 @@ export class ReferenceResolver {
   }
 
   /**
+   * Re-run dynamic-edge synthesis over the current graph. The full index runs
+   * it at the end of resolution; an incremental sync resolves only the changed
+   * files and calls this afterwards, so the edges a changed file wires up come
+   * back. Inserts are idempotent (INSERT OR IGNORE on the edge identity).
+   */
+  async resynthesize(): Promise<number> {
+    this.clearCaches();
+    return synthesizeCallbackEdges(this.queries, this.context);
+  }
+
+  /**
    * Clear internal caches
    */
   clearCaches(): void {

@@ -802,6 +802,12 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.53 Synthesized edges on incremental sync (2026-09-26)
+
+The scoped sync path resolves only the changed files and never ran synthesis, so every synthesized edge a changed file wired up (callbacks, React renders, cross-tier HTTP, external endpoints) was missing until the next full index, and an edge whose registration lived in a third file stayed after the registration was deleted (`callback-edge-synthesis.md`, remaining work 2). A sync now drops the synthesized edges whose `registeredAt` is in a changed file and re-runs synthesis; its inserts are idempotent, so edges that still hold come back. Edges whose source or target is in a changed file already went with their nodes.
+
+A full synthesis pass costs 0.2-2 s at the end of a full index (halo 0.33 s, ktor 0.33 s, koel 0.23 s, pretix 1.7 s, trezor-suite 2.0 s). Re-run after a one-file sync it took 2.8 s on pretix and 4.5 s on trezor-suite: no resolver pool, and its caches are cleared. So watcher syncs and the MCP catch-up sync defer it: it runs once edits pause, after at least 3 s and four times the last refresh (at most 5 minutes), under the same mutex and file lock as a sync. A one-shot `codegraph sync` refreshes inline. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns it off. Not covered: a pure-removal sync (the removed file's wiring sites are not known to the sync result).
+
 ### 5.52 External HTTP endpoints (2026-09-26)
 
 The HTTP client pass (`tier-synthesizer.ts`) already linked a JavaScript/TypeScript `fetch`/axios/ky/got call to the in-repo route it hits. A call to an http(s) host that no route serves is now an `endpoint` node (`GET https://api.github.com/repos/${…}`), linked from the calling function by a `calls` edge (`synthesizedBy: http-external`). The origin comes from the URL written at the call site or from the client's `baseURL`; other schemes (`fake://`, `file://`), comments and relative paths are ignored. The pass now also runs in projects with no routes. `endpoint` is appended to the node kinds in TypeScript and the kernel (the order is the wire contract).
@@ -814,7 +820,7 @@ Passes may run on read-only workers and return edges only, so the synthesis merg
 | warp-drive | 2 | GitHub contributors and users APIs: both real |
 | koel, halo | 0 | their calls use relative paths and an environment base URL |
 
-Limits: only a URL written at the call site (or a literal `baseURL`) counts, not one held in a constant; like every synthesized edge, endpoints are refreshed on a full index, not an incremental sync (`callback-edge-synthesis.md`, remaining work 2).
+Limits: only a URL written at the call site (or a literal `baseURL`) counts, not one held in a constant. (Refreshing on incremental sync came with 5.53.)
 
 ### 5.51 Near-duplicate function bodies (2026-09-26)
 

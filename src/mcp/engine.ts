@@ -392,8 +392,10 @@ export class MCPEngine {
   private catchUpSync(): void {
     const cg = this.cg;
     if (!cg) return;
+    // Synthesized edges refresh after the gate opens: the first tool call
+    // waits on this sync, and re-synthesis can take seconds.
     const p = cg
-      .sync()
+      .sync({ deferSynthesis: true })
       .then((result) => {
         const changed = result.filesAdded + result.filesModified + result.filesRemoved;
         if (changed > 0) {
