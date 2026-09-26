@@ -159,6 +159,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A shared codegraph server that stops (after idling, or on request) no longer hangs when a new session connects at that moment. Until that session gave up, the half-stopped server kept the project locked, and every other new session's codegraph tools failed with "writer lock held".
+
 - In JavaScript and TypeScript, a method call on a variable holding a factory's result now resolves again when the factory call spans several lines, as in `const server = await createServer({ … })` followed by `server.listen()`.
 
 - The Claude Code prompt hook no longer adds unrelated code to the conversation each time a background task finishes; it now ignores Claude Code's own notifications.

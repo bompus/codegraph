@@ -171,6 +171,9 @@ export interface DaemonStartResult {
 export class Daemon {
   private server: net.Server | null = null;
   private clients = new Set<MCPSession>();
+  // Every accepted connection, including one whose client-hello has not arrived
+  // and so is not yet in `clients`. `server.close()` waits for all of them.
+  private sockets = new Set<net.Socket>();
   /** Per-client peer pids from the optional client-hello, for the liveness sweep. */
   private clientPeers = new Map<MCPSession, { pid: number | null; hostPid: number | null }>();
   private idleTimer: NodeJS.Timeout | null = null;
@@ -362,6 +365,12 @@ export class Daemon {
       try { session.stop(); } catch { /* best-effort */ }
     }
     this.clients.clear();
+    // A connection accepted just before stop, its client-hello still pending, is
+    // in no session. Left open, `server.close()` waits on it while this process
+    // keeps the writer lock with its socket already gone, and every new client
+    // fails its daemon connect and then its in-process fallback until it closes.
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
     if (this.server) {
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));
       this.server = null;
@@ -379,6 +388,12 @@ export class Daemon {
   }
 
   private handleConnection(socket: net.Socket): void {
+    if (this.stopping) {
+      socket.destroy();
+      return;
+    }
+    this.sockets.add(socket);
+    socket.once('close', () => this.sockets.delete(socket));
     // Hello first so the proxy can verify versions before piping any
     // application bytes. The proxy reads exactly one line, then forwards.
     const hello: DaemonHello = {
@@ -399,7 +414,7 @@ export class Daemon {
       // here with a dead socket. Attaching onClose now would miss the close
       // that already fired, leaking a null-peer phantom client the sweep can't
       // reap — the daemon would never idle-exit. A closed socket is no client.
-      if (socket.destroyed) return;
+      if (socket.destroyed || this.stopping) return;
       const transport = new SocketTransport(socket);
       const session = new MCPSession(transport, this.engine, {
         explicitProjectPath: this.projectRoot,

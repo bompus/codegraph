@@ -35,6 +35,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
@@ -618,6 +619,31 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(await waitProcessExit(daemonPid, 10000)).toBe(true);
     expect(fs.existsSync(path.join(realRoot, '.codegraph', 'daemon.pid'))).toBe(false);
   }, 30000);
+
+  it('stop is not held open by an accepted connection that never sent its client-hello', async () => {
+    // A launcher connecting just as the daemon stops is accepted but is not yet a
+    // client. The stop used to wait on that socket with the writer lock held and
+    // the socket gone, so every other new client failed until it closed.
+    const env = { CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '30000', CODEGRAPH_PPID_POLL_MS: '5000' };
+    const server = spawnServer(tempDir, env);
+    servers.push(server);
+    sendInitialize(server.child, `file://${tempDir}`, 1);
+    await waitFor(() => findResponse(server.stdout, 1), 20000, 25, 'initialize response');
+    // Attached means the daemon is listening with its SIGTERM handler installed.
+    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 8000, 25, 'daemon attach log');
+    await waitFor(() => (readLockPid(realRoot) ?? 0) > 0, 8000, 25, 'daemon pidfile');
+    const daemonPid = readLockPid(realRoot)!;
+    const { socketPath } = JSON.parse(fs.readFileSync(path.join(realRoot, '.codegraph', 'daemon.pid'), 'utf8'));
+    const pending = net.connect(socketPath);
+    await new Promise((resolve, reject) => pending.once('connect', resolve).once('error', reject));
+    try {
+      process.kill(daemonPid, 'SIGTERM');
+      expect(await waitProcessExit(daemonPid, 5000)).toBe(true);
+      expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
+    } finally {
+      pending.destroy();
+    }
+  }, 45000);
 
   it('proxy survives the daemon dying mid-session and keeps serving (#662)', async () => {
     // The #662 scenario: an MCP host SIGTERM's the shared daemon while a session
