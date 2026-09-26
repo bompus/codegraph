@@ -31,9 +31,6 @@ export interface UnresolvedRef {
   /** `unresolved_refs.id` when loaded from the database — post-pass cleanup
    * targets exactly this row instead of every same-key sibling (#1269). */
   rowId?: number;
-  /** Kernel passthrough gate that deferred this ref to the TS pipeline —
-   * diagnostics only (CODEGRAPH_RESOLVE_PROFILE row suffix); never persisted. */
-  kernelReason?: string;
 }
 
 /**
@@ -75,6 +72,19 @@ export interface ResolvedRef {
 /**
  * Result of resolution attempt
  */
+/** Per-run kernel accounting, printed under CODEGRAPH_RESOLVE_PROFILE. */
+export interface KernelResolveStats {
+  /** Refs the kernel settled. */
+  handled: number;
+  /** Settled refs that ran the framework merge over an EMPTY kernel
+   *  candidate list (the no_candidates marker: only framework candidates
+   *  can win). */
+  frameworkMerge?: number;
+  /** Settled refs that ran the framework merge WITH kernel candidates — a
+   *  real first-max. */
+  frameworkMergeWithCands?: number;
+}
+
 export interface ResolutionResult {
   /** Successfully resolved references */
   resolved: ResolvedRef[];
@@ -86,20 +96,8 @@ export interface ResolutionResult {
     resolved: number;
     unresolved: number;
     byMethod: Record<string, number>;
-    /** Kernel-path accounting: refs settled natively vs handed back to TS */
-    kernel?: {
-      handled: number;
-      passthrough: number;
-      /** Passthrough outcomes by kernel-reported gate (diagnostics). */
-      reasons?: Record<string, number>;
-      /** Handled outcomes that still ran the TS framework merge with an
-       *  EMPTY kernel candidate list (the no_candidates marker — the merge
-       *  can only produce framework candidates). */
-      frameworkMerge?: number;
-      /** Handled outcomes that ran the framework merge WITH kernel
-       *  candidates present — a real first-max, not a dead dispatch. */
-      frameworkMergeWithCands?: number;
-    };
+    /** Kernel-path accounting (CODEGRAPH_RESOLVE_PROFILE). */
+    kernel?: KernelResolveStats;
   };
 }
 
