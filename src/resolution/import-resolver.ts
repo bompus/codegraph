@@ -1951,19 +1951,39 @@ function resolveJavaImportedReference(
 ): ResolvedRef | null {
   if (imports.length === 0) return null;
 
-  const ext = ref.language === 'kotlin' ? '.kt' : '.java';
+  // Java and Kotlin import each other's declarations: a Kotlin test's
+  // `import io.javalin.apibuilder.ApiBuilder.get` names a static method in a
+  // .java file. Matching only the importer's own language and extension missed
+  // it, and the bare `get(...)` fell through to name matching, which bound it
+  // to an unrelated same-named method.
+  const isJvm = (language: string) => language === 'java' || language === 'kotlin';
+  const endsWithFqn = (filePath: string, fqn: string) => {
+    const fp = filePath.replace(/\\/g, '/');
+    const base = fqn.replace(/\./g, '/');
+    return ['.java', '.kt'].some((ext) => fp.endsWith(base + ext) || fp.endsWith('/' + base + ext));
+  };
+
+  // Kotlin extraction reduces a deep receiver chain (`app.unsafe.routes.get(…)`)
+  // to its bare method name, and the ref's column is where the chain starts. A
+  // bare call is the import's only when the source there begins with the name;
+  // otherwise the file's `import …ApiBuilder.get` would claim every chained
+  // `.get(` at import confidence.
+  const isBareCallSite = (): boolean => {
+    const line = (context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/))?.[ref.line - 1];
+    if (line === undefined) return true;
+    const at = line.slice(ref.column);
+    return at.startsWith(ref.referenceName) && !/^[\w$]/.test(at.slice(ref.referenceName.length));
+  };
 
   for (const imp of imports) {
     const matchesBare = imp.localName === ref.referenceName;
     const matchesQualified = ref.referenceName.startsWith(imp.localName + '.');
     if (!matchesBare && !matchesQualified) continue;
+    if (matchesBare && ref.referenceKind === 'calls' && !isBareCallSite()) continue;
 
-    // Convert FQN to a file-path suffix. `com.example.Foo` ->
-    // `com/example/Foo.java` (or `.kt`). The actual file may live
-    // under any source root (`src/main/java/`, `src/`, etc.), so match
-    // by suffix rather than exact path.
-    const fqnPath = imp.source.replace(/\./g, '/') + ext;
-
+    // The FQN as a file-path suffix: `com.example.Foo` -> `com/example/Foo.java`
+    // or `.kt`. The file may live under any source root (`src/main/java/`,
+    // `src/`, etc.), so match by suffix rather than exact path.
     // Which symbol name to look up: the class itself, or a member.
     const memberName = matchesBare
       ? imp.localName
@@ -1971,9 +1991,8 @@ function resolveJavaImportedReference(
 
     const candidates = context.getNodesByName(memberName);
     for (const node of candidates) {
-      if (node.language !== ref.language) continue;
-      const fp = node.filePath.replace(/\\/g, '/');
-      if (fp.endsWith(fqnPath) || fp.endsWith('/' + fqnPath)) {
+      if (!isJvm(node.language)) continue;
+      if (endsWithFqn(node.filePath, imp.source)) {
         return {
           original: ref,
           targetNodeId: node.id,
@@ -1991,11 +2010,9 @@ function resolveJavaImportedReference(
       const dot = imp.source.lastIndexOf('.');
       if (dot > 0) {
         const ownerFqn = imp.source.substring(0, dot);
-        const ownerPath = ownerFqn.replace(/\./g, '/') + ext;
         for (const node of candidates) {
-          if (node.language !== ref.language) continue;
-          const fp = node.filePath.replace(/\\/g, '/');
-          if (fp.endsWith(ownerPath) || fp.endsWith('/' + ownerPath)) {
+          if (!isJvm(node.language)) continue;
+          if (endsWithFqn(node.filePath, ownerFqn)) {
             return {
               original: ref,
               targetNodeId: node.id,

@@ -802,6 +802,14 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.50 Kotlin imports of Java members (2026-09-26)
+
+Kotlin and Java import each other's declarations, but the JVM import resolver matched only the importer's own language and file extension. On javalin, Kotlin tests' `import io.javalin.apibuilder.ApiBuilder.get` never resolved, and the bare `get(...)` fell to name matching, which bound it to the test HTTP client `HttpUtil::get`. The resolver (TypeScript and kernel) now accepts either JVM language and either extension. A bare call is claimed by the import only when the source at the call's column begins with the name: Kotlin extraction reduces a chain like `app.unsafe.routes.get(...)` to a bare `get` whose column is the start of the chain, and without the check the file's import would have claimed about 120 chained calls at import confidence.
+
+javalin: 408 edges gained, 391 lost. 204 are the same edge relabelled from a name match to an import (`RouteRole`, `Context`, `HandlerType`, `Handler`…). 187 were retargeted, all onto the imported declaration: `ApiBuilder::get` 60 (from `HttpUtil::get` 59), `ApiBuilder::path` 46 (from `Context::path`), `ApiBuilder::crud`/`post`/`query`/`patch`/`delete`, and `io.javalin.testing::TestUtil` (from `io.javalin::TestUtil`). Spot checks matched each call's import. ktor and Exposed (Kotlin only): no change. javalin is now a pinned precision corpus with one present and one absent case, both held.
+
+The 619 chained `.get(...)` calls that still land on `HttpUtil::get` by name need the receiver's type, which static extraction does not recover. They remain labelled as name matches (5.44). The `http.get(...)` calls on a lambda parameter typed by a functional interface stay unresolved for the same reason.
+
 ### 5.49 Multi-line factory initializers resolve again (2026-09-26)
 
 `vite-factory-receiver-control` had been VIOLATED since a5c106cc (2026-09-16, found by `scripts/precision/bisect-case.sh`). That commit required the factory call to end the initializer, but the resolver read only three lines of the declaration, so a call whose arguments span more lines never closed inside the window and the receiver's type was never taken from the factory. The window is now 40 lines, in the TypeScript resolver and the kernel.

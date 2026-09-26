@@ -159,6 +159,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In Kotlin, a call to a function imported from a Java class (`import io.javalin.apibuilder.ApiBuilder.get`, then `get(...)`) now links to that Java function instead of an unrelated function with the same name, and Kotlin references to imported Java classes are now linked through the import.
+
 - A session that cannot reach the shared codegraph server, because that server stopped answering, runs a different version, or another session already fell back, now still gets codegraph's answers instead of a "writer lock held" error. It reads the index itself and leaves keeping it up to date to the process that holds the lock.
 
 - A shared codegraph server that stops (after idling, or on request) no longer hangs when a new session connects at that moment. Until that session gave up, the half-stopped server kept the project locked, and every other new session's codegraph tools failed with "writer lock held".
