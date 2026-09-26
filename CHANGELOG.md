@@ -159,6 +159,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In JavaScript and TypeScript, a method call on a variable holding a factory's result now resolves again when the factory call spans several lines, as in `const server = await createServer({ … })` followed by `server.listen()`.
+
 - The Claude Code prompt hook no longer adds unrelated code to the conversation each time a background task finishes; it now ignores Claude Code's own notifications.
 
 - The codegraph server's query workers no longer load the indexing code they never run, cutting each worker from about 96 MB to about 32 MB and the idle server by about 40 MB.

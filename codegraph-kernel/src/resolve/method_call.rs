@@ -96,7 +96,7 @@ impl KernelResolver {
         let declaration = if declares_value {
             lines.as_ref().map(|ls| {
                 let lo = (binding.line - 1).max(0) as usize;
-                let hi = ((binding.line + 2) as usize).min(ls.len());
+                let hi = (lo + FACTORY_DECLARATION_LINES).min(ls.len());
                 ls[lo..hi].join("\n")
             })
         } else {
@@ -874,6 +874,11 @@ fn ends_initializer(init_s: &str, call_end: i64) -> bool {
     }
     false
 }
+
+/// Lines of a declaration read for its factory initializer — enough to reach
+/// the closing paren of a multi-line call, which the tail rule needs
+/// (name-matcher.ts FACTORY_DECLARATION_LINES).
+const FACTORY_DECLARATION_LINES: usize = 40;
 
 /// A binding initializer's factory call (see factory_initializer).
 pub(super) struct FactoryInit {

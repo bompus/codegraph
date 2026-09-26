@@ -2627,6 +2627,15 @@ export function isBindingReceiverCall(ref: UnresolvedRef): boolean {
 }
 
 /** A member call with binding evidence is exclusive: unknown receivers never name-match. */
+/**
+ * Lines of a `const x = …` declaration read for its factory initializer. A
+ * receiver binds a factory's result only when that call ends the initializer,
+ * so the window must reach the closing paren of a call whose arguments span
+ * lines (`createServerModuleRunner(env, {\n  hmr: false,\n})`). Mirrored by
+ * the kernel's factory_initializer.
+ */
+const FACTORY_DECLARATION_LINES = 40;
+
 export function matchBoundReceiverCall(
   ref: UnresolvedRef, context: ResolutionContext,
 ): ResolvedRef | null | undefined {
@@ -2693,7 +2702,9 @@ export function matchBoundReceiverCall(
   const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const lines = context.getFileLines?.(ref.filePath);
   const declaresValue = new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*=`).test(lines?.[binding.line - 1] ?? '');
-  const declaration = declaresValue ? lines?.slice(binding.line - 1, binding.line + 2).join('\n') : undefined;
+  // Enough lines for the whole initializer: the tail rule below needs the
+  // factory call's closing paren, and an options object alone spans several.
+  const declaration = declaresValue ? lines?.slice(binding.line - 1, binding.line - 1 + FACTORY_DECLARATION_LINES).join('\n') : undefined;
   const signature = value?.signature ?? declaration?.match(new RegExp(`\\b(?:const|let|var)\\s+${escaped}\\s*(=[\\s\\S]+)`))?.[1];
   const init = signature ?? '';
   const site = { ...ref, line: binding.line };
