@@ -828,6 +828,20 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.76 Resolver port, leg 7c: Markdown (2026-09-26)
+
+Markdown refs are link paths (`AGENTS.md`, `docs/x.md#anchor`, `src/util.ts`), and TypeScript answers them with matchReference's file-path arm, which the kernel already ports. They went to TypeScript only because `markdown` wasn't in the kernel's migrated set. Admitting it was the whole change, and it was the largest punt left on every JS/TS corpus. A few Markdown refs now punt as `member-tail` instead (zod 19), which leaves them to 7d.
+
+| Corpus | Native before (Markdown punts) | Native after | Dump |
+|---|---|---|---|
+| vitest | 97.3% (2,060) | 99.7% | identical |
+| vite | 97.9% (890) | 99.9% | identical |
+| zod | 98.8% (431) | 99.9% | identical |
+| exposed | 99.2% (369) | 99.6% | identical |
+| svelte | 99.3% (370) | 99.9% | identical |
+| ktor, celery, Ocelot, javalin | 99.8–99.9% | 100.0% | identical |
+| laravel | 99.9% | 99.9% | identical |
+
 ### 5.75 Resolver port, leg 7b: the conformance pass through the kernel (2026-09-26)
 
 A chain call nothing matched (`Foo.create().bar()` in a chain language, or PHP `this->prop.method`) came back as a `defer` punt. TypeScript then re-ran its whole pipeline only to consult the framework resolvers and queue the ref for the conformance pass, which walks supertypes once every implements/extends edge is written. The pass itself called the TypeScript chain matchers directly.

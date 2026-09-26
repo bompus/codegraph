@@ -42,6 +42,7 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "lua"
             | "luau"
             | "r"
+            | "markdown"
     )
 }
 
