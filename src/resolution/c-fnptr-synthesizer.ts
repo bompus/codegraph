@@ -91,9 +91,12 @@ import { memoryBudgetBytes } from './memory-budget';
 import { LRUCache } from './lru-cache';
 import { stripCommentsForRegex } from './strip-comments';
 import { getKernel } from '../extraction/kernel/loader';
+import { isTestPath } from '../search/query-utils';
 import type { CfnptrFactsOut, CfnptrFileEnvOut, CfnptrFileIn, CfnptrLinkFileIn, CfnptrPathIn } from '../extraction/kernel/loader';
 
 const C_CPP_EXT = /\.(c|h|cc|cpp|cxx|hpp|hh|hxx|cppm|ipp|inl|tcc)$/i;
+const HEADER_EXT = /\.(h|hh|hpp|hxx|inl|tcc|ipp)$/i;
+const C_EXT = /\.[ch]$/i;
 const FN_KINDS = new Set(['function', 'method']);
 const FANOUT_CAP = 300; // a real command table (git ~150) is legitimate fan-out; this only stops pathological cases.
 
@@ -1046,17 +1049,76 @@ export async function cFnPointerDispatchEdges(
   // (O(nodes) memory, part of the #1212 kernel OOM).
 
   // ---- function-name → node resolution (prefer a function in the same file) ----
+  // Headers a file includes, directly or through other headers (bounded:
+  // real include chains to a static inline are short).
+  const includedByCache = new LRUCache<string, Set<string>>(1024);
+  const includedBy = (file: string): Set<string> => {
+    let seen = includedByCache.get(file);
+    if (seen) return seen;
+    seen = new Set();
+    let level = [file];
+    for (let d = 0; d < 4 && level.length > 0; d++) {
+      const next: string[] = [];
+      for (const f of level) for (const inc of localIncludesOf(f)) if (!seen.has(inc)) { seen.add(inc); next.push(inc); }
+      level = next;
+    }
+    includedByCache.set(file, seen);
+    return seen;
+  };
+  // Node ids of each file's `static` functions, from its binding rows.
+  const staticIdCache = new LRUCache<string, Set<string>>(2048);
+  const staticIdsIn = (file: string): Set<string> => {
+    let ids = staticIdCache.get(file);
+    if (!ids) {
+      ids = new Set();
+      for (const b of queries.getBindingsByFile(file)) if (b.storage === 'static' && b.nodeId) ids.add(b.nodeId);
+      staticIdCache.set(file, ids);
+    }
+    return ids;
+  };
   const resolveFn = (name: string, preferFile?: string): Node | null => {
     // C and C++ functions only: a same-named Python or Rust function is never
     // what a C table registers, and must not displace the C one.
     const cands = ctx.getNodesByName(name).filter((n) => FN_KINDS.has(n.kind) && C_CPP_EXT.test(n.filePath));
     if (cands.length === 0) return null;
     if (cands.length === 1) return cands[0]!;
-    if (preferFile) {
-      const same = cands.find((n) => n.filePath === preferFile);
-      if (same) return same;
-    }
-    return cands[0]!;
+    if (!preferFile) return cands[0]!;
+    const same = cands.find((n) => n.filePath === preferFile);
+    if (same) return same;
+    // Several definitions, none in the registering file. C only lets a file
+    // name another file's function when it is not `static`, or a header's
+    // static inline when the file includes that header; a C file
+    // registers C functions, not C++ methods, and production code does not
+    // register a test program's functions. Of what is left, take the only
+    // one; else the only non-static one (the real function beside a header's
+    // config stub); else, when all are in one file, its first (`#ifdef`
+    // variants of one function); else the only one in the registering file's
+    // directory, or the only one sharing its deepest directory path at least
+    // two levels down. Otherwise link nothing rather than an arbitrary
+    // namesake.
+    const fromC = C_EXT.test(preferFile);
+    const fromTest = isTestPath(preferFile);
+    const visible = cands.filter((n) =>
+      (!fromC || (n.kind === 'function' && C_EXT.test(n.filePath))) &&
+      (fromTest || !isTestPath(n.filePath)) &&
+      (!staticIdsIn(n.filePath).has(n.id) || (HEADER_EXT.test(n.filePath) && includedBy(preferFile).has(n.filePath))));
+    if (visible.length === 1) return visible[0]!;
+    const extern = visible.filter((n) => !staticIdsIn(n.filePath).has(n.id));
+    if (extern.length === 1) return extern[0]!;
+    if (visible.length > 1 && visible.every((n) => n.filePath === visible[0]!.filePath)) return visible[0]!;
+    const dir = path.posix.dirname(preferFile);
+    const near = visible.filter((n) => path.posix.dirname(n.filePath) === dir);
+    if (near.length === 1) return near[0]!;
+    const dirParts = dir.split('/');
+    const shared = (f: string): number => {
+      const parts = path.posix.dirname(f).split('/');
+      let k = 0;
+      while (k < parts.length && k < dirParts.length && parts[k] === dirParts[k]) k++;
+      return k;
+    };
+    const depth = visible.map((n) => shared(n.filePath));
+    const best = Math.max(0, ...depth);
+    return best >= 2 && depth.filter((d) => d === best).length === 1 ? visible[depth.indexOf(best)]! : null;
   };
 
   // ---- Stage C: registrations — Map<"struct.field", Set<funcNodeId>> ----

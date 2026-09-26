@@ -178,6 +178,54 @@ int do_io(struct vfs *v, int fd) { return v->read(fd) + v->write(fd); }
     expect(edges.every((e) => e.via === 'vfs.read' || e.via === 'vfs.write')).toBe(true);
   });
 
+  it('resolves an ambiguous handler name by C visibility, else leaves it unlinked', async () => {
+    write('drv/ops.h', `struct ops { int (*a)(int); int (*b)(int); int (*c)(int); };\n`);
+    // a: static in one other file (invisible here), non-static in another.
+    write('lib/one.c', `static int on_a(int x) { return x; }\nstatic int on_b(int x) { return x; }\nint on_c(int x) { return x; }\n`);
+    write('lib/two.c', `int on_a(int x) { return -x; }\nstatic int on_b(int x) { return -x; }\n`);
+    // c: non-static in two places; the one beside the registering file wins.
+    write('drv/near.c', `int on_c(int x) { return 2 * x; }\n`);
+    write('drv/ops.c', `
+#include "ops.h"
+int on_a(int); int on_b(int); int on_c(int);
+static struct ops the_ops = { .a = on_a, .b = on_b, .c = on_c };
+int use(struct ops *o, int x) { return o->a(x) + o->b(x) + o->c(x); }
+`);
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const rows: { tgt: string; file: string }[] = (cg as any).db.db
+      .prepare(
+        `SELECT t.name tgt, t.file_path file FROM edges e JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'fn-pointer-dispatch' ORDER BY 1, 2`
+      )
+      .all();
+    cg.close?.();
+    expect(rows.map((r) => `${r.tgt}@${r.file}`)).toEqual(['on_a@lib/two.c', 'on_c@drv/near.c']);
+  });
+
+  it('takes the first of #ifdef variants of one function, and the nearest in the tree', async () => {
+    write('kernel/sysctl.c', `#ifdef CONFIG_X\nint proc_minmax(int x) { return x; }\n#else\nint proc_minmax(int x) { return 0; }\n#endif\n`);
+    write('arch/sh/kernel/smp.c', `int native_off(int x) { return x; }\n`);
+    write('arch/x86/kernel/smp.c', `int native_off(int x) { return -x; }\n`);
+    write('arch/sh/kernel/cpu/ops.h', `struct cops { int (*h)(int); int (*off)(int); };\n`);
+    write('arch/sh/kernel/cpu/ops.c', `
+#include "ops.h"
+int proc_minmax(int); int native_off(int);
+static struct cops c = { .h = proc_minmax, .off = native_off };
+int use(struct cops *o, int x) { return o->h(x) + o->off(x); }
+`);
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const rows: { tgt: string; file: string }[] = (cg as any).db.db
+      .prepare(
+        `SELECT DISTINCT t.name tgt, t.file_path file FROM edges e JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'fn-pointer-dispatch' ORDER BY 1, 2`
+      )
+      .all();
+    cg.close?.();
+    expect(rows.map((r) => `${r.tgt}@${r.file}`)).toEqual(['native_off@arch/sh/kernel/smp.c', 'proc_minmax@kernel/sysctl.c']);
+  });
+
   it('links registrations only to C/C++ functions, never a same-named function in another language', async () => {
     write('ops.h', `struct ops { int (*read)(int); int (*probe)(int); };\n`);
     write('impl.c', `int impl_read(int fd) { return fd; }\n`);
