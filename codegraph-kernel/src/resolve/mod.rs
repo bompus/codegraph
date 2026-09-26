@@ -448,6 +448,7 @@ mod awaited;
 mod iteration;
 mod this_member;
 mod store;
+mod live_conn;
 use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
@@ -460,6 +461,8 @@ pub struct KernelResolver {
     // Option so close() can drop the Connection deterministically — see
     // close() for why GC-timed teardown is unsafe on a shared -shm.
     conn: Option<Connection>,
+    /// The conn is on the live db: park it instead of closing (live_conn).
+    live: bool,
     project_root: String,
     root_abs: String,
     /// AliasMap (project-aliases.ts), as the TS side passes it.
@@ -556,10 +559,11 @@ fn uri_path(db_path: &str) -> String {
 impl KernelResolver {
     #[napi(constructor)]
     pub fn new(config: KernelResolverConfig) -> Result<Self> {
-        let conn = if config.snapshot.unwrap_or(false) {
+        let snapshot = config.snapshot.unwrap_or(false);
+        let conn = if snapshot {
             open_immutable(&config.db_path)
         } else {
-            open_read_only_shm(&config.db_path)
+            live_conn::take(&config.db_path).map_or_else(|| open_read_only_shm(&config.db_path), Ok)
         }
             .map_err(|e| Error::from_reason(format!("KernelResolver open {}: {e}", config.db_path)))?;
         let root_abs = pos_normalize(&config.project_root);
@@ -580,6 +584,7 @@ impl KernelResolver {
         let cpp_include_dirs = config.cpp_include_dirs.unwrap_or_default();
         Ok(KernelResolver {
             conn: Some(conn),
+            live: !snapshot,
             table: std::cell::OnceCell::new(),
             lookups: config.query_lookups.unwrap_or(false).then(Default::default),
             db_path: config.db_path,
@@ -615,20 +620,26 @@ impl KernelResolver {
         })
     }
 
-    /// Deterministic connection teardown. Without it the rusqlite Connection
-    /// closes whenever V8 GCs the JS wrapper — at an arbitrary later moment,
-    /// possibly while resolver-pool workers' node:sqlite conns are mid-WAL
-    /// I/O on the live -shm. The bundled SQLite's intra-process wal-index
-    /// locks can't see node:sqlite's (POSIX fcntl is per-process), so a
-    /// GC-timed close's shm teardown races them (SIGBUS / wal-index
-    /// corruption on the linux corpus). Callers must close() only while no
-    /// other-build conn can be doing shm work — before pool workers spawn or
-    /// after they die.
+    /// Deterministic teardown: releases the conn and the node table at a known
+    /// point instead of whenever V8 GCs the JS wrapper. A live-db conn is
+    /// parked, not closed (live_conn): closing it would drop this process's
+    /// POSIX locks on the db, node:sqlite's included. A snapshot conn closes.
     #[napi]
     pub fn close(&mut self) {
         self.debug_stats("close");
-        self.conn.take();
+        self.release_conn();
         self.table.take();
+    }
+
+    /// Give the conn up: a live-db conn is parked for reuse, never closed —
+    /// closing drops this process's POSIX locks, node:sqlite's included
+    /// (see live_conn).
+    fn release_conn(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            if self.live {
+                live_conn::park(&self.db_path, conn);
+            }
+        }
     }
 
     /// `CODEGRAPH_KERNEL_STATS=1`: the per-instance cache sizes, to stderr —
@@ -861,6 +872,7 @@ impl Drop for KernelResolver {
     fn drop(&mut self) {
         self.debug_stats("drop");
         prof_dump("drop");
+        self.release_conn();
     }
 }
 
