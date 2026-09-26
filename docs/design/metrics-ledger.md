@@ -802,6 +802,28 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.45 Memory floor — parse pool sized to the project, idle query workers retired (2026-09-25)
+
+Strategy priority 3 (docs/design/strategy-2026-09.md): repowise builds its graph in 75 MB where CodeGraph 1.5.0 peaked at 757 MB. Measured on this host (15 cores, `/usr/bin/time` max RSS, `nice -n 10`):
+
+- **Fixed cost of an index run.** Bare Node is 77 MB and loading the library 116 MB, but indexing a 3-file project peaked at **358 MB**. The parse pool defaulted to `clamp(cores − 1, 1, 8)` workers whatever the project size — 8 on this machine — at about 26 MB each. It now also caps at one worker per 64 files or per 512 KB of source, whichever asks for more (an explicit `CODEGRAPH_PARSE_WORKERS` still wins). Old default (reproduced with `CODEGRAPH_PARSE_WORKERS=8`) against new, two runs each:
+
+| corpus | files / source | old | new |
+|---|---|---|---|
+| 3-file fixture | 3 / 115 B | 358 MB | **176 MB** |
+| os-lib | 68 / 373 KB | 398 MB, 0.63–0.64 s | **228 MB, 0.63–0.65 s** |
+| lazy.nvim | 83 / 546 KB | 397 MB, 0.62–0.64 s | **232 MB, 0.62 s** |
+| Alamofire | 129 / 2.6 MB | 677–682 MB, 1.31–1.32 s | 674–675 MB, 1.34–1.37 s |
+| dplyr, lune, eShop, bloc | 298–1,451 files | unchanged within noise | unchanged |
+
+  A files-only cap first gave Alamofire 3 workers and cost it 10% wall time; the byte term gives it 6 and restores it.
+- **The shared daemon's query pool never shrank.** It grows lazily on concurrent load (to `clamp(cores − 1, 1, 16)`), and every worker holds a V8 heap plus its own SQLite connection. On bloc, a daemon at 256 MB (one worker) reached 683–752 MB after an 8-way explore burst (5 workers, ~107 MB each) and stayed there. The live daemon serving this repository measured 1,115 MB after 81 minutes. Workers idle for 60 s are now retired down to the one warm worker (`CODEGRAPH_QUERY_IDLE_RETIRE_MS`, `0` keeps them): the same burst returns to **329 MB** after 90 s idle, against 723 MB with retirement off. A retirement is never counted as a worker crash.
+- **Transparent huge pages** are `always` on this host. Opting a process out (`PR_SET_THP_DISABLE`) cut index peaks 5–16% (bloc 1,055 → 888 MB) at unchanged wall time but barely moved an idle server (eShop 182 → 177 MB). Not adopted: it is a host setting, and the two changes above are larger.
+
+Not measured here: per-worker memory (about 107 MB per query worker, of which each connection's 64 MB page cache and 256 MB memory map are an upper bound) is the next lever.
+
+**Gate**: 5 new tests (`parse-pool.test.ts` pool sizing by files and bytes; `query-pool.test.ts` burst shrink and busy-worker safety); full suite 304 files / 5,184 tests.
+
 ### 5.44 Name-only hops labelled in explore and node (2026-09-25)
 
 [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) showed that deleting name-guessed edges costs as many correct edges as wrong ones: a Kotlin extraction change that kept deep receiver chains (so they could no longer be name-matched) removed 6,593 exact-match edges on javalin, ktor and Exposed, and a graded sample of 30 of them was 14 correct, 16 wrong. It was not landed. An offline proof of concept that types those chains from declared property types resolved only 715 of 8,364 (8.5%) — accurate where it applied (12 of 12 sampled disagreements with the old guess were the old guess being wrong), but the roots are mostly lambda parameters and implicit DSL receivers that need real type inference.

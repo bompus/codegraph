@@ -158,6 +158,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Indexing a small project no longer starts a full set of parser threads. The pool now grows with the amount of code to parse, so a project of a few dozen files peaks around 230 MB instead of about 400 MB, with no change in speed.
+- The shared codegraph server now releases the extra query workers a burst of parallel requests started once they have been idle for a minute. Each held about 100 MB, and before this they stayed for the life of the server; set `CODEGRAPH_QUERY_IDLE_RETIRE_MS` to change the delay, or `0` to keep them.
+
 - A call in another language no longer links to a same-named Nix binding. Nothing can call a Nix binding by name, so those links were always wrong, and they could appear whenever a project had `.nix` files beside its code.
 
 - Rust files at the top of a project now resolve `self::` and `crate::` paths to their submodules, which previously went unresolved when the module file had no parent directory.

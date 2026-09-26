@@ -69,6 +69,21 @@ const CRASH_BUDGET = 12;
  */
 const MAX_CONCURRENT_SPAWN = 2;
 
+/**
+ * A worker idle this long is retired, down to the one warm worker. Each holds a
+ * V8 heap plus its own SQLite connection (page cache and memory map), so a
+ * burst that grew the pool must not keep that memory for the daemon's
+ * lifetime. `CODEGRAPH_QUERY_IDLE_RETIRE_MS=0` keeps every worker.
+ */
+const DEFAULT_IDLE_RETIRE_MS = 60_000;
+
+function resolveIdleRetireMs(): number {
+  const raw = process.env.CODEGRAPH_QUERY_IDLE_RETIRE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_IDLE_RETIRE_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_IDLE_RETIRE_MS;
+}
+
 /** Shape of a message a worker posts back (ready handshake or a tool result). */
 interface WorkerMessage {
   type?: string;
@@ -99,6 +114,8 @@ export interface QueryPoolOptions {
   maxRetries?: number;
   /** Worker factory (tests inject a fake). Defaults to a real `worker_threads` Worker. */
   createWorker?: () => PoolWorker;
+  /** Idle time before a worker beyond the first is retired; 0 never retires. */
+  idleRetireMs?: number;
 }
 
 /**
@@ -158,6 +175,10 @@ export class QueryPool {
   private readonly softTimeoutMs: number;
   private readonly maxRetries: number;
   private readonly createWorker: () => PoolWorker;
+  /** When each idle worker became idle, for retirement. */
+  private idleSince = new Map<PoolWorker, number>();
+  private readonly idleRetireMs: number;
+  private retireTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts: QueryPoolOptions) {
     this.root = opts.root;
@@ -165,7 +186,37 @@ export class QueryPool {
     this.softTimeoutMs = opts.softTimeoutMs ?? resolveBusyTimeoutMs();
     this.maxRetries = opts.maxRetries ?? 1;
     this.createWorker = opts.createWorker ?? (() => new Worker(WORKER_FILE, { workerData: { root: this.root } }));
+    this.idleRetireMs = opts.idleRetireMs ?? resolveIdleRetireMs();
+    if (this.idleRetireMs > 0) {
+      this.retireTimer = setInterval(() => this.retireIdle(), Math.max(1_000, this.idleRetireMs / 4));
+      this.retireTimer.unref?.();
+    }
     this.spawnOne(); // one eager warm worker, ready for the first call
+  }
+
+  /**
+   * Terminate workers idle for `idleRetireMs`, oldest idle first, keeping one.
+   * A retired worker leaves `workers` before it is terminated, so its exit is
+   * not counted as a crash (onWorkerGone ignores workers it no longer owns).
+   */
+  private retireIdle(now = Date.now()): void {
+    if (this.destroyed) return;
+    const stale = this.idle
+      .filter((w) => now - (this.idleSince.get(w) ?? now) >= this.idleRetireMs)
+      .sort((a, b) => (this.idleSince.get(a) ?? 0) - (this.idleSince.get(b) ?? 0));
+    for (const w of stale) {
+      if (this.workers.size <= 1) break;
+      this.workers.delete(w);
+      this.idle = this.idle.filter((x) => x !== w);
+      this.idleSince.delete(w);
+      try { void w.terminate(); } catch { /* already gone */ }
+    }
+  }
+
+  /** Put a worker back on the idle stack and note when it went idle. */
+  private park(w: PoolWorker): void {
+    this.idle.push(w);
+    this.idleSince.set(w, Date.now());
   }
 
   /** Pool size cap (for logging/status). */
@@ -222,14 +273,14 @@ export class QueryPool {
       this.pendingWorkers.delete(w);
       if (m.ok === false) this.totalCrashes++; // hard open failure
       else this.everReady = true;
-      this.idle.push(w);
+      this.park(w);
       this.drain();
       return;
     }
     if (m.type === 'result') {
       const job = this.inflight.get(w);
       this.inflight.delete(w);
-      this.idle.push(w);
+      this.park(w);
       if (job) this.settle(job, m.result ?? busyGuidance(0));
       this.drain();
     }
@@ -243,6 +294,7 @@ export class QueryPool {
     this.workers.delete(w);
     this.pendingWorkers.delete(w);
     this.idle = this.idle.filter((x) => x !== w);
+    this.idleSince.delete(w);
     this.totalCrashes++;
     const job = this.inflight.get(w);
     this.inflight.delete(w);
@@ -312,6 +364,7 @@ export class QueryPool {
   async destroy(): Promise<void> {
     if (this.destroyed) return;
     this.destroyed = true;
+    if (this.retireTimer) clearInterval(this.retireTimer);
     const ws = [...this.workers];
     this.workers.clear();
     this.pendingWorkers.clear();

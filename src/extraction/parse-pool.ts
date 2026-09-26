@@ -54,7 +54,7 @@ export interface ParseTask {
 }
 
 /** Default upper bound on the pool size derived from the core count. */
-const DEFAULT_PARSE_POOL_CAP = 8;
+export const DEFAULT_PARSE_POOL_CAP = 8;
 /** Hard ceiling on pool size regardless of an explicit env override. */
 const MAX_PARSE_POOL_SIZE = 16;
 /** Parses a worker performs before it's recycled to reclaim WASM heap. */
@@ -122,7 +122,12 @@ export function resolveParseBudgetMs(baseMs: number, contentLength: number): num
   return Math.min(scaled, Math.max(baseMs, MAX_SCALED_PARSE_TIMEOUT_MS));
 }
 
-export function resolveParsePoolSize(envVal: string | undefined, cpuCount: number): number {
+export function resolveParsePoolSize(
+  envVal: string | undefined,
+  cpuCount: number,
+  fileCount = Infinity,
+  sourceBytes = 0,
+): number {
   if (envVal !== undefined && envVal !== '') {
     const n = Number(envVal);
     if (Number.isFinite(n) && n >= 0) {
@@ -130,8 +135,21 @@ export function resolveParsePoolSize(envVal: string | undefined, cpuCount: numbe
     }
     // non-numeric / negative → fall through to the default
   }
-  return Math.max(1, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP));
+  // Each worker is a V8 isolate plus a kernel instance (~26 MB resident); a
+  // small project cannot keep more than one busy per FILES_PER_PARSE_WORKER
+  // files or BYTES_PER_PARSE_WORKER of source, whichever asks for more (a few
+  // large files are as much work as many small ones).
+  const byWork = Math.max(
+    Math.ceil(fileCount / FILES_PER_PARSE_WORKER),
+    Math.ceil(sourceBytes / BYTES_PER_PARSE_WORKER),
+  );
+  return Math.max(1, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP, byWork));
 }
+
+/** Files that justify one more parse worker in the default pool size. */
+export const FILES_PER_PARSE_WORKER = 64;
+/** Source bytes that justify one more parse worker in the default pool size. */
+export const BYTES_PER_PARSE_WORKER = 512 * 1024;
 
 interface ParseJob {
   id: number;

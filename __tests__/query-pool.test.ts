@@ -9,7 +9,7 @@
  * connection and runs codegraph_explore) is validated separately against a real
  * index; here we pin the orchestration that makes that safe and fair.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { QueryPool, resolvePoolSize, type PoolWorker } from '../src/mcp/query-pool';
 import type { ToolResult } from '../src/mcp/tools';
 
@@ -193,6 +193,49 @@ describe('QueryPool', () => {
     const pool = new QueryPool({ root: '/x', size: 1, createWorker: () => new FakeWorker(() => ({ hang: true }), /* readyOk */ false) });
     await sleep(5);
     expect(pool.ready).toBe(false); // hard open failure — keep serving in-process
+    await pool.destroy();
+  });
+});
+
+describe('QueryPool idle retirement', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('shrinks a burst-grown pool back to one warm worker once it goes idle', async () => {
+    vi.useFakeTimers();
+    const gates: Array<() => void> = [];
+    const pool = new QueryPool({
+      root: '/x',
+      size: 4,
+      idleRetireMs: 4_000,
+      createWorker: () => new FakeWorker(() => ({ wait: new Promise<ToolResult>((r) => gates.push(() => r(ok('done')))) })),
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    const calls = [0, 1, 2, 3].map((i) => pool.run('codegraph_explore', { query: `q${i}` }));
+    for (let i = 0; i < 10 && gates.length < 4; i++) await vi.advanceTimersByTimeAsync(1);
+    expect(pool.liveWorkers).toBe(4);
+    gates.forEach((g) => g());
+    await Promise.all(calls);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(pool.liveWorkers).toBe(1);
+    expect(pool.healthy).toBe(true); // retirement is not a crash
+    await pool.destroy();
+  });
+
+  it('never retires a worker that is busy', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const pool = new QueryPool({
+      root: '/x',
+      size: 2,
+      idleRetireMs: 1_000,
+      createWorker: () => new FakeWorker(() => ({ wait: new Promise<ToolResult>((r) => { release = () => r(ok('late')); }) })),
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    const call = pool.run('codegraph_explore', { query: 'slow' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pool.liveWorkers).toBe(1);
+    release();
+    await expect(call).resolves.toEqual(ok('late'));
     await pool.destroy();
   });
 });
