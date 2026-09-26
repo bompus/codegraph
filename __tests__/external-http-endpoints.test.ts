@@ -85,8 +85,6 @@ describe('external HTTP endpoints', () => {
     expect(text).toMatch(/\*\*Calls →\*\* .*POST https:\/\/api\.example\.com\/v1\/users/);
   });
 
-  // Synthesis runs on a full index, not an incremental sync, for every
-  // synthesized edge (docs/design/callback-edge-synthesis.md, remaining work).
   it('drops an endpoint on re-index once its last call is removed', async () => {
     fs.writeFileSync(path.join(dir, 'src/api.ts'), API.replace("axios.post('https://API.example.com/v1/users', user)", 'Promise.resolve(user)'));
     await cg.indexAll();

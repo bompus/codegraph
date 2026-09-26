@@ -120,6 +120,12 @@ export interface IndexOptions {
   verbose?: boolean;
   /** Watcher fast path: reconcile ONLY these project-relative paths (see ExtractionOrchestrator.sync). */
   paths?: string[];
+  /**
+   * Refresh synthesized edges after the sync returns, debounced, instead of
+   * inside it (see scheduleSynthesisRefresh). The watcher sets this so a save
+   * is searchable as fast as before; one-shot syncs refresh inline.
+   */
+  deferSynthesis?: boolean;
 }
 
 /**
@@ -151,6 +157,11 @@ export class CodeGraph {
 
   // File lock for preventing concurrent writes across processes (CLI, MCP, git hooks)
   private fileLock: FileLock;
+  /** Files whose synthesized edges await a refresh (deferred incremental syncs). */
+  private synthesisDirty = new Set<string>();
+  private synthesisTimer: ReturnType<typeof setTimeout> | null = null;
+  /** How long the last refresh took; the debounce grows with it (see scheduleSynthesisRefresh). */
+  private lastSynthesisMs = 0;
 
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
@@ -442,6 +453,7 @@ export class CodeGraph {
    * Close the CodeGraph instance and release resources
    */
   close(): void {
+    if (this.synthesisTimer) { clearTimeout(this.synthesisTimer); this.synthesisTimer = null; }
     this.unwatch();
     // Release file lock if held
     this.fileLock.release();
@@ -1027,6 +1039,15 @@ export class CodeGraph {
           // member is inherited from a supertype (#808).
           await this.resolver.resolveDeferredThisMemberRefs();
         }
+        // The scoped path above resolves only the changed files and, unlike the
+        // batched path, never runs synthesis: without this every synthesized
+        // edge a changed file wired up (callbacks, React renders, cross-tier
+        // HTTP, external endpoints) stayed missing until a full index.
+        if (filesChanged && result.changedFilePaths && process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0') {
+          for (const p of result.changedFilePaths) this.synthesisDirty.add(p);
+          if (options.deferSynthesis) this.scheduleSynthesisRefresh();
+          else await this.refreshSynthesis();
+        }
         if (filesChanged || result.filesRemoved > 0) this.refreshNearDuplicates();
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -1122,7 +1143,7 @@ export class CodeGraph {
     this.watcher = new (sync().FileWatcher)(
       this.projectRoot,
       async (paths?: string[]) => {
-        const result = await this.sync({ paths });
+        const result = await this.sync({ paths, deferSynthesis: true });
         // sync() returns this exact zero-shape iff it failed to acquire the
         // file lock (a real empty sync always has filesChecked > 0 because
         // scanDirectory ran). Surface that to the watcher as a typed error
@@ -1327,6 +1348,62 @@ export class CodeGraph {
    * Resolve references in batches to keep memory bounded on large codebases.
    * Processes chunks of unresolved refs, persisting results after each batch.
    */
+  /**
+   * Recompute synthesized edges for the files marked dirty: drop the ones
+   * wired up in those files, then re-run synthesis (idempotent inserts restore
+   * whatever still holds). Caller holds the index mutex and file lock.
+   */
+  private async refreshSynthesis(): Promise<void> {
+    if (this.synthesisDirty.size === 0) return;
+    const files = [...this.synthesisDirty];
+    this.synthesisDirty.clear();
+    const t = Date.now();
+    try {
+      const dropped = this.queries.deleteSynthesizedEdgesRegisteredIn(files);
+      const edges = await this.resolver.resynthesize();
+      this.lastSynthesisMs = Date.now() - t;
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${dropped} dropped, ${edges} synthesized)`);
+    } catch (error) {
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * Refresh synthesized edges once edits pause. A synthesis pass after a sync
+   * takes 3-5 s on large repositories (ledger 5.53): run inside every watcher
+   * sync it would delay each save's index by that much. Each sync pushes the
+   * refresh back; it takes the same mutex and file lock as a sync and retries
+   * later when another writer holds the lock. The wait is at least 3 s and
+   * four times the last refresh, so a repository where synthesis is slow
+   * spends at most about a fifth of its time holding the mutex for it.
+   */
+  private scheduleSynthesisRefresh(): void {
+    if (this.synthesisTimer) clearTimeout(this.synthesisTimer);
+    const configured = process.env.CODEGRAPH_SYNTH_REFRESH_MS;
+    const delay = configured !== undefined
+      ? Number(configured)
+      : Math.min(5 * 60_000, Math.max(3000, 4 * this.lastSynthesisMs));
+    this.synthesisTimer = setTimeout(() => {
+      this.synthesisTimer = null;
+      void this.indexMutex.withLock(async () => {
+        if (this.synthesisDirty.size === 0) return;
+        try {
+          this.fileLock.acquire();
+        } catch {
+          this.scheduleSynthesisRefresh();
+          return;
+        }
+        try {
+          await this.refreshSynthesis();
+        } finally {
+          this.resolver.closeKernel();
+          this.fileLock.release();
+        }
+      });
+    }, delay);
+    this.synthesisTimer.unref?.();
+  }
+
   /**
    * Bring near-duplicate signatures and pairs up to date (src/graph/near-duplicates.ts).
    * Only changed bodies are re-signed, so a sync that touched no function costs

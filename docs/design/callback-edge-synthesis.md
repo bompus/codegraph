@@ -196,9 +196,9 @@ excalidraw +3 nodes, no explosion, no regression.
    intentionally not extracted in Phase 3). The fix is **synthesizer link-through-body**:
    parse the arrow's body and link `dispatcher → (calls inside the arrow)`. Highest
    remaining recall win; handles the most common modern callback shape.
-2. **Wire into `resolveAndPersist`** (incremental sync) — synthesis currently runs only
-   in `resolveAndPersistBatched` (full index). Incremental re-index won't refresh
-   synthesized edges.
+2. ~~**Wire into `resolveAndPersist`** (incremental sync)~~ — done (metrics ledger 5.53):
+   a sync drops the synthesized edges registered in changed files and re-runs synthesis,
+   deferred for watcher syncs.
 3. **Receiver-type matching** for EventEmitter precision (replace/augment the fan-out
    cap) — use `type_of` edges so `x.emit('change')` only links to `y.on('change', fn)`
    when `x`,`y` are the same type. Lets the fan-out cap relax.

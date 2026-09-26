@@ -30,7 +30,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
-- JavaScript and TypeScript calls to external HTTP APIs (`fetch`, axios, ky, got and similar, including clients made with a `baseURL`) now appear in the graph as endpoints such as `GET https://api.github.com/repos/${…}`, linked from the calling function, so you can see which outside services a piece of code talks to. They are refreshed on a full index.
+- JavaScript and TypeScript calls to external HTTP APIs (`fetch`, axios, ky, got and similar, including clients made with a `baseURL`) now appear in the graph as endpoints such as `GET https://api.github.com/repos/${…}`, linked from the calling function, so you can see which outside services a piece of code talks to.
 
 - `codegraph_explore` and `codegraph_node` now name the near-identical copies of the function you are looking at (for example the same helper pasted into three files), so a fix made in one copy is not forgotten in the others. Test files, generated code and vendored libraries are left out.
 
@@ -162,6 +162,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Trails are plain JSON, one file per trail, under `.codegraph/ui/trails/` — already ignored by git, so they stay yours by default. **Export** hands you the file if you'd rather commit one for the team. This is the only thing the viewer writes: it still never indexes, never changes your graph, and never touches a line of your code. Start it with `codegraph ui --read-only` and it won't write even that — saved trails can still be opened, just not saved or deleted.
 
 ### Fixes
+
+- Edges codegraph infers from dynamic dispatch (event handlers, callbacks, React re-renders, calls between front end and back end, external API calls) now come back after you edit a file, a few seconds after you stop typing, instead of staying missing until the next full index. A handler you unregister no longer stays linked either. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns this off.
 
 - In Kotlin, a call to a function imported from a Java class (`import io.javalin.apibuilder.ApiBuilder.get`, then `get(...)`) now links to that Java function instead of an unrelated function with the same name, and Kotlin references to imported Java classes are now linked through the import.
 
