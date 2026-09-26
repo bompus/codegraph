@@ -828,6 +828,19 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.60 C function-pointer pass skips generated C (2026-09-26)
+
+On codegraph's own repository the cFnPtr pass took 2.8 s of a 6.4 s resolution phase (stage A sweep 1.6 s, stage C macro environments 0.8 s) over 68 C files totalling 248 MB — nearly all of it tree-sitter `parser.c` tables under `codegraph-kernel/grammars/` — and produced no edges. The pass now skips files flagged generated (`generatedPredicateFor`: the persisted content verdict or a path pattern), and content detection recognises a tree-sitter parser without a banner: releases before 0.25 print none, but every generated parser includes `tree_sitter/parser.h` and defines `LANGUAGE_VERSION`, which a grammar's hand-written `scanner.c` never does.
+
+| codegraph full index | Before | After |
+|---|---|---|
+| Generated C files | 9 (155 MB) | 12 |
+| cFnPtrEdges | 2,809 ms | 1,155 ms |
+| resolution phase | 6,439 ms | 4,693 ms |
+| cFnPtr edges | 0 | 0 |
+
+The C function-pointer suites and golden dumps are unchanged.
+
 ### 5.59 JS/TS: scope shadows imports; member calls are never imports (2026-09-26)
 
 Two import-arm misses, both mirrored in the kernel and the TypeScript resolver:
