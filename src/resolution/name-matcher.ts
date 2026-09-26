@@ -305,23 +305,54 @@ export function crossesKnownFamily(a: string, b: string): boolean {
   return isKnownLanguageFamily(a) && isKnownLanguageFamily(b) && !sameLanguageFamily(a, b);
 }
 /**
- * Drop cross-language candidates from a name lookup. Two regimes:
+ * Languages whose code can name each other's symbols directly. Wider than
+ * {@link LANGUAGE_FAMILY}: single-file components join the web group,
+ * C/C++/ObjC/Swift share one native group (ObjC is a C superset; Swift calls
+ * both through bridging headers), and every other programming language is a
+ * group of its own. Markup, config and template languages are absent:
+ * framework bridges start there.
+ */
+const CODE_INTEROP_GROUP: Record<string, string> = {
+  typescript: 'web', tsx: 'web', javascript: 'web', jsx: 'web', arkts: 'web', svelte: 'web', vue: 'web', astro: 'web',
+  java: 'jvm', kotlin: 'jvm', scala: 'jvm',
+  c: 'native', cpp: 'native', objc: 'native', swift: 'native',
+  csharp: 'dotnet', razor: 'dotnet', vbnet: 'dotnet',
+  cfml: 'cfml', cfscript: 'cfml', cfquery: 'cfml',
+  lua: 'lua', luau: 'lua',
+  python: 'python', go: 'go', rust: 'rust', php: 'php', ruby: 'ruby', dart: 'dart', pascal: 'pascal',
+  r: 'r', solidity: 'solidity', erlang: 'erlang', cobol: 'cobol', terraform: 'terraform', nix: 'nix',
+};
+/**
+ * True when `a` and `b` are programming languages that cannot name each
+ * other's symbols: a same-named hit across them is a coincidence (a Rust
+ * `Ok(..)` is not a Scala enum member, a Go `Context` is not a C struct).
+ */
+export function crossesCodeBoundary(a: string, b: string): boolean {
+  const ga = CODE_INTEROP_GROUP[a];
+  const gb = CODE_INTEROP_GROUP[b];
+  return ga !== undefined && gb !== undefined && ga !== gb;
+}
+/**
+ * Drop cross-language candidates from a name lookup. Three regimes:
  *  - `references` (type-usage): a type named in language X resolves to a
  *    SAME-family type, never a coincidentally same-named symbol in another
  *    language (the Android `BatteryManager` system class vs a JS one). Strict
  *    same-family filter — cross-language communication is `calls`, not refs.
  *  - `imports` (import binding): an `import`/`#include` never crosses two
- *    KNOWN families (TS `import React` ↮ Swift `import React`). Weaker
- *    both-known filter so `.vue`/`.svelte` (own tag) importing `.ts` survives.
+ *    KNOWN families (TS `import React` ↮ Swift `import React`) nor a code
+ *    boundary. `.vue`/`.svelte` importing `.ts` survives.
+ *  - everything else: never across a code boundary.
  */
 function applyLanguageGate(candidates: Node[], ref: UnresolvedRef): Node[] {
   if (ref.referenceKind === 'references' || ref.referenceKind === 'function_ref') {
     return candidates.filter((c) => sameLanguageFamily(c.language, ref.language));
   }
   if (ref.referenceKind === 'imports') {
-    return candidates.filter((c) => !crossesKnownFamily(c.language, ref.language));
+    return candidates.filter(
+      (c) => !crossesKnownFamily(c.language, ref.language) && !crossesCodeBoundary(c.language, ref.language)
+    );
   }
-  return candidates;
+  return candidates.filter((c) => !crossesCodeBoundary(c.language, ref.language));
 }
 
 /**

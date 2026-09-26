@@ -163,6 +163,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A call, type use or base class in one language no longer links to a symbol that only shares its name in an unrelated language, such as a Rust `Ok(...)` landing on a Scala enum value or a Python `round()` on a TypeScript function. Languages that do call each other keep their links: Kotlin, Java and Scala; C, C++, Objective-C and Swift; JavaScript, TypeScript and Vue, Svelte or Astro components; and React Native, Expo and Tauri bridges.
+
 - Edges codegraph infers from dynamic dispatch (event handlers, callbacks, React re-renders, calls between front end and back end, external API calls) now come back after you edit a file, a few seconds after you stop typing, instead of staying missing until the next full index. A handler you unregister, or whose registering file you delete, no longer stays linked either. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns this off.
 
 - Indexing and the post-edit refresh of those edges are faster on large JavaScript and TypeScript projects, up to about twice as fast where many components or registries are involved.

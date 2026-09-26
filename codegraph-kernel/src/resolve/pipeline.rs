@@ -348,6 +348,9 @@ impl KernelResolver {
         if r.reference_kind == "imports" && crosses_known_family(tgt, &r.language) {
             return None;
         }
+        if crosses_code_boundary(tgt, &r.language) {
+            return None;
+        }
         Some(cand)
     }
 

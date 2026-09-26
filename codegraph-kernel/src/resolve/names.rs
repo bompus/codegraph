@@ -18,10 +18,16 @@ impl KernelResolver {
         if r.reference_kind == "imports" {
             return candidates
                 .into_iter()
-                .filter(|c| !crosses_known_family(&c.language, &r.language))
+                .filter(|c| {
+                    !crosses_known_family(&c.language, &r.language)
+                        && !crosses_code_boundary(&c.language, &r.language)
+                })
                 .collect();
         }
         candidates
+            .into_iter()
+            .filter(|c| !crosses_code_boundary(&c.language, &r.language))
+            .collect()
     }
 
     /// isLexicallyReachable (name-matcher.ts): a function nested in a

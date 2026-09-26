@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, nmTimed, clearNameMatcherMemos, resolveAmbiguousNameCeiling, matchRustBareSelf } from './name-matcher';
+import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, crossesCodeBoundary, dumpNameMatcherProfile, nmTimed, clearNameMatcherMemos, resolveAmbiguousNameCeiling, matchRustBareSelf } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -3461,6 +3461,7 @@ export class ReferenceResolver {
     if (tgt === 'markdown' || ref.language === 'markdown') return result;
     if ((ref.referenceKind === 'references' || ref.referenceKind === 'function_ref') && !sameLanguageFamily(tgt, ref.language)) return null;
     if (ref.referenceKind === 'imports' && crossesKnownFamily(tgt, ref.language)) return null;
+    if (crossesCodeBoundary(tgt, ref.language)) return null;
     return result;
   }
 
@@ -3475,12 +3476,21 @@ export class ReferenceResolver {
    * React/Svelte/Vue PascalCase component resolvers name-match `getNodesByName`
    * without a language check, so a TS `<TestRunner>` ref happily matched a
    * Kotlin `class TestRunner`. Gating only the both-known-cross-family case
-   * lets config bridges and `calls` bridges through untouched.
+   * lets config bridges and `calls` bridges through untouched. Anything else
+   * that crosses a code boundary is the same collision — a Svelte
+   * `new String()` is not a Dart class — and so is a call bridge that lands
+   * on something other than a function or method (JS `Function(…)` is not a
+   * Kotlin class).
    */
   private gateFrameworkLanguage(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
     if (!result) return result;
-    if (ref.referenceKind !== 'references' && ref.referenceKind !== 'imports') return result;
     const tgt = this.getLanguageFromNodeId(result.targetNodeId);
+    if (tgt && ref.language && crossesCodeBoundary(tgt, ref.language)) {
+      if (ref.referenceKind !== 'calls') return null;
+      const kind = this.queries.getNodeById(result.targetNodeId)?.kind;
+      if (kind !== 'function' && kind !== 'method') return null;
+    }
+    if (ref.referenceKind !== 'references' && ref.referenceKind !== 'imports') return result;
     // Package imports cannot target prose found by a framework's name lookup.
     if (ref.referenceKind === 'imports' && tgt === 'markdown' && ref.language !== 'markdown') return null;
     if (tgt && ref.language && crossesKnownFamily(tgt, ref.language)) return null;

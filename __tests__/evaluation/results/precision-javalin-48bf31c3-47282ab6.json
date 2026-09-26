@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-09-26T06:43:35.076Z",
+  "corpus": "javalin",
+  "repo": "https://github.com/javalin/javalin.git",
+  "commit": "48bf31c3",
+  "codegraphSha": "47282ab6",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 8145,
+    "exact-match": 5727,
+    "import": 2972,
+    "instance-method": 1728,
+    "fuzzy": 22,
+    "function-ref": 19,
+    "file-path": 8
+  },
+  "edges": 18621,
+  "results": [
+    {
+      "caseId": "javalin-kotlin-imports-java-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:ef8b70a9b486ddf107a0a782595685f5",
+          "to": "method:8eb17ccb9967512be8c4aed8f145f350",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "javalin-bare-get-not-test-client",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}

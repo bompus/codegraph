@@ -802,6 +802,20 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.55 Cross-language name matches (2026-09-26)
+
+The language gate covered `references`/`function_ref` (same family) and `imports` (two known families), so a `calls`, `instantiates` or `extends` ref took any same-named symbol in any language: a lone candidate in another language resolved at 0.5. On codegraph's own index that gave 527 Rust `Ok(..)` calls onto a Scala enum member in a fixture, 307 Rust `.map`/`.any` calls onto TypeScript methods, and Python `round` onto a TypeScript function; on Exposed, JavaScript `forEach`/`apply` onto Kotlin methods; on ktor, Rust `Send`/`WebRtc` onto Kotlin classes. The framework strategy added Go `Context` onto a C struct in a vendored grammar and C#/Svelte types onto Dart fixture classes.
+
+Now two programming languages that cannot name each other's symbols never bind by name (`crosses_code_boundary` / `crossesCodeBoundary`). Groups: web (TS, JS, arkts, Vue, Svelte, Astro), JVM, native (C, C++, ObjC, Swift), .NET (C#, Razor, VB.NET), CFML, Lua; every other programming language is its own. Markup, config and template languages are not grouped, so framework bridges from them are untouched. The import/name gates apply it to every ref kind; the framework gate applies it too, except a `calls` bridge onto a function or method (React Native, Expo and Tauri call across languages by design).
+
+| Check | Result |
+|---|---|
+| Golden `torture-multilang` | 64 edges removed (all cross-group coincidences), 19 retargeted to the same-language definition, 3 added (Java/Scala → Kotlin `register`, no longer ambiguous), 55 confidence raises (0.4 → 0.9, one candidate left) |
+| Golden `tail-langs` | 11 confidence raises, no edge change |
+| `eval:precision` exposed | 1/1 absent, 1/1 present held; 77,711 → 77,705 edges |
+| `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
+| Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
+
 ### 5.54 Cheaper synthesis runs (2026-09-26)
 
 The post-sync synthesis run (5.53) took 2.8 s on pretix and 4.4 s on trezor-suite, against 1.7 s and 2.0 s inside a full index. Warm caches alone barely helped (4.3 → 3.6 s on trezor-suite), and a CPU profile showed why: the resolver's LRUs hold 1,000 files of content and 5,000 of nodes, and ~30 passes each walking all 13,433 JS/TS files evicted each other, so every pass re-read the repository from disk and SQLite (a quarter of the run). Two quadratic hotspots made up most of the rest:
