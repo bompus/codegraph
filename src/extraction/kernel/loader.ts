@@ -258,6 +258,9 @@ export interface ResolveOutcome {
    *  framework claims it, and `'defer-this'` a `this.<member>` function ref
    *  the `this.<member>` pass retries. */
   reason?: string;
+  /** From an arm resolveOneInner runs before the framework loop: the verdict
+   *  stands without the framework merge. */
+  preFramework?: boolean;
 }
 
 export interface KernelResolverLike {

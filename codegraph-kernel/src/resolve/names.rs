@@ -597,6 +597,31 @@ impl KernelResolver {
         })))
     }
 
+    /// matchReference's ArkTS arm: `.width` / `.fancy` attribute calls name
+    /// only `@Extend`/`@Styles`/`@AnimatableExtend`/`@Builder` helpers — never
+    /// the name-match fallthrough — and only a single such helper.
+    pub(super) fn match_arkts_attribute(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let base = &r.reference_name[1..];
+        let candidates: Vec<Arc<KNode>> = self
+            .nodes_by_name(base)?
+            .iter()
+            .filter(|n| {
+                n.language == "arkts"
+                    && n.kind == "function"
+                    && n.decorators.as_ref().is_some_and(|ds| {
+                        ds.iter().any(|d| matches!(d.as_str(), "Extend" | "Styles" | "AnimatableExtend" | "Builder"))
+                    })
+            })
+            .cloned()
+            .collect();
+        // preferCallSiteFile reorders without filtering: more than one
+        // helper is ambiguous and drops the ref.
+        if candidates.len() != 1 {
+            return Ok(None);
+        }
+        Ok(Some(KCand { node: candidates[0].clone(), confidence: 0.85, resolved_by: "exact-match" }))
+    }
+
     pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));

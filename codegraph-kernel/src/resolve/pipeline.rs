@@ -16,9 +16,8 @@ impl KernelResolver {
     /// language-gated dead, boundReceiver is calls-gated dead, the chain
     /// guards need calls + `().`, and viaImport's first branch IS the c/cpp
     /// include arm (≥0.9 or nothing — its <0.9 candidate path can't fire).
-    /// The nameMatch tail (qualifiedName → cppChain → methodCall →
-    /// exactName → fuzzy) stays in TS: a `member-tail` passthrough
-    /// reproduces the full-spine verdict exactly.
+    /// Then matchReference's name arms: filePath → qualifiedName →
+    /// methodCall → exactName → fuzzy.
     pub(super) fn resolve_c_include_import_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
@@ -57,25 +56,12 @@ impl KernelResolver {
         if name_cand.is_none() {
             name_cand = self.match_method_call_free(r)?;
         }
-        let Some(c) = self.gate_language(name_cand, r) else {
-            return Ok(ResolveOutcome::passthrough("member-tail"));
-        };
-        // The nameMatch result takes the post-checks; a rejection leaves the
-        // later arms live in TS, so punt — never verdict.
-        if !self.name_result_stands(&c, r)? {
-            return Ok(ResolveOutcome::passthrough("member-tail"));
+        if name_cand.is_none() {
+            name_cand = self.match_reference_bare(r)?;
         }
-        let Some(winner) = self.gate_target_kind(c, r)? else {
-            return Ok(ResolveOutcome::passthrough("member-tail"));
-        };
-        // A file-path hit is a nameMatch candidate — it never early-returns
-        // in TS, it first-maxes against framework candidates. Under active
-        // frameworks report it for the merge instead of verdicting.
-        if self.frameworks_active {
-            let reported = vec![KernelCandidateOut::from(&winner)];
-            return self.finish(r, winner, Some(reported), false);
-        }
-        self.finish(r, winner, None, false)
+        // The first arm that answers is the name match; its post-checks and
+        // the framework merge follow, as for every other name.
+        self.after_name_match(r, Vec::new(), name_cand)
     }
 
     /// The `$`-receiver guard both phpStatic and boundReceiver share:
@@ -157,7 +143,7 @@ impl KernelResolver {
         };
         // gateTargetKind is a no-op for `calls` refs (imports/inheritance arms
         // only); the alias forward applies inside finish.
-        self.finish(r, cand, None, true).map(Some)
+        self.finish_pre_framework(r, cand).map(Some)
     }
 
     /// resolveOneInner for non-bare refs in migrated languages. Ported arms
@@ -176,7 +162,7 @@ impl KernelResolver {
         {
             return match self.resolve_cfml_component_path(r)? {
                 Some(c) => match self.gate_target_kind(c, r)? {
-                    Some(winner) => self.finish(r, winner, None, true),
+                    Some(winner) => self.finish_pre_framework(r, winner),
                     None => Ok(ResolveOutcome::unresolved()),
                 },
                 None => Ok(ResolveOutcome::unresolved()),
@@ -214,7 +200,7 @@ impl KernelResolver {
             if r.reference_name.starts_with("this.") {
                 return match self.resolve_this_member_fn_ref(r)? {
                     this_member::ThisMember::Found(c) => match self.gate_language(Some(c), r) {
-                        Some(c) => self.finish(r, c, None, true),
+                        Some(c) => self.finish_pre_framework(r, c),
                         None => Ok(ResolveOutcome::unresolved()),
                     },
                     this_member::ThisMember::Defer => Ok(ResolveOutcome::deferred_this_member()),
@@ -231,7 +217,7 @@ impl KernelResolver {
                             || c.node.kind == "method"
                             || (r.language == "python" && c.node.kind == "class")
                         {
-                            return self.finish(r, c, None, true);
+                            return self.finish_pre_framework(r, c);
                         }
                     }
                 }
@@ -246,7 +232,7 @@ impl KernelResolver {
                 self.match_function_ref_bare(r)?
             };
             return match self.gate_language(cand, r) {
-                Some(c) => self.finish(r, c, None, true),
+                Some(c) => self.finish_pre_framework(r, c),
                 None => Ok(ResolveOutcome::unresolved()),
             };
         }
@@ -256,7 +242,7 @@ impl KernelResolver {
         if r.reference_kind == "imports" && (r.language == "java" || r.language == "kotlin") {
             if let Some(cand) = self.resolve_jvm_import(r)? {
                 return match self.gate_target_kind(cand, r)? {
-                    Some(winner) => self.finish(r, winner, None, true),
+                    Some(winner) => self.finish_pre_framework(r, winner),
                     None => Ok(ResolveOutcome::unresolved()),
                 };
             }
@@ -332,7 +318,8 @@ impl KernelResolver {
         // matchReference's leading arkts arm — `.attr` names resolve ONLY to
         // decorator-marked helpers, never the name-match fallthrough.
         if r.language == "arkts" && r.reference_name.starts_with('.') {
-            return Ok(ResolveOutcome::passthrough("arkts-dot"));
+            let hit = self.match_arkts_attribute(r)?;
+            return self.after_name_match(r, cands, hit);
         }
         // matchReference in TS order: filePath, qualifiedName, the
         // per-language chain arm (cppChain/scopedChain/dottedChain),
@@ -505,7 +492,7 @@ impl KernelResolver {
     fn store_binding_on_prefilter_miss(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         let hit = self.match_js_store_binding_call(r)?;
         match self.gate_language(hit, r) {
-            Some(c) => self.finish(r, c, None, true),
+            Some(c) => self.finish_pre_framework(r, c),
             None => Ok(ResolveOutcome::unresolved()),
         }
     }
@@ -532,12 +519,12 @@ impl KernelResolver {
                 || c.node.kind == "method"
                 || (r.language == "python" && c.node.kind == "class")
             {
-                return self.finish(r, c, None, true);
+                return self.finish_pre_framework(r, c);
             }
         }
         let name_cand = self.match_function_ref_bare(r)?;
         match self.gate_language(name_cand, r) {
-            Some(c) => self.finish(r, c, None, true),
+            Some(c) => self.finish_pre_framework(r, c),
             None => Ok(ResolveOutcome::unresolved()),
         }
     }
@@ -592,7 +579,7 @@ impl KernelResolver {
         // bare-name verdict.
         if r.language == "rust" && r.reference_name == "Self" {
             if let Some(c) = self.match_rust_bare_self(r)? {
-                return self.finish(r, c, None, true);
+                return self.finish_pre_framework(r, c);
             }
         }
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
@@ -613,7 +600,7 @@ impl KernelResolver {
         if r.language == "razor" {
             if let Some(c) = self.resolve_razor_using(r)? {
                 return match self.gate_target_kind(c, r)? {
-                    Some(winner) => self.finish(r, winner, None, true),
+                    Some(winner) => self.finish_pre_framework(r, winner),
                     None => Ok(ResolveOutcome::unresolved()),
                 };
             }
@@ -777,6 +764,14 @@ impl KernelResolver {
         }
     }
 
+    /// finish for an arm resolveOneInner evaluates before the framework loop:
+    /// its verdict must not be overturned by a framework hit.
+    fn finish_pre_framework(&mut self, r: &ResolveRefIn, c: KCand) -> Res<ResolveOutcome> {
+        let mut out = self.finish(r, c, None, true)?;
+        out.pre_framework = true;
+        Ok(out)
+    }
+
     pub(super) fn refused(&self) -> ResolveOutcome {
         if self.frameworks_active {
             ResolveOutcome::no_candidates()
@@ -829,21 +824,6 @@ fn route(r: &ResolveRefIn) -> Route {
     if !name_is_bare(&r.reference_name) {
         if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
             return Route::CInclude;
-        }
-        // Rust dotted receivers: `calls` names without `::`/`()` ride the
-        // ported pipeline — inferLocalReceiverType (`let ctx: Ctx`) is
-        // native for rust now, and the self.-arms/strategies that follow
-        // reproduce TS's tail (§5.25's confidence-drift class is exactly
-        // what the inference arm resolves natively). `a::b.c`/`x::y().z`
-        // (::+.), `x().y`, and non-call `x.y`/`self.x` stay punted — TS
-        // verdicts by delegation.
-        if r.language == "rust"
-            && r.reference_name.contains('.')
-            && !(r.reference_kind == "calls"
-                && (r.reference_name.starts_with("self.")
-                    || (!r.reference_name.contains("::") && !r.reference_name.contains("()"))))
-        {
-            return Route::Passthrough("member-tail");
         }
         return Route::NonBare;
     }

@@ -1198,6 +1198,10 @@ export class ReferenceResolver {
       if (outcome.reason === 'defer-this') this.deferReference(ref, this.deferredThisMemberRefs);
       return this.applyResolveTail(verdict, ref);
     }
+    // An arm that runs before the framework loop in resolveOneInner (function
+    // refs, JVM imports, Razor, PHP static calls, …): no framework may
+    // overturn its verdict.
+    if (outcome.preFramework && verdict) return verdict;
     if (this.frameworks.length === 0) {
       // A kernel verdict already passed gateTargetKind + the alias forward
       // inside finish — re-running the tail on it would double-forward alias

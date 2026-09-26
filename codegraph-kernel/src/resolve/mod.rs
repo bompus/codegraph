@@ -199,6 +199,11 @@ pub struct ResolveOutcome {
     pub is_final: bool,
     pub candidates: Option<Vec<KernelCandidateOut>>,
     pub reason: Option<String>,
+    /// The verdict came from an arm resolveOneInner runs before the framework
+    /// loop (function refs, JVM imports, Razor usings, PHP static calls, CFML
+    /// component paths, Rust `Self`, a prefilter-miss store binding): it
+    /// stands without the framework merge.
+    pub pre_framework: bool,
 }
 
 impl ResolveOutcome {
@@ -211,6 +216,7 @@ impl ResolveOutcome {
             is_final: false,
             candidates: None,
             reason: Some(reason.into()),
+            pre_framework: false,
         }
     }
     fn unresolved() -> Self {
@@ -222,6 +228,7 @@ impl ResolveOutcome {
             is_final: false,
             candidates: None,
             reason: None,
+            pre_framework: false,
         }
     }
     /// Frameworks are active and the kernel found no name/import candidate —
@@ -269,6 +276,7 @@ impl ResolveOutcome {
             is_final,
             candidates: cands,
             reason: None,
+            pre_framework: false,
         }
     }
 }
