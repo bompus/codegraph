@@ -7,7 +7,7 @@
 import type CodeGraph from '../index';
 import type { QueryPool } from './query-pool';
 import { CodeGraphPackageVersion } from './version';
-import { findNearestCodeGraphRoot } from '../directory';
+import { extractCodeTokens, findNearestCodeGraphRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
 // schemas), but it must NOT drag in sqlite/query layers before the daemon binds;
@@ -3681,7 +3681,12 @@ export class ToolHandler {
     // lead the answer, while the rest of the query matches as usual.
     const changes = collectChanges(projectRoot, rawQuery);
     const changedNodes = changes ? this.changedSymbols(cg, changes) : [];
-    const rawMatch = changes ? changes.remainingQuery : rawQuery;
+    // Only the code-shaped part of the rest (symbols, paths) still matches: the
+    // prose around a change question ("list what calls it so I can re-test")
+    // pulls in unrelated flows ahead of the changes.
+    const rawMatch = changes
+      ? [...extractCodeTokens(changes.remainingQuery), ...changes.remainingQuery.split(/\s+/).filter((w) => w.includes('/'))].join(' ')
+      : rawQuery;
 
     let pinnedFiles: string[] = [];
     let unresolvedPathSpans: string[] = [];
