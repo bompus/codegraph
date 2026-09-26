@@ -59,7 +59,7 @@ against dozens of greps and reads.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
 - Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
 
-## Anti-patterns
+## Reading results
 
 - **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
 - **Read/Grep are for what the index lacks**: a detail a codegraph answer didn't cover, or files codegraph doesn't index (such as configs). Markdown is indexed — every \`.md\` file's headings, sections, tables and links — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` too; it returns the section body, not just its heading.
