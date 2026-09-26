@@ -16,7 +16,7 @@
  *   2. <up3>/kernel/codegraph-kernel.node — the release bundle layout
  *      (lib/dist/** next to lib/kernel/; see scripts/build-bundle.sh)
  *   3. <up3>/codegraph-kernel/prebuilds/<platform>-<arch>/codegraph-kernel.node
- *      — from-source runs and tests (staged by scripts/build-kernel.sh)
+ *      — from-source runs and tests (staged by scripts/build-kernel.mjs)
  *
  * "up3" = three directories above this file, which is the package root both
  * from src/extraction/kernel/ and from dist/extraction/kernel/.

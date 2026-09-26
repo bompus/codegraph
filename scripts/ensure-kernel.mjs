@@ -25,6 +25,6 @@ if (cargo.status !== 0) {
   console.error('[ensure-kernel] Install rustup (https://rustup.rs) and run `npm run build:kernel`, or set CODEGRAPH_KERNEL_PATH to a built codegraph-kernel.node.');
   process.exit(1);
 }
-console.log(`[ensure-kernel] no prebuild at ${prebuild}; building with scripts/build-kernel.sh`);
-const build = spawnSync('bash', [path.join(root, 'scripts', 'build-kernel.sh')], { stdio: 'inherit' });
+console.log(`[ensure-kernel] no prebuild at ${prebuild}; building with scripts/build-kernel.mjs`);
+const build = spawnSync(process.execPath, [path.join(root, 'scripts', 'build-kernel.mjs')], { stdio: 'inherit' });
 process.exit(build.status ?? 1);

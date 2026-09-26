@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Building from source on Windows: `npm run build:kernel` now works from PowerShell and Command Prompt, where it used to reach WSL's `bash` and build for Linux.
+
 - In JavaScript and TypeScript, a call to a parameter or local variable no longer links to an imported or other-file function that merely shares its name (`function toStore(get) { get() }`), and `this.save()` now links to the class's own `save` method instead of an imported `save` function.
 
 - `codegraph sync` (and the background sync after you switch branches) no longer crashes partway through resolving when many files changed at once. It could die with a bus error, leaving the index to finish on the next run.

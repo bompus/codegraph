@@ -29,7 +29,7 @@
     "preuninstall": "node dist/bin/uninstall.js",
     "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql')\"",
     "dev": "tsc --watch",
-    "build:kernel": "bash scripts/build-kernel.sh",
+    "build:kernel": "node scripts/build-kernel.mjs",
     "cli": "npm run build && node dist/bin/codegraph.js",
     "pretest": "npm run check:agent-docs && npm run check:kernel-rules && node scripts/ensure-kernel.mjs",
     "test": "vitest run",

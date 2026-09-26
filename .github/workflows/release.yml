@@ -37,7 +37,7 @@ jobs:
   # platforms — but every published bundle must carry its .node. Note the
   # vendored-grammar-C languages (kotlin/lua/scala/dart) compile parser.c via
   # the cc crate, so each leg needs its platform C toolchain (runner images
-  # ship one). (Runner images ship rustup; build-kernel.sh
+  # ship one). (Runner images ship rustup; build-kernel.mjs
   # adds each cross target itself.)
   kernel:
     strategy:
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           for t in ${{ matrix.targets }}; do
-            bash scripts/build-kernel.sh --target "$t"
+            node scripts/build-kernel.mjs --target "$t"
           done
           ls -R codegraph-kernel/prebuilds
       - uses: actions/upload-artifact@v4
