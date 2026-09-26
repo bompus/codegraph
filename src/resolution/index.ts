@@ -12,6 +12,7 @@ import {
   UnresolvedRef,
   ResolvedRef,
   ResolutionResult,
+  KernelResolveStats,
   ResolutionContext,
   FrameworkResolver,
   ImportMapping,
@@ -47,13 +48,7 @@ const SYNC_NODE_TABLE_MIN_REFS = 15_000;
 /** Refs per kernel `resolveChunk` call on the list paths. */
 const KERNEL_CHUNK = 500;
 
-type KernelStats = {
-  handled: number;
-  passthrough: number;
-  reasons: Record<string, number>;
-  frameworkMerge: number;
-  frameworkMergeWithCands: number;
-};
+type KernelStats = Required<KernelResolveStats>;
 
 /**
  * Cache size limits. Each per-resolver cache is bounded so memory
@@ -1190,7 +1185,7 @@ export class ReferenceResolver {
   }
 
   private static emptyKernelStats(): KernelStats {
-    return { handled: 0, passthrough: 0, reasons: {}, frameworkMerge: 0, frameworkMergeWithCands: 0 };
+    return { handled: 0, frameworkMerge: 0, frameworkMergeWithCands: 0 };
   }
 
   /** Settle one ref from its kernel outcome through the framework merge. */
@@ -1270,13 +1265,7 @@ export class ReferenceResolver {
     deferredChain: UnresolvedRef[];
     deferredThisMember: UnresolvedRef[];
     byMethod: Record<string, number>;
-    kernel?: {
-      handled: number;
-      passthrough: number;
-      reasons?: Record<string, number>;
-      frameworkMerge?: number;
-      frameworkMergeWithCands?: number;
-    };
+    kernel?: KernelResolveStats;
   } {
     // Each pool worker holds a KernelResolver over its own snapshot copy
     // (opened at 'open'), so refs resolve natively across cores; the
@@ -1441,15 +1430,7 @@ export class ReferenceResolver {
       resolved: 0,
       unresolved: 0,
       byMethod: {} as Record<string, number>,
-      kernel: undefined as
-        | {
-            handled: number;
-            passthrough: number;
-            reasons?: Record<string, number>;
-            frameworkMerge?: number;
-            frameworkMergeWithCands?: number;
-          }
-        | undefined,
+      kernel: undefined as KernelResolveStats | undefined,
     };
 
     // Parallel pool, started before the loop. The first fan-out waits for
@@ -1923,15 +1904,8 @@ export class ReferenceResolver {
         aggregateStats.byMethod[method] = (aggregateStats.byMethod[method] || 0) + count;
       }
       if (result.stats.kernel) {
-        aggregateStats.kernel ??= { handled: 0, passthrough: 0 };
+        aggregateStats.kernel ??= { handled: 0 };
         aggregateStats.kernel.handled += result.stats.kernel.handled;
-        aggregateStats.kernel.passthrough += result.stats.kernel.passthrough;
-        if (result.stats.kernel.reasons) {
-          aggregateStats.kernel.reasons ??= {};
-          for (const [k, v] of Object.entries(result.stats.kernel.reasons)) {
-            aggregateStats.kernel.reasons[k] = (aggregateStats.kernel.reasons[k] ?? 0) + v;
-          }
-        }
         aggregateStats.kernel.frameworkMerge =
           (aggregateStats.kernel.frameworkMerge ?? 0) + (result.stats.kernel.frameworkMerge ?? 0);
         aggregateStats.kernel.frameworkMergeWithCands =
@@ -2058,16 +2032,8 @@ export class ReferenceResolver {
       }
     }
     if (aggregateStats.kernel && process.env.CODEGRAPH_RESOLVE_PROFILE) {
-      const { handled, passthrough, reasons, frameworkMerge, frameworkMergeWithCands } = aggregateStats.kernel;
-      const pct = handled + passthrough > 0 ? ((100 * handled) / (handled + passthrough)).toFixed(1) : '0';
-      console.error(`[resolve-profile] kernel: handled=${handled} passthrough=${passthrough} (${pct}% native)`);
-      if (reasons && Object.keys(reasons).length > 0) {
-        const rs = Object.entries(reasons)
-          .sort((a, b) => b[1] - a[1])
-          .map(([k, v]) => `${k}=${v}`)
-          .join(' ');
-        console.error(`[resolve-profile] kernel passthrough reasons: ${rs}`);
-      }
+      const { handled, frameworkMerge, frameworkMergeWithCands } = aggregateStats.kernel;
+      console.error(`[resolve-profile] kernel: handled=${handled}`);
       if (frameworkMerge || frameworkMergeWithCands) {
         console.error(
           `[resolve-profile] kernel framework-merge refs: no_candidates=${frameworkMerge ?? 0} with_candidates=${frameworkMergeWithCands ?? 0}`

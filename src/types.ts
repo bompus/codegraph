@@ -422,10 +422,6 @@ export interface UnresolvedReference {
    * call sites (#1269).
    */
   rowId?: number;
-
-  /** Kernel passthrough gate that deferred this ref to the TS pipeline —
-   * diagnostics only (CODEGRAPH_RESOLVE_PROFILE row suffix); never persisted. */
-  kernelReason?: string;
 }
 
 // =============================================================================

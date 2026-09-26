@@ -664,7 +664,7 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
       }
     }
     // An unregistered name (custom registerFrameworkResolver) claims
-    // conservatively — a passthrough is always safe.
+    // conservatively: the framework merge then decides.
     expect(kernel!.frameworkClaimsName!('not-a-framework', 'helper')).toBe(true);
   });
 
@@ -1457,10 +1457,13 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // node exists anywhere → prefilter terminal unresolved (native
     // verdict, same as TS — not a punt).
     expect(at('z.nomethod', 'src/sub.rs', 'calls').status).toBe('unresolved');
-    // `::`+`.` and `()` shapes run natively too (scopedChain, then the name
-    // arms) — no Rust shape is handed back any more.
-    expect(at('Widget::new().again', 'src/sub.rs', 'calls').status).not.toBe('passthrough');
-    expect(at('make().run', 'src/sub.rs', 'calls').status).not.toBe('passthrough');
+    // `::`+`.` and `()` chain shapes miss here and defer to the conformance
+    // pass, which retries them once every supertype edge exists.
+    for (const name of ['Widget::new().again', 'make().run']) {
+      const o = at(name, 'src/sub.rs', 'calls');
+      expect(o.status).toBe('unresolved');
+      expect(o.reason).toBe('defer');
+    }
     // `impl Error for X` bound to `use std::error::Error` — the locality
     // gate drops the same-named local type_alias → stays failed.
     // (implements refs are prerequisite-kind rows.)
