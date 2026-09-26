@@ -802,6 +802,20 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.48 Change questions answered from the diff (2026-09-26)
+
+`codegraph_explore` and the prompt hook now recognise a question about the working changes ("my changes", "this branch", `main..HEAD`). They read the diff (merge base with the default branch plus uncommitted edits, or the named range, with copy detection so moved code diffs as edits), map each hunk to the innermost indexed symbol it touches, and lead with those symbols ranked by caller count, each with its callers and tests. Prose around the question no longer text-matches.
+
+Target: this repository with #122 and #123 left uncommitted (15 files). Task: "What do my uncommitted changes affect? List each changed function or method and the code that calls it, so I know what to re-test." Sonnet, 3 runs per arm, against `origin/fork/consolidated`.
+
+| A/B | Channel | New: median time / calls / Read | Baseline: median time / calls / Read |
+|---|---|---|---|
+| 1 | explore only, hook off | 60 s / 8 / 0 | 60 s / 8 / 1 |
+| 2 | hook on | 47 s / 5 / 0 | 67 s / 10 / 3 |
+| 3 | hook on, shipped build | 72 s / 7 / 0 | 66 s / 9 / 1 |
+
+A/B 1: agents never phrase an explore query as a change question. All of them run `git diff` through Bash and then explore a bag of symbol names, so the explore trigger fired 0/3; that is why the hook carries it. A/Bs 2 and 3 together (6 runs per arm): tool calls median 7 against 9.5, Read 0 against 4, time even (64 s against 67 s). Answers named more of the changed symbols (for example `wireLayers`, `indexAll`), because the changed list comes from the diff, not from what the agent chose to open. Agents still run `git diff` first even when the changes are in context.
+
 ### 5.47 Name-only caller count in explore's blast radius — parked (2026-09-26)
 
 The #119 labels mark name-only hops in the flow and in `codegraph_node`'s trail, but on a callers trap (javalin: `HttpUtil.get` has 676 callers, every one a bare `get` route registration matched by name at confidence 0.7) agents read callers from explore's blast radius, which carried no label. A variant counted those callers there: `N callers (all matched by name only, unverified)`.
