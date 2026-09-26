@@ -11,8 +11,9 @@
  * CODEGRAPH_TEST_TMPDIR to put it elsewhere (e.g. on disk when /tmp is
  * tmpfs). Avoid a parent inside a directory CodeGraph excludes by default
  * (`.cache`, `node_modules`, …): the test projects under it would index
- * nothing. Run directories a crashed run left behind are swept once they are
- * a day old.
+ * nothing. Keep the path short, too: daemon tests put Unix sockets under it,
+ * and a socket path over ~100 bytes is refused. Run directories a crashed run
+ * left behind are swept once they are a day old.
  */
 import * as fs from 'fs';
 import * as os from 'os';
