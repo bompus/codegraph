@@ -240,7 +240,7 @@ cd your-project
 codegraph init
 ```
 
-<sub>`codegraph init` creates the local `.codegraph/` directory and builds the full graph in the same step — one command, done.</sub>
+<sub>`codegraph init` creates the local `.codegraph/` directory and builds the full graph in the same step — one command, done. In a git worktree whose sibling worktree is already indexed, it starts from a copy of that index and re-reads only the files that differ, which usually takes seconds (`--no-seed` builds from scratch).</sub>
 
 <div align="center">
 
@@ -653,7 +653,7 @@ The exact text is `src/mcp/server-instructions.ts` — the single source of trut
 codegraph                         # Run interactive installer
 codegraph install                 # Run installer (explicit)
 codegraph uninstall               # Remove CodeGraph from your agents AND the CLI (--keep-cli for configs only)
-codegraph init [path]             # Initialize a project + build its graph (one step)
+codegraph init [path]             # Initialize a project + build its graph (one step; --no-seed in a worktree)
 codegraph uninit [path]           # Remove CodeGraph from a project (--force to skip prompt)
 codegraph index [path]            # Full index (--force to re-index, --quiet for less output)
 codegraph sync [path]             # Incremental update

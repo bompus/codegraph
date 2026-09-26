@@ -162,7 +162,8 @@ export function unindexedWorktreeNotice(u: UnindexedWorktree): string {
     u.indexedSiblings.length > 1 ? ` (and ${u.indexedSiblings.length - 1} more)` : '';
   return (
     `This git worktree has no CodeGraph index, but a sibling worktree of the same ` +
-    `repository does: ${sibling}${more}. Run "codegraph init" here to index this tree — ` +
+    `repository does: ${sibling}${more}. Run "codegraph init" here to index this tree — it ` +
+    `starts from that index and re-reads only the files that differ, usually in seconds, and ` +
     `results then reflect this branch and its uncommitted work. Codegraph will not answer ` +
     `from the sibling's index: that is a different branch, and symbols changed only here ` +
     `would be missing.`

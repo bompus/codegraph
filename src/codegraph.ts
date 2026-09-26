@@ -51,6 +51,7 @@ import { isGeneratedFile } from './extraction/generated-detection';
 import { refreshNearDuplicates } from './graph/near-duplicates';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
+import { findSeedSource, copySeedIndex, type SeedSource } from './sync/worktree-seed';
 import ignore from 'ignore';
 import { loadDeprioritizePatterns } from './project-config';
 import { CodeGraphPackageVersion } from './mcp/version';
@@ -330,6 +331,37 @@ export class CodeGraph {
     const queries = new QueryBuilder(db.getDb());
 
     return new CodeGraph(db, queries, resolvedRoot);
+  }
+
+  /**
+   * Initialize a git worktree from a sibling worktree's index: copy the
+   * closest compatible one (see `sync/worktree-seed.ts`), then sync it to this
+   * tree, which re-parses only the files that differ. Returns null, leaving
+   * nothing behind, when no sibling qualifies or the copy or sync fails; the
+   * caller then indexes from scratch.
+   */
+  static async initFromSibling(
+    projectRoot: string,
+    options: Pick<IndexOptions, 'onProgress'> = {}
+  ): Promise<{ codegraph: CodeGraph; source: SeedSource; sync: SyncResult } | null> {
+    const resolvedRoot = path.resolve(projectRoot);
+    if (isInitialized(resolvedRoot)) {
+      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
+    }
+    const source = findSeedSource(resolvedRoot);
+    if (!source) return null;
+    createDirectory(resolvedRoot);
+    let instance: CodeGraph | null = null;
+    try {
+      copySeedIndex(source, resolvedRoot);
+      instance = await CodeGraph.open(resolvedRoot);
+      const sync = await instance.sync({ onProgress: options.onProgress });
+      return { codegraph: instance, source, sync };
+    } catch {
+      instance?.close();
+      removeDatabaseFiles(getDatabasePath(resolvedRoot));
+      return null;
+    }
   }
 
   /**

@@ -828,6 +828,18 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.58 Worktree indexes seeded from a sibling (2026-09-26)
+
+`codegraph init` in a git worktree looks for a sibling worktree whose index is complete, was built by the running extraction version and has a schema this build opens; of those it takes the one whose indexed commit is fewest changed files from this worktree's HEAD (ties to the main checkout). It copies that index with `VACUUM INTO` from a read-only connection (a consistent snapshot even while the sibling's daemon writes) and runs a normal sync, which asks git what changed since the copied commit and re-parses only those files. The index holds repo-relative paths only, so nothing else needs rewriting. A failed copy or sync removes the copy and falls back to a full index; `--no-seed` skips seeding. `CodeGraph.initFromSibling` is the library entry point.
+
+| Worktree | Seeded init | Full index | Graph |
+|---|---|---|---|
+| svelte (8,217 files), same commit | 0.79–0.93 s, 184 MB | 5.75–6.11 s, 1.6 GB | — |
+| svelte, 10 files edited + 1 added | 1.87 s, 388 MB | 5.75 s, 1.6 GB | 36,995 nodes / 70,748 edges, identical |
+| codegraph (1,148 files), 115 files diverged | 9.8–10.3 s, 1.5 GB | 10.1–10.4 s, 3.7 GB | — |
+
+Seeding surfaced two sync defects, fixed first: the kernel connection truncating node:sqlite's `-shm` (5.56) and a doubled synthesis pass (5.57).
+
 ### 5.57 One synthesis pass per sync (2026-09-26)
 
 A sync whose definitions changed re-opens edges elsewhere (CG-33), and the orphan sweep that resolves them ends in a full synthesis pass; the post-sync refresh (5.53) then dropped the changed files' synthesized edges and ran a second one. On codegraph's own repository after a 30-commit checkout each pass cost 4.0 s (cFnPtr 2.3 s of it, over the vendored grammar C). The sync now drops those edges before the sweep and skips the refresh when the sweep's pass completed; if the sweep aborts first, the refresh still runs.
