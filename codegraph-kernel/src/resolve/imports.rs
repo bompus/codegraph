@@ -512,8 +512,8 @@ impl KernelResolver {
         }
         // C/C++ `#include` path refs: the including file's own directory first
         // (via a same-named file NODE, not just existence), then the include
-        // search path. isPhpIncludePathRef / isCobolCopybookRef /
-        // isNixPathImportRef name unmigrated languages.
+        // search path. isCobolCopybookRef / isNixPathImportRef name
+        // unmigrated languages; PHP includes follow this arm.
         if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {
             // Quoted-include search order: the including file's own directory
             // first, via a same-named file NODE (not just existence).
@@ -549,6 +549,27 @@ impl KernelResolver {
                 }));
             }
             return Ok(None);
+        }
+        // PHP include/require: the literal path resolves against the including
+        // file's directory (php.ini `include_path` isn't modeled), with `.php`
+        // tried when the literal omits it. A path that names no indexed file
+        // is a dead end, never a name match.
+        if is_php_include_path_ref(r) {
+            let from_dir = pos_dirname(&pos_join(&self.root_abs, &r.file_path)).to_string();
+            let rel = pos_relative(&self.root_abs, &pos_resolve(&from_dir, &r.reference_name));
+            let resolved = if self.file_exists(&rel) {
+                Some(rel)
+            } else {
+                let with_ext = format!("{rel}.php");
+                self.file_exists(&with_ext).then_some(with_ext)
+            };
+            let Some(resolved) = resolved else { return Ok(None) };
+            let basename = pos_basename(&resolved).to_string();
+            return Ok(self
+                .nodes_by_name(&basename)?
+                .iter()
+                .find(|n| n.kind == "file" && n.file_path == resolved)
+                .map(|n| KCand { node: n.clone(), confidence: 0.9, resolved_by: "import" }));
         }
         // TS/JS path-shaped `imports` ref whose referenceName IS the module
         // specifier — the module ref of `import … from './x'` or a dynamic
