@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
 import { Node, Edge } from '../src/types';
-import { GraphTraverser } from '../src/graph/traversal';
+import { GraphTraverser, isDocumentationNode } from '../src/graph/traversal';
 
 describe('Graph Queries', () => {
   let testDir: string;
@@ -611,5 +611,23 @@ describe('Traversal edge-completeness & limits (#1086–#1090)', () => {
     expect(sub.edges.some((e) => e.source === 'Q' && e.target === 'M' && e.kind === 'calls')).toBe(true);
     // The regression: this direct dependency edge used to vanish.
     expect(sub.edges.some((e) => e.source === 'Q' && e.target === 'P' && e.kind === 'calls')).toBe(true);
+  });
+
+  it('getImpactRadius reports a doc section but does not walk on from it', () => {
+    // F is imported by file U; doc section D links U; doc section E links D.
+    // D mentions a dependent, so it is reported; E only mentions a doc.
+    const doc = (id: string): Node => ({ ...tNode(id, 'module'), language: 'markdown', filePath: 'docs/g.md' } as Node);
+    const nodes = [tNode('F'), tNode('U', 'file'), doc('D'), doc('E')];
+    const edges: Edge[] = [
+      { source: 'U', target: 'F', kind: 'imports', line: 1 },
+      { source: 'D', target: 'U', kind: 'references', line: 3 },
+      { source: 'E', target: 'D', kind: 'references', line: 7 },
+    ];
+    const sub = tGraph(nodes, edges).getImpactRadius('F', 4);
+
+    expect(sub.nodes.has('U')).toBe(true);
+    expect(sub.nodes.has('D')).toBe(true);
+    expect(isDocumentationNode(sub.nodes.get('D')!)).toBe(true);
+    expect(sub.nodes.has('E')).toBe(false);
   });
 });

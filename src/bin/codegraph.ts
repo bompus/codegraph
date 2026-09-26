@@ -67,6 +67,7 @@ import { CodeGraphPackageVersion } from '../mcp/version';
 import { BROWSER_ENV, DEFAULT_UI_PORT } from '../ui-server/constants';
 import type { UiServerHandle } from '../ui-server';
 import { lookupSymbolNodes, describeSymbolNode, groupDefinitions } from '../graph/symbol-lookup';
+import { isDocumentationNode } from '../graph/traversal';
 import type { Node, Edge } from '../types';
 import { isTestPath } from '../search/query-utils';
 
@@ -2426,11 +2427,14 @@ program
           const definitions = collected.map(({ group, nodes, edges }) => {
             for (const [id, node] of nodes) unionNodes.set(id, node);
             for (const [key, edge] of edges) unionEdges.set(key, edge);
+            const code = [...nodes.values()].filter((n) => !isDocumentationNode(n));
+            const docs = [...nodes.values()].filter(isDocumentationNode);
             return {
               ...cliDefinition(group),
-              nodeCount: nodes.size,
+              nodeCount: code.length,
               edgeCount: edges.size,
-              affected: [...nodes.values()].map((node) => ({ id: node.id, ...cliNode(node) })),
+              affected: code.map((node) => ({ id: node.id, ...cliNode(node) })),
+              docs: docs.map((node) => ({ id: node.id, ...cliNode(node) })),
               edges: [...edges.values()],
             };
           });
@@ -2444,9 +2448,10 @@ program
             filteredOut,
             note,
             definitions,
-            nodeCount: unionNodes.size,
+            nodeCount: [...unionNodes.values()].filter((n) => !isDocumentationNode(n)).length,
             edgeCount: unionEdges.size,
-            affected: [...unionNodes.values()].map(cliNode),
+            affected: [...unionNodes.values()].filter((n) => !isDocumentationNode(n)).map(cliNode),
+            docs: [...unionNodes.values()].filter(isDocumentationNode).map(cliNode),
           }, null, 2));
         } else {
           if (note) warn(note);
@@ -2454,14 +2459,16 @@ program
             console.log(chalk.bold(`\nImpact of changing "${symbol}" — ${groups.length} distinct definitions (each with its own blast radius; narrow with --file):`));
           }
           for (const { group, nodes } of collected) {
+            const code = [...nodes.values()].filter((n) => !isDocumentationNode(n));
+            const docs = [...nodes.values()].filter(isDocumentationNode);
             if (ambiguous) {
-              console.log(chalk.bold(`\n${describeSymbolNode(group[0]!)} — ${nodes.size} affected symbols:\n`));
+              console.log(chalk.bold(`\n${describeSymbolNode(group[0]!)} — ${code.length} affected symbols:\n`));
             } else {
-              console.log(chalk.bold(`\nImpact of changing "${symbol}" — ${nodes.size} affected symbols:\n`));
+              console.log(chalk.bold(`\nImpact of changing "${symbol}" — ${code.length} affected symbols:\n`));
               console.log(chalk.dim(describeSymbolNode(group[0]!)));
             }
             const byFile = new Map<string, Node[]>();
-            for (const node of nodes.values()) {
+            for (const node of code) {
               const list = byFile.get(node.filePath) || [];
               list.push(node);
               byFile.set(node.filePath, list);
@@ -2472,6 +2479,11 @@ program
                 const loc = node.startLine ? `:${node.startLine}` : '';
                 console.log(`  ${chalk.dim(node.kind.padEnd(12))}${node.name}${chalk.dim(loc)}`);
               }
+              console.log();
+            }
+            if (docs.length > 0) {
+              console.log(chalk.bold(`Mentioned in docs (${docs.length}) — may need updating, not affected:`));
+              console.log(`  ${docs.map((n) => `${n.filePath}:${n.startLine} ${n.name}`).join(', ')}`);
               console.log();
             }
           }
