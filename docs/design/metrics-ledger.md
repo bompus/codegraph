@@ -828,6 +828,18 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.61 JS/TS: built-in method names on unknown receivers (2026-09-26)
+
+The extractor keeps only the method name for a member call whose receiver is not a plain name (`this.#out.push`, `(list ??= []).push`, `chunk.meta!.assets.add`), and exact-match/fuzzy then bound it to any project method of that name. Graded on svelte, vite, vitest and zod, those unknown-receiver matches split by name: built-in names (`push`, `add`, `get`, `map`, `values`, `then`, …) were almost always wrong (a Set's `add` → `FuzzySet::add`), domain names mostly right (`child!.get_path()` → `Renderer::get_path`). So only the built-ins decline: a JS built-in method name (Array, Map/Set, Promise, String, Function, EventTarget/EventEmitter, iterators) at a member call site whose receiver is not `this`/`super` resolves to no project method, in the kernel and the TS matcher alike.
+
+| Corpus (calls edges) | Removed | Added | Gate |
+|---|---|---|---|
+| svelte | 154 (150 exact-match, 4 fuzzy) | 0 | 1/1 absent held |
+| vite | 84 | 0 | 6/6 absent, 2/2 present held |
+| vitest | 123 | 0 | 1/1 absent held |
+
+A random sample of 30 removals graded 30 wrong (Map/Set/Array/`classList`/`Function.bind` calls landing on `SvelteMap::values`, `NoopWatcher::add`, `FileInformation::map`, `Traces::bind`, …). Goldens unchanged.
+
 ### 5.60 C function-pointer pass skips generated C (2026-09-26)
 
 On codegraph's own repository the cFnPtr pass took 2.8 s of a 6.4 s resolution phase (stage A sweep 1.6 s, stage C macro environments 0.8 s) over 68 C files totalling 248 MB — nearly all of it tree-sitter `parser.c` tables under `codegraph-kernel/grammars/` — and produced no edges. The pass now skips files flagged generated (`generatedPredicateFor`: the persisted content verdict or a path pattern), and content detection recognises a tree-sitter parser without a banner: releases before 0.25 print none, but every generated parser includes `tree_sitter/parser.h` and defines `LANGUAGE_VERSION`, which a grammar's hand-written `scanner.c` never does.

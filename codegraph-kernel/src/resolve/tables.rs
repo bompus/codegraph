@@ -781,6 +781,25 @@ pub(super) static PYTHON_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::
     .collect()
 });
 
+/// JS_BUILT_IN_METHODS (import-resolver.ts): methods of the JavaScript
+/// built-ins, almost always the built-in when called on an unknown receiver.
+pub(super) static JS_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "push", "pop", "shift", "unshift", "slice", "splice", "concat", "join", "reverse", "sort", "indexOf",
+        "lastIndexOf", "includes", "find", "findIndex", "findLast", "findLastIndex", "filter", "map", "forEach",
+        "reduce", "reduceRight", "some", "every", "flat", "flatMap", "fill", "at", "keys", "values", "entries",
+        "get", "set", "has", "delete", "clear", "add",
+        "then", "catch", "finally",
+        "split", "trim", "trimStart", "trimEnd", "startsWith", "endsWith", "replace", "replaceAll", "match",
+        "matchAll", "toLowerCase", "toUpperCase", "padStart", "padEnd", "charAt", "charCodeAt", "codePointAt",
+        "substring", "substr", "repeat", "localeCompare", "normalize",
+        "toString", "valueOf", "hasOwnProperty", "toJSON", "call", "apply", "bind",
+        "on", "off", "once", "addEventListener", "removeEventListener", "dispatchEvent", "next", "abort",
+    ]
+    .into_iter()
+    .collect()
+});
+
 pub(super) static PYTHON_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse", "copy", "update",

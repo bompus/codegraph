@@ -11,7 +11,7 @@ import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, 
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
 import { resolveWorkspaceImport } from './workspace-packages';
 import { JS_BUILT_INS, TS_PRIMITIVE_TYPES } from './js-builtins';
-import { resolveViaImport, resolveJvmImport, isShadowedImportName } from './import-resolver';
+import { resolveViaImport, resolveJvmImport, isShadowedImportName, isUnknownReceiverBuiltInCall } from './import-resolver';
 import { inferIterationReceiver, inferGuardedReceiver } from './receiver-iteration';
 
 /**
@@ -1073,6 +1073,7 @@ export function matchByExactName(
   // unresolved import refs each scored K same-named import candidates through
   // findBestMatch — O(K²) per package, the dominant cost of "Resolving refs" on
   // large import-heavy (front-end + back-end) repos (#915).
+  if (isUnknownReceiverBuiltInCall(ref, context)) return null;
   const bareJs = isBareJsCall(ref, context);
   if (bareJs) {
     const storeAction = matchJsStoreBindingCall(ref, context);
@@ -4395,6 +4396,7 @@ export function matchFuzzy(
   context: ResolutionContext
 ): ResolvedRef | null {
   if (isBoundToBareImport(ref, context)) return null;
+  if (isUnknownReceiverBuiltInCall(ref, context)) return null;
   // Exact-name already declined these C/C++ forms; a unique same-named
   // survivor must not inherit the reference (the true callee is external
   // or needs a receiver type exact-name does not have).
