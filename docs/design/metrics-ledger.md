@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.68 Resolver port, Phase 6 leg 6b: import arms that read the exporting file (2026-09-26)
+
+An imported constant called through a member (`Api.upload()`, `store.notify()`) punted as `via-src` when the containment lookup missed, because the two remaining TS arms read the exporting file. Both are ported. resolveObjectLiteralAlias takes the binding a shorthand or `key: ident` property names inside the literal and resolves it in the object's file: a symbol declared there, else through that file's own imports. resolveImportedInstanceMember types the value from its own declaration lines (the local receiver patterns over the joined extent, without the per-line length cap) and validates the member with resolveMethodOnType, supertype walk included.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| vitest (pool) | 93.0% (`via-src` ~3.5k) | 96.9% | identical |
+| svelte | 99.0% | 99.2% | identical |
+| vite | — | 97.5% | identical |
+| zod | — | 98.7% | identical |
+
 ### 5.67 Resolver port, Phase 6 leg 6a: supertype walks (2026-09-26)
 
 A member missing on a receiver's own type punted (`btm-supers`, `rmot-supers`) because TS then walks implements/extends edges the kernel's snapshot might not hold: TS reads live edges, and the resolution loop writes them as it goes. But only the prerequisite phase (imports/extends/implements, drained before any call) writes those edges, so a connection that sees the db after that phase sees all of them. The kernel now ports both walks — matchBoundTypeMember's node-anchored BFS over `getSupertypeNodes` (any target kind, visited once) and resolveMethodOnType's `getSupertypes` name-union recursion (depth < 4), both over the same `WHERE source = ? AND kind IN (…)` edge scan so order matches — gated by a `supertypesComplete` config flag. Main-thread kernels read the live db and set it; pool workers get it once their snapshot postdates the prerequisite phase: the loop refreshes it at the first idle boundary past that phase (a new copy and generation handed over through `recycle`; no copy if no prerequisite batch ran).
