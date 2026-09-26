@@ -14,7 +14,7 @@ import { findNearestCodeGraphRoot } from '../directory';
 // CodeGraph is pulled in only when a tool actually opens a project. require() is
 // sync + cached (CommonJS build).
 const loadCodeGraph = (): typeof import('../index').default =>
-  loadCodeGraphForTests ?? (require('../index') as typeof import('../index')).default;
+  loadCodeGraphForTests ?? (require('../codegraph') as typeof import('../codegraph')).default;
 // Test seam (same pattern as the watcher's `__setFsWatchForTests`): vitest's
 // module transform can't service the lazy `require('../index')` above, so
 // in-process tests that exercise a genuine cross-project open (an explicit

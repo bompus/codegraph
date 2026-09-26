@@ -288,11 +288,11 @@ describe('graph links land on the right token', () => {
     );
   });
 
-  it('lands on a real call site in the engine’s own src/index.ts', async () => {
-    const file = path.join(__dirname, '..', 'src', 'index.ts');
+  it('lands on a real call site in the engine’s own src/codegraph.ts', async () => {
+    const file = path.join(__dirname, '..', 'src', 'codegraph.ts');
     const source = fs.readFileSync(file, 'utf-8').split('\n');
     // A line the engine actually contains, found rather than hard-coded, so a
-    // refactor of index.ts retires this test instead of silently passing.
+    // refactor of codegraph.ts retires this test instead of silently passing.
     const index = source.findIndex((l) => /^\s*(?:return |const \w+ = )?this\.\w+\.\w+\(/.test(l));
     expect(index).toBeGreaterThanOrEqual(0);
     const line = source[index] as string;

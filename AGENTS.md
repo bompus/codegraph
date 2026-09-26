@@ -79,11 +79,11 @@ files → ExtractionOrchestrator (tree-sitter) → DB (nodes/edges/files)
        ContextBuilder (markdown/JSON for AI consumption)
 ```
 
-The public API surface is `src/index.ts` — the `CodeGraph` class wires all the layers and re-exports types. Library users only touch this file; the MCP server and CLI also drive it.
+The public API surface is `src/index.ts`, which re-exports types and the `CodeGraph` class from `src/codegraph.ts`. That class wires all the layers; extraction, resolution and the watcher load on first use, so read-only paths (query workers, the MCP engine) import `src/codegraph.ts` directly and never load them. Library users only touch `src/index.ts`; the MCP server and CLI also drive the class.
 
 ### Module layout
 
-- `src/index.ts` is the public library API and wires the system together.
+- `src/index.ts` is the public library API; `src/codegraph.ts` is the `CodeGraph` class that wires the system together.
 - `src/db/` owns the `node:sqlite` database, schema, and prepared queries. Source development requires Node 22.5 or newer; published bundles carry their own supported runtime.
 - `src/extraction/` parses supported languages; `src/resolution/` connects imports, names, frameworks, callbacks, and cross-tier flows.
 - `src/graph/` owns shared graph derivations. If more than one surface renders a derivation, put it here rather than in an individual handler.

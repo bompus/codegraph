@@ -38,7 +38,7 @@ interface CallMessage {
 // Mirror the engine's lazy-require of the heavy CodeGraph + tools chain. This
 // module is only ever loaded as a Worker, so the require runs once on spawn.
 const loadCodeGraph = (): typeof import('../index').default =>
-  (require('../index') as typeof import('../index')).default;
+  (require('../codegraph') as typeof import('../codegraph')).default;
 const loadToolHandler = (): typeof import('./tools').ToolHandler =>
   (require('./tools') as typeof import('./tools')).ToolHandler;
 
