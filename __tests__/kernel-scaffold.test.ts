@@ -5,7 +5,7 @@
  * per-file fallback. These are SCAFFOLD tests — behavioral parity with the
  * wasm extractors is R3's equivalence gate, not asserted here.
  *
- * Without a staged .node (scripts/build-kernel.sh) the suite skips. CI that builds the kernel sets
+ * Without a staged .node (npm run build:kernel) the suite skips. CI that builds the kernel sets
  * CODEGRAPH_KERNEL_EXPECT=1, which turns "missing binary" into a FAILURE so
  * the gate can't silently pass by not building the kernel.
  */
@@ -57,7 +57,7 @@ afterEach(() => {
 });
 
 it.runIf(expectKernel)('kernel binary must exist when CODEGRAPH_KERNEL_EXPECT=1', () => {
-  expect(kernelBuilt, `expected kernel at ${KERNEL_PATH} — run scripts/build-kernel.sh`).toBe(true);
+  expect(kernelBuilt, `expected kernel at ${KERNEL_PATH} — run npm run build:kernel`).toBe(true);
 });
 
 describe.skipIf(!kernelBuilt)('kernel scaffold', () => {

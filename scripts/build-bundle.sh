@@ -80,7 +80,7 @@ rm -f "$STAGE/lib/package-lock.json"
 # 3b. Native extraction kernel (REQUIRED — it is the only parser). Taken from
 #     release/kernel/<target>/codegraph-kernel.node (the release workflow's
 #     prebuild artifacts) or the locally staged codegraph-kernel/prebuilds/
-#     <target>/ (scripts/build-kernel.sh). Absent → the bundle is not built.
+#     <target>/ (scripts/build-kernel.mjs). Absent → the bundle is not built.
 KERNEL_NODE=""
 for candidate in "$ROOT/release/kernel/${TARGET}/codegraph-kernel.node" \
                  "$ROOT/codegraph-kernel/prebuilds/${TARGET}/codegraph-kernel.node"; do
@@ -91,7 +91,7 @@ if [ -n "$KERNEL_NODE" ]; then
   cp "$KERNEL_NODE" "$STAGE/lib/kernel/codegraph-kernel.node"
   echo "[bundle] native kernel included ($KERNEL_NODE)"
 else
-  echo "[bundle] ERROR: no native kernel for ${TARGET} — the kernel is the only parser (build it with scripts/build-kernel.sh --target <triple>)" >&2
+  echo "[bundle] ERROR: no native kernel for ${TARGET} — the kernel is the only parser (build it with scripts/build-kernel.mjs --target <triple>)" >&2
   exit 1
 fi
 
