@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph_sessions` now finds Cursor transcripts for projects whose path contains a dot directory, such as T3 Code worktrees under `~/.t3/worktrees/` or anything under `~/.local/`. Cursor names its project folder by turning each run of separators into one dash, and codegraph was producing a double dash there, so it looked in a folder that does not exist.
+
 - In Svelte, Vue and Astro components, a relative import such as `import { count } from './store'` now links to the imported file. In projects with several same-named files it used to link back to the component's own import line.
 
 - In JavaScript and TypeScript, a built-in method called on a value codegraph cannot type, such as `this.#items.add(x)` on a Set or `list.map(...)` on an array, no longer links to a project class that happens to have a method with that name.

@@ -299,6 +299,18 @@ describe('querySessions (project entry point)', () => {
     expect(() => querySessions(project, 'dedupe')).toThrow(NoSessionsError);
   });
 
+  it.skipIf(process.platform === 'win32')('names the Cursor project directory the way Cursor does', () => {
+    // The shape of the folders Cursor writes under ~/.cursor/projects: a
+    // separator run such as "/." collapses to a single dash.
+    expect(cursorProjectSlug('/home/user/my-repo')).toBe('home-user-my-repo');
+    expect(cursorProjectSlug('/home/user/.t3/worktrees/myRepo/t3code-51125c9e')).toBe(
+      'home-user-t3-worktrees-myRepo-t3code-51125c9e',
+    );
+    expect(cursorProjectSlug('/home/user/.local/share/scratch/check')).toBe(
+      'home-user-local-share-scratch-check',
+    );
+  });
+
   it('indexes Codex and Cursor prose for this project and skips other-repo or tool traffic', () => {
     const project = fixtureDir();
     const other = fixtureDir();
