@@ -1,4 +1,4 @@
-# C++ `begin` same-name ties — truth set and score (2026-09-14)
+# Truth set and score for C++ `begin` same-name ties (2026-09-14)
 
 Corpus: nlohmann/json at `aa391dc0` (the pinned Phase 3 commit).
 Engine: `fork/consolidated` at `7a53807d` (extraction 36, schema v12) for the
@@ -27,13 +27,13 @@ ref (column at the call expression, not the name). Exact-name used to
 pick among every same-named `begin` by same-file / proximity / exported.
 The matcher now reads the first `begin(` on or after that column:
 
-- implicit-this `begin()` — keep the existing same-file exact-name pick
+- For implicit-this `begin()`, keep the existing same-file exact-name pick
   (the present controls).
-- `this->begin()` — only a method/function whose qualified name is the
+- For `this->begin()`, accept only a method/function whose qualified name is the
   enclosing type's `begin`; otherwise nothing.
-- any other `.begin()` / `->begin()`, or `std::begin` — nothing (the
+- For any other `.begin()` / `->begin()`, or `std::begin`, accept nothing (the
   callee is a different type or external).
-- ADL `begin(x)` — only a unique same-file free `function`; two
+- For ADL `begin(x)`, accept only a unique same-file free `function`; two
   overloads in one amalgamated header are still a guess.
 
 Scoped to the iterator ADL names (`begin`/`end`/`rbegin`/`rend`/
@@ -66,7 +66,7 @@ own `begin` 23, `iteration_proxy::begin` 6, `Dictionary::begin` 3.
   `function`, unqualified). Correct entity.
 - ABI copy: `items()` → `iteration_proxy` constructor (2 edges,
   `return iteration_proxy<iterator>(*this)`). Explicit construction.
-  Correct — and the same shape in the main header has no `calls` edge
+  Correct. The same shape in the main header has no `calls` edge
   to the constructor (only `instantiates` edges to the class; the 2
   lost `calls` edges from the Phase 3 gate). Not encoded (the gate
   needs the main-header `calls` edge to exist first).

@@ -1,4 +1,4 @@
-# Kernel-only extraction — removing the WASM path
+# Removing the WASM path for kernel-only extraction
 
 **Status:** implemented through Phase 5 (2026-09-12); the WASM path is gone. Written 2026-09-11. Companion to [resolution-binding-model-plan.md](resolution-binding-model-plan.md) and [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). Supersedes the "coexistence is permanent" stance in [rust-kernel-migration-plan.md](rust-kernel-migration-plan.md) §4d once approved.
 
@@ -43,7 +43,7 @@ Moving the slicers themselves into Rust is a later optimization and is not requi
 
 **Revised 2026-09-11 (Phase 3 implementation).** The original text proposed two derivation entry points, `parse_tokens` and `walk_guards`. Reading the consumers changed that: `branch-guards.ts` is 2,300 lines of per-language rules with eight entry points (guards, call arguments, call sites, triggers, loops, decorators, member types), all walking the tree with `type`, `childForFieldName`, `text` and `parent`. Porting those rules to Rust is weeks of work for no retrieval gain.
 
-What shipped instead: `parse_tree(content, language)` returns the **whole CST as flat buffers in one crossing** (`codegraph-kernel/src/tree.rs`), and `src/extraction/kernel/tree.ts` wraps the rows in `NativeNode`, a facade with the web-tree-sitter node surface. `src/extraction/parse-tree.ts` is the one seam (`parseSourceTree`, now kernel-only) and defines the structural `TreeNode` type both trees satisfy, so the three consumers retain their tree-walking logic. Positions are UTF-16 code units so `source.slice` is exact; an all-ASCII file skips the prefix table; kind and field name tables are fetched once per language (`tree_names`); the child table is built by a counting pass; each row carries its index in its parent so sibling lookups are constant time.
+What shipped instead: `parse_tree(content, language)` returns the **whole CST as flat buffers in one crossing** (`codegraph-kernel/src/tree.rs`), and `src/extraction/kernel/tree.ts` wraps the rows in `NativeNode`, a facade with the web-tree-sitter node API. `src/extraction/parse-tree.ts` is the one seam (`parseSourceTree`, now kernel-only) and defines the structural `TreeNode` type both trees satisfy, so the three consumers retain their tree-walking logic. Positions are UTF-16 code units so `source.slice` is exact; an all-ASCII file skips the prefix table; kind and field name tables are fetched once per language (`tree_names`); the child table is built by a counting pass; each row carries its index in its parent so sibling lookups are constant time.
 
 The earlier rejection was of a per-node handle over napi, which would cost a crossing per property read. A serialized tree costs one crossing and is what the consumers need.
 
@@ -69,13 +69,13 @@ The inherited build matrix covers macOS x64 and arm64, Linux glibc x64 and arm64
 
 ### 2.7 Golden dumps replace the parity oracle
 
-`scripts/dump-graph.mjs` already produces a natural-key sorted dump. Check in dumps for a fixed set of fixture repos at pinned commits, one per language family, and add `__tests__/golden-dumps.test.ts` that re-indexes each fixture and compares. This is the regression gate for every extractor change from here on. It replaces the 15 parity test files, which delete.
+`scripts/dump-graph.mjs` already produces a natural-key sorted dump. Check in dumps for a fixed set of fixture repos at pinned commits, one per language family, and add `__tests__/golden-dumps.test.ts` that re-indexes each fixture and compares. This is the regression gate for every extractor change from here on. It replaces the 15 parity test files, which are deleted.
 
 ## 3. Phases
 
 Each phase lands on `fork/consolidated` behind the golden-dump gate and leaves the tree shippable. Phases 1 through 3 can proceed in parallel; 4 and 5 depend on all of them.
 
-### Phase 0: golden-dump gate — DONE 2026-09-11
+### Phase 0: golden-dump gate, DONE 2026-09-11
 
 - `__tests__/kernel-golden-dumps.test.ts` indexes each corpus fixture into a temp directory, dumps it with `scripts/dump-graph.mjs`, and compares against `__tests__/fixtures/golden/<name>.dump`. `UPDATE_GOLDEN=1` re-baselines; the resulting `.dump` diff is the review artifact.
 - Corpus: `torture-multilang` (the 38-file kernel-parity torture set, all 20 routed languages), `payroll-go`, `php-import-alias-static`, and two fixtures that exist only for this gate: `golden/vue-sfc` (script-setup TS, options API, styles, vue-router, pinia, `@/` path alias) and `golden/markdown-docs` (sections, doc→code and code→doc references).
@@ -85,7 +85,7 @@ Each phase lands on `fork/consolidated` behind the golden-dump gate and leaves t
 
 Exit met: the gate is green on `fork/consolidated` with no extraction change.
 
-### Phase 1: error recovery flip — DONE 2026-09-11
+### Phase 1: error recovery flip, DONE 2026-09-11
 
 - The `defer:` throw for parse errors is removed from all 14 walkers and the `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT` hatch is gone; only the stack-overflow guard defers. The one-slot memo stays until Phase 5 because a stack-guard defer still needs the pre-parsed source for the WASM fallback (a deviation from the original bullet).
 - The one recovery path that existed only on the WASM side, the Kotlin `fun interface` misparse hook, is ported into `kotlin.rs` (`is_fun_interface_node` and the hook in `try_visit_hook`). The C++ explicit-operator scan that was already in the kernel is now live. Every other "defer-shielded" note was a phantom-error or both-arm-error case with nothing to recover.
@@ -104,7 +104,7 @@ Exit met: the gate is green on `fork/consolidated` with no extraction change.
 
 Exit met: no file reaches WASM because of an ERROR node; deferral reads zero on all three survey repos.
 
-### Phase 2: SFC extractors call the kernel — DONE 2026-09-11
+### Phase 2: SFC extractors call the kernel, DONE 2026-09-11
 
 - `src/extraction/block-extract.ts` is the one seam: `extractEmbeddedBlock(filePath, content, language)` tries `tryKernelExtract` and falls back to `TreeSitterExtractor` only when the kernel declines (language not routed, no binary, stack-guard defer). Vue, Svelte, Astro and Razor call it in place of constructing the WASM extractor; their position rebasing is untouched, since results are block-relative either way.
 - A second SFC golden, `golden/sfc-mix` (Svelte with `lang="ts"`, `context="module"` and plain script; Astro frontmatter plus inline script; Razor `@code` with a C# sibling), was generated on the WASM block path before the change and holds byte-for-byte after it, as does `vue-sfc`.
@@ -112,7 +112,7 @@ Exit met: no file reaches WASM because of an ERROR node; deferral reads zero on 
 
 Exit met: SFC fixtures index with zero WASM parses on a host with a kernel. The remaining WASM users in `src/extraction/` are the CFML extractor (live CST), the tail languages, and the fallback itself.
 
-### Phase 3: parse-tree service — DONE 2026-09-11
+### Phase 3: parse-tree service, DONE 2026-09-11
 
 - `codegraph-kernel/src/tree.rs` (`parse_tree`, `tree_names`), `src/extraction/kernel/tree.ts` (facade), `src/extraction/parse-tree.ts` (seam and `TreeNode` type). `syntax-tokens.ts`, `graph/branch-guards.ts` and `mcp/explore-source-ranges.ts` import the seam instead of `web-tree-sitter` and `getParser`; their walkers are untouched.
 - `__tests__/kernel-parse-tree.test.ts`: for 19 torture fixtures plus three of this repo's own sources, the facade matches the WASM tree node for node (type, named-ness, UTF-16 indexes, positions, child counts, field names), syntax spans are equal, and branch guards agree at up to 60 call sites per file. Erroring C/C++ fixtures are checked for `hasError` agreement only (Phase 1). The existing highlighter, branch-guard and Steps suites pass on the kernel path.
@@ -132,11 +132,11 @@ Measured (median per file, warm, single thread, this host):
 | | tokenize | 1.42 ms | 0.90 ms | 1.58x |
 | | guards | 13.6 ms | 13.6 ms | 1.07x |
 
-Reading it honestly: the WASM parser builds a lazy tree, so a bare parse is cheaper there; the kernel serializes every node up front. Once a consumer walks the tree, the facade's buffer reads are cheaper than WASM boundary crossings, so tokenizing is at par or faster and guards are at par on TypeScript. On the largest redis file (658 KB) the kernel's parse plus serialization took 62 ms against 40 ms for the WASM parse alone and 58 ms for WASM parse plus one full walk. The guards row overstates the cost because the benchmark re-parses per site; production callers parse once per file and cache the tree. None of these paths is on the retrieval critical path: an explore call is measured in hundreds of milliseconds. The value of this phase is removing the last read-time dependency on the WASM runtime, not speed. Outputs differed on 3 of 765 files, all with erroring trees.
+The WASM parser builds a lazy tree, so a bare parse is cheaper there; the kernel serializes every node up front. Once a consumer walks the tree, the facade's buffer reads are cheaper than WASM boundary crossings, so tokenizing is at par or faster and guards are at par on TypeScript. On the largest redis file (658 KB) the kernel's parse plus serialization took 62 ms against 40 ms for the WASM parse alone and 58 ms for WASM parse plus one full walk. The guards row overstates the cost because the benchmark re-parses per site; production callers parse once per file and cache the tree. None of these paths is on the retrieval critical path: an explore call is measured in hundreds of milliseconds. The value of this phase is removing the last read-time dependency on the WASM runtime, not speed. Outputs differed on 3 of 765 files, all with erroring trees.
 
 Exit met: no `getParser` call outside `src/extraction/` (`branch-guards.ts` and `explore-source-ranges.ts` no longer import it).
 
-### Phase 4: tail languages — DONE 2026-09-11; all retained
+### Phase 4: tail languages, DONE 2026-09-11; all retained
 
 - The generic extractor runs on native trees (§2.4 revision). `__tests__/kernel-generic-extractor-tree.test.ts` gates it: with walker routing off and native trees on, extraction of every torture fixture equals the all-WASM arm as canonical multisets (erroring C/C++ files compared loosely). It caught one facade gap: web-tree-sitter's `childForFieldName` finds a child whose field is attached through a hidden grammar rule (Swift's `return_type`) while its `fieldNameForChild` does not; the kernel row now carries the cursor field plus an extra-field table gathered with the C-backed `child_by_field_id`, and the facade mirrors the asymmetry.
 - Objective-C, Erlang, Nix, Pascal and Solidity grammars are compiled into the kernel from crates.io (`tree-sitter-objc` 3.0.2, `tree-sitter-erlang` 0.20.0, `tree-sitter-nix` 0.3.0, `tree-sitter-pascal` 0.10.2, `tree-sitter-solidity` 1.2.13). Kind and field tables against the vendored WASM grammars: Erlang, Nix and Pascal identical; Objective-C 588 vs 570 kinds (35 differ) and Solidity 531 vs 512 kinds (39 differ), the crates being newer than the 2023-era `tree-sitter-wasms` builds. The `golden/tail-langs` fixture (ten files across the five languages) was generated on WASM before the grammars were added and holds byte-for-byte on native parsing despite the drift.
@@ -147,7 +147,7 @@ Measured, TypeScript sources of this repo, median per file: bare parse 0.69 ms W
 
 Exit met: every language in `EXTENSION_MAP` with a grammar parses natively. The only remaining WASM use in `src/extraction/` is the fallback itself, which Phase 5 removes.
 
-### Phase 5: delete WASM — DONE 2026-09-12
+### Phase 5: delete WASM, DONE 2026-09-12
 
 - Removed: `web-tree-sitter` and `tree-sitter-wasms` from `package.json`, the 29 vendored `.wasm` files and the `copy-assets` step for them, the `web-tree-sitter` type shim, the per-language routing table and `CODEGRAPH_KERNEL` / `CODEGRAPH_KERNEL_LANGS` / `CODEGRAPH_KERNEL_EXPECT`-driven routing in `kernel/index.ts`, the defer memo, the worker-side grammar loads, the Emscripten stderr filter, the parser reset and the WASM-OOM worker exit, the `--liftoff-only` relaunch (`wasm-runtime-flags.ts` is now `node-runtime-flags.ts`), the Node 25 block, `scripts/kernel-parity.mjs`, `scripts/bench-parse-tree.mjs`, the 12 per-language parity suites, the grammar-table parity suite, the wasm-bytes and runtime-flag suites.
 - Kept as no-ops for API stability: `initGrammars`, `loadGrammarsForLanguages`, `loadAllGrammars`, `isGrammarLoaded` (the public API re-exports them and dozens of tests warm grammars).
@@ -200,7 +200,7 @@ A measurement-only switch skipped the WASM grammar loads for kernel-routed langu
 | Kernel prebuild (linux-x64) | 34 MB |
 | `web-tree-sitter` + `tree-sitter-wasms` in `node_modules` | 54 MB |
 
-Reading it: on Node the per-worker WASM grammar heap is about 5 MB per worker, not the 60 MB the Bun probe saw (that was a JavaScriptCore compiler-thread leak). Peak RSS at index time is dominated by the main thread's store and resolution work, so deleting WASM does not move the memory headline on Node. It does buy roughly 0.3 to 0.7 s of grammar compile per fresh index, a 40 ms and 50 MB cheaper MCP cold start with one process fewer per session, a 41% smaller install (75 MB to 44 MB with the kernel counted), two fewer runtime dependencies, and the removal of the Node 25 block and the relaunch machinery that forced a dedicated Node 24 alias on the downstream host. The engineering payoff (one grammar supply chain, no parity oracle to maintain, about 27k lines gone) is not in these tables and is the larger part of the case. Retrieval quality is held constant by construction (goldens) and is not a lever here.
+On Node the per-worker WASM grammar heap is about 5 MB per worker, not the 60 MB the Bun probe saw (that was a JavaScriptCore compiler-thread leak). Peak RSS at index time is dominated by the main thread's store and resolution work, so deleting WASM does not move the memory headline on Node. It does buy roughly 0.3 to 0.7 s of grammar compile per fresh index, a 40 ms and 50 MB cheaper MCP cold start with one process fewer per session, a 41% smaller install (75 MB to 44 MB with the kernel counted), two fewer runtime dependencies, and the removal of the Node 25 block and the relaunch machinery that forced a dedicated Node 24 alias on the downstream host. The engineering payoff (one grammar supply chain, no parity oracle to maintain, about 27k lines gone) is not in these tables and is the larger part of the case. Retrieval quality is held constant by construction (goldens), so this work does not change it.
 
 ### Windows validation (2026-09-12)
 
@@ -211,7 +211,7 @@ Run on the Windows host itself (Windows-local checkout under `C:\Users\bompus\sr
 | `npm ci` | ok |
 | `bash scripts/build-kernel.sh` | **failed first**: `grammars/cobol/scanner.c` uses C99 variable-length arrays, which MSVC rejects (C2466/C2133). The wasm build had used clang. Fixed with a fixed-size-array patch recorded in `grammars/PROVENANCE.md`; then built in 53 s, 76 MB prebuild |
 | `npm run build` | ok (no grammar copy; check-ui-build passes) |
-| Kernel suites (`kernel-` filter, `CODEGRAPH_KERNEL_EXPECT=1`) | 8 files, 145 tests pass — the golden dumps are byte-identical on Windows |
+| Kernel suites (`kernel-` filter, `CODEGRAPH_KERNEL_EXPECT=1`) | 8 files, 145 tests pass; the golden dumps are byte-identical on Windows |
 | Full engine suite, 6 workers | 264 files pass, 2 fail, 4688 tests pass |
 
 The two failures are POSIX-only test fixtures unrelated to extraction: `extraction-old-git.test.ts` installs a `#!/bin/sh` git shim with a `:`-separated PATH, and `agent-eval-harness.test.ts` runs a bash script. Both are now gated with `it.runIf(process.platform !== 'win32')` per the repository's Windows-gated-tests rule; they still run on Linux.

@@ -20,7 +20,7 @@
 - **A2A 1.0** shipped in April under the Linux Foundation and joined the Agentic AI Foundation alongside MCP in August. Neither Claude Code nor Codex CLI implements it. Its production evidence is enterprise platforms, not developer tooling.
 - **Claude Code** has cross-session messaging since August: same machine over a per-session socket, cross-machine only through Anthropic's servers with a claude.ai login, plain text, no delivery to a session that never ran, WSL and native Windows cannot see each other. Agent teams are experimental, one team per session, in-process teammates do not survive resume.
 - **Codex** multi-agent and **Cursor** cloud agents are host-internal.
-- **Tool count**: a pet-store experiment went from perfect at 10 tools to complete failure at 107; a selection-accuracy study fell from 43% to under 14% as tools grew; GitHub Copilot cut 40 tools to 13 for a measurable SWE-bench gain. CodeGraph's two-tool default and its rule that early `isError` responses teach abandonment are load-bearing.
+- **Tool count**: a pet-store experiment went from perfect at 10 tools to complete failure at 107; a selection-accuracy study fell from 43% to under 14% as tools grew; GitHub Copilot cut 40 tools to 13 for a measurable SWE-bench gain. CodeGraph's two-tool default and its rule that early `isError` responses teach abandonment depend on these results.
 
 ## 3. What each concern would actually add
 
@@ -45,7 +45,7 @@ Hosts stop at the same machine, live sessions only, no durable inbox, one team p
 - **Consistency.** The graph is derived and rebuildable. Mail and memory are authoritative state. Mixing them in one store means re-index, WAL healing and `codegraph init` now put user data at risk. The agent-mail corruption and reconstruct incidents show what that looks like.
 - **Privacy.** Session transcripts never leave the checkout today. Cross-machine delivery necessarily ships transcript-derived text off machine. Bundling makes "did codegraph upload my transcripts" a legitimate question. Two of the reference projects carry licenses that cannot be reused in this package.
 - **Release coupling.** Extraction changes need golden re-baselines; a mail protocol change is a compatibility event across running agents. One version number, three cadences, and the installer rewrites every host config on each release.
-- **Spec drift.** Building a push-shaped feature on a protocol that just removed sessions and server-initiated requests is building against the current.
+- **Spec drift.** A push-shaped feature would depend on the sessions and server-initiated requests this protocol version just removed.
 
 ## 5. What to do instead
 

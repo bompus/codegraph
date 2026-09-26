@@ -1,4 +1,4 @@
-# Greenfield Rust core — design sketch and tradeoff
+# Design sketch and tradeoff for a greenfield Rust core
 
 **Status:** sketch, not approved. Written 2026-09-11 so the "rewrite from scratch in Rust" option is judged on paper against the two incremental plans it competes with: [kernel-only extraction](kernel-only-extraction-plan.md) and the [resolution binding model](resolution-binding-model-plan.md).
 
@@ -6,7 +6,7 @@
 
 ## 1. What a replacement must reproduce
 
-This is the surface a from-scratch core inherits on day one. Every row is a user-visible contract or a persisted artifact; none is optional.
+This is what a from-scratch core inherits on day one. Every row is a user-visible contract or a persisted artifact; none is optional.
 
 ### 1.1 Persisted graph (`.codegraph/codegraph.db`)
 

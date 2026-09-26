@@ -1,8 +1,8 @@
-# Where this fork goes next — base, upstream, and priorities
+# Base, upstream and priorities for where this fork goes next
 
 **Status:** assessment, 2026-09-25. Written to answer three questions: is the Rust rewrite worth it, how does CodeGraph compare with the tools we would otherwise use, and should this fork keep feeding upstream or become its own project. Companions: [competitive-landscape-adoption.md](competitive-landscape-adoption.md) (the 2026-09-11 survey this updates), [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md) (the rewrite-from-scratch option and its reopen conditions), and [metrics-ledger.md](metrics-ledger.md) (every number below that we measured ourselves).
 
-**Summary.** Keep CodeGraph as the base. It is still the best fit for how we use a code index, and nothing else on the market returns what our measurements say agents need. Stop treating upstream as the delivery path for the engine: run the engine as an independent line, send upstream only small single-concern fixes, and stop merging `upstream/main` wholesale. Spend the next stretch of work on edge correctness, not speed — an outside benchmark puts our call-edge precision at 58.6% against 85.7% for the best competitor, and that is the gap most likely to send an agent back to Grep.
+**Summary.** Keep CodeGraph as the base. It is still the best fit for how we use a code index, and nothing else on the market returns what our measurements say agents need. Stop treating upstream as the delivery path for the engine: run the engine as an independent line, send upstream only small single-concern fixes, and stop merging `upstream/main` wholesale. Spend the next stretch of work on edge correctness, not speed. An outside benchmark puts our call-edge precision at 58.6% against 85.7% for the best competitor, and that is the gap most likely to send an agent back to Grep.
 
 ## 1. What we need from a code index
 
@@ -51,7 +51,7 @@ repowise's [BENCHMARKS.md](https://github.com/repowise-dev/repowise/blob/main/do
 
 The TypeScript result matters most to us: TypeScript is our downstream project's language and the language of most of the README corpora.
 
-The precision gap has a likely shape. repowise types a receiver from its declaration where it can, and stores every weaker binding under a named origin with a lower confidence (its cross-file "global unique" match is recorded at 0.50 as a guess); CodeGraph's exact-name and fuzzy strategies bind a call to a same-named definition that passes the gates, with nothing marking it as a guess. The fork already found one instance while writing this: the kernel bound a Python call to a same-named Nix binding, which the TypeScript resolver rejects (fix pending). The 1.5.0 numbers predate the fork's binding model (#27–#38) and the member-access kernel work, so some of the 116 wrong rows may already be fixed — that has to be measured, not assumed (§6, step 1).
+The precision gap has a likely shape. repowise types a receiver from its declaration where it can, and stores every weaker binding under a named origin with a lower confidence (its cross-file "global unique" match is recorded at 0.50 as a guess); CodeGraph's exact-name and fuzzy strategies bind a call to a same-named definition that passes the gates, with nothing marking it as a guess. The fork already found one instance while writing this: the kernel bound a Python call to a same-named Nix binding, which the TypeScript resolver rejects (fix pending). The 1.5.0 numbers predate the fork's binding model (#27–#38) and the member-access kernel work, so some of the 116 wrong rows may already be fixed. That has to be measured, not assumed (§6, step 1).
 
 ## 4. Is the Rust rewrite worth it?
 
@@ -69,7 +69,7 @@ What it did not buy:
 - **Memory.** Our index run peaks near 400 MB even on a repository of 1,200–1,500 nodes (os-lib, lazy.nvim in the ledger's A/B), so the floor is Node plus the worker pool, not the kernel. repowise builds its graph in 75 MB. On a host that has been OOM-killed by aggregate pressure, this matters more to us than seconds do.
 - **One implementation.** Every kernel punt still runs the TypeScript resolver, so there are two resolvers to keep in step, and a parity bug the dump gate cannot see (a language no corpus contains) ships silently.
 
-The greenfield sketch's reopen conditions are close to met: both incremental plans have landed and resolution runs in the kernel with golden-dump parity. Its third condition — "a memory ceiling the daemon cannot meet" — now has outside evidence behind it. That argues for measuring the memory floor before deciding anything larger, not for a rewrite.
+The greenfield sketch's reopen conditions are close to met: both incremental plans have landed and resolution runs in the kernel with golden-dump parity. Its third condition, "a memory ceiling the daemon cannot meet", now has outside evidence behind it. That argues for measuring the memory floor before deciding anything larger, not for a rewrite.
 
 ## 5. Which base, and what to do about upstream
 
@@ -104,7 +104,7 @@ This also changes the downstream project's stated goal of keeping the fork thin 
 
 Ordered by what moves "the agent stops reading" and by what the outside benchmark showed. Speed is not on the list; we already lead it.
 
-1. **Measure our precision today.** Replay repowise's published graded rows (`repowise-bench/graph/experiments/g1-edge-precision/rows`: call site, bound declaration, verdict, reason) against the current fork and report what is still wrong per language. Rerun their `tsc` oracle cells (zod, hono) if the harness runs locally. Cost: small to moderate. This turns 58.6% into a concrete backlog, or shows the binding model already closed much of it. **Done 2026-09-25:** [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) — on the 120 rows for the four separating languages the fork keeps 66 edges, 46 correct (70%, against 49% for 1.5.0 on the same rows), mostly by declining; TypeScript member-call recall collapsed, and Kotlin is now the least precise language.
+1. **Measure our precision today.** Replay repowise's published graded rows (`repowise-bench/graph/experiments/g1-edge-precision/rows`: call site, bound declaration, verdict, reason) against the current fork and report what is still wrong per language. Rerun their `tsc` oracle cells (zod, hono) if the harness runs locally. Cost: small to moderate. This turns 58.6% into a concrete backlog, or shows the binding model already closed much of it. **Done 2026-09-25:** [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md). On the 120 rows for the four separating languages the fork keeps 66 edges, 46 correct (70%, against 49% for 1.5.0 on the same rows), mostly by declining; TypeScript member-call recall collapsed, and Kotlin is now the least precise language.
 2. **Stop guessing, and say how sure an edge is.** Two parts, in order:
    - Tighten the strategies that bind by name alone (exact-name across files, fuzzy) where the precision replay shows them wrong, starting with TypeScript: decline when the receiver's type is unknown rather than pick a same-named method.
    - Persist a resolution origin with a confidence on every edge, like repowise's 29 origins or gortex's tiers, and show it in explore's flow so the agent verifies the uncertain hop instead of re-reading the neighbourhood. Add the cross-language mis-wire guard with it (survey item C; the Nix bug is this class).
@@ -114,7 +114,7 @@ Ordered by what moves "the agent stops reading" and by what the outside benchmar
 5. **Index artifacts for worktrees** (survey item D). Copy an index into a new worktree and catch up by file hash, so a fresh worktree answers from the first call. **Done 2026-09-26:** `codegraph init` seeds from the closest compatible sibling worktree index and syncs (ledger 5.58).
 6. **Finish the resolver port, then delete the TypeScript resolver.** Only after steps 1–2, so the kernel moves one design forward instead of two mirrors in step. This removes the dual-maintenance cost for good.
 
-Explicitly deferred: git-history and code-health layers (repowise's strengths, but no measured miss in our use), an LSP/SCIP overlay (survey item G stays gated on a precision gap that heuristics cannot close — step 1 will say whether one exists), and further resolver performance work.
+Explicitly deferred: git-history and code-health layers (repowise's strengths, but no measured miss in our use), an LSP/SCIP overlay (survey item G stays gated on a precision gap that heuristics cannot close; step 1 will say whether one exists), and further resolver performance work.
 
 ## 7. Sources
 
