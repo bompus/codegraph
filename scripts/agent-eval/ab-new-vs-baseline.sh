@@ -96,7 +96,9 @@ echo
 
 # Two pristine copies so each arm starts clean (the agent edits its own copy).
 rm -rf "$OUT/t-new" "$OUT/t-base"
-rsync -a --exclude node_modules --exclude .git --exclude dist --exclude .codegraph "$TARGET/" "$OUT/t-new/"
+# AB_KEEP_GIT=1 keeps the target's .git, for a task about the working changes.
+KEEP_GIT_EXCLUDE=(--exclude .git); [ "${AB_KEEP_GIT:-0}" = 1 ] && KEEP_GIT_EXCLUDE=()
+rsync -a --exclude node_modules "${KEEP_GIT_EXCLUDE[@]}" --exclude dist --exclude .codegraph "$TARGET/" "$OUT/t-new/"
 cp -R "$OUT/t-new" "$OUT/t-base"
 
 prewarm() { # target — spawn a persistent daemon (current $BIN) and wait for its socket
