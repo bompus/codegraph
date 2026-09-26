@@ -3300,6 +3300,16 @@ export class QueryBuilder {
   }
 
   /**
+   * Run one read so this connection maps the WAL index. The kernel opens the
+   * same file with `readonly_shm=1`, which cannot create a missing `-shm`
+   * and fails at its first query ("unable to open database file") — as it
+   * would right after an index, before anything has read the db again.
+   */
+  mapWalIndex(): void {
+    this.db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
+  }
+
+  /**
    * The on-disk path of the `main` database, or null for in-memory/URI
    * connections. The kernel resolver opens its own read-only connection to
    * the same file (resolution-binding-model-plan §4).

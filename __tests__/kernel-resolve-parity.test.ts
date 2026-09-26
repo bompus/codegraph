@@ -1,16 +1,16 @@
 /**
  * Phase 4 kernel resolver (docs/design/resolution-binding-model-plan.md §4):
- * the binding-backed bare-name slice resolves natively in the Rust kernel —
- * readPendingBatch + resolveChunk over bindings/nodes/unresolved_refs — while
- * the TypeScript ReferenceResolver stays the orchestrator for passthrough
- * refs, framework merging, and persistence.
+ * every ref resolves natively in the Rust kernel — readPendingBatch +
+ * resolveChunk over bindings/nodes/unresolved_refs — while the TypeScript
+ * ReferenceResolver stays the orchestrator for framework merging and
+ * persistence.
  *
  * These tests pin the contract:
  *   - the native KernelResolver class exists and answers the chunk contract;
  *   - a bare imported call resolves, a builtin misses (unresolved — never a
- *     fabricated edge), and a receiver-shaped name passes through to TS;
- *   - a whole project resolves byte-identically with the kernel on and with
- *     CODEGRAPH_KERNEL_RESOLVE=0 (the TypeScript fallback).
+ *     fabricated edge);
+ *   - per-shape pins of the kernel's verdicts, first written as parity
+ *     checks against the TypeScript resolver the kernel replaced.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { builtinModules } from 'module';
@@ -497,15 +497,12 @@ const FIXTURE: Record<string, string> = {
 
 let tempDir: string | null = null;
 let cg: CodeGraph | null = null;
-const env = { kernelResolve: process.env.CODEGRAPH_KERNEL_RESOLVE };
-
-async function project(kernelResolve: boolean): Promise<CodeGraph> {
+async function project(): Promise<CodeGraph> {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-kresolve-'));
   for (const [rel, content] of Object.entries(FIXTURE)) {
     fs.mkdirSync(path.dirname(path.join(tempDir, rel)), { recursive: true });
     fs.writeFileSync(path.join(tempDir, rel), content);
   }
-  process.env.CODEGRAPH_KERNEL_RESOLVE = kernelResolve ? undefined : '0';
   cg = await CodeGraph.init(tempDir, { index: true });
   await cg.resolveReferencesBatched();
   return cg;
@@ -530,8 +527,6 @@ function dump(graph: CodeGraph): { edges: EdgeRow[]; refs: RefRow[] } {
 }
 
 afterEach(() => {
-  if (env.kernelResolve === undefined) delete process.env.CODEGRAPH_KERNEL_RESOLVE;
-  else process.env.CODEGRAPH_KERNEL_RESOLVE = env.kernelResolve;
   cg?.close();
   cg = null;
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -600,7 +595,7 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // has no -shm, and a `readonly_shm=1` open fails at its first query
     // there — every worker then fell back to TypeScript for the whole run.
     const kernel = getKernel();
-    const graph = await project(true);
+    const graph = await project();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const db = (graph as any).db.db as import('node:sqlite').DatabaseSync;
     db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -625,14 +620,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(fs.existsSync(`${snap}-wal`)).toBe(false);
   });
 
-  it('resolves byte-identically to the TypeScript fallback', async () => {
-    const withKernel = dump(await project(true));
-    await cg!.close();
-    cg = null;
-    const withoutKernel = dump(await project(false));
-    expect(withKernel).toEqual(withoutKernel);
-    // Guard against a trivially-passing comparison — the fixture must actually
-    // resolve edges through the ported strategies.
+  it('resolves the fixture through the ported strategies', async () => {
+    const withKernel = dump(await project());
     const resolvedBy = withKernel.edges
       .map((e) => (e.metadata ? (JSON.parse(e.metadata) as { resolvedBy?: string }).resolvedBy : undefined))
       .filter(Boolean);
@@ -641,7 +630,7 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
   });
 
   it('leaves genuine misses failed rather than fabricating edges', async () => {
-    const graph = await project(true);
+    const graph = await project();
     const failed = dump(graph).refs.filter((r) => r.status === 'failed');
     // console.log (external builtin member) and Date (builtin) must stay failed.
     const names = new Set(failed.map((r) => r.reference_name));

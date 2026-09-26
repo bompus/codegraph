@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, crossesCodeBoundary, dumpNameMatcherProfile, nmTimed, clearNameMatcherMemos, resolveAmbiguousNameCeiling, matchRustBareSelf } from './name-matcher';
+import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchBoundReceiverCall, isBindingReceiverCall, sameLanguageFamily, crossesKnownFamily, crossesCodeBoundary, dumpNameMatcherProfile, clearNameMatcherMemos, resolveAmbiguousNameCeiling, matchRustBareSelf } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, importMappingsFromBindings, reExportsFromBindings, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -53,7 +53,6 @@ const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
  * `::`-receiver ones (Rust) via matchScopedCallChain.
  */
 const CHAIN_LANGUAGES = new Set(['java', 'kotlin', 'csharp', 'swift', 'rust', 'go', 'scala', 'dart', 'objc', 'pascal']);
-const SCOPED_CHAIN_LANGUAGES = new Set(['rust']);
 
 /** The extractor's chained-receiver encoding: `<inner>().<method>`. */
 const CHAIN_SHAPE = /^(.+)\(\)\.(\w+)$/;
@@ -61,6 +60,16 @@ const CHAIN_SHAPE = /^(.+)\(\)\.(\w+)$/;
  *  loading the whole node table: the load is a fixed cost that per-name
  *  queries only overtake near 16k refs (measured on ktor, ledger §5.74). */
 const SYNC_NODE_TABLE_MIN_REFS = 15_000;
+/** Refs per kernel `resolveChunk` call on the list paths. */
+const KERNEL_CHUNK = 500;
+
+type KernelStats = {
+  handled: number;
+  passthrough: number;
+  reasons: Record<string, number>;
+  frameworkMerge: number;
+  frameworkMergeWithCands: number;
+};
 
 /** PHP `$this->prop->method()` encoded as `this->prop.method` — no `()`, so CHAIN_SHAPE misses it. */
 const PHP_PROP_SHAPE = /^this->\w+\.\w+$/;
@@ -752,71 +761,51 @@ export class ReferenceResolver {
   }
 
   /**
-   * Resolve all unresolved references
+   * Resolve all unresolved references through the kernel. Opens the live
+   * db's kernel conn when none is open and closes it again afterwards.
    */
   resolveAll(
     unresolvedRefs: UnresolvedReference[],
     onProgress?: (current: number, total: number) => void
   ): ResolutionResult {
-    // Pre-load all nodes into memory for fast lookups
     this.warmCaches();
     this.advanceSupertypeGeneration();
-
+    const opened = !this.kernelResolver;
+    const kernel = this.liveKernel(unresolvedRefs.length);
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
     const byMethod: Record<string, number> = {};
-
-    // Convert to our internal format, using denormalized fields when available
-    const refs: UnresolvedRef[] = unresolvedRefs.map((ref) => ({
-      fromNodeId: ref.fromNodeId,
-      referenceName: ref.referenceName,
-      referenceKind: ref.referenceKind,
-      line: ref.line,
-      column: ref.column,
-      filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
-      language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
-      rowId: ref.rowId,
-      kernelReason: ref.kernelReason,
-    }));
-
-    const total = refs.length;
+    const stats = ReferenceResolver.emptyKernelStats();
+    const total = unresolvedRefs.length;
     let lastReportedPercent = -1;
-
-    for (let i = 0; i < refs.length; i++) {
-      const ref = refs[i]!; // Array index is guaranteed to be in bounds
-      const result = this.resolveOneTimed(ref);
-
-      if (result) {
-        resolved.push(result);
-        byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
-      } else {
-        unresolved.push(ref);
-      }
-
-      // Report progress every 1% to avoid too many updates
-      if (onProgress) {
-        const currentPercent = Math.floor((i / total) * 100);
-        if (currentPercent > lastReportedPercent) {
+    try {
+      for (let i = 0; i < total; i += KERNEL_CHUNK) {
+        const chunk = unresolvedRefs.slice(i, i + KERNEL_CHUNK);
+        const outcomes = this.resolveChunkWithKernel(kernel, chunk);
+        for (let k = 0; k < chunk.length; k++) {
+          const { ref, result } = this.settleKernelRef(chunk[k]!, outcomes[k]!, stats);
+          if (result) {
+            resolved.push(result);
+            byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
+          } else {
+            unresolved.push(ref);
+          }
+        }
+        // Report progress every 1% to avoid too many updates
+        const done = Math.min(total, i + KERNEL_CHUNK);
+        const currentPercent = Math.floor((done / total) * 100);
+        if (onProgress && currentPercent > lastReportedPercent) {
           lastReportedPercent = currentPercent;
-          onProgress(i + 1, total);
+          onProgress(done, total);
         }
       }
+    } finally {
+      if (opened) this.closeKernel();
     }
-
-    // Final progress report
-    if (onProgress && total > 0) {
-      onProgress(total, total);
-    }
-
     return {
       resolved,
       unresolved,
-      stats: {
-        total: refs.length,
-        resolved: resolved.length,
-        unresolved: unresolved.length,
-        byMethod,
-      },
+      stats: { total, resolved: resolved.length, unresolved: unresolved.length, byMethod },
     };
   }
 
@@ -954,30 +943,20 @@ export class ReferenceResolver {
   }
 
   // ------------------------------------------------------------------
-  // Phase 4: kernel-native read+settle over bindings/nodes/unresolved_refs
-  // (resolution-binding-model-plan.md §4). The kernel resolves the
-  // binding-backed bare-name slice natively and reports `passthrough` for
-  // everything else (unmigrated languages, qualified/receiver/path names,
-  // `this.`/`Cls::m` function-ref shapes), which stays on the TypeScript
-  // pipeline.
+  // The kernel resolves every ref (resolution-binding-model-plan.md §4 and
+  // Phase 6): it reads bindings/nodes/unresolved_refs natively and returns a
+  // verdict or a candidate list, and settleKernelOutcome runs the framework
+  // merge over it.
   // ------------------------------------------------------------------
 
   /**
-   * Open the kernel's native resolver over the same database file, or null
-   * when the binary predates the feature, the kill switch is off
-   * (`CODEGRAPH_KERNEL_RESOLVE=0`), or the DB has no file path. Construction
-   * is the expensive step (knownNames/knownFiles warm); per-batch work is
-   * then a read + a settle call.
-   */
-  /**
    * KernelResolver held per resolver instance — the main thread's batch loop
-   * uses it for the no-pool path, and each resolver-pool worker holds its own
-   * (its 'open' handler calls initKernelResolver) so the eligible slice
-   * resolves natively across cores, not serially on the main thread.
-   * `kernelResolverTried` distinguishes "no kernel" from "not yet attempted".
+   * uses it when no pool runs, and each resolver-pool worker holds its own
+   * (its 'open' handler calls initKernelResolver) so refs resolve natively
+   * across cores. Construction is the expensive step (knownNames/knownFiles
+   * warm); per-batch work is then a read + a settle call.
    */
   private kernelResolver: KernelResolverLike | null = null;
-  private kernelResolverTried = false;
   /**
    * Checkpointed copy of the db file handed to resolver-pool workers' kernel
    * conns — see ensureKernelReaderSnapshot for why it exists. `undefined` =
@@ -986,27 +965,32 @@ export class ReferenceResolver {
   private kernelReaderSnapshot: string | null | undefined;
 
   /**
-   * One-time kernel-resolver init for this resolver instance. Workers call it
-   * with the pool's dbPath at 'open'; the main path lazily inside
-   * resolveListForAdmission / resolveAndPersistBatched. Fail-soft: a null
-   * result is cached, and a resolveChunk failure at use time disables the
-   * instance for the rest of the run. Passing `null` disables kernel
-   * resolution explicitly — workers use it when no snapshot path was handed
-   * to them, so their lazy init can never open the LIVE db file (a rusqlite
-   * conn on the real -shm races node:sqlite's wal-index state — the two
-   * SQLite builds' intra-process locks can't see each other).
+   * Open this instance's kernel resolver, replacing any open one. `dbPath`
+   * undefined means the live db. Workers pass the pool's snapshot copy and
+   * must never open the LIVE file: a rusqlite conn on the real -shm races
+   * node:sqlite's wal-index state (the two SQLite builds' intra-process locks
+   * can't see each other). Throws when the kernel can't open.
    */
   initKernelResolver(
-    dbPath?: string | null,
+    dbPath?: string,
     generation?: string,
     supertypesComplete = false,
     snapshot = false,
     queryLookups = false,
   ): void {
-    this.kernelResolverTried = true;
-    this.kernelResolver = dbPath === null
-      ? null
-      : this.openKernelResolver(dbPath, generation, supertypesComplete, snapshot, queryLookups);
+    this.closeKernel();
+    this.kernelResolver = this.openKernelResolver(dbPath, generation, supertypesComplete, snapshot, queryLookups);
+  }
+
+  /** The open kernel resolver, or the live db's opened on demand. */
+  private liveKernel(refCount: number): KernelResolverLike {
+    if (!this.kernelResolver) {
+      // The live db: prerequisites persist before the rest resolves, so every
+      // supertype edge the walks read is already written. A small list looks
+      // nodes up by query: loading the whole node table costs more than it.
+      this.initKernelResolver(undefined, undefined, true, false, refCount < SYNC_NODE_TABLE_MIN_REFS);
+    }
+    return this.kernelResolver!;
   }
 
   /**
@@ -1014,13 +998,11 @@ export class ReferenceResolver {
    * could fire while a valve checkpointer or a later run's workers are
    * mid-wal-index I/O on the same -shm — the two SQLite builds' locks can't
    * see each other — so the conn must close at a known-safe point (index
-   * teardown, valve stopped, pool destroyed). `kernelResolverTried` resets so
-   * a later pass can lazily re-init.
+   * teardown, valve stopped, pool destroyed). A later pass re-opens lazily.
    */
   closeKernel(): void {
     const kr = this.kernelResolver;
     this.kernelResolver = null;
-    this.kernelResolverTried = false;
     try { kr?.close(); } catch { /* best-effort teardown */ }
   }
 
@@ -1037,7 +1019,7 @@ export class ReferenceResolver {
    * WAL). The copy is a separate inode with a private -shm over
    * extraction-static tables — resolveChunk reads no edges/unresolved_refs —
    * so worker kernel conns do zero shm I/O on the live db. Returns null on
-   * any failure: callers then run workers kernel-less (TypeScript path).
+   * any failure: the run then resolves on the main-thread kernel, no pool.
    */
   /**
    * A second snapshot for the same run, taken after the prerequisite phase so
@@ -1088,51 +1070,46 @@ export class ReferenceResolver {
     supertypesComplete = false,
     snapshot = false,
     queryLookups = false,
-  ): KernelResolverLike | null {
-    if (process.env.CODEGRAPH_KERNEL_RESOLVE === '0') return null;
+  ): KernelResolverLike {
     const kernelModule = getKernel();
-    if (!kernelModule?.KernelResolver) return null;
-    const dbPath = parallelDbPath ?? this.queries.getDatabasePath();
-    if (!dbPath) return null;
-    try {
-      const aliases = this.context.getProjectAliases?.() ?? null;
-      const workspaces = this.context.getWorkspacePackages?.() ?? null;
-      const goModule = this.context.getGoModule?.() ?? null;
-      const toKv = (m: Map<string, string> | undefined): { key: string; value: string }[] =>
-        m ? [...m].map(([key, value]) => ({ key, value })) : [];
-      return new kernelModule.KernelResolver({
-        dbPath,
-        projectRoot: this.projectRoot,
-        aliases: aliases
-          ? { baseUrl: aliases.baseUrl, patterns: aliases.patterns }
-          : undefined,
-        workspaces: workspaces
-          ? {
-              sourceEntries: toKv(workspaces.sourceEntries),
-              byName: toKv(workspaces.byName),
-              entryByName: workspaces.entryByName ? toKv(workspaces.entryByName) : undefined,
-              localLinkNames: workspaces.localLinkNames ? [...workspaces.localLinkNames] : undefined,
-            }
-          : undefined,
-        goModulePath: goModule?.modulePath,
-        cppIncludeDirs: this.context.getCppIncludeDirs?.() ?? [],
-        nodeBuiltinSpecifiers: [...builtinModules],
-        frameworksActive: this.frameworks.length > 0,
-        frameworkNames: this.frameworks.map((f) => f.name),
-        ambiguousNameCeiling: resolveAmbiguousNameCeiling(),
-        generation,
-        supertypesComplete,
-        snapshot,
-        // CODEGRAPH_KERNEL_QUERY_LOOKUPS=1 forces query mode everywhere — a
-        // dev switch for gating it against the table on full indexes.
-        queryLookups: queryLookups || process.env.CODEGRAPH_KERNEL_QUERY_LOOKUPS === '1',
-      });
-    } catch (err) {
-      logDebug('Kernel resolver unavailable; staying on the TypeScript path', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
+    if (!kernelModule?.KernelResolver) {
+      throw new Error('The native kernel is unavailable on this platform; reference resolution needs it.');
     }
+    const dbPath = parallelDbPath ?? this.queries.getDatabasePath();
+    if (!dbPath) throw new Error('Reference resolution needs a file-backed database.');
+    if (!snapshot) this.queries.mapWalIndex();
+    const aliases = this.context.getProjectAliases?.() ?? null;
+    const workspaces = this.context.getWorkspacePackages?.() ?? null;
+    const goModule = this.context.getGoModule?.() ?? null;
+    const toKv = (m: Map<string, string> | undefined): { key: string; value: string }[] =>
+      m ? [...m].map(([key, value]) => ({ key, value })) : [];
+    return new kernelModule.KernelResolver({
+      dbPath,
+      projectRoot: this.projectRoot,
+      aliases: aliases
+        ? { baseUrl: aliases.baseUrl, patterns: aliases.patterns }
+        : undefined,
+      workspaces: workspaces
+        ? {
+            sourceEntries: toKv(workspaces.sourceEntries),
+            byName: toKv(workspaces.byName),
+            entryByName: workspaces.entryByName ? toKv(workspaces.entryByName) : undefined,
+            localLinkNames: workspaces.localLinkNames ? [...workspaces.localLinkNames] : undefined,
+          }
+        : undefined,
+      goModulePath: goModule?.modulePath,
+      cppIncludeDirs: this.context.getCppIncludeDirs?.() ?? [],
+      nodeBuiltinSpecifiers: [...builtinModules],
+      frameworksActive: this.frameworks.length > 0,
+      frameworkNames: this.frameworks.map((f) => f.name),
+      ambiguousNameCeiling: resolveAmbiguousNameCeiling(),
+      generation,
+      supertypesComplete,
+      snapshot,
+      // CODEGRAPH_KERNEL_QUERY_LOOKUPS=1 forces query mode everywhere — a
+      // dev switch for gating it against the table on full indexes.
+      queryLookups: queryLookups || process.env.CODEGRAPH_KERNEL_QUERY_LOOKUPS === '1',
+    });
   }
 
   /** Kernel row → the UnresolvedReference the batch machinery carries. */
@@ -1148,21 +1125,6 @@ export class ReferenceResolver {
       language: (kr.language || undefined) as Language | undefined,
       rowId: kr.rowId ?? undefined,
       failureReason: kr.failureReason as UnresolvedReference['failureReason'],
-    };
-  }
-
-  /** Kernel row → the UnresolvedRef the per-ref pipeline consumes — the same
-   *  field mapping resolveBatchYielding applies. */
-  private kernelRowToRef(kr: ResolveRefIn): UnresolvedRef {
-    return {
-      fromNodeId: kr.fromNodeId,
-      referenceName: kr.referenceName,
-      referenceKind: kr.referenceKind as UnresolvedRef['referenceKind'],
-      line: kr.line,
-      column: kr.column,
-      filePath: kr.filePath || this.getFilePathFromNodeId(kr.fromNodeId),
-      language: (kr.language || this.getLanguageFromNodeId(kr.fromNodeId)) as Language,
-      rowId: kr.rowId ?? undefined,
     };
   }
 
@@ -1748,16 +1710,7 @@ export class ReferenceResolver {
       valve.stop();
       await valve.drain();
     }
-    // The live db: prerequisites persist before the rest resolves, so every
-    // supertype edge the walks read is already written. A small batch looks
-    // nodes up by query: loading the whole node table costs more than it.
-    this.initKernelResolver(
-      this.queries.getDatabasePath() ?? undefined,
-      undefined,
-      true,
-      false,
-      refs.length < SYNC_NODE_TABLE_MIN_REFS,
-    );
+    this.liveKernel(refs.length);
     try {
       return await this.resolveAndPersistListInner(refs, options.onProgress);
     } finally {
@@ -1884,150 +1837,39 @@ export class ReferenceResolver {
     // with many deferred chained calls (#1091).
     const maybeYield = createYielder();
     const resolved: ResolvedRef[] = [];
-    // The kernel runs the same three arms over the live db, which now holds
-    // every supertype edge. A punted ref (an unmigrated language, a shape the
-    // kernel hands back) takes the TypeScript arms below.
+    // The kernel runs the chain arms over the live db, which now holds every
+    // supertype edge.
     const native = this.resolveDeferredNatively(deferred, (k, rows) => k.resolveDeferredChains(rows));
     for (let i = 0; i < deferred.length; i++) {
-      const ref = deferred[i]!;
-      const outcome = native?.[i];
-      if (outcome && outcome.status !== 'passthrough') {
-        const verdict = this.kernelVerdict(ref, outcome);
-        if (verdict) resolved.push(verdict);
-        continue;
-      }
-      // PHP `this->prop.method` resolves via matchMethodCall (declared-type
-      // inference + resolveMethodOnType conformance walk); `::`-receiver
-      // languages (Rust) split on `::` (matchScopedCallChain); other
-      // dotted-receiver languages on `.` (matchDottedCallChain).
-      const chainStage = (ref.language === 'php' && PHP_PROP_SHAPE.test(ref.referenceName))
-        ? 'deferredChain:methodCall'
-        : SCOPED_CHAIN_LANGUAGES.has(ref.language)
-        ? 'deferredChain:scopedChain'
-        : 'deferredChain:dottedChain';
-      const chainMatch = nmTimed(chainStage, ref, () =>
-        chainStage === 'deferredChain:methodCall'
-          ? matchMethodCall(ref, this.context)
-          : chainStage === 'deferredChain:scopedChain'
-          ? matchScopedCallChain(ref, this.context)
-          : matchDottedCallChain(ref, this.context));
-      const match = this.gateLanguage(chainMatch, ref);
-      if (match) resolved.push(match);
+      const verdict = this.kernelVerdict(deferred[i]!, native[i]!);
+      if (verdict) resolved.push(verdict);
       await maybeYield();
     }
-    if (process.env.CODEGRAPH_RESOLVE_PROFILE && native) {
-      const punted = native.filter((o) => o.status === 'passthrough').length;
-      console.error(`[resolve-profile] conformance kernel: refs=${deferred.length} native=${deferred.length - punted} passthrough=${punted}`);
-    }
-    const created = await this.persistDeferredReferences(deferred, resolved);
-    // Runs after resolveAndPersistBatched's 'main' dump — emit this pass's own
-    // nm rows under their own label (the table clears on each dump).
-    dumpNameMatcherProfile('deferredChain');
-    return created;
+    return this.persistDeferredReferences(deferred, resolved);
   }
 
-  /** One kernel pass over a deferred queue, or null when the kernel is
-   *  unavailable (the TypeScript arms then take every ref). The caller has
-   *  quiesced the WAL valve; teardown closes the conn. */
+  /** One kernel pass over a deferred queue. The caller has quiesced the WAL
+   *  valve; teardown closes the conn. */
   private resolveDeferredNatively(
     deferred: UnresolvedRef[],
     run: (kernel: KernelResolverLike, rows: ResolveRefIn[]) => ResolveOutcome[],
-  ): ResolveOutcome[] | null {
-    if (!this.kernelResolverTried) {
-      this.initKernelResolver(
-        this.queries.getDatabasePath() ?? undefined,
-        undefined,
-        true,
-        false,
-        deferred.length < SYNC_NODE_TABLE_MIN_REFS,
-      );
+  ): ResolveOutcome[] {
+    const kernel = this.liveKernel(deferred.length);
+    const rows: ResolveRefIn[] = deferred.map((ref) => ({
+      rowId: ref.rowId,
+      fromNodeId: ref.fromNodeId,
+      referenceName: ref.referenceName,
+      referenceKind: ref.referenceKind,
+      line: ref.line,
+      column: ref.column,
+      filePath: ref.filePath,
+      language: ref.language,
+    }));
+    const outcomes = run(kernel, rows);
+    if (outcomes.length !== deferred.length) {
+      throw new Error(`kernel deferred pass returned ${outcomes.length} outcomes for ${deferred.length} refs`);
     }
-    const kernel = this.kernelResolver;
-    if (!kernel) return null;
-    try {
-      const rows: ResolveRefIn[] = deferred.map((ref) => ({
-        rowId: ref.rowId,
-        fromNodeId: ref.fromNodeId,
-        referenceName: ref.referenceName,
-        referenceKind: ref.referenceKind,
-        line: ref.line,
-        column: ref.column,
-        filePath: ref.filePath,
-        language: ref.language,
-      }));
-      const outcomes = run(kernel, rows);
-      if (outcomes.length !== deferred.length) {
-        throw new Error(`kernel deferred pass returned ${outcomes.length} outcomes for ${deferred.length} refs`);
-      }
-      return outcomes;
-    } catch (err) {
-      logDebug('Kernel deferred pass failed; staying on the TypeScript path', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      this.closeKernel();
-      return null;
-    }
-  }
-
-  /**
-   * Resolve one batch with a yield checkpoint between EVERY ref so the #850
-   * liveness heartbeat can fire on a slow/dense batch (#1091). The checkpoint
-   * granularity is per-ref — not per-N-refs — because per-ref cost is unbounded
-   * in the worst case (a collision-heavy method name whose candidate set misses
-   * the LRU re-fetches tens of thousands of rows): any fixed N multiplies that
-   * worst case into the watchdog window, which is how v1.2.0 still got killed
-   * at "Resolving refs" on large Java monorepos (#1122). `maybeYield()` is a
-   * ~ns time check when under budget, so per-ref checkpoints cost nothing.
-   * Behaviourally identical to `resolveAll(batch)`: `warmCaches()` is
-   * idempotent (guarded) and `resolveOne` is independent per ref, so yielding
-   * between refs changes only timing, never which edges get created.
-   */
-  private async resolveBatchYielding(
-    batch: UnresolvedReference[],
-    maybeYield: MaybeYield
-  ): Promise<ResolutionResult> {
-    this.warmCaches();
-    this.advanceSupertypeGeneration();
-
-    const resolved: ResolvedRef[] = [];
-    const unresolved: UnresolvedRef[] = [];
-    const byMethod: Record<string, number> = {};
-
-    for (const raw of batch) {
-      const ref: UnresolvedRef = {
-        fromNodeId: raw.fromNodeId,
-        referenceName: raw.referenceName,
-        referenceKind: raw.referenceKind,
-        line: raw.line,
-        column: raw.column,
-        filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
-        language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
-        rowId: raw.rowId,
-        kernelReason: raw.kernelReason,
-      };
-      const result = this.resolveOneTimed(ref);
-      if (result) {
-        resolved.push(result);
-        byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
-      } else {
-        unresolved.push(ref);
-      }
-      // Fast-path the per-ref yield check: awaiting the async no-op costs a
-      // microtask hop per ref, which dominates at ~10⁵ refs (see MaybeYield).
-      const y = maybeYield();
-      if (y) await y;
-    }
-
-    return {
-      resolved,
-      unresolved,
-      stats: {
-        total: batch.length,
-        resolved: resolved.length,
-        unresolved: unresolved.length,
-        byMethod,
-      },
-    };
+    return outcomes;
   }
 
   /** One kernel `resolveChunk` over `refs`, in order. Throws on any native failure. */
@@ -2051,14 +1893,15 @@ export class ReferenceResolver {
     return outcomes;
   }
 
-  /**
-   * Settle one ref from its kernel outcome: a passthrough runs the full
-   * TypeScript pipeline, anything else goes through the framework merge.
-   */
+  private static emptyKernelStats(): KernelStats {
+    return { handled: 0, passthrough: 0, reasons: {}, frameworkMerge: 0, frameworkMergeWithCands: 0 };
+  }
+
+  /** Settle one ref from its kernel outcome through the framework merge. */
   private settleKernelRef(
     raw: UnresolvedReference,
     outcome: ResolveOutcome,
-    stats: { handled: number; passthrough: number; reasons: Record<string, number>; frameworkMerge: number; frameworkMergeWithCands: number },
+    stats: KernelStats,
   ): { ref: UnresolvedRef; result: ResolvedRef | null } {
     const ref: UnresolvedRef = {
       fromNodeId: raw.fromNodeId,
@@ -2070,13 +1913,6 @@ export class ReferenceResolver {
       language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
       rowId: raw.rowId,
     };
-    if (outcome.status === 'passthrough') {
-      stats.passthrough++;
-      const reason = outcome.reason ?? 'unknown';
-      stats.reasons[reason] = (stats.reasons[reason] ?? 0) + 1;
-      ref.kernelReason = reason;
-      return { ref, result: this.resolveOneTimed(ref) };
-    }
     stats.handled++;
     // unresolved + a kernel candidate list = the no_candidates marker;
     // settleKernelOutcome still runs the framework merge over it.
@@ -2090,36 +1926,24 @@ export class ReferenceResolver {
   }
 
   /**
-   * resolveBatchYielding with the kernel first: each chunk resolves natively
-   * and only its passthroughs run the TypeScript pipeline. A native failure
-   * drops the kernel and the rest of the batch runs in TypeScript.
+   * Resolve one batch through the open kernel conn, a chunk at a time, with
+   * a yield checkpoint between every ref so the #850 liveness heartbeat can
+   * fire on a slow or dense batch (#1091, #1122).
    */
   private async resolveBatchKernelFirst(
     batch: UnresolvedReference[],
     maybeYield: MaybeYield,
   ): Promise<ResolutionResult> {
-    const kernel = this.kernelResolver;
-    if (!kernel) return this.resolveBatchYielding(batch, maybeYield);
+    const kernel = this.liveKernel(batch.length);
     this.warmCaches();
     this.advanceSupertypeGeneration();
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
     const byMethod: Record<string, number> = {};
-    const stats = { handled: 0, passthrough: 0, reasons: {} as Record<string, number>, frameworkMerge: 0, frameworkMergeWithCands: 0 };
-    const CHUNK = 500;
-    let i = 0;
-    for (; i < batch.length; i += CHUNK) {
-      const chunk = batch.slice(i, i + CHUNK);
-      let outcomes: ResolveOutcome[];
-      try {
-        outcomes = this.resolveChunkWithKernel(kernel, chunk);
-      } catch (err) {
-        logDebug('Kernel resolution failed during sync; staying on the TypeScript path', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.closeKernel();
-        break;
-      }
+    const stats = ReferenceResolver.emptyKernelStats();
+    for (let i = 0; i < batch.length; i += KERNEL_CHUNK) {
+      const chunk = batch.slice(i, i + KERNEL_CHUNK);
+      const outcomes = this.resolveChunkWithKernel(kernel, chunk);
       for (let k = 0; k < chunk.length; k++) {
         const { ref, result } = this.settleKernelRef(chunk[k]!, outcomes[k]!, stats);
         if (result) {
@@ -2131,15 +1955,6 @@ export class ReferenceResolver {
         const y = maybeYield();
         if (y) await y;
       }
-    }
-    if (i < batch.length) {
-      const rest = await this.resolveBatchYielding(batch.slice(i), maybeYield);
-      resolved.push(...rest.resolved);
-      unresolved.push(...rest.unresolved);
-      for (const [k, v] of Object.entries(rest.stats.byMethod)) byMethod[k] = (byMethod[k] || 0) + v;
-    }
-    if (process.env.CODEGRAPH_RESOLVE_PROFILE) {
-      console.error(`[resolve-profile] sync kernel: handled=${stats.handled} passthrough=${stats.passthrough}`);
     }
     return {
       resolved,
@@ -2189,22 +2004,6 @@ export class ReferenceResolver {
     }
   }
 
-  private resolveOneTimed(ref: UnresolvedRef): ResolvedRef | null {
-    if (!this.resolveProfile) return this.resolveOne(ref);
-    const t0 = process.hrtime.bigint();
-    const result = this.resolveOne(ref);
-    const dt = process.hrtime.bigint() - t0;
-    const key = `${result ? result.resolvedBy : `fail:${ref.referenceKind}`}${ref.kernelReason ? `|${ref.kernelReason}` : ''}`;
-    const slot = this.resolveProfile.get(key);
-    if (slot) {
-      slot.n++;
-      slot.ns += dt;
-    } else {
-      this.resolveProfile.set(key, { n: 1, ns: dt });
-    }
-    return result;
-  }
-
   /** Dump the CODEGRAPH_RESOLVE_PROFILE histogram to stderr (no-op when off). */
   dumpResolveProfile(label: string): void {
     if (!this.resolveProfile || this.resolveProfile.size === 0) return;
@@ -2234,71 +2033,20 @@ export class ReferenceResolver {
       frameworkMergeWithCands?: number;
     };
   } {
+    // Each pool worker holds a KernelResolver over its own snapshot copy
+    // (opened at 'open'), so refs resolve natively across cores; the
+    // framework merge runs here too (the worker's resolver detected them).
+    const kernel = this.kernelResolver;
+    if (!kernel) throw new Error('resolveListForAdmission: no kernel resolver is open');
     this.warmCaches();
     this.advanceSupertypeGeneration();
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
     const byMethod: Record<string, number> = {};
-    const kernelStats = {
-      handled: 0,
-      passthrough: 0,
-      reasons: {} as Record<string, number>,
-      frameworkMerge: 0,
-      frameworkMergeWithCands: 0,
-    };
-
-    // Phase 4 (worker variant): each pool worker holds a KernelResolver over
-    // its own read-only connection, so the binding-backed bare-name slice
-    // resolves natively across cores — same chunk contract as the
-    // main-thread path, passthroughs still run the full TS pipeline in this
-    // worker (frameworks included — the worker's resolver detected them).
-    // The live db holds every edge written so far, as the TS walk sees it.
-    if (!this.kernelResolverTried) this.initKernelResolver(this.queries.getDatabasePath() ?? undefined, undefined, true);
-    if (this.kernelResolver) {
-      try {
-        const outcomes = this.resolveChunkWithKernel(this.kernelResolver, refs);
-        for (let i = 0; i < refs.length; i++) {
-          const { ref, result } = this.settleKernelRef(refs[i]!, outcomes[i]!, kernelStats);
-          if (result) {
-            resolved.push(result);
-            byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
-          } else {
-            unresolved.push(ref);
-          }
-        }
-        this.deferredRowIds.clear(); // the admission side now owns both queues
-        if (process.env.CODEGRAPH_RESOLVE_DEBUG && resolved.length + unresolved.length !== refs.length) {
-          console.error(`[resolve-debug] worker kernel chunk under-accounted: refs=${refs.length} resolved=${resolved.length} unresolved=${unresolved.length}`);
-        }
-        return {
-          resolved,
-          unresolved,
-          deferredChain: this.deferredChainRefs.splice(0),
-          deferredThisMember: this.deferredThisMemberRefs.splice(0),
-          byMethod,
-          kernel: kernelStats,
-        };
-      } catch (err) {
-        logDebug('Worker kernel resolution failed; staying on the TypeScript path', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.kernelResolver = null;
-      }
-    }
-
-    for (const raw of refs) {
-      const ref: UnresolvedRef = {
-        fromNodeId: raw.fromNodeId,
-        referenceName: raw.referenceName,
-        referenceKind: raw.referenceKind,
-        line: raw.line,
-        column: raw.column,
-        filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
-        language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
-        rowId: raw.rowId,
-        kernelReason: raw.kernelReason,
-      };
-      const result = this.resolveOneTimed(ref);
+    const kernelStats = ReferenceResolver.emptyKernelStats();
+    const outcomes = this.resolveChunkWithKernel(kernel, refs);
+    for (let i = 0; i < refs.length; i++) {
+      const { ref, result } = this.settleKernelRef(refs[i]!, outcomes[i]!, kernelStats);
       if (result) {
         resolved.push(result);
         byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
@@ -2347,7 +2095,7 @@ export class ReferenceResolver {
     onSynthesisProgress?: (done: number, total: number) => void,
     // When provided, big batches fan out across a read-only resolver-worker
     // pool with results admitted in canonical order (see resolver-pool.ts).
-    // Sequential fallback on any pool failure. CODEGRAPH_NO_PARALLEL_RESOLVE=1
+    // Main-thread fallback on any pool failure. CODEGRAPH_NO_PARALLEL_RESOLVE=1
     // disables entirely. bulkEdgeLoad hooks (when provided) bracket the batch
     // loop with drop/recreate of the non-unique edge indexes on big runs —
     // see DatabaseConnection.beginBulkEdgeLoad. backpressure (when provided)
@@ -2400,9 +2148,8 @@ export class ReferenceResolver {
 
     await this.warmCachesYielding(maybeYield);
 
-    // Phase 4: the kernel's native read+settle, when the binary provides it.
-    // `kernel` is cleared permanently on any native failure — a downgrade
-    // re-reads/re-resolves the current batch through the TypeScript path.
+    // The main thread resolves through its own kernel conn whenever no pool
+    // runs; with a pool, the workers' kernels do (see createPool).
     //
     // While a kernel (rusqlite) conn shares the live -shm, no other-build
     // shm writer may run: the bundled SQLite's wal-index locks can't see
@@ -2416,10 +2163,6 @@ export class ReferenceResolver {
       parallel?.walValve?.stop();
       await parallel?.walValve?.drain();
     };
-    if (!this.kernelResolverTried) {
-      await quiesceValveForKernel();
-      this.initKernelResolver(parallel?.dbPath, undefined, true);
-    }
     let kernel = this.kernelResolver;
     if (kernel) {
       // Covers a conn opened by an earlier call while the valve was running.
@@ -2427,25 +2170,25 @@ export class ReferenceResolver {
     } else {
       parallel?.walValve?.start(); // no kernel conn → off-thread checkpoints safe
     }
-    // Drop the kernel conn and re-arm the valve in one step — every
-    // downgrade path (native failure, pool engage) goes through this. The
-    // close() is deliberate: a GC-timed destructor could fire while workers
-    // or the valve are mid-shm I/O (cross-build locks can't see each other),
-    // so the conn must tear down HERE, while the valve is stopped and no
-    // worker has attached.
+    // Open the main-thread kernel on the live db. Only while no pool is up:
+    // once workers attach, no rusqlite conn may share the live -shm.
+    const openMainKernel = async (): Promise<KernelResolverLike> => {
+      if (kernel) return kernel;
+      await quiesceValveForKernel();
+      this.initKernelResolver(parallel?.dbPath, undefined, true);
+      kernel = this.kernelResolver!;
+      return kernel;
+    };
+    // Drop the kernel conn and re-arm the valve in one step (pool engage).
+    // The close() is deliberate: a GC-timed destructor could fire while
+    // workers or the valve are mid-shm I/O (cross-build locks can't see each
+    // other), so the conn must tear down HERE, while the valve is stopped and
+    // no worker has attached.
     const dropKernel = (): void => {
       kernel = null;
-      const kr = this.kernelResolver;
-      this.kernelResolver = null;
-      try { kr?.close(); } catch { /* teardown must not fail the batch loop */ }
+      this.closeKernel();
       parallel?.walValve?.start();
     };
-    // CODEGRAPH_RESOLVE_SHADOW=1: run the TS pipeline alongside the kernel
-    // verdict and count divergent outcomes (dev-only correctness probe —
-    // doubles settle cost).
-    const kernelShadow = kernel !== null && process.env.CODEGRAPH_RESOLVE_SHADOW === '1';
-    let shadowChecked = 0;
-    let shadowDivergent = 0;
 
     const total = this.queries.getUnresolvedReferencesCount();
     let processed = 0;
@@ -2465,23 +2208,16 @@ export class ReferenceResolver {
         | undefined,
     };
 
-    // Parallel pool, started immediately but never awaited up front: early
-    // batches run sequentially while the workers boot (module load + readonly
-    // DB open + framework detect + cache warm ≈ hundreds of ms), and the loop
-    // switches to fan-out the moment the pool reports ready — so pool boot
-    // costs zero wall-clock. Any failure downgrades to sequential permanently.
+    // Parallel pool, started before the loop. The first fan-out waits for
+    // the workers to boot (module load + readonly DB open + framework detect
+    // + cache warm + the snapshot kernel's node table). A pool failure
+    // downgrades to the main-thread kernel permanently.
     let pool: ResolverPool | null = null;
     let poolReady = false;
-    // True once pool creation has been attempted by EITHER engage site (the
-    // up-front ref-count gate or the adaptive projection below) — a pool that
-    // failed or was destroyed must stay down (downgrade is permanent), and
-    // tryCreate's sizing probes shouldn't re-run every batch on hosts that
-    // declined.
-    let poolEngageTried = false;
     // Supertype walks read implements/extends edges, which only the
     // prerequisite phase writes. A worker snapshot taken before that phase
-    // ends lacks some of them, so its kernel punts those walks to TS until
-    // the snapshot is refreshed at the phase boundary.
+    // ends lacks some of them, so the snapshot is refreshed at the phase
+    // boundary (refreshSnapshotIfDue) before any calls batch fans out.
     let inPrereqPhase = true;
     // Prerequisite batches read whose supertype edges are not inserted yet.
     // The prefetch reads the first calls page (ending the phase) while the
@@ -2491,9 +2227,15 @@ export class ReferenceResolver {
     let prereqBatchesPersisted = 0;
     const supertypesPersisted = (): boolean => !inPrereqPhase && prereqUnpersisted === 0;
     let snapshotComplete = false;
-    const createPool = async (t0: number, why: string): Promise<ResolverPool | null> => {
-      poolEngageTried = true;
+    const destroyPool = async (): Promise<void> => {
+      const p = pool;
+      pool = null;
+      poolReady = false;
+      if (p) await p.destroy().catch(() => undefined);
+    };
+    const createPool = async (): Promise<ResolverPool | null> => {
       if (!parallel) return null;
+      const t0 = Date.now();
       // Worker kernel conns resolve against a checkpointed COPY of the db —
       // their rusqlite build's wal-index locks are invisible to node:sqlite's,
       // so on the live file a worker's walIndexRecover could rebuild the -shm
@@ -2502,45 +2244,48 @@ export class ReferenceResolver {
       // private inode — its own -shm — over extraction-static tables.
       // Preflight the decline gates first so a host that can't carry a pool
       // doesn't fold+copy a multi-GB snapshot it would never use.
-      const canPool = ResolverPool.preflight(parallel.dbPath) !== null;
+      if (ResolverPool.preflight(parallel.dbPath) === null) return null;
       // Once workers attach, NO rusqlite conn may share the live -shm — not
       // even the main-thread kernel conn (only same-thread conns are
       // serialized). Close it BEFORE the snapshot fold and BEFORE workers
       // spawn: the fold is off-thread shm work (its wal-index reset can
       // leave the idle conn's mapping stale → its later close SIGBUSes), and
       // dropping the JS ref alone leaves teardown to GC time.
-      if (canPool) dropKernel();
-      const kernelDbPath = canPool
-        ? await this.ensureKernelReaderSnapshot(parallel.foldWalForSnapshot)
-        : null;
+      dropKernel();
+      const kernelDbPath = await this.ensureKernelReaderSnapshot(parallel.foldWalForSnapshot);
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-        console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — workers run kernel-less'}`);
+        console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — no pool'}`);
       }
-      snapshotComplete = kernelDbPath !== null && supertypesPersisted();
+      // Workers resolve only through a snapshot kernel.
+      if (kernelDbPath === null) return null;
+      snapshotComplete = supertypesPersisted();
       const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath, snapshotComplete);
       p?.ready().then(
         () => {
-          poolReady = true;
-          if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] pool ready after ${Date.now() - t0}ms (${why})`);
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] pool ready after ${Date.now() - t0}ms`);
         },
-        () => {
-          void p.destroy().catch(() => undefined);
-          if (pool === p) pool = null;
-        }
+        () => undefined, // awaitPool handles the failure
       );
       return p;
     };
+    // Wait for the workers to boot; a boot failure destroys the pool.
+    const awaitPool = async (): Promise<boolean> => {
+      if (!pool) return false;
+      if (poolReady) return true;
+      try {
+        await pool.ready();
+        poolReady = true;
+      } catch (err) {
+        logDebug('Resolver pool failed to start; resolving on the main thread', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await destroyPool();
+      }
+      return poolReady;
+    };
     if (parallel && total >= minRefsForPool()) {
-      pool = await createPool(Date.now(), 'ref-count');
+      pool = await createPool();
     }
-    // Adaptive engagement bar (see the batch-loop hook): projected remaining
-    // sequential settle above this boots the pool mid-loop. Boot is async and
-    // fan-out waits for ready, so a marginal engage costs background boot
-    // only; the bar just needs to clear the fan-out's own overhead class.
-    const ADAPTIVE_ENGAGE_SETTLE_MS = 400;
-    let adaptiveSeqMs = 0;
-    let adaptiveSeqRefs = 0;
-    let adaptiveSeen = 0;
 
     // Process in PIPELINED batches (double-buffer). The enumeration is the
     // head of the pending set in rowid order; every ref a persisted batch
@@ -2571,31 +2316,62 @@ export class ReferenceResolver {
     type BatchPage = { refs: UnresolvedReference[]; kernelRefs: ResolveRefIn[] | null; prereq: boolean };
     type InFlight =
       | { mode: 'pool'; settled: Promise<PoolSettled> }
-      | {
-          mode: 'kernel';
-          outcomes: ResolveOutcome[];
-          kernelRefs: ResolveRefIn[];
-          /** Batch indices of the passthrough refs (passthrough order = batch order). */
-          ptIdx: number[];
-          ptBatch: UnresolvedReference[];
-          ptSettled: Promise<PoolSettled> | null;
-        }
-      | { mode: 'seq' };
+      | { mode: 'kernel'; outcomes: ResolveOutcome[] };
 
-    // Begin one batch. Pool mode fans out when it's ready and the batch is
-    // big enough — workers then resolve batch k+1 WHILE the main thread
-    // persists batch k (persist measured at ~58% of resolution wall on a
-    // 255k-ref repo, all of it previously spent with the pool idle). Each
-    // worker holds its own KernelResolver, so the eligible slice still
-    // resolves natively — across cores, inside the pool. Kernel mode (no
-    // pool available) resolves the eligible slice eagerly here — the kernel
-    // reads only nodes/bindings/files (never edges or ref rows mid-loop), so
-    // begin-time sees the same state as settle-time — and the passthrough
-    // remainder can still fan out to a late-booting pool. Sequential batches
-    // stay lazy: they run on the main thread at settle time, where an early
-    // start would only contend with the persist.
-    const beginBatch = (batch: BatchPage): InFlight => {
-      if (pool && poolReady && ResolverPool.worthParallel(batch.refs.length)) {
+    // The last prerequisite batch's supertype edges are in: every edge the
+    // walks read is persisted. Hand the workers a snapshot that has them (a
+    // fresh copy only if a prerequisite batch wrote any) before the first
+    // calls batch fans out. A failed refresh destroys the pool.
+    const refreshSnapshotIfDue = async (): Promise<void> => {
+      if (!pool || snapshotComplete || !supertypesPersisted() || !this.kernelReaderSnapshot || !parallel?.foldWalForSnapshot) return;
+      snapshotComplete = true;
+      tLp = Date.now();
+      try {
+        const stale = this.kernelReaderSnapshot;
+        const fresh = prereqBatchesPersisted > 0
+          ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
+          : stale;
+        if (!fresh) throw new Error('snapshot copy failed');
+        await pool.recycleWorkers(fresh);
+        batchesSinceRecycle = 0;
+        if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+          console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
+        }
+        if (fresh !== stale) {
+          for (const suf of ['', '-wal', '-shm']) {
+            try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
+          }
+        }
+      } catch (err) {
+        logDebug('Kernel snapshot refresh failed; resolving on the main thread', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await destroyPool();
+      }
+      lp('recycle', tLp);
+    };
+
+    // Resolve a page on the main-thread kernel. Only while no pool is up.
+    const resolveOnMainKernel = async (batch: BatchPage): Promise<ResolveOutcome[]> => {
+      const k = await openMainKernel();
+      if (!batch.kernelRefs) return this.resolveChunkWithKernel(k, batch.refs);
+      const outcomes = k.resolveChunk(batch.kernelRefs);
+      if (outcomes.length !== batch.kernelRefs.length) {
+        throw new Error(`kernel resolveChunk returned ${outcomes.length} outcomes for ${batch.kernelRefs.length} refs`);
+      }
+      return outcomes;
+    };
+
+    // Begin one batch. With a pool, the workers resolve batch k+1 WHILE the
+    // main thread persists batch k (persist measured at ~58% of resolution
+    // wall on a 255k-ref repo). Each worker holds its own KernelResolver, so
+    // the batch resolves natively across cores. Without a pool the main
+    // kernel resolves eagerly here — it reads only nodes/bindings/files and
+    // the supertype edges already persisted, so begin-time sees the same
+    // state as settle-time.
+    const beginBatch = async (batch: BatchPage): Promise<InFlight> => {
+      if (await awaitPool()) await refreshSnapshotIfDue();
+      if (pool && poolReady) {
         return {
           mode: 'pool',
           settled: pool.resolveBatch(batch.refs).then(
@@ -2604,174 +2380,18 @@ export class ReferenceResolver {
           ),
         };
       }
-      if (kernel && batch.kernelRefs) {
-        try {
-          const outcomes = kernel.resolveChunk(batch.kernelRefs);
-          if (outcomes.length !== batch.kernelRefs.length) {
-            throw new Error(
-              `kernel resolveChunk returned ${outcomes.length} outcomes for ${batch.kernelRefs.length} refs`
-            );
-          }
-          const ptIdx: number[] = [];
-          const ptBatch: UnresolvedReference[] = [];
-          for (let i = 0; i < outcomes.length; i++) {
-            if (outcomes[i]?.status === 'passthrough') {
-              ptIdx.push(i);
-              // Stamp the decline gate on the row so the sequential fallback
-              // (resolveBatchYielding) carries it into the profile keys; the
-              // pool path re-derives it from its own resolveChunk outcome.
-              ptBatch.push({ ...batch.refs[i]!, kernelReason: outcomes[i]!.reason ?? 'unknown' });
-            }
-          }
-          if (ptBatch.length > 0 && pool && poolReady && ResolverPool.worthParallel(ptBatch.length)) {
-            return {
-              mode: 'kernel',
-              outcomes,
-              kernelRefs: batch.kernelRefs,
-              ptIdx,
-              ptBatch,
-              ptSettled: pool.resolveBatch(ptBatch).then(
-                (out) => ({ ok: true as const, out }),
-                (err: unknown) => ({ ok: false as const, err })
-              ),
-            };
-          }
-          return { mode: 'kernel', outcomes, kernelRefs: batch.kernelRefs, ptIdx, ptBatch, ptSettled: null };
-        } catch (err) {
-          logDebug('Kernel settle failed; downgrading to TypeScript resolution', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          dropKernel();
-        }
-      }
-      return { mode: 'seq' };
+      return { mode: 'kernel', outcomes: await resolveOnMainKernel(batch) };
     };
 
     // Settle an in-flight batch to a ResolutionResult. Deferred post-pass refs
     // are appended HERE, in loop order — never inside the fan-out promise — so
     // admission order stays exactly the sequential order even while a later
-    // batch resolves concurrently. A pool failure downgrades to sequential
-    // permanently and re-resolves this batch on the main thread; a kernel-mode
-    // passthrough fan-out failure downgrades just the same way.
+    // batch resolves concurrently. A pool failure downgrades to the main
+    // kernel permanently and re-resolves this batch there.
     const settleBatch = async (
       inFlight: InFlight,
       batch: BatchPage
     ): Promise<ResolutionResult> => {
-      const byMethod: Record<string, number> = {};
-      if (inFlight.mode === 'kernel') {
-        // Same per-batch edge-state boundary resolveBatchYielding draws —
-        // the kernel reads no edges, but framework resolvers do (via
-        // context.getSupertypes' generation-tagged memo).
-        this.advanceSupertypeGeneration();
-        // Slot results back into batch order — sequential mode emits its
-        // resolved/unresolved lists as batch-order-filtered sequences, and
-        // edge row ids (hence dump order) follow resolved[] order.
-        const resolvedSlots: (ResolvedRef | null)[] = new Array(batch.refs.length).fill(null);
-        const unresolvedSlots: (UnresolvedRef | null)[] = new Array(batch.refs.length).fill(null);
-        const kernelReasons: Record<string, number> = {};
-        let kernelFrameworkMerge = 0;
-        let kernelFrameworkMergeWithCands = 0;
-        for (let i = 0; i < inFlight.kernelRefs.length; i++) {
-          const outcome = inFlight.outcomes[i]!;
-          if (outcome.status === 'passthrough') {
-            const reason = outcome.reason ?? 'unknown';
-            kernelReasons[reason] = (kernelReasons[reason] ?? 0) + 1;
-            continue; // settled via ptBatch below
-          }
-          if (outcome.candidates && this.frameworks.length > 0) {
-            if (outcome.candidates.length === 0) kernelFrameworkMerge++;
-            else kernelFrameworkMergeWithCands++;
-          }
-          const ref = this.kernelRowToRef(inFlight.kernelRefs[i]!);
-          const result = this.settleKernelOutcome(ref, outcome);
-          if (kernelShadow) {
-            const tsResult = this.resolveOne({ ...ref, kernelReason: 'shadow' });
-            shadowChecked++;
-            if ((tsResult?.targetNodeId ?? null) !== (result?.targetNodeId ?? null)) {
-              shadowDivergent++;
-              if (shadowDivergent <= 20) {
-                logDebug('kernel/TS resolution divergence', {
-                  name: ref.referenceName,
-                  kind: ref.referenceKind,
-                  file: ref.filePath,
-                  kernel: result ? `${result.targetNodeId} (${result.resolvedBy}@${result.confidence})` : 'unresolved',
-                  ts: tsResult ? `${tsResult.targetNodeId} (${tsResult.resolvedBy}@${tsResult.confidence})` : 'unresolved',
-                });
-              }
-            }
-          }
-          if (result) {
-            resolvedSlots[i] = result;
-            byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
-          } else {
-            unresolvedSlots[i] = ref;
-          }
-          const y = maybeYield();
-          if (y) await y;
-        }
-        if (inFlight.ptBatch.length > 0) {
-          let ptSettled = inFlight.ptSettled ? await inFlight.ptSettled : null;
-          if (ptSettled && !ptSettled.ok) {
-            logDebug('Parallel passthrough resolution failed; falling back to sequential', {
-              error: ptSettled.err instanceof Error ? ptSettled.err.message : String(ptSettled.err),
-            });
-            if (pool) await pool.destroy().catch(() => undefined);
-            pool = null;
-            ptSettled = null;
-          }
-          const ptResult = ptSettled?.ok
-            ? (() => {
-                this.appendDeferredFromWorkers(ptSettled.out.deferredChain, ptSettled.out.deferredThisMember);
-                return {
-                  resolved: ptSettled.out.resolved,
-                  unresolved: ptSettled.out.unresolved,
-                };
-              })()
-            : await this.resolveBatchYielding(inFlight.ptBatch, maybeYield);
-          // Map passthrough results back to their batch positions by row id.
-          const posByRowId = new Map<number, number>();
-          for (let j = 0; j < inFlight.ptIdx.length; j++) {
-            const rowId = inFlight.ptBatch[j]!.rowId;
-            if (rowId !== undefined) posByRowId.set(rowId, inFlight.ptIdx[j]!);
-          }
-          for (const r of ptResult.resolved) {
-            const i = posByRowId.get(r.original.rowId ?? -1);
-            if (i !== undefined) resolvedSlots[i] = r;
-            else resolvedSlots.push(r); // no rowId — never silently drop a resolution
-            byMethod[r.resolvedBy] = (byMethod[r.resolvedBy] || 0) + 1;
-          }
-          for (const u of ptResult.unresolved) {
-            const i = posByRowId.get(u.rowId ?? -1);
-            if (i !== undefined) unresolvedSlots[i] = u;
-            else unresolvedSlots.push(u);
-          }
-        }
-        const resolved = resolvedSlots.filter((r): r is ResolvedRef => r !== null);
-        const unresolved = unresolvedSlots.filter((u): u is UnresolvedRef => u !== null);
-        if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
-          const unfilled = resolvedSlots.reduce((n, r, i) => n + (r === null && unresolvedSlots[i] === null ? 1 : 0), 0);
-          if (unfilled > 0 || resolved.length + unresolved.length !== batch.refs.length) {
-            console.error(`[resolve-debug] kernel batch under-accounted: refs=${batch.refs.length} resolved=${resolved.length} unresolved=${unresolved.length} unfilledSlots=${unfilled}`);
-          }
-        }
-        return {
-          resolved,
-          unresolved,
-          stats: {
-            total: batch.refs.length,
-            resolved: resolved.length,
-            unresolved: unresolved.length,
-            byMethod,
-            kernel: {
-              handled: inFlight.kernelRefs.length - inFlight.ptIdx.length,
-              passthrough: inFlight.ptIdx.length,
-              reasons: kernelReasons,
-              frameworkMerge: kernelFrameworkMerge,
-              frameworkMergeWithCands: kernelFrameworkMergeWithCands,
-            },
-          },
-        };
-      }
       if (inFlight.mode === 'pool') {
         const settled = await inFlight.settled;
         if (settled.ok) {
@@ -2788,13 +2408,41 @@ export class ReferenceResolver {
             },
           };
         }
-        logDebug('Parallel resolution failed; falling back to sequential', {
+        logDebug('Parallel resolution failed; resolving on the main thread', {
           error: settled.err instanceof Error ? settled.err.message : String(settled.err),
         });
-        if (pool) await pool.destroy().catch(() => undefined);
-        pool = null;
+        await destroyPool();
+        inFlight = { mode: 'kernel', outcomes: await resolveOnMainKernel(batch) };
       }
-      return this.resolveBatchYielding(batch.refs, maybeYield);
+      // Same per-batch edge-state boundary as the list paths — framework
+      // resolvers read supertypes via context.getSupertypes' memo.
+      this.advanceSupertypeGeneration();
+      const byMethod: Record<string, number> = {};
+      const kernelStats = ReferenceResolver.emptyKernelStats();
+      const resolved: ResolvedRef[] = [];
+      const unresolved: UnresolvedRef[] = [];
+      for (let i = 0; i < batch.refs.length; i++) {
+        const { ref, result } = this.settleKernelRef(batch.refs[i]!, inFlight.outcomes[i]!, kernelStats);
+        if (result) {
+          resolved.push(result);
+          byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
+        } else {
+          unresolved.push(ref);
+        }
+        const y = maybeYield();
+        if (y) await y;
+      }
+      return {
+        resolved,
+        unresolved,
+        stats: {
+          total: batch.refs.length,
+          resolved: resolved.length,
+          unresolved: unresolved.length,
+          byMethod,
+          kernel: kernelStats,
+        },
+      };
     };
 
     // Bulk edge load: on big runs, drop the non-unique edge indexes for the
@@ -2831,20 +2479,12 @@ export class ReferenceResolver {
     // phase boundary before cleanup without re-reading the current batch.
     let prerequisites = true;
     let afterRowId = 0;
-    // One page of the keyset scan — kernel read when engaged (identical
-    // predicate + ordering), TypeScript read otherwise. A kernel failure
-    // downgrades permanently and re-reads this page through queries.
+    // One page of the keyset scan — kernel read when the main kernel is open
+    // (identical predicate + ordering), TypeScript read otherwise.
     const readPage = (after: number, prereq: boolean): BatchPage => {
       if (kernel) {
-        try {
-          const kernelRefs = kernel.readPendingBatch(after, batchSize, prereq);
-          return { refs: kernelRefs.map(ReferenceResolver.kernelRowToUnresolved), kernelRefs, prereq };
-        } catch (err) {
-          logDebug('Kernel batch read failed; downgrading to TypeScript reads', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          dropKernel();
-        }
+        const kernelRefs = kernel.readPendingBatch(after, batchSize, prereq);
+        return { refs: kernelRefs.map(ReferenceResolver.kernelRowToUnresolved), kernelRefs, prereq };
       }
       return {
         refs: this.queries.getUnresolvedReferencesBatchAfter(after, batchSize, prereq),
@@ -2867,7 +2507,7 @@ export class ReferenceResolver {
     tLp = Date.now();
     let batch = readNextBatch();
     lp('read', tLp);
-    let inFlight: InFlight | null = batch.refs.length > 0 ? beginBatch(batch) : null;
+    let inFlight: InFlight | null = batch.refs.length > 0 ? await beginBatch(batch) : null;
     while (batch.refs.length > 0 && inFlight) {
       // Prefetch the NEXT batch before this one persists: this batch's rows
       // are still pending (nothing has mutated the table since they were
@@ -2895,34 +2535,6 @@ export class ReferenceResolver {
       }
       lp('settle', tBatch);
 
-      // Adaptive pool engagement: the fixed ref-count gate can't see PER-REF
-      // cost, and settle rates differ ~9× by language (56k Rust refs cost
-      // more sequential settle than 154k Go refs — 36µs vs 4µs measured on
-      // tokio/prometheus). After each sequential batch, project the remaining
-      // settle from the observed rate and boot the pool mid-loop when it
-      // clears the bar. The loop already switches to fan-out only when the
-      // async boot reports ready, admission order is mode-independent, and
-      // 2-core/low-memory hosts still decline inside tryCreate's sizing —
-      // so the switch changes wall-clock, never the graph.
-      // Kernel-mode batches count only their passthrough remainder toward the
-      // sequential-settle rate — the kernel's own slice is native-fast.
-      if (inFlight.mode !== 'pool' && parallel && pool === null && !poolEngageTried) {
-        const seqRefs = inFlight.mode === 'kernel' ? inFlight.ptBatch.length : batch.refs.length;
-        adaptiveSeqMs += Date.now() - tBatch;
-        adaptiveSeqRefs += seqRefs;
-        adaptiveSeen += batch.refs.length;
-        // Remaining SEQUENTIAL work: project the passthrough fraction seen so
-        // far onto the rows left (kernel refs don't need pool settle).
-        const remaining = (total - processed - batch.refs.length) * (adaptiveSeqRefs / Math.max(1, adaptiveSeen));
-        const projectedMs = (adaptiveSeqMs / Math.max(1, adaptiveSeqRefs)) * Math.max(0, remaining);
-        if (projectedMs >= ADAPTIVE_ENGAGE_SETTLE_MS) {
-          if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-            console.error(`[pool-timing] adaptive engage: projected ${Math.round(projectedMs)}ms sequential settle over ${remaining} remaining refs`);
-          }
-          pool = await createPool(Date.now(), 'adaptive');
-        }
-      }
-
       // WAL-valve backstop at the ONE pool-idle boundary of the double-buffer
       // (this batch settled, the next not yet fanned out): past the hard cap
       // the writer parks for a full backfill here, where the pool's readers
@@ -2945,18 +2557,17 @@ export class ReferenceResolver {
       // recovered the writes but paid +129s in full-park folds). Releasing
       // the read marks every ~25 batches lets the existing checkpoints
       // advance instead, at ~milliseconds of reopen cost. A failed recycle
-      // downgrades to sequential permanently, same as a failed fan-out.
+      // downgrades to the main-thread kernel permanently, as a failed fan-out does.
       if (pool && poolReady && ++batchesSinceRecycle >= RECYCLE_EVERY_BATCHES) {
         batchesSinceRecycle = 0;
         tLp = Date.now();
         try {
           await pool.recycleWorkers();
         } catch (err) {
-          logDebug('Worker connection recycle failed; falling back to sequential', {
+          logDebug('Worker connection recycle failed; resolving on the main thread', {
             error: err instanceof Error ? err.message : String(err),
           });
-          await pool.destroy().catch(() => undefined);
-          pool = null;
+          await destroyPool();
         }
         lp('recycle', tLp);
       }
@@ -3006,47 +2617,11 @@ export class ReferenceResolver {
       }
       lp('insertEdges', tLp);
 
-      // The last prerequisite batch's supertype edges are in: every edge the
-      // walks read is persisted. Hand the workers a snapshot that has them
-      // (a fresh copy only if a prerequisite batch wrote any) BEFORE the first
-      // calls batch fans out — at the idle boundary after the settle, that
-      // batch's edges weren't written yet, so the first calls batch ran on
-      // the stale snapshot and punted its supertype walks.
-      if (pool && poolReady && !snapshotComplete && supertypesPersisted() && this.kernelReaderSnapshot && parallel?.foldWalForSnapshot) {
-        snapshotComplete = true;
-        tLp = Date.now();
-        try {
-          const stale = this.kernelReaderSnapshot;
-          const fresh = prereqBatchesPersisted > 0
-            ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
-            : stale;
-          if (fresh) {
-            await pool.recycleWorkers(fresh);
-            batchesSinceRecycle = 0;
-            if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-              console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
-            }
-            if (fresh !== stale) {
-              for (const suf of ['', '-wal', '-shm']) {
-                try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
-              }
-            }
-          }
-        } catch (err) {
-          logDebug('Kernel snapshot refresh failed; falling back to sequential', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          await pool.destroy().catch(() => undefined);
-          pool = null;
-        }
-        lp('recycle', tLp);
-      }
-
       // NOW fan the next batch out — workers see the supertype edge state
       // the sequential baseline would, while the main thread spends the
       // REST of the persist (all other edges + ref deletes + failed parking
       // below) overlapped with their resolution — the double-buffer.
-      const nextInFlight = nextBatch.refs.length > 0 ? beginBatch(nextBatch) : null;
+      const nextInFlight = nextBatch.refs.length > 0 ? await beginBatch(nextBatch) : null;
 
       tLp = Date.now();
       const otherEdges = this.createEdges(otherRefs);
@@ -3172,8 +2747,7 @@ export class ReferenceResolver {
       // which runs an OFF-THREAD checkpoint even while the valve's timer is
       // stopped: that must never coexist with a live rusqlite conn on the
       // same -shm (cross-build wal-index locks can't see each other).
-      // Deferred passes lazily re-init below (kernelResolverTried reset in
-      // the outer finally).
+      // Deferred passes lazily re-open it below.
       if (kernel) dropKernel();
       // Recreate the edge indexes BEFORE synthesis (kind-keyed reads) and on
       // any error path. A crash before this line is healed by the next
@@ -3231,7 +2805,6 @@ export class ReferenceResolver {
           }
         }
       }
-      this.kernelResolverTried = false;
     }
 
     if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
@@ -3242,9 +2815,6 @@ export class ReferenceResolver {
         const inDeferred = rows.filter((r) => r.rowId != null && this.deferredRowIds.has(r.rowId)).length;
         console.error(`[resolve-debug] pending sample(${rows.length}): deferredRowIds∩pending=${inDeferred} ${rows.slice(0, 10).map((r) => `${r.rowId}:${r.referenceKind}:${r.referenceName}`).join(' ')}`);
       }
-    }
-    if (kernelShadow) {
-      console.error(`[kernel-shadow] ${shadowChecked} kernel-handled refs checked, ${shadowDivergent} divergent`);
     }
     if (aggregateStats.kernel && process.env.CODEGRAPH_RESOLVE_PROFILE) {
       const { handled, passthrough, reasons, frameworkMerge, frameworkMergeWithCands } = aggregateStats.kernel;
@@ -3612,112 +3182,11 @@ export class ReferenceResolver {
     const resolved: ResolvedRef[] = [];
     const native = this.resolveDeferredNatively(deferred, (k, rows) => k.resolveDeferredThisMembers(rows));
     for (let i = 0; i < deferred.length; i++) {
-      const ref = deferred[i]!;
+      const verdict = this.kernelVerdict(deferred[i]!, native[i]!);
+      if (verdict) resolved.push(verdict);
       await maybeYield();
-      const outcome = native?.[i];
-      if (outcome && outcome.status !== 'passthrough') {
-        const verdict = this.kernelVerdict(ref, outcome);
-        if (verdict) resolved.push(verdict);
-        continue;
-      }
-      const match = nmTimed('deferredThisMember', ref, () => this.matchDeferredThisMember(ref));
-      if (match) resolved.push(match);
     }
-    if (process.env.CODEGRAPH_RESOLVE_PROFILE && native) {
-      const punted = native.filter((o) => o.status === 'passthrough').length;
-      console.error(`[resolve-profile] this-member kernel: refs=${deferred.length} native=${deferred.length - punted} passthrough=${punted}`);
-    }
-    const created = await this.persistDeferredReferences(deferred, resolved);
-    // Runs after resolveAndPersistBatched's 'main' dump — emit this pass's own
-    // nm rows under their own label (the table clears on each dump).
-    dumpNameMatcherProfile('deferredThisMember');
-    return created;
-  }
-
-  /**
-   * The per-ref body of resolveDeferredThisMemberRefs: walk the enclosing
-   * class's supertypes (transitively, depth-capped) and resolve `this.<member>`
-   * on the nearest one that declares it.
-   */
-  private matchDeferredThisMember(ref: UnresolvedRef): ResolvedRef | null {
-    const member = ref.referenceName.slice('this.'.length);
-    const fromNode = this.queries.getNodeById(ref.fromNodeId);
-    if (!fromNode || !member) return null;
-    // Class-body-level hooks (Ruby) attribute to the CLASS node itself.
-    let className: string;
-    if (SUPERTYPE_BEARING_KINDS.has(fromNode.kind) || fromNode.kind === 'module') {
-      className = fromNode.name;
-    } else {
-      const sep = fromNode.qualifiedName.lastIndexOf('::');
-      if (sep <= 0) return null;
-      const classPrefix = fromNode.qualifiedName.slice(0, sep);
-      className = classPrefix.includes('::')
-        ? classPrefix.slice(classPrefix.lastIndexOf('::') + 2)
-        : classPrefix;
-    }
-
-    // NODE-anchored BFS up the supertype graph: start from the class node
-    // in the ref's own file (never a same-named class elsewhere — rails has
-    // a dozen `Engine`s), follow implements/extends EDGES to supertype
-    // NODES, and look members up through `contains` edges. No name-based
-    // unions anywhere — a name-keyed getSupertypes('Engine') merged every
-    // Engine's parents and produced a cross-class wrong edge on rails.
-    let frontierNodes = this.context
-      .getNodesByName(className)
-      .filter(
-        (n) =>
-          SUPERTYPE_BEARING_KINDS.has(n.kind) &&
-          n.filePath === ref.filePath
-      );
-    if (frontierNodes.length === 0) {
-      // The class itself may be declared in another file (partial/reopened
-      // classes); fall back to same-family nodes of that name.
-      frontierNodes = this.context
-        .getNodesByName(className)
-        .filter(
-          (n) =>
-            SUPERTYPE_BEARING_KINDS.has(n.kind) &&
-            sameLanguageFamily(n.language, ref.language)
-        );
-    }
-    const seenNodes = new Set<string>(frontierNodes.map((n) => n.id));
-    let target: Node | null = null;
-    for (let depth = 0; depth < 5 && frontierNodes.length > 0 && !target; depth++) {
-      const next: Node[] = [];
-      for (const typeNode of frontierNodes) {
-        for (const edge of this.queries.getOutgoingEdges(typeNode.id, ['implements', 'extends'])) {
-          const superNode = this.queries.getNodeById(edge.target);
-          if (!superNode || seenNodes.has(superNode.id)) continue;
-          seenNodes.add(superNode.id);
-          if (!SUPERTYPE_BEARING_KINDS.has(superNode.kind)) continue;
-          // Member lookup anchored on the supertype's contains edges.
-          for (const c of this.queries.getOutgoingEdges(superNode.id, ['contains'])) {
-            const m = this.queries.getNodeById(c.target);
-            if (
-              m &&
-              m.name === member &&
-              (m.kind === 'function' || m.kind === 'method') &&
-              sameLanguageFamily(m.language, ref.language)
-            ) {
-              target = m;
-              break;
-            }
-          }
-          if (target) break;
-          next.push(superNode);
-        }
-        if (target) break;
-      }
-      frontierNodes = next;
-    }
-
-    if (!target) return null;
-    return {
-      original: ref,
-      targetNodeId: target.id,
-      confidence: 0.85,
-      resolvedBy: 'function-ref',
-    };
+    return this.persistDeferredReferences(deferred, resolved);
   }
 
   /**

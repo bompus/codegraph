@@ -1,10 +1,10 @@
 /**
- * Incremental sync resolves through the kernel first, as a full index does,
- * and lands the same graph as the TypeScript path (CODEGRAPH_KERNEL_RESOLVE=0).
+ * Incremental sync resolves through the kernel, as a full index does.
  *
  * The git fast path resolves the changed files' refs, then retries failed refs
  * the changed files may now satisfy (#1240). Both used to run the TypeScript
- * pipeline only.
+ * pipeline only; the kernel path was checked against it edge for edge
+ * before the TypeScript resolver was removed.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
@@ -56,12 +56,9 @@ const AFTER: Record<string, string> = {
 
 let tempDir: string | null = null;
 let cg: CodeGraph | null = null;
-const envKernel = process.env.CODEGRAPH_KERNEL_RESOLVE;
 
 afterEach(() => {
   vi.restoreAllMocks();
-  if (envKernel === undefined) delete process.env.CODEGRAPH_KERNEL_RESOLVE;
-  else process.env.CODEGRAPH_KERNEL_RESOLVE = envKernel;
   cg?.close();
   cg = null;
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -75,7 +72,7 @@ function write(files: Record<string, string>): void {
   }
 }
 
-async function syncedGraph(kernelResolve: boolean): Promise<{ edges: string[]; syncChunks: number }> {
+async function syncedGraph(): Promise<{ edges: string[]; syncChunks: number }> {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-sync-kernel-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd: tempDir!, stdio: 'pipe' });
   write(BEFORE);
@@ -84,8 +81,6 @@ async function syncedGraph(kernelResolve: boolean): Promise<{ edges: string[]; s
   git('config', 'user.name', 'Test');
   git('add', '-A');
   git('commit', '-m', 'initial');
-  if (kernelResolve) delete process.env.CODEGRAPH_KERNEL_RESOLVE;
-  else process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
   cg = await CodeGraph.init(tempDir, { index: true });
   write(AFTER);
   // Counted from here: only the sync's own native chunks.
@@ -105,17 +100,9 @@ async function syncedGraph(kernelResolve: boolean): Promise<{ edges: string[]; s
 }
 
 describe.skipIf(!kernelBuilt)('incremental sync through the kernel', () => {
-  it('resolves the changed refs natively and matches the TypeScript path', async () => {
-    const viaKernel = await syncedGraph(true);
+  it('resolves the changed refs natively', async () => {
+    const viaKernel = await syncedGraph();
     expect(viaKernel.syncChunks).toBeGreaterThan(0);
-    cg?.close();
-    cg = null;
-    fs.rmSync(tempDir!, { recursive: true, force: true });
-    tempDir = null;
-
-    const viaTs = await syncedGraph(false);
-    expect(viaTs.syncChunks).toBe(0);
-    expect(viaKernel.edges).toEqual(viaTs.edges);
     // The edit's new edges exist: the inherited call and the retried import.
     expect(viaKernel.edges.some((e) => e.startsWith('calls main -> Base::greet'))).toBe(true);
     expect(viaKernel.edges.some((e) => e.startsWith('calls main -> later'))).toBe(true);

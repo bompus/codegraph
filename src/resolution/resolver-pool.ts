@@ -44,7 +44,6 @@ interface PoolWorker {
   busy: number;
 }
 
-const MIN_PARALLEL_BATCH = 1000;
 const CHUNK_SIZE = 500;
 
 /**
@@ -257,11 +256,6 @@ export class ResolverPool {
     // owns rejection, and the recycle caller checks this.failed next round.
     for (const [, done] of this.recycleWaiters) done();
     this.recycleWaiters.clear();
-  }
-
-  /** Whether this batch is worth fanning out. */
-  static worthParallel(batchLength: number): boolean {
-    return batchLength >= MIN_PARALLEL_BATCH;
   }
 
   async ready(): Promise<void> {
