@@ -193,6 +193,18 @@ impl KernelResolver {
         // only non-bare shape matchFunctionRef resolves; `.`/`this.` forms
         // always miss in it). A miss punts back to that same block.
         if r.reference_kind == "function_ref" {
+            // `this.<member>`: the class-scoped arm answers alone — before the
+            // import lookup, with no fallback (resolveThisMemberFnRef).
+            if r.reference_name.starts_with("this.") {
+                return match self.resolve_this_member_fn_ref(r)? {
+                    this_member::ThisMember::Found(c) => match self.gate_language(Some(c), r) {
+                        Some(c) => self.finish(r, c, None, true),
+                        None => Ok(ResolveOutcome::unresolved()),
+                    },
+                    this_member::ThisMember::Defer => Ok(ResolveOutcome::deferred_this_member()),
+                    this_member::ThisMember::Miss => Ok(ResolveOutcome::unresolved()),
+                };
+            }
             match self.resolve_via_import_member(r)? {
                 None => {}
                 Some(c) => {
@@ -208,15 +220,19 @@ impl KernelResolver {
                     }
                 }
             }
-            if let Some(c) = self.match_function_ref_scoped(r)? {
-                // Frameworks never run on this path — a gated candidate is
-                // discarded to terminal unresolved, exactly like the bare arm.
-                return match self.gate_language(Some(c), r) {
-                    Some(c) => self.finish(r, c, None, true),
-                    None => Ok(ResolveOutcome::unresolved()),
-                };
-            }
-            return Ok(ResolveOutcome::passthrough("member-tail"));
+            // matchFunctionRef: a `::` name takes only the member-pointer arm;
+            // any other name the bare arm, over the whole dotted name.
+            // Frameworks never run on this path — a gated candidate is
+            // discarded to terminal unresolved, exactly like the bare arm.
+            let cand = if r.reference_name.contains("::") {
+                self.match_function_ref_scoped(r)?
+            } else {
+                self.match_function_ref_bare(r)?
+            };
+            return match self.gate_language(cand, r) {
+                Some(c) => self.finish(r, c, None, true),
+                None => Ok(ResolveOutcome::unresolved()),
+            };
         }
         // resolveJvmImport — a java/kotlin `imports` ref that names a
         // declaration by FQN is answered before anything else; resolveOne's

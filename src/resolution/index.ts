@@ -1194,6 +1194,8 @@ export class ReferenceResolver {
     // no_candidates marker), which falls through to the merge below.
     // The tail still runs: bound-receiver refusals stamp failureReason.
     if (outcome.status === 'unresolved' && !outcome.candidates) {
+      // resolveThisMemberFnRef's deferral: the member may be inherited.
+      if (outcome.reason === 'defer-this') this.deferReference(ref, this.deferredThisMemberRefs);
       return this.applyResolveTail(verdict, ref);
     }
     if (this.frameworks.length === 0) {
@@ -1881,7 +1883,7 @@ export class ReferenceResolver {
     // The kernel runs the same three arms over the live db, which now holds
     // every supertype edge. A punted ref (an unmigrated language, a shape the
     // kernel hands back) takes the TypeScript arms below.
-    const native = this.resolveDeferredChainsNatively(deferred);
+    const native = this.resolveDeferredNatively(deferred, (k, rows) => k.resolveDeferredChains(rows));
     for (let i = 0; i < deferred.length; i++) {
       const ref = deferred[i]!;
       const outcome = native?.[i];
@@ -1920,10 +1922,13 @@ export class ReferenceResolver {
     return created;
   }
 
-  /** One kernel pass over the conformance queue, or null when the kernel is
+  /** One kernel pass over a deferred queue, or null when the kernel is
    *  unavailable (the TypeScript arms then take every ref). The caller has
    *  quiesced the WAL valve; teardown closes the conn. */
-  private resolveDeferredChainsNatively(deferred: UnresolvedRef[]): ResolveOutcome[] | null {
+  private resolveDeferredNatively(
+    deferred: UnresolvedRef[],
+    run: (kernel: KernelResolverLike, rows: ResolveRefIn[]) => ResolveOutcome[],
+  ): ResolveOutcome[] | null {
     if (!this.kernelResolverTried) {
       this.initKernelResolver(
         this.queries.getDatabasePath() ?? undefined,
@@ -1934,7 +1939,7 @@ export class ReferenceResolver {
       );
     }
     const kernel = this.kernelResolver;
-    if (!kernel?.resolveDeferredChains) return null;
+    if (!kernel) return null;
     try {
       const rows: ResolveRefIn[] = deferred.map((ref) => ({
         rowId: ref.rowId,
@@ -1946,13 +1951,13 @@ export class ReferenceResolver {
         filePath: ref.filePath,
         language: ref.language,
       }));
-      const outcomes = kernel.resolveDeferredChains(rows);
+      const outcomes = run(kernel, rows);
       if (outcomes.length !== deferred.length) {
-        throw new Error(`kernel resolveDeferredChains returned ${outcomes.length} outcomes for ${deferred.length} refs`);
+        throw new Error(`kernel deferred pass returned ${outcomes.length} outcomes for ${deferred.length} refs`);
       }
       return outcomes;
     } catch (err) {
-      logDebug('Kernel conformance pass failed; staying on the TypeScript path', {
+      logDebug('Kernel deferred pass failed; staying on the TypeScript path', {
         error: err instanceof Error ? err.message : String(err),
       });
       this.closeKernel();
@@ -3597,10 +3602,22 @@ export class ReferenceResolver {
     // periodically so the #850 liveness watchdog heartbeat can fire (#1091).
     const maybeYield = createYielder();
     const resolved: ResolvedRef[] = [];
-    for (const ref of deferred) {
+    const native = this.resolveDeferredNatively(deferred, (k, rows) => k.resolveDeferredThisMembers(rows));
+    for (let i = 0; i < deferred.length; i++) {
+      const ref = deferred[i]!;
       await maybeYield();
+      const outcome = native?.[i];
+      if (outcome && outcome.status !== 'passthrough') {
+        const verdict = this.kernelVerdict(ref, outcome);
+        if (verdict) resolved.push(verdict);
+        continue;
+      }
       const match = nmTimed('deferredThisMember', ref, () => this.matchDeferredThisMember(ref));
       if (match) resolved.push(match);
+    }
+    if (process.env.CODEGRAPH_RESOLVE_PROFILE && native) {
+      const punted = native.filter((o) => o.status === 'passthrough').length;
+      console.error(`[resolve-profile] this-member kernel: refs=${deferred.length} native=${deferred.length - punted} passthrough=${punted}`);
     }
     const created = await this.persistDeferredReferences(deferred, resolved);
     // Runs after resolveAndPersistBatched's 'main' dump — emit this pass's own
