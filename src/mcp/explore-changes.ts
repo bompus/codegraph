@@ -39,6 +39,14 @@ const CHANGE_PHRASES: RegExp[] = [
 // so nothing that reaches git can be read as an option.
 const REV_RANGE = /(?<![\w./~^@-])([\w][\w./~^@-]*)(\.\.\.?)([\w][\w./~^@-]*)?(?![\w./~^@-])/;
 
+/**
+ * Shaped like a change question: a change phrase or a revision range. Cheap and
+ * git-free, for the prompt hook's gate; collectChanges makes the real call.
+ */
+export function looksLikeChangeQuestion(query: string): boolean {
+  return CHANGE_PHRASES.some((re) => { re.lastIndex = 0; return re.test(query); }) || REV_RANGE.test(query);
+}
+
 function git(root: string, args: string[]): string {
   return execFileSync('git', ['-c', 'core.quotepath=off', ...args], {
     cwd: root, encoding: 'utf-8', timeout: 5000, maxBuffer: 32 * 1024 * 1024,

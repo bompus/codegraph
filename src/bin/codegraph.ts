@@ -1499,9 +1499,13 @@ program
       // verified against the graph below, so a tech brand ("JavaScript") that
       // merely looks like code doesn't inject spurious context.
       const keyworded = hasStructuralKeyword(prompt);
+      // "review my changes", `main..HEAD`: explore answers these from the diff,
+      // so a confirmed change question gets the full injection like a keyword.
+      const { looksLikeChangeQuestion, collectChanges } = await import('../mcp/explore-changes');
+      const changeShaped = !keyworded && looksLikeChangeQuestion(prompt);
       const codeTokens = keyworded ? [] : extractCodeTokens(prompt);
       const proseWords = keyworded ? [] : extractProseCandidates(prompt);
-      if (!keyworded && codeTokens.length === 0 && proseWords.length === 0) { gate('noop-shape'); return; }
+      if (!keyworded && !changeShaped && codeTokens.length === 0 && proseWords.length === 0) { gate('noop-shape'); return; }
 
       // Decide what to inject, shaped by WHERE the index(es) are: the nearest
       // indexed ancestor of cwd, or — when cwd is an un-indexed workspace root
@@ -1531,8 +1535,9 @@ program
           // must be real here — a brand name or prose about another domain
           // must not inject). Keyword-bearing prompts skip verification — the
           // keyword is signal enough.
-          const tokenVerified = !keyworded && codeTokens.some((t) => cg.getNodesByName(t).length > 0);
-          if (keyworded || tokenVerified) {
+          const changeQuestion = changeShaped && collectChanges(plan.exploreRoot, prompt) !== null;
+          const tokenVerified = !keyworded && !changeQuestion && codeTokens.some((t) => cg.getNodesByName(t).length > 0);
+          if (keyworded || changeQuestion || tokenVerified) {
             const { ToolHandler } = await import('../mcp/tools');
             const handler = new ToolHandler(cg);
             const result = await handler.execute('codegraph_explore', { query: prompt });
@@ -1551,13 +1556,13 @@ program
               process.stdout.write(
                 `<codegraph_context note="Structural context from CodeGraph for this prompt — treat returned source as already read; ${more}.">\n${body}${others}\n</codegraph_context>\n`,
               );
-              gate(keyworded ? 'high-keyword' : 'high-token');
+              gate(keyworded ? 'high-keyword' : changeQuestion ? 'high-change' : 'high-token');
             } else {
               // A high-* outcome must mean context was actually delivered —
               // the funnel's noop-vs-high split is how gate recall is
               // measured (#1143). An explore error or empty result is a
               // delivery failure, not a gate success.
-              gate(keyworded ? 'noop-explore-keyword' : 'noop-explore-token');
+              gate(keyworded ? 'noop-explore-keyword' : changeQuestion ? 'noop-explore-change' : 'noop-explore-token');
             }
             return;
           }

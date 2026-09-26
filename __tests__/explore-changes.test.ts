@@ -11,13 +11,24 @@ import * as os from 'os';
 import { execFileSync } from 'child_process';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
-import { parseUnifiedZero, symbolsForRanges } from '../src/mcp/explore-changes';
+import { collectChanges, looksLikeChangeQuestion, parseUnifiedZero, symbolsForRanges } from '../src/mcp/explore-changes';
 import type { Node } from '../src/types';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], {
     cwd, stdio: 'pipe', env: { ...process.env, GIT_TEMPLATE_DIR: '/usr/share/git-core/templates' },
   });
+
+describe('looksLikeChangeQuestion (the prompt hook gate)', () => {
+  it('matches change phrases and revision ranges, not ordinary questions', () => {
+    for (const q of ['review my changes', 'summarize this branch', 'what did main..HEAD break?', 'what have we modified']) {
+      expect(looksLikeChangeQuestion(q), q).toBe(true);
+    }
+    for (const q of ['how does the cache propagate changes', 'fix this typo', 'where is parseToken']) {
+      expect(looksLikeChangeQuestion(q), q).toBe(false);
+    }
+  });
+});
 
 describe('parseUnifiedZero', () => {
   it('reads new-side ranges and marks pure deletions at the line they follow', () => {
@@ -120,6 +131,11 @@ describe('codegraph_explore answers change questions from the diff', () => {
     const branch = await explore('review this branch');
     expect(branch).toContain('since the merge base with `main`');
     expect(branch).toMatch(/- `unrelated` \(src\/lib\.ts:5\) — no callers/);
+  });
+
+  it('declines an ellipsis or a range whose ends are not commits', () => {
+    expect(collectChanges(dir, 'wait... how does checkout work')).toBeNull();
+    expect(collectChanges(dir, 'versions 1..10')).toBeNull();
   });
 
   it('leaves ordinary queries alone', async () => {
