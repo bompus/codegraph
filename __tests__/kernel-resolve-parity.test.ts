@@ -124,6 +124,8 @@ const FIXTURE: Record<string, string> = {
     '}',
     'function reguser() { Registry::make()->name(); }',
   ].join('\n'),
+  // Markdown links resolve to the linked file by path.
+  'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,
   // `.php` optional, and a miss never name-matches a same-named file.
   'src/inc/db.php': '<?php\nfunction dbconnect() {}\n',
@@ -643,6 +645,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().nope', 'src/w.cpp', 'cpp', 'calls', 5);
     seed(nodeId('reguser', 'reg.php'), 'Registry::make().name', 'src/reg.php', 'php', 'calls', 6);
     ins.run(nodeId('pet', 'g.php'), 'x.meow', 'calls', 5, 8, 'src/g.php', 'php');
+    const readme = cg!.getNodesByKind('file').find((n) => n.filePath === 'README.md')!.id;
+    ins.run(readme, 'src/util.ts', 'references', 3, 4, 'README.md', 'markdown');
     for (const [name, line] of [['inc/db.php', 2], ['inc/db', 3], ['nowhere/g.php', 4]] as const) {
       ins.run('file:src/useinc.php', name, 'imports', line, 0, 'src/useinc.php', 'php');
     }
@@ -1022,6 +1026,11 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
     // scopedChain: `Registry::make` returns `self` → the factory's own class
     // → `Registry::name` @0.85.
+    // A markdown link is answered natively by the file-path arm.
+    const mdLink = at('src/util.ts', 'README.md', 'references');
+    expect(mdLink.status).toBe('resolved');
+    expect(mdLink.resolvedBy).toBe('file-path');
+    expect(mdLink.targetNodeId).toBe(cg!.getNodesByKind('file').find((n) => n.filePath === 'src/util.ts')!.id);
     // PHP include paths (prerequisite-phase `imports` rows).
     const dbFile = cg!.getNodesByKind('file').find((n) => n.filePath === 'src/inc/db.php')!.id;
     for (const name of ['inc/db.php', 'inc/db']) {
