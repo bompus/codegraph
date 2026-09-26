@@ -802,6 +802,12 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.49 Multi-line factory initializers resolve again (2026-09-26)
+
+`vite-factory-receiver-control` had been VIOLATED since a5c106cc (2026-09-16, found by `scripts/precision/bisect-case.sh`). That commit required the factory call to end the initializer, but the resolver read only three lines of the declaration, so a call whose arguments span more lines never closed inside the window and the receiver's type was never taken from the factory. The window is now 40 lines, in the TypeScript resolver and the kernel.
+
+vite: 28,209 → 28,287 edges; 78 gained, 0 lost, all `instance-method` calls onto the factory's declared return type (`ViteDevServer::close` 24, `ViteDevServer::listen` 5, `ModuleRunner::import` 10, `ViteBuilder::build` 10, and similar). Precision cases: vite 8/8 held (was 7/8), vitest and svelte unchanged. The first bisect attempt skipped every step: `git bisect run` exports GIT_DIR, and the precision runner's corpus git calls read the engine repository. The runner now clears git's local environment variables.
+
 ### 5.48 Change questions answered from the diff (2026-09-26)
 
 `codegraph_explore` and the prompt hook now recognise a question about the working changes ("my changes", "this branch", `main..HEAD`). They read the diff (merge base with the default branch plus uncommitted edits, or the named range, with copy detection so moved code diffs as edits), map each hunk to the innermost indexed symbol it touches, and lead with those symbols ranked by caller count, each with its callers and tests. Prose around the question no longer text-matches.
