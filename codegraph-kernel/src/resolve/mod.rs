@@ -290,16 +290,49 @@ pub(super) struct SourceFile {
     lines: Vec<String>,
     text: OnceCell<String>,
     rust_uses: OnceCell<HashMap<String, String>>,
+    await_lines: OnceCell<Vec<usize>>,
+    /// `lines_containing` memo, by needle.
+    needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
 
 impl SourceFile {
     fn new(lines: Vec<String>) -> Self {
-        SourceFile { lines, text: OnceCell::new(), rust_uses: OnceCell::new() }
+        SourceFile {
+            lines,
+            text: OnceCell::new(),
+            rust_uses: OnceCell::new(),
+            await_lines: OnceCell::new(),
+            needle_lines: RefCell::new(HashMap::new()),
+        }
     }
 
     /// The lines rejoined with `\n` (CRLF already normalized).
     pub(super) fn text(&self) -> &str {
         self.text.get_or_init(|| self.lines.join("\n"))
+    }
+
+    /// The lines containing `await` — the only ones an awaited-initializer
+    /// pattern can match.
+    pub(super) fn await_lines(&self) -> impl Iterator<Item = &str> {
+        self.await_lines
+            .get_or_init(|| (0..self.lines.len()).filter(|&i| self.lines[i].contains("await")).collect())
+            .iter()
+            .map(|&i| self.lines[i].as_str())
+    }
+
+    /// Indices of the lines containing `needle`, ascending — one SIMD pass
+    /// over the file per distinct needle instead of a search per line per
+    /// query. A pattern that needs the literal can only match these.
+    pub(super) fn lines_containing(&self, needle: &str) -> Rc<[u32]> {
+        if let Some(hit) = self.needle_lines.borrow().get(needle) {
+            return hit.clone();
+        }
+        let finder = memchr::memmem::Finder::new(needle.as_bytes());
+        let hits: Rc<[u32]> = (0..self.lines.len() as u32)
+            .filter(|&i| finder.find(self.lines[i as usize].as_bytes()).is_some())
+            .collect();
+        self.needle_lines.borrow_mut().insert(needle.to_string(), hits.clone());
+        hits
     }
 
     /// The file's Rust `use` bindings (collectRustUseBindings).
@@ -438,6 +471,8 @@ pub struct KernelResolver {
     rust_trait_memo: HashMap<String, bool>,
     root_import_memo: HashMap<String, bool>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
+    /// factory_initializer memo: (file, binding line, root, binding node).
+    factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
     file_cache: FileCache,
 }
 
@@ -489,6 +524,7 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
+            factory_init_memo: HashMap::new(),
             file_cache: FileCache::new(1024),
         })
     }
@@ -523,7 +559,7 @@ impl KernelResolver {
             .map(|v| v.as_ref().map_or(0, |l| l.iter().map(|s| s.capacity() + 24).sum::<usize>()))
             .sum();
         eprintln!(
-            "[kernel-stats] {at}: regex(shared)={} files={} (lines={file_lines} bytes={file_bytes}) bindings={} imports={} reexports={} export_index={} memos: symbol={} import_path={} sealed={} c_static={} rust_trait={} root_import={} crate_root={}",
+            "[kernel-stats] {at}: regex(shared)={} files={} (lines={file_lines} bytes={file_bytes}) bindings={} imports={} reexports={} export_index={} memos: symbol={} import_path={} sealed={} c_static={} rust_trait={} root_import={} crate_root={} factory_init={}",
             shared_regex_count(),
             self.file_cache.map.len(),
             self.bindings_cache.len(),
@@ -537,6 +573,7 @@ impl KernelResolver {
             self.rust_trait_memo.len(),
             self.root_import_memo.len(),
             self.rust_crate_root_memo.len(),
+            self.factory_init_memo.len(),
         );
     }
 
@@ -663,6 +700,15 @@ impl Drop for KernelResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf16_len_counts_units_from_bytes() {
+        for s in ["", "abc", "é", "€", "😀", "a😀é€x"] {
+            assert_eq!(utf16_len(s), s.encode_utf16().count(), "{s:?}");
+        }
+        let wide = "€".repeat(4); // 12 bytes, 4 units
+        assert!(!utf16_len_exceeds(&wide, 4) && utf16_len_exceeds(&wide, 3));
+    }
 
     #[test]
     fn path_or_tail_needs_a_segment_boundary() {

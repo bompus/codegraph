@@ -802,6 +802,32 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.43 Kernel performance pass — JavaScript member calls in the resolver (2026-09-25)
+
+After the code-quality review (#104–#114) the per-verdict-class profiler (`CODEGRAPH_KERNEL_PROF=1`) put pretix's biggest resolution cost in JavaScript, not Python. 30,792 JavaScript call refs ended unresolved at about 200 µs each (6.0 s of worker time), almost all of it inside `bound_receiver_claim`. Pretix ships vendored and minified JS. Probes added one sub-step at a time found four costs, each proportional to the size of the file or the line, paid again on every ref:
+
+- **The await gate** (`mc_await_gate`, 2.9 s): an `= await x(` scan of every line in the file, for every ref. The pattern needs a literal `await`, so each file now keeps the list of its lines containing `await`, built once, and the gate scans only those.
+- **The receiver-type scan** (`infer_local_receiver_type`, 1.9 s): a backward scan from the call to the enclosing scope's start, which in top-level or IIFE-style code is line 1. Every receiver pattern needs the receiver literal in the line. The file now records, once per distinct receiver, which lines contain it (one `memmem` pass), and the scan visits only those lines, highest first as before.
+- **The factory initializer** (`esm_factory_tail`, 1.0 s): every ref through the same binding re-parsed the same declaration, and `parens_end` kept walking to the end of a minified line after the parenthesis had closed. It now returns at the close, and the parse is memoized per (file, binding line, root, binding node).
+- **The 10,000-unit line guard**: `utf16_len(line) > 10_000` measured the whole line. It is now decided from the byte length when that settles it (at most one unit per byte, at least one per three bytes), and `utf16_len` counts from bytes.
+
+**Index level** (`codegraph index`, kernel-on, `nice -n 10`, single runs; the #114 kernel through `CODEGRAPH_KERNEL_PATH` against this one, same `dist`; wall / `resolution` phase):
+
+| corpus | before | after |
+|---|---|---|
+| pretix | 10.6 s / 7.7 s | **9.0 s / 6.0 s** |
+| firefly-iii | 7.9 s / 5.2 s | 6.7 s / 4.7 s |
+| linux-fs | 11.7 s / 6.2 s | 10.5 s / 5.7 s |
+| warp-drive | 4.6 s / 2.6 s | 4.3 s / 2.2 s |
+| alamofire | 1.3 s / 565 ms | 1.2 s / 460 ms |
+| discourse | 20.1 s / 8.5 s | 20.0 s / 8.3 s |
+
+Peak RSS is within run-to-run noise (±100 MB on the large corpora). A first version searched a joined copy of each file's text and cost 3–5% RSS; a per-line search gives the same result without the copy. On pretix the JavaScript unresolved-call bucket went from 6.0 s to 0.8 s of worker time.
+
+**Correction to §5.42.** tree-sitter's `child(i)` is linear in `i`, not log(i): `ts_node__child` (node.c) walks the children from the first one. §5.42's measurement stands. The walkers' nodes are narrow enough that the quadratic loops cost nothing measurable, which #113 confirmed with its hybrid `kids()` iteration (discourse parse-loop 7,604 → 7,694 ms, within noise).
+
+**Gate**: dump-graph byte-identical against the #114 kernel on all fifteen corpora; kernel 35/35, clippy `-D warnings`, ast-grep rules; full suite 303 files / 5,178 tests.
+
 ### 5.42 Kernel review, pass 2 — performance batch C, the table load and what did not move (2026-09-20)
 
 The per-class profiler's next target after §5.41 was discourse's JavaScript `imports` refs at 480 µs each (2.0 s). Probing the path step by step found no step that cost it; the pre-pass did, at 117 µs over 19,866 refs, because the pre-pass is a resolver's first table access: the six pool workers block on the one shared node-table load and the profiler charges the wait to whichever ref triggered it. So the real per-run cost was the load itself — 476 ms on discourse (167,753 nodes), 136 ms on halo — not per-ref work. Pre-sized maps, `Arc<Vec<…>>` lists instead of copying every list into an `Arc<[…]>`, and a lowercase-name index built on first use (only the fuzzy matcher asks) take discourse to 356 ms; `CODEGRAPH_KERNEL_STATS=1` now prints the load. Halo's remaining wall variance (6.7–8.6 s run to run) is its maintenance phase, not resolution.
