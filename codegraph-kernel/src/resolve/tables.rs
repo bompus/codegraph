@@ -43,6 +43,13 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "luau"
             | "r"
             | "markdown"
+            | "objc"
+            | "solidity"
+            | "liquid"
+            | "twig"
+            | "yaml"
+            | "xml"
+            | "properties"
     )
 }
 
