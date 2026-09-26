@@ -885,6 +885,9 @@ export function reExportsFromBindings(rows: Binding[]): ReExport[] | null {
   for (const r of rows) {
     if (r.kind !== 'reexport' || !r.targetSpec) continue;
     if (r.name === '*') {
+      // `export * as ns from` exports one name, `ns`, not the module's members:
+      // chasing it flat would let `ns`'s members shadow the barrel's own.
+      if (r.exportedAs && r.exportedAs !== '*') continue;
       out.push({ kind: 'wildcard', source: r.targetSpec });
     } else {
       out.push({ kind: 'named', exportedName: r.exportedAs ?? r.name, originalName: r.name, source: r.targetSpec });
@@ -2179,7 +2182,11 @@ function findExportedSymbolWalk(
   if (reExports.length === 0) return undefined;
 
   // Look for explicit `export { want } from './other'` (with optional rename).
-  const targetName = want.isDefault ? 'default' : want.exportedName;
+  // A namespace member (`ns.clone` through `import * as ns`) is forwarded
+  // under the member's own name.
+  const targetName = want.isDefault
+    ? 'default'
+    : want.isNamespace && want.memberName ? want.memberName : want.exportedName;
   for (const rex of reExports) {
     if (rex.kind === 'named' && rex.exportedName === targetName) {
       const next = resolveImportPath(rex.source, filePath, language, context);

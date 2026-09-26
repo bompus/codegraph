@@ -78,3 +78,44 @@ describe('workspace bundle source entries', () => {
     expect([...loadWorkspaceSourceEntries(dir, 'packages/lib', 'lib')]).toEqual([]);
   });
 });
+
+describe('workspace exports conditions naming committed source', () => {
+  function sourceFixture(files: string[], exports: unknown) {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-workspace-exports-'));
+    fs.mkdirSync(path.join(dir, 'packages/zod'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+    fs.writeFileSync(path.join(dir, 'packages/zod/package.json'), JSON.stringify({ name: 'zod', exports }));
+    for (const f of files) {
+      fs.mkdirSync(path.dirname(path.join(dir, 'packages/zod', f)), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/zod', f), 'export const x = 1;\n');
+    }
+  }
+  const zodExports = {
+    '.': { '@zod/source': './src/index.ts', types: './index.d.cts', import: './index.js' },
+    './v4': { '@zod/source': './src/v4/index.ts', types: './v4/index.d.cts', import: './v4/index.js' },
+  };
+
+  it('maps each subpath to the one condition target present in the checkout', () => {
+    sourceFixture(['src/index.ts', 'src/v4/index.ts', 'v4/index.d.cts'], zodExports);
+    expect(new Map(loadWorkspaceSourceEntries(dir, 'packages/zod', 'zod'))).toEqual(new Map([
+      ['zod', 'packages/zod/src/index.ts'],
+      ['zod/v4', 'packages/zod/src/v4/index.ts'],
+    ]));
+  });
+
+  it('skips a subpath whose build output is also present, rather than guess', () => {
+    sourceFixture(['src/v4/index.ts', 'v4/index.js'], { './v4': zodExports['./v4'] });
+    expect([...loadWorkspaceSourceEntries(dir, 'packages/zod', 'zod')]).toEqual([]);
+  });
+
+  it('resolves a namespace import through the mapped subpath', async () => {
+    sourceFixture(['src/v4/index.ts'], { './v4': zodExports['./v4'] });
+    fs.writeFileSync(path.join(dir, 'packages/zod/src/v4/index.ts'), 'export function string() { return 1; }\n');
+    fs.mkdirSync(path.join(dir, 'packages/zod/tests'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/zod/tests/use.test.ts'), 'import * as z from "zod/v4";\nexport function check() { return z.string(); }\n');
+    graph = await CodeGraph.init(dir, { index: true });
+    const check = graph.getNodesByKind('function').find(n => n.name === 'check')!;
+    const targets = graph.getOutgoingEdges(check.id).filter(e => e.kind === 'calls').map(e => graph!.getNode(e.target)!.filePath);
+    expect(targets).toContain('packages/zod/src/v4/index.ts');
+  });
+});

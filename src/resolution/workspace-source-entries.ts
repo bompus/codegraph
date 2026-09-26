@@ -166,9 +166,44 @@ function bundleEntries(source: string, directory: string): Map<string, string> {
   } finally { tree.delete(); }
 }
 
+/** A resolvable source file (not a declaration file). */
+const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte)$/;
+
+/** Every string target under an `exports` value, conditions included. */
+function allTargets(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (!value || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(allTargets);
+}
+
+/**
+ * Exact subpaths whose conditions name exactly one source file that exists in
+ * the checkout (`"@zod/source": "./src/v4/index.ts"` beside build targets that
+ * are not committed). Build output present locally makes it ambiguous, so the
+ * subpath is skipped rather than guessed.
+ */
+function existingSourceEntries(projectRoot: string, member: string, name: string, exports: unknown): Map<string, string> {
+  const result = new Map<string, string>();
+  const directory = path.join(projectRoot, member);
+  const rootExports = typeof exports === 'object' && exports !== null && !Array.isArray(exports) &&
+    Object.keys(exports).some(k => k.startsWith('.')) ? exports : { '.': exports };
+  for (const [subpath, value] of Object.entries(rootExports as Record<string, unknown>)) {
+    if (subpath !== '.' && !subpath.startsWith('./') || subpath.includes('*')) continue;
+    const existing = new Set(allTargets(value)
+      .filter(t => t.startsWith('./') && SOURCE_FILE.test(t) && !/\.d\.[cm]?ts$/.test(t))
+      .map(t => path.resolve(directory, t))
+      .filter(abs => fs.existsSync(abs)));
+    if (existing.size !== 1) continue;
+    const relative = path.relative(projectRoot, [...existing][0]!).replace(/\\/g, '/');
+    if (relative.startsWith('../') || !relative.startsWith(member + '/')) continue;
+    result.set(name + (subpath === '.' ? '' : subpath.slice(1)), relative);
+  }
+  return result;
+}
+
 /** Exact public specifier → source file, relative to the indexed project. */
 export function loadWorkspaceSourceEntries(projectRoot: string, member: string, name: string): Map<string, string> {
-  const result = new Map<string, string>();
+  let result = new Map<string, string>();
   const directory = path.join(projectRoot, member);
   let exports: unknown;
   let scripts: Record<string, unknown>;
@@ -179,6 +214,7 @@ export function loadWorkspaceSourceEntries(projectRoot: string, member: string, 
   }
   catch { return result; }
   if (!exports) return result;
+  result = existingSourceEntries(projectRoot, member, name, exports);
   const configs = ['rolldown', 'rollup'].flatMap(tool => ['ts', 'mts', 'js', 'mjs'].map(ext => `${tool}.config.${ext}`))
     .filter(file => fs.existsSync(path.join(directory, file)));
   if (configs.length !== 1) return result;
