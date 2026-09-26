@@ -480,6 +480,8 @@ pub struct KernelResolver {
     c_static_memo: HashMap<String, bool>,
     rust_trait_memo: HashMap<String, bool>,
     root_import_memo: HashMap<String, bool>,
+    /// matchSelectedStoreCall's per-file selector names (`const a = f((s) =>`).
+    selector_names_memo: HashMap<String, Rc<HashSet<String>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
@@ -569,6 +571,7 @@ impl KernelResolver {
             c_static_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
+            selector_names_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             file_cache: FileCache::new(1024),
@@ -1001,10 +1004,10 @@ mod tests {
         }
     }
 
-    /// `js_const_binds` against the JavaScript pattern it replaces, with
-    /// ASCII word boundaries.
+    /// `js_destructure_names` against the pattern it implements, with ASCII
+    /// word boundaries: a `const {…}` run naming the ref.
     #[test]
-    fn js_const_binds_matches_the_regex() {
+    fn js_destructure_names_matches_the_regex() {
         let names = ["a", "user", "über", "b$"];
         let texts = [
             "const user = 1;",
@@ -1027,12 +1030,12 @@ mod tests {
         for name in names {
             // The oracle: the pattern the function replaced, per name.
             let pattern = format!(
-                r"(?-u:\b)const\s*(?:\{{[^{{}}]*(?-u:\b){0}(?-u:\b)|{0}(?-u:\b))",
+                r"(?-u:\b)const\s*\{{[^{{}}]*(?-u:\b){0}(?-u:\b)",
                 regex::escape(name)
             );
             let re = Regex::new(&pattern).unwrap();
             for text in texts {
-                assert_eq!(js_const_binds(text, name), re.is_match(text), "name={name:?} text={text:?}");
+                assert_eq!(js_destructure_names(text, name), re.is_match(text), "name={name:?} text={text:?}");
             }
         }
     }

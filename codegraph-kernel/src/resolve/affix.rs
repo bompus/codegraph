@@ -407,7 +407,7 @@ pub(super) static TS_FIELD_TYPE_PATTERNS: LazyLock<[(Affix, bool); 3]> = LazyLoc
 /// boundaries JavaScript's `\b` has. One forward pass over the `const`
 /// sites: the file is scanned once per call whatever the name, where a walk
 /// back from every occurrence of a short name was quadratic.
-pub(super) fn js_const_binds(text: &str, name: &str) -> bool {
+pub(super) fn js_destructure_names(text: &str, name: &str) -> bool {
     static CONST: LazyLock<memchr::memmem::Finder<'static>> = LazyLock::new(|| memchr::memmem::Finder::new("const"));
     let bytes = text.as_bytes();
     // One searcher for the name: a minified bundle has thousands of
@@ -439,10 +439,6 @@ pub(super) fn js_const_binds(text: &str, name: &str) -> bool {
             }
             p += c.len_utf8();
         }
-        // `const\s*NAME\b`
-        if text[p..].starts_with(name) && word_boundary_at(text, p + name.len()) {
-            return true;
-        }
         // `const\s*\{[^{}]*\bNAME\b` — the brace-free run after `{`; its
         // edges are braces or the end of text, non-word like a slice edge.
         if bytes.get(p) == Some(&b'{') {
@@ -457,4 +453,17 @@ pub(super) fn js_const_binds(text: &str, name: &str) -> bool {
         }
     }
     false
+}
+
+/// matchSelectedStoreCall's selector names: every `NAME` in
+/// `const NAME = f((s) =>` / `const NAME = f(s =>` over the raw source, with
+/// TS's ASCII `\w`.
+pub(super) fn js_selector_names(text: &str) -> HashSet<String> {
+    static SELECTOR: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?-u:\b)const\s+([0-9A-Za-z_$]+)\s*=\s*[0-9A-Za-z_$]+\s*\(\s*(?:\(\s*[0-9A-Za-z_$]+\s*\)|[0-9A-Za-z_$]+)\s*=>",
+        )
+        .expect("selector regex")
+    });
+    SELECTOR.captures_iter(text).map(|c| c[1].to_string()).collect()
 }

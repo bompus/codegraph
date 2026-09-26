@@ -460,19 +460,35 @@ impl KernelResolver {
     // resolveOne's gateTargetKind + calls alias-forward.
     // -----------------------------------------------------------------------
 
-    /// Necessary condition for matchJsStoreBindingCall (name-matcher.ts):
-    /// both store-binding arms bind the ref's own name through `const` — a
-    /// destructure (`const {a} = X.getState()`) or a selector alias
-    /// (`const a = useStore(s => s.a)`). Absent that shape the matcher cannot
-    /// fire, so the kernel may adjudicate the ref itself. The whole file is
-    /// scanned (the destructure can span lines); false positives only cost a
-    /// TS fallback, never a wrong verdict.
+    /// Necessary condition for matchJsStoreBindingCall (name-matcher.ts),
+    /// arm by arm. matchDestructuredStoreCall needs a file that mentions
+    /// `.getState` and a `const {…}` naming the ref; matchSelectedStoreCall
+    /// needs a `=>` and the ref among the file's selector names
+    /// (`const a = f((s) =>`), which TS collects from the raw source exactly
+    /// as here. Absent both the matcher returns null, so the kernel may
+    /// adjudicate the ref itself; false positives only cost a TS fallback.
     pub(super) fn file_could_store_bind(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.reference_kind != "calls" || !is_js_family(&r.language) {
             return Ok(false);
         }
         let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
-        Ok(js_const_binds(lines.text(), &r.reference_name))
+        let text = lines.text();
+        let name = r.reference_name.as_str();
+        if text.contains(".getState") && js_destructure_names(text, name) {
+            return Ok(true);
+        }
+        if !text.contains("=>") {
+            return Ok(false);
+        }
+        let names = match self.selector_names_memo.get(&r.file_path) {
+            Some(n) => n.clone(),
+            None => {
+                let n = Rc::new(js_selector_names(text));
+                self.selector_names_memo.insert(r.file_path.clone(), n.clone());
+                n
+            }
+        };
+        Ok(names.contains(name))
     }
 
     /// The `function_ref` block of resolveOneInner (index.ts). TS order:
