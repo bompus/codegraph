@@ -1102,7 +1102,9 @@ export class CodeGraph {
           if (options.deferSynthesis) this.scheduleSynthesisRefresh();
           else await this.refreshSynthesis();
         }
-        if (filesChanged || result.filesRemoved > 0) this.refreshNearDuplicates();
+        if (filesChanged || result.filesRemoved > 0) {
+          this.refreshNearDuplicates(result.changedFilePaths, result.filesRemoved > 0);
+        }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread — see indexAll's call site.
@@ -1463,7 +1465,7 @@ export class CodeGraph {
    * Only changed bodies are re-signed, so a sync that touched no function costs
    * one query. Never fails an index: the pairs are an annotation.
    */
-  private refreshNearDuplicates(): void {
+  private refreshNearDuplicates(changedFiles?: readonly string[], force = false): void {
     const t = Date.now();
     try {
       const deprioritized = this.queries.getDeprioritizedPathMatcher();
@@ -1475,8 +1477,10 @@ export class CodeGraph {
           try { return fs.readFileSync(path.join(this.projectRoot, p), 'utf-8'); } catch { return null; }
         },
         isExcluded: (p) => generated(p) || isGeneratedFile(p) || (deprioritized?.(p) ?? false),
+        changedFiles,
+        force,
       });
-      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDuplicates: ${Date.now() - t}ms (${r.signed} signed, ${r.pairs ?? 'unchanged'} pairs)`);
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDuplicates: ${Date.now() - t}ms (${r.signed} signed, ${r.rescored} pairs re-scored, ${r.pairs ?? 'unchanged'} pairs)`);
     } catch (error) {
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDuplicates failed: ${String(error)}`);
     }

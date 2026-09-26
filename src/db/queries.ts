@@ -3833,17 +3833,27 @@ export class QueryBuilder {
     return stmt;
   }
 
-  /** Function and method bodies of at least `minLines`, with their stored signature's stamp (null when none). */
-  *minhashCandidates(minLines: number): IterableIterator<{
+  /**
+   * Function and method bodies of at least `minLines`, with their stored
+   * signature's stamp (null when none). `filePaths` limits the scan to those
+   * files (a sync's changed files); omitted, every file is scanned.
+   */
+  *minhashCandidates(minLines: number, filePaths?: readonly string[]): IterableIterator<{
     id: string; name: string; filePath: string; startLine: number; endLine: number; updatedAt: number; sigUpdatedAt: number | null;
   }> {
-    const stmt = this.nearDupStmt(
-      `SELECT n.id AS id, n.name AS name, n.file_path AS filePath, n.start_line AS startLine, n.end_line AS endLine,
+    const select = `SELECT n.id AS id, n.name AS name, n.file_path AS filePath, n.start_line AS startLine, n.end_line AS endLine,
               n.updated_at AS updatedAt, m.node_updated_at AS sigUpdatedAt
          FROM nodes n LEFT JOIN node_minhash m ON m.node_id = n.id
-        WHERE n.kind IN ('function', 'method') AND n.end_line - n.start_line >= ? AND n.language != 'markdown'`,
-    );
-    for (const row of stmt.iterate(minLines - 1)) yield row as never;
+        WHERE n.kind IN ('function', 'method') AND n.end_line - n.start_line >= ? AND n.language != 'markdown'`;
+    if (!filePaths) {
+      for (const row of this.nearDupStmt(select).iterate(minLines - 1)) yield row as never;
+      return;
+    }
+    for (let i = 0; i < filePaths.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+      const chunk = filePaths.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+      const stmt = this.db.prepare(`${select} AND n.file_path IN (${chunk.map(() => '?').join(',')})`);
+      for (const row of stmt.iterate(minLines - 1, ...chunk)) yield row as never;
+    }
   }
 
   /** Store signatures; an empty `sig` marks a body too small to compare. */
@@ -3867,17 +3877,59 @@ export class QueryBuilder {
     })();
   }
 
-  /** One LSH band of every comparable signature: its bytes `[offset, offset + length)`. */
-  *minhashBand(offset: number, length: number): IterableIterator<{ rowid: number; band: Uint8Array }> {
-    const stmt = this.nearDupStmt(
-      'SELECT rowid AS rowid, substr(sig, ?, ?) AS band FROM node_minhash WHERE length(sig) > 0',
-    );
-    for (const row of stmt.iterate(offset + 1, length)) yield row as never;
-  }
-
   minhashByRowid(rowid: number): { nodeId: string; sig: Uint8Array } | null {
     const row = this.nearDupStmt('SELECT node_id AS nodeId, sig FROM node_minhash WHERE rowid = ?').get(rowid);
     return (row as { nodeId: string; sig: Uint8Array } | undefined) ?? null;
+  }
+
+  /**
+   * Every comparable signature in rowid order: rowids, node ids by rowid, and
+   * the signatures packed back to back (`sigBytes` each).
+   */
+  minhashAll(sigBytes: number): { rowids: number[]; nodeIds: Map<number, string>; sigs: Buffer } {
+    const rows = this.nearDupStmt(
+      'SELECT rowid AS rowid, node_id AS nodeId, sig FROM node_minhash WHERE length(sig) = ? ORDER BY rowid',
+    ).all(sigBytes) as Array<{ rowid: number; nodeId: string; sig: Uint8Array }>;
+    const sigs = Buffer.allocUnsafe(rows.length * sigBytes);
+    const rowids: number[] = new Array(rows.length);
+    const nodeIds = new Map<number, string>();
+    rows.forEach((r, i) => {
+      rowids[i] = r.rowid;
+      nodeIds.set(r.rowid, r.nodeId);
+      sigs.set(r.sig, i * sigBytes);
+    });
+    return { rowids, nodeIds, sigs };
+  }
+
+  /** Every cached pair score, keyed `a\nb` with a < b. */
+  nearDupScores(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const row of this.nearDupStmt('SELECT a, b, score FROM near_dup_scores').iterate()) {
+      const r = row as { a: string; b: string; score: number };
+      out.set(`${r.a}\n${r.b}`, r.score);
+    }
+    return out;
+  }
+
+  insertNearDupScores(rows: ReadonlyArray<{ a: string; b: string; score: number }>): void {
+    if (rows.length === 0) return;
+    const stmt = this.nearDupStmt('INSERT OR REPLACE INTO near_dup_scores (a, b, score) VALUES (?, ?, ?)');
+    this.db.transaction(() => {
+      for (const r of rows) stmt.run(r.a, r.b, r.score);
+    })();
+  }
+
+  /** Drop the cached scores of every pair these bodies are in. */
+  deleteNearDupScoresFor(nodeIds: readonly string[]): void {
+    if (nodeIds.length === 0) return;
+    const byA = this.nearDupStmt('DELETE FROM near_dup_scores WHERE a = ?');
+    const byB = this.nearDupStmt('DELETE FROM near_dup_scores WHERE b = ?');
+    this.db.transaction(() => {
+      for (const id of nodeIds) {
+        byA.run(id);
+        byB.run(id);
+      }
+    })();
   }
 
   /** Replace every stored pair; each pair is kept in both directions. */
