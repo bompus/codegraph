@@ -2,7 +2,7 @@
 
 # CodeGraph
 
-Already installed? Run `codegraph upgrade`
+**bompus/codegraph** · a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) · [how it differs](#about-this-fork)
 
 Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
@@ -50,131 +50,98 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ---
 
-## Consolidated fork — current status
+## About this fork
 
-`fork/consolidated` is the canonical integration branch. The reconciliation at
-[`31eff33`](https://github.com/bompus/codegraph/commit/31eff33b02e0655b0f4e66f2c8b20b590ab37991)
-preserves extraction, literal lookup and retrieval behavior from the former
-integration branch alongside consolidated Markdown and resolution guards.
-Both source histories are included in the merge. Deployment state is verified
-separately by the managed updater.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`ba3c21e`](https://github.com/colbymchenry/codegraph/commit/ba3c21e5), 2026-09-16) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
-The installers, npm package, release badges and `codegraph upgrade` instructions
-below refer to **upstream releases**. This fork's managed deployment is separate:
-its updater validates the canonical revision before promotion and compares source,
-built and running revisions. Managed builds include their source revision in the
-MCP version handshake; an unstamped build does not establish deployment identity.
+The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
-The fork adds Markdown indexing and retrieval, project session search, import
-and call-resolution guards, Windows test teardown fixes, and agent integration
-changes. It incorporates upstream PRs
-[#1695](https://github.com/colbymchenry/codegraph/pull/1695),
-[#1697](https://github.com/colbymchenry/codegraph/pull/1697),
-[#1699](https://github.com/colbymchenry/codegraph/pull/1699),
-[#1702](https://github.com/colbymchenry/codegraph/pull/1702),
-[#1706](https://github.com/colbymchenry/codegraph/pull/1706),
-[#1710](https://github.com/colbymchenry/codegraph/pull/1710),
-[#1715](https://github.com/colbymchenry/codegraph/pull/1715) (including #1713),
-[#1717](https://github.com/colbymchenry/codegraph/pull/1717),
-[#1718](https://github.com/colbymchenry/codegraph/pull/1718), and
-[#1720](https://github.com/colbymchenry/codegraph/pull/1720), plus the resolver
-corrections below. [#1721](https://github.com/colbymchenry/codegraph/issues/1721)
-remains separate design work.
+### Install the fork from source
 
-### Historical upstream comparison (2026-09-06)
+You need Node.js 22.5 or newer, git, and a [Rust toolchain](https://rustup.rs/) for the native kernel.
 
-The table and timings below compare upstream `b9ca4b7` with the pre-reconciliation
-fork resolver `1c4432f`. They do not measure reconciliation `31eff33` or the deployed service.
+```bash
+git clone https://github.com/bompus/codegraph.git
+cd codegraph
+npm ci
+npm run build:kernel   # compiles the native parser and resolver
+npm run build
+npm link               # puts `codegraph` on your PATH
+codegraph install      # wires CodeGraph into your agents
+```
 
-Corpus: [vitejs/vite at `8492422`](https://github.com/vitejs/vite/tree/8492422b8f110625a90c702f42f30784e8cf19dc).
-Sources: [upstream measurements](docs/benchmarks/fork-integration-2026-09-06.json)
-and [corrected fork measurements](docs/benchmarks/framework-import-correction-2026-09-06.json).
+Then run `codegraph init` in each project, as in [Get Started](#get-started). Indexes built by upstream releases should be rebuilt (`codegraph index --force`), because the fork writes tables and node kinds that upstream does not.
 
-| Metric                             | Upstream `b9ca4b7` | Fork resolver `1c4432f` | Fork minus upstream |
-| ---------------------------------- | -----------------: | ----------------------: | ------------------: |
-| Files indexed (CLI count)          |              1,635 |                   1,719 |                 +84 |
-| File nodes                         |              1,608 |                   1,692 |                 +84 |
-| Markdown file nodes / sections     |              0 / 0 |              84 / 1,983 |        +84 / +1,983 |
-| Nodes                              |              9,354 |                  12,484 |              +3,130 |
-| Edges                              |             27,778 |                  28,209 |                +431 |
-| Heuristic edges, total / code only |            36 / 36 |              3,082 / 36 |          +3,046 / 0 |
-| Unresolved references              |             24,920 |                  28,445 |              +3,525 |
-| Main database file, decimal MB     |              33.89 |                   37.99 |               +4.10 |
-| Recorded tests passing             |              4,173 |                   4,284 |                +111 |
-| Recorded test failures (Windows)   |                 23 |                       0 |                 −23 |
-| Recorded tests skipped             |                 44 |                      44 |                   0 |
+### What the fork adds
 
-The fork indexes additional Markdown content and rejects incorrect resolutions.
-Node, edge, and unresolved-reference totals therefore measure different graph
-contents; more edges or fewer unresolved references alone do not establish
-better accuracy. The test suites also differ: +111 passing tests is not a count
-of fixed bugs. The fork's full-suite result predates the test-only `7eb7656`
-change; that follow-up passed 53 focused tests with 3 skipped, but the full
-suite was not rerun.
+Compared with upstream `main` at `ba3c21e`. Each item was checked against upstream's tree.
 
-### Timing and method
+| Feature | Upstream | Fork | What it does |
+|---|:-:|:-:|---|
+| Session search (`codegraph sessions`, `codegraph_sessions`) | — | ✓ | Searches this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY and Devin transcripts, so an agent can find what a past session decided. `"sessions": false` in `codegraph.json` turns it off. |
+| Markdown indexing | — | ✓ | Headings, sections, tables and links become graph nodes; a documentation question gets the matching section. |
+| Near-duplicate functions | — | ✓ | `codegraph_explore` and `codegraph_node` name the near-identical copies of a function, so a fix made in one copy is not forgotten in the others. |
+| External HTTP endpoints | — | ✓ | JavaScript and TypeScript calls through `fetch`, axios, ky, got and similar clients appear as endpoint nodes such as `GET https://api.github.com/…`. |
+| Change questions | — | ✓ | "What did my changes touch?" or `main..HEAD` is answered from the diff: the changed functions, their callers and their tests. |
+| Name-only links marked | — | ✓ | Call links matched only by a function's name, with no import or receiver type behind them, are marked, so an agent knows which hop to check. |
+| Worktree seeding | — | ✓ | `codegraph init` in a new git worktree starts from a sibling worktree's index and re-reads only the files that differ. |
+| Inferred links kept current on sync | — | ✓ | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after each sync, so a sync ends with the graph a full index would build. |
+| Devin | — | ✓ | `codegraph install` can wire up Devin (CLI and Desktop). |
+| Reloading MCP launcher | — | ✓ (opt-in) | A long-running MCP server picks up a new build without the agent reconnecting. |
+| Build revision in version output | — | ✓ | `codegraph --version` and `status --json` report the source revision the build came from. |
 
-| Full reindex, eight samples per revision | Upstream `b9ca4b7` | Fork resolver `1c4432f` |
-| ---------------------------------------- | -----------------: | ----------------------: |
-| Wall-time median                         |           3,513 ms |                3,892 ms |
-| Wall-time range                          |     3,454–3,784 ms |          3,707–4,222 ms |
-| Wall ms / indexed file                   |              2.149 |                   2.264 |
+### Parsing, resolution and languages
 
-**These timings come from separate batches, not a paired upstream-versus-current-fork
-run.** They describe the recorded cost of each revision; no controlled speed
-difference is claimed. The fork also indexes 84 more files.
+| | Upstream | Fork |
+|---|---|---|
+| Parser | Native kernel for 20 languages, with a WebAssembly fallback for the rest and for files the kernel cannot parse | Native kernel only: every language is parsed in Rust. The WebAssembly parser is removed (a platform without a prebuilt kernel needs a Rust toolchain) |
+| Files with syntax errors | Handed to the fallback parser | Extracted from the native parser's error recovery |
+| Name resolution | In TypeScript, by import tracing and name matching over the source text | In the native kernel for every language, reading what each file actually binds (declarations, parameters, imports) for TypeScript/JavaScript, ArkTS, Python, Go, Java, Kotlin, PHP, C, C++ and Rust |
+| Markdown (`.md`, `.mdx`) | — | Indexed |
+| Node.js 25 and newer | Refused | Allowed, but untested |
 
-Both batches used Windows x64, Node 24.16.0, `--liftoff-only`, telemetry disabled,
-compiled JavaScript, and verified native kernels (the wasm fallback that then existed was removed later).
-Each sample used a fresh index directory and an untimed `init`, which indexes
-and warms the corpus, before timing the full `index` process including startup
-and shutdown. These are warm full-reindex timings, not cold initial-index timings.
-Builds and tests were outside timing. The upstream batch balanced four revisions
-across eight rotating/reversed rounds; the correction batch balanced two revisions
-across eight alternating/reversed rounds.
+The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
-### Resolver validation and limits
+Dispatch and framework coverage the fork adds:
 
-Relative to the earlier integrated fork `9b75b69` — **not upstream** — the
-corrected resolver removes **325 invalid edges and adds none**:
+| Addition | What it links |
+|---|---|
+| Drupal hooks | `invokeAll()` / `invoke()` / `alter()` call sites to hook implementations, including Drupal 11 `#[Hook]` attributes |
+| NgRx effects | Dispatched actions to the effects that handle them |
+| `window.postMessage` | Posted messages to their listeners |
+| React Native `NativeModules[key]` | Computed native-module calls to the native method |
+| Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
+| C function pointers | `x->f = fn;` assignments, alongside table initializers |
 
-- 304 code imports into Markdown, including 157 `vite` imports into `cli.md#vite`.
-- 21 wrong calls: 18 into unrelated code symbols and three into documentation.
-  All 11 targeted call sites lose their incorrect targets without replacements.
-- Both verified restored imports remain: emitted `./hello.js` resolves to
-  `hello.ts`, and a local `file:` dependency resolves to its exported `msg`.
+### Measured results
 
-The [first correction audit](docs/benchmarks/resolver-corrections-2026-09-06.json)
-records 319 removals; the [framework follow-up](docs/benchmarks/framework-import-correction-2026-09-06.json)
-records the final six and the combined result. Edge comparisons retain duplicate
-multiplicities and identify endpoints by path, qualified name, and node kind,
-plus edge kind and source location.
+All numbers come from the fork's measurement ledger, [`docs/design/metrics-ledger.md`](docs/design/metrics-ledger.md) (§ numbers below), or from the linked pull request, on a 15-vCPU WSL2 host with Node 24. **Most of them compare the fork with an earlier fork revision, not with upstream**; the table says which.
 
-In that paired correction benchmark, the median rose from 3,760 to 3,892 ms
-(+3.5%), with overlapping ranges of 3,655–3,862 and 3,707–4,222 ms.
-The historical corrected revision passed 4,284 full-suite tests with the native kernel
-required, 267 focused forced-WASM tests, and TypeScript compilation. The original
-integration's one Windows cleanup failure and its successful isolated rerun remain
-in the saved data.
+| What | Before | After | Compared with | Corpus | Source |
+|---|---|---|---|---|---|
+| One-file sync, inferred links not rebuilt | 45–46 s | 15.6–16.2 s | earlier fork | Linux kernel | §5.93 |
+| — of which near-duplicate refresh | 37 s | 6.6–7.7 s | earlier fork | Linux kernel | §5.93 |
+| One-file sync, inferred links rebuilt | 1:34–1:38 | 1:19–1:23, same edges | earlier fork | Linux kernel | [#199](https://github.com/bompus/codegraph/pull/199), [#202](https://github.com/bompus/codegraph/pull/202) |
+| One-file sync, C function-pointer links | 57–61 s | 40–41 s, same edges | earlier fork | Linux kernel | [#199](https://github.com/bompus/codegraph/pull/199), [#202](https://github.com/bompus/codegraph/pull/202) |
+| New worktree ready to query | 5.8–6.1 s, 1.6 GB (full index) | 0.8–0.9 s, 184 MB (seeded) | full index | svelte, 8,217 files | §5.58 |
+| Resolution memory and time | 23.7 s, 5.59 GB | 18.8 s, 3.46 GB | earlier fork | discourse, 15,564 files | §5.41 |
+| Extraction time | 29.9 s | 10.7 s | earlier fork | discourse | §5.40 |
+| Memory per extra query worker | ~96 MB | ~32 MB | earlier fork | bloc | §5.46 |
+| Retained call links that are correct | 59 of 120 (49%) | 46 of 66 (70%) | upstream 1.5.0 | zod, celery, Ocelot, javalin, ktor, Exposed | [precision replay](docs/benchmarks/precision-replay-2026-09.md) |
 
-Reconciliation `31eff33` passed production/native builds, 4,334 native tests
-(44 skipped), 1,046 WASM-focused tests (1 skipped), and 27 Rust tests. These suites
-overlap and their counts must not be added together.
+The precision gain comes mostly from declining uncertain links rather than resolving more. TypeScript member-call recall dropped on those rows and is the fork's largest known gap.
 
-These checks cover the named regressions on this corpus, not complete graph
-precision or recall. CommonJS export detection remains conservative. Unchanged
-heuristic-edge counts do not establish correctness: the removed incorrect edges
-had null provenance. Resolver and Windows follow-ups are linked through
-[#1720](https://github.com/colbymchenry/codegraph/pull/1720) and
-[#1717](https://github.com/colbymchenry/codegraph/pull/1717); consult those PRs
-for their review history. The reconciliation is published; updater promotion and
-deployment cutover remain pending.
+### What it costs
+
+Against upstream release 1.6.0, a fresh index of ten open-source projects was, at the median, **9% slower, used 15% more peak memory and wrote a 20% larger database**, while extracting 16% more nodes (Markdown, nested functions, interface members, exports and the binding rows resolution reads). Measured 2026-09-12 (§5.1); the per-project table is in the ledger.
+
+The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kernel) sections further down are upstream's own measurements of upstream builds; the fork has not re-run them. The fork's comparison from 2026-09-06, before the kernel became the only parser, is kept in [`docs/fork/history-2026-09-06.md`](docs/fork/history-2026-09-06.md).
 
 ---
 
 ## Contents
 
-- [Consolidated fork — current status](#consolidated-fork--current-status)
+- [About this fork](#about-this-fork)
 - [Get Started](#get-started)
 - [Language Support](#language-support)
 - [Why CodeGraph?](#why-codegraph)
@@ -199,6 +166,8 @@ deployment cutover remain pending.
 ## Get Started
 
 ### 1. Install the CLI
+
+> These commands install **upstream's** release. To run this fork, [build it from source](#install-the-fork-from-source) instead, then continue with step 2.
 
 **No Node.js required** — one command grabs the right build for your OS:
 
@@ -307,7 +276,7 @@ Every language below gets the same treatment — full structural extraction and 
   <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/nix.svg?v=1" width="104" height="104" alt="Nix" />
 </p>
 
-<sub>Per-language details — extensions, frameworks, and what exactly gets extracted — in [Supported Languages](#supported-languages).</sub>
+<sub>This fork also indexes Markdown documentation. Per-language details — extensions, frameworks, and what exactly gets extracted — in [Supported Languages](#supported-languages).</sub>
 
 ---
 
@@ -324,6 +293,8 @@ When an AI agent needs to understand code — to answer a question or make a cha
 > **A note on context:** the numbers above measure *throughput* — tokens processed, tools called, dollars spent to reach one answer. They don't measure what is still sitting in your context window afterward, and on that axis CodeGraph costs **more**, not less. Across the same seven repos in multi-turn sessions, CodeGraph's responses leave about **80% more retrieval context resident** at the end of a session than a file-reading agent's do — on VS Code, 67k tokens against 18k. The mechanism is the same one that makes it fast: CodeGraph returns one dense, verbatim payload that answers the question and then stays in the window, where a grep-and-read agent churns through many small results that get evicted. Fewer tokens *processed* and a larger persistent *footprint* are both real at once. If you run long sessions in a small window, budget for it. Measured per-repo: [`docs/benchmarks/residual-context-occupancy.md`](docs/benchmarks/residual-context-occupancy.md).
 
 ### Benchmark Results
+
+> Upstream's measurement of an upstream build; this fork has not re-run it. The fork's own numbers are under [About this fork](#measured-results).
 
 Tested across **7 real-world open-source codebases** spanning 7 languages, comparing an agent (Claude Code, headless) answering one architecture question **with** and **without** CodeGraph, at the **median of 4 runs per arm**. _Re-measured 2026-08-05 on **Claude Opus 4.8** against the current build, on a harness that blocks the `codegraph` CLI in **both** arms — contamination row: 0 of 28 without-arm runs._
 
@@ -384,6 +355,8 @@ With the index available, the agent answers from one to four `codegraph_explore`
 
 ## Built for speed — the Rust kernel
 
+> The timings in this section are upstream's measurements of upstream builds; this fork has not re-run them. The fork's own numbers are under [About this fork](#measured-results).
+
 CodeGraph's parsing engine is a **native Rust kernel**, and it is the only parser: every supported grammar is compiled into it. 20 languages — TypeScript, JavaScript, Java, Python, Go, C, C++, Rust, C#, Ruby, PHP, Swift, Kotlin, Scala, Dart, R, Lua, Luau (Metal and CUDA ride the C++ path) — parse in compiled code with one boundary crossing per file. Every language shipped only after its graphs proved **byte-for-byte identical** to the reference engine on real repositories, from small libraries up to the Linux kernel; the remaining languages are parsed by the kernel and walked by the generic extractor over its tree. Files with syntax errors are extracted from the native parse's recovery. Platforms: macOS (x64, arm64), Linux glibc (x64, arm64), Windows (x64, arm64); others need a from-source kernel build.
 
 **And it scales itself to the machine it's on.** Worker pools, parallel resolution, and analysis caches are sized from what the system actually has — real core counts (container/cgroup-aware, so a VPS that grants 2 cores gets sized for 2, not the host's 64), honestly-measured available RAM on macOS and Linux, and the measured cost of *your* project's resolution work:
@@ -398,13 +371,13 @@ CodeGraph's parsing engine is a **native Rust kernel**, and it is the only parse
 
 | | |
 |---|---|
-| **Native Rust Kernel** | Parsing and extraction run in a compiled Rust engine for 20 languages — with graphs verified byte-for-byte identical to the reference engine, and automatic per-file fallback so nothing ever breaks |
+| **Native Rust Kernel** | Every language is parsed by a compiled Rust engine, and 20 of them are also extracted in Rust; files with syntax errors are extracted from the parser's error recovery |
 | **Adapts to Your Machine** | Sizes its worker pools and caches from what the system actually has — real core counts (container-aware), honest available RAM, measured per-project cost. A workstation gets the full parallel pipeline; a 2-core VPS gets one tuned to finish reliably |
 | **Surgical Context** | One tool call returns entry points, related symbols, and code snippets — no slow file-by-file exploration |
 | **Full-Text Search** | Find code by name instantly across your entire codebase, powered by FTS5 |
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
-| **20+ Languages** | TypeScript, JavaScript, ArkTS, Python, Go, Rust, Java, C#, VB.NET, PHP, Ruby, C, C++, CUDA, Objective-C, Metal, Swift, Kotlin, Scala, Dart, Lua, Luau, R, Nix, Erlang, CFML, COBOL, Solidity, Terraform/OpenTofu, Svelte, Vue, Astro, Liquid, Pascal/Delphi |
+| **20+ Languages** | TypeScript, JavaScript, ArkTS, Python, Go, Rust, Java, C#, VB.NET, PHP, Ruby, C, C++, CUDA, Objective-C, Metal, Swift, Kotlin, Scala, Dart, Lua, Luau, R, Nix, Erlang, CFML, COBOL, Solidity, Terraform/OpenTofu, Svelte, Vue, Astro, Liquid, Pascal/Delphi, and Markdown documentation |
 | **Framework-aware Routes** | Recognizes web-framework routing files and links URL patterns to their handlers across 17 frameworks |
 | **Mixed iOS / React Native / Expo** | Closes cross-language flows that static parsing misses: Swift ↔ ObjC bridging, React Native legacy bridge + TurboModules + Fabric view components, native → JS event emitters, Expo Modules |
 | **100% Local** | No data leaves your machine. No API keys. No external services. SQLite database only |
@@ -637,7 +610,7 @@ The exact text is `src/mcp/server-instructions.ts` — the single source of trut
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Extraction** — a native **Rust kernel** parses source with [tree-sitter](https://tree-sitter.github.io/) grammars compiled into it, extracting nodes (functions, classes, methods) and edges (calls, imports, extends, implements) for 20 languages; remaining languages and per-file fallbacks use the same extraction logic on the portable engine, producing identical graphs.
+1. **Extraction** — a native **Rust kernel** parses source with [tree-sitter](https://tree-sitter.github.io/) grammars compiled into it, extracting nodes (functions, classes, methods) and edges (calls, imports, extends, implements) for 20 languages; the remaining languages are parsed by the same kernel and walked by a generic extractor over its tree.
 
 2. **Storage** — Everything goes into a local SQLite database (`.codegraph/codegraph.db`) with FTS5 full-text search.
 
@@ -661,7 +634,7 @@ codegraph status [path]           # Show statistics
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
-codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, and AGY transcripts for this project (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
+codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin transcripts for this project (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
 codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
 codegraph callers <symbol>        # Find what calls a function/method (--limit, --json)
@@ -970,8 +943,11 @@ is written):
 | Solidity | `.sol` | Full support (contracts, libraries, interfaces, structs, enums, modifiers, events, errors, state variables, `import`/`using` directives, `emit`/`revert` calls) |
 | Terraform / OpenTofu | `.tf`, `.tfvars`, `.tofu` | Full support (resources, data sources, modules, variables, outputs, providers incl. aliases, `locals`; `var.`/`local.`/`module.`/resource references with Terraform's per-directory scoping enforced; module calls bridged across the boundary — inputs to the child module's variables, `module.M.out` to the child's output, `source` to the module's files; cloudposse/atmos `remote-state` cross-component wiring when the component is statically named; `provider = aws.east` selections resolved up the module tree; `moved`/`import`/`removed`/`check` block references; `.tfvars` assignments linked to the variables they set) |
 | Nix | `.nix` | Full support (functions with simple/destructured/curried params, `let`/attrset bindings, `inherit`, `import ./path` file edges — `./dir` resolving through `default.nix` — plus NixOS module `imports = [ ./x.nix ]` lists and `callPackage ./pkg.nix` file edges; call edges; module-system option wiring — a config write like `launchd.user.agents.x = { ... }` links to the module declaring `options.launchd.user.agents`, so option flows trace across modules) |
+| Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections, local links, selected table rows and list items, shell command references); this fork only |
 
 ## Measured cross-file coverage
+
+> Upstream's measurement; this fork has not re-run it.
 
 Impact and blast-radius queries are only as good as the dependency graph behind them, so coverage is measured rather than asserted. **Fair coverage** = the share of symbol-bearing source files that have at least one *resolved cross-file dependent* — something that imports, calls, references, or (through a framework convention) routes to them — on a real-world benchmark repo per language. The residual is always a genuine static-analysis frontier (runtime dynamic dispatch, reflection / DI containers, framework-convention entry points, vendored third-party code), never hidden by gaming the denominator.
 

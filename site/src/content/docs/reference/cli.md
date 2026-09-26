@@ -7,7 +7,7 @@ description: Every CodeGraph command and the flags it accepts.
 codegraph                         # Run interactive installer
 codegraph install                 # Run installer (explicit)
 codegraph uninstall               # Remove CodeGraph from your agents (inverse of install)
-codegraph init [path]             # Initialize a project + build its graph (one step)
+codegraph init [path]             # Initialize a project + build its graph (one step; --no-seed in a worktree)
 codegraph uninit [path]           # Remove CodeGraph from a project (--force to skip prompt)
 codegraph index [path]            # Full re-index from scratch (--force, --quiet, --verbose)
 codegraph sync [path]             # Incremental update (--quiet)
@@ -16,6 +16,7 @@ codegraph ui [path]               # Open the browser viewer for an indexed proje
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
+codegraph sessions <words...>     # Search this project's earlier agent sessions (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
 codegraph files [path]            # Show file structure (--format, --filter, --pattern, --max-depth, --json)
 codegraph callers <symbol>        # Find what calls a function/method (--limit, --json)
