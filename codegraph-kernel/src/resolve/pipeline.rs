@@ -340,7 +340,7 @@ impl KernelResolver {
             // An unresolved chain call waits for the conformance pass — TS
             // queues it, so it goes back; anything else is a plain miss.
             if is_deferred_chain_call(r) {
-                return Ok(ResolveOutcome::passthrough("defer"));
+                return Ok(ResolveOutcome::deferred());
             }
             return Ok(self.refused());
         }

@@ -828,6 +828,21 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.75 Resolver port, leg 7b: the conformance pass through the kernel (2026-09-26)
+
+A chain call nothing matched (`Foo.create().bar()` in a chain language, or PHP `this->prop.method`) came back as a `defer` punt. TypeScript then re-ran its whole pipeline only to consult the framework resolvers and queue the ref for the conformance pass, which walks supertypes once every implements/extends edge is written. The pass itself called the TypeScript chain matchers directly.
+
+The kernel now returns a deferring outcome: `no_candidates` tagged `reason: 'defer'`. `settleKernelOutcome` runs the frameworks and queues the ref only when none of them produces a candidate, which is resolveOneInner's order. The conformance pass runs kernel-first through a new `resolveDeferredChains` entry point (the same three arms plus the language gate) over the live db. Unmigrated languages and any shape the kernel hands back keep the TypeScript arms.
+
+| Corpus | Native before (`defer`) | Native after | Conformance queue answered natively | Dump |
+|---|---|---|---|---|
+| exposed | 97.3% (1,752) | 99.2% | — | identical |
+| Ocelot | 96.2% (1,373) | 99.8% | 1,373 / 1,373 | identical |
+| ktor | 99.0% (1,213) | 99.9% | 1,213 / 1,213 | identical |
+| javalin | 96.8% (884) | 99.9% | — | identical |
+
+Ocelot's resolution phase went from 906 ms (TypeScript) to 675 ms, now that the deferred refs don't re-run the TypeScript pipeline. After a real sync, ktor and Ocelot also dump identically.
+
 ### 5.74 Resolver port, leg 7a: incremental sync through the kernel (2026-09-26)
 
 Incremental sync never called the kernel. The git fast path (the changed files' refs) and the failed-ref retry (#1240) both ran the TypeScript pipeline per ref. Both now resolve kernel-first, as a full index does: chunks go to `resolveChunk`, outcomes settle through the framework merge, and passthroughs run the TypeScript pipeline. The sync stops and drains its WAL valve while the kernel connection is open and restarts it after, the same rule the batched loop follows.
