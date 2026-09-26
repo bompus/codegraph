@@ -124,6 +124,15 @@ const FIXTURE: Record<string, string> = {
     '}',
     'function reguser() { Registry::make()->name(); }',
   ].join('\n'),
+  // `this.<member>` function refs: the class's own member, or — inherited —
+  // deferred to the `this.<member>` pass, which walks the extends edge.
+  'src/widget.ts': [
+    'export class BaseW { onBase() {} }',
+    'export class Widget extends BaseW {',
+    '  onClick() {}',
+    '  wire(el: any) { el.on("a", this.onClick); el.on("b", this.onBase); }',
+    '}',
+  ].join('\n'),
   // Markdown links resolve to the linked file by path.
   'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,
@@ -645,6 +654,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().nope', 'src/w.cpp', 'cpp', 'calls', 5);
     seed(nodeId('reguser', 'reg.php'), 'Registry::make().name', 'src/reg.php', 'php', 'calls', 6);
     ins.run(nodeId('pet', 'g.php'), 'x.meow', 'calls', 5, 8, 'src/g.php', 'php');
+    const wireFn = byName('wire', 'method').find((n) => n.qualifiedName === 'Widget::wire')!.id;
+    ins.run(wireFn, 'this.onClick', 'function_ref', 4, 38, 'src/widget.ts', 'typescript');
+    ins.run(wireFn, 'this.onBase', 'function_ref', 4, 67, 'src/widget.ts', 'typescript');
     const readme = cg!.getNodesByKind('file').find((n) => n.filePath === 'README.md')!.id;
     ins.run(readme, 'src/util.ts', 'references', 3, 4, 'README.md', 'markdown');
     for (const [name, line] of [['inc/db.php', 2], ['inc/db', 3], ['nowhere/g.php', 4]] as const) {
@@ -1026,6 +1038,21 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
     // scopedChain: `Registry::make` returns `self` → the factory's own class
     // → `Registry::name` @0.85.
+    // `this.onClick` is Widget's own member @0.95; `this.onBase` is not on
+    // Widget, so it is deferred (terminal now, retried after supertypes).
+    const onClick = at('this.onClick', 'src/widget.ts', 'function_ref');
+    expect(onClick.status).toBe('resolved');
+    expect(onClick.confidence).toBe(0.95);
+    expect(onClick.targetNodeId).toBe(byName('onClick', 'method').find((n) => n.qualifiedName === 'Widget::onClick')!.id);
+    const onBase = at('this.onBase', 'src/widget.ts', 'function_ref');
+    expect(onBase.status).toBe('unresolved');
+    expect(onBase.reason).toBe('defer-this');
+    // The deferred pass walks Widget → BaseW (the index wrote that edge).
+    const onBaseRow = batch[idx.get('this.onBase@function_ref@src/widget.ts')!]!;
+    const [inherited] = resolver.resolveDeferredThisMembers([onBaseRow]);
+    expect(inherited!.status).toBe('resolved');
+    expect(inherited!.confidence).toBe(0.85);
+    expect(inherited!.targetNodeId).toBe(byName('onBase', 'method').find((n) => n.qualifiedName === 'BaseW::onBase')!.id);
     // A markdown link is answered natively by the file-path arm.
     const mdLink = at('src/util.ts', 'README.md', 'references');
     expect(mdLink.status).toBe('resolved');
@@ -1151,8 +1178,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(scopedFr.targetNodeId).toBe(
       byName('m', 'method').find((n) => n.qualifiedName === 'W::m')!.id,
     );
-    // `Pool::missing` — no `missing` member anywhere → member-tail punt.
-    expect(at('Pool::missing', 'src/w.cpp', 'function_ref').status).toBe('passthrough');
+    // `Pool::missing` — no `missing` member anywhere: matchFunctionRef's `::`
+    // arm misses and a `::` name tries nothing else → a native miss.
+    expect(at('Pool::missing', 'src/w.cpp', 'function_ref').status).toBe('unresolved');
     // `api.call` — viaImport's member-descent claims it before the scoped
     // arm: import `api` → svc's `api` const → `call` member @0.9.
     const frImport = at('api.call', 'src/main.ts', 'function_ref');

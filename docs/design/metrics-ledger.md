@@ -828,6 +828,27 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.77 Resolver port, leg 7d (part 1): function refs and the `this.<member>` pass (2026-09-26)
+
+A non-bare `function_ref` (a function passed as a value) that missed the kernel's `::` member-pointer arm punted as `member-tail`, the largest punt left on the JS/TS corpora. TypeScript's function-ref block takes three paths, and the kernel now handles all of them:
+
+- **`this.x`:** resolveThisMemberFnRef runs first, with no import lookup and no fallback. It finds the enclosing class's own member in the same file at 0.95. When the member isn't on the class, the ref is deferred: a terminal outcome tagged `defer-this` that the settle step queues for the `this.<member>` pass.
+- **`::` names:** only the member-pointer arm runs, so a miss is final.
+- **Any other name:** the bare-name arm runs over the whole dotted name, exactly as matchFunctionRef does.
+
+The `this.<member>` pass runs kernel-first through a new `resolveDeferredThisMembers` entry point. It's a port of matchDeferredThisMember: a node-anchored BFS up implements/extends edges, finding the member through `contains` edges. The kernel reads edges with getOutgoingEdges' own full-row statement, because a narrower select list could be answered from the identity index in a different order. The 6a supertype walk now uses the same statement.
+
+| Corpus | Native before (`member-tail`) | Native after | `this.<member>` pass answered natively | Dump |
+|---|---|---|---|---|
+| vitest | 99.7% (287) | 100.0% | 231 / 231 | identical |
+| svelte | 99.9% (69) | 100.0% | 54 / 54 | identical |
+| vite | 99.9% (49) | 100.0% | 32 / 32 | identical |
+| zod | 99.9% (40) | 100.0% | 22 / 22 | identical |
+| ktor | 100.0% (41) | 100.0% (2 left) | — | identical |
+| exposed, javalin, Ocelot, celery, laravel | — | 99.7–100.0% | all | identical |
+
+Left on these corpora: `store-bind` (exposed 282, vitest 23), laravel's supertype walks in pool batches before the snapshot refresh (109), and single-digit `mc-tfield-ambig`, `claimed`, `chain`, `gated-import` and `member-tail`.
+
 ### 5.76 Resolver port, leg 7c: Markdown (2026-09-26)
 
 Markdown refs are link paths (`AGENTS.md`, `docs/x.md#anchor`, `src/util.ts`), and TypeScript answers them with matchReference's file-path arm, which the kernel already ports. They went to TypeScript only because `markdown` wasn't in the kernel's migrated set. Admitting it was the whole change, and it was the largest punt left on every JS/TS corpus. A few Markdown refs now punt as `member-tail` instead (zod 19), which leaves them to 7d.

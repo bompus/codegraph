@@ -241,6 +241,15 @@ impl ResolveOutcome {
             ..Self::no_candidates()
         }
     }
+    /// A `this.<member>` function ref whose member is not on the class itself:
+    /// terminal now (frameworks never run on the function_ref path), retried
+    /// by the deferred `this.<member>` pass once supertype edges exist.
+    fn deferred_this_member() -> Self {
+        ResolveOutcome {
+            reason: Some("defer-this".into()),
+            ..Self::unresolved()
+        }
+    }
     /// A miss the framework loop may still overturn, but only with a ≥0.9 hit:
     /// lower framework candidates are discarded, not merged (the TS chain
     /// branch returns before the merge).
@@ -452,6 +461,7 @@ mod file_refs;
 mod rust_modules;
 mod awaited;
 mod iteration;
+mod this_member;
 use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
@@ -758,6 +768,26 @@ impl KernelResolver {
                 prof_add(key, t0.elapsed().as_nanos() as u64);
             }
             out.push(o);
+        }
+        Ok(out)
+    }
+
+    /// resolveDeferredThisMemberRefs' per-ref match (matchDeferredThisMember),
+    /// run after the main pass wrote every implements/extends edge.
+    #[napi]
+    pub fn resolve_deferred_this_members(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
+        let mut out = Vec::with_capacity(refs.len());
+        for r in refs {
+            if !is_migrated_language(&r.language) {
+                out.push(ResolveOutcome::passthrough("ineligible:lang"));
+                continue;
+            }
+            out.push(match self.match_deferred_this_member(&r) {
+                Ok(Some(c)) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
+                Ok(None) => ResolveOutcome::unresolved(),
+                Err(Halt::Punt(reason)) => ResolveOutcome::passthrough(reason),
+                Err(Halt::Napi(e)) => return Err(e),
+            });
         }
         Ok(out)
     }

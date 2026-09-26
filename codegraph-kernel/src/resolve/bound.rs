@@ -260,15 +260,7 @@ impl KernelResolver {
     /// point at, in edge-table order (the same `WHERE source = ? AND kind
     /// IN (…)` scan TS runs, so the order matches).
     pub(super) fn supertype_nodes(&mut self, id: &str) -> Res<Vec<Arc<KNode>>> {
-        let targets: Vec<String> = {
-            let conn = self.conn()?;
-            let mut stmt = conn
-                .prepare("SELECT target FROM edges WHERE source = ?1 AND kind IN ('implements', 'extends')")
-                .map_err(|e| Error::from_reason(e.to_string()))?;
-            let rows = stmt.query_map([id], |row| row.get::<_, String>(0)).map_err(|e| Error::from_reason(e.to_string()))?;
-            rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()
-                .map_err(|e| Error::from_reason(e.to_string()))?
-        };
+        let targets = self.outgoing_edge_targets(id, &["implements", "extends"])?;
         let mut out = Vec::with_capacity(targets.len());
         for t in targets {
             if let Some(n) = self.node_by_id(&t)? {
