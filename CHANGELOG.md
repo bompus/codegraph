@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- On a project indexed before the last near-duplicate change, the list of near-identical copies stopped updating after each sync, with no error shown. Opening the index now adds the missing table, and the copies stay current again.
+
 - After a `codegraph sync`, C function-pointer calls could still point at a handler that had been removed from its dispatch table, until the next full index. A sync now rebuilds these inferred links from scratch, so it ends with the same graph a full index would.
 
 - A sync that changes a few files no longer re-scores every near-duplicate pair in the project: pair scores are kept between runs, and only the pairs a changed function is in are compared again.
