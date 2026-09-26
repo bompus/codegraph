@@ -537,14 +537,11 @@ impl KernelResolver {
         // A miss falls through for migrated rust (qualified-name/exact arms
         // mirror matchReference's continuation) and punts otherwise.
         if is_rust_path_ref(r) {
-            match self.resolve_rust_path_ref(r)? {
-                Some(o) => return Ok(o),
-                None if is_migrated_language(&r.language) => {}
-                None => return Ok(ResolveOutcome::passthrough("ineligible:lang")),
+            if let Some(o) = self.resolve_rust_path_ref(r)? {
+                return Ok(o);
             }
         }
         match route(r) {
-            Route::Passthrough(reason) => Ok(ResolveOutcome::passthrough(reason)),
             Route::Unresolved => Ok(ResolveOutcome::unresolved()),
             Route::CInclude => self.resolve_c_include_import_ref(r),
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
@@ -805,8 +802,6 @@ fn is_rust_path_ref(r: &ResolveRefIn) -> bool {
 
 /// Where a ref goes once the Rust path arm has missed.
 enum Route {
-    /// Back to the TS spine, with the reason for the profile.
-    Passthrough(&'static str),
     /// C/C++ `#include` path refs — the measured-dominant slice of the
     /// non-bare tail (§5.14).
     CInclude,
@@ -818,8 +813,10 @@ enum Route {
 
 /// ref_is_eligible, split so a passthrough names its gate.
 fn route(r: &ResolveRefIn) -> Route {
+    // Only the `unknown` placeholder (an undetected file) is unmigrated: no
+    // arm can place a ref from it.
     if !is_migrated_language(&r.language) {
-        return Route::Passthrough("ineligible:lang");
+        return Route::Unresolved;
     }
     if !name_is_bare(&r.reference_name) {
         if (r.language == "c" || r.language == "cpp") && r.reference_kind == "imports" {

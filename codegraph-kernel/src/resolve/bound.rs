@@ -209,8 +209,11 @@ impl KernelResolver {
         if let Some(m) = member {
             return Ok(Some(bound_member_cand(m)));
         }
+        // A db that may lack supertype edges (a pool worker's snapshot taken
+        // mid-prerequisite phase — unreachable since the snapshot refreshes
+        // before the first calls batch) gets no walk: a miss, never a guess.
         if !self.supertypes_complete {
-            return Err(Halt::Punt("btm-supers"));
+            return Ok(None);
         }
         // matchBoundTypeMember's supertype BFS: `getSupertypeNodes` (the
         // type's outgoing implements/extends edges, any target kind), each
@@ -330,8 +333,10 @@ impl KernelResolver {
             .cloned()
             .collect();
         if matches.is_empty() {
+            // No walk over a db that may lack supertype edges (see
+            // match_bound_type_member): a miss, never a guess.
             if !self.supertypes_complete {
-                return Err(Halt::Punt("rmot-supers"));
+                return Ok(None);
             }
             // The conformance fallback: the method may live on a supertype
             // (transitively, depth-capped), still validated by name.

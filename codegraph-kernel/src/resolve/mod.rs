@@ -207,18 +207,6 @@ pub struct ResolveOutcome {
 }
 
 impl ResolveOutcome {
-    fn passthrough(reason: &'static str) -> Self {
-        ResolveOutcome {
-            status: "passthrough".into(),
-            target_node_id: None,
-            confidence: None,
-            resolved_by: None,
-            is_final: false,
-            candidates: None,
-            reason: Some(reason.into()),
-            pre_framework: false,
-        }
-    }
     fn unresolved() -> Self {
         ResolveOutcome {
             status: "unresolved".into(),
@@ -291,16 +279,9 @@ struct KCand {
     resolved_by: &'static str,
 }
 
-/// Why a ref leaves the native resolver before a verdict: a punt (the next
-/// step needs state the snapshot can't see — a source read, live supertype
-/// edges, tree-sitter parsing, an unported arm — so the TS spine takes the
-/// ref, with the reason for the profile), or a napi error. The punt is the
-/// only concept the kernel adds to the TS matchers, which just return null:
-/// every native matcher returns `Res<Option<_>>`, where `Ok(None)` is TS's
-/// provable null and `?` carries a punt up to `resolve_chunk`, which turns
-/// it into a `passthrough` outcome.
+/// A native failure. Every ref settles in the kernel — there is no longer a
+/// punt back to the TypeScript pipeline.
 enum Halt {
-    Punt(&'static str),
     Napi(Error),
 }
 
@@ -316,7 +297,6 @@ impl From<Halt> for Error {
     fn from(h: Halt) -> Self {
         match h {
             Halt::Napi(e) => e,
-            Halt::Punt(reason) => Error::from_reason(format!("unexpected punt outside resolve_ref: {reason}")),
         }
     }
 }
@@ -771,7 +751,6 @@ impl KernelResolver {
             let t0 = PROF_ON.then(std::time::Instant::now);
             let o = match self.resolve_ref(&r) {
                 Ok(o) => o,
-                Err(Halt::Punt(reason)) => ResolveOutcome::passthrough(reason),
                 Err(Halt::Napi(e)) => return Err(e),
             };
             if let Some(t0) = t0 {
@@ -794,13 +773,12 @@ impl KernelResolver {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             if !is_migrated_language(&r.language) {
-                out.push(ResolveOutcome::passthrough("ineligible:lang"));
+                out.push(ResolveOutcome::unresolved());
                 continue;
             }
             out.push(match self.match_deferred_this_member(&r) {
                 Ok(Some(c)) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
                 Ok(None) => ResolveOutcome::unresolved(),
-                Err(Halt::Punt(reason)) => ResolveOutcome::passthrough(reason),
                 Err(Halt::Napi(e)) => return Err(e),
             });
         }
@@ -816,7 +794,7 @@ impl KernelResolver {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             if !is_migrated_language(&r.language) {
-                out.push(ResolveOutcome::passthrough("ineligible:lang"));
+                out.push(ResolveOutcome::unresolved());
                 continue;
             }
             let hit = if r.language == "php" && php_prop_shape_re().is_match(&r.reference_name) {
@@ -831,7 +809,6 @@ impl KernelResolver {
                     Some(c) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
                     None => ResolveOutcome::unresolved(),
                 },
-                Err(Halt::Punt(reason)) => ResolveOutcome::passthrough(reason),
                 Err(Halt::Napi(e)) => return Err(e),
             });
         }
