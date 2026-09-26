@@ -23,6 +23,7 @@
 import type { CodeGraph } from '../../index';
 import type { Edge, Node, NodeKind } from '../../types';
 import { isTestFile } from '../../search/query-utils';
+import { isDocumentationNode } from '../../graph/traversal';
 import { buildHierarchy, type WireOverride } from './hierarchy';
 import { notFound } from './respond';
 import { findIndexedFile, hasDriftedOnDisk } from './source';
@@ -466,8 +467,14 @@ function summarizeBlast(cg: CodeGraph, node: Node, direct: number): WireBlastSum
 
   const perFile = new Map<string, number>();
   let routes = 0;
+  let docs = 0;
   for (const [id, dependent] of subgraph.nodes) {
     if (id === node.id) continue;
+    // Doc sections mentioning the symbol are not dependents (see isDocumentationNode).
+    if (isDocumentationNode(dependent)) {
+      docs++;
+      continue;
+    }
     const file = toPosixPath(dependent.filePath);
     perFile.set(file, (perFile.get(file) ?? 0) + 1);
     if (dependent.kind === ('route' as NodeKind)) routes++;
@@ -481,7 +488,7 @@ function summarizeBlast(cg: CodeGraph, node: Node, direct: number): WireBlastSum
 
   return {
     direct,
-    withinHops: Math.max(0, subgraph.nodes.size - 1),
+    withinHops: Math.max(0, subgraph.nodes.size - 1 - docs),
     hops: BLAST_DEPTH,
     files: perFile.size,
     testFiles,

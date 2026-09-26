@@ -31,6 +31,15 @@ interface TraversalStep {
 /**
  * Graph traverser for BFS and DFS traversal
  */
+/**
+ * A documentation node (a Markdown file or section). Impact lists these apart
+ * from code: a doc that mentions a symbol may need updating, but it is not a
+ * dependent that breaks.
+ */
+export function isDocumentationNode(node: Node): boolean {
+  return node.language === 'markdown';
+}
+
 export class GraphTraverser {
   private queries: QueryBuilder;
 
@@ -601,6 +610,13 @@ export class GraphTraverser {
       edges.push(edge);
       if (!visited.has(sourceNode.id)) {
         nodes.set(sourceNode.id, sourceNode);
+        // A doc section that mentions or links a symbol is reported, but it
+        // does not propagate a change: docs linking to that section are not
+        // affected by the code.
+        if (isDocumentationNode(sourceNode)) {
+          visited.add(sourceNode.id);
+          continue;
+        }
         this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited);
       }
     }

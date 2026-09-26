@@ -47,6 +47,7 @@ import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranc
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
 import { isNameGuess } from '../graph/edge-trust';
+import { isDocumentationNode } from '../graph/traversal';
 import {
   findAllSymbols,
   resolveNamedSymbolFlow,
@@ -7831,17 +7832,20 @@ export class ToolHandler {
   }
 
   private formatImpact(symbol: string, impact: Subgraph): string {
-    const nodeCount = impact.nodes.size;
+    // Doc sections that mention or link the symbol may need updating, but they
+    // are not dependents that break — count and list them apart from code.
+    const code = [...impact.nodes.values()].filter((n) => !isDocumentationNode(n));
+    const docs = [...impact.nodes.values()].filter(isDocumentationNode);
 
     // Compact format: just list affected symbols grouped by file
     const lines: string[] = [
-      `**Impact: "${symbol}" affects ${nodeCount} symbols**`,
+      `**Impact: "${symbol}" affects ${code.length} symbols**`,
       '',
     ];
 
     // Group by file
     const byFile = new Map<string, Node[]>();
-    for (const node of impact.nodes.values()) {
+    for (const node of code) {
       const existing = byFile.get(node.filePath) || [];
       existing.push(node);
       byFile.set(node.filePath, existing);
@@ -7853,6 +7857,9 @@ export class ToolHandler {
       const nodeList = nodes.map(n => `${n.name}:${n.startLine}`).join(', ');
       lines.push(nodeList);
       lines.push('');
+    }
+    if (docs.length > 0) {
+      lines.push(`**Mentioned in docs (${docs.length}) — may need updating, not affected:** ${docs.map((n) => `${n.filePath}:${n.startLine} ${n.name}`).join(', ')}`, '');
     }
 
     return lines.join('\n');
