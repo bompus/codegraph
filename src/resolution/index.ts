@@ -2942,38 +2942,6 @@ export class ReferenceResolver {
       // the read marks every ~25 batches lets the existing checkpoints
       // advance instead, at ~milliseconds of reopen cost. A failed recycle
       // downgrades to sequential permanently, same as a failed fan-out.
-      // First idle boundary past the prerequisite phase: every supertype edge
-      // this run reads is now persisted. Hand the workers a snapshot that has
-      // them (a fresh copy only if a prerequisite batch wrote any).
-      if (pool && poolReady && !snapshotComplete && supertypesPersisted() && this.kernelReaderSnapshot && parallel?.foldWalForSnapshot) {
-        snapshotComplete = true;
-        tLp = Date.now();
-        try {
-          const stale = this.kernelReaderSnapshot;
-          const fresh = prereqBatchesPersisted > 0
-            ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
-            : stale;
-          if (fresh) {
-            await pool.recycleWorkers(fresh);
-            batchesSinceRecycle = 0;
-            if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
-              console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
-            }
-            if (fresh !== stale) {
-              for (const suf of ['', '-wal', '-shm']) {
-                try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
-              }
-            }
-          }
-        } catch (err) {
-          logDebug('Kernel snapshot refresh failed; falling back to sequential', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          await pool.destroy().catch(() => undefined);
-          pool = null;
-        }
-        lp('recycle', tLp);
-      }
       if (pool && poolReady && ++batchesSinceRecycle >= RECYCLE_EVERY_BATCHES) {
         batchesSinceRecycle = 0;
         tLp = Date.now();
@@ -3033,6 +3001,42 @@ export class ReferenceResolver {
         prereqBatchesPersisted++;
       }
       lp('insertEdges', tLp);
+
+      // The last prerequisite batch's supertype edges are in: every edge the
+      // walks read is persisted. Hand the workers a snapshot that has them
+      // (a fresh copy only if a prerequisite batch wrote any) BEFORE the first
+      // calls batch fans out — at the idle boundary after the settle, that
+      // batch's edges weren't written yet, so the first calls batch ran on
+      // the stale snapshot and punted its supertype walks.
+      if (pool && poolReady && !snapshotComplete && supertypesPersisted() && this.kernelReaderSnapshot && parallel?.foldWalForSnapshot) {
+        snapshotComplete = true;
+        tLp = Date.now();
+        try {
+          const stale = this.kernelReaderSnapshot;
+          const fresh = prereqBatchesPersisted > 0
+            ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
+            : stale;
+          if (fresh) {
+            await pool.recycleWorkers(fresh);
+            batchesSinceRecycle = 0;
+            if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+              console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
+            }
+            if (fresh !== stale) {
+              for (const suf of ['', '-wal', '-shm']) {
+                try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
+              }
+            }
+          }
+        } catch (err) {
+          logDebug('Kernel snapshot refresh failed; falling back to sequential', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await pool.destroy().catch(() => undefined);
+          pool = null;
+        }
+        lp('recycle', tLp);
+      }
 
       // NOW fan the next batch out — workers see the supertype edge state
       // the sequential baseline would, while the main thread spends the

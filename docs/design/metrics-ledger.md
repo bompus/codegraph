@@ -828,6 +828,10 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.78 Pool snapshot refresh before the first calls batch (2026-09-26)
+
+The post-prerequisite snapshot refresh (§5.67, §5.71) ran at the idle boundary right after a batch settled, before that batch's supertype edges were inserted. When the batch was the last prerequisite batch, the refresh waited a full iteration, so the first calls batch fanned out on the stale snapshot and punted every supertype walk (`rmot-supers`/`btm-supers`, 109 on laravel). The refresh now runs after the insert and before the next fan-out. It's still an idle boundary, because the settled batch is done and the next hasn't started. laravel pooled: 99.9% → 100.0% native, zero punts; laravel, vitest, ktor and celery dump identically.
+
 ### 5.77 Resolver port, leg 7d (part 1): function refs and the `this.<member>` pass (2026-09-26)
 
 A non-bare `function_ref` (a function passed as a value) that missed the kernel's `::` member-pointer arm punted as `member-tail`, the largest punt left on the JS/TS corpora. TypeScript's function-ref block takes three paths, and the kernel now handles all of them:
