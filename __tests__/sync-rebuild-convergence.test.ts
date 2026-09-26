@@ -329,65 +329,49 @@ describe('Incremental sync converges to a full rebuild (CG-33)', () => {
 
   /**
    * The rebind pass DELETES an edge and re-inserts the reference behind it, so
-   * it may only touch edges it can reconstruct. Two shapes it must leave alone,
-   * both of which it would otherwise destroy permanently:
+   * it may only touch edges it can reconstruct. An edge with no
+   * `metadata.refName` — written by an engine older than the stamp — must be
+   * left alone: rebuilding a reference from the target's plain name would strip
+   * the receiver context the original text carried (`h.greet` → `greet`).
+   * (Synthesized edges are out of its reach too, but a sync now rebuilds all
+   * of them from scratch, so one that no pass re-creates is rightly dropped.)
    *
-   * - an edge with no `metadata.refName` — written by an engine older than the
-   *   stamp. Rebuilding a reference from the target's plain name would strip the
-   *   receiver context the original text carried (`h.greet` → `greet`);
-   * - a synthesized dispatch edge (`provenance='heuristic'`), which is not
-   *   resolution output at all: nothing would re-create it, and the synthesizer
-   *   that wired it does not run again on this sync.
-   *
-   * Both are planted directly, since extraction cannot be asked to emit them.
+   * It is planted directly, since extraction cannot be asked to emit it.
    * The sync then changes the answer for `pct`, which is exactly the condition
    * that makes the pass want to re-open every edge targeting `pct`.
    */
-  it('never deletes an edge it cannot reconstruct — no refName stamp, or synthesized', async () => {
+  it('never deletes an edge it cannot reconstruct — no refName stamp', async () => {
     write('src/caller.ts', `export function run(): number {\n  return pct(1);\n}\n`);
-    write('src/other.ts', `export function other(): number {\n  return 0;\n}\n`);
     write('src/zeta.ts', `export function pct(n: number): number {\n  return n;\n}\n`);
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
 
     const planted = withDb((db) => {
       const pct = db.prepare("SELECT id FROM nodes WHERE name = 'pct'").get() as { id: string };
-      const other = db.prepare("SELECT id FROM nodes WHERE name = 'other'").get() as { id: string };
 
-      // 1. Strip the stamp off the real edge, leaving the rest of its metadata
-      //    intact — the shape an index built before the stamp existed has.
+      // Strip the stamp off the real edge, leaving the rest of its metadata
+      // intact — the shape an index built before the stamp existed has.
       db.prepare(
         `UPDATE edges SET metadata = json_remove(metadata, '$.refName')
          WHERE target = ? AND kind = 'calls'`
       ).run(pct.id);
 
-      // 2. A synthesized edge that DOES carry a stamp, so only the provenance
-      //    rule can save it.
-      db.prepare(
-        `INSERT INTO edges (source, target, kind, metadata, line, col, provenance)
-         VALUES (?, ?, 'calls', ?, 1, 0, 'heuristic')`
-      ).run(other.id, pct.id, JSON.stringify({ refName: 'pct', synthesizedBy: 'cg35-test' }));
-
       return {
         unstamped: `${(db.prepare("SELECT source FROM edges WHERE target = ? AND provenance IS NULL AND kind = 'calls'").get(pct.id) as { source: string }).source}|${pct.id}|calls`,
-        synthesized: `${other.id}|${pct.id}|calls`,
       };
     });
 
     const before = edgeSet();
     expect(before.has(planted.unstamped)).toBe(true);
-    expect(before.has(planted.synthesized)).toBe(true);
 
     write('src/alpha.ts', `export function pct(n: number): number {\n  return n * 2;\n}\n`);
     const result = await cg.sync();
     expect(result.definitionDelta).toContain('pct');
 
-    // Both survive: the pass considered them (their target is `pct`) and
-    // declined. Drift is the acceptable outcome here; an edge that no pass can
-    // ever restore is not.
-    const after = edgeSet();
-    expect(after.has(planted.unstamped)).toBe(true);
-    expect(after.has(planted.synthesized)).toBe(true);
+    // It survives: the pass considered it (its target is `pct`) and declined.
+    // Drift is the acceptable outcome here; an edge that no pass can ever
+    // restore is not.
+    expect(edgeSet().has(planted.unstamped)).toBe(true);
   });
 
   /**
