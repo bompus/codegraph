@@ -454,10 +454,14 @@ describe('Shared MCP daemon (issue #411)', () => {
       method: 'tools/call',
       params: { name: 'codegraph_status', arguments: {} },
     });
-    const toolResponse = await waitFor(() => findResponse(second.stdout, 3), 5000);
-    expect(toolResponse).toMatchObject({
-      error: { message: expect.stringContaining('writer lock held') },
-    });
+    // The session still gets CodeGraph: reads served in-process, the live
+    // holder's locks left untouched, and no second watcher started.
+    const toolResponse = await waitFor(() => findResponse(second.stdout, 3), 15000);
+    expect(toolResponse.error).toBeUndefined();
+    expect(toolResponse.result.isError).not.toBe(true);
+    expect(second.stderr.some((line) => line.includes('Serving reads in-process without auto-sync'))).toBe(true);
+    expect(fs.readFileSync(daemonPath, 'utf8')).toBe(staleDaemonLock);
+    expect(fs.readFileSync(writerPath, 'utf8')).toBe(staleWriterLock);
   }, 50000);
 
   it('does not replace a live legacy lock with a second daemon', async () => {
@@ -561,10 +565,12 @@ describe('Shared MCP daemon (issue #411)', () => {
         method: 'tools/call',
         params: { name: 'codegraph_status', arguments: {} },
       });
-      const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 5000);
-      expect(toolResponse).toMatchObject({
-        error: { message: expect.stringContaining('live daemon') },
-      });
+      // The live mismatched daemon keeps the project; this session still gets
+      // reads in-process, without taking the writer lock.
+      const toolResponse = await waitFor(() => findResponse(server.stdout, 2), 15000);
+      expect(toolResponse.error).toBeUndefined();
+      expect(toolResponse.result.isError).not.toBe(true);
+      expect(server.stderr.some((l) => l.includes('live daemon pid'))).toBe(true);
       expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
     } finally {
       await new Promise<void>((resolve) => miniServer.close(() => resolve()));
