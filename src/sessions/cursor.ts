@@ -17,9 +17,13 @@ function cursorConfigDir(): string {
   return process.env.CURSOR_CONFIG_DIR || path.join(os.homedir(), '.cursor');
 }
 
-/** Same path → folder mapping Cursor uses for `projects/<slug>`. */
+/**
+ * Same path → folder mapping Cursor uses for `projects/<slug>`: each run of
+ * non-alphanumerics becomes one dash (`/home/u/.t3/wt` → `home-u-t3-wt`),
+ * unlike Claude Code, which maps every character.
+ */
 export function cursorProjectSlug(projectRoot: string): string {
-  return path.resolve(projectRoot).replace(/^\/+/, '').replace(/[^a-zA-Z0-9]/g, '-');
+  return path.resolve(projectRoot).replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 export function cursorFilesForProject(projectRoot: string): string[] {
