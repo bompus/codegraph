@@ -6,6 +6,8 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 
 **Completion boundary:** This repository's default integration branch is `fork/consolidated`. A worktree or other feature branch is intermediate. For authorized repository work, finish by committing the verified change, integrating it through any required checks or PR into `fork/consolidated`, pushing, and confirming that its remote head contains the commit. Stop earlier only when the user requests it or integration is blocked; report the exact blocker. Do not run `npm publish` without explicit authorization. Fork GitHub release policy is defined under Releases below.
 
+**Public repository:** never name private projects, their repositories, source paths or home directories in commits, docs, tests or fixtures; write "a private downstream project" instead.
+
 **Branch roles:** `origin/main` is an exact mirror of `upstream/main`; never commit or merge fork work into it. `.github/workflows/sync-upstream-main.yml` maintains that mirror. Merge upstream updates into `fork/consolidated`, which is this fork's canonical/default development branch. Base focused upstream contributions on `upstream/main` so they do not include the consolidated branch's experimental history.
 
 ## Project Overview

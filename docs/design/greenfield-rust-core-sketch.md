@@ -98,7 +98,7 @@ Design choices that would differ from today:
 ## 3. What it would buy
 
 - Fresh-index wall time: the kernel spike measured a 4.4x to 14x parse walk over WASM, and the migration plan's Linux-kernel run puts resolution at 73% of wall. A native resolve with a proper binding table is the remaining large win. Realistic target on the Linux kernel: under 8 minutes on 8 cores against 14.8 today.
-- Memory: no per-worker grammar copies, no V8 heap per worker. The Bun probe in the espn-draft research showed how much of today's footprint is runtime, not data.
+- Memory: no per-worker grammar copies, no V8 heap per worker. The Bun probe in the downstream research showed how much of today's footprint is runtime, not data.
 - Distribution: one binary per platform. The npm thin installer stays as a shim.
 - Bugs of the class "handle left open on Windows teardown" and "orphan daemon per test run" become type-system and RAII concerns instead of discipline.
 
@@ -117,7 +117,7 @@ Measured against the repository as of 2026-09-11.
 - **The heuristics are the product.** Every framework resolver and synthesizer exists because an agent A/B showed a flow breaking without it. A rewrite re-validates all of them or regresses answers silently, and the repository rule is that a half-bridged flow is worse than none.
 - **The upstream relationship ends.** A separate codebase cannot merge upstream fixes or contribute back. Five of the fork's fixes in the last week landed upstream as maintainer re-lands; that channel closes.
 - **Time to parity is long.** With the kernel as a head start, extraction is done. Resolution, synthesis, retrieval, daemon, sync, and MCP are each multi-week efforts with a byte-parity bar, done serially because each consumes the previous one's output.
-- **Retrieval quality does not move.** The espn-draft audit log shows the organic loss is in ranking and trimming inside explore, at a median 228 ms latency. That code is pure logic and gains nothing from Rust.
+- **Retrieval quality does not move.** The downstream audit log shows the organic loss is in ranking and trimming inside explore, at a median 228 ms latency. That code is pure logic and gains nothing from Rust.
 
 ## 5. Decision
 

@@ -12,7 +12,7 @@ Measured 2026-09-10 (America/Denver). This change fixes omissions of requested s
 
 ## Controlled comparison
 
-The 16 queries and expected source ranges come from the [ESPN reproduction fixture](https://github.com/bompus/chrome-ext-bompus-espn-draft/blob/74fcd4e147020d834a3110ac161cb1f6d10cf4b2/docs/agents/codegraph-retrieval-repro.json). All 13 referenced source files were checked against their recorded SHA-256 hashes at ESPN commit `c570e32b22177ab59d3fa8f4c162419bac196422`.
+The 16 queries and expected source ranges come from the private reproduction fixture (private checkout at `74fcd4e`). All 13 referenced source files were checked against their recorded SHA-256 hashes at downstream commit `c570e32b22177ab59d3fa8f4c162419bac196422`.
 
 Three engines queried the same checkout-local index, with a fresh ToolHandler per query and no explicit `maxFiles` override:
 
@@ -67,7 +67,7 @@ For a source probe, build the intended engine's TypeScript and copy its assets, 
 
 ```bash
 fnm exec --using codegraph node scripts/agent-eval/probe-explore.mjs \
-  /home/bompus/bompus-espn-draft-codegraph-repro \
+  <fixture-checkout> \
   'src/components/DraftTable.vue "col-w-survival"'
 ```
 
