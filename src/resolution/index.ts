@@ -1201,6 +1201,7 @@ export class ReferenceResolver {
       // inside finish — re-running the tail on it would double-forward alias
       // chains. Only a null verdict needs the tail's unknown-receiver stamp.
       if (verdict) return verdict;
+      if (outcome.reason === 'defer') this.deferReference(ref, this.deferredChainRefs);
       return this.applyResolveTail(null, ref);
     }
     const candidates: ResolvedRef[] = [];
@@ -1228,7 +1229,11 @@ export class ReferenceResolver {
         resolvedBy: kc.resolvedBy as ResolvedRef['resolvedBy'],
       });
     }
-    if (candidates.length === 0) return this.applyResolveTail(null, ref);
+    if (candidates.length === 0) {
+      // No framework took the chain call either: resolveOneInner defers it.
+      if (outcome.reason === 'defer') this.deferReference(ref, this.deferredChainRefs);
+      return this.applyResolveTail(null, ref);
+    }
     const winner = candidates.reduce((best, curr) => (curr.confidence > best.confidence ? curr : best));
     return this.applyResolveTail(this.gateTargetKind(winner, ref), ref);
   }
@@ -1873,7 +1878,18 @@ export class ReferenceResolver {
     // with many deferred chained calls (#1091).
     const maybeYield = createYielder();
     const resolved: ResolvedRef[] = [];
-    for (const ref of deferred) {
+    // The kernel runs the same three arms over the live db, which now holds
+    // every supertype edge. A punted ref (an unmigrated language, a shape the
+    // kernel hands back) takes the TypeScript arms below.
+    const native = this.resolveDeferredChainsNatively(deferred);
+    for (let i = 0; i < deferred.length; i++) {
+      const ref = deferred[i]!;
+      const outcome = native?.[i];
+      if (outcome && outcome.status !== 'passthrough') {
+        const verdict = this.kernelVerdict(ref, outcome);
+        if (verdict) resolved.push(verdict);
+        continue;
+      }
       // PHP `this->prop.method` resolves via matchMethodCall (declared-type
       // inference + resolveMethodOnType conformance walk); `::`-receiver
       // languages (Rust) split on `::` (matchScopedCallChain); other
@@ -1893,11 +1909,55 @@ export class ReferenceResolver {
       if (match) resolved.push(match);
       await maybeYield();
     }
+    if (process.env.CODEGRAPH_RESOLVE_PROFILE && native) {
+      const punted = native.filter((o) => o.status === 'passthrough').length;
+      console.error(`[resolve-profile] conformance kernel: refs=${deferred.length} native=${deferred.length - punted} passthrough=${punted}`);
+    }
     const created = await this.persistDeferredReferences(deferred, resolved);
     // Runs after resolveAndPersistBatched's 'main' dump — emit this pass's own
     // nm rows under their own label (the table clears on each dump).
     dumpNameMatcherProfile('deferredChain');
     return created;
+  }
+
+  /** One kernel pass over the conformance queue, or null when the kernel is
+   *  unavailable (the TypeScript arms then take every ref). The caller has
+   *  quiesced the WAL valve; teardown closes the conn. */
+  private resolveDeferredChainsNatively(deferred: UnresolvedRef[]): ResolveOutcome[] | null {
+    if (!this.kernelResolverTried) {
+      this.initKernelResolver(
+        this.queries.getDatabasePath() ?? undefined,
+        undefined,
+        true,
+        false,
+        deferred.length < SYNC_NODE_TABLE_MIN_REFS,
+      );
+    }
+    const kernel = this.kernelResolver;
+    if (!kernel?.resolveDeferredChains) return null;
+    try {
+      const rows: ResolveRefIn[] = deferred.map((ref) => ({
+        rowId: ref.rowId,
+        fromNodeId: ref.fromNodeId,
+        referenceName: ref.referenceName,
+        referenceKind: ref.referenceKind,
+        line: ref.line,
+        column: ref.column,
+        filePath: ref.filePath,
+        language: ref.language,
+      }));
+      const outcomes = kernel.resolveDeferredChains(rows);
+      if (outcomes.length !== deferred.length) {
+        throw new Error(`kernel resolveDeferredChains returned ${outcomes.length} outcomes for ${deferred.length} refs`);
+      }
+      return outcomes;
+    } catch (err) {
+      logDebug('Kernel conformance pass failed; staying on the TypeScript path', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      this.closeKernel();
+      return null;
+    }
   }
 
   /**
@@ -2069,7 +2129,7 @@ export class ReferenceResolver {
       unresolved.push(...rest.unresolved);
       for (const [k, v] of Object.entries(rest.stats.byMethod)) byMethod[k] = (byMethod[k] || 0) + v;
     }
-    if (this.profileStages) {
+    if (process.env.CODEGRAPH_RESOLVE_PROFILE) {
       console.error(`[resolve-profile] sync kernel: handled=${stats.handled} passthrough=${stats.passthrough}`);
     }
     return {

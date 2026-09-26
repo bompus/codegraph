@@ -232,6 +232,15 @@ impl ResolveOutcome {
             ..Self::unresolved()
         }
     }
+    /// A chain call nothing matched: the framework loop still runs, and when
+    /// it finds nothing either the ref waits for the conformance pass
+    /// (resolveOneInner's deferral) instead of failing.
+    fn deferred() -> Self {
+        ResolveOutcome {
+            reason: Some("defer".into()),
+            ..Self::no_candidates()
+        }
+    }
     /// A miss the framework loop may still overturn, but only with a ≥0.9 hit:
     /// lower framework candidates are discarded, not merged (the TS chain
     /// branch returns before the merge).
@@ -749,6 +758,37 @@ impl KernelResolver {
                 prof_add(key, t0.elapsed().as_nanos() as u64);
             }
             out.push(o);
+        }
+        Ok(out)
+    }
+
+    /// resolveChainedCallsViaConformance's per-ref match, run after the main
+    /// pass wrote every implements/extends edge: PHP `this->prop.method`
+    /// through the method-call arm, Rust's `::` chains through the scoped
+    /// arm, every other chain through the dotted arm, then the language gate.
+    #[napi]
+    pub fn resolve_deferred_chains(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
+        let mut out = Vec::with_capacity(refs.len());
+        for r in refs {
+            if !is_migrated_language(&r.language) {
+                out.push(ResolveOutcome::passthrough("ineligible:lang"));
+                continue;
+            }
+            let hit = if r.language == "php" && php_prop_shape_re().is_match(&r.reference_name) {
+                self.match_method_call_free(&r)
+            } else if r.language == "rust" {
+                self.match_scoped_call_chain(&r)
+            } else {
+                self.match_dotted_call_chain(&r)
+            };
+            out.push(match hit {
+                Ok(c) => match self.gate_language(c, &r) {
+                    Some(c) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
+                    None => ResolveOutcome::unresolved(),
+                },
+                Err(Halt::Punt(reason)) => ResolveOutcome::passthrough(reason),
+                Err(Halt::Napi(e)) => return Err(e),
+            });
         }
         Ok(out)
     }

@@ -252,14 +252,18 @@ export interface ResolveOutcome {
   resolvedBy?: string;
   isFinal: boolean;
   candidates?: KernelCandidateOut[];
-  /** Passthrough only: the gate that declined (diagnostics; absent on older
-   *  binaries — tally those under 'unknown'). */
+  /** Passthrough: the gate that declined (diagnostics; absent on older
+   *  binaries — tally those under 'unknown'). On an `unresolved` outcome,
+   *  `'defer'` marks a chain call the conformance pass retries when no
+   *  framework claims it. */
   reason?: string;
 }
 
 export interface KernelResolverLike {
   readPendingBatch(afterRowId: number, limit: number, prerequisites: boolean): ResolveRefIn[];
   resolveChunk(refs: ResolveRefIn[]): ResolveOutcome[];
+  /** The conformance pass's per-ref chain match (resolveChainedCallsViaConformance). */
+  resolveDeferredChains(refs: ResolveRefIn[]): ResolveOutcome[];
   /** Deterministic conn teardown — must run while no other-build conn can do
    *  shm work (before pool workers spawn / after they die). Without it the
    *  rusqlite conn closes at GC time, whose shm teardown races node:sqlite
