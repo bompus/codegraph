@@ -345,6 +345,44 @@ pub(super) fn crosses_known_family(a: &str, b: &str) -> bool {
     is_known_language_family(a) && is_known_language_family(b) && !same_language_family(a, b)
 }
 
+/// CODE_INTEROP_GROUP (name-matcher.ts): languages whose code can name each
+/// other's symbols directly. Wider than LANGUAGE_FAMILY: single-file
+/// components join the web group, C/C++/ObjC/Swift share one native group
+/// (ObjC is a C superset; Swift calls both through bridging headers), and
+/// every other programming language is a group of its own. Markup, config
+/// and template languages are absent: framework bridges start there.
+fn code_interop_group(lang: &str) -> Option<&'static str> {
+    match lang {
+        "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "svelte" | "vue" | "astro" => Some("web"),
+        "java" | "kotlin" | "scala" => Some("jvm"),
+        "c" | "cpp" | "objc" | "swift" => Some("native"),
+        "csharp" | "razor" | "vbnet" => Some("dotnet"),
+        "cfml" | "cfscript" | "cfquery" => Some("cfml"),
+        "lua" | "luau" => Some("lua"),
+        "python" => Some("python"),
+        "go" => Some("go"),
+        "rust" => Some("rust"),
+        "php" => Some("php"),
+        "ruby" => Some("ruby"),
+        "dart" => Some("dart"),
+        "pascal" => Some("pascal"),
+        "r" => Some("r"),
+        "solidity" => Some("solidity"),
+        "erlang" => Some("erlang"),
+        "cobol" => Some("cobol"),
+        "terraform" => Some("terraform"),
+        "nix" => Some("nix"),
+        _ => None,
+    }
+}
+
+/// True when `a` and `b` are programming languages that cannot name each
+/// other's symbols: a same-named hit across them is a coincidence (a Rust
+/// `Ok(..)` is not a Scala enum member, a Go `Context` is not a C struct).
+pub(super) fn crosses_code_boundary(a: &str, b: &str) -> bool {
+    matches!((code_interop_group(a), code_interop_group(b)), (Some(ga), Some(gb)) if ga != gb)
+}
+
 /// ESM_FAMILY (name-matcher.ts).
 pub(super) fn is_esm_family(lang: &str) -> bool {
     matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts")
