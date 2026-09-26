@@ -12,7 +12,8 @@
 //
 // Usage: node scripts/agent-eval/probe-sweep.mjs [--tool=context|explore|trace] [--repos=a,b,c]
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 
 const args = Object.fromEntries(
   process.argv.slice(2).map(a => a.startsWith('--') ? a.slice(2).split('=') : [a, true])
@@ -28,30 +29,31 @@ const ToolHandler = tools.ToolHandler ?? tools.default?.ToolHandler;
 // Each entry: repo, query, optional 2nd arg for trace (from, to).
 // The query is the same prompt used in the real claude audits, so probe
 // output is directly comparable to the agent's would-be input.
+const CORPUS = process.env.CORPUS ?? join(homedir(), 'codegraph-corpora');
 const SWEEP = [
   // Small realworld template repos (the loss cases from the cross-language sweep)
-  { id: 'gin-rw',        repo: '/tmp/codegraph-corpus/gin-realworld',         q: 'How does this Gin app route a request through its middleware chain to a handler?' },
-  { id: 'go-mux',        repo: '/tmp/codegraph-corpus/go-mux',                q: 'How does this gorilla/mux app route a request to its handler?' },
-  { id: 'fastapi-rw',    repo: '/tmp/codegraph-corpus/fastapi-realworld',     q: 'How does FastAPI route a request through its dependencies to a handler?' },
-  { id: 'spring-pc',     repo: '/tmp/codegraph-corpus/spring-petclinic',      q: 'How does Spring route an HTTP request to a controller method?' },
-  { id: 'axum-rw',       repo: '/tmp/codegraph-corpus/rust-axum-realworld',   q: 'How does Axum route a request to its handler in this app?' },
-  { id: 'express-rw',    repo: '/tmp/codegraph-corpus/express-realworld',     q: 'How does this Express app route a request through middleware to a handler?' },
-  { id: 'kotlin-pc',     repo: '/tmp/codegraph-corpus/kotlin-petclinic',      q: 'How does the Kotlin Spring app route an HTTP request to its handler?' },
-  { id: 'flask-mb',      repo: '/tmp/codegraph-corpus/flask-microblog',       q: 'How does this Flask app route a request to a view function?' },
-  { id: 'vapor-tpl',     repo: '/tmp/codegraph-corpus/vapor-template',        q: 'How does Vapor route an HTTP request to its handler?' },
-  { id: 'cpp-leveldb',   repo: '/tmp/codegraph-corpus/cpp-leveldb',           q: 'How does LevelDB handle a Put operation through to disk?' },
-  { id: 'lualine',       repo: '/tmp/codegraph-corpus/lualine.nvim',          q: 'How does lualine assemble and render the statusline?' },
-  { id: 'drupal-admin',  repo: '/tmp/codegraph-corpus/drupal-admintoolbar',   q: 'How does the Drupal admin toolbar module render its toolbar?' },
-  { id: 'svelte-rw',     repo: '/tmp/codegraph-corpus/svelte-realworld',      q: 'How does this SvelteKit app route a request to a handler?' },
-  { id: 'react-rw',      repo: '/tmp/codegraph-corpus/react-realworld',       q: 'How does this React app fetch and display articles?' },
-  { id: 'rails-rw',      repo: '/tmp/codegraph-corpus/rails-realworld',       q: 'How does Rails route a request to a controller action?' },
-  { id: 'flask-rest',    repo: '/tmp/codegraph-corpus/flask-restful-realworld', q: 'How does Flask-RESTful route a request to a resource method?' },
-  { id: 'laravel-rw',    repo: '/tmp/codegraph-corpus/laravel-realworld',     q: 'How does Laravel route a request to the controller method?' },
-  { id: 'aspnet-rw',     repo: '/tmp/codegraph-corpus/aspnet-realworld',      q: 'How does ASP.NET route a request to the controller action?' },
+  { id: 'gin-rw',        repo: `${CORPUS}/gin-realworld`,         q: 'How does this Gin app route a request through its middleware chain to a handler?' },
+  { id: 'go-mux',        repo: `${CORPUS}/go-mux`,                q: 'How does this gorilla/mux app route a request to its handler?' },
+  { id: 'fastapi-rw',    repo: `${CORPUS}/fastapi-realworld`,     q: 'How does FastAPI route a request through its dependencies to a handler?' },
+  { id: 'spring-pc',     repo: `${CORPUS}/spring-petclinic`,      q: 'How does Spring route an HTTP request to a controller method?' },
+  { id: 'axum-rw',       repo: `${CORPUS}/rust-axum-realworld`,   q: 'How does Axum route a request to its handler in this app?' },
+  { id: 'express-rw',    repo: `${CORPUS}/express-realworld`,     q: 'How does this Express app route a request through middleware to a handler?' },
+  { id: 'kotlin-pc',     repo: `${CORPUS}/kotlin-petclinic`,      q: 'How does the Kotlin Spring app route an HTTP request to its handler?' },
+  { id: 'flask-mb',      repo: `${CORPUS}/flask-microblog`,       q: 'How does this Flask app route a request to a view function?' },
+  { id: 'vapor-tpl',     repo: `${CORPUS}/vapor-template`,        q: 'How does Vapor route an HTTP request to its handler?' },
+  { id: 'cpp-leveldb',   repo: `${CORPUS}/cpp-leveldb`,           q: 'How does LevelDB handle a Put operation through to disk?' },
+  { id: 'lualine',       repo: `${CORPUS}/lualine.nvim`,          q: 'How does lualine assemble and render the statusline?' },
+  { id: 'drupal-admin',  repo: `${CORPUS}/drupal-admintoolbar`,   q: 'How does the Drupal admin toolbar module render its toolbar?' },
+  { id: 'svelte-rw',     repo: `${CORPUS}/svelte-realworld`,      q: 'How does this SvelteKit app route a request to a handler?' },
+  { id: 'react-rw',      repo: `${CORPUS}/react-realworld`,       q: 'How does this React app fetch and display articles?' },
+  { id: 'rails-rw',      repo: `${CORPUS}/rails-realworld`,       q: 'How does Rails route a request to a controller action?' },
+  { id: 'flask-rest',    repo: `${CORPUS}/flask-restful-realworld`, q: 'How does Flask-RESTful route a request to a resource method?' },
+  { id: 'laravel-rw',    repo: `${CORPUS}/laravel-realworld`,     q: 'How does Laravel route a request to the controller method?' },
+  { id: 'aspnet-rw',     repo: `${CORPUS}/aspnet-realworld`,      q: 'How does ASP.NET route a request to the controller action?' },
   // The iter7 wins/ties (to make sure we don't regress)
-  { id: 'cobra',         repo: '/tmp/codegraph-corpus/cobra',                 q: 'How does cobra parse commands and flags?' },
-  { id: 'sinatra',       repo: '/tmp/codegraph-corpus/sinatra',               q: 'How does sinatra route a request to its handler?' },
-  { id: 'slim',          repo: '/tmp/codegraph-corpus/slim',                  q: 'How does slim route a request and apply middleware?' },
+  { id: 'cobra',         repo: `${CORPUS}/cobra`,                 q: 'How does cobra parse commands and flags?' },
+  { id: 'sinatra',       repo: `${CORPUS}/sinatra`,               q: 'How does sinatra route a request to its handler?' },
+  { id: 'slim',          repo: `${CORPUS}/slim`,                  q: 'How does slim route a request and apply middleware?' },
 ];
 
 // Detect signals in response text — these are the levers we've added that

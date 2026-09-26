@@ -162,8 +162,7 @@ Make the dev build the codegraph on PATH **once**, then loop:
 npm run build && ./scripts/local-install.sh
 scripts/add-lang/bench.sh <lang> <name> <url> "<question>" headless   # ×3
 ```
-`bench.sh` clones into `$CORPUS` (set it to a workspace-disk directory; the
-`/tmp` default is shared tmpfs), wipes + indexes, runs
+`bench.sh` clones into `$CORPUS` (default `~/codegraph-corpora`), wipes + indexes, runs
 `verify-extraction.mjs`, then the with/without retrieval A/B via
 `scripts/agent-eval/run-all.sh` (skips the paid A/B if extraction is broken).
 Read each `parse-run.mjs` summary printed by `run-all.sh`: tool calls, file
@@ -202,9 +201,8 @@ the PR body. Do not publish or tag: this fork publishes no releases (AGENTS.md
 ## Notes
 - The A/B spawns real **paid** `claude -p` runs (Sonnet at `--effort high` by
   default, `--max-budget-usd`),
-  2 arms × 3 repos. Set `CORPUS` to the same workspace-disk directory
-  `/agent-eval` uses (never the `/tmp` default, which is shared tmpfs), so
-  clones are reused across runs.
+  2 arms × 3 repos. The corpus dir is shared with `/agent-eval`, so clones
+  are reused across runs.
 - An index must be served by the **same** binary that built it. Step 8 builds +
   links the dev build first, so this holds.
 - If a grammar can't be obtained, or extraction can't reach PASS, **STOP and
