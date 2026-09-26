@@ -122,6 +122,16 @@ describe('resolveParsePoolSize', () => {
     expect(resolveParsePoolSize(undefined, 2)).toBe(1);   // leave a core
     expect(resolveParsePoolSize(undefined, 64)).toBe(8);  // never above the default cap
   });
+  it('sizes the default pool by the files to parse, never an explicit count', () => {
+    expect(resolveParsePoolSize(undefined, 16, 3)).toBe(1);
+    expect(resolveParsePoolSize(undefined, 16, 64)).toBe(1);
+    expect(resolveParsePoolSize(undefined, 16, 65)).toBe(2);
+    expect(resolveParsePoolSize(undefined, 16, 10_000)).toBe(8);
+    expect(resolveParsePoolSize(undefined, 16, 0)).toBe(1);
+    expect(resolveParsePoolSize('6', 16, 3)).toBe(6);
+    // A few large files need as many workers as many small ones.
+    expect(resolveParsePoolSize(undefined, 16, 129, 2_609 * 1024)).toBe(6);
+  });
 });
 
 describe('ParseWorkerPool', () => {

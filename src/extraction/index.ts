@@ -22,7 +22,7 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
-import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
+import { DEFAULT_PARSE_POOL_CAP, FILES_PER_PARSE_WORKER, ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
 import { StoreWriter, StoreBundle, finalizeStoreBundle, attachBindings } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
@@ -2013,7 +2013,18 @@ export class ExtractionOrchestrator {
       // parse is worker-side CPU, and 1 worker measured 34% slower than the
       // old oversubscribed pool on the kernel-scale 2-cpuset envelope
       // (493s vs 369s) — main + store-worker don't fill the second core.
-      const poolSize = resolveParsePoolSize(process.env.CODEGRAPH_PARSE_WORKERS, Math.max(3, os.availableParallelism()));
+      // Source size only matters below the file count that fills the pool.
+      const sourceBytes = files.length < FILES_PER_PARSE_WORKER * DEFAULT_PARSE_POOL_CAP
+        ? files.reduce((sum, f) => {
+            try { return sum + fs.statSync(path.join(this.rootDir, f)).size; } catch { return sum; }
+          }, 0)
+        : 0;
+      const poolSize = resolveParsePoolSize(
+        process.env.CODEGRAPH_PARSE_WORKERS,
+        Math.max(3, os.availableParallelism()),
+        files.length,
+        sourceBytes,
+      );
       pool = new ParseWorkerPool({
         languages: neededLanguages,
         size: poolSize,
