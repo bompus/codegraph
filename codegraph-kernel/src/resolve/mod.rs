@@ -1027,6 +1027,10 @@ mod tests {
                 r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("r", &[r"(?-u:\b)R(?-u:\b)\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new(?-u:\b)"]),
+            ("pascal", &[
+                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_]*)",
+                r"(?-u:\b)R(?-u:\b)\s*:=\s*([A-Z][A-Za-z0-9_.]*)\.Create(?-u:\b)",
+            ]),
         ];
         let php_property: &[&str] = &[
             r"(?-u:\b)(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][A-Za-z0-9_\\]*)\s+&?\$R(?-u:\b)",

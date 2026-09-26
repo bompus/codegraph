@@ -341,6 +341,14 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         );
     }
     m.insert("r", vec![both(r"\s*(?:<-|<<-|=)\s*([A-Z][A-Za-z0-9_.]*)\$new(?-u:\b)", b"<=", 0)]);
+    // `var lg: TLogger` / a `lg: TLogger` parameter, then `lg := TLogger.Create`.
+    m.insert(
+        "pascal",
+        vec![
+            both(r"\s*:\s*([A-Z][A-Za-z0-9_]*)", b":", 0),
+            both(r"\s*:=\s*([A-Z][A-Za-z0-9_.]*)\.Create(?-u:\b)", b":", 0),
+        ],
+    );
     m
 });
 

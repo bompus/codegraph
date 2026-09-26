@@ -828,6 +828,16 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.82 Resolver port, leg 7e: Pascal (2026-09-26)
+
+Pascal had two TypeScript-only pieces. One is the built-in filter: Delphi RTL/VCL unit prefixes, and intrinsics and RTL classes such as `WriteLn`, `IntToStr` and `TObject`. The other is two receiver-type patterns: `lg: TLogger` for variables and parameters, and `lg := TLogger.Create`. The kernel now carries both, and the pattern parity unit test checks the new pair against the TypeScript regexes. Pascal is admitted.
+
+| Corpus | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|
+| pasdoc (334 Pascal files, plus its HTML/JS docs) | 534,443 | 0 | identical |
+
+The parity fixture gained a Pascal unit, so the byte-compare leg now covers the built-in filter and both receiver shapes.
+
 ### 5.81 Resolver port, leg 7e (group 1): seven languages admitted (2026-09-26)
 
 objc, solidity, liquid, twig, yaml, xml and properties had no resolution arm of their own in TypeScript beyond what the kernel already ports: the objc chain arm, the yaml/properties constant filter for `calls`, and the family and interop tables, which match. So admission was the change. Each was gated on a public corpus cloned to scratch:

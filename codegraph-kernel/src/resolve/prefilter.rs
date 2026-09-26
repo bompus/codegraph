@@ -42,6 +42,12 @@ impl KernelResolver {
                 return true;
             }
         }
+        // Pascal/Delphi built-ins and standard library units.
+        if r.language == "pascal"
+            && (PASCAL_UNIT_PREFIXES.iter().any(|p| name.starts_with(p)) || PASCAL_BUILT_INS.contains(name))
+        {
+            return true;
+        }
         if r.language == "c" || r.language == "cpp" {
             // `std::` prefix — never a user-defined qualified name.
             if name.starts_with("std::") {
