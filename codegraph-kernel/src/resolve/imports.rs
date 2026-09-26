@@ -930,6 +930,15 @@ impl KernelResolver {
     /// The `getAllFiles()`-ordered paths sharing `basename` (luaBasenameIndex).
     /// `ORDER BY path` is byte order — the same order `sort()` gives.
     pub(super) fn lua_basename_bucket(&self, basename: &str) -> Arc<Vec<String>> {
+        if let Some(files) = self.sorted_files() {
+            return Arc::new(
+                files
+                    .iter()
+                    .filter(|f| f.rsplit('/').next().unwrap_or("") == basename)
+                    .cloned()
+                    .collect(),
+            );
+        }
         self.table().map(|t| t.lua_basename_bucket(basename)).unwrap_or_default()
     }
 

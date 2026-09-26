@@ -238,6 +238,15 @@ impl KernelResolver {
     /// `.rs` files indexed under `dir` (exact parent dir, sorted for
     /// determinism), built once from `known_files`.
     pub(super) fn rust_rs_files_in_dir(&self, dir: &str) -> Arc<Vec<String>> {
+        if let Some(files) = self.sorted_files() {
+            let mut out: Vec<String> = files
+                .iter()
+                .map(|f| pos_normalize(f))
+                .filter(|f| f.ends_with(".rs") && pos_dirname(f) == dir)
+                .collect();
+            out.sort();
+            return Arc::new(out);
+        }
         self.table().map(|t| t.rust_rs_files_in_dir(dir)).unwrap_or_default()
     }
 

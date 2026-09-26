@@ -134,6 +134,10 @@ pub struct KernelResolverConfig {
     /// worker's snapshot). Opened `immutable=1`: no locks and no `-wal`/`-shm`
     /// — a copy has no `-shm`, and `readonly_shm=1` can't open one without it.
     pub snapshot: Option<bool>,
+    /// Answer node lookups with indexed queries instead of loading the whole
+    /// node table. For small batches (an incremental sync) the table load
+    /// dominates; the queries return the same rows in the same order.
+    pub query_lookups: Option<bool>,
 }
 
 /// One unresolved_refs row — mirrors UnresolvedReference/rowId shape so the
@@ -467,6 +471,8 @@ pub struct KernelResolver {
     /// The run's node table, loaded on first use (a worker reports ready
     /// before it) and dropped by close().
     table: std::cell::OnceCell<Arc<NodeTable>>,
+    /// Set when `query_lookups`: per-key query results (no table is loaded).
+    lookups: Option<RefCell<node_table::QueryLookups>>,
     db_path: String,
     /// The run token the table is shared under (see NodeTable); None keeps
     /// the table private.
@@ -566,6 +572,7 @@ impl KernelResolver {
         Ok(KernelResolver {
             conn: Some(conn),
             table: std::cell::OnceCell::new(),
+            lookups: config.query_lookups.unwrap_or(false).then(Default::default),
             db_path: config.db_path,
             generation: config.generation,
             project_root: config.project_root,

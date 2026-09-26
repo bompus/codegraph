@@ -828,6 +828,23 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.74 Resolver port, leg 7a: incremental sync through the kernel (2026-09-26)
+
+Incremental sync never called the kernel. The git fast path (the changed files' refs) and the failed-ref retry (#1240) both ran the TypeScript pipeline per ref. Both now resolve kernel-first, as a full index does: chunks go to `resolveChunk`, outcomes settle through the framework merge, and passthroughs run the TypeScript pipeline. The sync stops and drains its WAL valve while the kernel connection is open and restarts it after, the same rule the batched loop follows.
+
+Opening the kernel costs a full node-table load (about 150 ms on ktor), which made a one-file sync slower than TypeScript. A new `queryLookups` mode answers the kernel's nine node lookups with indexed queries in the table's exact row order (rowid breaks ties) and never loads the table. Sync uses it below 15,000 refs. With `CODEGRAPH_KERNEL_QUERY_LOOKUPS=1` forcing it on full indexes, vitest, ktor, celery and laravel all dump identically to the TypeScript path.
+
+Sync resolve time on ktor, indexed at `HEAD~N` then synced to `HEAD`:
+
+| Commits synced | Refs | TypeScript | Kernel |
+|---|---|---|---|
+| 40 | 36,015 | 2,172 ms | 1,723 ms (table) |
+| 8 | 4,880 | 391 ms | 318 ms (query) |
+| 2 | 1,057 | 136 ms | 111 ms (query) |
+| one edited file | 32 | 49 ms | 44 ms (query) |
+
+Table vs query at the same sizes: 1,683 vs 1,854 ms at 36k refs, 375 vs 302 ms at 4.9k and 216 vs 109 ms at 1k, a crossover near 16k. After a real sync (ktor 489 changed files, celery 59, Ocelot 1,029) the graph dumps identically with the kernel on and off.
+
 ### 5.73 Resolver port: PHP imports (2026-09-26)
 
 Every PHP `imports` ref punted as `php-inc` because resolveViaImport's include-path arm was unported. That arm only takes path-shaped refs (`inc/db.php`, `config`): a namespace `use` (`App\Foo\Bar`) has neither `/` nor `.`, and those refs, the bulk of the punt, already had a full kernel path. The kernel now ports the arm: the literal resolves against the including file's directory, `.php` is tried when omitted, and the file node is the answer. A path-shaped ref that the import arm misses is terminal (best candidate so far, else unresolved) and never name-matches a same-named file elsewhere (#660).

@@ -927,13 +927,18 @@ export class CodeGraph {
               total: unresolvedRefs.length,
             });
 
-            this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
-              options.onProgress?.({
-                phase: 'resolving',
-                current,
-                total,
-              });
+            const tResolve = Date.now();
+            await this.resolver.resolveAndPersistListYielding(unresolvedRefs, {
+              onProgress: (current, total) => {
+                options.onProgress?.({
+                  phase: 'resolving',
+                  current,
+                  total,
+                });
+              },
+              walValve,
             });
+            if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-resolve: ${Date.now() - tResolve}ms (${unresolvedRefs.length} refs)`);
 
             // Retry previously-failed refs the changed files may now satisfy
             // (#1240). Scoped resolution above only re-resolves refs FROM the
@@ -954,7 +959,7 @@ export class CodeGraph {
                 current: 0,
                 total: retryable.length,
               });
-              await this.resolver.resolveAndPersistListYielding(retryable);
+              await this.resolver.resolveAndPersistListYielding(retryable, { walValve });
               options.onProgress?.({
                 phase: 'resolving',
                 current: retryable.length,
