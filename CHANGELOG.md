@@ -158,6 +158,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In JavaScript and TypeScript monorepos, an import of a workspace package subpath now resolves when the package's `exports` names its source file under a custom condition (for example `"@zod/source": "./src/v4/index.ts"`). Calls through `import * as z from "zod/v4"` now link to the right functions instead of going unresolved; on zod this added about 4,000 correct links.
+- A barrel's `export * as ns from "./x"` no longer leaks the members of `./x` into the barrel itself, so a name the barrel also star-exports from another module resolves to that module instead of a same-named member of the namespaced one.
+- `ns.member` calls through a namespace import now follow a named re-export (`export { clone } from "./util"`) inside a star-exported module.
+
 - `codegraph impact` and `codegraph_impact` no longer count documentation as affected code. Doc sections that mention or link the changed code are listed separately as "mentioned in docs" (they may need updating), and the search no longer wanders from one doc page to the next; on one project 17 of 27 reported symbols had been Markdown headings.
 
 - Indexing a small project no longer starts a full set of parser threads. The pool now grows with the amount of code to parse, so a project of a few dozen files peaks around 230 MB instead of about 400 MB, with no change in speed.

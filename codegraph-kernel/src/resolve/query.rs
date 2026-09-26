@@ -183,6 +183,11 @@ impl KernelResolver {
                 continue;
             }
             if r.name == "*" {
+                // `export * as ns from` exports one name, `ns`, not the
+                // module's members (reExportsFromBindings).
+                if r.exported_as.as_deref().is_some_and(|a| a != "*") {
+                    continue;
+                }
                 out.push(KReExport {
                     kind: "wildcard",
                     exported_name: None,
@@ -389,8 +394,12 @@ impl KernelResolver {
         if reexports.is_empty() {
             return self.memo_symbol_opt(memo_key, None);
         }
+        // A namespace member (`ns.clone` through `import * as ns`) is
+        // forwarded under the member's own name.
         let target_name = if want.is_default {
             "default".to_string()
+        } else if want.is_namespace && want.member_name.is_some() {
+            want.member_name.clone().unwrap()
         } else {
             want.exported_name.clone()
         };
