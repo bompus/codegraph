@@ -18,7 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
-const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f-'));
+const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f'));
 // os.tmpdir() reads TMPDIR on POSIX and TMP/TEMP on Windows, on every call.
 process.env.TMPDIR = process.env.TMP = process.env.TEMP = fileDir;
 

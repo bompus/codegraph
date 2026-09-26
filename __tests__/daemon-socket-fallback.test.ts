@@ -72,7 +72,8 @@ function errno(code: string): NodeJS.ErrnoException {
 
 describe('getDaemonSocketCandidates (#997)', () => {
   it.runIf(POSIX)('returns [in-project, tmpdir] for a normal short path', () => {
-    const root = path.join(os.tmpdir(), 'cg-cand-short');
+    // A root that is short wherever TMPDIR points (the suite nests it).
+    const root = path.join(path.parse(os.tmpdir()).root, 'cg-cand-short');
     const candidates = getDaemonSocketCandidates(root);
     expect(candidates).toHaveLength(2);
     expect(candidates[0]).toBe(path.join(root, '.codegraph', 'daemon.sock'));
