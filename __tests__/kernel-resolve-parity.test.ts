@@ -217,6 +217,17 @@ const FIXTURE: Record<string, string> = {
     'output "o" { value = module.net.id }',
   ].join('\n'),
   'tf/net/main.tf': 'output "id" { value = "x" }\n',
+  // Razor: a simple type resolves through the page's `@using` set, walked up
+  // through each directory's `_Imports.razor`.
+  'web/_Imports.razor': '@using Shop.Models\n',
+  'web/pages/Cart.razor': [
+    '@page "/cart"',
+    '<ProductCard Item="@item" />',
+    '@code {',
+    '  private Product item = new Product();',
+    '}',
+  ].join('\n'),
+  'web/Models/Product.cs': 'namespace Shop.Models { public class Product { } public class ProductCard { } }\n',
   // Markdown links resolve to the linked file by path.
   'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,

@@ -513,6 +513,8 @@ pub struct KernelResolver {
     awaited_files: HashMap<String, Option<Rc<awaited::AwaitedFile>>>,
     /// resolveCobolCopybook's stem → file paths index, built on first use.
     cobol_copybooks: Option<HashMap<String, Vec<String>>>,
+    /// getRazorUsings memo, by file.
+    razor_usings_memo: HashMap<String, Rc<Vec<String>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
@@ -621,6 +623,7 @@ impl KernelResolver {
             selector_names_memo: HashMap::new(),
             awaited_files: HashMap::new(),
             cobol_copybooks: None,
+            razor_usings_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             file_cache: FileCache::new(1024),
