@@ -1588,19 +1588,23 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const readAndSettle = (extra: Record<string, unknown>) => {
       const resolver = new kernel!.KernelResolver!({ ...config, ...extra });
       const batch = resolver.readPendingBatch(0, 200, false);
-      const out = new Map(
-        resolver.resolveChunk(batch).map((o, i) => [batch[i]!.referenceName, o.status]),
-      );
+      const out = new Map(resolver.resolveChunk(batch).map((o, i) => [batch[i]!.referenceName, o]));
       resolver.close();
       return out;
     };
 
     // express claims nothing — an unclaimed miss settles as a terminal
-    // unresolved instead of riding the full TS dispatch.
-    expect(readAndSettle({ frameworkNames: ['express'] }).get('neverDeclared')).toBe('unresolved');
-    // react-router's NAV_CALL claims `navigate` — it must still passthrough.
-    expect(readAndSettle({ frameworkNames: ['react-router'] }).get('navigate')).toBe('passthrough');
+    // unresolved (no candidate list: the frameworks never run for it).
+    const unclaimed = readAndSettle({ frameworkNames: ['express'] }).get('neverDeclared')!;
+    expect(unclaimed.status).toBe('unresolved');
+    expect(unclaimed.candidates).toBeUndefined();
+    // react-router's NAV_CALL claims `navigate`: no definition or import
+    // carries it, so only the frameworks can answer — an empty candidate list
+    // sends it through the framework merge.
+    const claimed = readAndSettle({ frameworkNames: ['react-router'] }).get('navigate')!;
+    expect(claimed.status).toBe('unresolved');
+    expect(claimed.candidates).toEqual([]);
     // A config without frameworkNames keeps the legacy claim-everything gate.
-    expect(readAndSettle({}).get('neverDeclared')).toBe('passthrough');
+    expect(readAndSettle({}).get('neverDeclared')!.candidates).toEqual([]);
   });
 });
