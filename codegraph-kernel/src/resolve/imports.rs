@@ -459,10 +459,7 @@ impl KernelResolver {
     /// arms cannot fire for it, so this is that function without the punt,
     /// which only the member descent raises.
     pub(super) fn resolve_via_import(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
-        match self.resolve_via_import_member(r) {
-            Err(Halt::Punt(_)) => Ok(None),
-            other => other,
-        }
+        self.resolve_via_import_member(r)
     }
 
     /// isBoundToOutOfRepoImport (import-resolver.ts): for a bare name in a

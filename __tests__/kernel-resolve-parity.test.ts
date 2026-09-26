@@ -1054,9 +1054,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // A store accessor chain resolves inside the identified store; `api`'s
     // literal has no `reset`, so it is a native miss.
     expect(at('api.getState().reset', 'src/main.ts', 'calls').status).toBe('unresolved');
-    // `svc.call` infers Service then misses `Service::call` — the supertype
-    // walk reads live edges, so the kernel punts for TS to decide.
-    expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('passthrough');
+    // `svc.call` infers Service then misses `Service::call`. This resolver is
+    // not told its db holds every supertype edge, so it walks none: a miss.
+    expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('unresolved');
     // Over a db holding every supertype edge (the live db, or a snapshot taken
     // after the prerequisite phase) the kernel walks supertypes itself:
     // `Service extends BaseSvc`, written here as the prerequisite pass would,
@@ -1105,8 +1105,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(sharedRun.targetNodeId).toBe(
       byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
     );
-    // A miss on the inferred type needs the supertype walk — a punt here.
-    expect(at('shared.unrelated', 'src/main.ts', 'calls').status).toBe('passthrough');
+    // A miss on the inferred type needs the supertype walk — none here: a miss.
+    expect(at('shared.unrelated', 'src/main.ts', 'calls').status).toBe('unresolved');
     // `über.run`: ASCII word boundaries miss the non-ASCII receiver in both
     // engines, and the receiver's `local` row makes the bound-receiver claim
     // exclusive — a refused claim is terminal. With Unicode boundaries the
@@ -1154,8 +1154,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
       byName('drain', 'method').find((n) => n.qualifiedName === 'Pool::drain')!.id,
     );
     // `Pool::instance().nope` — the owner resolves but no `Pool::nope`
-    // exists; rmot's supertype walk reads live edges, so the kernel punts.
-    expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
+    // exists; without a complete-supertypes db there is no walk: a miss.
+    expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('unresolved');
     // scopedChain: `Registry::make` returns `self` → the factory's own class
     // → `Registry::name` @0.85.
     // `this.onClick` is Widget's own member @0.95; `this.onBase` is not on
@@ -1295,7 +1295,7 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // builtin bail — `arr` infers to `Array` (a JS_BUILT_INS member), whose
     // rmot miss returns null in TS rather than letting Strategy 3 guess the
     // unrelated `Service::split` (the bait — @0.7 if the bail is missing).
-    expect(at('arr.split', 'src/notify.ts', 'references').status).toBe('passthrough');
+    expect(at('arr.split', 'src/notify.ts', 'references').status).toBe('unresolved');
 
     // ---- Non-bare function_ref (`::` member-pointer arm) ----
     // `W::m` — the only scoped match (`Outer::Sub::m` fails the `::W::m`

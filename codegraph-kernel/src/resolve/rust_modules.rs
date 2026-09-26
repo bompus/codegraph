@@ -29,7 +29,7 @@ impl KernelResolver {
         // is unreadable — for rust (no bindings rows) that's every missing
         // file, which then falls to matchReference's unported arms.
         if self.read_file(&r.file_path).is_none() {
-            return Ok(Some(ResolveOutcome::passthrough("ineligible:lang")));
+            return Ok(None);
         }
         match self.match_rust_path_reference(r)? {
             // A gated candidate is discarded to terminal unresolved — the

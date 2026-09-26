@@ -828,6 +828,16 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.90 Resolver port, leg 7f (part 3a): the kernel settles every ref (2026-09-26)
+
+The last punts are gone, along with the `Halt::Punt` plumbing and the `passthrough` outcome constructor:
+
+- **Supertype walks** over a db that may lack supertype edges now return a miss instead of handing the ref back. That can only be a pool worker's snapshot taken mid-prerequisite phase, which has been unreachable since §5.78: the snapshot refreshes before the first calls batch. A miss is the safe direction, silent rather than wrong.
+- **`unknown`-language refs**, from an undetected file, are a native miss.
+- **A Rust module path in an unreadable file** continues down the kernel's ordinary route, as TypeScript falls through to its name arms.
+
+vitest, ktor, laravel, ripgrep, Ocelot, celery and redis all report zero punts and dump identically. The TypeScript side still accepts a `passthrough` status until the spine itself is deleted (3b).
+
 ### 5.89 Resolver port, leg 7f (part 2): the route punts, and verdicts no framework may overturn (2026-09-26)
 
 Three more punts go:
