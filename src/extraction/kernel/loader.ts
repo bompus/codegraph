@@ -239,22 +239,19 @@ export interface KernelCandidateOut {
 /**
  * One verdict per input ref. `status`:
  *   resolved    — verdict (gates + alias forwarding applied)
- *   unresolved  — terminal miss
- *   passthrough — kernel declined; run the full TS pipeline
+ *   unresolved  — a miss (a candidate list, when present, still merges)
  * `candidates` is populated only when frameworks are active and the kernel
  * produced a non-final verdict — the raw [import?, name?] list for the TS
  * first-max merge with framework candidates.
  */
 export interface ResolveOutcome {
-  status: 'resolved' | 'unresolved' | 'passthrough' | string;
+  status: 'resolved' | 'unresolved' | string;
   targetNodeId?: string;
   confidence?: number;
   resolvedBy?: string;
   isFinal: boolean;
   candidates?: KernelCandidateOut[];
-  /** Passthrough: the gate that declined (diagnostics; absent on older
-   *  binaries — tally those under 'unknown'). On an `unresolved` outcome,
-   *  `'defer'` marks a chain call the conformance pass retries when no
+  /** On an `unresolved` outcome, `'defer'` marks a chain call the conformance pass retries when no
    *  framework claims it, and `'defer-this'` a `this.<member>` function ref
    *  the `this.<member>` pass retries. */
   reason?: string;

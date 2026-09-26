@@ -828,6 +828,20 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.91 Resolver port, leg 7f (part 3b, step 1): every path resolves through the kernel (2026-09-26)
+
+No resolution path falls back to TypeScript any more:
+
+- **Full index, no pool.** The main-thread kernel opens when the first batch needs it. A kernel that cannot open, and a native failure mid-run, are errors, not a downgrade.
+- **Full index, pool.** Batches no longer run on the main thread while the workers boot: the first fan-out waits for them, and every later batch fans out whatever its size. The snapshot refresh after the prerequisite phase moved into the fan-out step, so it runs even when the pool becomes ready at that step. A pool failure (boot, fan-out, recycle, refresh) destroys the pool and the run continues on a main-thread kernel over the live db. A pool without a snapshot is not created. The adaptive mid-loop pool engage is gone: it projected only passthrough settle time, which has been zero since §5.90, so it could no longer trigger.
+- **Workers** open their kernel over the snapshot at boot and refuse to start without one.
+- **Incremental sync, the public `resolveReferences`, both deferred passes.** Kernel only. `resolveReferences` opens the live db's kernel and closes it afterwards.
+- **`CODEGRAPH_KERNEL_RESOLVE=0` and `CODEGRAPH_RESOLVE_SHADOW=1`** are removed.
+
+One bug surfaced: right after an index, before anything reads the db again, node:sqlite has no `-shm` mapped, and the kernel's `readonly_shm=1` open fails at its first query ("unable to open database file"). The TypeScript list paths had hidden it. The resolver now runs one node:sqlite read before opening a kernel on the live db.
+
+Gate: dumps from the previous build (9cc255a7) against this one, default and with the pool forced on (`CODEGRAPH_PARALLEL_RESOLVE_MIN=0`). All 28 gate corpora (vitest, vite, svelte, exposed, Ocelot, celery, javalin, ktor, zod, laravel, ripgrep, redis, fmt, gin and the per-language corpora) dump identically in both modes, 56 of 56. `init` wall-clock is unchanged within noise (vitest 4.7 → 4.6s, ktor 7.6 → 7.7s, laravel 18.2 → 17.2s). In forced-pool runs the first fan-out waited 158 ms for the workers on vitest. Incremental sync (index 40 commits back, then sync) dumps identically on ktor, celery and Ocelot; sync-resolve went 2,231 → 1,995 ms on ktor (36,015 refs), 596 → 365 ms on celery, 637 → 568 ms on Ocelot.
+
 ### 5.90 Resolver port, leg 7f (part 3a): the kernel settles every ref (2026-09-26)
 
 The last punts are gone, along with the `Halt::Punt` plumbing and the `passthrough` outcome constructor:

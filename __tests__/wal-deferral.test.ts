@@ -313,7 +313,7 @@ describe('sync WAL deferral end-to-end (#1248)', () => {
     }
   });
 
-  it('applies WAL backpressure during changed-file storage and orphan resolution (#1539)', async () => {
+  it('applies WAL backpressure during changed-file storage (#1539)', async () => {
     writeFixtureProject();
     const cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
@@ -321,10 +321,6 @@ describe('sync WAL deferral end-to-end (#1248)', () => {
       .spyOn(WalCheckpointValve.prototype, 'backpressure')
       .mockReturnValue(null);
 
-    // Kernel-off: while a kernel conn shares the live -shm the batch loop
-    // stops the valve and never calls backpressure — the hook only exists
-    // for kernel-less runs.
-    process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
     try {
       fs.writeFileSync(
         path.join(tmpDir, 'src', 'mod0.ts'),
@@ -334,14 +330,10 @@ describe('sync WAL deferral end-to-end (#1248)', () => {
       const changed = await cg.sync();
       expect(changed.filesModified).toBe(1);
       expect(backpressure).toHaveBeenCalled();
-
-      backpressure.mockClear();
-      await seedPendingRefs(cg);
-      const recovered = await cg.sync();
-      expect(recovered.filesAdded + recovered.filesModified + recovered.filesRemoved).toBe(0);
-      expect(backpressure).toHaveBeenCalled();
+      // Orphan resolution runs on the main-thread kernel, whose conn shares
+      // the live -shm: the valve stays stopped for the whole loop and the
+      // hook is never called (the pool-mode plumbing tests below cover it).
     } finally {
-      delete process.env.CODEGRAPH_KERNEL_RESOLVE;
       backpressure.mockRestore();
       await cg.close();
     }
@@ -356,11 +348,11 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
   // 22GB WAL on a 4.6GB DB. These pin that the batch loop (a) calls the hook
   // at the pool-idle boundary and (b) actually parks on a returned promise.
 
-  // Kernel-off: while a kernel conn shares the live -shm the batch loop
-  // stops the valve and never calls this hook — an off-thread node:sqlite
-  // checkpoint can race the bundled SQLite build's wal-index state, so the
-  // hook exists only for kernel-less runs. The fake valve satisfies the
-  // resolver's pause/resume surface.
+  // Pool mode: while the main-thread kernel conn shares the live -shm the
+  // batch loop stops the valve and never calls this hook — an off-thread
+  // node:sqlite checkpoint can race the bundled SQLite build's wal-index
+  // state. With a pool the workers' kernels read a snapshot copy, so the
+  // hook runs. The fake valve satisfies the resolver's pause/resume surface.
   const fakeValve = (backpressure: () => Promise<void> | null) => ({
     stop() {},
     start() {},
@@ -374,7 +366,7 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
     await cg.indexAll();
     await seedPendingRefs(cg);
 
-    process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
+    process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN = '0';
     try {
       let calls = 0;
       const result = await cg.resolveReferencesBatched(undefined, undefined, fakeValve(() => {
@@ -384,7 +376,7 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
       expect(result.stats.total).toBeGreaterThan(0);
       expect(calls).toBeGreaterThanOrEqual(1);
     } finally {
-      delete process.env.CODEGRAPH_KERNEL_RESOLVE;
+      delete process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;
       await cg.close();
     }
   });
@@ -398,7 +390,7 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     let hookHit = false;
-    process.env.CODEGRAPH_KERNEL_RESOLVE = '0';
+    process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN = '0';
     const done = cg
       .resolveReferencesBatched(undefined, undefined, fakeValve(() => {
         if (hookHit) return null; // park only on the first boundary
@@ -415,7 +407,7 @@ describe('resolution-phase WAL backpressure plumbing (§7a.1)', () => {
 
     release();
     expect(await done).toBe(true);
-    delete process.env.CODEGRAPH_KERNEL_RESOLVE;
+    delete process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;
     await cg.close();
   });
 });

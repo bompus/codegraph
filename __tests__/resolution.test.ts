@@ -2528,7 +2528,7 @@ func main() {
       expect(afterClear.map((n) => n.qualifiedName)).toEqual(['Logger::log']);
     });
 
-    it('resolveBatchYielding offers a yield checkpoint for every ref', async () => {
+    it('resolveBatchKernelFirst offers a yield checkpoint for every ref', async () => {
       fs.writeFileSync(
         path.join(tempDir, 'a.ts'),
         `export function fnA() { return 1; }\nexport function fnB() { return fnA(); }\nexport function fnC() { return fnB(); }\n`,
@@ -2541,7 +2541,7 @@ func main() {
       const resolver = (cg as unknown as { resolver: ReferenceResolver }).resolver;
 
       // `init({ index: true })` already ran resolution, so feed the batch
-      // directly — resolveBatchYielding takes it as an argument; whether each
+      // directly — resolveBatchKernelFirst takes it as an argument; whether each
       // ref resolves is irrelevant to the checkpoint contract.
       const refs: UnresolvedReference[] = ['fnA', 'fnB', 'nosuchFn', 'fnA', 'alsoMissing'].map((name, i) => ({
         fromNodeId: `caller-${i}`,
@@ -2556,8 +2556,10 @@ func main() {
       let checkpoints = 0;
       const countingYield = async () => { checkpoints++; };
       const result = await (resolver as unknown as {
-        resolveBatchYielding(batch: UnresolvedReference[], maybeYield: () => Promise<void>): Promise<{ stats: { total: number } }>;
-      }).resolveBatchYielding(refs, countingYield);
+        resolveBatchKernelFirst(batch: UnresolvedReference[], maybeYield: () => Promise<void>): Promise<{ stats: { total: number } }>;
+        closeKernel(): void;
+      }).resolveBatchKernelFirst(refs, countingYield);
+      resolver.closeKernel();
 
       // One checkpoint per ref: a pocket of pathologically slow refs can never
       // run more than ONE ref past the yield budget before the heartbeat gets
