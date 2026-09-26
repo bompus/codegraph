@@ -256,6 +256,19 @@ CREATE TABLE IF NOT EXISTS node_minhash (
     sig BLOB NOT NULL,
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
+-- The exact score of every candidate pair near-duplicate pairing has scored,
+-- keyed with a < b. Valid while neither body changes: a re-signed or deleted
+-- body drops its rows (explicitly or by cascade), so a sync re-scores only the
+-- pairs a changed body is in.
+CREATE TABLE IF NOT EXISTS near_dup_scores (
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    score REAL NOT NULL,
+    PRIMARY KEY (a, b),
+    FOREIGN KEY (a) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (b) REFERENCES nodes(id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_near_dup_scores_b ON near_dup_scores(b);
 CREATE TABLE IF NOT EXISTS near_duplicates (
     node_id TEXT NOT NULL,
     other_id TEXT NOT NULL,

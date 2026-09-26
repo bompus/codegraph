@@ -130,6 +130,17 @@ export interface NearDuplicateDeps {
   readFile(filePath: string): string | null;
   /** Generated or configured-away files, left out like tests and vendored code. */
   isExcluded?(filePath: string): boolean;
+  /**
+   * A sync's changed files: only their bodies can be stale, so only they are
+   * scanned. Omitted (a full index), every body is checked.
+   */
+  changedFiles?: readonly string[];
+  /**
+   * Pair even when no signature changed. A sync that removed files needs it:
+   * the removed bodies' pairs go by cascade, and the family cap counts pairs,
+   * so a pair it dropped before may now be kept.
+   */
+  force?: boolean;
 }
 
 /**
@@ -137,14 +148,13 @@ export interface NearDuplicateDeps {
  * the pairs. Returns how many signatures were written and pairs stored
  * (`pairs` is null when nothing changed and the stored pairs stand).
  */
-export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number; pairs: number | null } {
+export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number; pairs: number | null; rescored: number } {
   const { queries } = deps;
   const excluded = (p: string) => isTestFile(p) || VENDORED.test(p) || (deps.isExcluded?.(p) ?? false);
-
   // Group stale bodies by file so each file is read once.
   const stale = new Map<string, Array<{ id: string; name: string; startLine: number; endLine: number; updatedAt: number }>>();
   const drop: string[] = [];
-  for (const c of queries.minhashCandidates(MIN_LINES)) {
+  for (const c of queries.minhashCandidates(MIN_LINES, deps.changedFiles)) {
     if (excluded(c.filePath)) {
       if (c.sigUpdatedAt !== null) drop.push(c.id);
       continue;
@@ -154,7 +164,6 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
     list.push(c);
     stale.set(c.filePath, list);
   }
-
   const rows: Array<{ nodeId: string; nodeUpdatedAt: number; sig: Uint8Array }> = [];
   for (const [filePath, bodies] of stale) {
     const lines = deps.readFile(filePath)?.split(/\r?\n/);
@@ -163,24 +172,33 @@ export function refreshNearDuplicates(deps: NearDuplicateDeps): { signed: number
       rows.push({ nodeId: b.id, nodeUpdatedAt: b.updatedAt, sig: sig ? new Uint8Array(sig.buffer) : new Uint8Array(0) });
     }
   }
+  // A re-signed body's cached pair scores are stale; a dropped body's are moot.
+  queries.deleteNearDupScoresFor([...rows.map((r) => r.nodeId), ...drop]);
   queries.upsertMinhash(rows);
   queries.deleteMinhash(drop);
-  if (rows.length === 0 && drop.length === 0) return { signed: 0, pairs: null };
-  return { signed: rows.length, pairs: pairNearDuplicates(deps) };
+  if (rows.length === 0 && drop.length === 0 && !deps.force) return { signed: 0, pairs: null, rescored: 0 };
+  const { kept, rescored } = pairNearDuplicates(deps);
+  return { signed: rows.length, pairs: kept, rescored };
 }
 
 /** LSH over the stored signatures, one band at a time so memory stays linear in the bodies. */
-function pairNearDuplicates(deps: NearDuplicateDeps): number {
+function pairNearDuplicates(deps: NearDuplicateDeps): { kept: number; rescored: number } {
   const { queries } = deps;
   const candidates = new Set<string>();
   const bandBytes = ROWS * 4;
+  // Every signature in one scan (rowid order), then each band's buckets from
+  // the bytes in memory: sixteen SQL scans with a per-row substr and base64
+  // key were most of a sync's near-duplicate cost on a large index. Bands are
+  // still bucketed one at a time, so only one band's keys are alive at once.
+  const { rowids, nodeIds, sigs: allSigs } = queries.minhashAll(HASHES * 4);
   for (let band = 0; band < BANDS; band++) {
     const buckets = new Map<string, number[]>();
-    for (const { rowid, band: bytes } of queries.minhashBand(band * bandBytes, bandBytes)) {
-      const key = Buffer.from(bytes).toString('base64');
+    for (let i = 0; i < rowids.length; i++) {
+      const at = i * HASHES * 4 + band * bandBytes;
+      const key = allSigs.toString('latin1', at, at + bandBytes);
       const bucket = buckets.get(key);
-      if (bucket) bucket.push(rowid);
-      else buckets.set(key, [rowid]);
+      if (bucket) bucket.push(rowids[i]!);
+      else buckets.set(key, [rowids[i]!]);
     }
     for (const ids of buckets.values()) {
       if (ids.length < 2 || ids.length > BUCKET_CAP) continue;
@@ -192,7 +210,12 @@ function pairNearDuplicates(deps: NearDuplicateDeps): number {
 
   // Candidates are decided on their exact shingle overlap, read back from
   // source; the estimate from the signatures is the fallback when a body
-  // cannot be read.
+  // cannot be read. A pair's score depends only on its two bodies, so a
+  // cached score stands until either body changes (refreshNearDuplicates
+  // drops those); only the rest are read and scored. Banding still runs in
+  // full: a changed body can move an unchanged pair's bucket across the cap.
+  const cached = queries.nearDupScores();
+  const scored: Array<{ a: string; b: string; score: number }> = [];
   const files = new Map<string, string[] | null>();
   const lines = (filePath: string) => {
     if (!files.has(filePath)) files.set(filePath, deps.readFile(filePath)?.split(/\r?\n/) ?? null);
@@ -215,16 +238,25 @@ function pairNearDuplicates(deps: NearDuplicateDeps): number {
   const degree = new Map<string, number>();
   for (const key of candidates) {
     const [x, y] = key.split(':').map(Number) as [number, number];
-    const a = load(x);
-    const b = load(y);
-    if (!a || !b) continue;
-    const score = a.set && b.set ? jaccard(a.set, b.set) : similarity(a.sig, b.sig);
+    const idX = nodeIds.get(x);
+    const idY = nodeIds.get(y);
+    if (!idX || !idY) continue;
+    const [lo, hi] = idX < idY ? [idX, idY] : [idY, idX];
+    let score = cached.get(`${lo}\n${hi}`);
+    if (score === undefined) {
+      const a = load(x);
+      const b = load(y);
+      if (!a || !b) continue;
+      score = a.set && b.set ? jaccard(a.set, b.set) : similarity(a.sig, b.sig);
+      scored.push({ a: lo, b: hi, score });
+    }
     if (score < NEAR_DUPLICATE_THRESHOLD) continue;
-    pairs.push({ a: a.nodeId, b: b.nodeId, score });
-    degree.set(a.nodeId, (degree.get(a.nodeId) ?? 0) + 1);
-    degree.set(b.nodeId, (degree.get(b.nodeId) ?? 0) + 1);
+    pairs.push({ a: idX, b: idY, score });
+    degree.set(idX, (degree.get(idX) ?? 0) + 1);
+    degree.set(idY, (degree.get(idY) ?? 0) + 1);
   }
+  queries.insertNearDupScores(scored);
   const kept = pairs.filter((p) => degree.get(p.a)! <= FAMILY_CAP && degree.get(p.b)! <= FAMILY_CAP);
   queries.replaceNearDuplicates(kept);
-  return kept.length;
+  return { kept: kept.length, rescored: scored.length };
 }

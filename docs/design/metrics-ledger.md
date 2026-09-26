@@ -828,6 +828,23 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.93 Near-duplicate refresh on sync: cached pair scores, one-scan banding (2026-09-26)
+
+A one-file sync on the Linux-kernel index spent 37 s refreshing near-duplicates. Only the changed file's 375 bodies were re-signed, but every candidate pair in the index (452,957) was re-scored by exact Jaccard, re-reading and shingling each pair's files, and banding read the signature table in sixteen SQL scans.
+
+- Pair scores persist in `near_dup_scores` (cascading on node deletion). A refresh drops only the scores of re-signed or dropped bodies, so a sync re-scores just the pairs a changed body is in. Banding still covers every signature: a changed body can move an unchanged pair's bucket across the cap. The threshold and family cap apply as before, so the stored pairs match a full recompute.
+- Banding reads every signature in one scan and builds each band's buckets from the bytes in memory, one band at a time.
+- A git-scoped sync scans only the changed files for stale bodies. A sync that removed files now re-pairs: the family cap counts pairs, so a removal can bring a capped pair back.
+
+| Linux index, one-file sync (resynthesis off in both), 3 runs | 55706ac7 | this change |
+|---|---|---|
+| nearDuplicates | 37.4 / 37.6 / 37.3 s | 6.6 / 7.2 / 7.7 s |
+| whole sync | 45.1 / 45.8 / 46.2 s | 16.2 / 15.6 / 15.9 s |
+| pairs re-scored | 452,957 | 84 |
+| stored pairs (hash) | `ed6bb35b5b24` | `ed6bb35b5b24` |
+
+What remains is banding over 659,557 signatures (4.9–5.8 s) and loading the cached scores (1.3–1.4 s). On `linux-fs` (36,597 signatures) the sync's phase went from 1.6 s to 0.45 s and a full index's from 2.6 s to 1.9 s, pairs identical.
+
 ### 5.92 Resolver port, leg 7f (part 3b, step 2): the TypeScript spine is deleted (2026-09-26)
 
 Nothing reached the TypeScript strategies after §5.91, so they are gone: `resolveOne`/`resolveOneInner`, every `name-matcher.ts` strategy, `resolveViaImport` and the other TypeScript import strategies, `receiver-iteration.ts`, `js-builtins.ts`, and five `ResolutionContext` members (`getMethodMatches`, `getSupertypes`, `getSupertypeNodes`, `getReExports`, `getNodesByLowerName`) with their caches. About 7,500 lines of `src/` go. `name-matcher.ts` (4,721 lines) becomes `gates.ts` (134: the language-family gates, the ambiguity ceiling, binding helpers); `import-resolver.ts` drops from 2,547 to 1,021 lines and keeps the import-path helpers the synthesizers and framework resolvers use.
