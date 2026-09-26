@@ -558,6 +558,7 @@ impl KernelResolver {
         }
         match route(r) {
             Route::Passthrough(reason) => Ok(ResolveOutcome::passthrough(reason)),
+            Route::Unresolved => Ok(ResolveOutcome::unresolved()),
             Route::CInclude => self.resolve_c_include_import_ref(r),
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
             // import member descent, filePath and qualifiedName — the rest
@@ -595,13 +596,15 @@ impl KernelResolver {
             }
         }
         // nix-path/arkts-dot/erlang-arity arms are dead for migrated bare
-        // names; the claimsReference arm is evaluated natively — a claimed
-        // name still reaches the framework resolvers through the TS path.
+        // names; the claimsReference arm is evaluated natively. A claimed name
+        // that no definition or import carries can only be answered by the
+        // framework resolvers — every name arm finds nothing — so it settles
+        // through the framework merge alone.
         let pre_pass = probe!(r, "pre-pass",
             self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
         if !pre_pass {
             if self.framework_claims(&r.reference_name) {
-                return Ok(ResolveOutcome::passthrough("claimed"));
+                return Ok(ResolveOutcome::no_candidates());
             }
             return self.store_binding_on_prefilter_miss(r);
         }
@@ -782,12 +785,12 @@ impl KernelResolver {
         }
     }
 
-    /// A gated-out ≥0.9 import: only the full TS spine can tell whether a
-    /// ≥0.9 framework hit would have pre-empted it, so hand it back when
-    /// frameworks are live.
+    /// A gated-out ≥0.9 import resolves to nothing, unless a ≥0.9 framework
+    /// hit pre-empts it (resolveOneInner returns the import before any <0.9
+    /// framework candidate can merge): exactly the final-miss rule.
     pub(super) fn gated_import(&self) -> ResolveOutcome {
         if self.frameworks_active {
-            ResolveOutcome::passthrough("gated-import")
+            ResolveOutcome::final_miss()
         } else {
             ResolveOutcome::unresolved()
         }
@@ -814,6 +817,8 @@ enum Route {
     CInclude,
     NonBare,
     Bare,
+    /// A ref with no file: no arm can place it.
+    Unresolved,
 }
 
 /// ref_is_eligible, split so a passthrough names its gate.
@@ -843,7 +848,7 @@ fn route(r: &ResolveRefIn) -> Route {
         return Route::NonBare;
     }
     if r.file_path.is_empty() {
-        return Route::Passthrough("ineligible:path");
+        return Route::Unresolved;
     }
     Route::Bare
 }

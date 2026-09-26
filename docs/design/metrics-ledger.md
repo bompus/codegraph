@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.88 Resolver port, leg 7f (part 1): the framework-only punts (2026-09-26)
+
+Two punts existed only because the kernel couldn't run the framework resolvers:
+
+- **`claimed`:** a prefilter miss that a framework claims. No definition or import carries such a name, so every name arm finds nothing and only the frameworks can answer. It now settles through the framework merge (`no_candidates`), where the frameworks run.
+- **`gated-import`:** a ≥0.9 import the target-kind gate rejects. resolveOneInner returns that import before any <0.9 framework candidate can merge, so only a ≥0.9 framework hit overturns it. That is the existing `final_miss` rule, which is what the kernel now returns.
+
+A ref with no file path is a native miss. zod (`claimed` 3) and celery (`gated-import` 3) have zero punts; zod, celery, vitest, svelte, laravel, ktor, exposed and symfony/demo dump identically.
+
+Punts left for 7f: the C/C++ include route's name arms, Rust's mixed `::`/`.` names, Go's dotted-chain fallback, ArkTS `.attr` refs, supertype walks before a snapshot is complete, and the `unknown` language.
+
 ### 5.87 Resolver port, leg 7e: VB.NET, the last language (2026-09-26)
 
 VB.NET had no TypeScript-only resolution arm (its interop group, `dotnet`, already matched), so admission was the change. Every language the extractor supports now resolves in the kernel; only `unknown`, the placeholder for undetected files, is outside the migrated set.
