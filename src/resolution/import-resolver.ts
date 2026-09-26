@@ -1276,14 +1276,11 @@ export function resolveViaImport(
   // search for a symbol literally named `./commands/about.ts`, and basename
   // matching guesses among same-named files (warp-drive has six `install.ts`).
   // Specifiers without a path shape (`react`, `v.m`) keep the symbol path.
+  // Component files (Svelte, Vue, Astro) import the same specifiers.
   if (
     ref.referenceKind === 'imports' &&
     ref.referenceName.includes('/') &&
-    (ref.language === 'typescript' ||
-      ref.language === 'tsx' ||
-      ref.language === 'javascript' ||
-      ref.language === 'jsx' ||
-      ref.language === 'arkts')
+    ESM_IMPORT_LANGUAGES.has(ref.language)
   ) {
     const resolvedPath = resolveImportPath(ref.referenceName, ref.filePath, ref.language, context);
     if (!resolvedPath) return null;
