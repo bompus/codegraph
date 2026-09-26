@@ -124,6 +124,19 @@ const FIXTURE: Record<string, string> = {
     '}',
     'function reguser() { Registry::make()->name(); }',
   ].join('\n'),
+  // A PHP `instanceof` branch narrows `$x` inside its body only.
+  'src/g.php': [
+    '<?php',
+    'class Cat { function meow() {} }',
+    'function pet($x) {',
+    '    if ($x instanceof Cat) {',
+    '        $x->meow();',
+    '    }',
+    '    if ($x instanceof Nope) {',
+    '        $x->meow();',
+    '    }',
+    '}',
+  ].join('\n'),
   // Stage-2 member inference: `svc := NewService()` exercises the Go factory
   // arm (callee return type → owner → member); `o.in.Do()` the two-hop field
   // chain (param type → field type → method).
@@ -620,6 +633,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().drain', 'src/w.cpp', 'cpp', 'calls', 5);
     seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().nope', 'src/w.cpp', 'cpp', 'calls', 5);
     seed(nodeId('reguser', 'reg.php'), 'Registry::make().name', 'src/reg.php', 'php', 'calls', 6);
+    ins.run(nodeId('pet', 'g.php'), 'x.meow', 'calls', 5, 8, 'src/g.php', 'php');
+    ins.run(nodeId('pet', 'g.php'), 'x.meow', 'calls', 8, 8, 'src/g.php', 'php');
     seed(goRun, 'NewService().Run', 'main.go', 'go', 'calls', 16);
     seed(goRun, 'nosuch().Run', 'main.go', 'go', 'calls', 17);
     seed(nodeId('user2', 'K.java', 'method'), 'J2.getK().mymethod', 'src/K.java', 'java', 'calls', 3);
@@ -995,6 +1010,15 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
     // scopedChain: `Registry::make` returns `self` → the factory's own class
     // → `Registry::name` @0.85.
+    // mc-guarded — `$x instanceof Cat` types `$x` inside its body; the
+    // second branch names an undeclared type, so nothing is proven there.
+    const guardedIdx = batch
+      .map((row, i) => ({ row, i }))
+      .filter(({ row }) => row.referenceName === 'x.meow' && row.filePath === 'src/g.php');
+    const guarded = new Map(guardedIdx.map(({ row, i }) => [row.line, outcomes[i]!]));
+    expect(guarded.get(5)!.status).toBe('resolved');
+    expect(guarded.get(5)!.targetNodeId).toBe(nodeId('meow', 'g.php', 'method'));
+    expect(guarded.get(8)!.status).toBe('unresolved');
     const phpChain = at('Registry::make().name', 'src/reg.php', 'calls');
     expect(phpChain.status).toBe('resolved');
     expect(phpChain.resolvedBy).toBe('instance-method');
