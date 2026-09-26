@@ -25,7 +25,7 @@ import type { Edge, Language, Node, NodeKind } from '../types';
 import type { QueryBuilder } from '../db/queries';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
-import { stripCommentsForRegex } from './strip-comments';
+import { stripCommentsForRegex, withStripMemo } from './strip-comments';
 import { cFnPointerDispatchEdges } from './c-fnptr-synthesizer';
 import { drupalHookEdges } from './drupal-hook-synthesizer';
 import { goframeRouteEdges } from './goframe-synthesizer';
@@ -150,9 +150,31 @@ function nuxtComponentName(filePath: string): string | null {
   return out.join('');
 }
 
+// Callers walk one file's nodes in a row, so the last file's lines are kept:
+// splitting the whole file once per node was the JSX and render passes' top
+// cost (466 ms of a 2.8 s pretix run).
+let sliceLinesSource: string | null = null;
+let sliceLinesSplit: string[] = [];
 function sliceLines(content: string, startLine?: number, endLine?: number): string | null {
   if (!startLine || !endLine) return null;
-  return content.split('\n').slice(startLine - 1, endLine).join('\n');
+  if (content !== sliceLinesSource) {
+    sliceLinesSource = content;
+    sliceLinesSplit = content.split('\n');
+  }
+  return sliceLinesSplit.slice(startLine - 1, endLine).join('\n');
+}
+
+// `src.slice(0, idx).split('\n').length` per match is quadratic on a file with
+// many matches (the registry pass's top cost). The line index is built once
+// per text, and the last text's index is kept.
+let lineOfSource: string | null = null;
+let lineOfIndex: (idx: number) => number = () => 1;
+function lineOf(src: string, idx: number): number {
+  if (src !== lineOfSource) {
+    lineOfSource = src;
+    lineOfIndex = makeLineAt(src, 1);
+  }
+  return lineOfIndex(idx);
 }
 
 function registrarField(src: string): string | null {
@@ -838,7 +860,7 @@ async function arkuiEmitterEdges(ctx: ResolutionContext, onYield: MaybeYield): P
     while ((m = ARKUI_EMITTER_CALL_RE.exec(safe))) {
       const verb = m[1]!;
       const arg = m[2]!.trim();
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       const encl = nodes
         .filter((n) => n.startLine <= line && n.endLine >= line)
         .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0];
@@ -942,7 +964,7 @@ async function arkuiRouterEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     let m: RegExpExecArray | null;
     while ((m = ARKUI_ROUTER_RE.exec(safe))) {
       const url = m[1]!;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       const encl = nodes
         .filter((n) => n.startLine <= line && n.endLine >= line)
         .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0];
@@ -2430,7 +2452,7 @@ async function ginMiddlewareChainEdges(queries: QueryBuilder, ctx: ResolutionCon
       const parenIdx = m.index + m[0].length - 1;
       const argStr = goBalancedArgs(safe, parenIdx);
       if (!argStr) continue;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       for (const arg of goSplitArgs(argStr)) {
         const name = goHandlerIdent(arg);
         if (name && !registered.has(name)) registered.set(name, `${file}:${line}`);
@@ -2607,7 +2629,7 @@ async function reduxThunkEdges(queries: QueryBuilder, ctx: ResolutionContext, on
       const key = `${node.id}>${target.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const line = node.startLine + safe.slice(0, m.index).split('\n').length - 1;
+      const line = node.startLine + lineOf(safe, m.index) - 1;
       edges.push({
         source: node.id,
         target: target.id,
@@ -2754,7 +2776,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
     while ((dm = REGISTRY_DISPATCH_RE.exec(safe))) {
       const win = safe.slice(dm.index, dm.index + 160);
       const cm = /\]\s*\([^)]*\)\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win) || /\]\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win);
-      dispatches.push({ ref: dm[1]!, line: safe.slice(0, dm.index).split('\n').length, chained: cm ? cm[1]! : null });
+      dispatches.push({ ref: dm[1]!, line: lineOf(safe, dm.index), chained: cm ? cm[1]! : null });
     }
     // Literal-key accesses through an alias (`r['k'](…)`) — collected up front
     // so a file with ONLY these (no `r[k]` var dispatch) still proceeds.
@@ -2808,7 +2830,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
       if (!body) continue;
       const { names, literalKeys } = registryEntryNames(body); // depth-0 `key: Identifier` entries only
       if (names.length >= REGISTRY_MIN_ENTRIES) {
-        registries.set(lhs, { names, literalKeys, line: safe.slice(0, am.index).split('\n').length });
+        registries.set(lhs, { names, literalKeys, line: lineOf(safe, am.index) });
       }
     }
     if (!registries.size) continue;
@@ -2867,7 +2889,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
       if (!reg) continue;
       const handler = reg.literalKeys.get(la.key);
       if (!handler) continue;
-      const line = safe.slice(0, la.pos).split('\n').length;
+      const line = lineOf(safe, la.pos);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue;
       const win = safe.slice(la.pos, la.pos + 160);
@@ -2901,7 +2923,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
       // The const's own scope: a fn-scoped alias bridges only calls in the same
       // function after the assignment (a `v(` in another fn is a shadow, not
       // the lookup); a module-level alias stays open to any later call.
-      const assignLine = safe.slice(0, ca.pos).split('\n').length;
+      const assignLine = lineOf(safe, ca.pos);
       const aliasScope = enclosingFn(nodesInFile, assignLine);
       const callRe = new RegExp(`(^|[^\\w$])${ca.var.replace(/\$/g, '\\$')}\\s*\\(`, 'g');
       let cl: RegExpExecArray | null;
@@ -2910,7 +2932,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
         if (varStart <= ca.pos) continue; // uses can't precede the const (TDZ)
         // Skip `function v(` declarations — only a bare `v(` use is a dispatch.
         if (/function\s*$/.test(safe.slice(Math.max(0, varStart - 12), varStart))) continue;
-        const line = safe.slice(0, varStart).split('\n').length;
+        const line = lineOf(safe, varStart);
         const disp = enclosingFn(nodesInFile, line);
         if (!disp || (aliasScope && disp.id !== aliasScope.id)) continue;
         const names = ca.litKey !== null ? [reg.literalKeys.get(ca.litKey)].filter((x): x is string => !!x) : reg.names;
@@ -3060,7 +3082,7 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
     let added = 0;
     const linkCall = (storeFile: string, method: string, matchIndex: number): void => {
       if (added >= PINIA_FANOUT_CAP) return;
-      const line = safe.slice(0, matchIndex).split('\n').length;
+      const line = lineOf(safe, matchIndex);
       const disp = enclosingFn(nodesInFile, line) ?? fallbackDispatcher;
       if (!disp) return;
       const target = ctx
@@ -3166,7 +3188,7 @@ async function vuexDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): P
     let added = 0;
     while ((m = VUEX_DISPATCH_RE.exec(safe)) && added < VUEX_FANOUT_CAP) {
       const key = m[1]!;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       const disp = enclosingFn(nodesInFile, line) ?? fallback;
       if (!disp) continue;
       const target = resolve(key, file);
@@ -3780,7 +3802,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     if (content.includes('.publishEvent(')) {
       SPRING_PUBLISH_RE.lastIndex = 0;
       while ((m = SPRING_PUBLISH_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
-        const line = safe.slice(0, m.index).split('\n').length;
+        const line = lineOf(safe, m.index);
         const disp = enclosingFn(nodesInFile, line);
         if (!disp) continue;
         const type = argType(m[1]!, disp, line);
@@ -3788,7 +3810,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
       }
       SPRING_REPUBLISH_RE.lastIndex = 0;
       while ((m = SPRING_REPUBLISH_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
-        const line = safe.slice(0, m.index).split('\n').length;
+        const line = lineOf(safe, m.index);
         const disp = enclosingFn(nodesInFile, line);
         if (!disp) continue;
         // Gate: the enclosing method must itself be a registered listener —
@@ -3828,7 +3850,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     if (SPRING_AGGREGATE_ROOT_RE.test(safe)) {
       SPRING_REGISTER_RE.lastIndex = 0;
       while ((m = SPRING_REGISTER_RE.exec(safe)) && added < SPRING_FANOUT_CAP) {
-        const line = safe.slice(0, m.index).split('\n').length;
+        const line = lineOf(safe, m.index);
         const disp = enclosingFn(nodesInFile, line);
         if (!disp) continue;
         const type = argType(m[1]!, disp, line);
@@ -3852,7 +3874,7 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
         const body = safeLines.slice(node.startLine - 1, end).join('\n');
         SPRING_NEW_TYPE_RE.lastIndex = 0;
         while ((m = SPRING_NEW_TYPE_RE.exec(body)) && added < SPRING_FANOUT_CAP) {
-          const line = node.startLine + body.slice(0, m.index).split('\n').length - 1;
+          const line = node.startLine + lineOf(body, m.index) - 1;
           emit(node, m[1]!, line);
         }
       }
@@ -3988,7 +4010,7 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
     let added = 0;
     while ((m = MEDIATR_DISPATCH_RE.exec(safe)) && added < MEDIATR_FANOUT_CAP) {
       if (!MEDIATR_RECEIVER_RE.test(m[1]!)) continue; // not a mediator (MessagingCenter, HttpClient, …)
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue;
       const verb = m[2]!;
@@ -5092,7 +5114,7 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
       const behaviour = behaviours[0]!;
       const targets = targetsOf(behaviour, fn, arity);
       if (targets.length === 0 || targets.length > ERLANG_BEHAVIOUR_FANOUT_CAP) continue;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue;
       for (const target of targets) {
@@ -5280,7 +5302,7 @@ async function laravelEventEdges(ctx: ResolutionContext, onYield: MaybeYield): P
     while ((m = LARAVEL_DISPATCH_RE.exec(safe)) && added < LARAVEL_FANOUT_CAP) {
       const targets = listeners.get(phpSimpleName(m[1]!));
       if (!targets) continue;
-      const line = safe.slice(0, m.index).split('\n').length;
+      const line = lineOf(safe, m.index);
       const disp = enclosingFn(nodesInFile, line);
       if (!disp) continue;
       for (const target of targets.values()) {
@@ -5619,7 +5641,60 @@ export const SYNTH_PASSES: SynthPassDef[] = [
 /** Fixed non-registry steps: goMethodContains, goImplements, dedupe-merge, insertMergedEdges. */
 const FIXED_SYNTH_STEPS = 4;
 export const SYNTH_PROGRESS_STEPS = SYNTH_PASSES.length + FIXED_SYNTH_STEPS;
+/**
+ * The context the synthesis passes share for one run: file contents and
+ * per-file nodes are read once and handed to every pass. The resolver's own
+ * caches are LRUs sized for resolution batches (1,000 files of content, 5,000
+ * of nodes); ~30 passes each walking every file of a 13k-file repository
+ * evicted each other's entries, so every pass re-read the repository from
+ * disk and SQLite (a quarter of a trezor-suite run each). Content is capped
+ * at `RUN_CACHE_BYTES`; past it, reads fall through to the resolver.
+ */
+const RUN_CACHE_BYTES = 256 * 1024 * 1024;
+function withRunCache(ctx: ResolutionContext): ResolutionContext {
+  const files = new Map<string, string | null>();
+  const nodes = new Map<string, Node[]>();
+  let bytes = 0;
+  return {
+    ...ctx,
+    readFile(filePath: string): string | null {
+      const hit = files.get(filePath);
+      if (hit !== undefined) return hit;
+      const content = ctx.readFile(filePath);
+      if (bytes + (content?.length ?? 0) <= RUN_CACHE_BYTES) {
+        files.set(filePath, content);
+        bytes += content?.length ?? 0;
+      }
+      return content;
+    },
+    getNodesInFile(filePath: string): Node[] {
+      let list = nodes.get(filePath);
+      if (!list) {
+        list = ctx.getNodesInFile(filePath);
+        if (bytes <= RUN_CACHE_BYTES) nodes.set(filePath, list);
+      }
+      return list;
+    },
+  };
+}
+
 export async function synthesizeCallbackEdges(
+  queries: QueryBuilder,
+  ctx: ResolutionContext,
+  onProgress?: (done: number, total: number) => void,
+  // A live resolver pool to fan the independent passes across (structural type
+  // so this file never imports the pool — resolver-worker imports THIS file).
+  // Null/omitted → the sequential path, byte-identical to the pool path.
+  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number }> } | null,
+  // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
+  // pool-idle points in the edge-insert loops below — the passes themselves
+  // only read; every write in this function happens with the pool idle.
+  backpressure?: () => Promise<void> | null
+): Promise<number> {
+  return withStripMemo(() => synthesizeWith(queries, withRunCache(ctx), onProgress, pool, backpressure));
+}
+
+async function synthesizeWith(
   queries: QueryBuilder,
   ctx: ResolutionContext,
   onProgress?: (done: number, total: number) => void,

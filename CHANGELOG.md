@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Edges codegraph infers from dynamic dispatch (event handlers, callbacks, React re-renders, calls between front end and back end, external API calls) now come back after you edit a file, a few seconds after you stop typing, instead of staying missing until the next full index. A handler you unregister no longer stays linked either. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns this off.
 
+- Indexing and the post-edit refresh of those edges are faster on large JavaScript and TypeScript projects, up to about twice as fast where many components or registries are involved.
+
 - In Kotlin, a call to a function imported from a Java class (`import io.javalin.apibuilder.ApiBuilder.get`, then `get(...)`) now links to that Java function instead of an unrelated function with the same name, and Kotlin references to imported Java classes are now linked through the import.
 
 - A session that cannot reach the shared codegraph server, because that server stopped answering, runs a different version, or another session already fell back, now still gets codegraph's answers instead of a "writer lock held" error. It reads the index itself and leaves keeping it up to date to the process that holds the lock.

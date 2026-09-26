@@ -84,7 +84,46 @@ export type CommentLang =
   | 'cpp'
   | 'erlang';
 
+/**
+ * A synthesis run's memo of stripped text, keyed by language and by the exact
+ * content string (the run's file cache hands every pass the same string, so a
+ * lookup is a pointer compare after the first hash). Roughly 30 passes each
+ * strip every file of their languages; without it a 13k-file repository
+ * stripped each one per pass. Bounded by `STRIP_MEMO_BYTES`.
+ */
+let stripMemo: Map<CommentLang, Map<string, string>> | null = null;
+let stripMemoBytes = 0;
+const STRIP_MEMO_BYTES = 256 * 1024 * 1024;
+
+/** Run `work` with stripped text memoized; the memo is dropped when it settles. */
+export async function withStripMemo<T>(work: () => Promise<T>): Promise<T> {
+  const prev = stripMemo;
+  const prevBytes = stripMemoBytes;
+  stripMemo = new Map();
+  stripMemoBytes = 0;
+  try {
+    return await work();
+  } finally {
+    stripMemo = prev;
+    stripMemoBytes = prevBytes;
+  }
+}
+
 export function stripCommentsForRegex(content: string, lang: CommentLang): string {
+  if (!stripMemo) return stripUncached(content, lang);
+  let byLang = stripMemo.get(lang);
+  const hit = byLang?.get(content);
+  if (hit !== undefined) return hit;
+  const out = stripUncached(content, lang);
+  if (stripMemoBytes + out.length <= STRIP_MEMO_BYTES) {
+    if (!byLang) stripMemo.set(lang, (byLang = new Map()));
+    byLang.set(content, out);
+    stripMemoBytes += out.length;
+  }
+  return out;
+}
+
+function stripUncached(content: string, lang: CommentLang): string {
   switch (lang) {
     case 'python':
       return stripPython(content);
