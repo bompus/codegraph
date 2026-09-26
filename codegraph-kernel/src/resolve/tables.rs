@@ -408,6 +408,15 @@ pub(super) fn is_esm_import_language(lang: &str) -> bool {
     )
 }
 
+/// isPhpIncludePathRef (import-resolver.ts): a PHP `imports` ref shaped like
+/// a path — PHP identifiers carry neither `/` nor `.`, a namespace `use` never
+/// does.
+pub(super) fn is_php_include_path_ref(r: &ResolveRefIn) -> bool {
+    r.language == "php"
+        && r.reference_kind == "imports"
+        && (r.reference_name.contains('/') || r.reference_name.contains('.'))
+}
+
 /// isBindingReceiverCall (name-matcher.ts): a `calls` ref in a binding-
 /// carrying language shaped `receiver.method`, excluding `()`-chains and
 /// the self/this/super/cls receiver roots.

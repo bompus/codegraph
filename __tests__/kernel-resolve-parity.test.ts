@@ -124,6 +124,15 @@ const FIXTURE: Record<string, string> = {
     '}',
     'function reguser() { Registry::make()->name(); }',
   ].join('\n'),
+  // PHP include paths resolve to files only: relative to the including file,
+  // `.php` optional, and a miss never name-matches a same-named file.
+  'src/inc/db.php': '<?php\nfunction dbconnect() {}\n',
+  'src/useinc.php': [
+    '<?php',
+    "require 'inc/db.php';",
+    "require 'inc/db';",
+    "require 'nowhere/g.php';",
+  ].join('\n'),
   // A PHP `instanceof` branch narrows `$x` inside its body only.
   'src/g.php': [
     '<?php',
@@ -634,6 +643,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('pooluser', 'w.cpp'), 'Pool::instance().nope', 'src/w.cpp', 'cpp', 'calls', 5);
     seed(nodeId('reguser', 'reg.php'), 'Registry::make().name', 'src/reg.php', 'php', 'calls', 6);
     ins.run(nodeId('pet', 'g.php'), 'x.meow', 'calls', 5, 8, 'src/g.php', 'php');
+    for (const [name, line] of [['inc/db.php', 2], ['inc/db', 3], ['nowhere/g.php', 4]] as const) {
+      ins.run('file:src/useinc.php', name, 'imports', line, 0, 'src/useinc.php', 'php');
+    }
     ins.run(nodeId('pet', 'g.php'), 'x.meow', 'calls', 8, 8, 'src/g.php', 'php');
     seed(goRun, 'NewService().Run', 'main.go', 'go', 'calls', 16);
     seed(goRun, 'nosuch().Run', 'main.go', 'go', 'calls', 17);
@@ -1010,6 +1022,14 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('Pool::instance().nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
     // scopedChain: `Registry::make` returns `self` → the factory's own class
     // → `Registry::name` @0.85.
+    // PHP include paths (prerequisite-phase `imports` rows).
+    const dbFile = cg!.getNodesByKind('file').find((n) => n.filePath === 'src/inc/db.php')!.id;
+    for (const name of ['inc/db.php', 'inc/db']) {
+      const inc = atPre(name, 'src/useinc.php');
+      expect(inc.status, name).toBe('resolved');
+      expect(inc.targetNodeId, name).toBe(dbFile);
+    }
+    expect(atPre('nowhere/g.php', 'src/useinc.php').status).toBe('unresolved');
     // mc-guarded — `$x instanceof Cat` types `$x` inside its body; the
     // second branch names an undeclared type, so nothing is proven there.
     const guardedIdx = batch

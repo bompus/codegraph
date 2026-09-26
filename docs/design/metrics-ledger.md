@@ -828,6 +828,15 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.73 Resolver port: PHP imports (2026-09-26)
+
+Every PHP `imports` ref punted as `php-inc` because resolveViaImport's include-path arm was unported. That arm only takes path-shaped refs (`inc/db.php`, `config`): a namespace `use` (`App\Foo\Bar`) has neither `/` nor `.`, and those refs, the bulk of the punt, already had a full kernel path. The kernel now ports the arm: the literal resolves against the including file's directory, `.php` is tried when omitted, and the file node is the answer. A path-shaped ref that the import arm misses is terminal (best candidate so far, else unresolved) and never name-matches a same-named file elsewhere (#660).
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| laravel, pool | 93.8% (`php-inc` 14,561) | 99.9% | identical |
+| laravel, sequential | 91.0% (`php-inc` 22,156) | 100.0% | identical |
+
 ### 5.72 Resolver port, Phase 6 leg 6c: PHP instanceof receivers (2026-09-26)
 
 A PHP member call punted as `mc-guarded` in any file containing `instanceof`, because inferGuardedReceiver walks a parse tree. The kernel now walks its own: from the call's node up to the nearest enclosing function-like node, the first `if` whose body holds the call and whose condition is exactly `($receiver instanceof T)` narrows the receiver to `T`, unless the receiver is re-bound inside that `if` (a binding row starting after it) or assigned in its body before the call. That closes the last `mc-*` punt.

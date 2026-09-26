@@ -229,11 +229,6 @@ impl KernelResolver {
                 };
             }
         }
-        // PHP `imports` refs take the include-path arm inside resolveViaImport
-        // (unported — include-path file resolution) — punt the whole kind.
-        if r.language == "php" && r.reference_kind == "imports" {
-            return Ok(ResolveOutcome::passthrough("php-inc"));
-        }
         // resolvePhpImportedStaticCall — terminal before frameworks.
         if let Some(outcome) = self.resolve_php_imported_static(r)? {
             return Ok(outcome);
@@ -294,8 +289,13 @@ impl KernelResolver {
                 }
             }
         }
-        // isPhpIncludePathRef / cobol / nix / terraform terminal-merge arm:
-        // php imports punt above; the rest are unmigrated languages.
+        // isPhpIncludePathRef: an include path resolves to a file through the
+        // import arm or not at all — a name match would bind `inc/db.php` to
+        // an unrelated `db.php` (#660). cobol / nix / terraform share the arm
+        // in TS but are unmigrated languages.
+        if is_php_include_path_ref(r) {
+            return if cands.is_empty() { Ok(self.refused()) } else { self.settle(r, cands) };
+        }
 
         // matchReference's leading arkts arm — `.attr` names resolve ONLY to
         // decorator-marked helpers, never the name-match fallthrough.
