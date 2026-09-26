@@ -65,7 +65,7 @@ their dependencies. The root config (`vitest.config.mts`, `.mts` because the plu
 ESM-only and the repo is CJS) is the shared base; note that a workspace project **concatenates**
 the base's `include` with its own, which is why the `ui` project does not `extends` it.
 
-Node engines: `>=20.0.0`. There is a hard exit below Node 20 (see `src/bin/node-version-check.ts`). Node 25+ is untested.
+Node engines: `>=20.0.0`. There is a hard exit below Node 20 (see `src/bin/node-version-check.ts`). The full suite also passes on Node 26 and Bun; the tested versions are listed in the README's "Runtimes" section.
 
 ## Architecture
 
