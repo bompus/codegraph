@@ -47,6 +47,8 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import type { FileWatcher, WatchOptions, PendingFile } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
+import { isGeneratedFile } from './extraction/generated-detection';
+import { refreshNearDuplicates } from './graph/near-duplicates';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
 import ignore from 'ignore';
@@ -658,6 +660,7 @@ export class CodeGraph {
           await this.resolver.resolveDeferredThisMemberRefs();
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] deferredThisMember: ${Date.now() - tDeferred}ms`);
         }
+        if (result.success) this.refreshNearDuplicates();
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread (worker connection): on a multi-GB index this is minutes
@@ -1024,6 +1027,7 @@ export class CodeGraph {
           // member is inherited from a supertype (#808).
           await this.resolver.resolveDeferredThisMemberRefs();
         }
+        if (filesChanged || result.filesRemoved > 0) this.refreshNearDuplicates();
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread — see indexAll's call site.
@@ -1323,6 +1327,30 @@ export class CodeGraph {
    * Resolve references in batches to keep memory bounded on large codebases.
    * Processes chunks of unresolved refs, persisting results after each batch.
    */
+  /**
+   * Bring near-duplicate signatures and pairs up to date (src/graph/near-duplicates.ts).
+   * Only changed bodies are re-signed, so a sync that touched no function costs
+   * one query. Never fails an index: the pairs are an annotation.
+   */
+  private refreshNearDuplicates(): void {
+    const t = Date.now();
+    try {
+      const deprioritized = this.queries.getDeprioritizedPathMatcher();
+      // The index's content-based generated flag, not just the path check.
+      const generated = this.queries.generatedPredicateFor(this.queries.getAllFiles().map((f) => f.path));
+      const r = refreshNearDuplicates({
+        queries: this.queries,
+        readFile: (p) => {
+          try { return fs.readFileSync(path.join(this.projectRoot, p), 'utf-8'); } catch { return null; }
+        },
+        isExcluded: (p) => generated(p) || isGeneratedFile(p) || (deprioritized?.(p) ?? false),
+      });
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDuplicates: ${Date.now() - t}ms (${r.signed} signed, ${r.pairs ?? 'unchanged'} pairs)`);
+    } catch (error) {
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] nearDuplicates failed: ${String(error)}`);
+    }
+  }
+
   async resolveReferencesBatched(
     onProgress?: (current: number, total: number) => void,
     onSynthesisProgress?: (done: number, total: number) => void,
@@ -1636,6 +1664,19 @@ export class CodeGraph {
   /**
    * Get all nodes in a file
    */
+  /**
+   * Function and method bodies nearly identical to this one, best first
+   * (src/graph/near-duplicates.ts). Empty on an index built before the table
+   * existed.
+   */
+  getNearDuplicates(nodeId: string, limit = 5): Array<{ node: Node; score: number }> {
+    try {
+      return this.queries.getNearDuplicates(nodeId, limit);
+    } catch {
+      return [];
+    }
+  }
+
   getNodesInFile(filePath: string): Node[] {
     return this.queries.getNodesByFile(filePath);
   }

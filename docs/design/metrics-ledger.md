@@ -802,6 +802,30 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.51 Near-duplicate function bodies (2026-09-26)
+
+An idea from codebase-memory-mcp (OrangeOrchid's comparison, 2026-09-25): MinHash over function bodies to find copies. Scoped with a Python proof of concept first: a private downstream project 55 pairs, this repository 673 (vendored code excluded); 24 of 24 sampled non-test pairs were real copies.
+
+**Prototype A/B before building** (a private downstream project, Sonnet, 3 runs per arm, edit task: fix a relative-URL bug in one URL helper; the same bug sits in two identical copies of it in other files; the prototype read precomputed pairs from a sidecar into explore's blast radius):
+
+| Arm | Saw the line | Copies named to the user | Copies edited | Median time |
+|---|---|---|---|---|
+| New | 3/3 | 2/3 | 0/3 | 71 s |
+| Baseline | — | 0/3 | 0/3 | 68 s |
+
+Agents kept the edit to the function they were asked about and told the user about the copies; without the line no run noticed them.
+
+**Shipped:** a MinHash signature per function/method body (64 hashes, 4-token shingles, the function's own name masked), stored with the node's `updated_at` so a sync re-signs only changed bodies; LSH (16 bands × 4) proposes candidates and the exact Jaccard of the two bodies decides (≥ 0.8), because the 64-hash estimate alone (±0.04) let copies near the threshold come and go. Test files, generated files (the index's content flag) and vendored code (`vendor/`, `grammars/`, `*.min.js`, `*.bundle.js`) are left out, and families of more than 8 alike bodies are dropped as patterns (pretix's `get_success_url` in every view). Shown in explore's blast radius and `codegraph_node`'s trail.
+
+| Corpus | Bodies signed | Pairs | Time per full index |
+|---|---|---|---|
+| pretix | 7,839 | 682 | 0.52 s (of ~15 s) |
+| halo | 3,711 | 158 | 0.25 s |
+| ktor | 4,020 | 528 | 0.56 s |
+| private downstream project | 2,942 | 20 | 0.5 s |
+
+A sync that changes no file skips the pass. Known limit: vendored libraries outside the excluded paths still pair with each other (pretix's `static/d3/` bundles).
+
 ### 5.50 Kotlin imports of Java members (2026-09-26)
 
 Kotlin and Java import each other's declarations, but the JVM import resolver matched only the importer's own language and file extension. On javalin, Kotlin tests' `import io.javalin.apibuilder.ApiBuilder.get` never resolved, and the bare `get(...)` fell to name matching, which bound it to the test HTTP client `HttpUtil::get`. The resolver (TypeScript and kernel) now accepts either JVM language and either extension. A bare call is claimed by the import only when the source at the call's column begins with the name: Kotlin extraction reduces a chain like `app.unsafe.routes.get(...)` to a bare `get` whose column is the start of the chain, and without the check the file's import would have claimed about 120 chained calls at import confidence.

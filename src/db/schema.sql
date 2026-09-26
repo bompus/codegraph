@@ -244,3 +244,23 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- Near-duplicate function bodies (src/graph/near-duplicates.ts). One MinHash
+-- signature per function/method body, stamped with the node's updated_at so a
+-- sync recomputes only changed bodies; an empty signature marks a body too
+-- small to compare. Pairs are stored in both directions. Both follow their
+-- node via ON DELETE CASCADE.
+CREATE TABLE IF NOT EXISTS node_minhash (
+    node_id TEXT NOT NULL UNIQUE,
+    node_updated_at INTEGER NOT NULL,
+    sig BLOB NOT NULL,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS near_duplicates (
+    node_id TEXT NOT NULL,
+    other_id TEXT NOT NULL,
+    score REAL NOT NULL,
+    PRIMARY KEY (node_id, other_id),
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (other_id) REFERENCES nodes(id) ON DELETE CASCADE
+) WITHOUT ROWID;
