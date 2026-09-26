@@ -631,9 +631,11 @@ codegraph uninit [path]           # Remove CodeGraph from a project (--force to 
 codegraph index [path]            # Full index (--force to re-index, --quiet for less output)
 codegraph sync [path]             # Incremental update
 codegraph status [path]           # Show statistics
+codegraph ui [path]               # Open the browser viewer for an indexed project (alias: web; --port, --no-open)
 codegraph unlock [path]           # Remove a stale lock file that's blocking indexing
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph explore <query>         # Relevant symbols' source + call paths in one shot (same output as the codegraph_explore MCP tool)
+codegraph context <task...>       # Context for a task: relevant symbols, relationships and code (--format markdown|json, --max-nodes, --no-code)
 codegraph sessions <words...>     # Search Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin transcripts for this project (--role, --since <days>, --session, --any, --json; same output as codegraph_sessions)
 codegraph node <symbol|file>      # One symbol's source + callers, or read a file with line numbers (same output as codegraph_node)
 codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
@@ -944,6 +946,11 @@ is written):
 | Terraform / OpenTofu | `.tf`, `.tfvars`, `.tofu` | Full support (resources, data sources, modules, variables, outputs, providers incl. aliases, `locals`; `var.`/`local.`/`module.`/resource references with Terraform's per-directory scoping enforced; module calls bridged across the boundary — inputs to the child module's variables, `module.M.out` to the child's output, `source` to the module's files; cloudposse/atmos `remote-state` cross-component wiring when the component is statically named; `provider = aws.east` selections resolved up the module tree; `moved`/`import`/`removed`/`check` block references; `.tfvars` assignments linked to the variables they set) |
 | Nix | `.nix` | Full support (functions with simple/destructured/curried params, `let`/attrset bindings, `inherit`, `import ./path` file edges — `./dir` resolving through `default.nix` — plus NixOS module `imports = [ ./x.nix ]` lists and `callPackage ./pkg.nix` file edges; call edges; module-system option wiring — a config write like `launchd.user.agents.x = { ... }` links to the module declaring `options.launchd.user.agents`, so option flows trace across modules) |
 | Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections, local links, selected table rows and list items, shell command references); this fork only |
+| Razor / Blazor | `.cshtml`, `.razor` | Markup linked to the C# it names (`@model`, `@inherits`, components, `@inject`) |
+| XML | `.xml` | MyBatis mapper statements linked to their Java mapper methods |
+| YAML | `.yml`, `.yaml` | File tracking; Drupal `*.routing.yml` routes and Spring config keys |
+| Java properties | `.properties` | Spring config keys |
+| Twig | `.twig` | File tracking only |
 
 ## Measured cross-file coverage
 
