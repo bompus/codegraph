@@ -405,7 +405,7 @@ What still reaches TypeScript, measured 2026-09-26 at `9e54df0a` (`CODEGRAPH_RES
 Legs, largest and most self-contained first; each lands on its own with the Phase 5c gate (kernel-on vs `CODEGRAPH_KERNEL_RESOLVE=0`, `scripts/dump-graph.mjs` dumps byte-identical on Ocelot, celery, ktor, vitest, svelte and codegraph itself, plus the parity suite):
 
 1. **Non-bare exact/fuzzy tail — DONE 2026-09-26** (ledger §5.62). A non-bare ref that misses the file-path, qualified-name, chain and method-call arms now runs exact-name then fuzzy natively; only store-accessor `().` receivers keep a punt, and an unresolved chain call goes back as `defer` for the conformance pass. Native share: Ocelot 74.8% → 95.0%, celery 94.9% → 97.3%, ktor 86.9% → 88.1%; svelte `member-tail` 533 → 56. Every dump identical.
-2. `chain` — the call-receiver chain matchers.
+2. **`chain` — DONE 2026-09-26** (ledger §5.63). A TS/JS/Python `x().y` call runs matchReference's file-path and qualified-name arms natively; a store-accessor chain (`get()`/`getState()`, source-reading) keeps its punt, and any other chain is a native miss. The miss is final under frameworks — only a ≥0.9 framework hit overturns it, as in the TS chain branch — via a new `unresolved` + `isFinal` outcome. Native share: vitest 74.2% → 87.6%, celery 97.3% → 99.0%, svelte 84.3% → 85.3%; every dump identical.
 3. SFC languages — binding rows for script blocks, then admission.
 4. `jvm` — Kotlin/Java import resolution.
 5. `store-bind`.

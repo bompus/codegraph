@@ -513,6 +513,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(runFn, 'api.getState', 'src/main.ts', 'typescript', 'calls', 11);
     seed(runFn, 'Service.deep.create', 'src/main.ts', 'typescript', 'calls', 12);
     seed(runFn, 'unbound.doThing', 'src/main.ts', 'typescript', 'calls', 13);
+    // TS/JS/Python call chains skip the import arm: a store accessor's action
+    // stays in TS, any other chain is a native miss.
+    seed(runFn, 'api.prepare().all', 'src/main.ts', 'typescript', 'calls', 13);
+    seed(runFn, 'api.getState().reset', 'src/main.ts', 'typescript', 'calls', 13);
     seed(goFn, 'tool.pyhelper', 'main.py', 'python', 'calls', 5);
     seed(goFn, 'tool.missing', 'main.py', 'python', 'calls', 6);
     seed(nodeId('wuser', 'w.cpp'), 'W::m', 'src/w.cpp', 'cpp', 'calls');
@@ -804,6 +808,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `signature`), so the tail bails exactly like TS and the ref stays
     // unresolved.
     expect(at('made.run', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // A chain says nothing about what its inner call returns — no guess.
+    expect(at('api.prepare().all', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // A store accessor's action is read from source — TS answers it.
+    expect(at('api.getState().reset', 'src/main.ts', 'calls').status).toBe('passthrough');
     // `svc.call` infers Service then misses `Service::call` — the supertype
     // walk reads live edges, so the kernel punts for TS to decide.
     expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('passthrough');

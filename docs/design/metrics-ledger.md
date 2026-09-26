@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.63 Resolver port, Phase 6 leg 2: call chains (2026-09-26)
+
+TS/JS/Python `x().y` calls skip the import arm and are answered by matchReference alone: the file-path and qualified-name arms, then matchStoreAccessorChain, which only ever answers a store accessor's action (`get().reset`, `useStore.getState().reset`). The kernel punted every such call as `chain`. It now runs the two arms natively and decides the rest: a store-accessor chain keeps the punt (reading the store's actions is source-reading), anything else is a miss. Under active frameworks the TS branch returns before the merge, so a <0.9 framework candidate cannot win; the kernel reports that as a new outcome, `unresolved` with `isFinal` and an empty candidate list, which `settleKernelOutcome` honours by keeping only a ≥0.9 framework hit.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| vitest | 74.2% (`chain` 11,084) | 87.6% | 192,116 lines, identical |
+| celery | 97.3% | 99.0% | 108,276 lines, identical |
+| svelte | 84.3% (`chain` 288) | 85.3% (`chain` 1) | 193,354 lines, identical |
+| codegraph | — | — | 298,458 lines, identical |
+
 ### 5.62 Resolver port, Phase 6 leg 1: the non-bare exact/fuzzy tail (2026-09-26)
 
 A non-bare ref (`a.b`, `A::b`, `x$y`) that missed the kernel's file-path, qualified-name, chain and method-call arms went back to TypeScript as `member-tail` only to run exact-name then fuzzy there. The kernel now runs that tail itself, in TS order: the first strategy that answers is the name match, a gated-out answer does not fall through, an unresolved chain call returns as `defer` for the conformance pass, and a store-accessor `().` receiver (TS/JS/Python) keeps its punt. Six parity-suite pins moved from `passthrough` to `unresolved` — native misses TS also fails.
