@@ -170,6 +170,10 @@ const FIXTURE: Record<string, string> = {
   'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
   // `import tool` + `tool.pyhelper()` exercises the python module-member arm.
   'main.py': 'import tool\nfrom tool import pyhelper\n\ndef go():\n    pyhelper()\n    tool.pyhelper()\n',
+  // A name match may never land on a Nix binding: no other language can call
+  // one symbolically (TS drops the match; the kernel must too).
+  'nix/lib.nix': '{ nixonly = x: x; }\n',
+  'nixcaller.py': 'def callsnix():\n    nixonly(1)\n    obj.nixonly(2)\n',
   // Rust module-path refs — pure `::` names take the native
   // resolveRustPathReference arm ahead of the ineligible:lang punt. `lib.rs`
   // marks the crate root; `deep/mod.rs` exercises the `<seg>/mod.rs` form;
