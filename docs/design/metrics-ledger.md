@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.72 Resolver port, Phase 6 leg 6c: PHP instanceof receivers (2026-09-26)
+
+A PHP member call punted as `mc-guarded` in any file containing `instanceof`, because inferGuardedReceiver walks a parse tree. The kernel now walks its own: from the call's node up to the nearest enclosing function-like node, the first `if` whose body holds the call and whose condition is exactly `($receiver instanceof T)` narrows the receiver to `T`, unless the receiver is re-bound inside that `if` (a binding row starting after it) or assigned in its body before the call. That closes the last `mc-*` punt.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| laravel, sequential | 88.3% (`mc-guarded` 6,714) | 91.0% | identical |
+| laravel, pool | not measured (workers had no kernel before §5.71) | 93.8% | identical |
+
+`php-inc` (14,561 pooled, 22,156 sequential) is now laravel's dominant punt.
+
 ### 5.71 Pool workers kept the kernel only by luck (2026-09-26)
 
 Two faults in the worker-kernel path, found when a laravel run reported `handled=0` with the pool on and 88% native without it.
