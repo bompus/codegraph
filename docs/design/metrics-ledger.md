@@ -828,6 +828,16 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.66 Resolver port, Phase 6 leg 5: store-bind precondition (2026-09-26)
+
+A bare JS call punted as `store-bind` whenever its file had `const name…` or a destructure naming it (`js_const_binds`) — nearly every file with a local of that name. matchJsStoreBindingCall only ever answers through two arms, each with a narrow precondition: matchDestructuredStoreCall needs `.getState` in the file and a `const {…}` naming the ref; matchSelectedStoreCall needs `=>` and the ref among the file's selector names, which TS collects from the raw source with one regex (mirrored with ASCII `\w`, memoized per file). The kernel checks those and resolves the rest itself.
+
+| Corpus | `store-bind` before | after | Native after | Dump |
+|---|---|---|---|---|
+| vitest | 3,405 | 23 | 92.7% (was 89.0%) | identical |
+| svelte | 618 | 17 | 98.9% (was 97.9%) | identical |
+| codegraph | — | — | — | identical |
+
 ### 5.65 Resolver port, Phase 6 leg 4: Kotlin/Java imports (2026-09-26)
 
 Every java/kotlin `imports` ref punted as `jvm` because resolveJvmImport "reads decorators, an unselected column". Both premises had since gone: `resolve_jvm_import` (FQN → `pkg::Sym`, directory proximity, KMP `expect` on a tie) was ported for the bound-type arm, and `KNode` loads `decorators`. The punt now calls it: a hit is answered at once (resolveOne's gateTargetKind can still refuse it), a miss continues down the kernel spine as it does in TS.
