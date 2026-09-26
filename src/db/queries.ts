@@ -3346,19 +3346,6 @@ export class QueryBuilder {
   }
 
   /**
-   * Stream the distinct node names one row at a time — the incremental
-   * counterpart to {@link getAllNodeNames} for callers that need to yield
-   * to the event loop mid-scan (resolver cache warm-up on multi-million-node
-   * indexes). Fresh statement per call: the iterator holds an open cursor.
-   */
-  *iterateNodeNames(): IterableIterator<string> {
-    const stmt = this.db.prepare('SELECT DISTINCT name FROM nodes');
-    for (const row of stmt.iterate()) {
-      yield (row as { name: string }).name;
-    }
-  }
-
-  /**
    * Get unresolved references scoped to specific file paths.
    * Uses the idx_unresolved_file_path index for efficient lookup.
    */

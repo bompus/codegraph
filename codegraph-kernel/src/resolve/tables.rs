@@ -13,8 +13,7 @@ use super::*;
 /// `use` rows landed — their import mappings are empty on both engines and
 /// every arm they reach is a bindings-free join or a ported source scan.
 /// Their language-specific TS arms (receiver-type patterns, the lua `:` /
-/// r `$` receiver shapes, lua `require`) are ported below; anything else
-/// they touch punts by the same gates the migrated set uses.
+/// r `$` receiver shapes, lua `require`) are ported below.
 pub(super) fn is_migrated_language(lang: &str) -> bool {
     matches!(
         lang,
@@ -70,8 +69,8 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
 // prefilter miss to TypeScript whenever ANY framework is detected. JS `\w`
 // is ASCII without /u, so the ports spell it `[A-Za-z0-9_]`. Registered
 // resolvers without a claimsReference claim nothing; an unlisted name
-// (a custom registerFrameworkResolver) claims everything — a conservative
-// passthrough, never a wrong verdict.
+// (a custom registerFrameworkResolver) claims everything — conservative: the
+// framework merge then decides, never a wrong kernel verdict.
 // ---------------------------------------------------------------------------
 
 pub(super) fn drupal_claim_re() -> Rc<Regex> {

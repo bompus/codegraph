@@ -181,7 +181,7 @@ impl KernelResolver {
     // DB sub-arms (br:import + claim refusals), viaImport's member descent
     // (static member + object literal), filePath, qualifiedName. Arms that
     // read source (receiver-type inference, object-literal alias/instance
-    // member, store bindings) or defer (chains, this.members) punt so the TS
-    // spine reproduces them exactly.
+    // member, store bindings) and deferring ones (chains, this.members) are
+    // ported in their own modules.
     // -----------------------------------------------------------------------
 }

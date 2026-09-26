@@ -38,8 +38,7 @@
  *   Fabric (Phase 6) and is left to that phase.
  */
 import type { Node } from '../../types';
-import { innermostBinding } from '../name-matcher';
-import { resolveViaImport } from '../import-resolver';
+import { innermostBinding } from '../gates';
 import { matchBalanced } from '../synth-utils';
 import {
   FrameworkExtractionResult,
@@ -224,7 +223,7 @@ export const expoModulesResolver: FrameworkResolver = {
     if (!call) return null;
     const binding = innermostBinding(context.getBindings?.(ref.filePath) ?? [], call[1]!, ref.line);
     const receiverId = binding?.kind === 'import'
-      ? resolveViaImport({ ...ref, referenceName: call[1]!, referenceKind: 'references' }, context)?.targetNodeId
+      ? context.resolveImport?.({ ...ref, referenceName: call[1]!, referenceKind: 'references' })?.targetNodeId
       : binding?.nodeId;
     const receiver = receiverId && context.getNodeById?.(receiverId);
     if (!receiver) return null;

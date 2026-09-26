@@ -404,7 +404,7 @@ Two harness lessons from that run, both now baked into `ab-new-vs-baseline.sh`:
      missed. Fix is in the language layer, not Spring-specific: (a) extractor unwraps `field_access(this, X)`
      to use `X` as the receiver (`src/extraction/tree-sitter.ts`); (b) `matchMethodCall` learns to look up
      the receiver name as a field declaration in the enclosing class and use the field's `signature`-stored
-     declared type (`inferJavaFieldReceiverType` in `src/resolution/name-matcher.ts`). Repro confirmed on the
+     declared type (`inferJavaFieldReceiverType`, now `infer_java_field_receiver_type` in `codegraph-kernel/src/resolve/bound.rs`). Repro confirmed on the
      issue's exact example: `UserAction.toLogin2 → UserBO.toLogin2` edge appeared (was 0 outgoing edges).
   2. **MyBatis XML mapper indexing + Java↔XML bridge.** `*.xml` is now a language (`xml`), with a custom
      extractor (`src/extraction/mybatis-extractor.ts`) that emits one method-shaped node per `<select|insert|

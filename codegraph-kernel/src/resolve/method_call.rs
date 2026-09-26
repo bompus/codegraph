@@ -261,8 +261,8 @@ impl KernelResolver {
     }
 
     /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
-    /// boundReceiver evidence slice. Punt point: a member miss whose supertype
-    /// walk needs edges the db may not hold yet.
+    /// boundReceiver evidence slice. A member miss whose supertype walk needs
+    /// edges the db may not hold yet is a miss.
     pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let (object_or_class, method_name, inferable, dotted) = match probe!(r, "mc:shape", self.method_call_shape(r)?) {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),

@@ -267,6 +267,8 @@ export interface KernelResolverLike {
   resolveDeferredChains(refs: ResolveRefIn[]): ResolveOutcome[];
   /** The `this.<member>` pass's per-ref match (resolveDeferredThisMemberRefs). */
   resolveDeferredThisMembers(refs: ResolveRefIn[]): ResolveOutcome[];
+  /** The import arm for one ref, behind `context.resolveImport`. */
+  resolveViaImportRef(ref: ResolveRefIn): ResolveOutcome;
   /** Deterministic conn teardown — must run while no other-build conn can do
    *  shm work (before pool workers spawn / after they die). Without it the
    *  rusqlite conn closes at GC time, whose shm teardown races node:sqlite
@@ -280,8 +282,7 @@ export interface KernelModule {
    *  generic extractor extracts (resolution-binding-model-plan.md §2.4).
    *  OPTIONAL: absent on older binaries; the caller then emits no rows. */
   bindingsFile?(filePath: string, content: string, language: string): KernelBuffers;
-  /** Native batch resolver over persisted bindings (Phase 4). OPTIONAL:
-   *  absent on older binaries — the resolution loop keeps its TS path. */
+  /** Native batch resolver over persisted bindings — the only resolver. */
   KernelResolver?: new (config: KernelResolverConfig) => KernelResolverLike;
   /** Parse-tree service for read-time consumers (Phase 3). OPTIONAL: absent
    *  on older binaries — kernel/tree.ts feature-detects and the consumers

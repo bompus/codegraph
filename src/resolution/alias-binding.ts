@@ -42,7 +42,7 @@ function escapeRegExp(s: string): string {
  * `memberName` targets a property of an object-literal initializer
  * (`= { run: impl }` for `api.run()`), including ES shorthand (`= { impl }`).
  */
-export function aliasTargetName(
+function aliasTargetName(
   signature: string | undefined | null,
   memberName: string | null
 ): string | null {

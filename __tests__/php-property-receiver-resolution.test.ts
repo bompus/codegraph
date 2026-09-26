@@ -29,10 +29,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { CodeGraph } from '../src';
-import { Node } from '../src/types';
-import { ResolutionContext } from '../src/resolution';
-import { matchMethodCall } from '../src/resolution/name-matcher';
-import type { UnresolvedRef } from '../src/resolution/types';
 
 describe('PHP property-receiver resolution', () => {
   let dir: string;
@@ -298,45 +294,5 @@ class App {
 `);
     const calls = await load();
     expect(callsMethodNamed(calls, 'run', 'greet')).toBe(false);
-  });
-
-  // Unit-level check of the confidence the integration DB does not expose:
-  // the property-receiver shape resolves through resolveMethodOnType at 0.9.
-  it('matchMethodCall resolves `this->prop.method` at confidence 0.9', () => {
-    const node = (id: string, name: string, qn: string, kind: Node['kind'], file: string): Node => ({
-      id, kind, name, qualifiedName: qn, filePath: file, language: 'php',
-      startLine: 1, endLine: 1, startColumn: 0, endColumn: 0, updatedAt: 0,
-    });
-    const byName: Record<string, Node[]> = {
-      Greeter: [node('c:greeter', 'Greeter', 'Greeter', 'class', 'Greeter.php')],
-      greet: [node('m:greet', 'greet', 'Greeter::greet', 'method', 'Greeter.php')],
-    };
-    const lines = [
-      '<?php',
-      'class App {',
-      '  public function __construct(private readonly Greeter $greeter) {}',
-      '  public function run() { return $this->greeter->greet(); }',
-      '}',
-    ];
-    const ctx: ResolutionContext = {
-      getNodesInFile: () => [],
-      getNodesByName: (name) => byName[name] ?? [],
-      getNodesByQualifiedName: () => [],
-      getNodesByKind: () => [],
-      fileExists: () => false,
-      readFile: () => null,
-      getFileLines: () => lines,
-      getProjectRoot: () => '',
-      getAllFiles: () => [],
-      getImportMappings: () => [],
-    };
-    const ref: UnresolvedRef = {
-      fromNodeId: 'caller', referenceName: 'this->greeter.greet', referenceKind: 'calls',
-      line: 4, column: 0, filePath: 'App.php', language: 'php',
-    };
-    const res = matchMethodCall(ref, ctx);
-    expect(res?.targetNodeId).toBe('m:greet');
-    expect(res?.confidence).toBe(0.9);
-    expect(res?.resolvedBy).toBe('instance-method');
   });
 });

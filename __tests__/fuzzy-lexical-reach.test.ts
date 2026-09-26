@@ -1,7 +1,6 @@
 /**
  * A function nested inside another function is only callable from inside its
- * container. matchByExactName already filters candidates that way; matchFuzzy
- * must too, or a call to a builtin method (`res.text()`) whose only same-named
+ * container. The resolver's exact and fuzzy name arms both filter candidates that way, or a call to a builtin method (`res.text()`) whose only same-named
  * project symbol is some file's closure resolves onto that closure.
  */
 
@@ -10,9 +9,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
-import { matchFuzzy } from '../src/resolution/name-matcher';
-import type { Node } from '../src/types';
-import type { ResolutionContext, UnresolvedRef } from '../src/resolution/types';
 
 describe('fuzzy matching respects lexical reachability of nested functions', () => {
   let tempDir: string;
@@ -72,105 +68,5 @@ describe('fuzzy matching respects lexical reachability of nested functions', () 
     const container = cg.getNodesByKind('function').find((n) => n.name === 'readSeedState');
     const inside = cg.getOutgoingEdges(container!.id).filter((e) => e.kind === 'calls');
     expect(inside.map((e) => e.target)).toContain(closure!.id);
-  });
-});
-
-/**
- * The reachability check must sit on the one candidate matchFuzzy would
- * commit to, never on the candidate set. Filtering a crowd of same-named
- * definitions down to the reachable ones leaves a single survivor, and the
- * strategy then hands it every call of that name: vite has a dozen `resolve`
- * definitions, most nested, and one reachable `resolve` method inherited 59
- * `import { resolve } from 'node:path'` calls that way (#1709). Driven
- * directly, so the shape is pinned regardless of what the earlier strategies
- * make of a given fixture.
- */
-describe('fuzzy reachability rejects a unique guess but never manufactures one', () => {
-  const node = (partial: Partial<Node> & Pick<Node, 'id' | 'kind' | 'name' | 'filePath'>): Node => ({
-    qualifiedName: partial.name,
-    language: 'typescript',
-    startLine: 1,
-    endLine: 1,
-    startColumn: 0,
-    endColumn: 0,
-    updatedAt: 0,
-    ...partial,
-  });
-  // build.ts:  function build() { const resolve = …; function resolve() {} }
-  const container = node({ id: 'f:build', kind: 'function', name: 'build', filePath: 'build.ts', startLine: 1, endLine: 40 });
-  const closure = node({ id: 'f:build.resolve', kind: 'function', name: 'resolve', qualifiedName: 'build::resolve', filePath: 'build.ts', startLine: 10, endLine: 12 });
-  // pluginContainer.ts:  class PluginContainer { resolve() {} }
-  const method = node({ id: 'm:resolve', kind: 'method', name: 'resolve', qualifiedName: 'PluginContainer::resolve', filePath: 'pluginContainer.ts', startLine: 5, endLine: 9 });
-  const contextWith = (nodes: Node[]): ResolutionContext =>
-    ({
-      getNodesInFile: () => [],
-      getNodesByName: (name: string) => nodes.filter((n) => n.name === name),
-      getNodesByLowerName: (name: string) => nodes.filter((n) => n.name.toLowerCase() === name),
-      getNodesByQualifiedName: (qn: string) => [container].filter((n) => n.qualifiedName === qn),
-      getNodesByKind: () => [],
-      fileExists: () => false,
-      readFile: () => null,
-      getFileLines: () => [],
-      getProjectRoot: () => '',
-      getAllFiles: () => [],
-      getImportMappings: () => [],
-    }) as unknown as ResolutionContext;
-  const callFrom = (filePath: string, line: number): UnresolvedRef => ({
-    fromNodeId: 'f:caller',
-    referenceName: 'resolve',
-    referenceKind: 'calls',
-    line,
-    column: 2,
-    filePath,
-    language: 'typescript',
-  });
-
-  it('declines the sole candidate when it is a closure the call cannot reach', () => {
-    expect(matchFuzzy(callFrom('vite.config.js', 3), contextWith([closure]))).toBeNull();
-  });
-
-  it('still resolves the sole candidate from inside its container', () => {
-    expect(matchFuzzy(callFrom('build.ts', 20), contextWith([closure]))?.targetNodeId).toBe('f:build.resolve');
-  });
-
-  it('does not let the unreachable closure drop out and leave the method as a "unique" match', () => {
-    // Two same-named callables: ambiguous, exactly as before the check existed.
-    expect(matchFuzzy(callFrom('vite.config.js', 3), contextWith([closure, method]))).toBeNull();
-  });
-
-  it('trusts no nesting in C, where a nested function is an extraction artifact', () => {
-    // betaflight: tree-sitter-c's recovery from `RESET_CONFIG(…, .pid = {…})`
-    // runs resetPidProfile to the end of pid.c, so every function after it is
-    // "nested" in the graph. C has no nested named functions; the call reaches it.
-    const cClosure = node({ ...closure, id: 'f:c', language: 'c' as Node['language'], filePath: 'pid.c' });
-    const cRef = { ...callFrom('core.c', 3), language: 'c' as UnresolvedRef['language'] };
-    expect(matchFuzzy(cRef, contextWith([cClosure]))?.targetNodeId).toBe('f:c');
-  });
-
-  it('resolves a lone reachable method as before', () => {
-    expect(matchFuzzy(callFrom('vite.config.js', 3), contextWith([method]))?.targetNodeId).toBe('m:resolve');
-  });
-
-  // A sealed module is read from the bindings table: an `import` node, no
-  // row exported under any form (the source is never read).
-  const sealedRows = (file: string, name: string, kind: 'decl' | 'local') => [
-    { filePath: file, name, kind, scopeStart: 1, scopeEnd: 40, line: 2 },
-  ];
-  const importNode = (file: string) => node({ id: `i:${file}`, kind: 'import', name: './setup', filePath: file, startLine: 1, endLine: 1 });
-
-  it('rejects a sole sealed-module candidate across files but allows its own file', () => {
-    const context = contextWith([method]);
-    context.getNodesInFile = (file) => file === 'pluginContainer.ts' ? [importNode(file), method] : [];
-    context.getBindings = (file) => file === 'pluginContainer.ts' ? sealedRows(file, 'resolve', 'local') : [];
-    expect(matchFuzzy(callFrom('vite.config.js', 3), context)).toBeNull();
-    expect(matchFuzzy(callFrom('pluginContainer.ts', 20), context)?.targetNodeId).toBe('m:resolve');
-  });
-
-  it('keeps a sealed candidate in the ambiguity count alongside a reachable method', () => {
-    const sealed = node({ id: 'f:sealed', kind: 'function', name: 'resolve', filePath: 'sealed.ts' });
-    const context = contextWith([sealed, method]);
-    context.getNodesInFile = (file) => file === 'sealed.ts' ? [importNode(file), sealed] : [];
-    context.getBindings = (file) => file === 'sealed.ts' ? sealedRows(file, 'resolve', 'decl') : [];
-    expect(matchFuzzy(callFrom('vite.config.js', 3), context)).toBeNull();
   });
 });

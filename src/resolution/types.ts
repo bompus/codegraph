@@ -137,35 +137,10 @@ export interface ResolutionContext {
    * callers fall back to splitting `readFile` themselves.
    */
   getFileLines?(filePath: string): string[] | null;
-  /**
-   * The method-definition nodes matching `typeName::methodName` in the language family —
-   * exactly `resolveMethodOnType`'s kind/language/qualifiedName-suffix filter,
-   * LRU-cached per (language, type, method). The uncached path re-fetches every
-   * node sharing the METHOD name (unbounded — tens of thousands on a collision-
-   * heavy Java repo) and re-scans it per ref, the dominant term in the #1122
-   * watchdog kill. Cached entries hold only the small filtered result; per-ref
-   * disambiguation (import FQN, call-site file) stays in the caller so a cached
-   * entry is valid from any call site. Optional for external/test contexts.
-   */
-  getMethodMatches?(typeName: string, methodName: string, language: Language): Node[];
   /** Get project root */
   getProjectRoot(): string;
   /** Get all files */
   getAllFiles(): string[];
-  /** Get nodes by lowercase name (O(1) lookup for fuzzy matching) */
-  getNodesByLowerName(lowerName: string): Node[];
-  /**
-   * Direct supertypes of the type named `typeName` (same language): the classes
-   * it extends and the interfaces / protocols / traits it implements/conforms to,
-   * by simple name. Backed by the resolved `implements`/`extends` edges, so it is
-   * EMPTY during the first resolution pass (edges aren't built yet) and populated
-   * afterward — the conformance pass uses it to resolve a chained method defined
-   * on a supertype the receiver type conforms to (e.g. a protocol-extension
-   * method). Optional so external/test contexts compile without it.
-   */
-  getSupertypes?(typeName: string, language: Language): string[];
-  /** Direct inheritance targets for one exact declaration, preserving module identity. */
-  getSupertypeNodes?(nodeId: string): Node[];
   /**
    * Look up a node by its id. Lets matchers derive the FROM-symbol's
    * enclosing-class scope (Swift implicit-self method scoping, `this.X`
@@ -202,13 +177,6 @@ export interface ResolutionContext {
    * member's directory instead of an external npm package (#629).
    */
   getWorkspacePackages?(): import('./workspace-packages').WorkspacePackages | null;
-  /**
-   * Re-exports declared by a file (`export { x } from './other'`,
-   * `export * from './other'`). Empty array when the file has none.
-   * Optional so older callers compile; the import resolver follows
-   * re-export chains when this is provided.
-   */
-  getReExports?(filePath: string, language: Language): ReExport[];
   /**
    * The file's `bindings` rows (docs/design/resolution-binding-model-plan.md
    * §2.2): what each name in the file is bound to, with its scope and export
