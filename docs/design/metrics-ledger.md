@@ -802,6 +802,23 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.54 Cheaper synthesis runs (2026-09-26)
+
+The post-sync synthesis run (5.53) took 2.8 s on pretix and 4.4 s on trezor-suite, against 1.7 s and 2.0 s inside a full index. Warm caches alone barely helped (4.3 → 3.6 s on trezor-suite), and a CPU profile showed why: the resolver's LRUs hold 1,000 files of content and 5,000 of nodes, and ~30 passes each walking all 13,433 JS/TS files evicted each other, so every pass re-read the repository from disk and SQLite (a quarter of the run). Two quadratic hotspots made up most of the rest:
+
+- a synthesis run now shares one file-content and per-file-node cache across its passes, and memoizes comment stripping, each capped at 256 MB and dropped when the run ends;
+- `sliceLines` split the whole file once per node (466 ms of pretix's run); it keeps the last file's lines;
+- `src.slice(0, i).split('\n').length` per match (18 sites) became a binary search over a newline index built once per text (the registry pass's 681 ms).
+
+| Run | Before | After | Edges |
+|---|---|---|---|
+| Post-sync synthesis, trezor-suite | 4.39 s, 890 MB RSS | 3.2 s, 798 MB | 16,074 = 16,074 |
+| Post-sync synthesis, pretix | 2.82 s, 544 MB | 1.49 s, 484 MB | 217 = 217 |
+| Full-index synthesis phase, pretix | 1.67 s | 0.95 s | |
+| Full-index synthesis phase, trezor-suite | 1.99 s | 1.97 s (passes run on the resolver pool, outside the run cache) | |
+
+Golden dumps unchanged. Left: SQLite name lookups, `existsSync` probing in workspace import resolution (JSX pass) and a second strip of `.js` files under the TypeScript language key, each under 0.6 s on trezor-suite.
+
 ### 5.53 Synthesized edges on incremental sync (2026-09-26)
 
 The scoped sync path resolves only the changed files and never ran synthesis, so every synthesized edge a changed file wired up (callbacks, React renders, cross-tier HTTP, external endpoints) was missing until the next full index, and an edge whose registration lived in a third file stayed after the registration was deleted (`callback-edge-synthesis.md`, remaining work 2). A sync now drops the synthesized edges whose `registeredAt` is in a changed file and re-runs synthesis; its inserts are idempotent, so edges that still hold come back. Edges whose source or target is in a changed file already went with their nodes.
