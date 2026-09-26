@@ -843,7 +843,14 @@ pub(super) fn js_unit_to_byte(s: &str, units: usize) -> usize {
 
 /// UTF-16 length — the `.length` JS sees.
 pub(super) fn utf16_len(s: &str) -> usize {
-    s.chars().map(|c| c.len_utf16()).sum()
+    // One unit per char (every non-continuation byte), two for a 4-byte one.
+    s.bytes().map(|b| usize::from(b & 0xC0 != 0x80) + usize::from(b >= 0xF0)).sum()
+}
+
+/// `utf16_len(s) > limit`, settled from the byte length when it can be: a
+/// char is 1–3 bytes per UTF-16 unit.
+pub(super) fn utf16_len_exceeds(s: &str, limit: usize) -> bool {
+    s.len() > limit && (s.len() > 3 * limit || utf16_len(s) > limit)
 }
 
 /// rustModuleDir (name-matcher.ts).

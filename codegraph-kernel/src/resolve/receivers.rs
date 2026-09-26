@@ -73,7 +73,7 @@ impl KernelResolver {
         pats: &'static [ReceiverPattern],
         preserve: bool,
     ) -> Res<Option<String>> {
-        if utf16_len(line) > 10_000 {
+        if utf16_len_exceeds(line, 10_000) {
             return Ok(None);
         }
         for pat in pats {
@@ -163,17 +163,32 @@ impl KernelResolver {
         let start_idx = if component_scoped {
             0usize
         } else {
-            let scope = self.enclosing_scope_start_line(
+            let scope = probe!(site, "il:scope", self.enclosing_scope_start_line(
                 &site.file_path,
                 &site.language,
                 site.line,
-            )?;
+            )?);
             call_idx.min((scope - 1).max(0) as usize)
         };
-        for i in (start_idx..=call_idx).rev() {
-            if let Some(t) = self.infer_match_line(&lines[i], &scan_receiver, pats, preserve)? {
-                return Ok(Some(t));
+        // Every pattern needs the receiver literal in the line, so only the
+        // lines containing it are scanned (highest first, as before).
+        let scanned = probe!(site, "il:scan", {
+            let candidates = lines.lines_containing(&scan_receiver);
+            let upto = candidates.partition_point(|&l| l as usize <= call_idx);
+            let mut hit = None;
+            for &i in candidates[..upto].iter().rev() {
+                if (i as usize) < start_idx {
+                    break;
+                }
+                if let Some(t) = self.infer_match_line(&lines[i as usize], &scan_receiver, pats, preserve)? {
+                    hit = Some(t);
+                    break;
+                }
             }
+            hit
+        });
+        if scanned.is_some() {
+            return Ok(scanned);
         }
         if component_scoped {
             for line in lines.iter().skip(call_idx + 1) {
@@ -204,7 +219,7 @@ impl KernelResolver {
         let mut var_name: Option<String> = None;
         for i in (0..=call_idx).rev() {
             let line = &lines[i];
-            if line.is_empty() || utf16_len(line) > 10_000 {
+            if line.is_empty() || utf16_len_exceeds(line, 10_000) {
                 continue;
             }
             if let Some(var) = ASSIGN.capture(line, prop) {
@@ -215,7 +230,7 @@ impl KernelResolver {
         }
         if var_name.is_none() {
             for (i, line) in lines.iter().enumerate().skip(call_idx + 1) {
-                if line.is_empty() || utf16_len(line) > 10_000 {
+                if line.is_empty() || utf16_len_exceeds(line, 10_000) {
                     continue;
                 }
                 if let Some(var) = ASSIGN.capture(line, prop) {
@@ -231,7 +246,7 @@ impl KernelResolver {
         let pats = local_receiver_type_patterns("php");
         for i in (0..=ai).rev() {
             let line = &lines[i];
-            if !line.is_empty() && utf16_len(line) <= 10_000 {
+            if !line.is_empty() && !utf16_len_exceeds(line, 10_000) {
                 if let Some(t) = self.infer_match_line(line, &vn, pats, false)? {
                     return Ok(Some(t));
                 }

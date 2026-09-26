@@ -13,6 +13,75 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
+        let parsed = self.factory_initializer(binding, root, r)?;
+        let (awaited, callee_name, owner_name) = (parsed.awaited, parsed.callee.clone(), parsed.owner.clone());
+        let Some(callee_name) = callee_name else {
+            return Ok(None);
+        };
+        let bindings = self.bindings(&r.file_path)?;
+        let callee: Option<Arc<KNode>> = if let Some(owner_name) = owner_name {
+            let owner_binding =
+                innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
+            let owner_id = self.binding_target_id(owner_binding.as_ref(), |s| {
+                let mut ref2 = r.clone().naming(&owner_name, "references");
+                ref2.line = binding.line;
+                s.resolve_via_import(&ref2)
+            })?;
+            let owner = self.node_by_opt_id(owner_id.as_deref())?;
+            let Some(owner) = owner else { return Ok(None) };
+            if !matches!(owner.kind.as_str(), "class" | "interface" | "component") {
+                return Ok(None);
+            }
+            self.nodes_by_qualified_name(&format!(
+                "{}::{}",
+                owner.qualified_name, callee_name
+            ))?
+            .iter()
+            .find(|n| n.kind == "method" && n.file_path == owner.file_path)
+            .cloned()
+        } else {
+            let factory_binding =
+                innermost_binding(&bindings, &callee_name, Some(binding.line))
+                    .cloned();
+            let callee_id = self.binding_target_id(factory_binding.as_ref(), |s| {
+                let mut ref2 = r.clone();
+                ref2.line = binding.line;
+                ref2.reference_name = callee_name.clone();
+                s.resolve_via_import(&ref2)
+            })?;
+            self.node_by_opt_id(callee_id.as_deref())?
+        };
+        let Some(callee) = callee else { return Ok(None) };
+        let ret_re = re!(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$");
+        let return_type = callee.return_type.clone().or_else(|| {
+            callee
+                .signature
+                .as_deref()
+                .and_then(|s| ret_re.captures(s).map(|c| c[1].to_string()))
+        });
+        // `!returnType` — an empty annotation/returnType fails the same way.
+        let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
+            return Ok(None);
+        };
+        let promise_re = re!(r"^Promise<(.+)>$");
+        let ty = if awaited {
+            promise_re
+                .replace(&return_type, "$1")
+                .to_string()
+        } else {
+            return_type
+        };
+        self.match_bound_type_member(&ty, method, &r.clone().at(&callee))
+    }
+
+    /// The factory call a binding's initializer ends in — `= f(…)` or
+    /// `= new C(…).m(…)`, optionally awaited — parsed once per binding: every
+    /// ref through the same binding reads the same declaration.
+    fn factory_initializer(&mut self, binding: &KBinding, root: &str, r: &ResolveRefIn) -> Res<Rc<FactoryInit>> {
+        let key = (r.file_path.clone(), binding.line, root.to_string(), binding.node_id.clone());
+        if let Some(hit) = self.factory_init_memo.get(&key) {
+            return Ok(hit.clone());
+        }
         let value = self.node_by_opt_id(binding.node_id.as_deref())?;
         // `\b(?:const|let|var)\s+ROOT\s*=` and its `(=…)` capture form.
         static DECLARES: LazyLock<Affix> =
@@ -74,63 +143,9 @@ impl KernelResolver {
                 }
             }
         }
-        let Some(callee_name) = callee_name else {
-            return Ok(None);
-        };
-        let bindings = self.bindings(&r.file_path)?;
-        let callee: Option<Arc<KNode>> = if let Some(owner_name) = owner_name {
-            let owner_binding =
-                innermost_binding(&bindings, &owner_name, Some(binding.line)).cloned();
-            let owner_id = self.binding_target_id(owner_binding.as_ref(), |s| {
-                let mut ref2 = r.clone().naming(&owner_name, "references");
-                ref2.line = binding.line;
-                s.resolve_via_import(&ref2)
-            })?;
-            let owner = self.node_by_opt_id(owner_id.as_deref())?;
-            let Some(owner) = owner else { return Ok(None) };
-            if !matches!(owner.kind.as_str(), "class" | "interface" | "component") {
-                return Ok(None);
-            }
-            self.nodes_by_qualified_name(&format!(
-                "{}::{}",
-                owner.qualified_name, callee_name
-            ))?
-            .iter()
-            .find(|n| n.kind == "method" && n.file_path == owner.file_path)
-            .cloned()
-        } else {
-            let factory_binding =
-                innermost_binding(&bindings, &callee_name, Some(binding.line))
-                    .cloned();
-            let callee_id = self.binding_target_id(factory_binding.as_ref(), |s| {
-                let mut ref2 = r.clone();
-                ref2.line = binding.line;
-                ref2.reference_name = callee_name.clone();
-                s.resolve_via_import(&ref2)
-            })?;
-            self.node_by_opt_id(callee_id.as_deref())?
-        };
-        let Some(callee) = callee else { return Ok(None) };
-        let ret_re = re!(r"\)\s*:\s*([A-Za-z0-9_$]+(?:<[A-Za-z0-9_$]+>)?)\s*$");
-        let return_type = callee.return_type.clone().or_else(|| {
-            callee
-                .signature
-                .as_deref()
-                .and_then(|s| ret_re.captures(s).map(|c| c[1].to_string()))
-        });
-        // `!returnType` — an empty annotation/returnType fails the same way.
-        let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
-            return Ok(None);
-        };
-        let promise_re = re!(r"^Promise<(.+)>$");
-        let ty = if awaited {
-            promise_re
-                .replace(&return_type, "$1")
-                .to_string()
-        } else {
-            return_type
-        };
-        self.match_bound_type_member(&ty, method, &r.clone().at(&callee))
+        let parsed = Rc::new(FactoryInit { awaited, callee: callee_name, owner: owner_name });
+        self.factory_init_memo.insert(key, parsed.clone());
+        Ok(parsed)
     }
 
     /// Cheap raw-source gate for inferEsmAwaitedCallType — the awaited arm can
@@ -145,7 +160,8 @@ impl KernelResolver {
         static AWAITED: LazyLock<Affix> = LazyLock::new(|| {
             Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(", false, false, false)
         });
-        Ok(AWAITED.any_line(lines.iter().map(String::as_str), receiver))
+        // The pattern needs a literal `await`, so only those lines can match.
+        Ok(AWAITED.any_line(lines.await_lines(), receiver))
     }
 
     /// Cheap gate for inferIterationReceiver — kotlin/go only, fires only
@@ -265,7 +281,7 @@ impl KernelResolver {
     /// go/kotlin iteration constructs, ESM awaited inference, and every
     /// member-miss that would walk live supertype edges.
     pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
-        let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {
+        let (object_or_class, method_name, inferable, dotted) = match probe!(r, "mc:shape", self.method_call_shape(r)?) {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
             McShape::Done(res) => return Ok(res),
         };
@@ -299,7 +315,7 @@ impl KernelResolver {
             let mut inferred = if r.language == "cpp" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, true)?
             } else {
-                self.infer_local_receiver_type(&object_or_class, &site, true)?
+                probe!(r, "mc:infer-local", self.infer_local_receiver_type(&object_or_class, &site, true)?)
             };
             if inferred.is_none() && r.language == "go" {
                 if let Some(c) = self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
@@ -307,11 +323,11 @@ impl KernelResolver {
                 }
             }
             if inferred.is_none() {
-                if self.mc_iteration_gate(&object_or_class, r)? {
+                if probe!(r, "mc:iter-gate", self.mc_iteration_gate(&object_or_class, r)?) {
                     return Err(Halt::Punt("mc-iteration"));
                 }
                 if is_esm_family(&r.language)
-                    && self.mc_await_gate(&object_or_class, r)?
+                    && probe!(r, "mc:await-gate", self.mc_await_gate(&object_or_class, r)?)
                 {
                     return Err(Halt::Punt("mc-await"));
                 }
@@ -770,7 +786,7 @@ impl KernelResolver {
             if let Some(nid) = &binding.node_id {
                 site.from_node_id = nid.clone();
             }
-            let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else {
+            let Some(ty) = probe!(r, "brc:fieldinfer", self.infer_local_receiver_type(root, &site, true)?) else {
                 return Ok(None);
             };
             let type_binding = innermost_binding(
@@ -808,7 +824,7 @@ impl KernelResolver {
         if binding.kind == "param" {
             return Ok(None);
         }
-        self.esm_factory_tail(&binding, root, method, r)
+        probe!(r, "brc:factory-tail", self.esm_factory_tail(&binding, root, method, r))
     }
 }
 
@@ -816,26 +832,23 @@ impl KernelResolver {
 /// at `from - 1`, or -1 when it never closes (JS string indexing).
 fn parens_end(s: &str, from: usize) -> i64 {
     let mut depth = 1i64;
-    let mut i = from;
     let mut units = 0usize;
     for ch in s.chars() {
         let start = units;
         units += ch.len_utf16();
-        if start < from || depth == 0 {
+        if start < from {
             continue;
         }
         if ch == '(' {
             depth += 1;
         } else if ch == ')' {
             depth -= 1;
+            if depth == 0 {
+                return units as i64;
+            }
         }
-        i = units;
     }
-    if depth != 0 {
-        -1
-    } else {
-        i as i64
-    }
+    -1
 }
 /// ^[ \t]*(?:;|\r?\n(?![ \t]*[.(\[?])) — the lookahead is emulated:
 /// `;` always ends the initializer; a newline does unless a chained
@@ -860,4 +873,11 @@ fn ends_initializer(init_s: &str, call_end: i64) -> bool {
             .is_some_and(|c| matches!(c, '.' | '(' | '[' | '?'));
     }
     false
+}
+
+/// A binding initializer's factory call (see factory_initializer).
+pub(super) struct FactoryInit {
+    awaited: bool,
+    callee: Option<String>,
+    owner: Option<String>,
 }
