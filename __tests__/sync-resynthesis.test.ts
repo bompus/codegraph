@@ -63,6 +63,18 @@ describe('synthesized edges on incremental sync', () => {
     expect(callees('publish')).not.toContain('onSaved');
   });
 
+  it('drops a removed registration\'s edge when the sync also re-resolves other files', async () => {
+    // A second onSaved re-opens every edge to that name, so this sync runs the
+    // orphan sweep, whose own synthesis pass has to leave the removed wiring out.
+    write('src/use.ts', "import { onSaved } from './handlers';\n\nexport function use() {\n  onSaved(1);\n}\n");
+    await cg.sync();
+    write('src/wire.ts', "import { bus } from './bus';\n\nexport function wire() {\n  return bus;\n}\n");
+    write('src/more.ts', 'export function onSaved(x: string) {\n  return x;\n}\n');
+    await cg.sync();
+    expect(callees('publish')).not.toContain('onSaved');
+    expect(callees('use')).toContain('onSaved');
+  });
+
   it('refreshes after a debounce when the sync defers it', async () => {
     process.env.CODEGRAPH_SYNTH_REFRESH_MS = '30';
     write('src/api.ts', 'export async function loadRepo(owner: string) {\n  // edited\n  return fetch(`https://api.github.com/repos/${owner}`);\n}\n');

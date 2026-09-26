@@ -828,6 +828,15 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.57 One synthesis pass per sync (2026-09-26)
+
+A sync whose definitions changed re-opens edges elsewhere (CG-33), and the orphan sweep that resolves them ends in a full synthesis pass; the post-sync refresh (5.53) then dropped the changed files' synthesized edges and ran a second one. On codegraph's own repository after a 30-commit checkout each pass cost 4.0 s (cFnPtr 2.3 s of it, over the vendored grammar C). The sync now drops those edges before the sweep and skips the refresh when the sweep's pass completed; if the sweep aborts first, the refresh still runs.
+
+| Sync after a 30-commit checkout (codegraph) | Before | After |
+|---|---|---|
+| Wall, 3 runs | 13.2–14.0 s | 9.3–9.9 s |
+| Edges | 84,368 | 84,368, identical |
+
 ### 5.54 Cheaper synthesis runs (2026-09-26)
 
 The post-sync synthesis run (5.53) took 2.8 s on pretix and 4.4 s on trezor-suite, against 1.7 s and 2.0 s inside a full index. Warm caches alone barely helped (4.3 → 3.6 s on trezor-suite), and a CPU profile showed why: the resolver's LRUs hold 1,000 files of content and 5,000 of nodes, and ~30 passes each walking all 13,433 JS/TS files evicted each other, so every pass re-read the repository from disk and SQLite (a quarter of the run). Two quadratic hotspots made up most of the rest:
