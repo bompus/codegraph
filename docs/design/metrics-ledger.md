@@ -804,9 +804,9 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 ### 5.51 Near-duplicate function bodies (2026-09-26)
 
-An idea from codebase-memory-mcp (OrangeOrchid's comparison, 2026-09-25): MinHash over function bodies to find copies. Scoped with a Python proof of concept first: bompus-espn-draft 55 pairs, bompus-codegraph 673 (vendored code excluded); 24 of 24 sampled non-test pairs were real copies.
+An idea from codebase-memory-mcp (OrangeOrchid's comparison, 2026-09-25): MinHash over function bodies to find copies. Scoped with a Python proof of concept first: a private downstream project 55 pairs, this repository 673 (vendored code excluded); 24 of 24 sampled non-test pairs were real copies.
 
-**Prototype A/B before building** (bompus-espn-draft, Sonnet, 3 runs per arm, edit task: fix a relative-URL bug in `fpAjaxUrlOf`; the same bug sits in `ttdAjaxUrlOf` and `dsAjaxUrlOf`; the prototype read precomputed pairs from a sidecar into explore's blast radius):
+**Prototype A/B before building** (a private downstream project, Sonnet, 3 runs per arm, edit task: fix a relative-URL bug in one URL helper; the same bug sits in two identical copies of it in other files; the prototype read precomputed pairs from a sidecar into explore's blast radius):
 
 | Arm | Saw the line | Copies named to the user | Copies edited | Median time |
 |---|---|---|---|---|
@@ -822,7 +822,7 @@ Agents kept the edit to the function they were asked about and told the user abo
 | pretix | 7,839 | 682 | 0.52 s (of ~15 s) |
 | halo | 3,711 | 158 | 0.25 s |
 | ktor | 4,020 | 528 | 0.56 s |
-| bompus-espn-draft | 2,942 | 20 | 0.5 s |
+| private downstream project | 2,942 | 20 | 0.5 s |
 
 A sync that changes no file skips the pass. Known limit: vendored libraries outside the excluded paths still pair with each other (pretix's `static/d3/` bundles).
 
