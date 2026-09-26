@@ -828,6 +828,20 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.81 Resolver port, leg 7e (group 1): seven languages admitted (2026-09-26)
+
+objc, solidity, liquid, twig, yaml, xml and properties had no resolution arm of their own in TypeScript beyond what the kernel already ports: the objc chain arm, the yaml/properties constant filter for `calls`, and the family and interop tables, which match. So admission was the change. Each was gated on a public corpus cloned to scratch:
+
+| Corpus | Languages | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|---|
+| AFNetworking | objc | 4,941 | 0 | identical |
+| OpenZeppelin contracts | solidity (+ JS/TS) | 41,426 | 0 | identical |
+| Shopify Dawn | liquid | 2,945 | 0 | identical |
+| symfony/demo | twig, yaml, xml (+ PHP) | 1,708 | 0 | identical |
+| ktor, javalin | yaml, properties (+ Kotlin/Java) | — | ktor 2 (Rust `member-tail`) | identical |
+
+Left for 7e: pascal (built-in filter and receiver patterns to port), erlang (arity strip), cfml/cfscript/cfquery (component paths, receiver patterns), cobol (copybooks), nix (path imports, same-file rule), terraform (framework-only), razor (`@using` arm), and vbnet (no corpus yet).
+
 ### 5.80 Resolver port, leg 7d (part 4): the field-type tie-break (2026-09-26)
 
 When a TS field's declared type named a method in several apps of one repo and two declarations sat equally near the call site, TypeScript broke the tie with `localeCompare`. That is ICU collation, and it depends on the host locale, so the kernel handed those refs back (`mc-tfield-ambig`). Both engines now break the tie by code-unit order (JS `<` on the paths), which is deterministic on every host. It is a deliberate TypeScript change: that spine is being deleted (Phase 6 leg 7f), so both engines now apply the kernel's rule. vitest and vite now have zero punts; vitest, vite, celery and ktor dump identically.
