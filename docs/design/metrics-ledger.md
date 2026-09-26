@@ -802,6 +802,12 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.47 Name-only caller count in explore's blast radius — parked (2026-09-26)
+
+The #119 labels mark name-only hops in the flow and in `codegraph_node`'s trail, but on a callers trap (javalin: `HttpUtil.get` has 676 callers, every one a bare `get` route registration matched by name at confidence 0.7) agents read callers from explore's blast radius, which carried no label. A variant counted those callers there: `N callers (all matched by name only, unverified)`.
+
+Agent A/B, codegraph-only, Sonnet, 3 runs per arm against b0f0eaf9: the label appeared once per run. Correct callers 15 against 14, wrong `get` answers 3 against 2, median 29 s / 2 calls against 26 s / 3 calls, no Read, Grep or Bash in either arm. No measurable effect, so the change was not landed.
+
 ### 5.46 Query workers skip the indexing stacks (2026-09-26)
 
 §5.45 left each query worker at ~96 MB anonymous. Loading the library through `src/index.ts` pulled 187 modules (4.5 MB of JavaScript: tree-sitter extraction, the callback synthesizer, the name matcher, the resolver) and every open built an extraction orchestrator and a resolver, none of which a read-only worker uses. The `CodeGraph` class moved to `src/codegraph.ts`; `src/index.ts` stays the public entry and hands the extraction, resolution and watcher modules over (`provideStacks`), while a caller that loads `codegraph.ts` directly — query workers, the MCP engine — loads them on first use, and the orchestrator and resolver are built on first use.
