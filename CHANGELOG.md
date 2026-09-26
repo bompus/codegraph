@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- `codegraph_explore` and `codegraph_node` now name the near-identical copies of the function you are looking at (for example the same helper pasted into three files), so a fix made in one copy is not forgotten in the others. Test files, generated code and vendored libraries are left out.
+
 - Ask about "my changes", "this branch" or a range like `main..HEAD`, and `codegraph_explore` (and the Claude Code prompt hook) answers from the diff: the functions your edits touched, most-called first, with their callers and the tests that cover them.
 - `codegraph_explore` flows and `codegraph_node` caller and callee lists now mark a call that was matched only by the function's name, with no import or known receiver type to confirm it. About half of those links are wrong on real projects, so the mark tells your agent which single hop to check rather than re-reading the whole flow.
 

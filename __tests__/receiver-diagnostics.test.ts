@@ -23,7 +23,7 @@ it('migrates existing unresolved rows without changing their retry state', () =>
   const { raw, queries } = setup();
   queries.markReferencesFailed([{ fromNodeId: 'caller', referenceName: 'unknown.run', referenceKind: 'calls' }]);
   raw.exec('ALTER TABLE unresolved_refs DROP COLUMN failure_reason');
-  raw.exec('DELETE FROM schema_versions WHERE version = 12');
+  raw.exec('DELETE FROM schema_versions WHERE version > 11');
   runMigrations(raw, 11);
   expect(queries.getRetryableFailedReferences(['run'])).toHaveLength(2);
   expect(queries.getRetryableFailedReferences(['run']).every(r => r.failureReason === undefined)).toBe(true);

@@ -48,6 +48,9 @@
 #   MODEL / EFFORT  default sonnet / high. Never raise without a reason: sonnet
 #                   is the deliberate floor model (see CLAUDE.md).
 #
+# AB_EDIT_TASK=1 resets the target copy before each run and saves each run's
+# diff as diff-<arm>-<n>.patch, for tasks that edit code.
+#
 # AB_PROMPT_HOOK=1 instead gives each arm its OWN build's front-load hook, for
 # a change that reaches the agent through the hook rather than a tool call.
 #
@@ -56,6 +59,9 @@
 # dist/, so leaving it on injects context through a second, uncontrolled channel
 # and confounds the tool-call counts this script exists to compare.
 set -uo pipefail
+# AB_ENV="K=V ...": extra environment for both arms' codegraph (the pre-warmed
+# daemon inherits it); a build without the feature ignores it.
+for kv in ${AB_ENV:-}; do export "$kv"; done
 
 TARGET="${1:?usage: ab-new-vs-baseline.sh <indexed-repo> \"<task>\" [baseline-ref]}"
 TASK="${2:?task required}"
@@ -110,7 +116,8 @@ echo
 rm -rf "$OUT/t-new" "$OUT/t-base"
 # AB_KEEP_GIT=1 keeps the target's .git, for a task about the working changes.
 KEEP_GIT_EXCLUDE=(--exclude .git); [ "${AB_KEEP_GIT:-0}" = 1 ] && KEEP_GIT_EXCLUDE=()
-rsync -a --exclude node_modules "${KEEP_GIT_EXCLUDE[@]}" --exclude dist --exclude .codegraph "$TARGET/" "$OUT/t-new/"
+COPY_EXCLUDES=(--exclude node_modules "${KEEP_GIT_EXCLUDE[@]}" --exclude dist --exclude .codegraph)
+rsync -a "${COPY_EXCLUDES[@]}" "$TARGET/" "$OUT/t-new/"
 cp -R "$OUT/t-new" "$OUT/t-base"
 
 prewarm() { # target — spawn a persistent daemon (current $BIN) and wait for its socket
@@ -132,12 +139,16 @@ run_arm() { # label, target-copy — runs the task $RUNS times against one build
   for i in $(seq 1 "${RUNS:-1}"); do
     # Re-warm per run: the previous run's daemon is killed below, and a cold
     # attach is exactly the failure this pre-warm exists to prevent.
+    # AB_EDIT_TASK=1: the task edits code, so every run starts from the
+    # original tree and leaves its diff behind for grading.
+    [ "${AB_EDIT_TASK:-0}" = 1 ] && rsync -a --delete "${COPY_EXCLUDES[@]}" "$TARGET/" "$tgt/"
     prewarm "$tgt"
     ( cd "$tgt" && PATH="$ARM_PATH" CODEGRAPH_NO_PROMPT_HOOK="$NO_PROMPT_HOOK" claude -p "$TASK" \
         --output-format stream-json --verbose --permission-mode bypassPermissions \
         --model "${MODEL:-sonnet}" --effort "${EFFORT:-high}" --max-budget-usd 4 --strict-mcp-config --mcp-config "$c" \
         --settings "$ARM_SETTINGS" \
         </dev/null > "$OUT/run-$label-$i.jsonl" 2>"$OUT/run-$label-$i.err" )
+    [ "${AB_EDIT_TASK:-0}" = 1 ] && diff -ruN "${COPY_EXCLUDES[@]}" "$TARGET" "$tgt" > "$OUT/diff-$label-$i.patch"
     echo "-- run $i --"
     # --brief: tool counts, result, and the three metric blocks, minus the
     # numbered call transcript (RUNS>=2 is otherwise mostly call listings; the

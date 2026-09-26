@@ -3800,6 +3800,88 @@ export class QueryBuilder {
   /**
    * Get a metadata value by key
    */
+  // ===========================================================================
+  // Near-duplicate bodies (src/graph/near-duplicates.ts)
+  // ===========================================================================
+
+  private nearDupStmts = new Map<string, SqliteStatement>();
+  private nearDupStmt(sql: string): SqliteStatement {
+    let stmt = this.nearDupStmts.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this.nearDupStmts.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  /** Function and method bodies of at least `minLines`, with their stored signature's stamp (null when none). */
+  *minhashCandidates(minLines: number): IterableIterator<{
+    id: string; name: string; filePath: string; startLine: number; endLine: number; updatedAt: number; sigUpdatedAt: number | null;
+  }> {
+    const stmt = this.nearDupStmt(
+      `SELECT n.id AS id, n.name AS name, n.file_path AS filePath, n.start_line AS startLine, n.end_line AS endLine,
+              n.updated_at AS updatedAt, m.node_updated_at AS sigUpdatedAt
+         FROM nodes n LEFT JOIN node_minhash m ON m.node_id = n.id
+        WHERE n.kind IN ('function', 'method') AND n.end_line - n.start_line >= ? AND n.language != 'markdown'`,
+    );
+    for (const row of stmt.iterate(minLines - 1)) yield row as never;
+  }
+
+  /** Store signatures; an empty `sig` marks a body too small to compare. */
+  upsertMinhash(rows: ReadonlyArray<{ nodeId: string; nodeUpdatedAt: number; sig: Uint8Array }>): void {
+    if (rows.length === 0) return;
+    const stmt = this.nearDupStmt(
+      `INSERT INTO node_minhash (node_id, node_updated_at, sig) VALUES (?, ?, ?)
+       ON CONFLICT(node_id) DO UPDATE SET node_updated_at = excluded.node_updated_at, sig = excluded.sig`,
+    );
+    this.db.transaction(() => {
+      for (const r of rows) stmt.run(r.nodeId, r.nodeUpdatedAt, r.sig);
+    })();
+  }
+
+  /** Drop signatures of bodies that are no longer candidates (shrunk below the size, or excluded). */
+  deleteMinhash(nodeIds: readonly string[]): void {
+    if (nodeIds.length === 0) return;
+    const stmt = this.nearDupStmt('DELETE FROM node_minhash WHERE node_id = ?');
+    this.db.transaction(() => {
+      for (const id of nodeIds) stmt.run(id);
+    })();
+  }
+
+  /** One LSH band of every comparable signature: its bytes `[offset, offset + length)`. */
+  *minhashBand(offset: number, length: number): IterableIterator<{ rowid: number; band: Uint8Array }> {
+    const stmt = this.nearDupStmt(
+      'SELECT rowid AS rowid, substr(sig, ?, ?) AS band FROM node_minhash WHERE length(sig) > 0',
+    );
+    for (const row of stmt.iterate(offset + 1, length)) yield row as never;
+  }
+
+  minhashByRowid(rowid: number): { nodeId: string; sig: Uint8Array } | null {
+    const row = this.nearDupStmt('SELECT node_id AS nodeId, sig FROM node_minhash WHERE rowid = ?').get(rowid);
+    return (row as { nodeId: string; sig: Uint8Array } | undefined) ?? null;
+  }
+
+  /** Replace every stored pair; each pair is kept in both directions. */
+  replaceNearDuplicates(pairs: ReadonlyArray<{ a: string; b: string; score: number }>): void {
+    const insert = this.nearDupStmt('INSERT OR REPLACE INTO near_duplicates (node_id, other_id, score) VALUES (?, ?, ?)');
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM near_duplicates');
+      for (const p of pairs) {
+        insert.run(p.a, p.b, p.score);
+        insert.run(p.b, p.a, p.score);
+      }
+    })();
+  }
+
+  /** The bodies most similar to `nodeId`, best first. */
+  getNearDuplicates(nodeId: string, limit = 5): Array<{ node: Node; score: number }> {
+    const rows = this.nearDupStmt(
+      `SELECT n.*, d.score AS near_dup_score FROM near_duplicates d JOIN nodes n ON n.id = d.other_id
+        WHERE d.node_id = ? ORDER BY d.score DESC, n.file_path, n.start_line LIMIT ?`,
+    ).all(nodeId, limit) as Array<NodeRow & { near_dup_score: number }>;
+    return rows.map((row) => ({ node: rowToNode(row), score: row.near_dup_score }));
+  }
+
   getMetadata(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM project_metadata WHERE key = ?').get(key) as { value: string } | undefined;
     return row?.value ?? null;

@@ -3408,6 +3408,8 @@ export class ToolHandler {
     const rel = (p: string) => p.replace(/\\/g, '/');
     const entries: string[] = [];
     for (const root of roots) {
+      const dups = this.nearDuplicateNote(cg, root);
+      const dupNote = dups ? `; near-duplicates (update together): ${dups}` : '';
       let callers: Array<{ node: Node }> = [];
       try { callers = cg.getCallers(root.id) as Array<{ node: Node }>; } catch { /* skip this root */ }
 
@@ -3417,8 +3419,9 @@ export class ToolHandler {
         if (c?.node && !seen.has(c.node.id)) { seen.add(c.node.id); uniq.push(c.node); }
       }
       if (uniq.length === 0) {
-        if (includeLeaves) entries.push(`- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — no callers`);
-        continue; // no blast radius → nothing to flag
+        // A body with copies elsewhere is worth flagging even with no callers.
+        if (includeLeaves || dupNote) entries.push(`- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — no callers${dupNote}`);
+        continue;
       }
 
       const callerFiles = [...new Set(uniq.map((n) => rel(n.filePath)))];
@@ -3433,10 +3436,21 @@ export class ToolHandler {
         : this.indirectTestNote(cg, uniq, rel);
 
       entries.push(
-        `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} caller${uniq.length === 1 ? '' : 's'}${where}${tests}`,
+        `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} caller${uniq.length === 1 ? '' : 's'}${where}${tests}${dupNote}`,
       );
     }
     return entries;
+  }
+
+  /**
+   * The bodies nearly identical to `node`, formatted for a line of output, or
+   * '' when it has none. A fix made in one copy usually belongs in the others.
+   */
+  private nearDuplicateNote(cg: CodeGraph, node: Node): string {
+    const dups = cg.getNearDuplicates(node.id, 4);
+    return dups
+      .map((d) => `\`${d.node.name}\` (${d.node.filePath.replace(/\\/g, '/')}:${d.node.startLine}, ${Math.round(d.score * 100)}% similar)`)
+      .join(', ');
   }
 
   /**
@@ -7431,8 +7445,10 @@ export class ToolHandler {
     };
     const callees = collect(cg.getCallees(node.id));
     const callers = collect(cg.getCallers(node.id));
-    if (callees.length === 0 && callers.length === 0) return '';
+    const dups = this.nearDuplicateNote(cg, node);
+    if (callees.length === 0 && callers.length === 0 && !dups) return '';
     const lines: string[] = ['', '**Trail — codegraph_node any of these to follow it (no Read needed)**'];
+    if (dups) lines.push(`**Near-duplicates (update together) ≈** ${dups}`);
     if (callees.length > 0) {
       lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
     }
