@@ -406,6 +406,13 @@ export class ReferenceResolver {
    * files and calls this afterwards, so the edges a changed file wires up come
    * back. Inserts are idempotent (INSERT OR IGNORE on the edge identity).
    */
+  /**
+   * Completed synthesis passes at the end of {@link resolveAndPersistBatched}.
+   * A sync compares it across its orphan sweep to tell whether that pass
+   * already refreshed the synthesized edges.
+   */
+  synthesisRuns = 0;
+
   async resynthesize(): Promise<number> {
     this.clearCaches();
     return synthesizeCallbackEdges(this.queries, this.context);
@@ -2914,6 +2921,7 @@ export class ReferenceResolver {
         pool,
         parallel?.backpressure
       );
+      this.synthesisRuns++;
     } catch {
       // synthesis is additive and optional; ignore failures
     }

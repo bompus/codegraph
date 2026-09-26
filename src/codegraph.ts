@@ -999,8 +999,29 @@ export class CodeGraph {
         // Grind them down with the batched resolver; this also makes a bare
         // `codegraph sync` the recovery command for a wedged index. On a
         // healthy index this is one COUNT query.
+        // The scoped path above resolves only the changed files and, unlike the
+        // batched path, never runs synthesis: without a refresh every
+        // synthesized edge a changed file wired up (callbacks, React renders,
+        // cross-tier HTTP, external endpoints) stayed missing until a full
+        // index. A pure-removal sync resolves nothing either, and a removed
+        // file may have held the registration behind an edge between two
+        // other files.
+        const scopedChange = filesChanged && result.changedFilePaths;
+        const pureRemoval = !filesChanged && result.filesRemoved > 0;
+        const resynthesis = (scopedChange || pureRemoval) && process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0';
+        if (resynthesis) {
+          for (const p of result.changedFilePaths ?? []) this.synthesisDirty.add(p);
+          for (const p of result.removedFilePaths ?? []) this.synthesisDirty.add(p);
+        }
+
         const orphanCount = this.queries.getUnresolvedReferencesCount();
         if (orphanCount > 0) {
+          // The sweep ends in a full synthesis pass. Dropping the stale edges
+          // first makes that pass the refresh, instead of synthesizing twice.
+          const synthesisRuns = this.resolver.synthesisRuns;
+          if (this.synthesisDirty.size > 0) {
+            this.queries.deleteSynthesizedEdgesRegisteredIn([...this.synthesisDirty]);
+          }
           options.onProgress?.({
             phase: 'resolving',
             current: 0,
@@ -1024,6 +1045,7 @@ export class CodeGraph {
             },
             walValve
           );
+          if (this.resolver.synthesisRuns > synthesisRuns) this.synthesisDirty.clear();
         }
 
         if (filesChanged || orphanCount > 0) {
@@ -1039,17 +1061,7 @@ export class CodeGraph {
           // member is inherited from a supertype (#808).
           await this.resolver.resolveDeferredThisMemberRefs();
         }
-        // The scoped path above resolves only the changed files and, unlike the
-        // batched path, never runs synthesis: without this every synthesized
-        // edge a changed file wired up (callbacks, React renders, cross-tier
-        // HTTP, external endpoints) stayed missing until a full index.
-        // A pure-removal sync resolves nothing either, and a removed file may
-        // have held the registration behind an edge between two other files.
-        const scopedChange = filesChanged && result.changedFilePaths;
-        const pureRemoval = !filesChanged && result.filesRemoved > 0;
-        if ((scopedChange || pureRemoval) && process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0') {
-          for (const p of result.changedFilePaths ?? []) this.synthesisDirty.add(p);
-          for (const p of result.removedFilePaths ?? []) this.synthesisDirty.add(p);
+        if (resynthesis && this.synthesisDirty.size > 0) {
           if (options.deferSynthesis) this.scheduleSynthesisRefresh();
           else await this.refreshSynthesis();
         }
