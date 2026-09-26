@@ -385,7 +385,29 @@ impl KernelResolver {
         if imports.is_empty() {
             return Ok(None);
         }
-        let ext = if r.language == "kotlin" { ".kt" } else { ".java" };
+        // Java and Kotlin import each other's declarations (a Kotlin test's
+        // `import …ApiBuilder.get` names a method in a .java file), so both
+        // languages and both extensions count.
+        let is_jvm = |language: &str| language == "java" || language == "kotlin";
+        let ends_with_fqn = |file_path: &str, fqn: &str| {
+            let base = fqn.replace('.', "/");
+            [".java", ".kt"].iter().any(|ext| file_path.ends_with(&format!("{base}{ext}")))
+        };
+        // A chained call reduced to its bare method name starts its column at
+        // the chain, not the name: only a source that begins with the name is
+        // the import's (import-resolver.ts isBareCallSite).
+        let bare_call_site = if r.reference_kind == "calls" {
+            match self.read_file(&r.file_path) {
+                Some(lines) => lines.get((r.line - 1) as usize).is_none_or(|line| {
+                    js_slice(line, r.column as usize)
+                        .strip_prefix(r.reference_name.as_str())
+                        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+                }),
+                None => true,
+            }
+        } else {
+            true
+        };
         for imp in imports {
             let matches_bare = imp.local_name == r.reference_name;
             let matches_qualified = r
@@ -394,20 +416,18 @@ impl KernelResolver {
             if !matches_bare && !matches_qualified {
                 continue;
             }
+            if matches_bare && !bare_call_site {
+                continue;
+            }
             let member_name = if matches_bare {
                 imp.local_name.clone()
             } else {
                 js_slice(&r.reference_name, utf16_len(&imp.local_name) + 1)
                     .to_string()
             };
-            let fqn_path = format!("{}{}", imp.source.replace('.', "/"), ext);
             let candidates = self.nodes_by_name(&member_name)?;
             for node in candidates.iter() {
-                if node.language != r.language {
-                    continue;
-                }
-                let fp = &node.file_path;
-                if fp.ends_with(&fqn_path) {
+                if is_jvm(&node.language) && ends_with_fqn(&node.file_path, &imp.source) {
                     return Ok(Some(node.clone()));
                 }
             }
@@ -417,14 +437,9 @@ impl KernelResolver {
             if matches_bare {
                 if let Some(dot) = imp.source.rfind('.') {
                     if dot > 0 {
-                        let owner_path =
-                            format!("{}{}", imp.source[..dot].replace('.', "/"), ext);
+                        let owner = &imp.source[..dot];
                         for node in candidates.iter() {
-                            if node.language != r.language {
-                                continue;
-                            }
-                            let fp = &node.file_path;
-                            if fp.ends_with(&owner_path) {
+                            if is_jvm(&node.language) && ends_with_fqn(&node.file_path, owner) {
                                 return Ok(Some(node.clone()));
                             }
                         }

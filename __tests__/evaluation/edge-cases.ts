@@ -65,6 +65,12 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
     commit: '2155404863401e0257f89c301509cde59e7becd1',
     note: 'Kotlin corpus for binding-model Phase 3 (import rows replace the JVM import regex).',
   },
+  javalin: {
+    key: 'javalin',
+    repo: 'https://github.com/javalin/javalin.git',
+    commit: '48bf31c3e0fc9f218470dde17de67499fbf549eb',
+    note: 'Mixed Java/Kotlin: Kotlin tests import static members of Java classes (ApiBuilder).',
+  },
   slim: {
     key: 'slim',
     repo: 'https://github.com/slimphp/Slim.git',
@@ -86,6 +92,20 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
 };
 
 export const edgeCases: EdgeCase[] = [
+  // --- javalin: a Kotlin file importing a Java class's static member ---
+  {
+    id: 'javalin-kotlin-imports-java-member', corpus: 'javalin', kind: 'calls',
+    from: { file: 'javalin/src/test/java/io/javalin/TestApiBuilder.kt', name: '`ApiBuilder prefixes paths with slash`' },
+    to: { file: 'javalin/src/main/java/io/javalin/apibuilder/ApiBuilder.java', name: 'get' }, expect: 'present',
+    source: 'jvm member imports', why: 'The file imports io.javalin.apibuilder.ApiBuilder.get and calls get(...) bare.',
+  },
+  {
+    id: 'javalin-bare-get-not-test-client', corpus: 'javalin', kind: 'calls',
+    from: { file: 'javalin/src/test/java/io/javalin/TestApiBuilder.kt', name: '`ApiBuilder prefixes paths with slash`' },
+    to: { file: 'javalin/src/test/java/io/javalin/testing/HttpUtil.kt', name: 'get' }, expect: 'absent',
+    source: 'jvm member imports', why: 'HttpUtil.get is the test HTTP client; the bare get(...) is the imported ApiBuilder route.',
+  },
+
   {
     id: 'slim-guarded-exception-receiver', corpus: 'slim', kind: 'calls',
     from: { file: 'Slim/Error/AbstractErrorRenderer.php', name: 'getErrorTitle' },
