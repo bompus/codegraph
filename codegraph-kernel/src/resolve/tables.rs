@@ -51,6 +51,7 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "xml"
             | "properties"
             | "pascal"
+            | "erlang"
     )
 }
 

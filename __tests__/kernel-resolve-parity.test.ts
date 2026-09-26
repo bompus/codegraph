@@ -177,6 +177,24 @@ const FIXTURE: Record<string, string> = {
     'end;',
     'end.',
   ].join('\n'),
+  // Erlang: arity is part of a function's identity (`em::f/2`); behaviours
+  // and `.app.src` entries name modules only.
+  'src/em.erl': [
+    '-module(em).',
+    '-behaviour(gen_server).',
+    '-export([f/1, f/2, g/1, run/0]).',
+    'f(X) -> X.',
+    'f(X, Y) -> {X, Y}.',
+    'g(X) -> X.',
+    'run() -> f(1), em:f(1, 2), em:g(3), em:h(4), lists:map(fun g/1, []).',
+  ].join('\n'),
+  'src/em_user.erl': [
+    '-module(em_user).',
+    '-behaviour(em).',
+    '-export([go/0]).',
+    'go() -> em:f(1), em:g(2), apply(em, g, [3]).',
+  ].join('\n'),
+  'src/em.app.src': '{application, em, [{mod, {em, []}}, {applications, [kernel, em_user]}]}.\n',
   // Markdown links resolve to the linked file by path.
   'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,

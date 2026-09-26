@@ -173,6 +173,9 @@ impl KernelResolver {
         // `Foo::bar` can still reach it — punt when the source check applies.
         let existence = if r.language == "arkts" && r.reference_name.starts_with('.') {
             &r.reference_name[1..]
+        } else if r.language == "erlang" {
+            // The call-site arity (`f/1`) is not part of any node name.
+            re!(r"/[0-9]{1,3}$").splitn(&r.reference_name, 2).next().unwrap_or(&r.reference_name)
         } else {
             &r.reference_name
         };
@@ -321,6 +324,9 @@ impl KernelResolver {
         // methodCall's requireReceiverEvidence=false arm, exactName, fuzzy.
         // The first strategy that answers is the name match; a gated-out
         // answer does not fall through to the next.
+        if let Some(erlang) = self.match_erlang_reference(r)? {
+            return self.after_name_match(r, cands, erlang);
+        }
         let mut name_cand = self.match_by_file_path(r)?;
         if name_cand.is_none() {
             name_cand = self.match_by_qualified_name(r)?;
@@ -615,7 +621,10 @@ impl KernelResolver {
             return self.finish(r, winner, None, true);
         }
 
-        let name_cand = probe!(r, "match_reference_bare", self.match_reference_bare(r)?);
+        let name_cand = match self.match_erlang_reference(r)? {
+            Some(erlang) => erlang,
+            None => probe!(r, "match_reference_bare", self.match_reference_bare(r)?),
+        };
         if let Some(c) = self.gate_language(name_cand, r) {
             if self.name_result_stands(&c, r)? {
                 cands.push(c);

@@ -828,6 +828,23 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.83 Resolver port, leg 7e: Erlang (2026-09-26)
+
+Erlang's TypeScript-only handling (#1610) came in four pieces, and the kernel now ports them all:
+
+- **Prefilter:** the call-site arity (`f/1`) is stripped before the symbol-existence check.
+- **Qualified names:** a `mod::f/2` ref that misses the exact lookup is a miss, with no partial match and no sibling arity. An arity-less `mod::f` resolves only when the module defines exactly one arity.
+- **Behaviours and `.app`/`.app.src` refs:** these resolve to module namespaces only.
+- **Arity calls:** an `f/1` call or reference resolves only to a definition of exactly that arity. The order is the call site's file, then a unique definition, then the best-ranked one at 0.7 or 0.4 by path proximity.
+
+Erlang is admitted.
+
+| Corpus | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|
+| ninenines/cowboy (189 Erlang files) | 15,210 | 0 | identical |
+
+The parity fixture gained Erlang modules covering each arm (a behaviour, arity calls, `mod::f/N`, an undefined `mod::h`, and an `.app.src` resource), so the byte-compare leg now covers them.
+
 ### 5.82 Resolver port, leg 7e: Pascal (2026-09-26)
 
 Pascal had two TypeScript-only pieces. One is the built-in filter: Delphi RTL/VCL unit prefixes, and intrinsics and RTL classes such as `WriteLn`, `IntToStr` and `TObject`. The other is two receiver-type patterns: `lg: TLogger` for variables and parameters, and `lg := TLogger.Create`. The kernel now carries both, and the pattern parity unit test checks the new pair against the TypeScript regexes. Pascal is admitted.

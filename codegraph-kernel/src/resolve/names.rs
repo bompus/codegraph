@@ -549,6 +549,54 @@ impl KernelResolver {
     /// matchReference restricted to the bare-name slice: every strategy
     /// before exact-name keys on a separator a bare name cannot carry, so
     /// the pipeline is exact → fuzzy.
+    /// matchReference's leading Erlang arms: `Some(result)` when one owns the
+    /// ref (its result, a miss included, is the name match), `None` otherwise.
+    /// A `-behaviour(m)` ref, or any ref from an `.app`/`.app.src` resource,
+    /// can only name a module. A call carrying its arity (`f/1`) resolves only
+    /// to a definition of exactly that arity: the call site's own file, then a
+    /// unique one, then the best-ranked — never a sibling arity.
+    pub(super) fn match_erlang_reference(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        if r.language != "erlang" {
+            return Ok(None);
+        }
+        if r.reference_kind == "implements" || re!(r"(?i)\.app(?:\.src)?$").is_match(&r.file_path) {
+            let modules: Vec<Arc<KNode>> = self
+                .nodes_by_name(&r.reference_name)?
+                .iter()
+                .filter(|n| n.language == "erlang" && n.kind == "namespace")
+                .cloned()
+                .collect();
+            let chosen = prefer_call_site_file(modules, &r.file_path).into_iter().next();
+            return Ok(Some(chosen.map(|node| KCand { node, confidence: 0.9, resolved_by: "exact-match" })));
+        }
+        if r.reference_name.contains("::") || (r.reference_kind != "calls" && r.reference_kind != "references") {
+            return Ok(None);
+        }
+        let Some(m) = re!(r"^(.+)/([0-9]{1,3})$").captures(&r.reference_name) else {
+            return Ok(None);
+        };
+        let arity_tail = format!("/{}", &m[2]);
+        let candidates: Vec<Arc<KNode>> = self
+            .nodes_by_name(&m[1])?
+            .iter()
+            .filter(|n| n.language == "erlang" && n.kind == "function" && n.qualified_name.ends_with(&arity_tail))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Some(None));
+        }
+        if let Some(same) = candidates.iter().find(|n| n.file_path == r.file_path) {
+            return Ok(Some(Some(KCand { node: same.clone(), confidence: 0.95, resolved_by: "exact-match" })));
+        }
+        if candidates.len() == 1 {
+            return Ok(Some(Some(KCand { node: candidates[0].clone(), confidence: 0.8, resolved_by: "exact-match" })));
+        }
+        Ok(Some(self.find_best_match(r, &candidates).map(|best| {
+            let proximity = compute_path_proximity(&r.file_path, &best.file_path);
+            KCand { node: best, confidence: if proximity >= 30 { 0.7 } else { 0.4 }, resolved_by: "exact-match" }
+        })))
+    }
+
     pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));
@@ -676,6 +724,32 @@ impl KernelResolver {
                     resolved_by: "qualified-name",
                 }));
             }
+        }
+
+        // Erlang (#1610): every function's qualified name carries its arity
+        // (`mod::f/2`). A ref WITH an arity that missed the exact lookup names
+        // an undefined arity — never the partial match (its last segment would
+        // be the digits) and never a sibling arity. An arity-less ref resolves
+        // only when the module defines exactly one arity of the function.
+        if r.language == "erlang" && r.reference_name.contains("::") {
+            if re!(r"/[0-9]{1,3}$").is_match(&r.reference_name) {
+                return Ok(None);
+            }
+            let base = &r.reference_name[r.reference_name.rfind("::").unwrap() + 2..];
+            let prefix = format!("{}/", r.reference_name);
+            let arity: Vec<Arc<KNode>> = keep_for_ref(&self.nodes_by_name(base)?)
+                .into_iter()
+                .filter(|n| {
+                    n.qualified_name
+                        .strip_prefix(&prefix)
+                        .is_some_and(|tail| re!(r"^[0-9]{1,3}$").is_match(tail))
+                })
+                .collect();
+            return Ok((arity.len() == 1).then(|| KCand {
+                node: arity[0].clone(),
+                confidence: 0.85,
+                resolved_by: "qualified-name",
+            }));
         }
 
         // Partial match — the last `:`/`.` segment, then the suffix filter.
