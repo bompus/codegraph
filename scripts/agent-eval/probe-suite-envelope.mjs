@@ -17,14 +17,14 @@
  *   node scripts/agent-eval/probe-suite-envelope.mjs
  *   node scripts/agent-eval/probe-suite-envelope.mjs --json > /tmp/new.json
  *   node scripts/agent-eval/probe-suite-envelope.mjs --baseline /tmp/base.json
- *   CORPUS=/tmp/codegraph-corpus node scripts/agent-eval/probe-suite-envelope.mjs
+ *   CORPUS=~/codegraph-corpora node scripts/agent-eval/probe-suite-envelope.mjs
  */
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const CORPUS = process.env.CORPUS ?? '/tmp/codegraph-corpus';
+const CORPUS = process.env.CORPUS ?? join(homedir(), 'codegraph-corpora');
 
 /** The six suite repos + the exact queries the CG-30/CG-31 tables were measured on. */
 const SUITE = [

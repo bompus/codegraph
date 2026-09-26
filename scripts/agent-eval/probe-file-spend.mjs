@@ -22,16 +22,16 @@
  *   node scripts/agent-eval/probe-file-spend.mjs --json > /tmp/new.json
  *   node scripts/agent-eval/probe-file-spend.mjs --baseline /tmp/base.json
  *   node scripts/agent-eval/probe-file-spend.mjs django --all   # every file, not just flags
- *   CORPUS=/tmp/codegraph-corpus node scripts/agent-eval/probe-file-spend.mjs
+ *   CORPUS=~/codegraph-corpora node scripts/agent-eval/probe-file-spend.mjs
  *
  * Exit code is 1 when any repo carries a starvation flag, so this can gate.
  */
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const CORPUS = process.env.CORPUS ?? '/tmp/codegraph-corpus';
+const CORPUS = process.env.CORPUS ?? join(homedir(), 'codegraph-corpora');
 
 /** Same six repos and queries the CG-30/CG-31/CG-26 envelope tables use. */
 const SUITE = [

@@ -75,7 +75,7 @@ codegraph reduced effort and whether both arms reached a correct answer.
   that built it.
 - `audit.sh` temporarily mutates the global `codegraph` install for the test,
   then restores your dev link via `local-install.sh`.
-- Set `CORPUS` to a workspace-disk directory; the script default
-  `/tmp/codegraph-corpus` is shared tmpfs. Clones are reused if already present.
+- Corpus repos are cloned to `$CORPUS` (default `~/codegraph-corpora`, on the
+  workspace disk) and reused if already present.
 - Add or edit repos in `corpus.json` (fields: `name`, `repo`, `size`, `files`,
   `question`).

@@ -8,7 +8,7 @@
 #   <repo-name>  dir name under the corpus dir
 #   <repo-url>   git URL (cloned --depth 1 when the repo dir is missing)
 #   [mode]       headless (default) | all (also the interactive tmux arms)
-# Env: CORPUS  corpus dir (default: /tmp/codegraph-corpus)
+# Env: CORPUS  corpus dir (default: ~/codegraph-corpora)
 set -euo pipefail
 
 VERSION="${1:?usage: audit.sh <version> <repo-name> <repo-url> \"<question>\" [mode]}"
@@ -19,7 +19,7 @@ MODE="${5:-headless}"
 
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HARNESS/../.." && pwd)"     # codegraph repo root
-CORPUS="${CORPUS:-/tmp/codegraph-corpus}"
+CORPUS="${CORPUS:-$HOME/codegraph-corpora}"
 REPO="$CORPUS/$NAME"
 PKG="@colbymchenry/codegraph"
 PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/codegraph-audit.XXXXXX")"

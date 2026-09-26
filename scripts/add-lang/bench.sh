@@ -9,7 +9,7 @@
 # broken extractor); set FORCE_AB=1 to run it anyway.
 #
 # Usage: bench.sh <lang> <repo-name> <repo-url> "<question>" [headless|tmux|all]
-# Env:   CORPUS   corpus dir (default /tmp/codegraph-corpus, shared with agent-eval)
+# Env:   CORPUS   corpus dir (default ~/codegraph-corpora, shared with agent-eval)
 set -uo pipefail
 
 LANG_TOKEN="${1:?usage: bench.sh <lang> <repo-name> <repo-url> \"<question>\" [mode]}"
@@ -20,7 +20,7 @@ MODE="${5:-headless}"
 
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 AGENT_EVAL="$(cd "$HARNESS/../agent-eval" && pwd)"
-CORPUS="${CORPUS:-/tmp/codegraph-corpus}"
+CORPUS="${CORPUS:-$HOME/codegraph-corpora}"
 REPO="$CORPUS/$NAME"
 
 command -v codegraph >/dev/null || { echo "no codegraph on PATH (build + ./scripts/local-install.sh first)"; exit 1; }
