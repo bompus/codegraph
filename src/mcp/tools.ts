@@ -1404,7 +1404,7 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
 export const tools: ToolDefinition[] = [
   {
     name: 'codegraph_search',
-    description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.',
+    description: 'Find symbols by name — full or partial ("auth" matches authenticate, AuthService) — ranked with generated files last. Returns each match\'s name, kind and file:line, not its source; codegraph_explore returns the source.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1414,12 +1414,12 @@ export const tools: ToolDefinition[] = [
         },
         kind: {
           type: 'string',
-          description: 'Filter by node kind',
+          description: 'Only symbols of this kind. "type" matches type aliases.',
           enum: ['function', 'method', 'class', 'interface', 'type', 'variable', 'route', 'component'],
         },
         limit: {
           type: 'number',
-          description: 'Maximum results (default: 10)',
+          description: 'Maximum results, 1–100 (default: 10)',
           default: 10,
         },
         projectPath: projectPathProperty,
@@ -1430,7 +1430,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_callers',
-    description: 'List functions that call <symbol>. For the full flow, use codegraph_explore.',
+    description: 'List the functions and methods that directly call <symbol>, with file:line and, for a dynamic-dispatch edge, how the call was wired. Same-named definitions in different files are listed separately; narrow with `file`. The output says when `limit` cut the list. Returns locations, not source: use codegraph_impact for transitive dependents and codegraph_explore for the code.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1444,7 +1444,7 @@ export const tools: ToolDefinition[] = [
         },
         limit: {
           type: 'number',
-          description: 'Maximum number of callers to return (default: 20)',
+          description: 'Maximum callers per definition, 1–100 (default: 20)',
           default: 20,
         },
         projectPath: projectPathProperty,
@@ -1455,7 +1455,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_callees',
-    description: 'List functions that <symbol> calls. For the full flow, use codegraph_explore.',
+    description: 'List the functions and methods that <symbol> directly calls, with file:line and, for a dynamic-dispatch edge, how the call was wired. Same-named definitions in different files are listed separately; narrow with `file`. The output says when `limit` cut the list. Returns locations, not source: use codegraph_explore for the code or a whole flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1469,7 +1469,7 @@ export const tools: ToolDefinition[] = [
         },
         limit: {
           type: 'number',
-          description: 'Maximum number of callees to return (default: 20)',
+          description: 'Maximum callees per definition, 1–100 (default: 20)',
           default: 20,
         },
         projectPath: projectPathProperty,
@@ -1480,7 +1480,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_impact',
-    description: 'List symbols affected by changing <symbol>. Use before a refactor.',
+    description: 'List what depends on <symbol> — anything with an incoming edge to it (callers, importers, subclasses, other references), followed transitively up to `depth` levels — to see what a change could break. Same-named definitions in different files get separate results; narrow with `file`. Returns locations, not source.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1494,7 +1494,7 @@ export const tools: ToolDefinition[] = [
         },
         depth: {
           type: 'number',
-          description: 'How many levels of dependencies to traverse (default: 2)',
+          description: 'Levels of dependents to follow, 1–10 (default: 2)',
           default: 2,
         },
         projectPath: projectPathProperty,
@@ -1505,7 +1505,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_node',
-    description: 'Two modes. (1) READ A FILE — use INSTEAD of the Read tool: pass `file` (a path or basename) with no `symbol` and it returns that file\'s current on-disk source with line numbers, exactly the shape Read gives you (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit` just like Read — PLUS a one-line note of which files depend on it. Same bytes as Read, faster (served from the index), with the blast radius attached. Use it whenever you would Read a source file. (2) ONE SYMBOL you can name — its location, signature, verbatim source (includeCode=true) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an AMBIGUOUS name it returns EVERY matching definition\'s body in one call (so you never Read a file to find the right overload); pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.',
+    description: 'Two modes. (1) Read a file: pass `file` (a path or basename) with no `symbol` to get that file\'s current on-disk source with line numbers in Read\'s shape (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit`, plus a one-line note of which files depend on it. (2) One symbol you can name: its location, signature, verbatim source (includeCode=true) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an ambiguous name it returns every matching definition\'s body; pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1520,7 +1520,7 @@ export const tools: ToolDefinition[] = [
         },
         file: {
           type: 'string',
-          description: 'A file path or basename (e.g. "harness.rs", "src/auth/session.ts"). Pass it ALONE (no symbol) to READ the file like the Read tool — its full source with line numbers + which files depend on it. Or pass it WITH a symbol to disambiguate an overloaded name to the definition in this file.',
+          description: 'A file path or basename (e.g. "harness.rs", "src/auth/session.ts"). Pass it alone (no symbol) to read the file like the Read tool — its full source with line numbers + which files depend on it. Or pass it WITH a symbol to disambiguate an overloaded name to the definition in this file.',
         },
         offset: {
           type: 'number',
@@ -1610,7 +1610,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_status',
-    description: 'Index health check (files / nodes / edges). Skip unless debugging.',
+    description: 'Index health for the project: server build, files, nodes and edges indexed, database size, SQLite backend and journal mode, nodes by kind, languages, and any pending sync or disabled auto-sync. Use it when results look stale or incomplete, not for code questions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1621,7 +1621,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_files',
-    description: 'Indexed file tree with language + symbol counts. Faster than Glob for project layout.',
+    description: 'List the files codegraph indexes — as a tree, a flat list or grouped by language, with language and symbol counts — optionally filtered by directory or glob. Files codegraph does not index are not listed; use Glob for those.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1862,8 +1862,8 @@ export class ToolHandler {
 
   /**
    * Optional allowlist of exposed tools, parsed from the CODEGRAPH_MCP_TOOLS
-   * env var (comma-separated short names, e.g. "trace,search,node,context").
-   * Unset/empty → every tool is exposed. Lets an operator (or an A/B harness)
+   * env var (comma-separated short names, e.g. "explore,search,node").
+   * Unset/empty → DEFAULT_MCP_TOOLS. Lets an operator (or an A/B harness)
    * trim the tool surface without rebuilding the client config; the ablated
    * tool is then truly absent from ListTools rather than merely denied on call.
    * Matching is on the short form, so "node" and "codegraph_node" both work.
@@ -1890,7 +1890,7 @@ export class ToolHandler {
    */
   getTools(): ToolDefinition[] {
     const allow = this.toolAllowlist();
-    // No explicit allowlist → the default 4-tool surface (see
+    // No explicit allowlist → the default surface (see
     // DEFAULT_MCP_TOOLS for the evidence). An allowlist replaces the
     // default entirely, so any defined tool can be re-enabled.
     let visible = allow
@@ -3742,7 +3742,7 @@ export class ToolHandler {
     // What this session has already been served for THIS project (CG-17), and
     // whether this call may act on it (CG-18). Dedup is off on the session's
     // first call by construction — there is nothing to point back AT — and off
-    // entirely under `CODEGRAPH_EXPLORE_DEDUP=0`.
+    // entirely unless `CODEGRAPH_EXPLORE_DEDUP=1` (see exploreDedupEnabled).
     const priorCalls = viewForProject(readExploreSessionView(args), projectRoot);
     diag?.noteSession(priorCalls);
     const dedupEnabled = exploreDedupEnabled() && (priorCalls?.calls.length ?? 0) > 0;
