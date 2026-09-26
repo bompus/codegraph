@@ -128,6 +128,22 @@ function sliceLinesPre(lines: string[], startLine?: number, endLine?: number): s
   return lines.slice(startLine - 1, endLine ?? startLine).join('\n');
 }
 
+/** Start offset of every line of `text`. */
+function lineStarts(text: string): number[] {
+  const starts = [0];
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i + 1);
+  return starts;
+}
+
+/** `sliceLinesPre(text.split('\n'), …)` without splitting: one substring of `text`. */
+function sliceLinesAt(text: string, starts: number[], startLine?: number, endLine?: number): string {
+  if (!startLine) return '';
+  const a = startLine - 1;
+  const b = Math.min(endLine ?? startLine, starts.length);
+  if (a >= b) return '';
+  return text.substring(starts[a]!, b < starts.length ? starts[b]! - 1 : text.length);
+}
+
 /** Index of the `}` matching the `{` at `open` (which must point at a `{`). -1 if unbalanced. */
 function matchBrace(src: string, open: number): number {
   let depth = 0;
@@ -409,7 +425,9 @@ const FIELD_ASSIGN_RE = /(\w+)\s*(?:->|\.)\s*(\w+)\s*=\s*(\w+)\s*(?:->|\.)\s*(\w
  *  terminator keeps `a->f = b->g` propagation and member RHS (`= x.y`) out;
  *  `(?!=)` keeps `==` comparisons out. A bare `fp = fn` never matches — no
  *  field access on the LHS. */
-const FN_ASSIGN_RE = /(\w+)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g;
+// `(?<!\w)`: a match can only start at a word's first character (a start
+// inside the word implies one at its start, found first), so skip the rest.
+const FN_ASSIGN_RE = /(?<!\w)(\w+)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g;
 /** The dereference-receiver form of the same: `(*x)->f = fn;` / `(*x).f = fn;`. */
 const DEREF_FN_ASSIGN_RE = /\(\s*\*\s*(\w+)\s*\)\s*(?:->|\.)\s*(\w+)\s*=(?!=)\s*&?\s*(\w+)\s*;/g;
 
@@ -1397,7 +1415,7 @@ export async function cFnPointerDispatchEdges(
   const recvTypeIn = (fnSrc: string, recv: string): string | null => {
     let re = recvReCache.get(recv);
     if (!re) {
-      re = new RegExp(`(?:(?:struct|union)\\s+)?(\\w+)\\s*\\*?\\s*\\b${recv}\\b\\s*(?:[,)=;]|\\[)`, 'g');
+      re = new RegExp(`(?<!\\w)(?:(?:struct|union)\\s+)?(\\w+)\\s*\\*?\\s*\\b${recv}\\b\\s*(?:[,)=;]|\\[)`, 'g');
       recvReCache.set(recv, re);
     }
     re.lastIndex = 0;
@@ -1416,7 +1434,7 @@ export async function cFnPointerDispatchEdges(
   const varTypeIn = (fnSrc: string, v: string): string | null => {
     let re = varReCache.get(v);
     if (!re) {
-      re = new RegExp(`(?:(?:struct|union)\\s+)?(\\w+)\\s*\\*?\\s*\\b${escapeRe(v)}\\b\\s*(?:[,)=;]|\\[)`, 'g');
+      re = new RegExp(`(?<!\\w)(?:(?:struct|union)\\s+)?(\\w+)\\s*\\*?\\s*\\b${escapeRe(v)}\\b\\s*(?:[,)=;]|\\[)`, 'g');
       varReCache.set(v, re);
     }
     re.lastIndex = 0;
@@ -1470,10 +1488,10 @@ export async function cFnPointerDispatchEdges(
       const tN = prof ? Date.now() : 0;
       const fnsA = ctx.getNodesInFile(file);
       if (prof) { prof.nodesMs += Date.now() - tN; prof.nodesN++; }
-      const aLines = s.split('\n');
+      const aStarts = lineStarts(s);
       for (const fn of fnsA) {
         if (!FN_KINDS.has(fn.kind)) continue;
-        const body = sliceLinesPre(aLines, fn.startLine, fn.endLine);
+        const body = sliceLinesAt(s, aStarts, fn.startLine, fn.endLine);
         if (!body.includes('=')) continue;
         for (const re of [FN_ASSIGN_RE, DEREF_FN_ASSIGN_RE]) {
           re.lastIndex = 0;
