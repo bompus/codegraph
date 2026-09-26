@@ -50,6 +50,7 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "yaml"
             | "xml"
             | "properties"
+            | "pascal"
     )
 }
 
@@ -859,6 +860,38 @@ pub(super) static GO_STDLIB_PACKAGES: LazyLock<HashSet<&'static str>> = LazyLock
         "scanner", "tar", "zip", "gzip", "zlib", "tls", "url", "user", "pprof", "trace",
         "ast", "build", "parser", "printer", "token", "types", "cgo", "plugin", "race",
         "ioutil", "utilruntime", "utilwait", "utilnet",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// PASCAL_UNIT_PREFIXES (index.ts): Delphi RTL/VCL/FMX unit namespaces.
+pub(super) const PASCAL_UNIT_PREFIXES: [&str; 15] = [
+    "System.", "Winapi.", "Vcl.", "Fmx.", "Data.", "Datasnap.",
+    "Soap.", "Xml.", "Web.", "REST.", "FireDAC.", "IBX.",
+    "IdHTTP", "IdTCP", "IdSSL",
+];
+
+/// PASCAL_BUILT_INS (index.ts): standard units, intrinsics and RTL classes.
+pub(super) static PASCAL_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "System", "SysUtils", "Classes", "Types", "Variants", "StrUtils",
+        "Math", "DateUtils", "IOUtils", "Generics.Collections", "Generics.Defaults",
+        "Rtti", "TypInfo", "SyncObjs", "RegularExpressions",
+        "SysInit", "Windows", "Messages", "Graphics", "Controls", "Forms",
+        "Dialogs", "StdCtrls", "ExtCtrls", "ComCtrls", "Menus", "ActnList",
+        "WriteLn", "Write", "ReadLn", "Read", "Inc", "Dec", "Ord", "Chr",
+        "Length", "SetLength", "High", "Low", "Assigned", "FreeAndNil",
+        "Format", "IntToStr", "StrToInt", "FloatToStr", "StrToFloat",
+        "Trim", "UpperCase", "LowerCase", "Pos", "Copy", "Delete", "Insert",
+        "Now", "Date", "Time", "DateToStr", "StrToDate",
+        "Raise", "Exit", "Break", "Continue", "Abort",
+        "True", "False", "nil", "Self", "Result",
+        "Create", "Destroy", "Free",
+        "TObject", "TComponent", "TPersistent", "TInterfacedObject",
+        "TList", "TStringList", "TStrings", "TStream", "TMemoryStream", "TFileStream",
+        "Exception", "EAbort", "EConvertError", "EAccessViolation",
+        "IInterface", "IUnknown",
     ]
     .into_iter()
     .collect()
