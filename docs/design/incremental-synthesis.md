@@ -1,6 +1,6 @@
 # Incremental synthesis after a sync
 
-Status: proposal, 2026-09-26. Nothing here is built yet.
+Status: proposal, 2026-09-26. Nothing here is built yet; Milestone 1 was measured and set aside (see below).
 
 ## Problem
 
@@ -67,6 +67,25 @@ Effect: in a mixed repository, a TypeScript edit no longer re-runs the C pass,
 and a C edit no longer re-runs the JavaScript passes. It does nothing for the
 Linux case above, because the edited file is C. It is small, general, and a
 prerequisite for Milestone 2's edge ownership, so it goes first.
+
+### Measured before building (2026-09-26)
+
+On discourse (15,564 files, Ruby and JavaScript), a one-file sync takes ~5 s, of which resynthesis is ~3 s. With `CODEGRAPH_SYNTH_TIMINGS=all`:
+
+| Edit | Passes a language gate could skip | Time they take |
+|---|---|---|
+| One Ruby file | `tierEdges`, `rnEventEdgesList`, `rnXPlatEdges`, `windowMessageEdges`, `jsxEdges`, … | ~1.5 s |
+| One JavaScript file | `sidekiqEdges` and a few small ones | ~0.1 s |
+
+The `ALWAYS` passes (`emitterEdges`, `registryEdges`, `fieldEdges`, `closureCollEdges`) take ~1 s and re-run on every edit.
+
+Three problems the plan above missed:
+
+- **A gate is not a list of inputs.** `tierEdges` is gated on JavaScript but links front-end calls to backend routes, so a Ruby route edit changes its output. Every pass needs a hand-audited `reads` list, and a missed input shows up as silently stale edges.
+- **Passes read edges.** Kept edges from skipped passes would be in the database while the re-run passes execute, and some passes query edges. A fresh index never shows them those edges. Kept edges would have to be moved aside during the re-run.
+- **Shadowed duplicates.** When a re-run pass stops emitting an edge that used to shadow a skipped pass's duplicate, a fresh index would contain the skipped pass's copy, which was never stored. Being exact needs each pass's raw output, either persisted or cached in a long-lived process.
+
+Status: not built. The gain is modest (~30% of a Ruby-edit sync on discourse, ~2% of a JavaScript-edit sync), and the audit it needs is error-prone. A narrower variant is exact with much less audit: skip only `cFnPtrEdges` when no C/C++ file changed, reusing its raw output cached in the daemon. It helps mixed C projects (CPython, Node.js) and does nothing for the Linux kernel, where every edit is C.
 
 ## Milestone 2: an incremental C function-pointer pass
 
