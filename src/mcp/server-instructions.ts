@@ -26,11 +26,10 @@ reading files (cached intelligence: thousands of parse/trace decisions you
 don't pay to re-reason each run). It indexes 30+ languages
 (TypeScript/JavaScript, Python, Go, Rust, Java, C#, C/C++, PHP, Ruby, Swift,
 Kotlin, and more) — don't assume a language here isn't covered. Reads are
-sub-millisecond. Reach for it BEFORE *and* while
-writing or editing code — not just for questions: one call returns the
-verbatim source PLUS who calls it and what it affects, so you edit with the
-blast radius in view. More accurate context, in far fewer tokens and
-round-trips than reading files yourself.
+sub-millisecond. Use it while writing or editing code as well as for
+questions: one call returns the verbatim source plus who calls it and what it
+affects, so you edit with the blast radius in view — more accurate context in
+fewer tokens and round-trips than reading files yourself.
 
 ## The code tool: codegraph_explore — use it instead of reading files
 
@@ -43,16 +42,15 @@ like callbacks, React re-render, and JSX children that grep can't follow) and
 a blast-radius summary of what depends on them.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
-bug, adding a feature), call \`codegraph_explore\` before you Read. ONE call
-usually answers the whole question. Codegraph IS the pre-built search index —
-so running your own grep + read loop, or delegating the lookup to a separate
-file-reading sub-task/agent, repeats work codegraph already did and costs more
-for the same answer. A direct codegraph answer is typically one to a few
-calls; a grep/read exploration is dozens.
+bug, adding a feature), call \`codegraph_explore\` before you Read; one call
+usually answers the whole question. Codegraph is a pre-built search index, so
+your own grep + read loop, or a file-reading sub-agent, repeats work it already
+did and costs more for the same answer: typically one to a few codegraph calls
+against dozens of greps and reads.
 
 ## How to query
 
-- **Almost any question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. ONE capped call returns the verbatim source grouped by file; most often the ONLY call you need.
+- **Almost any code question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. It returns the verbatim source grouped by file, capped by project size.
 - **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops, and returns their source.
 - **Reading or editing a file/symbol you can name** → put its name or file path in the \`codegraph_explore\` query — it returns that current line-numbered source (safe to \`Edit\` from) with the call path and blast radius attached, so you don't Read it separately. For an overloaded name it returns every matching definition's body in one call.
 - Name what you need as precisely as you can — a receiver type with its method, a constant or variable, a callable, or a file path. Named items are funded first within the output cap; an oversized body comes back as a bounded excerpt whose gap markers name what was left out. Treat returned ranges as already Read; for trimmed parts, query the names in the gap marker.
@@ -64,7 +62,7 @@ calls; a grep/read exploration is dozens.
 ## Anti-patterns
 
 - **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
-- **Don't grep or Read first** to find or understand indexed code — ONE \`codegraph_explore\` returns the relevant symbols' source together in a single round-trip. Reach for raw \`Read\`/\`Grep\` only to confirm a specific detail codegraph didn't cover, or for what codegraph doesn't index (configs). Markdown IS indexed — every \`.md\` file's headings, sections, tables and links — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` first as well; it returns the section body, not just its heading.
+- **Read/Grep are for what the index lacks**: a detail a codegraph answer didn't cover, or files codegraph doesn't index (such as configs). Markdown is indexed — every \`.md\` file's headings, sections, tables and links — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` too; it returns the section body, not just its heading.
 - **A question about the working changes** ("what do my changes affect", "this branch", \`main..HEAD\`) goes to \`codegraph_explore\` as asked: it reads the diff itself (merge base with the default branch plus uncommitted edits, or the named range) and leads with the changed symbols, their callers and their tests.
 - **Near-duplicates (update together)** in a blast radius or trail names other function bodies nearly identical to the one you are reading. A bug fixed in one copy is usually still in the others: check them, and tell the user if you leave them unchanged.
 - **Don't reconstruct a flow by hand** — name the endpoints in one \`codegraph_explore\` and it surfaces the path between them, dynamic-dispatch hops included.
