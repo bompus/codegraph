@@ -38,8 +38,8 @@ let queries: QueryBuilder | null = null;
 let resolver: ReferenceResolver | null = null;
 
 type InMessage =
-  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null; kernelGeneration?: string }
-  | { type: 'recycle'; id: number }
+  | { type: 'open'; dbPath: string; projectRoot: string; kernelDbPath?: string | null; kernelGeneration?: string; supertypesComplete?: boolean }
+  | { type: 'recycle'; id: number; kernel?: { dbPath: string; generation: string } }
   | { type: 'resolve'; id: number; refs: UnresolvedReference[] }
   | { type: 'synth'; id: number; pass: string }
   | { type: 'close' };
@@ -74,7 +74,8 @@ port.on('message', (msg: InMessage) => {
         // in-memory node table over the snapshot instead of filling six.
         resolver.initKernelResolver(
           msg.kernelDbPath && msg.kernelDbPath !== msg.dbPath ? msg.kernelDbPath : null,
-          msg.kernelGeneration
+          msg.kernelGeneration,
+          msg.supertypesComplete === true
         );
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] worker open: db=${tDb - tOpen}ms init=${Date.now() - tDb}ms`);
         port.postMessage({ type: 'ready' });
@@ -96,6 +97,12 @@ port.on('message', (msg: InMessage) => {
         db.pragma('busy_timeout = 5000');
         db.pragma('cache_size = -32000');
         queries.rebind(db);
+        // A snapshot refreshed after the prerequisite phase: every supertype
+        // edge the rest of the run reads is in it, so the kernel walks them.
+        if (msg.kernel && resolver) {
+          resolver.closeKernel();
+          resolver.initKernelResolver(msg.kernel.dbPath, msg.kernel.generation, true);
+        }
         port.postMessage({ type: 'recycled', id: msg.id });
         break;
       }

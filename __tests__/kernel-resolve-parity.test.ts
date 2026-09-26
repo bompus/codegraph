@@ -47,6 +47,8 @@ const FIXTURE: Record<string, string> = {
     '}',
     'export const api = { getState() { return {}; }, call() { return 1; } };',
   ].join('\n'),
+  // A supertype the kernel's walk can reach once an `extends` edge names it.
+  'src/base.ts': 'export class BaseSvc {\n  call() { return 2; }\n}\n',
   'src/main.ts': [
     "import { helper, VERSION } from './util';",
     "import { renamed } from './barrel';",
@@ -815,6 +817,30 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // `svc.call` infers Service then misses `Service::call` — the supertype
     // walk reads live edges, so the kernel punts for TS to decide.
     expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('passthrough');
+    // Over a db holding every supertype edge (the live db, or a snapshot taken
+    // after the prerequisite phase) the kernel walks supertypes itself:
+    // `Service extends BaseSvc`, written here as the prerequisite pass would,
+    // proves `svc.call` on BaseSvc.
+    db.prepare("INSERT INTO edges (source, target, kind) VALUES (?, ?, 'extends')").run(
+      nodeId('Service', 'svc.ts', 'class'),
+      nodeId('BaseSvc', 'base.ts', 'class'),
+    );
+    const walking = new kernel!.KernelResolver!({
+      dbPath: path.join(tempDir, '.codegraph', 'codegraph.db'),
+      projectRoot: tempDir,
+      aliases: {
+        baseUrl: '.',
+        patterns: [{ prefix: '@lib/', suffix: '', hasWildcard: true, replacements: ['src/*'] }],
+      },
+      cppIncludeDirs: [],
+      nodeBuiltinSpecifiers: [...builtinModules],
+      frameworksActive: false,
+      supertypesComplete: true,
+    });
+    const walked = walking.resolveChunk(batch)[idx.get('svc.call@calls@src/main.ts')!]!;
+    walking.close();
+    expect(walked.status).toBe('resolved');
+    expect(walked.targetNodeId).toBe(nodeId('call', 'base.ts', 'method'));
     // `über.run`: ASCII word boundaries miss the non-ASCII receiver in both
     // engines, and the receiver's `local` row makes the bound-receiver claim
     // exclusive — a refused claim is terminal. With Unicode boundaries the

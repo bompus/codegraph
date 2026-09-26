@@ -828,6 +828,18 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.67 Resolver port, Phase 6 leg 6a: supertype walks (2026-09-26)
+
+A member missing on a receiver's own type punted (`btm-supers`, `rmot-supers`) because TS then walks implements/extends edges the kernel's snapshot might not hold: TS reads live edges, and the resolution loop writes them as it goes. But only the prerequisite phase (imports/extends/implements, drained before any call) writes those edges, so a connection that sees the db after that phase sees all of them. The kernel now ports both walks — matchBoundTypeMember's node-anchored BFS over `getSupertypeNodes` (any target kind, visited once) and resolveMethodOnType's `getSupertypes` name-union recursion (depth < 4), both over the same `WHERE source = ? AND kind IN (…)` edge scan so order matches — gated by a `supertypesComplete` config flag. Main-thread kernels read the live db and set it; pool workers get it once their snapshot postdates the prerequisite phase: the loop refreshes it at the first idle boundary past that phase (a new copy and generation handed over through `recycle`; no copy if no prerequisite batch ran).
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| ktor (pool) | 96.5% (`btm` 2,313, `rmot` 616) | 98.2% | identical |
+| celery | 99.0% | 99.6% | identical |
+| Ocelot | 95.0% (`rmot` 373) | 96.2% | identical |
+| vitest (pool) | 92.7% | 93.0% | identical |
+| svelte | 98.9% | 99.0% | identical |
+
 ### 5.66 Resolver port, Phase 6 leg 5: store-bind precondition (2026-09-26)
 
 A bare JS call punted as `store-bind` whenever its file had `const name…` or a destructure naming it (`js_const_binds`) — nearly every file with a local of that name. matchJsStoreBindingCall only ever answers through two arms, each with a narrow precondition: matchDestructuredStoreCall needs `.getState` in the file and a `const {…}` naming the ref; matchSelectedStoreCall needs `=>` and the ref among the file's selector names, which TS collects from the raw source with one regex (mirrored with ASCII `\w`, memoized per file). The kernel checks those and resolves the rest itself.

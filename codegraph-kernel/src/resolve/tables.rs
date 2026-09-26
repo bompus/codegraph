@@ -512,6 +512,12 @@ pub(super) fn strip_line_comments(line: &str) -> String {
 }
 
 /// SUPERTYPE_TARGET_KINDS (resolution/types.ts).
+/// SUPERTYPE_BEARING_KINDS (index.ts): the kinds whose implements/extends
+/// edges a supertype walk follows.
+pub(super) fn is_supertype_bearing_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "struct" | "interface" | "trait" | "protocol" | "enum")
+}
+
 pub(super) fn is_supertype_target_kind(kind: &str) -> bool {
     matches!(
         kind,

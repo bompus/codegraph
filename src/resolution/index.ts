@@ -992,9 +992,9 @@ export class ReferenceResolver {
    * conn on the real -shm races node:sqlite's wal-index state — the two
    * SQLite builds' intra-process locks can't see each other).
    */
-  initKernelResolver(dbPath?: string | null, generation?: string): void {
+  initKernelResolver(dbPath?: string | null, generation?: string, supertypesComplete = false): void {
     this.kernelResolverTried = true;
-    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath, generation);
+    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath, generation, supertypesComplete);
   }
 
   /**
@@ -1027,6 +1027,28 @@ export class ReferenceResolver {
    * so worker kernel conns do zero shm I/O on the live db. Returns null on
    * any failure: callers then run workers kernel-less (TypeScript path).
    */
+  /**
+   * A second snapshot for the same run, taken after the prerequisite phase so
+   * it holds every implements/extends edge the call phase reads. A new path:
+   * the workers still have the first copy open. Returns null on any failure
+   * (the workers keep the old snapshot and keep punting supertype walks).
+   */
+  private async refreshKernelReaderSnapshot(fold: () => Promise<boolean>): Promise<string | null> {
+    const dbPath = this.queries.getDatabasePath();
+    if (!dbPath || !(await fold())) return null;
+    const snap = `${dbPath}.kr-snapshot-${++this.kernelSnapshotSeq}`;
+    try {
+      fs.rmSync(`${snap}-wal`, { force: true });
+      fs.rmSync(`${snap}-shm`, { force: true });
+      await fs.promises.copyFile(dbPath, snap);
+    } catch {
+      return null;
+    }
+    this.kernelReaderSnapshot = snap;
+    return snap;
+  }
+  private kernelSnapshotSeq = 0;
+
   private async ensureKernelReaderSnapshot(fold?: () => Promise<boolean>): Promise<string | null> {
     if (process.env.CODEGRAPH_NO_KERNEL_SNAPSHOT === '1') return null;
     if (this.kernelReaderSnapshot !== undefined) return this.kernelReaderSnapshot;
@@ -1048,7 +1070,7 @@ export class ReferenceResolver {
     return this.kernelReaderSnapshot;
   }
 
-  private openKernelResolver(parallelDbPath: string | undefined, generation?: string): KernelResolverLike | null {
+  private openKernelResolver(parallelDbPath: string | undefined, generation?: string, supertypesComplete = false): KernelResolverLike | null {
     if (process.env.CODEGRAPH_KERNEL_RESOLVE === '0') return null;
     const kernelModule = getKernel();
     if (!kernelModule?.KernelResolver) return null;
@@ -1081,6 +1103,7 @@ export class ReferenceResolver {
         frameworkNames: this.frameworks.map((f) => f.name),
         ambiguousNameCeiling: resolveAmbiguousNameCeiling(),
         generation,
+        supertypesComplete,
       });
     } catch (err) {
       logDebug('Kernel resolver unavailable; staying on the TypeScript path', {
@@ -1977,7 +2000,8 @@ export class ReferenceResolver {
     // resolves natively across cores — same chunk contract as the
     // main-thread path, passthroughs still run the full TS pipeline in this
     // worker (frameworks included — the worker's resolver detected them).
-    if (!this.kernelResolverTried) this.initKernelResolver(this.queries.getDatabasePath() ?? undefined);
+    // The live db holds every edge written so far, as the TS walk sees it.
+    if (!this.kernelResolverTried) this.initKernelResolver(this.queries.getDatabasePath() ?? undefined, undefined, true);
     if (this.kernelResolver) {
       try {
         const kernelRows: ResolveRefIn[] = refs.map((raw) => ({
@@ -2187,7 +2211,7 @@ export class ReferenceResolver {
     };
     if (!this.kernelResolverTried) {
       await quiesceValveForKernel();
-      this.initKernelResolver(parallel?.dbPath);
+      this.initKernelResolver(parallel?.dbPath, undefined, true);
     }
     let kernel = this.kernelResolver;
     if (kernel) {
@@ -2247,6 +2271,13 @@ export class ReferenceResolver {
     // tryCreate's sizing probes shouldn't re-run every batch on hosts that
     // declined.
     let poolEngageTried = false;
+    // Supertype walks read implements/extends edges, which only the
+    // prerequisite phase writes. A worker snapshot taken before that phase
+    // ends lacks some of them, so its kernel punts those walks to TS until
+    // the snapshot is refreshed at the phase boundary.
+    let inPrereqPhase = true;
+    let prereqBatchesSettled = 0;
+    let snapshotComplete = false;
     const createPool = async (t0: number, why: string): Promise<ResolverPool | null> => {
       poolEngageTried = true;
       if (!parallel) return null;
@@ -2272,7 +2303,8 @@ export class ReferenceResolver {
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
         console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — workers run kernel-less'}`);
       }
-      const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath);
+      snapshotComplete = kernelDbPath !== null && !inPrereqPhase;
+      const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath, snapshotComplete);
       p?.ready().then(
         () => {
           poolReady = true;
@@ -2323,7 +2355,7 @@ export class ReferenceResolver {
       | { ok: false; err: unknown };
     /** One page of pending refs: the loop's UnresolvedReference rows plus,
      *  when the kernel did the read, the native rows resolveChunk consumes. */
-    type BatchPage = { refs: UnresolvedReference[]; kernelRefs: ResolveRefIn[] | null };
+    type BatchPage = { refs: UnresolvedReference[]; kernelRefs: ResolveRefIn[] | null; prereq: boolean };
     type InFlight =
       | { mode: 'pool'; settled: Promise<PoolSettled> }
       | {
@@ -2593,7 +2625,7 @@ export class ReferenceResolver {
       if (kernel) {
         try {
           const kernelRefs = kernel.readPendingBatch(after, batchSize, prereq);
-          return { refs: kernelRefs.map(ReferenceResolver.kernelRowToUnresolved), kernelRefs };
+          return { refs: kernelRefs.map(ReferenceResolver.kernelRowToUnresolved), kernelRefs, prereq };
         } catch (err) {
           logDebug('Kernel batch read failed; downgrading to TypeScript reads', {
             error: err instanceof Error ? err.message : String(err),
@@ -2604,12 +2636,14 @@ export class ReferenceResolver {
       return {
         refs: this.queries.getUnresolvedReferencesBatchAfter(after, batchSize, prereq),
         kernelRefs: null,
+        prereq,
       };
     };
     const readNextBatch = (): BatchPage => {
       let next = readPage(afterRowId, prerequisites);
       if (next.refs.length === 0 && prerequisites) {
         prerequisites = false;
+        inPrereqPhase = false;
         afterRowId = 0;
         next = readPage(afterRowId, prerequisites);
       }
@@ -2632,6 +2666,7 @@ export class ReferenceResolver {
 
       const tBatch = Date.now();
       const result = await settleBatch(inFlight, batch);
+      if (batch.prereq) prereqBatchesSettled++;
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] batch ${inFlight.mode}: ${batch.refs.length} refs in ${Date.now() - tBatch}ms`);
       if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
         const accounted = result.resolved.length + result.unresolved.length;
@@ -2698,6 +2733,38 @@ export class ReferenceResolver {
       // the read marks every ~25 batches lets the existing checkpoints
       // advance instead, at ~milliseconds of reopen cost. A failed recycle
       // downgrades to sequential permanently, same as a failed fan-out.
+      // First idle boundary past the prerequisite phase: every supertype edge
+      // this run reads is now persisted. Hand the workers a snapshot that has
+      // them (a fresh copy only if a prerequisite batch wrote any).
+      if (pool && poolReady && !snapshotComplete && !inPrereqPhase && this.kernelReaderSnapshot && parallel?.foldWalForSnapshot) {
+        snapshotComplete = true;
+        tLp = Date.now();
+        try {
+          const stale = this.kernelReaderSnapshot;
+          const fresh = prereqBatchesSettled > 0
+            ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
+            : stale;
+          if (fresh) {
+            await pool.recycleWorkers(fresh);
+            batchesSinceRecycle = 0;
+            if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+              console.error(`[pool-timing] kernel snapshot refreshed after the prerequisite phase: ${fresh} (${Date.now() - tLp}ms)`);
+            }
+            if (fresh !== stale) {
+              for (const suf of ['', '-wal', '-shm']) {
+                try { fs.rmSync(stale + suf, { force: true }); } catch { /* best-effort scratch cleanup */ }
+              }
+            }
+          }
+        } catch (err) {
+          logDebug('Kernel snapshot refresh failed; falling back to sequential', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await pool.destroy().catch(() => undefined);
+          pool = null;
+        }
+        lp('recycle', tLp);
+      }
       if (pool && poolReady && ++batchesSinceRecycle >= RECYCLE_EVERY_BATCHES) {
         batchesSinceRecycle = 0;
         tLp = Date.now();
