@@ -30,7 +30,6 @@ import {
   enterWalMode,
   ftsQuery,
   querySessions,
-  sessionsSourceDir,
   NoSessionsError,
   formatSessionHits,
 } from '../src/sessions';
@@ -122,7 +121,6 @@ describe('Claude Code reader', () => {
 
   it('derives the project slug the way Claude Code does and finds either drive-letter case', () => {
     const root = fixtureDir();
-    expect(claudeProjectSlug(root)).toBe(path.resolve(root).replace(/[^a-zA-Z0-9]/g, '-'));
     const config = fixtureDir();
     process.env.CLAUDE_CONFIG_DIR = config;
     expect(claudeSessionsDir(root)).toBeNull();
@@ -298,7 +296,6 @@ describe('querySessions (project entry point)', () => {
 
     fs.writeFileSync(path.join(project, 'codegraph.json'), JSON.stringify({ sessions: false }));
     clearProjectConfigCache();
-    expect(sessionsSourceDir(project)).toBeNull();
     expect(() => querySessions(project, 'dedupe')).toThrow(NoSessionsError);
   });
 

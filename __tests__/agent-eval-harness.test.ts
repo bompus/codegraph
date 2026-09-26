@@ -103,7 +103,7 @@ chmod +x "$prefix/node_modules/.bin/codegraph"
     });
 
     expect(result.status).not.toBe(0);
-    expect(readFileSync(npmArgs, 'utf8')).not.toMatch(/(^|\\n)-g(\\n|$)/);
+    expect(readFileSync(npmArgs, 'utf8')).not.toMatch(/^-g$/m);
     const prefix = readFileSync(prefixFile, 'utf8');
     expect(prefix).toContain('codegraph-audit.');
     expect(existsSync(prefix)).toBe(false);
