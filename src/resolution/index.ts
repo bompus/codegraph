@@ -1172,7 +1172,9 @@ export class ReferenceResolver {
     // The kernel's ≥0.9 import verdict outranks <0.9 framework candidates —
     // resolveOneInner early-returns it and discards them. A verdict reported
     // without a candidate list is likewise already the merged winner.
-    if (outcome.isFinal || (!outcome.candidates && verdict)) return verdict;
+    // A final miss (the chain branch) keeps only a ≥0.9 framework hit.
+    if (outcome.isFinal) return verdict ?? this.applyResolveTail(null, ref);
+    if (!outcome.candidates && verdict) return verdict;
     for (const kc of outcome.candidates ?? []) {
       candidates.push({
         original: ref,

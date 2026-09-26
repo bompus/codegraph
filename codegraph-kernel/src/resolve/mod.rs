@@ -219,6 +219,16 @@ impl ResolveOutcome {
             ..Self::unresolved()
         }
     }
+    /// A miss the framework loop may still overturn, but only with a ≥0.9 hit:
+    /// lower framework candidates are discarded, not merged (the TS chain
+    /// branch returns before the merge).
+    fn final_miss() -> Self {
+        ResolveOutcome {
+            candidates: Some(Vec::new()),
+            is_final: true,
+            ..Self::unresolved()
+        }
+    }
     fn resolved(target: &KNode, confidence: f64, by: &str, is_final: bool, cands: Option<Vec<KernelCandidateOut>>) -> Self {
         ResolveOutcome {
             status: "resolved".into(),

@@ -266,16 +266,13 @@ impl KernelResolver {
         if is_unresolved_js_member_call(r) {
             return Ok(ResolveOutcome::unresolved());
         }
-        // The chain guard routes `x().y` calls through matchReference only —
-        // the chain matchers there (storeAccessorChain et al.) are unported.
+        // A TS/JS/Python `x().y` call names the root's import, not the
+        // method's, so it skips the import arm and matchReference answers alone.
         if r.reference_kind == "calls"
             && chain_shape_re().is_match(&r.reference_name)
-            && matches!(
-                r.language.as_str(),
-                "typescript" | "javascript" | "tsx" | "jsx" | "python"
-            )
+            && is_store_chain_language(&r.language)
         {
-            return Ok(ResolveOutcome::passthrough("chain"));
+            return self.resolve_call_chain(r);
         }
 
         let mut cands: Vec<KCand> = Vec::new();
@@ -694,6 +691,37 @@ impl KernelResolver {
 
     /// No kernel verdict: framework candidates may still exist on the TS
     /// side, so report an empty list when frameworks are active.
+    /// resolveOneInner's TS/JS/Python chain branch: matchReference's
+    /// file-path and qualified-name arms, then matchStoreAccessorChain, whose
+    /// only answer is a store accessor's action (`get().reset`,
+    /// `useStore.getState().reset`) — source-reading, so that shape stays in
+    /// TS. Any other chain says nothing about what the inner call returns and
+    /// resolves to nothing. The branch returns before the framework merge and
+    /// the name post-checks.
+    fn resolve_call_chain(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        let mut cand = self.match_by_file_path(r)?;
+        if cand.is_none() {
+            cand = self.match_by_qualified_name(r)?;
+        }
+        let Some(cand) = cand else {
+            if store_accessor_chain(&r.reference_name) {
+                return Ok(ResolveOutcome::passthrough("chain"));
+            }
+            return Ok(self.chain_miss());
+        };
+        let Some(cand) = self.gate_language(Some(cand), r) else { return Ok(self.chain_miss()) };
+        let Some(winner) = self.gate_target_kind(cand, r)? else { return Ok(self.chain_miss()) };
+        self.finish(r, winner, None, true)
+    }
+
+    fn chain_miss(&self) -> ResolveOutcome {
+        if self.frameworks_active {
+            ResolveOutcome::final_miss()
+        } else {
+            ResolveOutcome::unresolved()
+        }
+    }
+
     pub(super) fn refused(&self) -> ResolveOutcome {
         if self.frameworks_active {
             ResolveOutcome::no_candidates()
@@ -790,4 +818,18 @@ fn is_deferred_chain_call(r: &ResolveRefIn) -> bool {
     r.reference_kind == "calls"
         && ((CHAIN_LANGUAGES.contains(&r.language.as_str()) && chain_shape_re().is_match(&r.reference_name))
             || (r.language == "php" && php_prop_shape_re().is_match(&r.reference_name)))
+}
+
+/// matchStoreAccessorChain's shape: `<inner>().<method>` whose inner call is a
+/// store accessor — `get`, `getState` or `<x>.getState`.
+fn store_accessor_chain(name: &str) -> bool {
+    let Some((inner, method)) = name.rsplit_once("().") else { return false };
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    if inner.is_empty() || method.is_empty() || !method.chars().all(word) {
+        return false;
+    }
+    if !inner.chars().all(|c| word(c) || c == '$' || c == '.') {
+        return false;
+    }
+    inner == "get" || inner == "getState" || inner.ends_with(".getState")
 }
