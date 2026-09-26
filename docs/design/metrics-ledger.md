@@ -828,6 +828,18 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.64 Resolver port, Phase 6 leg 3: Svelte, Vue and Astro (2026-09-26)
+
+The SFC extractors already rebased their script blocks' binding rows to file positions, so admitting `svelte`/`vue`/`astro` to the kernel was the whole port — except for one latent divergence the dump gate caught: TS's path-shaped `imports` arm (`./x` specifier → file node @0.9) listed only the TS/JS family while the kernel used `ESM_IMPORT_LANGUAGES`. For a component, TS fell through to name matching: file-path (0.7) when the basename was unique, the importing file's own `import` statement node (qualified-name, 0.95) when it was not — 694 such self-edges on svelte. TS now uses `ESM_IMPORT_LANGUAGES` too.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| svelte | 85.3% (`ineligible:lang` 7,160) | 97.9% (370) | identical |
+| vitest | 87.6% (`ineligible:lang` 3,353) | 89.0% (2,060) | identical |
+| codegraph | — | — | 298,515 lines, identical |
+
+Golden `sfc-mix`: two component/Astro imports of `store.ts` move from the self `import` node to the file; two relative component imports move from file-path 0.7 to import 0.9. Remaining `ineligible:lang` on these corpora is markdown and yaml. Finding: a template-only `.svelte` file (no `<script>`) gets a component node but no file node, so an import of it still has no file to land on.
+
 ### 5.63 Resolver port, Phase 6 leg 2: call chains (2026-09-26)
 
 TS/JS/Python `x().y` calls skip the import arm and are answered by matchReference alone: the file-path and qualified-name arms, then matchStoreAccessorChain, which only ever answers a store accessor's action (`get().reset`, `useStore.getState().reset`). The kernel punted every such call as `chain`. It now runs the two arms natively and decides the rest: a store-accessor chain keeps the punt (reading the store's actions is source-reading), anything else is a miss. Under active frameworks the TS branch returns before the merge, so a <0.9 framework candidate cannot win; the kernel reports that as a new outcome, `unresolved` with `isFinal` and an empty candidate list, which `settleKernelOutcome` honours by keeping only a ≥0.9 framework hit.

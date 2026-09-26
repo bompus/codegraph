@@ -18,7 +18,10 @@ use super::*;
 pub(super) fn is_migrated_language(lang: &str) -> bool {
     matches!(
         lang,
-        "typescript"
+        "svelte"
+            | "vue"
+            | "astro"
+            | "typescript"
             | "tsx"
             | "javascript"
             | "jsx"

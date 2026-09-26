@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In Svelte, Vue and Astro components, a relative import such as `import { count } from './store'` now links to the imported file. In projects with several same-named files it used to link back to the component's own import line.
+
 - In JavaScript and TypeScript, a built-in method called on a value codegraph cannot type, such as `this.#items.add(x)` on a Set or `list.map(...)` on an array, no longer links to a project class that happens to have a method with that name.
 
 - Building from source on Windows: `npm run build:kernel` now works from PowerShell and Command Prompt, where it used to reach WSL's `bash` and build for Linux.
