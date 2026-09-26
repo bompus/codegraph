@@ -17,8 +17,8 @@ import CodeGraph from '../src/index';
 import { getKernel } from '../src/extraction/kernel/loader';
 
 const kernel = getKernel();
-// Windows locks belong to the handle; Bun has no node:sqlite for the child.
-const runs = !!kernel?.KernelResolver && process.platform !== 'win32' && !process.versions.bun;
+// Windows locks belong to the handle, not the process.
+const runs = !!kernel?.KernelResolver && process.platform !== 'win32';
 
 let tempDir: string | null = null;
 let cg: CodeGraph | null = null;
