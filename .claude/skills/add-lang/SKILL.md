@@ -120,13 +120,13 @@ npm run build:kernel && npm run build
 ```
 Index a small sample repo and check extraction:
 ```bash
-( cd <sample-repo> && codegraph init -i )
+( cd <sample-repo> && codegraph init )
 node scripts/add-lang/verify-extraction.mjs <sample-repo> <lang>
 ```
 `verify-extraction.mjs` fails (exit 1) if the language isn't detected or only
 `file`/`import` nodes were produced — the classic symptom of wrong node-type
-names. On FAIL or a thin WARN: re-run `dump-ast.mjs` on a richer file, fix the
-mappings in `<lang>.ts`, `npm run build`, re-index, re-verify. **Repeat until
+names. On FAIL or a thin WARN: re-check the node types (Step 3) against a richer
+sample, fix the mappings in `<lang>.ts`, `npm run build`, re-index, re-verify. **Repeat until
 PASS.**
 
 ### Step 6 — Tests
@@ -162,7 +162,8 @@ Make the dev build the codegraph on PATH **once**, then loop:
 npm run build && ./scripts/local-install.sh
 scripts/add-lang/bench.sh <lang> <name> <url> "<question>" headless   # ×3
 ```
-`bench.sh` clones (shared `/tmp/codegraph-corpus`), wipes + indexes, runs
+`bench.sh` clones into `$CORPUS` (set it to a workspace-disk directory; the
+`/tmp` default is shared tmpfs), wipes + indexes, runs
 `verify-extraction.mjs`, then the with/without retrieval A/B via
 `scripts/agent-eval/run-all.sh` (skips the paid A/B if extraction is broken).
 Read each `parse-run.mjs` summary printed by `run-all.sh`: tool calls, file
@@ -194,14 +195,15 @@ Summarize for review:
 - **Gaps / follow-ups** (node types not yet mapped, resolution edges missing,
   framework routes, etc.).
 
-Hand the changes to the user. **Do not** run `git commit`/`push` or publish —
-releases go through the GitHub Actions Release workflow.
+Hand the changes to the user. **Do not** run `git commit`/`push`, publish or tag —
+this fork publishes no releases (AGENTS.md § Releases).
 
 ## Notes
 - The A/B spawns real **paid** `claude -p` runs (Sonnet at `--effort high` by
   default, `--max-budget-usd`),
-  2 arms × 3 repos. The corpus dir `/tmp/codegraph-corpus` is shared with
-  `/agent-eval`, so clones are reused across runs.
+  2 arms × 3 repos. Set `CORPUS` to the same workspace-disk directory
+  `/agent-eval` uses (never the `/tmp` default, which is shared tmpfs), so
+  clones are reused across runs.
 - An index must be served by the **same** binary that built it. Step 8 builds +
   links the dev build first, so this holds.
 - If a grammar can't be obtained, or extraction can't reach PASS, **STOP and
