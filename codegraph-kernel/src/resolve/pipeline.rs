@@ -301,11 +301,11 @@ impl KernelResolver {
         if r.language == "arkts" && r.reference_name.starts_with('.') {
             return Ok(ResolveOutcome::passthrough("arkts-dot"));
         }
-        // matchReference's ported arms, in order: filePath, qualifiedName,
-        // the per-language chain arm (cppChain/scopedChain/dottedChain), then
-        // methodCall's requireReceiverEvidence=false arm. Everything after
-        // (exactName/fuzzy, then deferred drains) stays in TS behind the
-        // member-tail punt.
+        // matchReference in TS order: filePath, qualifiedName, the
+        // per-language chain arm (cppChain/scopedChain/dottedChain),
+        // methodCall's requireReceiverEvidence=false arm, exactName, fuzzy.
+        // The first strategy that answers is the name match; a gated-out
+        // answer does not fall through to the next.
         let mut name_cand = self.match_by_file_path(r)?;
         if name_cand.is_none() {
             name_cand = self.match_by_qualified_name(r)?;
@@ -314,7 +314,21 @@ impl KernelResolver {
             name_cand = self.match_call_chain(r)?;
         }
         if name_cand.is_none() {
+            // A `<inner>().` receiver in TS/JS/Python resolves only through
+            // matchStoreAccessorChain (unported), which returns before the
+            // method-call arm.
+            if r.reference_name.contains("().") && is_store_chain_language(&r.language) {
+                return Ok(ResolveOutcome::passthrough("member-tail"));
+            }
             name_cand = self.match_method_call_free(r)?;
+        }
+        if name_cand.is_none() {
+            // matchByExactName runs the store-binding matcher first for a
+            // bare JS call — source-reading, so that shape stays in TS.
+            if self.is_bare_js_call(r)? && self.file_could_store_bind(r)? {
+                return Ok(ResolveOutcome::passthrough("store-bind"));
+            }
+            name_cand = probe!(r, "match_reference_bare", self.match_reference_bare(r)?);
         }
         if let Some(c) = self.gate_language(name_cand, r) {
             if self.name_result_stands(&c, r)? {
@@ -322,8 +336,12 @@ impl KernelResolver {
             }
         }
         if cands.is_empty() {
-            // nameMatch's remaining arms may still hit — the ref goes back.
-            return Ok(ResolveOutcome::passthrough("member-tail"));
+            // An unresolved chain call waits for the conformance pass — TS
+            // queues it, so it goes back; anything else is a plain miss.
+            if is_deferred_chain_call(r) {
+                return Ok(ResolveOutcome::passthrough("defer"));
+            }
+            return Ok(self.refused());
         }
         self.settle(r, cands)
     }
@@ -758,4 +776,18 @@ pub(super) fn name_is_bare(name: &str) -> bool {
         && !name
             .char_indices()
             .any(|(i, c)| matches!(c, '.' | ':' | '/' | '\\' | '#' | '(' | ')') || (c == '$' && i > 0))
+}
+
+/// matchReference's storeAccessorChain languages.
+fn is_store_chain_language(language: &str) -> bool {
+    matches!(language, "typescript" | "javascript" | "tsx" | "jsx" | "python")
+}
+
+/// A call resolveOneInner defers to the conformance pass when nothing
+/// matched: a chain call in a CHAIN_LANGUAGES language, or PHP's
+/// `this->prop.method`.
+fn is_deferred_chain_call(r: &ResolveRefIn) -> bool {
+    r.reference_kind == "calls"
+        && ((CHAIN_LANGUAGES.contains(&r.language.as_str()) && chain_shape_re().is_match(&r.reference_name))
+            || (r.language == "php" && php_prop_shape_re().is_match(&r.reference_name)))
 }

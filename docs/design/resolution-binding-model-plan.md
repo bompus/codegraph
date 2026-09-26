@@ -368,7 +368,7 @@ Rust is not a `BINDINGS_LANGUAGES` member — its walker (`rustlang.rs`) emits n
 
 1. **`Self::` associated items** — ~~ASSESSED: zero migration surface~~ **LANDED as enhancement 2026-09-19** (§5.27). `Self` binds to the caller's qualified-name owner (same derivation as `self.` calls; `impl Tr for T` binds `T`), leaf resolves `owner::leaf` over method/enum_member/constant @0.9, advisory fall-through on miss — verdict-identical in both engines. Corpus: 81/177 previously-failed refs now resolve (all owner-verified), 93 member-tail passthroughs identical, **0 shadow divergences**; ~16 pre-existing fabricated edges (wrong-owner bare-name hits) re-target on next resolution. Extended same day (§5.28): `Self::AssocType::member` binds through the enclosing impl's `type Assoc = X` decl (source-scanned, impl-only — trait default methods stay abstract) → 3 more corpus refs resolved, 0 divergent. Extended again (§5.30): `Self::f().tail` resolves through the receiver's declared return type — 0/37 corpus flips, all declines verified (stdlib/macro returns only). Extended again (§5.31): bare `Self` refs bind the caller's concrete owner type — +1,320 corpus refs, trait-kind owners stay abstract. The `Self::`/bare-`Self` surface is exhausted; remaining declines are abstract-by-design.
 2. **`crate::` module-path roots** — **LANDED as enhancement 2026-09-19** (§5.32). Kernel-module-style crates whose root file is not `lib.rs`/`main.rs` (e.g. `rust_binder_main.rs`) now get their root dir by climbing the `mod` declaration chain (`<dirname>.rs` 2018 declarant or a flat sibling declaring `mod <stem>;`). Corpus: +356 edges (331 `imports` `use`-spec hits, 23 `calls`, 2 `instantiates`), 0 removed/changed, 0 shadow divergences.
-3. **Permanent punts** (no further migration yield): trait dispatch via `getSupertypes` + `btm-supers`/`rmot-supers` (mid-loop impl edges — §5.21), `chain`/`via-src`/`matchByExactName` (source reads), `ineligible:lang` tail (objc/ruby/markdown — audited §5.24, all correct failures).
+3. **Permanent punts** (no further migration yield — superseded by Phase 6, which ports them to retire the TypeScript spine): trait dispatch via `getSupertypes` + `btm-supers`/`rmot-supers` (mid-loop impl edges — §5.21), `chain`/`via-src`/`matchByExactName` (source reads), `ineligible:lang` tail (objc/ruby/markdown — audited §5.24, all correct failures).
 4. **Rust bindings emission** (`rustlang.rs` → `bindings` rows) — **LANDED as enhancement 2026-09-19** (§5.29). `use` declarations emit one `import` row per bound local name on both walks (item + fn-body); `rust` joined `BINDINGS_LANGUAGES` + `bindingsFile` dispatch. Corpus dual-db A/B: +69 resolved / −0 across 3.83M edges, 0 shadow divergences on 11,942 handled; the new edge class (bound name, no in-graph target → fuzzy @0.5) is standard weakest-tier behavior.
 5. **Adjacent enhancement candidates** (different axis — node-set changes): ~~C `ops->read` fn-ptr field calls~~ — **LANDED as enhancement 2026-09-19** (§5.33): callable fn-pointer members extract as `field` nodes (`Type::member`), a C receiver-decl arm feeds `inferLocalReceiverType`, `Type::member` accepts `field` for c/cpp, and a singleton-only unique-field fallback covers untyped receivers. Full linux corpus: **+28,866 field nodes, +13,592 `field-call` edges**, failed dotted c/cpp `calls` **21,769 → 8,177**; a bare-name `field`→exact-match collision (~39k libc-name calls) was caught and gated; `unknown-receiver` genuine misses (local-var data-flow — a different problem entirely); `Self::AssocType::*` binding — **done 2026-09-19** (§5.28).
 6. **Product frontier** (non-resolver): dynamic-dispatch synthesis — reactive/reconciler runtimes (`ReactiveExtensionClient`, MediatR, Vue Proxy) per AGENTS.md. This is where effort moves the product metric — the resolver migration's surface is now fully assessed (every remaining item is permanent punt or enhancement-territory).
@@ -384,6 +384,33 @@ Phase 3's original order named Ruby, C# and Swift after C/C++, and the R7b ports
 Everything else those languages reach was already language-neutral (dotted chains, the Swift implicit-self `function_ref` arms, the private-is-file-local visibility rule, the built-in tables — none has arms for these languages in TypeScript either) or punts by the existing gates (`member-tail`, `rmot-supers`, `chain`, `jvm`).
 
 Gate, per language (kernel-on with `CODEGRAPH_RESOLVE_SHADOW=1` vs `CODEGRAPH_KERNEL_RESOLVE=0`, `scripts/dump-graph.mjs` dumps compared byte for byte; ledger §5.38): eShop (C#) 66.9% native, Alamofire (Swift) 90.1%, os-lib (Scala) 84.9%, bloc (Dart) 85.7%, lazy.nvim (Lua) 74.7%, lune (Luau) 72.5%, dplyr (R) 98.2%, discourse (Ruby, 167.7k nodes) 63.7% — every dump identical, 0 shadow divergences. The parity fixture carries one `lg = <Type>…; lg.<method>()` file per language plus a Lua `require`, pinned to the native `instance-method`/`import` verdicts. The remaining `ineligible:lang` refs on those corpora are markdown, razor and yaml — extractors without a walker, by design.
+
+### Phase 6: finish the port, retire the TypeScript spine — IN PROGRESS (2026-09-26)
+
+Strategy item 6 ([strategy-2026-09.md](strategy-2026-09.md) §6): every resolution change so far has been written twice, once in `resolve.rs` and once in `name-matcher.ts`/`index.ts`, and held together by the parity suite. Phase 6 moves the remaining TypeScript-only arms into the kernel, then deletes the TypeScript name-resolution spine (`resolveOneInner` and the `name-matcher.ts` strategies). Framework resolvers and the synthesis passes stay in TypeScript: they are not mirrored, so they carry no dual-maintenance cost.
+
+What still reaches TypeScript, measured 2026-09-26 at `9e54df0a` (`CODEGRAPH_RESOLVE_PROFILE=1`, full index):
+
+| Passthrough reason | Refs | Mostly on | What it needs |
+|---|---|---|---|
+| `chain` (`x().y`) | ~12.1k | vitest, celery, svelte | the TS chain matchers (`matchStoreAccessorChain` and the dotted/scoped call chains that read source) |
+| `member-tail` (non-bare exact/fuzzy) | ~11.7k | Ocelot (C#), ktor, vitest, celery | **done in leg 1** |
+| `ineligible:lang` (SFC) | ~10.9k | svelte, vitest | binding rows for Svelte/Vue/Astro script blocks, then admission |
+| `jvm` (Kotlin/Java `imports`) | ~10.1k | ktor | `resolveJvmImport` (reads decorators) |
+| `store-bind` | ~4.0k | vitest, svelte | `matchJsStoreBindingCall` |
+| `btm-supers` / `rmot-supers` | ~4.3k | ktor, celery | supertype walks over edges the same pass writes (§5.21) |
+| `via-src` | ~3.5k | vitest | the source-reading import arms |
+| `mc-iteration` / `mc-await` | ~1.4k | ktor, vitest | method-call receiver arms that read source |
+
+Legs, largest and most self-contained first; each lands on its own with the Phase 5c gate (kernel-on vs `CODEGRAPH_KERNEL_RESOLVE=0`, `scripts/dump-graph.mjs` dumps byte-identical on Ocelot, celery, ktor, vitest, svelte and codegraph itself, plus the parity suite):
+
+1. **Non-bare exact/fuzzy tail — DONE 2026-09-26** (ledger §5.62). A non-bare ref that misses the file-path, qualified-name, chain and method-call arms now runs exact-name then fuzzy natively; only store-accessor `().` receivers keep a punt, and an unresolved chain call goes back as `defer` for the conformance pass. Native share: Ocelot 74.8% → 95.0%, celery 94.9% → 97.3%, ktor 86.9% → 88.1%; svelte `member-tail` 533 → 56. Every dump identical.
+2. `chain` — the call-receiver chain matchers.
+3. SFC languages — binding rows for script blocks, then admission.
+4. `jvm` — Kotlin/Java import resolution.
+5. `store-bind`.
+6. `via-src`, the supertype walks, `mc-iteration`/`mc-await`.
+7. Retire the spine: `resolveOneInner` becomes kernel call → framework merge; the `name-matcher.ts` strategies and the parity suite's TS half go; the dump gate and golden dumps carry correctness.
 
 ## 4. What is removed
 

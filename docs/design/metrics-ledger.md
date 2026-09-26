@@ -828,6 +828,19 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.62 Resolver port, Phase 6 leg 1: the non-bare exact/fuzzy tail (2026-09-26)
+
+A non-bare ref (`a.b`, `A::b`, `x$y`) that missed the kernel's file-path, qualified-name, chain and method-call arms went back to TypeScript as `member-tail` only to run exact-name then fuzzy there. The kernel now runs that tail itself, in TS order: the first strategy that answers is the name match, a gated-out answer does not fall through, an unresolved chain call returns as `defer` for the conformance pass, and a store-accessor `().` receiver (TS/JS/Python) keeps its punt. Six parity-suite pins moved from `passthrough` to `unresolved` — native misses TS also fails.
+
+| Corpus | Native before | Native after | Dump (kernel vs `CODEGRAPH_KERNEL_RESOLVE=0`) |
+|---|---|---|---|
+| Ocelot (C#) | 74.8% | 95.0% | 61,983 lines, identical |
+| celery (Python) | 94.9% | 97.3% | 108,276 lines, identical |
+| ktor (Kotlin) | 86.9% | 88.1% | 291,033 lines, identical |
+| vitest (TS) | 74.5% | 74.2% | 192,116 lines, identical |
+| svelte (JS/Svelte) | `member-tail` 533 | 56 | 193,354 lines, identical |
+| codegraph (TS/Rust) | — | — | 298,401 lines, identical |
+
 ### 5.61 JS/TS: built-in method names on unknown receivers (2026-09-26)
 
 The extractor keeps only the method name for a member call whose receiver is not a plain name (`this.#out.push`, `(list ??= []).push`, `chunk.meta!.assets.add`), and exact-match/fuzzy then bound it to any project method of that name. Graded on svelte, vite, vitest and zod, those unknown-receiver matches split by name: built-in names (`push`, `add`, `get`, `map`, `values`, `then`, …) were almost always wrong (a Set's `add` → `FuzzySet::add`), domain names mostly right (`child!.get_path()` → `Renderer::get_path`). So only the built-ins decline: a JS built-in method name (Array, Map/Set, Promise, String, Function, EventTarget/EventEmitter, iterators) at a member call site whose receiver is not `this`/`super` resolves to no project method, in the kernel and the TS matcher alike.
