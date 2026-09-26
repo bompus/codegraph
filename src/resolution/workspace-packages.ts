@@ -240,7 +240,23 @@ function readOhpmFileDeps(manifestAbs: string): Array<[string, string]> {
  * name `@scope/ui` → its directory. Returns `null` when no member package
  * name matches.
  */
+/** Answers per workspace (immutable for a resolver's lifetime): the scan below walks every package name. */
+const workspaceImportMemo = new WeakMap<WorkspacePackages, Map<string, string | null>>();
+
 export function resolveWorkspaceImport(
+  importPath: string,
+  ws: WorkspacePackages
+): string | null {
+  let memo = workspaceImportMemo.get(ws);
+  if (!memo) workspaceImportMemo.set(ws, (memo = new Map()));
+  const hit = memo.get(importPath);
+  if (hit !== undefined) return hit;
+  const resolved = resolveWorkspaceImportUncached(importPath, ws);
+  memo.set(importPath, resolved);
+  return resolved;
+}
+
+function resolveWorkspaceImportUncached(
   importPath: string,
   ws: WorkspacePackages
 ): string | null {
