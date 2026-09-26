@@ -8,8 +8,8 @@ description: Add tree-sitter language support to codegraph end-to-end — wire t
 Wire a new tree-sitter language into codegraph's extraction pipeline, prove it
 extracts real symbols on popular repos, and prove it beats no-codegraph for an
 agent. Runs **fully autonomously** — pick repos, benchmark, update docs, then
-report. **Never commit, push, publish, or tag** (house rule); leave all changes
-for the user to review.
+report, then land the verified change per AGENTS.md (commit on a task branch,
+integrate into `fork/consolidated` through a PR). Never publish or tag.
 
 The argument is the language token used throughout the `Language` union, e.g.
 `lua`, `elixir`, `zig`. If none was given, ask which language. Use the lowercase
@@ -33,7 +33,7 @@ Copy this checklist and work through it in order:
 - [ ] 7. Auto-pick 3 popular repos by size tier; add to corpus.json
 - [ ] 8. Benchmark all 3: extraction + with/without A/B
 - [ ] 9. Update README + CHANGELOG
-- [ ] 10. Report; do NOT commit
+- [ ] 10. Report and land
 ```
 
 ### Step 1 — Resolve + short-circuit
@@ -183,7 +183,7 @@ Read each `parse-run.mjs` summary printed by `run-all.sh`: tool calls, file
   call edges."* If `## [Unreleased]` already exists, append under it. (It's
   folded into the next versioned block at release time.)
 
-### Step 10 — Report (do NOT commit)
+### Step 10 — Report and land
 
 Summarize for review:
 - **Files changed**: the kernel grammar (Cargo pin or vendored C + `langs.rs`),
@@ -195,8 +195,9 @@ Summarize for review:
 - **Gaps / follow-ups** (node types not yet mapped, resolution edges missing,
   framework routes, etc.).
 
-Hand the changes to the user. **Do not** run `git commit`/`push`, publish or tag —
-this fork publishes no releases (AGENTS.md § Releases).
+Land the change per AGENTS.md's completion boundary, with the summary above as
+the PR body. Do not publish or tag: this fork publishes no releases (AGENTS.md
+§ Releases).
 
 ## Notes
 - The A/B spawns real **paid** `claude -p` runs (Sonnet at `--effort high` by
