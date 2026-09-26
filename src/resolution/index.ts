@@ -567,11 +567,11 @@ export class ReferenceResolver {
   }
 
   /**
-   * Deterministically close the kernel conn. A GC-timed rusqlite destructor
-   * could fire while a valve checkpointer or a later run's workers are
-   * mid-wal-index I/O on the same -shm — the two SQLite builds' locks can't
-   * see each other — so the conn must close at a known-safe point (index
-   * teardown, valve stopped, pool destroyed). A later pass re-opens lazily.
+   * Release the kernel resolver at a known point (index teardown, valve
+   * stopped, pool destroyed) rather than at GC time. A conn on the live db
+   * is parked inside the kernel, not closed: closing any descriptor on the
+   * db drops this process's POSIX locks, node:sqlite's included. A later pass
+   * re-opens lazily and reuses it.
    */
   closeKernel(): void {
     const kr = this.kernelResolver;
