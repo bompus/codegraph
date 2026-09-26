@@ -7,7 +7,7 @@
 import type CodeGraph from '../index';
 import type { QueryPool } from './query-pool';
 import { CodeGraphPackageVersion } from './version';
-import { findNearestCodeGraphRoot } from '../directory';
+import { extractCodeTokens, findNearestCodeGraphRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
 // schemas), but it must NOT drag in sqlite/query layers before the daemon binds;
@@ -55,6 +55,7 @@ import {
 import { getUpdateNotice } from '../upgrade/update-check';
 import { ExploreDiagnostics } from './explore-diagnostics';
 import { requestedSourceRanges } from './explore-source-ranges';
+import { collectChanges, symbolsForRanges, type ChangeSet } from './explore-changes';
 import { extractSegmentSearchWords, splitIdentifierSegments } from '../search/identifier-segments';
 import {
   EXPLORE_EMISSION_KEY,
@@ -3378,19 +3379,33 @@ export class ToolHandler {
    */
   private buildBlastRadiusSection(cg: CodeGraph, subgraph: Subgraph): string {
     const ROOT_CAP = 5; // only the symbols the query actually targeted
-    const FILE_CAP = 4; // caller files listed per symbol before "+N more"
     const MEANINGFUL = new Set<string>([
       'function', 'method', 'class', 'interface', 'struct', 'union', 'trait', 'protocol',
       'enum', 'type_alias', 'component', 'constant', 'variable', 'property', 'field',
     ]);
-    const rel = (p: string) => p.replace(/\\/g, '/');
-
     const roots = subgraph.roots
       .map((id) => subgraph.nodes.get(id))
       .filter((n): n is Node => !!n && MEANINGFUL.has(n.kind))
       .slice(0, ROOT_CAP);
-    if (roots.length === 0) return '';
+    const entries = this.dependentEntries(cg, roots, false);
+    if (entries.length === 0) return '';
 
+    return [
+      '**Blast radius — what depends on these (update/verify before editing)**',
+      '',
+      ...entries,
+      '',
+    ].join('\n');
+  }
+
+  /**
+   * One line per symbol: where it is, who calls it, and which tests cover it.
+   * `includeLeaves` keeps symbols nothing calls, which a change list must show
+   * and a blast radius leaves out.
+   */
+  private dependentEntries(cg: CodeGraph, roots: Node[], includeLeaves: boolean): string[] {
+    const FILE_CAP = 4; // caller files listed per symbol before "+N more"
+    const rel = (p: string) => p.replace(/\\/g, '/');
     const entries: string[] = [];
     for (const root of roots) {
       let callers: Array<{ node: Node }> = [];
@@ -3401,7 +3416,10 @@ export class ToolHandler {
       for (const c of callers) {
         if (c?.node && !seen.has(c.node.id)) { seen.add(c.node.id); uniq.push(c.node); }
       }
-      if (uniq.length === 0) continue; // no blast radius → nothing to flag
+      if (uniq.length === 0) {
+        if (includeLeaves) entries.push(`- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — no callers`);
+        continue; // no blast radius → nothing to flag
+      }
 
       const callerFiles = [...new Set(uniq.map((n) => rel(n.filePath)))];
       const testFiles = callerFiles.filter((f) => isTestFile(f));
@@ -3418,14 +3436,55 @@ export class ToolHandler {
         `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} caller${uniq.length === 1 ? '' : 's'}${where}${tests}`,
       );
     }
-    if (entries.length === 0) return '';
+    return entries;
+  }
 
-    return [
-      '**Blast radius — what depends on these (update/verify before editing)**',
-      '',
-      ...entries,
-      '',
-    ].join('\n');
+  /**
+   * The indexed symbols a change set's hunks touch, most-called first, capped.
+   * Test files are left out: a changed test helper has no dependents worth
+   * listing, and the test files are named apart.
+   */
+  private changedSymbols(cg: CodeGraph, changes: ChangeSet): Node[] {
+    const GATHER_CAP = 400;
+    const CAP = 40;
+    const touched: Node[] = [];
+    for (const f of changes.files) {
+      if (isTestFile(f.path) || touched.length >= GATHER_CAP) continue;
+      let nodes: Node[] = [];
+      try { nodes = cg.getNodesInFile(f.path); } catch { continue; }
+      touched.push(...symbolsForRanges(nodes, f.ranges).filter((n) => !isDocumentationNode(n)));
+    }
+    const callers = (n: Node) => { try { return cg.getCallers(n.id).length; } catch { return 0; } };
+    return touched
+      .slice(0, GATHER_CAP)
+      .map((n, i) => ({ n, i, c: callers(n) }))
+      .sort((a, b) => b.c - a.c || a.i - b.i)
+      .slice(0, CAP)
+      .map((x) => x.n);
+  }
+
+  /**
+   * What a change question asked for: the changed symbols with their callers
+   * and tests, most-called first, then the changed tests and the changed files
+   * that hold no indexed symbol (docs, config, deletions).
+   */
+  private buildChangesSection(cg: CodeGraph, changes: ChangeSet, changedNodes: Node[]): string {
+    const SHOWN = 15;
+    const entries = this.dependentEntries(cg, changedNodes.slice(0, SHOWN), true);
+    const more = changedNodes.length > SHOWN ? [`- … ${changedNodes.length - SHOWN} more changed symbols, each with fewer callers`] : [];
+    const symbolFiles = new Set(changedNodes.map((n) => n.filePath));
+    const fileList = (label: string, paths: string[]) => paths.length === 0 ? [] : [
+      `${label}: ${paths.slice(0, 8).map((p) => `\`${p}\``).join(', ')}${paths.length > 8 ? ` +${paths.length - 8} more` : ''}`, '',
+    ];
+    const unlisted = changes.files.map((f) => f.path).filter((p) => !symbolFiles.has(p));
+    const other = [
+      ...fileList('Changed tests', unlisted.filter((p) => isTestFile(p))),
+      ...fileList('Changed files with no listed symbol', unlisted.filter((p) => !isTestFile(p))),
+    ];
+    const heading = changes.files.length === 0
+      ? `**Changes (${changes.label}) — none**`
+      : `**Changes (${changes.label}) — ${changes.files.length} file${changes.files.length === 1 ? '' : 's'}, ${changedNodes.length} symbol${changedNodes.length === 1 ? '' : 's'}; what depends on them**`;
+    return [heading, '', ...entries, ...more, ...(entries.length > 0 ? [''] : []), ...other].join('\n');
   }
 
   /**
@@ -3617,13 +3676,25 @@ export class ToolHandler {
     // seeding tokenizer (splits on brackets → `runId` seeded as a "named
     // symbol") and by FTS (`page`/`runs` fragments admitted every sibling
     // `+page.svelte`), starving the very files the agent asked for.
+    // A question about "my changes", "this branch" or `main..HEAD` is answered
+    // from the diff: the symbols its hunks touch seed the call and their callers
+    // lead the answer, while the rest of the query matches as usual.
+    const changes = collectChanges(projectRoot, rawQuery);
+    const changedNodes = changes ? this.changedSymbols(cg, changes) : [];
+    // Only the code-shaped part of the rest (symbols, paths) still matches: the
+    // prose around a change question ("list what calls it so I can re-test")
+    // pulls in unrelated flows ahead of the changes.
+    const rawMatch = changes
+      ? [...extractCodeTokens(changes.remainingQuery), ...changes.remainingQuery.split(/\s+/).filter((w) => w.includes('/'))].join(' ')
+      : rawQuery;
+
     let pinnedFiles: string[] = [];
     let unresolvedPathSpans: string[] = [];
-    let matchQuery = query;
-    if (queryMightContainPaths(rawQuery)) {
+    let matchQuery = changes ? normalizeQuerySpelling(rawMatch) : query;
+    if (queryMightContainPaths(rawMatch)) {
       try {
         const extraction = extractQueryPaths(
-          rawQuery,
+          rawMatch,
           cg.getFiles().map((f) => f.path),
           { maxPins: maxFiles },
         );
@@ -3707,12 +3778,19 @@ export class ToolHandler {
     // that prevents context bloat, so more nodes just means better coverage
     // across entry points (especially for large files like Svelte components).
     // Matching runs on the path-stripped query; `query` stays for display.
-    const subgraph = await cg.findRelevantContext(matchQuery, {
-      searchLimit: 8,
-      traversalDepth: 3,
-      maxNodes: 200,
-      minScore: 0.2,
-    });
+    const subgraph: Subgraph = changes && matchQuery.trim() === ''
+      ? { nodes: new Map(), edges: [], roots: [] }
+      : await cg.findRelevantContext(matchQuery, {
+        searchLimit: 8,
+        traversalDepth: 3,
+        maxNodes: 200,
+        minScore: 0.2,
+      });
+    for (const n of changedNodes) subgraph.nodes.set(n.id, n);
+    if (changedNodes.length > 0) {
+      const changedIds = new Set(changedNodes.map((n) => n.id));
+      subgraph.roots = [...changedIds, ...subgraph.roots.filter((id) => !changedIds.has(id))];
+    }
 
     // Pinned files' symbols enter the gather unconditionally — the agent named
     // the file itself, so its contents ARE the answer regardless of what the
@@ -3759,7 +3837,9 @@ export class ToolHandler {
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
         : '';
-      const empty = `No relevant code found for "${query}"${missNote}`;
+      const empty = changes
+        ? `${this.buildChangesSection(cg, changes, changedNodes)}\nNo other relevant code found for "${query}"${missNote}`
+        : `No relevant code found for "${query}"${missNote}`;
       // Still an explore call, so it is still recorded: an empty answer spends a
       // call against the tier budget even though it emits no source.
       return this.exploreResult(empty, {
@@ -4196,7 +4276,7 @@ export class ToolHandler {
     // does; a holder reached through a constant is a small file with no callers,
     // and on graph mass alone it loses its source slot to a hub that never
     // mentions the literal.
-    for (const id of literalSeedIds) {
+    for (const id of [...literalSeedIds, ...changedNodes.map((n) => n.id)]) {
       if (subgraph.nodes.has(id)) {
         namedSeedIds.add(id);
         tierSeedIds.add(id);
@@ -4870,7 +4950,9 @@ export class ToolHandler {
     // With a doc tier the answer is the section, so the graph sections trail the
     // source instead of preceding it, and are dropped when no code file renders.
     const graphLines: string[] = docTierFiles.size > 0 ? [] : lines;
-    const blastRadius = this.buildBlastRadiusSection(cg, subgraph);
+    const blastRadius = changes
+      ? this.buildChangesSection(cg, changes, changedNodes)
+      : this.buildBlastRadiusSection(cg, subgraph);
     if (blastRadius) graphLines.push(blastRadius);
 
     // Relationship map — show how symbols connect

@@ -30,6 +30,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Ask about "my changes", "this branch" or a range like `main..HEAD`, and `codegraph_explore` (and the Claude Code prompt hook) answers from the diff: the functions your edits touched, most-called first, with their callers and the tests that cover them.
 - `codegraph_explore` flows and `codegraph_node` caller and callee lists now mark a call that was matched only by the function's name, with no import or known receiver type to confirm it. About half of those links are wrong on real projects, so the mark tells your agent which single hop to check rather than re-reading the whole flow.
 
 - **`codegraph_sessions` also searches Codex, Cursor/T3, OpenCode, and AGY transcripts for this project.** Hits are tagged `claude:`, `codex:`, `cursor:`, `opencode:`, or `agy:` so the ids cannot collide. OpenCode uses `session.directory` in its local database; AGY is included only when a `file://` workspace URI is present. Tool payloads and injected instruction blobs stay out; `"sessions": false` still opts the whole feature off.

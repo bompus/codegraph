@@ -48,7 +48,10 @@
 #   MODEL / EFFORT  default sonnet / high. Never raise without a reason: sonnet
 #                   is the deliberate floor model (see CLAUDE.md).
 #
-# Both arms run with CODEGRAPH_NO_PROMPT_HOOK=1: the machine's ambient
+# AB_PROMPT_HOOK=1 instead gives each arm its OWN build's front-load hook, for
+# a change that reaches the agent through the hook rather than a tool call.
+#
+# Otherwise both arms run with CODEGRAPH_NO_PROMPT_HOOK=1: the machine's ambient
 # UserPromptSubmit front-load hook resolves to whichever build is currently in
 # dist/, so leaving it on injects context through a second, uncontrolled channel
 # and confounds the tool-call counts this script exists to compare.
@@ -87,6 +90,15 @@ mkdir -p "$OUT"
 # $ARM_PATH and $ARM_SETTINGS; aborts if either layer fails its own probe.
 . "$HARNESS/no-cli-shim.sh"
 cg_no_cli_setup "$OUT" || exit 1
+NO_PROMPT_HOOK=1
+if [ "${AB_PROMPT_HOOK:-0}" = 1 ]; then
+  # The hook runs the dist/ build of whichever arm is running, the same binary
+  # its MCP server uses; an absolute `node` path keeps the blocked CLI blocked.
+  node -e 'const fs=require("fs");const [f,bin]=process.argv.slice(1);const s=JSON.parse(fs.readFileSync(f,"utf8"));
+    s.hooks=s.hooks||{};s.hooks.UserPromptSubmit=[{hooks:[{type:"command",command:`${process.execPath} ${bin} prompt-hook`}]}];
+    fs.writeFileSync(f,JSON.stringify(s))' "$ARM_SETTINGS" "$BIN"
+  NO_PROMPT_HOOK=0
+fi
 
 echo "###### engine=$ENGINE  baseline=$BASE_REF"
 echo "###### changed: $(echo "$CHANGED" | tr '\n' ' ')"
@@ -96,7 +108,9 @@ echo
 
 # Two pristine copies so each arm starts clean (the agent edits its own copy).
 rm -rf "$OUT/t-new" "$OUT/t-base"
-rsync -a --exclude node_modules --exclude .git --exclude dist --exclude .codegraph "$TARGET/" "$OUT/t-new/"
+# AB_KEEP_GIT=1 keeps the target's .git, for a task about the working changes.
+KEEP_GIT_EXCLUDE=(--exclude .git); [ "${AB_KEEP_GIT:-0}" = 1 ] && KEEP_GIT_EXCLUDE=()
+rsync -a --exclude node_modules "${KEEP_GIT_EXCLUDE[@]}" --exclude dist --exclude .codegraph "$TARGET/" "$OUT/t-new/"
 cp -R "$OUT/t-new" "$OUT/t-base"
 
 prewarm() { # target — spawn a persistent daemon (current $BIN) and wait for its socket
@@ -119,7 +133,7 @@ run_arm() { # label, target-copy — runs the task $RUNS times against one build
     # Re-warm per run: the previous run's daemon is killed below, and a cold
     # attach is exactly the failure this pre-warm exists to prevent.
     prewarm "$tgt"
-    ( cd "$tgt" && PATH="$ARM_PATH" CODEGRAPH_NO_PROMPT_HOOK=1 claude -p "$TASK" \
+    ( cd "$tgt" && PATH="$ARM_PATH" CODEGRAPH_NO_PROMPT_HOOK="$NO_PROMPT_HOOK" claude -p "$TASK" \
         --output-format stream-json --verbose --permission-mode bypassPermissions \
         --model "${MODEL:-sonnet}" --effort "${EFFORT:-high}" --max-budget-usd 4 --strict-mcp-config --mcp-config "$c" \
         --settings "$ARM_SETTINGS" \
