@@ -802,6 +802,16 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.44 Name-only hops labelled in explore and node (2026-09-25)
+
+[precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) showed that deleting name-guessed edges costs as many correct edges as wrong ones: a Kotlin extraction change that kept deep receiver chains (so they could no longer be name-matched) removed 6,593 exact-match edges on javalin, ktor and Exposed, and a graded sample of 30 of them was 14 correct, 16 wrong. It was not landed. An offline proof of concept that types those chains from declared property types resolved only 715 of 8,364 (8.5%) — accurate where it applied (12 of 12 sampled disagreements with the old guess were the old guess being wrong), but the roots are mostly lambda parameters and implicit DSL receivers that need real type inference.
+
+So the guesses stay, and are labelled instead. `isNameGuess` (`src/graph/edge-trust.ts`) flags exact-name and fuzzy matches below 0.9 and method-name scoring below 0.8; on the graded rows those were right 19 of 35 times against 25 of 27 for every other strategy. Explore's flow marks such a hop `matched by name only, unverified` and `codegraph_node`'s trail `[name match, unverified]`. The label fires on 13–40% of call edges (paperless 13%, halo 19%, koel 23%, eShop 24%, javalin 40%).
+
+**Agent A/B** (`ab-new-vs-baseline.sh`, javalin, SSE route trace, Sonnet, 3 runs per arm): both arms answered 6 of 6 correctly and neither followed the name-guessed `HttpUtil::sse` hop, so the task did not exercise the trap; labels appeared in 2 of 3 new-arm runs. Median 60 s / 6 tool calls against 71 s / 8, 0 Read and 0 Grep in both — within noise at n = 3. No regression; the benefit is unproven until a task where the baseline follows a wrong guessed hop.
+
+**Gate**: 3 new tests (`edge-trust.test.ts`), full suite.
+
 ### 5.43 Kernel performance pass — JavaScript member calls in the resolver (2026-09-25)
 
 After the code-quality review (#104–#114) the per-verdict-class profiler (`CODEGRAPH_KERNEL_PROF=1`) put pretix's biggest resolution cost in JavaScript, not Python. 30,792 JavaScript call refs ended unresolved at about 200 µs each (6.0 s of worker time), almost all of it inside `bound_receiver_claim`. Pretix ships vendored and minified JS. Probes added one sub-step at a time found four costs, each proportional to the size of the file or the line, paid again on every ref:
