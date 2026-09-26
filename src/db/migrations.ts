@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 /**
  * Migration definition
@@ -258,6 +258,26 @@ CREATE TABLE IF NOT EXISTS near_duplicates (
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (other_id) REFERENCES nodes(id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+      `);
+    },
+  },
+  {
+    version: 14,
+    description: 'Near-duplicate pair scores kept between runs',
+    up: (db) => {
+      // Added to schema.sql alone at first, so an index created before it
+      // (already at version 13) never got the table and every near-duplicate
+      // refresh on it failed. Keep in lockstep with schema.sql.
+      db.exec(`
+CREATE TABLE IF NOT EXISTS near_dup_scores (
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    score REAL NOT NULL,
+    PRIMARY KEY (a, b),
+    FOREIGN KEY (a) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (b) REFERENCES nodes(id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_near_dup_scores_b ON near_dup_scores(b);
       `);
     },
   },

@@ -164,6 +164,17 @@ describe('near-duplicates in the index', () => {
     expect(synced).toEqual(pairsOf(cg));
   });
 
+  it('an index created before the pair-score table gets it on open and keeps refreshing', async () => {
+    const db = (cg as any).db.db as import('node:sqlite').DatabaseSync;
+    db.exec("DROP TABLE near_dup_scores; DELETE FROM schema_versions WHERE version >= 14; INSERT OR IGNORE INTO schema_versions VALUES (13, 0, 'v13');");
+    cg.close();
+    cg = await CodeGraph.open(dir);
+    write('src/ds.ts', unrelated.replace('totalPoints', 'dsTotals'));
+    await cg.sync();
+    expect(dupsOf('fpUrlOf')).toEqual(['ttdUrlOf']);
+    expect(dupsOf('totalPoints')).toEqual(['dsTotals']);
+  });
+
   it('follows edits and deletions on sync', async () => {
     write('src/ds.ts', unrelated.replace('totalPoints', 'dsTotals'));
     fs.rmSync(path.join(dir, 'src/ttd.ts'));
