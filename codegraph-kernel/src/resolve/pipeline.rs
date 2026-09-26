@@ -218,12 +218,16 @@ impl KernelResolver {
             }
             return Ok(ResolveOutcome::passthrough("member-tail"));
         }
-        // resolveJvmImport (java/kotlin `imports` refs) reads decorators —
-        // an unselected column; the arm stays in TS.
-        if r.reference_kind == "imports"
-            && (r.language == "java" || r.language == "kotlin")
-        {
-            return Ok(ResolveOutcome::passthrough("jvm"));
+        // resolveJvmImport — a java/kotlin `imports` ref that names a
+        // declaration by FQN is answered before anything else; resolveOne's
+        // gateTargetKind can still refuse it. A miss continues down the spine.
+        if r.reference_kind == "imports" && (r.language == "java" || r.language == "kotlin") {
+            if let Some(cand) = self.resolve_jvm_import(r)? {
+                return match self.gate_target_kind(cand, r)? {
+                    Some(winner) => self.finish(r, winner, None, true),
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
         }
         // PHP `imports` refs take the include-path arm inside resolveViaImport
         // (unported — include-path file resolution) — punt the whole kind.
