@@ -828,6 +828,16 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.65 Resolver port, Phase 6 leg 4: Kotlin/Java imports (2026-09-26)
+
+Every java/kotlin `imports` ref punted as `jvm` because resolveJvmImport "reads decorators, an unselected column". Both premises had since gone: `resolve_jvm_import` (FQN → `pkg::Sym`, directory proximity, KMP `expect` on a tie) was ported for the bound-type arm, and `KNode` loads `decorators`. The punt now calls it: a hit is answered at once (resolveOne's gateTargetKind can still refuse it), a miss continues down the kernel spine as it does in TS.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| ktor | 88.1% (`jvm` 10,124) | 96.5% | 291,033 lines, identical |
+| exposed | — | 93.1% | 186,842 lines, identical |
+| javalin | — | 92.0% | 56,021 lines, identical |
+
 ### 5.64 Resolver port, Phase 6 leg 3: Svelte, Vue and Astro (2026-09-26)
 
 The SFC extractors already rebased their script blocks' binding rows to file positions, so admitting `svelte`/`vue`/`astro` to the kernel was the whole port — except for one latent divergence the dump gate caught: TS's path-shaped `imports` arm (`./x` specifier → file node @0.9) listed only the TS/JS family while the kernel used `ESM_IMPORT_LANGUAGES`. For a component, TS fell through to name matching: file-path (0.7) when the basename was unique, the importing file's own `import` statement node (qualified-name, 0.95) when it was not — 694 such self-edges on svelte. TS now uses `ESM_IMPORT_LANGUAGES` too.
