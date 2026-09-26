@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.69 Resolver port, Phase 6 leg 6c: awaited receivers (2026-09-26)
+
+A JS/TS member call on `const x = await f()` punted as `mc-await` whenever the file bound the receiver in that shape: inferEsmAwaitedCallType sanitizes the file (comments stripped, string contents blanked, regex literals skipped), builds a brace-scope tree, and walks the visible awaited declaration to the callee's `Promise<T>` return annotation. The kernel now ports it whole, along with importShadowedAt and hasParameterBinding. The name-parameterized patterns are hand-written matchers (JS ASCII word boundaries, leftmost non-overlapping matches), and the sanitizers write one space per UTF-16 unit so offsets line up with ref columns. An awaited receiver of unknown type stays a terminal miss, as in TS. The old raw-line gate and its `Affix::any_line` helper are gone.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| vitest (pool) | 96.9% (`mc-await` 438) | 97.4% | identical |
+| vite | 97.5% (`mc-await` 186) | 97.9% | identical |
+| svelte | 99.2% (`mc-await` 11) | 99.3% | identical |
+| zod | 98.7% | 98.8% | identical |
+
 ### 5.68 Resolver port, Phase 6 leg 6b: import arms that read the exporting file (2026-09-26)
 
 An imported constant called through a member (`Api.upload()`, `store.notify()`) punted as `via-src` when the containment lookup missed, because the two remaining TS arms read the exporting file. Both are ported. resolveObjectLiteralAlias takes the binding a shorthand or `key: ident` property names inside the literal and resolves it in the object's file: a symbol declared there, else through that file's own imports. resolveImportedInstanceMember types the value from its own declaration lines (the local receiver patterns over the joined extent, without the per-line length cap) and validates the member with resolveMethodOnType, supertype walk included.

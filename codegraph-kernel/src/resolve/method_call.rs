@@ -148,22 +148,6 @@ impl KernelResolver {
         Ok(parsed)
     }
 
-    /// Cheap raw-source gate for inferEsmAwaitedCallType — the awaited arm can
-    /// only engage when the file binds `receiver` in an `= await x(` shape.
-    /// True → punt (the arm needs sanitized scope parsing); false → provable
-    /// null, continue natively.
-    pub(super) fn mc_await_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
-        let Some(lines) = self.read_file(&r.file_path) else {
-            return Ok(false);
-        };
-        // `\b(?:const|let|var)\s+RECV\s*=\s*await\s+x\s*\(`
-        static AWAITED: LazyLock<Affix> = LazyLock::new(|| {
-            Affix::new(r"(?-u:\b)(?:const|let|var)\s+", r"\s*=\s*await\s+[A-Za-z0-9_$]+\s*\(", false, false, false)
-        });
-        // The pattern needs a literal `await`, so only those lines can match.
-        Ok(AWAITED.any_line(lines.await_lines(), receiver))
-    }
-
     /// Cheap gate for inferIterationReceiver — kotlin/go only, fires only
     /// when its declaration preconditions can hold; tree-sitter stays in TS.
     pub(super) fn mc_iteration_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
@@ -326,10 +310,15 @@ impl KernelResolver {
                 if probe!(r, "mc:iter-gate", self.mc_iteration_gate(&object_or_class, r)?) {
                     return Err(Halt::Punt("mc-iteration"));
                 }
-                if is_esm_family(&r.language)
-                    && probe!(r, "mc:await-gate", self.mc_await_gate(&object_or_class, r)?)
-                {
-                    return Err(Halt::Punt("mc-await"));
+                if is_esm_family(&r.language) {
+                    if let Some(a) =
+                        probe!(r, "mc:await", self.infer_esm_awaited_call_type(&object_or_class, r)?)
+                    {
+                        match a.name {
+                            Some(t) if !TS_PRIMITIVE_TYPES.contains(t.as_str()) => inferred = Some(t),
+                            _ => return Ok(None),
+                        }
+                    }
                 }
                 // `recv->fp(...)` / `x.fp(...)` with an unrecoverable
                 // receiver type: the member is still provable when exactly
@@ -446,11 +435,18 @@ impl KernelResolver {
             };
             // mc-guarded/gofactory/iteration are evidence-gated in TS and
             // never run here; mc-await still does.
-            if inferred.is_none()
-                && is_esm_family(&r.language)
-                && self.mc_await_gate(&object_or_class, r)?
-            {
-                return Err(Halt::Punt("mc-await"));
+            let mut inferred = inferred;
+            let mut awaited_file: Option<String> = None;
+            if inferred.is_none() && is_esm_family(&r.language) {
+                if let Some(a) = self.infer_esm_awaited_call_type(&object_or_class, r)? {
+                    match a.name {
+                        Some(t) if !TS_PRIMITIVE_TYPES.contains(t.as_str()) => {
+                            inferred = Some(t);
+                            awaited_file = Some(a.file_path);
+                        }
+                        _ => return Ok(None),
+                    }
+                }
             }
             // Same unique-field fallback as the bound arm — `recv->fp(...)`
             // proves its field member when exactly one exists.
@@ -466,15 +462,29 @@ impl KernelResolver {
                 } else {
                     None
                 };
+                // An awaited type resolves from the file that declares it,
+                // and a hit on that type itself must live there.
+                let mut site = r.clone();
+                if let Some(f) = &awaited_file {
+                    site.file_path = f.clone();
+                }
                 match self.resolve_method_on_type(
                     &t,
                     &method_name,
-                    r,
+                    &site,
                     0.9,
                     "instance-method",
                     fqn.as_deref(),
                 )? {
-                    Some(c) => return Ok(Some(c)),
+                    Some(c) => {
+                        if let Some(f) = &awaited_file {
+                            if c.node.qualified_name.starts_with(&format!("{t}::")) && &c.node.file_path != f {
+                                return Ok(None);
+                            }
+                        }
+                        return Ok(Some(c));
+                    }
+                    None if awaited_file.is_some() => return Ok(None),
                     None => {
                         // A known builtin/primitive receiver is external when
                         // it has no project method — TS returns null here

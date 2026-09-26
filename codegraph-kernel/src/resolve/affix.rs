@@ -151,12 +151,6 @@ impl Affix {
         }
     }
 
-    /// Whether any line matches — one regex lookup for the whole set.
-    pub(super) fn any_line<'l>(&'static self, lines: impl IntoIterator<Item = &'l str>, word: &str) -> bool {
-        let (head, tail) = self.local();
-        lines.into_iter().any(|l| self.find_with(l, word, 0, head.as_deref(), tail.as_deref()).is_some())
-    }
-
     /// The match for a word at `at`, once the head (if any) has matched up
     /// to it: the word's boundaries, then the tail.
     pub(super) fn finish_at(
