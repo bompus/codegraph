@@ -133,6 +133,25 @@ const FIXTURE: Record<string, string> = {
     '  wire(el: any) { el.on("a", this.onClick); el.on("b", this.onBase); }',
     '}',
   ].join('\n'),
+  // Zustand store actions: destructured, selected, chained off the accessor,
+  // and `get()` inside the store — each lands on the store's own `reset`.
+  'src/zstore.ts': [
+    "import { create } from 'zustand';",
+    'export const useStore = create((set, get) => ({',
+    '  reset() { set({}); },',
+    '  bump() { get().reset(); },',
+    '}));',
+  ].join('\n'),
+  'src/zapp.ts': [
+    "import { useStore } from './zstore';",
+    'export function zapp() {',
+    '  const { reset } = useStore.getState();',
+    '  reset();',
+    '  const r2 = useStore((s) => s.reset);',
+    '  r2();',
+    '  useStore.getState().reset();',
+    '}',
+  ].join('\n'),
   // Markdown links resolve to the linked file by path.
   'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,
@@ -657,6 +676,12 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     const wireFn = byName('wire', 'method').find((n) => n.qualifiedName === 'Widget::wire')!.id;
     ins.run(wireFn, 'this.onClick', 'function_ref', 4, 38, 'src/widget.ts', 'typescript');
     ins.run(wireFn, 'this.onBase', 'function_ref', 4, 67, 'src/widget.ts', 'typescript');
+    const zappFn = nodeId('zapp', 'zapp.ts');
+    ins.run(zappFn, 'reset', 'calls', 4, 2, 'src/zapp.ts', 'typescript');
+    ins.run(zappFn, 'r2', 'calls', 6, 2, 'src/zapp.ts', 'typescript');
+    ins.run(zappFn, 'useStore.getState().reset', 'calls', 7, 2, 'src/zapp.ts', 'typescript');
+    const bumpFn = [...byName('bump', 'method'), ...byName('bump', 'function')].find((n) => n.filePath.endsWith('zstore.ts'))!.id;
+    ins.run(bumpFn, 'get().reset', 'calls', 4, 11, 'src/zstore.ts', 'typescript');
     const readme = cg!.getNodesByKind('file').find((n) => n.filePath === 'README.md')!.id;
     ins.run(readme, 'src/util.ts', 'references', 3, 4, 'README.md', 'markdown');
     for (const [name, line] of [['inc/db.php', 2], ['inc/db', 3], ['nowhere/g.php', 4]] as const) {
@@ -932,8 +957,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('made.run', 'src/main.ts', 'calls').status).toBe('unresolved');
     // A chain says nothing about what its inner call returns — no guess.
     expect(at('api.prepare().all', 'src/main.ts', 'calls').status).toBe('unresolved');
-    // A store accessor's action is read from source — TS answers it.
-    expect(at('api.getState().reset', 'src/main.ts', 'calls').status).toBe('passthrough');
+    // A store accessor chain resolves inside the identified store; `api`'s
+    // literal has no `reset`, so it is a native miss.
+    expect(at('api.getState().reset', 'src/main.ts', 'calls').status).toBe('unresolved');
     // `svc.call` infers Service then misses `Service::call` — the supertype
     // walk reads live edges, so the kernel punts for TS to decide.
     expect(at('svc.call', 'src/main.ts', 'calls').status).toBe('passthrough');
@@ -1053,6 +1079,13 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(inherited!.status).toBe('resolved');
     expect(inherited!.confidence).toBe(0.85);
     expect(inherited!.targetNodeId).toBe(byName('onBase', 'method').find((n) => n.qualifiedName === 'BaseW::onBase')!.id);
+    // Store actions resolve natively to the store's `reset`.
+    const storeReset = [...byName('reset', 'method'), ...byName('reset', 'function')].find((n) => n.filePath.endsWith('zstore.ts'))!.id;
+    for (const [name, file] of [['reset', 'src/zapp.ts'], ['r2', 'src/zapp.ts'], ['useStore.getState().reset', 'src/zapp.ts'], ['get().reset', 'src/zstore.ts']] as const) {
+      const hit = at(name, file, 'calls');
+      expect(hit.status, name).toBe('resolved');
+      expect(hit.targetNodeId, name).toBe(storeReset);
+    }
     // A markdown link is answered natively by the file-path arm.
     const mdLink = at('src/util.ts', 'README.md', 'references');
     expect(mdLink.status).toBe('resolved');

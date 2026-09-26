@@ -240,7 +240,7 @@ fn word_occurrences<'a>(hay: &'a str, name: &'a str) -> impl Iterator<Item = usi
 /// Non-overlapping matches, leftmost first, of
 /// `\b(?:KEYWORDS)\s+(?:NAME\b|\{[^}]*\bNAME\b)` (the brace arm only when
 /// `braces`): the byte offset of each match's keyword.
-fn declaration_matches(code: &str, name: &str, keywords: &[&str], braces: bool) -> Vec<usize> {
+pub(super) fn declaration_matches(code: &str, name: &str, keywords: &[&str], braces: bool) -> Vec<usize> {
     let bytes = code.as_bytes();
     let mut out = Vec::new();
     let mut p = 0;

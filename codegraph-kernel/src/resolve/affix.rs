@@ -396,59 +396,6 @@ pub(super) static TS_FIELD_TYPE_PATTERNS: LazyLock<[(Affix, bool); 3]> = LazyLoc
     ]
 });
 
-/// `\bconst\s*(?:\{[^{}]*\bNAME\b|NAME\b)` over a file's text — a `const`
-/// destructure naming NAME, or `const NAME` itself — with the ASCII word
-/// boundaries JavaScript's `\b` has. One forward pass over the `const`
-/// sites: the file is scanned once per call whatever the name, where a walk
-/// back from every occurrence of a short name was quadratic.
-pub(super) fn js_destructure_names(text: &str, name: &str) -> bool {
-    static CONST: LazyLock<memchr::memmem::Finder<'static>> = LazyLock::new(|| memchr::memmem::Finder::new("const"));
-    let bytes = text.as_bytes();
-    // One searcher for the name: a minified bundle has thousands of
-    // `const{…}` sites, each a short brace-free run to search.
-    let name_finder = memchr::memmem::Finder::new(name);
-    let name_step = name.chars().next().map_or(1, char::len_utf8);
-    let word_in_run = |run: &str| {
-        let mut pos = 0;
-        while pos <= run.len() {
-            let Some(at) = name_finder.find(&run.as_bytes()[pos..]).map(|i| pos + i) else { break };
-            if word_boundary_at(run, at) && word_boundary_at(run, at + name.len()) {
-                return true;
-            }
-            pos = at + name_step;
-        }
-        false
-    };
-    let mut from = 0;
-    while let Some(at) = CONST.find(&bytes[from..]).map(|i| from + i) {
-        from = at + 5;
-        if !word_boundary_at(text, at) {
-            continue;
-        }
-        // `\s*`
-        let mut p = at + 5;
-        while let Some(c) = text[p..].chars().next() {
-            if !c.is_whitespace() {
-                break;
-            }
-            p += c.len_utf8();
-        }
-        // `const\s*\{[^{}]*\bNAME\b` — the brace-free run after `{`; its
-        // edges are braces or the end of text, non-word like a slice edge.
-        if bytes.get(p) == Some(&b'{') {
-            let run_start = p + 1;
-            let run_len = bytes[run_start..]
-                .iter()
-                .position(|&b| b == b'{' || b == b'}')
-                .unwrap_or(bytes.len() - run_start);
-            if word_in_run(&text[run_start..run_start + run_len]) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// matchSelectedStoreCall's selector names: every `NAME` in
 /// `const NAME = f((s) =>` / `const NAME = f(s =>` over the raw source, with
 /// TS's ASCII `\w`.
