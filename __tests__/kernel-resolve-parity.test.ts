@@ -144,6 +144,23 @@ const FIXTURE: Record<string, string> = {
     '\tsvc := NewService()',
     '\tsvc.Run()',
     '}',
+    // A range variable typed from the collection's declared slice.
+    'func loop(xs []*Service) {',
+    '\tfor _, x := range xs {',
+    '\t\tx.Run()',
+    '\t}',
+    '}',
+  ].join('\n'),
+  // Kotlin scope functions: `it` and a named lambda parameter take the
+  // receiver's type from the `let`/`also` call's root.
+  'src/L.kt': [
+    'class Box { fun open() {} }',
+    'fun make(): Box = Box()',
+    'fun user() {',
+    '    val b: Box = make()',
+    '    b.let { it.open() }',
+    '    b.also { v -> v.open() }',
+    '}',
   ].join('\n'),
   // C++ is bareFnOnly: a bare identifier there is never a method value.
   // `Outer::Sub::m` gives the qualified-name partial arm a suffix target.
@@ -564,6 +581,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // Go factory receiver + two-hop field chain.
     const goRun = nodeId('run', 'main.go');
     seed(goRun, 'svc.Run', 'main.go', 'go', 'calls', 15);
+    ins.run(nodeId('loop', 'main.go'), 'x.Run', 'calls', 19, 2, 'main.go', 'go');
+    ins.run(nodeId('user', 'L.kt'), 'it.open', 'calls', 5, 12, 'src/L.kt', 'kotlin');
+    ins.run(nodeId('user', 'L.kt'), 'v.open', 'calls', 6, 18, 'src/L.kt', 'kotlin');
     seed(nodeId('use', 'main.go'), 'o.in.Do', 'main.go', 'go', 'calls', 12);
     // Chain arms — `<inner>().<method>` refs whose receiver's type is the
     // inner call's declared return type.
@@ -906,6 +926,18 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(km.targetNodeId).toBe(
       byName('mymethod', 'method').find((n) => n.qualifiedName === 'K::mymethod')!.id,
     );
+    // Iteration receivers (inferIterationReceiver, a tree walk): a Go range
+    // variable over `xs []*Service`, and Kotlin `it` inside `b.let` where
+    // `b: Box`.
+    const loopRun = at('x.Run', 'main.go', 'calls');
+    expect(loopRun.status).toBe('resolved');
+    expect(loopRun.targetNodeId).toBe(nodeId('Run', 'main.go', 'method'));
+    const itOpen = at('it.open', 'src/L.kt', 'calls');
+    expect(itOpen.status).toBe('resolved');
+    expect(itOpen.targetNodeId).toBe(nodeId('open', 'L.kt', 'method'));
+    // A named lambda parameter has no binding row, so its declaration can't
+    // be read and the walk never starts — unresolved in both engines.
+    expect(at('v.open', 'src/L.kt', 'calls').status).toBe('unresolved');
     // Go factory — `svc := NewService()` → callee return type `*Service` →
     // matchBoundTypeMember on `Service::Run` @0.9.
     const goSvc = at('svc.Run', 'main.go', 'calls');

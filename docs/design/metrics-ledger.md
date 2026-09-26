@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.70 Resolver port, Phase 6 leg 6c: iteration receivers (2026-09-26)
+
+Go range variables and Kotlin `let`/`also` lambda receivers punted as `mc-iteration` whenever the declaration could come from one of those constructs, because inferIterationReceiver walks a parse tree. The kernel is the parser, so it now walks the tree-sitter tree itself, using the facade's `descendantForPosition` rule (the first child, named or not, whose span holds the point) with byte columns converted to UTF-16 the way the serialized tree reports them. The Go arms (a typed owner's slice field, a declared slice/array/map, a factory whose signature returns a slice) use `Affix` patterns; the factory call goes through the bound-receiver claim, as TS's callback does. The thread's cached parser is shared with the tree service.
+
+| Corpus | Native before | Native after | Dump |
+|---|---|---|---|
+| ktor | 98.2% (`mc-iteration` 937) | 99.0% | identical |
+| exposed | 96.4% (`mc-iteration` 640) | 97.2% | identical |
+
+Finding: a named Kotlin lambda parameter (`b.also { v -> v.open() }`) carries no binding row, so the walk never starts for it in either engine. Only implicit `it` is typed today.
+
 ### 5.69 Resolver port, Phase 6 leg 6c: awaited receivers (2026-09-26)
 
 A JS/TS member call on `const x = await f()` punted as `mc-await` whenever the file bound the receiver in that shape: inferEsmAwaitedCallType sanitizes the file (comments stripped, string contents blanked, regex literals skipped), builds a brace-scope tree, and walks the visible awaited declaration to the callee's `Promise<T>` return annotation. The kernel now ports it whole, along with importShadowedAt and hasParameterBinding. The name-parameterized patterns are hand-written matchers (JS ASCII word boundaries, leftmost non-overlapping matches), and the sanitizers write one space per UTF-16 unit so offsets line up with ref columns. An awaited receiver of unknown type stays a terminal miss, as in TS. The old raw-line gate and its `Affix::any_line` helper are gone.
