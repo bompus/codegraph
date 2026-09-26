@@ -61,7 +61,7 @@ Tests run as **two vitest projects** (`vitest.workspace.mts`): `engine` (node) a
 Svelte plugin, `resolve.conditions: ['browser']`) for the single `__tests__/ui-package.test.ts`.
 `npm test` still runs both. The split is not cosmetic — `browser` is a package-resolution
 condition, and applied globally it hands the engine's suites the browser builds of
-`web-tree-sitter` and friends. The root config (`vitest.config.mts`, `.mts` because the plugin is
+their dependencies. The root config (`vitest.config.mts`, `.mts` because the plugin is
 ESM-only and the repo is CJS) is the shared base; note that a workspace project **concatenates**
 the base's `include` with its own, which is why the `ui` project does not `extends` it.
 
