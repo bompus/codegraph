@@ -57,6 +57,12 @@ describe('synthesized edges on incremental sync', () => {
     expect(callees('publish')).not.toContain('onSaved');
   });
 
+  it('drops an edge when the file holding its registration is deleted', async () => {
+    fs.rmSync(path.join(dir, 'src/wire.ts'));
+    await cg.sync();
+    expect(callees('publish')).not.toContain('onSaved');
+  });
+
   it('refreshes after a debounce when the sync defers it', async () => {
     process.env.CODEGRAPH_SYNTH_REFRESH_MS = '30';
     write('src/api.ts', 'export async function loadRepo(owner: string) {\n  // edited\n  return fetch(`https://api.github.com/repos/${owner}`);\n}\n');
