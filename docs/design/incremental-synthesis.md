@@ -85,7 +85,9 @@ Three problems the plan above missed:
 - **Passes read edges.** Kept edges from skipped passes would be in the database while the re-run passes execute, and some passes query edges. A fresh index never shows them those edges. Kept edges would have to be moved aside during the re-run.
 - **Shadowed duplicates.** When a re-run pass stops emitting an edge that used to shadow a skipped pass's duplicate, a fresh index would contain the skipped pass's copy, which was never stored. Being exact needs each pass's raw output, either persisted or cached in a long-lived process.
 
-Status: not built. The gain is modest (~30% of a Ruby-edit sync on discourse, ~2% of a JavaScript-edit sync), and the audit it needs is error-prone. A narrower variant is exact with much less audit: skip only `cFnPtrEdges` when no C/C++ file changed, reusing its raw output cached in the daemon. It helps mixed C projects (CPython, Node.js) and does nothing for the Linux kernel, where every edit is C.
+Status: not built. The gain is modest (~30% of a Ruby-edit sync on discourse, ~2% of a JavaScript-edit sync), and the audit it needs is error-prone.
+
+The narrower variant was built and measured, then left out. It skips only `cFnPtrEdges` when the fingerprint of the indexed C/C++ files (path, content hash, generated flag) is unchanged, and reuses the pass's raw output cached in the long-running process. Making it exact first required #208: the pass had been resolving handler names across every language. On CPython (1,126 C/C++ files, 2,368 Python) the pass takes ~0.55 s of a ~3.9 s resynthesis, spread over 30-odd passes, so the reuse saves ~0.5 s per Python edit. That is not enough to justify a module-level cache holding up to ~40 MB. The patch is kept outside the repository in case a mixed C project with a multi-second pass appears.
 
 ## Milestone 2: an incremental C function-pointer pass
 
