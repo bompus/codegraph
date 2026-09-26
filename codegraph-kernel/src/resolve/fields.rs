@@ -654,17 +654,15 @@ impl KernelResolver {
                 let shared = |fp: &str| shared_dir_prefix(&call_dirs, fp);
                 let max_shared =
                     declared.iter().map(|n| shared(&n.file_path)).max().unwrap_or(0);
-                let nearest: Vec<&Arc<KNode>> = declared
+                // Ties break by code-unit order (JS `<` on the paths); the
+                // first of equal paths wins, as the stable sort keeps it.
+                let nearest = declared
                     .iter()
                     .filter(|n| shared(&n.file_path) == max_shared)
-                    .collect();
-                if nearest.len() > 1 {
-                    // TS tiebreaks by localeCompare, which this port
-                    // cannot model exactly — let the TS spine pick.
-                    return Err(Halt::Punt("mc-tfield-ambig"));
-                }
+                    .min_by(|a, b| a.file_path.encode_utf16().cmp(b.file_path.encode_utf16()))
+                    .unwrap();
                 return Ok(Some(KCand {
-                    node: nearest[0].clone(),
+                    node: nearest.clone(),
                     confidence: 0.85,
                     resolved_by: "instance-method",
                 }));

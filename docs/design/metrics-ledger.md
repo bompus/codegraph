@@ -828,6 +828,12 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.80 Resolver port, leg 7d (part 4): the field-type tie-break (2026-09-26)
+
+When a TS field's declared type named a method in several apps of one repo and two declarations sat equally near the call site, TypeScript broke the tie with `localeCompare`. That is ICU collation, and it depends on the host locale, so the kernel handed those refs back (`mc-tfield-ambig`). Both engines now break the tie by code-unit order (JS `<` on the paths), which is deterministic on every host. It is a deliberate TypeScript change: that spine is being deleted (Phase 6 leg 7f), so both engines now apply the kernel's rule. vitest and vite now have zero punts; vitest, vite, celery and ktor dump identically.
+
+What's left on the ten gate corpora is `gated-import` (celery 3) and `claimed` (zod 3), which belong to the framework-merge design, and 2 Rust `member-tail` refs on ktor (mixed `::`/`.` names).
+
 ### 5.79 Resolver port, leg 7d (part 3): store actions (2026-09-26)
 
 A bare JS call that a Zustand-style store might bind punted as `store-bind`, and an accessor chain (`get().reset`, `useStore.getState().reset`) as `chain`/`member-tail`, because matchJsStoreBindingCall and matchStoreAccessorChain read source. The kernel now ports them, together with resolveStoreAction:
