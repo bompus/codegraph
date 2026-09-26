@@ -91,7 +91,7 @@ import { memoryBudgetBytes } from './memory-budget';
 import { LRUCache } from './lru-cache';
 import { stripCommentsForRegex } from './strip-comments';
 import { getKernel } from '../extraction/kernel/loader';
-import type { CfnptrFactsOut, CfnptrFileIn, CfnptrLinkFileIn, CfnptrPathIn } from '../extraction/kernel/loader';
+import type { CfnptrFactsOut, CfnptrFileEnvOut, CfnptrFileIn, CfnptrLinkFileIn, CfnptrPathIn } from '../extraction/kernel/loader';
 
 const C_CPP_EXT = /\.(c|h|cc|cpp|cxx|hpp|hh|hxx|cppm|ipp|inl|tcc)$/i;
 const FN_KINDS = new Set(['function', 'method']);
@@ -465,7 +465,7 @@ export async function cFnPointerDispatchEdges(
   // A = extraction sweep, B = struct-layout linking, C = registration,
   // D = propagation, E = dispatch.
   const prof = process.env.CODEGRAPH_SYNTH_TIMINGS
-    ? { A: 0, B: 0, C: 0, D: 0, E: 0, readMs: 0, readN: 0, stripMs: 0, stripN: 0, nodesMs: 0, nodesN: 0, cEnvMs: 0, cUnitMs: 0, cIncMs: 0 }
+    ? { A: 0, B: 0, C: 0, D: 0, E: 0, readMs: 0, readN: 0, stripMs: 0, stripN: 0, nodesMs: 0, nodesN: 0, cEnvMs: 0, cUnitMs: 0, cIncMs: 0, envCalls: 0, envNativeMs: 0, assignMs: 0, assignFiles: 0, cFiles: 0 }
     : null;
 
   // Within-pass progress: this is the pass that parks the "Linking dynamic
@@ -690,37 +690,55 @@ export async function cFnPointerDispatchEdges(
     def: Set<string>;
     incs: string[];
   }
-  const envCache = new LRUCache<string, NativeEnv | null>(512);
+  // Sized to hold one stage-C block's include closure (prefetchEnvClosure).
+  const envCache = new LRUCache<string, NativeEnv | null>(8192);
+  const toNativeEnv = (file: string, r: CfnptrFileEnvOut | null): NativeEnv | null => {
+    // r === null: unreadable on disk — stay null so the JS path below (and
+    // `src()`/`ctx.readFile`, possibly a virtual FS) still gets the file.
+    if (r == null) return null;
+    const incs: string[] = [];
+    for (const cap of r.includes) {
+      if (!INCLUDABLE_EXT.test(cap)) continue;
+      const t = resolveInclude(file, cap);
+      if (t) incs.push(intern(t));
+    }
+    // The extraction already produced the stripped text — hand it to
+    // `srcCache` so `src(file)` (stage C's processUnit / include rescans)
+    // doesn't pay a second read+strip. This restores the side-effect
+    // warming the JS extractors gave: they ran through `src()` themselves.
+    srcCache.set(file, r.stripped);
+    return {
+      fn: new Map(r.fnMacros.map((m) => [m.name, { params: m.params, expansion: m.expansion }])),
+      obj: new Map(r.objMacros.map((m) => [m.name, m.value])),
+      def: new Set(r.defined),
+      incs,
+    };
+  };
   const nativeEnvFor = (file: string): NativeEnv | null => {
     let e = envCache.get(file);
     if (e !== undefined) return e;
     e = null;
     if (nativeEnvs) {
-      const r = nativeEnvs([path.join(root, file)])[0];
-      if (r != null) {
-        const incs: string[] = [];
-        for (const cap of r.includes) {
-          if (!INCLUDABLE_EXT.test(cap)) continue;
-          const t = resolveInclude(file, cap);
-          if (t) incs.push(intern(t));
-        }
-        e = {
-          fn: new Map(r.fnMacros.map((m) => [m.name, { params: m.params, expansion: m.expansion }])),
-          obj: new Map(r.objMacros.map((m) => [m.name, m.value])),
-          def: new Set(r.defined),
-          incs,
-        };
-        // The extraction already produced the stripped text — hand it to
-        // `srcCache` so `src(file)` (stage C's processUnit / include rescans)
-        // doesn't pay a second read+strip. This restores the side-effect
-        // warming the JS extractors gave: they ran through `src()` themselves.
-        srcCache.set(file, r.stripped);
-      }
-      // r === null: unreadable on disk — stay null so the JS path below (and
-      // `src()`/`ctx.readFile`, possibly a virtual FS) still gets the file.
+      const tE = prof ? Date.now() : 0;
+      e = toNativeEnv(file, nativeEnvs([path.join(root, file)])[0] ?? null);
+      if (prof) { prof.envCalls++; prof.envNativeMs += Date.now() - tE; }
     }
     envCache.set(file, e);
     return e;
+  };
+  // Fetch the envs of `files` not yet cached in ONE native call: the kernel
+  // threads the batch, where one call per file ran serially (47k calls, 7.7 s
+  // on the Linux kernel). Same per-file results, so nothing downstream changes.
+  const prefetchEnvs = (files: Iterable<string>): void => {
+    if (!nativeEnvs) return;
+    const missing = [...new Set(files)].filter((f) => envCache.get(f) === undefined);
+    for (let i = 0; i < missing.length; i += 512) {
+      const batch = missing.slice(i, i + 512);
+      const tE = prof ? Date.now() : 0;
+      const out = nativeEnvs(batch.map((f) => path.join(root, f)));
+      if (prof) { prof.envCalls++; prof.envNativeMs += Date.now() - tE; }
+      batch.forEach((f, k) => envCache.set(f, toNativeEnv(f, out[k] ?? null)));
+    }
   };
 
   const mergeNativeFacts = (file: string, out: CfnptrFactsOut): void => {
@@ -763,15 +781,20 @@ export async function cFnPointerDispatchEdges(
   };
 
   let tPass = Date.now();
+  // C/C++ struct and union nodes in kind-scan order, kept from the extent scan
+  // below so stage B doesn't load every struct node a second time.
+  let cStructNodes: { id: string; name: string }[] | null = null;
   if (nativePaths) {
     // Bulk-prefetch every struct/union extent in one kind-scan — the per-file
     // `getNodesInFile` calls this replaces were ~84k individual queries on the
     // kernel corpus (~14s). Struct extents are all the sweep needs; per-file
     // ordering inside a file is irrelevant (facts are keyed by node id).
     const extentsByFile = new Map<string, CfnptrPathIn['structs']>();
+    cStructNodes = [];
     for (const kind of ['struct', 'union'] as const) {
       for (const st of (ctx.iterateNodesByKind?.(kind) ?? ctx.getNodesByKind(kind))) {
         if (!C_CPP_EXT.test(st.filePath)) continue;
+        cStructNodes.push({ id: st.id, name: st.name });
         let arr = extentsByFile.get(st.filePath);
         if (!arr) { arr = []; extentsByFile.set(st.filePath, arr); }
         // sliceLinesPre semantics ride along: falsy startLine never parses,
@@ -970,13 +993,24 @@ export async function cFnPointerDispatchEdges(
     if (fields.some((f) => f.isFnPtr)) structLayout.set(name, fields);
   };
 
-  for (const kind of ['struct', 'union'] as const) {
-    for (const st of (ctx.iterateNodesByKind?.(kind) ?? ctx.getNodesByKind(kind))) {
+  const registerStructNode = (st: { id: string; name: string }): void => {
+    const rawFields = rawFieldsByNode.get(st.id);
+    if (!rawFields) return; // file unreadable or body unparsable at sweep time — the old pass skipped it too
+    registerStructLayout(st.name, classifyFields(rawFields));
+  };
+  if (cStructNodes) {
+    for (const st of cStructNodes) {
       if ((++scannedFiles & 255) === 0) await onYield();
-      if (!C_CPP_EXT.test(st.filePath)) continue;
-      const rawFields = rawFieldsByNode.get(st.id);
-      if (!rawFields) continue; // file unreadable or body unparsable at sweep time — the old pass skipped it too
-      registerStructLayout(st.name, classifyFields(rawFields));
+      registerStructNode(st);
+    }
+    cStructNodes = null;
+  } else {
+    for (const kind of ['struct', 'union'] as const) {
+      for (const st of (ctx.iterateNodesByKind?.(kind) ?? ctx.getNodesByKind(kind))) {
+        if ((++scannedFiles & 255) === 0) await onYield();
+        if (!C_CPP_EXT.test(st.filePath)) continue;
+        registerStructNode(st);
+      }
     }
   }
   rawFieldsByNode.clear();
@@ -1280,14 +1314,38 @@ export async function cFnPointerDispatchEdges(
       e.charCodeAt(0) === 42 /* '*' */ ? typedefHit(e.slice(1)) : fnPtrTypedefs.has(e)
     ) ?? false);
 
+  // buildEnv visits a file and its includes two levels down. Prefetch those
+  // envs for a block of files up front, level by level (each level's includes
+  // come from the facts or the level before's envs). Every file with facts is
+  // included — a superset of the gate below, which only widens as the stage
+  // runs — so the loop's buildEnv calls hit the cache.
+  const ENV_BLOCK = 256;
+  const prefetchEnvClosure = (roots: string[]): void => {
+    let level = roots;
+    for (let d = 0; d <= 2 && level.length > 0; d++) {
+      prefetchEnvs(level);
+      if (d === 2) break;
+      const next = new Set<string>();
+      for (const f of level) for (const inc of localIncludesOf(f)) next.add(inc);
+      level = [...next];
+    }
+  };
+
   // ---- Stage C: registrations — stream each surviving file (and every file's
   // qualifying local includes) through processUnit, one at a time.
-  for (const file of files) {
+  for (let fi = 0; fi < files.length; fi++) {
+    const file = files[fi]!;
+    if (fi % ENV_BLOCK === 0) {
+      const tP = prof ? Date.now() : 0;
+      prefetchEnvClosure(files.slice(fi, fi + ENV_BLOCK).filter((f) => factsByFile.has(f)));
+      if (prof) prof.cEnvMs += Date.now() - tP;
+    }
     await tick();
     const facts = factsByFile.get(file);
     if (!facts) continue; // no facts ⇒ nothing matched at sweep time ⇒ the old pass would no-op here
     const survives = regSurvives(facts);
     if (!survives && facts.includes.length === 0) continue;
+    if (prof) prof.cFiles++;
     const env = new Map<string, MacroDef>();
     const objEnv = new Map<string, string>();
     const defined = new Set<string>();
@@ -1303,14 +1361,18 @@ export async function cFnPointerDispatchEdges(
     const tInc = prof ? Date.now() : 0;
     for (const target of facts.includes) {
       if (seenInclude.has(`${file}>${target}`)) continue;
+      // Re-scan an indexed header only when this includer unlocks guarded
+      // code. The cheap defined-name test runs before the header is read.
+      const indexed = indexedSet.has(target);
+      if (indexed) {
+        const ownDef = fileDefinedNames(target);
+        let adds = false;
+        for (const n of defined) if (!ownDef.has(n)) { adds = true; break; }
+        if (!adds) continue;
+      }
       const incSrc = src(target);
       if (!incSrc) continue;
-      if (indexedSet.has(target)) {
-        // Re-scan an indexed header only when this includer unlocks guarded code.
-        const ownDef = fileDefinedNames(target);
-        const adds = [...defined].some((n) => !ownDef.has(n));
-        if (!adds || !/#\s*if/.test(incSrc)) continue;
-      }
+      if (indexed && !/#\s*if/.test(incSrc)) continue;
       seenInclude.add(`${file}>${target}`);
       // The include is pasted into the includer — evaluate its conditionals in
       // the includer's defined set (a no-op when it has none). Re-parse the
@@ -1402,6 +1464,7 @@ export async function cFnPointerDispatchEdges(
       await tick();
       const facts = factsByFile.get(file);
       if (!facts?.assignFields?.some((f) => fieldToStructs.has(f))) continue;
+      if (prof) prof.assignFiles++;
       const s = src(file);
       if (!s || !s.includes('=')) continue;
       const tN = prof ? Date.now() : 0;
@@ -1434,7 +1497,7 @@ export async function cFnPointerDispatchEdges(
         }
       }
     }
-    if (prof) prof.C += Date.now() - tA;
+    if (prof) { prof.assignMs = Date.now() - tA; prof.C += prof.assignMs; }
   }
 
   const edges: Edge[] = [];
@@ -1680,7 +1743,7 @@ export async function cFnPointerDispatchEdges(
   if (prof) {
     if (!nativeLink) prof.E = Date.now() - tPass;
     console.error(
-      `[synth-timing] cFnPtr sub: A=${prof.A}ms B=${prof.B}ms C=${prof.C}ms (env=${prof.cEnvMs} unit=${prof.cUnitMs} inc=${prof.cIncMs}) D=${prof.D}ms E=${prof.E}ms | read n=${prof.readN} ${prof.readMs}ms strip n=${prof.stripN} ${prof.stripMs}ms nodesInFile n=${prof.nodesN} ${prof.nodesMs}ms`
+      `[synth-timing] cFnPtr sub: A=${prof.A}ms B=${prof.B}ms C=${prof.C}ms (files=${prof.cFiles} env=${prof.cEnvMs} [native ${prof.envCalls} calls ${prof.envNativeMs}ms] unit=${prof.cUnitMs} inc=${prof.cIncMs} assign=${prof.assignMs} over ${prof.assignFiles} files) D=${prof.D}ms E=${prof.E}ms | read n=${prof.readN} ${prof.readMs}ms strip n=${prof.stripN} ${prof.stripMs}ms nodesInFile n=${prof.nodesN} ${prof.nodesMs}ms`
     );
   }
   return edges;
