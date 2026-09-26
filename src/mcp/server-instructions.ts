@@ -78,7 +78,7 @@ calls; a grep/read exploration is dozens.
 
 - If a tool reports a project isn't indexed (no \`.codegraph/\`), stop calling codegraph tools for that project for the rest of the session and use your built-in tools there instead. Indexing is the user's decision — mention they can run \`codegraph init\` if it comes up, but don't run it yourself.
 - Index lags file writes by ~1 second.
-- Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
+- Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates. A hop marked **matched by name only, unverified** (flow) or **[name match, unverified]** (trail) was bound by the callee's name alone — check that one hop against the source you were given rather than re-reading the whole flow.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;
 
