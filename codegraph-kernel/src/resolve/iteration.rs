@@ -1,6 +1,7 @@
-//! Receiver evidence from a scoped lambda or range loop
-//! (receiver-iteration.ts inferIterationReceiver): Kotlin `x.let { it.m() }`
-//! / `x.also { v -> v.m() }` and Go `for _, v := range xs { v.m() }`.
+//! Receiver evidence from a scoped construct (receiver-iteration.ts):
+//! inferIterationReceiver — Kotlin `x.let { it.m() }` / `x.also { v -> v.m() }`
+//! and Go `for _, v := range xs { v.m() }` — and inferGuardedReceiver, a PHP
+//! `if ($x instanceof T) { $x->m(); }` body.
 //!
 //! The TS side walks the kernel's serialized tree (tree.rs), whose positions
 //! are UTF-16 columns; this walks the tree-sitter tree directly and converts
@@ -246,5 +247,71 @@ impl KernelResolver {
             site.line = callee.start_line;
             IterationHit { ty, site }
         }))
+    }
+}
+
+impl KernelResolver {
+    /// inferGuardedReceiver — the `T` of the nearest enclosing
+    /// `if ($receiver instanceof T)` whose body holds the call, unless the
+    /// receiver is redeclared or reassigned inside it first.
+    pub(super) fn infer_guarded_receiver(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        if r.language != "php" {
+            return Ok(None);
+        }
+        let Some(lines) = self.read_file(&r.file_path) else {
+            return Ok(None);
+        };
+        let text = lines.text().to_string();
+        if !text.contains("instanceof") {
+            return Ok(None);
+        }
+        let Ok(tree) = crate::tree::parse_with_cached_parser(&text, &r.language) else {
+            return Ok(None);
+        };
+        let at = ((r.line - 1).max(0) as usize, r.column.max(0) as usize);
+        let call = descendant_for_position(tree.root_node(), &text, at);
+        let mut cur = Some(call);
+        while let Some(node) = cur {
+            cur = node.parent();
+            if matches!(
+                node.kind(),
+                "anonymous_function"
+                    | "anonymous_function_creation_expression"
+                    | "arrow_function"
+                    | "function_definition"
+                    | "method_declaration"
+            ) {
+                return Ok(None);
+            }
+            if node.kind() != "if_statement" {
+                continue;
+            }
+            let Some(body) = node.child_by_field_name("body") else { continue };
+            if call.start_byte() < body.start_byte() || call.end_byte() > body.end_byte() {
+                continue;
+            }
+            let Some(condition) = node.child_by_field_name("condition") else { continue };
+            let Some(m) = re!(r"^\(\s*\$([A-Za-z0-9_]+)\s+instanceof\s+([A-Za-z0-9_\\]+)\s*\)$")
+                .captures(node_text(condition, &text))
+            else {
+                continue;
+            };
+            if &m[1] != receiver {
+                continue;
+            }
+            let if_line = node.start_position().row as i64 + 1;
+            let shadow = self.bindings(&r.file_path)?.iter().any(|b| {
+                b.name == receiver && b.scope_start > if_line && b.scope_start <= r.line && b.scope_end >= r.line
+            });
+            let mut assignments = Vec::new();
+            descendants_of_type(body, "assignment_expression", &mut assignments);
+            let var = format!("${receiver}");
+            let assigned = assignments.iter().any(|a| {
+                a.start_byte() < call.start_byte()
+                    && a.child_by_field_name("left").is_some_and(|l| node_text(l, &text) == var)
+            });
+            return Ok((!shadow && !assigned).then(|| m[2].to_string()));
+        }
+        Ok(None)
     }
 }

@@ -261,8 +261,8 @@ impl KernelResolver {
     }
 
     /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
-    /// boundReceiver evidence slice. Punt points: php instanceof guards, and
-    /// a member miss whose supertype walk needs edges the db may not hold yet.
+    /// boundReceiver evidence slice. Punt point: a member miss whose supertype
+    /// walk needs edges the db may not hold yet.
     pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let (object_or_class, method_name, inferable, dotted) = match probe!(r, "mc:shape", self.method_call_shape(r)?) {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
@@ -274,15 +274,9 @@ impl KernelResolver {
             innermost_binding(&bindings, &object_or_class, Some(r.line)).cloned();
 
         if inferable {
-            // inferGuardedReceiver is php-only and needs a tree parse — punt
-            // when its cheap precondition can hold, else provable null.
-            if r.language == "php" {
-                let guarded = self
-                    .read_file(&r.file_path)
-                    .is_some_and(|ls| ls.iter().any(|l| l.contains("instanceof")));
-                if guarded {
-                    return Err(Halt::Punt("mc-guarded"));
-                }
+            // A PHP `instanceof` branch narrows the receiver inside its body.
+            if let Some(t) = probe!(r, "mc:guarded", self.infer_guarded_receiver(&object_or_class, r)?) {
+                return self.match_bound_type_member(&t, &method_name, r);
             }
             let mut site = r.clone();
             if let Some(b) = &binding {
@@ -432,7 +426,7 @@ impl KernelResolver {
             } else {
                 self.infer_local_receiver_type(&object_or_class, r, false)?
             };
-            // mc-guarded/gofactory/iteration are evidence-gated in TS and
+            // guarded/gofactory/iteration are evidence-gated in TS and
             // never run here; mc-await still does.
             let mut inferred = inferred;
             let mut awaited_file: Option<String> = None;
