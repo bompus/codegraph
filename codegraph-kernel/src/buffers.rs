@@ -81,7 +81,7 @@ pub const REF_ROW_SIZE: usize = 40;
 pub const BINDING_ROW_SIZE: usize = 64;
 
 /// Mirror of NODE_KINDS in src/types.ts — order is the wire contract.
-pub const NODE_KINDS: [&str; 23] = [
+pub const NODE_KINDS: [&str; 24] = [
     "file",
     "module",
     "class",
@@ -105,6 +105,7 @@ pub const NODE_KINDS: [&str; 23] = [
     "route",
     "component",
     "union",
+    "endpoint",
 ];
 
 /// Mirror of EDGE_KINDS in src/types.ts — order is the wire contract.
@@ -163,6 +164,7 @@ pub fn node_kind_index(kind: &str) -> Option<u8> {
         "route" => 20,
         "component" => 21,
         "union" => 22,
+        "endpoint" => 23,
         _ => return None,
     })
 }

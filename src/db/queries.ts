@@ -1025,7 +1025,7 @@ export class QueryBuilder {
     return out;
   }
 
-  private getExistingNodeIds(ids: readonly string[]): Set<string> {
+  getExistingNodeIds(ids: readonly string[]): Set<string> {
     const out = new Set<string>();
     if (ids.length === 0) return out;
 

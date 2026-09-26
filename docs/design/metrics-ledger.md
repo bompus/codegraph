@@ -802,6 +802,20 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.52 External HTTP endpoints (2026-09-26)
+
+The HTTP client pass (`tier-synthesizer.ts`) already linked a JavaScript/TypeScript `fetch`/axios/ky/got call to the in-repo route it hits. A call to an http(s) host that no route serves is now an `endpoint` node (`GET https://api.github.com/repos/${…}`), linked from the calling function by a `calls` edge (`synthesizedBy: http-external`). The origin comes from the URL written at the call site or from the client's `baseURL`; other schemes (`fake://`, `file://`), comments and relative paths are ignored. The pass now also runs in projects with no routes. `endpoint` is appended to the node kinds in TypeScript and the kernel (the order is the wire contract).
+
+Passes may run on read-only workers and return edges only, so the synthesis merge creates the endpoint nodes (only missing ones: replacing a row would cascade away edges earlier runs attached). Each node is sited at its first call site and lives with that file.
+
+| Corpus | Endpoints | Sample |
+|---|---|---|
+| trezor-suite | 4 | npm registry, raw.githubusercontent.com, data.trezor.io definitions: all real |
+| warp-drive | 2 | GitHub contributors and users APIs: both real |
+| koel, halo | 0 | their calls use relative paths and an environment base URL |
+
+Limits: only a URL written at the call site (or a literal `baseURL`) counts, not one held in a constant; like every synthesized edge, endpoints are refreshed on a full index, not an incremental sync (`callback-edge-synthesis.md`, remaining work 2).
+
 ### 5.51 Near-duplicate function bodies (2026-09-26)
 
 An idea from codebase-memory-mcp (OrangeOrchid's comparison, 2026-09-25): MinHash over function bodies to find copies. Scoped with a Python proof of concept first: a private downstream project 55 pairs, this repository 673 (vendored code excluded); 24 of 24 sampled non-test pairs were real copies.

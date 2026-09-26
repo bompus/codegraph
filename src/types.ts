@@ -43,6 +43,7 @@ export const NODE_KINDS = [
   'route',
   'component',
   'union',
+  'endpoint',        // An external HTTP endpoint a call site requests (tier-synthesizer)
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];

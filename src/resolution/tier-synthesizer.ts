@@ -371,6 +371,8 @@ interface HttpSite {
   /** The path began with a hole — a base URL — and matches a route by its tail. */
   suffix: boolean;
   display: string;
+  /** `https://api.example.com` when the URL (or the client's base URL) names an http(s) host. */
+  origin: string | null;
 }
 
 function httpRoutes(ctx: ResolutionContext): HttpRoute[] {
@@ -444,13 +446,21 @@ function matchHttp(site: HttpSite, routes: readonly HttpRoute[]): HttpRoute | nu
  * when a base URL came first. Null when the path is not literal enough: a
  * relative path with no base, or nothing but holes.
  */
-function clientPath(raw: string, baseURL: string | null): { segs: string[]; suffix: boolean; display: string } | null {
+function clientPath(raw: string, baseURL: string | null): { segs: string[]; suffix: boolean; display: string; origin: string | null } | null {
   let p = raw;
   const cut = p.search(/[?#]/);
   if (cut >= 0) p = p.slice(0, cut);
   let suffix = false;
-  const absolute = /^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/]*(\/.*)?$/i.exec(p);
-  if (absolute) p = absolute[1] ?? '/';
+  let origin: string | null = null;
+  const absolute = /^(?:([a-z][a-z0-9+.-]*):)?\/\/([^/]*)(\/.*)?$/i.exec(p);
+  if (absolute) {
+    // Only an http(s) host is an endpoint: `fake://offline` and `file://` are not.
+    const scheme = absolute[1]?.toLowerCase();
+    if ((scheme === 'http' || scheme === 'https') && absolute[2] && !absolute[2].includes(HOLE)) {
+      origin = `${scheme}://${absolute[2].toLowerCase()}`;
+    }
+    p = absolute[3] ?? '/';
+  }
   else if (!p.startsWith('/')) {
     if (p.startsWith(HOLE)) {
       const rest = p.slice(1);
@@ -466,12 +476,14 @@ function clientPath(raw: string, baseURL: string | null): { segs: string[]; suff
         p = '/' + p;
       } else {
         suffix = base.suffix;
+        origin = base.origin;
         p = '/' + [...base.segs, ...p.split('/')].filter(Boolean).join('/');
       }
     } else return null;
   } else if (baseURL !== null) {
     // An instance with a literal path base: axios joins `baseURL + url`.
     const base = clientPath(baseURL, null);
+    if (base) origin = base.origin;
     if (base && base.segs.length > 0) {
       suffix = base.suffix;
       p = '/' + [...base.segs, ...p.split('/')].filter(Boolean).join('/');
@@ -481,8 +493,8 @@ function clientPath(raw: string, baseURL: string | null): { segs: string[]; suff
     .split('/')
     .filter((s) => s.length > 0)
     .map((s) => (s.includes(HOLE) ? '*' : s));
-  if (segs.length > 0 && segs.every((s) => s === '*')) return null;
-  return { segs, suffix, display: '/' + segs.map((s) => (s === '*' ? '${…}' : s)).join('/') };
+  if (segs.length > 0 && segs.every((s) => s === '*') && origin === null) return null;
+  return { segs, suffix, display: '/' + segs.map((s) => (s === '*' ? '${…}' : s)).join('/'), origin };
 }
 
 /** What a member-call receiver is: a client (with its base URL), or nothing. */
@@ -532,7 +544,7 @@ function collectHttpSites(ctx: ResolutionContext, facts: FileFacts, sites: HttpS
     if (literal === null) return;
     const path = clientPath(literal, baseURL);
     if (!path) return;
-    sites.push({ fn, file: facts.file, line, column: facts.columnOf(index), callee, method, segs: path.segs, suffix: path.suffix, display: path.display });
+    sites.push({ fn, file: facts.file, line, column: facts.columnOf(index), callee, method, segs: path.segs, suffix: path.suffix, display: path.display, origin: path.origin });
   };
 
   BARE_CLIENT_CALL.lastIndex = 0;
@@ -880,6 +892,70 @@ const HTTP_GATE = /\b(?:fetch|\$fetch|ofetch|axios|ky|got|useFetch|useSWR)\b|\.\
 const QUEUE_GATE = /\.\s*add\s*\(|@Processor\s*\(|\bnew\s+Worker\s*[<(]|\.\s*process\s*\(/;
 const EVENT_GATE = /\.\s*(?:emit|emitAsync|on|once)\s*\(|@OnEvent\s*\(|@SubscribeMessage\s*\(/;
 
+/** Marks an edge whose target is an external endpoint node the merge creates (see endpointNodesFor). */
+export const HTTP_EXTERNAL = 'http-external';
+
+/**
+ * A call to an http(s) host no route in the index serves: the edge targets an
+ * `endpoint` node for `METHOD origin/path`, which the synthesis merge creates
+ * (passes may run on read-only workers and return edges only).
+ */
+function externalEndpointEdge(site: HttpSite): Edge {
+  const url = `${site.origin}${site.display === '/' ? '' : site.display}`;
+  const name = `${site.method} ${url}`;
+  return {
+    source: site.fn.id,
+    target: `endpoint:${name}`,
+    kind: 'calls',
+    line: site.line,
+    column: site.column,
+    provenance: 'heuristic',
+    metadata: {
+      synthesizedBy: HTTP_EXTERNAL,
+      channel: 'http',
+      callee: site.callee,
+      method: site.method,
+      href: url,
+      endpoint: name,
+      registeredAt: `${site.file}:${site.line}`,
+    },
+  };
+}
+
+/**
+ * The endpoint nodes a set of synthesized edges points at: one per endpoint,
+ * sited at its first call site (by path, then line), so its source line shows
+ * the request. The node lives with that file: re-indexing the file drops it
+ * and the next synthesis recreates it from whatever calls remain.
+ */
+export function endpointNodesFor(edges: readonly Edge[], languageOf: (filePath: string) => string): Node[] {
+  const first = new Map<string, { name: string; file: string; line: number }>();
+  for (const e of edges) {
+    if (e.metadata?.synthesizedBy !== HTTP_EXTERNAL) continue;
+    const [file, lineText] = String(e.metadata.registeredAt).split(/:(?=\d+$)/);
+    const line = Number(lineText);
+    const prev = first.get(e.target);
+    if (!prev || file! < prev.file || (file === prev.file && line < prev.line)) {
+      first.set(e.target, { name: String(e.metadata.endpoint), file: file!, line });
+    }
+  }
+  const now = Date.now();
+  return [...first].map(([id, f]) => ({
+    id,
+    kind: 'endpoint',
+    name: f.name,
+    qualifiedName: id,
+    filePath: f.file,
+    startLine: f.line,
+    endLine: f.line,
+    startColumn: 0,
+    endColumn: 0,
+    language: languageOf(f.file) as Node['language'],
+    isExported: false,
+    updatedAt: now,
+  }));
+}
+
 export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   const routes = httpRoutes(ctx);
   const httpSites: HttpSite[] = [];
@@ -895,7 +971,8 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
     if ((++scanned & 63) === 0) await onYield();
     const content = ctx.readFile(file);
     if (!content) continue;
-    const wantsHttp = routes.length > 0 && HTTP_GATE.test(content);
+    // Without routes a call can still name an external endpoint.
+    const wantsHttp = HTTP_GATE.test(content);
     const wantsQueue = QUEUE_GATE.test(content);
     const wantsEvents = EVENT_GATE.test(content);
     if (!wantsHttp && !wantsQueue && !wantsEvents) continue;
@@ -914,6 +991,15 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
   const seen = new Set<string>();
   for (const site of httpSites) {
     const route = matchHttp(site, routes);
+    if (!route && site.origin) {
+      const edge = externalEndpointEdge(site);
+      const key = `${site.fn.id}>${edge.target}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        edges.push(edge);
+      }
+      continue;
+    }
     if (!route || route.node.id === site.fn.id) continue;
     const key = `${site.fn.id}>${route.node.id}`;
     if (seen.has(key)) continue;
