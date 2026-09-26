@@ -366,6 +366,11 @@ impl KernelResolver {
             return Ok(None);
         }
         let bare_js = self.is_bare_js_call(r)?;
+        if bare_js {
+            if let Some(c) = self.match_js_store_binding_call(r)? {
+                return Ok(Some(c));
+            }
+        }
         let all_named: Vec<Arc<KNode>> = self
             .nodes_by_name(&r.reference_name)?
             .iter()

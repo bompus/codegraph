@@ -828,6 +828,25 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.79 Resolver port, leg 7d (part 3): store actions (2026-09-26)
+
+A bare JS call that a Zustand-style store might bind punted as `store-bind`, and an accessor chain (`get().reset`, `useStore.getState().reset`) as `chain`/`member-tail`, because matchJsStoreBindingCall and matchStoreAccessorChain read source. The kernel now ports them, together with resolveStoreAction:
+
+- **Destructured:** `const { reset } = useStore.getState()`, visible in the call's brace scope and not shadowed after it.
+- **Selected:** `const r = useStore((s) => s.reset)`, where the hook must be a `create` imported from `zustand`.
+- **Accessor chains:** JS resolves the member inside the identified store's object literal; Python keeps its unique-callable fallback.
+
+The kernel also consults them where TypeScript does: alone on a prefilter miss, and first inside matchByExactName for a bare JS call. That removes the whole-ref `store-bind` punt and its precondition scan (`file_could_store_bind`, `js_destructure_names`). The sanitizer, declaration and parameter-shadow helpers come from the leg 6c port.
+
+| Corpus | Native before (store punts) | Punts after | Dump |
+|---|---|---|---|
+| exposed | 99.7% (`store-bind` 282) | 0 | identical |
+| svelte | 100.0% (`store-bind` 17, `chain` 1) | 0 | identical |
+| vitest | 100.0% (`store-bind` 23, `member-tail` 2) | 4 (`mc-tfield-ambig`) | identical |
+| zod | 100.0% (`store-bind` 15) | 3 (`claimed`) | identical |
+| vite | 100.0% (`store-bind` 10) | 2 (`mc-tfield-ambig`) | identical |
+| ktor, celery, Ocelot, javalin, laravel | unchanged | unchanged | identical |
+
 ### 5.78 Pool snapshot refresh before the first calls batch (2026-09-26)
 
 The post-prerequisite snapshot refresh (§5.67, §5.71) ran at the idle boundary right after a batch settled, before that batch's supertype edges were inserted. When the batch was the last prerequisite batch, the refresh waited a full iteration, so the first calls batch fanned out on the stale snapshot and punted every supertype walk (`rmot-supers`/`btm-supers`, 109 on laravel). The refresh now runs after the insert and before the next fan-out. It's still an idle boundary, because the settled batch is done and the next hasn't started. laravel pooled: 99.9% → 100.0% native, zero punts; laravel, vitest, ktor and celery dump identically.

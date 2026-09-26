@@ -180,10 +180,8 @@ impl KernelResolver {
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));
         if !pre_pass {
-            if self.is_bare_js_call(r)? {
-                return Ok(ResolveOutcome::passthrough("store-bind"));
-            }
-            return Ok(ResolveOutcome::unresolved());
+            // matchJsStoreBindingCall answers a prefilter miss alone.
+            return self.store_binding_on_prefilter_miss(r);
         }
 
         // `function_ref` refs resolve ONLY through matchFunctionRef, never
@@ -332,21 +330,25 @@ impl KernelResolver {
         }
         if name_cand.is_none() {
             // A `<inner>().` receiver in TS/JS/Python resolves only through
-            // matchStoreAccessorChain (unported), which returns before the
-            // method-call arm.
+            // matchStoreAccessorChain, which returns before the method-call arm.
             if r.reference_name.contains("().") && is_store_chain_language(&r.language) {
-                return Ok(ResolveOutcome::passthrough("member-tail"));
+                name_cand = self.match_store_accessor_chain(r)?;
+                return self.after_name_match(r, cands, name_cand);
             }
             name_cand = self.match_method_call_free(r)?;
         }
         if name_cand.is_none() {
             // matchByExactName runs the store-binding matcher first for a
-            // bare JS call — source-reading, so that shape stays in TS.
-            if self.is_bare_js_call(r)? && self.file_could_store_bind(r)? {
-                return Ok(ResolveOutcome::passthrough("store-bind"));
-            }
+            // bare JS call.
             name_cand = probe!(r, "match_reference_bare", self.match_reference_bare(r)?);
         }
+        self.after_name_match(r, cands, name_cand)
+    }
+
+    /// resolveOneInner after the name match: its post-checks, then the
+    /// first-max over the import candidate and the name result, deferring an
+    /// unresolved chain call to the conformance pass.
+    fn after_name_match(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>, name_cand: Option<KCand>) -> Res<ResolveOutcome> {
         if let Some(c) = self.gate_language(name_cand, r) {
             if self.name_result_stands(&c, r)? {
                 cands.push(c);
@@ -476,35 +478,15 @@ impl KernelResolver {
     // resolveOne's gateTargetKind + calls alias-forward.
     // -----------------------------------------------------------------------
 
-    /// Necessary condition for matchJsStoreBindingCall (name-matcher.ts),
-    /// arm by arm. matchDestructuredStoreCall needs a file that mentions
-    /// `.getState` and a `const {…}` naming the ref; matchSelectedStoreCall
-    /// needs a `=>` and the ref among the file's selector names
-    /// (`const a = f((s) =>`), which TS collects from the raw source exactly
-    /// as here. Absent both the matcher returns null, so the kernel may
-    /// adjudicate the ref itself; false positives only cost a TS fallback.
-    pub(super) fn file_could_store_bind(&mut self, r: &ResolveRefIn) -> Res<bool> {
-        if r.reference_kind != "calls" || !is_js_family(&r.language) {
-            return Ok(false);
+    /// resolveOneInner's prefilter miss: `matchJsStoreBindingCall` alone,
+    /// before the frameworks and every name arm (a bound action need not
+    /// share its name with any definition).
+    fn store_binding_on_prefilter_miss(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        let hit = self.match_js_store_binding_call(r)?;
+        match self.gate_language(hit, r) {
+            Some(c) => self.finish(r, c, None, true),
+            None => Ok(ResolveOutcome::unresolved()),
         }
-        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
-        let text = lines.text();
-        let name = r.reference_name.as_str();
-        if text.contains(".getState") && js_destructure_names(text, name) {
-            return Ok(true);
-        }
-        if !text.contains("=>") {
-            return Ok(false);
-        }
-        let names = match self.selector_names_memo.get(&r.file_path) {
-            Some(n) => n.clone(),
-            None => {
-                let n = Rc::new(js_selector_names(text));
-                self.selector_names_memo.insert(r.file_path.clone(), n.clone());
-                n
-            }
-        };
-        Ok(names.contains(name))
     }
 
     /// The `function_ref` block of resolveOneInner (index.ts). TS order:
@@ -573,13 +555,6 @@ impl KernelResolver {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
         }
-        // The store-binding matcher stays in TS (source-reading): it can fire
-        // on a prefilter miss AND short-circuits matchByExactName's candidate
-        // list, so a JS bare call whose file const-binds its name must
-        // passthrough wherever it would otherwise settle.
-        if probe!(r, "bare-js-call", self.is_bare_js_call(r)?) && probe!(r, "store-bind", self.file_could_store_bind(r)?) {
-            return Ok(ResolveOutcome::passthrough("store-bind"));
-        }
         // `function_ref` (#756) has a dedicated, strictly-gated TS path that
         // never reaches frameworks or the fuzzy matchers — resolve it here
         // the same way (import, then the name-matcher's bare arm). The
@@ -604,11 +579,10 @@ impl KernelResolver {
         let pre_pass = probe!(r, "pre-pass",
             self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
         if !pre_pass {
-            return Ok(if self.framework_claims(&r.reference_name) {
-                ResolveOutcome::passthrough("claimed")
-            } else {
-                ResolveOutcome::unresolved()
-            });
+            if self.framework_claims(&r.reference_name) {
+                return Ok(ResolveOutcome::passthrough("claimed"));
+            }
+            return self.store_binding_on_prefilter_miss(r);
         }
 
         let mut cands: Vec<KCand> = Vec::new();
@@ -739,10 +713,10 @@ impl KernelResolver {
         if cand.is_none() {
             cand = self.match_by_qualified_name(r)?;
         }
+        if cand.is_none() {
+            cand = self.match_store_accessor_chain(r)?;
+        }
         let Some(cand) = cand else {
-            if store_accessor_chain(&r.reference_name) {
-                return Ok(ResolveOutcome::passthrough("chain"));
-            }
             return Ok(self.chain_miss());
         };
         let Some(cand) = self.gate_language(Some(cand), r) else { return Ok(self.chain_miss()) };
@@ -854,18 +828,4 @@ fn is_deferred_chain_call(r: &ResolveRefIn) -> bool {
     r.reference_kind == "calls"
         && ((CHAIN_LANGUAGES.contains(&r.language.as_str()) && chain_shape_re().is_match(&r.reference_name))
             || (r.language == "php" && php_prop_shape_re().is_match(&r.reference_name)))
-}
-
-/// matchStoreAccessorChain's shape: `<inner>().<method>` whose inner call is a
-/// store accessor — `get`, `getState` or `<x>.getState`.
-fn store_accessor_chain(name: &str) -> bool {
-    let Some((inner, method)) = name.rsplit_once("().") else { return false };
-    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    if inner.is_empty() || method.is_empty() || !method.chars().all(word) {
-        return false;
-    }
-    if !inner.chars().all(|c| word(c) || c == '$' || c == '.') {
-        return false;
-    }
-    inner == "get" || inner == "getState" || inner.ends_with(".getState")
 }

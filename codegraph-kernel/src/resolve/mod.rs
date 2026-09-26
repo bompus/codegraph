@@ -462,6 +462,7 @@ mod rust_modules;
 mod awaited;
 mod iteration;
 mod this_member;
+mod store;
 use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
@@ -1096,42 +1097,6 @@ mod tests {
                 for line in LINES.iter().chain(extra.iter()) {
                     assert_eq!(affix_matches(affix, line, word), regex_matches(pat, line, word), "{pat:?} word={word:?} line={line:?}");
                 }
-            }
-        }
-    }
-
-    /// `js_destructure_names` against the pattern it implements, with ASCII
-    /// word boundaries: a `const {…}` run naming the ref.
-    #[test]
-    fn js_destructure_names_matches_the_regex() {
-        let names = ["a", "user", "über", "b$"];
-        let texts = [
-            "const user = 1;",
-            "constuser = 2",
-            "const {a, user} = X.getState();",
-            "const {\n  a,\n  user\n} = s;",
-            "const {a: {user}} = x",
-            "let user = 1; const b$ = 2",
-            "x.const user",
-            "const\u{a0}user",
-            "const { über } = 1",
-            "const {a} = {user}",
-            "aconst user",
-            "const {} user",
-            "const user_1 = 0",
-            "const {a} = 1; const {b, name} = x; const {\n c: user } = y",
-            "xconst user; const\n{ user }",
-            "",
-        ];
-        for name in names {
-            // The oracle: the pattern the function replaced, per name.
-            let pattern = format!(
-                r"(?-u:\b)const\s*\{{[^{{}}]*(?-u:\b){0}(?-u:\b)",
-                regex::escape(name)
-            );
-            let re = Regex::new(&pattern).unwrap();
-            for text in texts {
-                assert_eq!(js_destructure_names(text, name), re.is_match(text), "name={name:?} text={text:?}");
             }
         }
     }
