@@ -1,6 +1,6 @@
-# Session transcript index — plan
+# Plan for the session transcript index
 
-Status: 8/8 — done 2026-09-05; upstream PR colbymchenry/codegraph#1702 from `pr/session-index` (this commit on
+Status: 8/8, done 2026-09-05; upstream PR colbymchenry/codegraph#1702 from `pr/session-index` (this commit on
 upstream main, minus this plan file and the alwaysLoad `_meta` that waits on #1697). Decided 2026-09-04: separate
 `sessions.db`; new `codegraph_sessions` tool in the default surface with alwaysLoad; on by default,
 `"sessions": false` opts out; the repo script is deleted once the fork command works.
@@ -41,22 +41,22 @@ files); a UI tab; changes to `codegraph.db`'s schema or bulk-load path.
 - From the downstream checkout: `codegraph sessions turn readiness dedupe` returns the C43 session; the MCP
   server lists the tool and answers the same query; `bun scripts/cg-probe.ts` unchanged.
 - Ablation: the separate `sessions.db` stays only because putting the tables in `codegraph.db` touches
-  `schema.sql`, `migrations.ts` and `endBulkNodeLoad`'s FTS rebuild — three merge surfaces for no query gain.
+  `schema.sql`, `migrations.ts` and `endBulkNodeLoad`'s FTS rebuild, three more merge-conflict points for no query gain.
 
 ## Steps
 
-- [x] 1 `src/sessions/claude-code.ts` — reader: `claudeSessionsDir(projectRoot)` (exact and lowercased slug),
+- [x] 1 `src/sessions/claude-code.ts` adds the reader: `claudeSessionsDir(projectRoot)` (exact and lowercased slug),
       `walkJsonl`, `parseEntries`, `transcriptDocs`, `transcriptTitle` · sessions-index.test.ts 6 pass
-- [x] 2 `src/sessions/index.ts` — `SessionsIndex` (open/refresh/search/close over `createDatabase`),
+- [x] 2 `src/sessions/index.ts` adds `SessionsIndex` (open/refresh/search/close over `createDatabase`),
       `querySessions`, `formatSessionHits`, `NoSessionsError` · same test; deleted files are forgotten too
-- [x] 3 `src/project-config.ts` — `sessions?: boolean`, `loadSessionsEnabled` · tsc clean
-- [x] 4 `src/bin/codegraph.ts` — `sessions <words...>` · cli-sessions-command.test.ts 3 pass (on Node; on Bun
-      the temp-dir cleanup hits EBUSY in every CLI test, cli-query-command included — Bun's node:sqlite keeps a
+- [x] 3 `src/project-config.ts` adds `sessions?: boolean`, `loadSessionsEnabled` · tsc clean
+- [x] 4 `src/bin/codegraph.ts` adds `sessions <words...>` · cli-sessions-command.test.ts 3 pass (on Node; on Bun
+      the temp-dir cleanup hits EBUSY in every CLI test, cli-query-command included, because Bun's node:sqlite keeps a
       prepared statement's file handle until GC)
-- [x] 5 `src/mcp/tools.ts` — tool def (alwaysLoad), `DEFAULT_MCP_TOOLS` = explore + sessions, tiny-repo core
+- [x] 5 `src/mcp/tools.ts` adds the tool def (alwaysLoad), `DEFAULT_MCP_TOOLS` = explore + sessions, tiny-repo core
       set, `handleSessions`; `server-instructions.ts` names it · mcp-tool-allowlist, -annotations, -unindexed pass
 - [x] 6 README (CLI table, MCP Tools table) + CHANGELOG `[Unreleased]`
-- [x] 7 Merge into `experimental`, rebuild `codegraph-daily`, run the proof queries — de0dbca fast-forwarded,
+- [x] 7 Merge into `experimental`, rebuild `codegraph-daily`, run the proof queries. de0dbca fast-forwarded,
       tsc + copy-assets clean, pushed to `fork` · full suite on Node 32 failed / 3997 passed against a 33 / 3987
       baseline, same environmental files · CLI `sessions turn readiness dedupe` 3 hits over 237 transcripts
       (6.5 s first, 141 ms after) · direct-mode MCP lists explore + sessions with alwaysLoad and answers the
