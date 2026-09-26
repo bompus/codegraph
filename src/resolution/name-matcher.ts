@@ -11,7 +11,7 @@ import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, 
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
 import { resolveWorkspaceImport } from './workspace-packages';
 import { JS_BUILT_INS, TS_PRIMITIVE_TYPES } from './js-builtins';
-import { resolveViaImport, resolveJvmImport } from './import-resolver';
+import { resolveViaImport, resolveJvmImport, isShadowedImportName } from './import-resolver';
 import { inferIterationReceiver, inferGuardedReceiver } from './receiver-iteration';
 
 /**
@@ -1111,7 +1111,10 @@ export function matchByExactName(
     )
     // A name the file binds itself (a parameter, a const) shadows every other
     // file's symbol of that name, so a bare call has no cross-file candidate.
-    .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context, ref.line)));
+    .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context, ref.line)))
+    // Whatever the call looks like, a name a parameter or local shadows at the
+    // ref line is never another file's symbol.
+    .filter((n) => n.filePath === ref.filePath || !isShadowedImportName(ref, context));
 
   // A name bound to a bare import (`import { test } from 'vitest'`) has its
   // target outside the graph: no other file's `test` is it, however unique.
@@ -4438,6 +4441,7 @@ export function matchFuzzy(
     !(isBareJsCall(ref, context) &&
       (finalCandidates[0]!.kind === 'method' ||
         (finalCandidates[0]!.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context, ref.line)))) &&
+    (finalCandidates[0]!.filePath === ref.filePath || !isShadowedImportName(ref, context)) &&
     isLexicallyReachable(finalCandidates[0]!, ref, context)
   ) {
     const isCrossLanguage = finalCandidates[0]!.language !== ref.language;

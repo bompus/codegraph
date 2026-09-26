@@ -507,6 +507,9 @@ impl KernelResolver {
     /// where TS would read source the kernel doesn't port (the member descent
     /// only).
     pub(super) fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if self.is_member_call_site(r) || self.is_shadowed_import_name(r)? {
+            return Ok(None);
+        }
         // C/C++ `#include` path refs: the including file's own directory first
         // (via a same-named file NODE, not just existence), then the include
         // search path. isPhpIncludePathRef / isCobolCopybookRef /

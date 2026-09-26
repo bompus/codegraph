@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In JavaScript and TypeScript, a call to a parameter or local variable no longer links to an imported or other-file function that merely shares its name (`function toStore(get) { get() }`), and `this.save()` now links to the class's own `save` method instead of an imported `save` function.
+
 - `codegraph sync` (and the background sync after you switch branches) no longer crashes partway through resolving when many files changed at once. It could die with a bus error, leaving the index to finish on the next run.
 
 - A call, type use or base class in one language no longer links to a symbol that only shares its name in an unrelated language, such as a Rust `Ok(...)` landing on a Scala enum value or a Python `round()` on a TypeScript function. Languages that do call each other keep their links: Kotlin, Java and Scala; C, C++, Objective-C and Swift; JavaScript, TypeScript and Vue, Svelte or Astro components; and React Native, Expo and Tauri bridges.

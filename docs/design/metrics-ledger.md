@@ -828,6 +828,21 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.59 JS/TS: scope shadows imports; member calls are never imports (2026-09-26)
+
+Two import-arm misses, both mirrored in the kernel and the TypeScript resolver:
+
+- **Shadowing.** The import arm answered a bare call before any scope check, so a parameter or local of an imported name (`toStore(get, set)` calling `get()`, `const render = … ; render(…)`) linked to the import. Now a `param` row, or a `local` row that is not a class member (method/property/field rows are class-body scoped but never lexical), for the name's root at the ref line shadows the import, and exact-match/fuzzy keep only same-file candidates for it. The fuzzy/exact guards used to depend on `isBareJsCall`, whose prefix test reads `if (n) set(n)` as a call chain, so the shadowed name escaped to `Store::set` in a `.d.ts`; the new check is by scope, not call syntax.
+- **Member calls.** The extractor keeps only `save` for `this.save()` and `(a.b).save()` (receiver not a plain name), so a same-named import beat the class method (`this.findAllSymbols` in `tools.ts` linked to `named-symbol-flow.ts`). The ref column is the call expression's start; a call-shaped occurrence of the name preceded by `.` marks a member call, which the import arm now declines and which scope never shadows.
+
+| Corpus (calls edges) | Removed | Added | Gate |
+|---|---|---|---|
+| svelte | 60 (47 import, 13 exact-match) | 31 | 1/1 absent held |
+| vite | 7 (3 import, 4 exact-match) | 1 | 6/6 absent, 2/2 present held |
+| vitest | 176 (170 import, 6 exact-match) | 12 | 1/1 absent held |
+
+Every sampled removal was a shadowed or member-call site. Of the 44 added edges, 25 are `this.x()`/`super.x()` calls reaching the class's own method and 2 same-file locals; 17 are deeper chains (`this.#out.push`, `this.root.tasks.filter`) that trade a wrong import guess for a same-file name guess — both are name-only hops, which explore already labels (#119). Goldens unchanged.
+
 ### 5.58 Worktree indexes seeded from a sibling (2026-09-26)
 
 `codegraph init` in a git worktree looks for a sibling worktree whose index is complete, was built by the running extraction version and has a schema this build opens; of those it takes the one whose indexed commit is fewest changed files from this worktree's HEAD (ties to the main checkout). It copies that index with `VACUUM INTO` from a read-only connection (a consistent snapshot even while the sibling's daemon writes) and runs a normal sync, which asks git what changed since the copied commit and re-parses only those files. The index holds repo-relative paths only, so nothing else needs rewriting. A failed copy or sync removes the copy and falls back to a full index; `--no-seed` skips seeding. `CodeGraph.initFromSibling` is the library entry point.

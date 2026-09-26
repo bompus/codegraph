@@ -260,6 +260,80 @@ impl KernelResolver {
 
 /// innermostBinding: the row for `name` whose scope contains `line`,
 /// narrowest scope first (first-wins on ties, matching the TS loop).
+/// isShadowedImportName (import-resolver.ts): a parameter or lexical local
+/// that binds the name's root at the ref line shadows a same-named import
+/// there — in `toStore(get, set)`, `get()` calls the parameter. Class members
+/// also sit in `local` rows scoped to the class body, but a bare name never
+/// reaches them, so they do not shadow.
+impl KernelResolver {
+    pub(super) fn is_shadowed_import_name(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if !is_esm_family(&r.language) || self.is_member_call_site(r) {
+            return Ok(false);
+        }
+        let rows = self.bindings(&r.file_path)?;
+        let root = r.reference_name.split('.').next().unwrap_or("");
+        let Some(b) = innermost_binding(&rows, root, Some(r.line)) else { return Ok(false) };
+        match b.kind.as_str() {
+            "param" => Ok(true),
+            "local" => Ok(match self.node_by_opt_id(b.node_id.as_deref())? {
+                Some(n) => !matches!(n.kind.as_str(), "method" | "property" | "field"),
+                None => true,
+            }),
+            _ => Ok(false),
+        }
+    }
+}
+
+impl KernelResolver {
+    /// isMemberCallSite (import-resolver.ts): a bare-named JS/TS call that is
+    /// really a member call — the extractor keeps only `save` for
+    /// `this.save()` and `(a.b).save()`. The ref column is the start of the
+    /// call expression, so the name's first call-shaped occurrence from
+    /// there, preceded by `.`, marks a receiver. An import binds a lexical
+    /// name and never answers one.
+    pub(super) fn is_member_call_site(&mut self, r: &ResolveRefIn) -> bool {
+        if r.reference_kind != "calls" || !is_esm_family(&r.language) || r.reference_name.contains('.') {
+            return false;
+        }
+        let Some(lines) = self.read_file(&r.file_path) else { return false };
+        let Some(line) = lines.get((r.line - 1) as usize) else { return false };
+        member_call_at(js_slice(line, r.column as usize), &r.reference_name)
+    }
+}
+
+fn member_call_at(at: &str, name: &str) -> bool {
+    let b = at.as_bytes();
+    let ident = |i: Option<usize>| i.and_then(|i| b.get(i)).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
+    let blank = |i: usize| matches!(b.get(i), Some(b' ' | b'\t'));
+    let mut from = 0;
+    while let Some(off) = at[from..].find(name) {
+        let i = from + off;
+        from = i + 1;
+        if ident(i.checked_sub(1)) || ident(Some(i + name.len())) {
+            continue;
+        }
+        let mut j = i + name.len();
+        while blank(j) {
+            j += 1;
+        }
+        if b.get(j) == Some(&b'?') && b.get(j + 1) == Some(&b'.') {
+            j += 2;
+        }
+        while blank(j) {
+            j += 1;
+        }
+        if !matches!(b.get(j), Some(b'(' | b'<' | b'`')) {
+            continue;
+        }
+        let mut k = i;
+        while k > 0 && blank(k - 1) {
+            k -= 1;
+        }
+        return k > 0 && b[k - 1] == b'.';
+    }
+    false
+}
+
 pub(super) fn innermost_binding<'a>(
     rows: &'a [KBinding],
     name: &str,

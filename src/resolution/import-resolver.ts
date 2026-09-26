@@ -15,6 +15,7 @@ import {
   resolveObjectLiteralMember,
   localReceiverTypePatterns,
   normalizeInferredTypeName,
+  innermostBinding,
 } from './name-matcher';
 
 /**
@@ -1044,10 +1045,65 @@ export function resolvePhpImportedStaticCall(
   return { original: ref, targetNodeId: methods[0]!.id, confidence: 0.95, resolvedBy: 'import' };
 }
 
+const SHADOWING_LANGUAGES = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts']);
+
+/**
+ * A parameter or lexical local that binds the name's root at the reference
+ * line shadows a same-named import, and every other file's symbol, there: in
+ * `toStore(get, set)`, `get()` calls the parameter, not an imported `get`. Class members also sit in
+ * `local` rows scoped to the class body, but a bare name never reaches them,
+ * so they do not shadow.
+ */
+export function isShadowedImportName(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  if (!SHADOWING_LANGUAGES.has(ref.language)) return false;
+  if (isMemberCallSite(ref, context)) return false;
+  const rows = context.getBindings?.(ref.filePath);
+  if (!rows || rows.length === 0) return false;
+  const binding = innermostBinding(rows, ref.referenceName.split('.')[0]!, ref.line);
+  if (!binding) return false;
+  if (binding.kind === 'param') return true;
+  if (binding.kind !== 'local') return false;
+  if (!binding.nodeId) return true;
+  const kind = context.getNodeById?.(binding.nodeId)?.kind;
+  return kind !== 'method' && kind !== 'property' && kind !== 'field';
+}
+
+const isIdentChar = (c: string | undefined): boolean => c !== undefined && /[\w$]/.test(c);
+
+/**
+ * True when a bare-named JS/TS call is really a member call: the extractor
+ * keeps only `save` for `this.save()` and `(a.b).save()`, whose receiver is
+ * not a plain name. The ref column is the start of the call expression, so
+ * the name's first call-shaped occurrence from there, preceded by `.`, marks
+ * a receiver. An import binds a lexical name and never answers one.
+ */
+export function isMemberCallSite(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  if (ref.referenceKind !== 'calls' || !SHADOWING_LANGUAGES.has(ref.language)) return false;
+  const name = ref.referenceName;
+  if (name.includes('.')) return false;
+  const line = context.getFileLines?.(ref.filePath)?.[ref.line - 1]
+    ?? context.readFile(ref.filePath)?.split('\n')[ref.line - 1];
+  if (line === undefined) return false;
+  const at = line.slice(ref.column);
+  for (let i = at.indexOf(name); i !== -1; i = at.indexOf(name, i + 1)) {
+    if (isIdentChar(at[i - 1]) || isIdentChar(at[i + name.length])) continue;
+    let j = i + name.length;
+    while (at[j] === ' ' || at[j] === '\t') j++;
+    if (at[j] === '?' && at[j + 1] === '.') j += 2;
+    while (at[j] === ' ' || at[j] === '\t') j++;
+    if (at[j] !== '(' && at[j] !== '<' && at[j] !== '`') continue;
+    let k = i - 1;
+    while (at[k] === ' ' || at[k] === '\t') k--;
+    return at[k] === '.';
+  }
+  return false;
+}
+
 export function resolveViaImport(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
+  if (isMemberCallSite(ref, context) || isShadowedImportName(ref, context)) return null;
   // C/C++ #include references — resolve directly to the included file
   // (file→file edge), bypassing symbol lookup. The extractor emits these
   // with `referenceKind: 'imports'` and `referenceName: <include path>`

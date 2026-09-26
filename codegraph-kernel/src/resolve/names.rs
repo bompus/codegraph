@@ -425,6 +425,12 @@ impl KernelResolver {
             }
         }
 
+        // Whatever the call looks like, a name a parameter or local shadows at
+        // the ref line is never another file's symbol.
+        if candidates.iter().any(|n| n.file_path != r.file_path) && self.is_shadowed_import_name(r)? {
+            candidates.retain(|n| n.file_path == r.file_path);
+        }
+
         // A name bound to a bare external import can land only on a same-file
         // definition (#1709).
         if candidates.iter().any(|n| n.file_path != r.file_path)
@@ -515,7 +521,8 @@ impl KernelResolver {
                             &r.file_path,
                             Some(r.line),
                         )?));
-            let reachable = reachable && !bare_decline && self.is_lexically_reachable(&only, r)?;
+            let shadowed = only.file_path != r.file_path && self.is_shadowed_import_name(r)?;
+            let reachable = reachable && !bare_decline && !shadowed && self.is_lexically_reachable(&only, r)?;
             if reachable {
                 let cross = only.language != r.language;
                 return Ok(Some(KCand {
