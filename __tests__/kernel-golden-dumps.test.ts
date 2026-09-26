@@ -15,11 +15,9 @@
  * and the resulting diff in the .dump files IS the review artifact: a PR
  * that changes a golden must explain every added or removed line.
  *
- * Today the kernel and wasm paths produce identical graphs for every routed
- * language (the kernel-*-parity suites pin that), so the goldens hold on
- * both paths and this suite runs whether or not a kernel binary is staged.
- * Phase 1 of the plan (native error recovery becomes canonical) will
- * re-baseline these once and thereafter the goldens describe the kernel.
+ * The native kernel is the only parser (the wasm path was removed), so the
+ * goldens describe the kernel's graph and a source checkout needs a staged
+ * prebuild to run this suite.
  *
  * The name matches the `__tests__/kernel-*.test.ts` glob the release
  * workflow runs against the freshly built linux-x64 kernel, so the gate is
