@@ -54,7 +54,11 @@ lines.on("line", (line) => {
         content: [{ type: "text", text: JSON.stringify(value) }],
         structuredContent: value,
       });
-    if (name === "slow") {
+    if (name === "exit-after") {
+      // Replies, then exits while idle, like a proxy whose daemon was stopped.
+      reply();
+      setTimeout(() => process.exit(0), 20);
+    } else if (name === "slow") {
       send({
         method: "notifications/progress",
         params: { progressToken: message.id, progress: 0 },

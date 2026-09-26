@@ -269,6 +269,20 @@ describe("isolated MCP refresh launcher", () => {
     );
   });
 
+  it.each([
+    ["tools change", { tool: "different" }, "Tool definitions changed"],
+    ["protocol change", { protocol: "different" }, "Session contract changed"],
+  ])("replaces a child that exited while idle even when the contract changed: %s", async (_name, options, reason) => {
+    const server = await start();
+    const before = (await server.call(1, "exit-after")).result.structuredContent;
+    await waitFor(() => (alive(before.pid) ? undefined : true), "idle child exit");
+    server.deploy(B, options);
+    const after = await server.call(2);
+    expect(after.error, server.stderr()).toBeUndefined();
+    expect(after.result.structuredContent.revision).toBe(B);
+    expect(server.stderr()).toContain(`${reason}; reconnect host; serving it anyway`);
+  });
+
   it("bounds replacement handshake time and continues with the old child", async () => {
     const server = await start();
     server.deploy(B, { hang: true });

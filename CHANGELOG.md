@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- With the managed launcher, `codegraph_explore` and the other tools stopped answering for the rest of a session with `CodeGraph child exited` once a deployment update had stopped the project's daemon and changed the tool descriptions. The launcher now starts the new build in that case and keeps serving; the host picks up the new descriptions on its next reconnect.
+
 - An index could be reported as `database disk image is malformed` after a `codegraph sync` ran while the background daemon had the same project open. Each sync made the daemon silently give up its database locks, so the other process deleted the write-ahead log the daemon was still writing to. The locks now stay held.
 
 - `codegraph_sessions` now finds Cursor transcripts for projects whose path contains a dot directory, such as T3 Code worktrees under `~/.t3/worktrees/` or anything under `~/.local/`. Cursor names its project folder by turning each run of separators into one dash, and codegraph was producing a double dash there, so it looked in a folder that does not exist.
