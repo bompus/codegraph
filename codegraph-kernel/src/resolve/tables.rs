@@ -59,6 +59,7 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "cfml"
             | "cfscript"
             | "cfquery"
+            | "vbnet"
     )
 }
 

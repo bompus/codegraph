@@ -828,6 +828,15 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.87 Resolver port, leg 7e: VB.NET, the last language (2026-09-26)
+
+VB.NET had no TypeScript-only resolution arm (its interop group, `dotnet`, already matched), so admission was the change. Every language the extractor supports now resolves in the kernel; only `unknown`, the placeholder for undetected files, is outside the migrated set.
+
+| Corpus | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|
+| IridiumIO/CompactGUI (61 VB files) | 3,076 | 0 | identical |
+| staxrip (145 VB files) | 28,719 | 0 | identical |
+
 ### 5.86 Resolver port, leg 7e: CFML (2026-09-26)
 
 CFML's TypeScript-only handling came in three pieces:
