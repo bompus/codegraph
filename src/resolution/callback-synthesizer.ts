@@ -1497,12 +1497,31 @@ const JSX_CHILD_KINDS = new Set<NodeKind>(['component', 'function', 'class']);
 const JSX_CHILD_LANGUAGES = [...JS_FAMILY, 'vue', 'svelte'];
 
 /** `localName` → the project file it is imported from, for one file's imports. */
+/**
+ * `resolveImportPath` answers for one synthesis run, keyed by language,
+ * importing directory and specifier: the same specifiers repeat across
+ * thousands of files, and each miss probes the disk for extensions and index
+ * files (0.3 s of existsSync on trezor-suite). Null outside a run.
+ */
+let importPathMemo: Map<string, string | null> | null = null;
+
+function resolveImportPathMemo(source: string, file: string, language: Language, ctx: ResolutionContext): string | null {
+  if (!importPathMemo) return resolveImportPath(source, file, language, ctx);
+  const key = `${language}\0${file.slice(0, file.lastIndexOf('/') + 1)}\0${source}`;
+  let hit = importPathMemo.get(key);
+  if (hit === undefined) {
+    hit = resolveImportPath(source, file, language, ctx);
+    importPathMemo.set(key, hit);
+  }
+  return hit;
+}
+
 function importedFrom(ctx: ResolutionContext, file: string, language: Language): Map<string, string> {
   const out = new Map<string, string>();
   for (const im of ctx.getImportMappings(file, language)) {
     // The mappings name the module as written; the file it is comes from the
     // same resolution the import resolver uses (aliases, extensions, index files).
-    const resolved = im.resolvedPath ?? resolveImportPath(im.source, file, language, ctx);
+    const resolved = im.resolvedPath ?? resolveImportPathMemo(im.source, file, language, ctx);
     if (resolved) out.set(im.localName, resolved);
   }
   return out;
@@ -5691,7 +5710,13 @@ export async function synthesizeCallbackEdges(
   // only read; every write in this function happens with the pool idle.
   backpressure?: () => Promise<void> | null
 ): Promise<number> {
-  return withStripMemo(() => synthesizeWith(queries, withRunCache(ctx), onProgress, pool, backpressure));
+  const prevImports = importPathMemo;
+  importPathMemo = new Map();
+  try {
+    return await withStripMemo(() => synthesizeWith(queries, withRunCache(ctx), onProgress, pool, backpressure));
+  } finally {
+    importPathMemo = prevImports;
+  }
 }
 
 async function synthesizeWith(

@@ -817,7 +817,9 @@ The post-sync synthesis run (5.53) took 2.8 s on pretix and 4.4 s on trezor-suit
 | Full-index synthesis phase, pretix | 1.67 s | 0.95 s | |
 | Full-index synthesis phase, trezor-suite | 1.99 s | 1.97 s (passes run on the resolver pool, outside the run cache) | |
 
-Golden dumps unchanged. Left: SQLite name lookups, `existsSync` probing in workspace import resolution (JSX pass) and a second strip of `.js` files under the TypeScript language key, each under 0.6 s on trezor-suite.
+Golden dumps unchanged.
+
+Follow-up: the strip memo is keyed by stripper (JavaScript and TypeScript strip identically, so `.js` files were stripped twice), import-path answers are memoized per run and workspace-import answers per workspace. pretix's post-sync run 1.49 → 1.42 s and 484 → 440 MB; trezor-suite unchanged within noise (3.1-3.2 s), where `existsSync` halved (291 → 155 ms, the rest is alias probing) but what remains is one node query per file per run, each pass streaming the function nodes, and the registry regexes: inherent to per-pass whole-repository scans.
 
 ### 5.53 Synthesized edges on incremental sync (2026-09-26)
 

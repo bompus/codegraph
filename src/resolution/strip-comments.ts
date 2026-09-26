@@ -109,14 +109,30 @@ export async function withStripMemo<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Languages that share one stripper share one memo entry (JS and TS strip identically). */
+function stripperKey(lang: CommentLang): CommentLang {
+  switch (lang) {
+    case 'typescript':
+      return 'javascript';
+    case 'csharp':
+    case 'swift':
+    case 'c':
+    case 'cpp':
+      return 'java';
+    default:
+      return lang;
+  }
+}
+
 export function stripCommentsForRegex(content: string, lang: CommentLang): string {
   if (!stripMemo) return stripUncached(content, lang);
-  let byLang = stripMemo.get(lang);
+  const key = stripperKey(lang);
+  let byLang = stripMemo.get(key);
   const hit = byLang?.get(content);
   if (hit !== undefined) return hit;
   const out = stripUncached(content, lang);
   if (stripMemoBytes + out.length <= STRIP_MEMO_BYTES) {
-    if (!byLang) stripMemo.set(lang, (byLang = new Map()));
+    if (!byLang) stripMemo.set(key, (byLang = new Map()));
     byLang.set(content, out);
     stripMemoBytes += out.length;
   }
