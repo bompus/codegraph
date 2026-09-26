@@ -177,6 +177,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A sync that changes which files define a name, such as after switching branches, runs the dynamic-dispatch linking once instead of twice: about 30% faster on codegraph's own repository.
 
+- Generated C files, including tree-sitter `parser.c` files from releases that print no banner, are recognised as generated and skipped by the C function-pointer linking, which spent most of its time reading parser tables that never produce a link. On a repository that vendors tree-sitter grammars, that step went from 2.8 s to 1.2 s.
+
 - In Kotlin, a call to a function imported from a Java class (`import io.javalin.apibuilder.ApiBuilder.get`, then `get(...)`) now links to that Java function instead of an unrelated function with the same name, and Kotlin references to imported Java classes are now linked through the import.
 
 - A session that cannot reach the shared codegraph server, because that server stopped answering, runs a different version, or another session already fell back, now still gets codegraph's answers instead of a "writer lock held" error. It reads the index itself and leaves keeping it up to date to the process that holds the lock.
