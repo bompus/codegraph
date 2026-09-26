@@ -228,6 +228,21 @@ const FIXTURE: Record<string, string> = {
     '}',
   ].join('\n'),
   'web/Models/Product.cs': 'namespace Shop.Models { public class Product { } public class ProductCard { } }\n',
+  // CFML: supertypes as component paths (dotted and relative) and receivers
+  // typed by `new`, WireBox `property … inject=` and scope prefixes.
+  'cf/models/UserService.cfc': 'component {\n  function save() {}\n}\n',
+  'cf/base.cfc': 'component {\n  function init() {}\n}\n',
+  'cf/handlers/Main.cfc': [
+    'component extends="cf.models.UserService" {',
+    '  property name="svc" inject="UserService";',
+    '  function run() {',
+    '    variables.svc.save();',
+    '    var u = new UserService();',
+    '    u.save();',
+    '  }',
+    '}',
+  ].join('\n'),
+  'cf/handlers/Sub.cfc': 'component extends="../base" {\n  function go() { init(); }\n}\n',
   // Markdown links resolve to the linked file by path.
   'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,

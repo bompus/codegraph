@@ -941,6 +941,78 @@ impl KernelResolver {
         Ok(Some(KCand { node: found.pop().unwrap(), confidence: 0.9, resolved_by: "import" }))
     }
 
+    /// resolveCfmlComponentPath: `extends="../base"` resolves against the
+    /// referencing file's directory to an exact `.cfc` (case-insensitive);
+    /// `extends="coldbox.system.web.Controller"` matches the class segment and
+    /// corroborates its directories right to left — at least one must agree,
+    /// and a tie yields nothing.
+    pub(super) fn resolve_cfml_component_path(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let norm = |p: &str| p.replace('\\', "/").to_lowercase();
+        let candidates = |this: &Self, name: &str| -> Res<Vec<Arc<KNode>>> {
+            Ok(this
+                .nodes_by_name(name)?
+                .iter()
+                .filter(|n| (n.kind == "class" || n.kind == "interface") && (n.language == "cfml" || n.language == "cfscript"))
+                .cloned()
+                .collect())
+        };
+        if r.reference_name.contains('/') {
+            let rel = re!(r"(?i)\.cfc$").replace(&r.reference_name, "").into_owned();
+            let from = r.file_path.replace('\\', "/");
+            let mut parts: Vec<&str> = from.split('/').collect();
+            parts.pop();
+            for seg in rel.split('/') {
+                match seg {
+                    "" | "." => {}
+                    ".." => {
+                        if parts.pop().is_none() {
+                            return Ok(None);
+                        }
+                    }
+                    s => parts.push(s),
+                }
+            }
+            let want = norm(&format!("{}.cfc", parts.join("/")));
+            let Some(class_name) = parts.last().filter(|s| !s.is_empty()) else { return Ok(None) };
+            return Ok(candidates(self, class_name)?
+                .into_iter()
+                .find(|c| norm(&c.file_path) == want)
+                .map(|node| KCand { node, confidence: 0.95, resolved_by: "file-path" }));
+        }
+        let segments: Vec<&str> = r.reference_name.split('.').map(str::trim).filter(|s| !s.is_empty()).collect();
+        if segments.len() < 2 {
+            return Ok(None);
+        }
+        let class_name = segments[segments.len() - 1];
+        let dir_segments = &segments[..segments.len() - 1];
+        let mut best: Option<Arc<KNode>> = None;
+        let mut best_score = 0usize;
+        let mut tie = false;
+        for cand in candidates(self, class_name)? {
+            let path = cand.file_path.replace('\\', "/");
+            let mut dirs: Vec<&str> = path.split('/').collect();
+            dirs.pop();
+            let mut score = 0usize;
+            while score < dir_segments.len()
+                && score < dirs.len()
+                && dir_segments[dir_segments.len() - 1 - score].to_lowercase() == dirs[dirs.len() - 1 - score].to_lowercase()
+            {
+                score += 1;
+            }
+            if score > best_score {
+                best = Some(cand);
+                best_score = score;
+                tie = false;
+            } else if score == best_score && score > 0 {
+                tie = true;
+            }
+        }
+        if best_score == 0 || tie {
+            return Ok(None);
+        }
+        Ok(best.map(|node| KCand { node, confidence: 0.9, resolved_by: "qualified-name" }))
+    }
+
     /// The resolved import path's file node @0.9, or nothing.
     fn resolve_import_path_to_file_node(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(resolved) = self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)? else {

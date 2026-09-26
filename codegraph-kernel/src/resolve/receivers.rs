@@ -145,7 +145,9 @@ impl KernelResolver {
         site: &ResolveRefIn,
         preserve: bool,
     ) -> Res<Option<String>> {
-        // CFML scope prefixes are dead — cfml/cfscript aren't claim-eligible.
+        if site.language == "cfml" || site.language == "cfscript" {
+            return self.infer_cfml_receiver_type(receiver, site, preserve);
+        }
         let mut scan_receiver = receiver.to_string();
         let mut component_scoped = false;
         let mut php_property = false;
@@ -211,6 +213,78 @@ impl KernelResolver {
         }
         if php_property {
             return self.infer_php_assigned_property_type(&scan_receiver, &lines, call_idx);
+        }
+        Ok(None)
+    }
+
+    /// inferLocalReceiverType for CFML. A `variables.`/`this.` receiver is
+    /// component-scoped: the prefix is stripped and the scan widens to the
+    /// whole file (backward from the call, then forward); `local.`/`arguments.`
+    /// only strip. The declaration patterns — `new X()`, both `createObject`
+    /// forms, a typed parameter, and `cfargument`/`property` attributes in
+    /// either order — are built per receiver: the attribute forms match the
+    /// name case-insensitively, which no Affix split can.
+    fn infer_cfml_receiver_type(&mut self, receiver: &str, site: &ResolveRefIn, preserve: bool) -> Res<Option<String>> {
+        let mut scan_receiver = receiver.to_string();
+        let mut component_scoped = false;
+        if let Some(m) = re!(r"(?i)^(variables|this|local|arguments)\.(.+)$").captures(receiver) {
+            let scope = m[1].to_lowercase();
+            component_scoped = scope == "variables" || scope == "this";
+            scan_receiver = m[2].to_string();
+        }
+        let r = regex::escape(&scan_receiver);
+        let b = r"(?-u:\b)";
+        let w = "A-Za-z0-9_";
+        let patterns = [
+            format!(r#"{b}{r}{b}\s*=\s*new\s+([A-Za-z_][{w}.]*)"#),
+            format!(r#"{b}{r}{b}\s*=\s*[Cc]reate[Oo]bject\s*\(\s*["']component["']\s*,\s*["']([{w}.]+)["']"#),
+            format!(r#"{b}{r}{b}\s*=\s*[Cc]reate[Oo]bject\s*\(\s*["']([{w}.]+)["']\s*\)"#),
+            format!(r#"{b}([A-Z][{w}.]*)\s+{r}{b}\s*[=;,)]"#),
+            format!(r#"(?i){b}cfargument[^>\n]*{b}name\s*=\s*["']{r}["'][^>\n]*{b}type\s*=\s*["']([{w}.]+)["']"#),
+            format!(r#"(?i){b}cfargument[^>\n]*{b}type\s*=\s*["']([{w}.]+)["'][^>\n]*{b}name\s*=\s*["']{r}["']"#),
+            format!(r#"(?i){b}(?:cf)?property{b}[^;\n]*{b}name\s*=\s*["']{r}["'][^;\n]*{b}(?:type|inject)\s*=\s*["']([{w}.]+)["']"#),
+            format!(r#"(?i){b}(?:cf)?property{b}[^;\n]*{b}(?:type|inject)\s*=\s*["']([{w}.]+)["'][^;\n]*{b}name\s*=\s*["']{r}["']"#),
+        ];
+        let mut regexes = Vec::with_capacity(patterns.len());
+        for p in &patterns {
+            regexes.push(Self::cached_regex(p)?);
+        }
+        let Some(lines) = self.read_file(&site.file_path) else { return Ok(None) };
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let call_idx = (site.line - 1).clamp(0, lines.len() as i64 - 1) as usize;
+        let start_idx = if component_scoped {
+            0
+        } else {
+            let scope = self.enclosing_scope_start_line(&site.file_path, &site.language, site.line)?;
+            call_idx.min((scope - 1).max(0) as usize)
+        };
+        let match_line = |this: &mut Self, i: usize| -> Res<Option<String>> {
+            let line = &lines[i];
+            if line.is_empty() || utf16_len_exceeds(line, 10_000) {
+                return Ok(None);
+            }
+            for re in &regexes {
+                if let Some(m1) = re.captures(line).and_then(|c| c.get(1)).map(|g| g.as_str()).filter(|s| !s.is_empty()) {
+                    if let Some(t) = this.normalize_inferred_type_name(m1)? {
+                        return Ok(Some(if preserve { m1.to_string() } else { t }));
+                    }
+                }
+            }
+            Ok(None)
+        };
+        for i in (start_idx..=call_idx).rev() {
+            if let Some(t) = match_line(self, i)? {
+                return Ok(Some(t));
+            }
+        }
+        if component_scoped {
+            for i in call_idx + 1..lines.len() {
+                if let Some(t) = match_line(self, i)? {
+                    return Ok(Some(t));
+                }
+            }
         }
         Ok(None)
     }

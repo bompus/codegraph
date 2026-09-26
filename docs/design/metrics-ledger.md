@@ -828,6 +828,23 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.86 Resolver port, leg 7e: CFML (2026-09-26)
+
+CFML's TypeScript-only handling came in three pieces:
+
+- **Component paths (resolveCfmlComponentPath):** a CFML supertype written as a component path resolves before the prefilter. A relative `extends="../base"` must match its `.cfc` exactly (case-insensitive). A dotted `extends="a.b.Class"` corroborates its directories right to left: at least one must agree, and a tie yields nothing.
+- **Scope prefixes:** `variables.`/`this.` are stripped and the scan widens to the whole file; `local.`/`arguments.` are only stripped.
+- **Receiver patterns:** eight declaration patterns. The `cfargument` and `property` attribute forms match the name case-insensitively, which the kernel's Affix splitter cannot express.
+
+For those patterns the kernel now has `KernelResolver::cached_regex`, the bounded per-thread compile cache that its no-ad-hoc-regex rule already pointed to. It builds the CFML patterns per receiver with JavaScript's semantics. cfml, cfscript and cfquery are admitted.
+
+| Corpus | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|
+| framework-one/fw1 (305 CFML files, relative `extends`) | 15,673 | 0 | identical |
+| Ortus TestBox (146 CFML files, dotted `extends`) | 9,914 | 0 | identical |
+
+The parity fixture gained CFML components with a dotted and a relative `extends`, a WireBox `property … inject=` receiver called through `variables.`, and a `new` receiver.
+
 ### 5.85 Resolver port, leg 7e: Razor (2026-09-26)
 
 Razor's one TypeScript-only arm was resolveRazorUsing. A simple type name in a `.razor`/`.cshtml` file resolves through the file's `@using` namespaces and each `_Imports.razor` from its directory up to the root, and only when exactly one node is `<namespace>::<Name>`. The kernel now runs it where TypeScript does: after the prefilter, ahead of the import arm and the frameworks. Razor is admitted.
