@@ -118,13 +118,17 @@ function makeFallbackEngine(root: string): MCPEngine {
     );
   }
   const writer = readWriterLock(root);
-  if (writer && writer.pid > 0 && isProcessAlive(writer.pid)) {
-    throw new Error(writerLockHeldMessage(writer, getWriterPidPath(root)));
-  }
-  if (existing && isProcessAlive(existing.pid)) {
-    throw new Error(
-      `Cannot start an in-process fallback while live daemon pid ${existing.pid} holds the project lock.`
-    );
+  const liveWriter = writer && writer.pid > 0 && isProcessAlive(writer.pid);
+  if (liveWriter || (existing && isProcessAlive(existing.pid))) {
+    // A live process owns the writer lock: a daemon that stopped answering, or
+    // another session's fallback. Serve reads without the lock or a watcher and
+    // leave syncing to the holder. Refusing left this session with no CodeGraph,
+    // and every later one too for as long as a fallback holder lived.
+    const holder = liveWriter
+      ? writerLockHeldMessage(writer, getWriterPidPath(root))
+      : `live daemon pid ${existing!.pid} holds the project lock.`;
+    process.stderr.write(`[CodeGraph MCP] Serving reads in-process without auto-sync: ${holder}\n`);
+    return new MCPEngine({ watch: false });
   }
   return new MCPEngine({ writerLockRoot: root });
 }

@@ -159,6 +159,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A session that cannot reach the shared codegraph server, because that server stopped answering, runs a different version, or another session already fell back, now still gets codegraph's answers instead of a "writer lock held" error. It reads the index itself and leaves keeping it up to date to the process that holds the lock.
+
 - A shared codegraph server that stops (after idling, or on request) no longer hangs when a new session connects at that moment. Until that session gave up, the half-stopped server kept the project locked, and every other new session's codegraph tools failed with "writer lock held".
 
 - With the auto-refreshing MCP launcher, a tool call that was running when the codegraph server restarted is now retried once on the new server instead of failing, so your agent no longer sees an error it may take as a reason to stop using codegraph.
