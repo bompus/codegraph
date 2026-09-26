@@ -1,4 +1,4 @@
-# Vendored grammar sources — provenance
+# Provenance of vendored grammar sources
 
 Each directory holds the generated `parser.c` (+ `scanner.c`, headers) the
 kernel compiles in `build.rs`. Sources are the same revisions the vendored
