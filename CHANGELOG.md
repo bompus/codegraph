@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- C function-pointer calls no longer link to a Python or Rust function that happens to share the handler's name, and such a function no longer hides the real C handler. On the Linux kernel this removes 193 wrong links and restores 133 C ones.
+
 - On a project indexed before the last near-duplicate change, the list of near-identical copies stopped updating after each sync, with no error shown. Opening the index now adds the missing table, and the copies stay current again.
 
 - After a `codegraph sync`, C function-pointer calls could still point at a handler that had been removed from its dispatch table, until the next full index. A sync now rebuilds these inferred links from scratch, so it ends with the same graph a full index would.
