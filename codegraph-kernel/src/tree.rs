@@ -113,11 +113,12 @@ struct Row {
     extra_fields: Vec<u16>,
 }
 
-fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
+/// Parse with this thread's parser for `language` (created on first use).
+pub(crate) fn parse_with_cached_parser(content: &str, language: &str) -> Result<tree_sitter::Tree> {
     // One parser per language per thread: read-time callers parse many small
     // files in a row, and Parser::new + set_language per call was measurable
     // against a sub-millisecond parse.
-    let tree = PARSERS.with(|cell| -> Result<tree_sitter::Tree> {
+    PARSERS.with(|cell| -> Result<tree_sitter::Tree> {
         let mut map = cell.borrow_mut();
         let parser = match map.entry(language.to_string()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
@@ -134,7 +135,11 @@ fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
         parser
             .parse(content, None)
             .ok_or_else(|| Error::from_reason("parser returned null tree".to_string()))
-    })?;
+    })
+}
+
+fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
+    let tree = parse_with_cached_parser(content, language)?;
 
     // ASCII: byte offsets ARE UTF-16 offsets and tree-sitter's byte columns
     // are code-unit columns. Only a non-ASCII file pays for the prefix table.

@@ -148,8 +148,8 @@ impl KernelResolver {
         Ok(parsed)
     }
 
-    /// Cheap gate for inferIterationReceiver — kotlin/go only, fires only
-    /// when its declaration preconditions can hold; tree-sitter stays in TS.
+    /// inferIterationReceiver's parse precondition — kotlin/go only, true
+    /// only when the receiver's declaration can come from a range or lambda.
     pub(super) fn mc_iteration_gate(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "kotlin" && r.language != "go" {
             return Ok(false);
@@ -261,9 +261,8 @@ impl KernelResolver {
     }
 
     /// matchMethodCall(ref, context, requireReceiverEvidence=true) — the
-    /// boundReceiver evidence slice. Punt points: php instanceof guards,
-    /// go/kotlin iteration constructs, ESM awaited inference, and every
-    /// member-miss that would walk live supertype edges.
+    /// boundReceiver evidence slice. Punt points: php instanceof guards, and
+    /// a member miss whose supertype walk needs edges the db may not hold yet.
     pub(super) fn match_method_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let (object_or_class, method_name, inferable, dotted) = match probe!(r, "mc:shape", self.method_call_shape(r)?) {
             McShape::Parsed { receiver, method, inferable, dotted } => (receiver, method, inferable, dotted),
@@ -307,8 +306,8 @@ impl KernelResolver {
                 }
             }
             if inferred.is_none() {
-                if probe!(r, "mc:iter-gate", self.mc_iteration_gate(&object_or_class, r)?) {
-                    return Err(Halt::Punt("mc-iteration"));
+                if let Some(hit) = probe!(r, "mc:iteration", self.infer_iteration_receiver(&object_or_class, r)?) {
+                    return self.match_bound_type_member(&hit.ty, &method_name, &hit.site);
                 }
                 if is_esm_family(&r.language) {
                     if let Some(a) =

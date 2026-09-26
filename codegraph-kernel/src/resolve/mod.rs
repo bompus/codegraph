@@ -434,6 +434,7 @@ mod pipeline;
 mod file_refs;
 mod rust_modules;
 mod awaited;
+mod iteration;
 use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
