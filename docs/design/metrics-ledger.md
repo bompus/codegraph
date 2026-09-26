@@ -828,6 +828,24 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.89 Resolver port, leg 7f (part 2): the route punts, and verdicts no framework may overturn (2026-09-26)
+
+Three more punts go:
+
+- **C/C++ `#include`:** after the file-path, qualified-name and method-call arms, the route continues through exactName and fuzzy. It then takes the shared post-name step (language gate, visibility, framework merge), as every other name does.
+- **Go dotted chains:** `f().m`, where `f` has no captured return type (a package-level function value), falls back to `m`'s bare name.
+- **Rust mixed names:** `::`+`.` names, `x().y` and non-call dotted names run the ordinary non-bare pipeline. On ripgrep, 732 punts went to zero with an identical dump.
+
+ArkTS `.attr` refs resolve to their single `@Extend`/`@Styles`/`@AnimatableExtend`/`@Builder` helper, and never fall through.
+
+Gating ripgrep exposed a divergence that predated this change. An arm that resolveOneInner runs *before* the framework loop returns a verdict no framework can overturn, but the settle step ran the frameworks over every kernel verdict when frameworks were active. On ripgrep, a Rust framework resolver's 0.95 file-node hit replaced two function-ref verdicts. Kernel outcomes now carry `preFramework` for those arms (function refs, JVM imports, Razor usings, PHP static calls, CFML component paths, Rust `Self`, a prefilter-miss store binding), and settle returns them untouched.
+
+| Corpus | Punts before | Punts after | Dump |
+|---|---|---|---|
+| ripgrep | `member-tail` 732 (and 2 edges wrong) | 0 | identical |
+| redis (C), fmt (C++), gin (Go) | — | 0 | identical |
+| laravel, ktor, eShopOnWeb, vitest, FW/1 | — | 0 | identical |
+
 ### 5.88 Resolver port, leg 7f (part 1): the framework-only punts (2026-09-26)
 
 Two punts existed only because the kernel couldn't run the framework resolvers:

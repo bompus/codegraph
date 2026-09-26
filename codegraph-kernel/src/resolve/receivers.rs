@@ -635,8 +635,8 @@ impl KernelResolver {
 
     /// matchDottedCallChain — `Foo.getInstance().bar` factory/fluent chains,
     /// Go's bare `New().Method`, and the objc/pascal convention arms
-    /// (#645/#608). The Go bare-name fallback (exactName/fuzzy) is unported —
-    /// the member-tail punt reproduces it.
+    /// (#645/#608). Go's `f().m` with an unknown `f` falls back to `m`'s bare
+    /// name (exactName, then fuzzy).
     pub(super) fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(m) = call_chain_re().captures(&r.reference_name) else {
             return Ok(None);
@@ -658,7 +658,14 @@ impl KernelResolver {
                         fqn.as_deref(),
                     );
                 }
-                return Err(Halt::Punt("member-tail"));
+                // A package-level variable holding a function value: its type
+                // is unrecoverable, so the method resolves by its bare name.
+                let mut bare = r.clone();
+                bare.reference_name = method.to_string();
+                if let Some(c) = self.match_by_exact_name(&bare)? {
+                    return Ok(Some(c));
+                }
+                return self.match_fuzzy(&bare);
             }
             if !CONSTRUCTS_VIA_BARE_CALL.contains(r.language.as_str())
                 || !inner.as_bytes()[0].is_ascii_uppercase()

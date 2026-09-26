@@ -916,6 +916,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(cross.status).toBe('resolved');
     expect(cross.resolvedBy).toBe('function-ref');
     expect(cross.confidence).toBe(0.8);
+    // resolveOneInner's function_ref block runs before the framework loop, so
+    // the verdict must stand without the framework merge.
+    expect(cross.preFramework).toBe(true);
     expect(cross.targetNodeId).toBe(nodeId('helper', 'util.ts'));
     // The import binding wins first — 'import' at 0.9, matching the TS spine.
     const viaImport = at('helper', 'src/main.ts');
@@ -1211,9 +1214,11 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(goDot.status).toBe('resolved');
     expect(goDot.resolvedBy).toBe('instance-method');
     expect(goDot.confidence).toBe(0.85);
-    // dottedChain go bare-fallback (exactName/fuzzy on the method) is
-    // unported — the member-tail punt hands it to TS.
-    expect(at('nosuch().Run', 'main.go', 'calls').status).toBe('passthrough');
+    // dottedChain go bare-fallback: `nosuch` has no return type, so the
+    // method resolves by its bare name (exactName) — `Service::Run`.
+    const goBare = at('nosuch().Run', 'main.go', 'calls');
+    expect(goBare.status).toBe('resolved');
+    expect(goBare.targetNodeId).toBe(nodeId('Run', 'main.go', 'method'));
     // dottedChain (java): `J2.getK` returns `K` → `K::mymethod`.
     const javaDot = at('J2.getK().mymethod', 'src/K.java', 'calls');
     expect(javaDot.status).toBe('resolved');
@@ -1350,9 +1355,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // Leaf unknown → prefilter miss → terminal unresolved (store-binding is
     // JS-gated dead for rust).
     expect(at('crate::sub::missing', 'src/lib.rs', 'calls').status).toBe('unresolved');
-    // `::`+`.` names are receiver-shaped — dot-gated punt back to TS
-    // (rust's non-self receiver inference is source-reading, unported).
-    expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // `::`+`.` names run the full non-bare pipeline natively; nothing here
+    // types `a::b`, so it is a native miss.
+    expect(at('a::b.c', 'src/lib.rs', 'calls').status).toBe('unresolved');
     // Root-level module file: `self::child` resolves under `rootmod/`.
     const rootChild = at('self::child::root_child_fn', 'rootmod.rs', 'calls');
     expect(rootChild.status).toBe('resolved');
@@ -1463,10 +1468,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     // node exists anywhere → prefilter terminal unresolved (native
     // verdict, same as TS — not a punt).
     expect(at('z.nomethod', 'src/sub.rs', 'calls').status).toBe('unresolved');
-    // Gate exclusions: `::`+`.` and `()` shapes stay punted to the TS
-    // spine (boundReceiver/scopedChain territory, unchanged by R5).
-    expect(at('Widget::new().again', 'src/sub.rs', 'calls').status).toBe('passthrough');
-    expect(at('make().run', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // `::`+`.` and `()` shapes run natively too (scopedChain, then the name
+    // arms) — no Rust shape is handed back any more.
+    expect(at('Widget::new().again', 'src/sub.rs', 'calls').status).not.toBe('passthrough');
+    expect(at('make().run', 'src/sub.rs', 'calls').status).not.toBe('passthrough');
     // `impl Error for X` bound to `use std::error::Error` — the locality
     // gate drops the same-named local type_alias → stays failed.
     // (implements refs are prerequisite-kind rows.)
