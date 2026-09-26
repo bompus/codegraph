@@ -10,8 +10,8 @@ by the host, not by the agent's judgement. A memory file is the agent's own dist
 unreviewed, and stale the moment the code moves under it. Both are worth searching, but they carry different
 trust, and an agent reading a hit needs to know which one it is holding.
 
-So the feature is not "index memory files". It is a fourth `role` in `sessions.db` — `memory` beside `user`,
-`assistant`, `summary` — so one query returns the memory claim and the session where it was actually decided,
+So the feature is not "index memory files". It is a fourth `role` in `sessions.db`, `memory`, beside `user`,
+`assistant` and `summary`, so one query returns the memory claim and the session where it was actually decided,
 and `--role memory` alone shows what earlier agents believe about the project. A memory hit with no session hit
 behind it is the stale-claim signal; that check stays a query pattern the agent runs, not a feature.
 
@@ -24,7 +24,7 @@ Where the hosts keep memory, and why most of it is already excluded:
 
 | Host        | Memory location                                                   | In scope                                                               |
 | ----------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Claude Code | `~/.claude/projects/<slug>/memory/` — user profile, keyed by path | No. `walkJsonl` already skips `memory/`; that exclusion is deliberate   |
+| Claude Code | `~/.claude/projects/<slug>/memory/`, user profile, keyed by path  | No. `walkJsonl` already skips `memory/`; that exclusion is deliberate   |
 | Cursor      | Its own database                                                  | No                                                                     |
 | Codex       | `AGENTS.md` is instructions, not memory; memory store unverified  | No unless a project commits it                                         |
 | Any host    | A directory the team commits: `.claude/memory/`, `notes/`, `.agents/` | Yes, by opt-in glob                                                |
@@ -36,11 +36,11 @@ projects that commit a memory directory instead.
 
 ## Shape
 
-- `codegraph.json`: `"sessions": { "memory": ["<glob>", ...] }` — opt-in, empty by default. `sessions: false`
+- `codegraph.json`: `"sessions": { "memory": ["<glob>", ...] }`, opt-in and empty by default. `sessions: false`
   still turns the whole source off.
 - Each matched file is one or more docs in the existing `docs` FTS table, `role = 'memory'`, `file` = the
   repo-relative path, `ts` = file mtime, split on top-level headings so a hit lands on a section, not a file.
-- Refresh rides the existing mtime-or-size check in `SessionsIndex.refresh`; a deleted file is forgotten the
+- Refresh uses the existing mtime-or-size check in `SessionsIndex.refresh`; a deleted file is forgotten the
   same way a deleted transcript is.
 - Honour the code index's ignore handling. A project can mark a directory human-only (`.cursorignore`, or a
   `notes/` the agents never read); an indexer that serves it puts the wrong text in agent context.
