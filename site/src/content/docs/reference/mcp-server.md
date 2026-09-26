@@ -9,13 +9,17 @@ CodeGraph runs as a [Model Context Protocol](https://modelcontextprotocol.io/) s
 codegraph serve --mcp
 ```
 
-When a `.codegraph/` index exists, the agent gets the tool below. In a workspace with **no** index, the server announces itself inactive and lists **no** tools — the agent works normally with its built-in tools, and indexing stays your decision.
+The tools below are listed in every workspace. Where the project has no `.codegraph/` index, a call returns guidance (for example, to pass `projectPath` for a sub-project that is indexed) instead of an error, and indexing stays your decision.
 
-## One tool by default: `codegraph_explore`
+## Two tools by default: `codegraph_explore` and `codegraph_sessions`
 
-By default the server exposes a **single tool**, `codegraph_explore`. It's Read-equivalent: give it a natural-language question or a bag of symbol and file names, and it returns the **verbatim, line-numbered source** of the relevant symbols grouped by file — the same shape the `Read` tool gives you — plus the call paths between them (including dynamic-dispatch hops like callbacks, React re-render, and JSX children that grep can't follow) and a blast-radius summary of what depends on them. One call usually answers the whole question.
+By default the server exposes `codegraph_explore` for code and `codegraph_sessions` for project history.
 
-Exposing a single strong tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
+`codegraph_explore` It's Read-equivalent: give it a natural-language question or a bag of symbol and file names, and it returns the **verbatim, line-numbered source** of the relevant symbols grouped by file — the same shape the `Read` tool gives you — plus the call paths between them (including dynamic-dispatch hops like callbacks, React re-render, and JSX children that grep can't follow) and a blast-radius summary of what depends on them. One call usually answers the whole question.
+
+`codegraph_sessions` searches this project's earlier agent sessions (Claude Code, Codex, Cursor/T3, OpenCode, AGY and Devin transcripts) for what a previous session asked, decided or tried. It answers "why is X like this" questions, which the code graph cannot. Set `"sessions": false` in `codegraph.json` to turn it off.
+
+Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
 ## The other tools
 
@@ -34,7 +38,7 @@ Seven more tools exist and stay fully functional, but are **unlisted by default*
 Re-enable any of them with the `CODEGRAPH_MCP_TOOLS` environment variable — a comma-separated allowlist of short names that replaces the default:
 
 ```bash
-CODEGRAPH_MCP_TOOLS=explore,node,search,callers
+CODEGRAPH_MCP_TOOLS=explore,sessions,node,search,callers
 ```
 
 Each also has a CLI equivalent (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`) for scripts and non-MCP harnesses.
