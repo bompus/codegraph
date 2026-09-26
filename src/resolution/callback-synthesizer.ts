@@ -36,7 +36,7 @@ import { tanstackLinkEdges } from './tanstack-router-synthesizer';
 import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
-import { crossTierEdges } from './tier-synthesizer';
+import { crossTierEdges, endpointNodesFor } from './tier-synthesizer';
 import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-utils';
 import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
@@ -5800,6 +5800,17 @@ export async function synthesizeCallbackEdges(
     merged.push(e);
   }
   __mark('dedupe-merge');
+  // External endpoint nodes the http pass points at: created here, on the
+  // writer, because passes may run on read-only workers. insertEdges drops an
+  // edge whose target does not exist, so they go in first.
+  // Only missing ones: replacing an existing endpoint row would cascade away
+  // the edges earlier runs attached to it.
+  const endpoints = endpointNodesFor(merged, (file) => queries.getFileByPath(file)?.language ?? 'unknown');
+  if (endpoints.length > 0) {
+    const existing = queries.getExistingNodeIds(endpoints.map((n) => n.id));
+    const missing = endpoints.filter((n) => !existing.has(n.id));
+    if (missing.length > 0) queries.insertNodes(missing);
+  }
   // Chunked insert with yields: on the Linux kernel the merged synthesized
   // edge set is ~275k rows, and one transaction for all of them was a 20s
   // unyielded main-thread span (#1212 follow-up) — the last one in the tail.

@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- JavaScript and TypeScript calls to external HTTP APIs (`fetch`, axios, ky, got and similar, including clients made with a `baseURL`) now appear in the graph as endpoints such as `GET https://api.github.com/repos/${…}`, linked from the calling function, so you can see which outside services a piece of code talks to. They are refreshed on a full index.
+
 - `codegraph_explore` and `codegraph_node` now name the near-identical copies of the function you are looking at (for example the same helper pasted into three files), so a fix made in one copy is not forgotten in the others. Test files, generated code and vendored libraries are left out.
 
 - Ask about "my changes", "this branch" or a range like `main..HEAD`, and `codegraph_explore` (and the Claude Code prompt hook) answers from the diff: the functions your edits touched, most-called first, with their callers and the tests that cover them.
