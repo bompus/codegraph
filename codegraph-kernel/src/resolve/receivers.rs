@@ -76,6 +76,18 @@ impl KernelResolver {
         if utf16_len_exceeds(line, 10_000) {
             return Ok(None);
         }
+        self.infer_match_text(line, receiver, pats, preserve)
+    }
+
+    /// infer_match_line without the long-line cap: resolveImportedInstanceMember
+    /// applies the patterns to a value's whole declaration, joined, uncapped.
+    pub(super) fn infer_match_text(
+        &mut self,
+        line: &str,
+        receiver: &str,
+        pats: &'static [ReceiverPattern],
+        preserve: bool,
+    ) -> Res<Option<String>> {
         for pat in pats {
             let mut from = 0;
             while let Some(m) = pat.affix.find_from(line, receiver, from) {

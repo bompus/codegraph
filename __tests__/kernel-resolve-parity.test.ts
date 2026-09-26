@@ -49,6 +49,16 @@ const FIXTURE: Record<string, string> = {
   ].join('\n'),
   // A supertype the kernel's walk can reach once an `extends` edge names it.
   'src/base.ts': 'export class BaseSvc {\n  call() { return 2; }\n}\n',
+  // Import-member arms that read the exporting file: an object literal whose
+  // members alias bindings (one local, one imported), and a shared instance
+  // typed from its own declaration.
+  'src/facade.ts': [
+    "import { helper } from './util';",
+    "import { Service } from './svc';",
+    'export function local1() { return 3; }',
+    'export const Facade = { helper, go: local1 };',
+    'export const shared = new Service();',
+  ].join('\n'),
   'src/main.ts': [
     "import { helper, VERSION } from './util';",
     "import { renamed } from './barrel';",
@@ -75,7 +85,13 @@ const FIXTURE: Record<string, string> = {
     // infer `Service` and resolve `run` at 0.9 where TS lands at 0.7.
     '  const über = new Service();',
     '  über.run();',
+    '  Facade.helper();',
+    '  Facade.go();',
+    '  shared.run();',
+    '  shared.unrelated();',
     '}',
+    // Last, so the seeded lines above stay put; ESM hoists imports anyway.
+    "import { Facade, shared } from './facade';",
   ].join('\n'),
   'src/other.ts': 'export function unrelated() { return 0; }\n',
   // Two same-named definitions in one file: the same-file overload arm.
@@ -534,6 +550,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(runFn, 'made.run', 'src/main.ts', 'typescript', 'calls', 18);
     seed(runFn, 'svc.call', 'src/main.ts', 'typescript', 'calls', 19);
     seed(runFn, 'über.run', 'src/main.ts', 'typescript', 'calls', 21);
+    seed(runFn, 'Facade.helper', 'src/main.ts', 'typescript', 'calls', 22);
+    seed(runFn, 'Facade.go', 'src/main.ts', 'typescript', 'calls', 23);
+    seed(runFn, 'shared.run', 'src/main.ts', 'typescript', 'calls', 24);
+    seed(runFn, 'shared.unrelated', 'src/main.ts', 'typescript', 'calls', 25);
     // Java field receiver — `private K k = new K()` inside class J.
     seed(nodeId('user', 'K.java', 'method'), 'k.mymethod', 'src/K.java', 'java', 'calls', 2);
     // Go factory receiver + two-hop field chain.
@@ -837,10 +857,36 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
       frameworksActive: false,
       supertypesComplete: true,
     });
-    const walked = walking.resolveChunk(batch)[idx.get('svc.call@calls@src/main.ts')!]!;
+    const walkedAll = walking.resolveChunk(batch);
     walking.close();
+    const walked = walkedAll[idx.get('svc.call@calls@src/main.ts')!]!;
     expect(walked.status).toBe('resolved');
     expect(walked.targetNodeId).toBe(nodeId('call', 'base.ts', 'method'));
+    // A member neither the shared instance's type nor its supertype declares
+    // (`unrelated` is only a free function elsewhere) settles natively once
+    // the walk may run, the same way as TS — the byte-compare leg over this
+    // fixture pins the TS side.
+    const nope = walkedAll[idx.get('shared.unrelated@calls@src/main.ts')!]!;
+    expect(nope.status).toBe('unresolved');
+    // Object-literal aliases: `Facade.helper` follows the literal's shorthand
+    // into facade.ts's own import; `Facade.go` names a local function.
+    const facadeHelper = at('Facade.helper', 'src/main.ts', 'calls');
+    expect(facadeHelper.status).toBe('resolved');
+    expect(facadeHelper.resolvedBy).toBe('import');
+    expect(facadeHelper.targetNodeId).toBe(nodeId('helper', 'util.ts'));
+    const facadeGo = at('Facade.go', 'src/main.ts', 'calls');
+    expect(facadeGo.status).toBe('resolved');
+    expect(facadeGo.targetNodeId).toBe(nodeId('local1', 'facade.ts'));
+    // `shared = new Service()` types the imported value → `Service::run` @0.85.
+    const sharedRun = at('shared.run', 'src/main.ts', 'calls');
+    expect(sharedRun.status).toBe('resolved');
+    expect(sharedRun.resolvedBy).toBe('instance-method');
+    expect(sharedRun.confidence).toBe(0.85);
+    expect(sharedRun.targetNodeId).toBe(
+      byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
+    );
+    // A miss on the inferred type needs the supertype walk — a punt here.
+    expect(at('shared.unrelated', 'src/main.ts', 'calls').status).toBe('passthrough');
     // `über.run`: ASCII word boundaries miss the non-ASCII receiver in both
     // engines, and the receiver's `local` row makes the bound-receiver claim
     // exclusive — a refused claim is terminal. With Unicode boundaries the
