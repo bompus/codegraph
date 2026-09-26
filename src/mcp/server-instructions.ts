@@ -26,7 +26,7 @@ reading files (cached intelligence: thousands of parse/trace decisions you
 don't pay to re-reason each run). It indexes 30+ languages
 (TypeScript/JavaScript, Python, Go, Rust, Java, C#, C/C++, PHP, Ruby, Swift,
 Kotlin, and more) — don't assume a language here isn't covered. Reads are
-sub-millisecond; the index lags writes by ~1s through the file watcher. Reach for it BEFORE *and* while
+sub-millisecond. Reach for it BEFORE *and* while
 writing or editing code — not just for questions: one call returns the
 verbatim source PLUS who calls it and what it affects, so you edit with the
 blast radius in view. More accurate context, in far fewer tokens and
@@ -55,18 +55,15 @@ calls; a grep/read exploration is dozens.
 - **Almost any question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. ONE capped call returns the verbatim source grouped by file; most often the ONLY call you need.
 - **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops, and returns their source.
 - **Reading or editing a file/symbol you can name** → put its name or file path in the \`codegraph_explore\` query — it returns that current line-numbered source (safe to \`Edit\` from) with the call path and blast radius attached, so you don't Read it separately. For an overloaded name it returns every matching definition's body in one call.
-- An explicitly named receiver type can disambiguate its capitalized method from lowercase prose; recovered methods include bounded same-file caller/callee context.
-- Precisely named constants and variables remain eligible for source retrieval even without usage edges.
-- Named callable bodies reserve source space even without a file path. Short call paths retain their call sites; oversized bodies use bounded excerpts with gap markers. Treat returned ranges as already Read; a gap does not claim the omitted source was shown.
-- Requested files include declarations matching the question alongside named bodies, including selectors and cache keys. Requested test files prioritize matching test blocks with their assertions; Vue layout questions reserve space for matching template and style regions. Compound concepts can also return a matching reader/writer with its existing local caller chain; a single named function prioritizes direct callers over unrelated files. These excerpts share the output budget and do not imply additional graph edges.
-- **"Why is this like this? What did the last session decide / try / get told about X?"** → \`codegraph_sessions\` with a few words. It searches the prose of this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin sessions (prompts, replies, compaction summaries — stemmed, ranked) and names the session each hit came from (\`claude:\`, \`codex:\`, \`cursor:\`, \`opencode:\`, \`agy:\`, \`devin:\`). History and rationale live there, not in the code; do not grep transcript files by hand.
+- Name what you need as precisely as you can — a receiver type with its method, a constant or variable, a callable, or a file path. Named items are funded first within the output cap; an oversized body comes back as a bounded excerpt whose gap markers name what was left out. Treat returned ranges as already Read; for trimmed parts, query the names in the gap marker.
+- **"Why is this like this? What did the last session decide / try / get told about X?"** → \`codegraph_sessions\` with a few words. It searches the prose of this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin sessions (prompts, replies, compaction summaries — stemmed, ranked) and names the session each hit came from (\`claude:\`, \`codex:\`, \`cursor:\`, \`opencode:\`, \`agy:\`, \`devin:\`). History and rationale live there, not in the code.
 - **Need more?** Call \`codegraph_explore\` again with more specific names — treat the source it returns as already Read. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
 - Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
 
 ## Anti-patterns
 
-- **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
+- **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
 - **Don't grep or Read first** to find or understand indexed code — ONE \`codegraph_explore\` returns the relevant symbols' source together in a single round-trip. Reach for raw \`Read\`/\`Grep\` only to confirm a specific detail codegraph didn't cover, or for what codegraph doesn't index (configs). Markdown IS indexed — every \`.md\` file's headings, sections, tables and links — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` first as well; it returns the section body, not just its heading.
 - **A question about the working changes** ("what do my changes affect", "this branch", \`main..HEAD\`) goes to \`codegraph_explore\` as asked: it reads the diff itself (merge base with the default branch plus uncommitted edits, or the named range) and leads with the changed symbols, their callers and their tests.
 - **Near-duplicates (update together)** in a blast radius or trail names other function bodies nearly identical to the one you are reading. A bug fixed in one copy is usually still in the others: check them, and tell the user if you leave them unchanged.
@@ -79,7 +76,7 @@ calls; a grep/read exploration is dozens.
 ## Limitations
 
 - If a tool reports a project isn't indexed (no \`.codegraph/\`), stop calling codegraph tools for that project for the rest of the session and use your built-in tools there instead. Indexing is the user's decision — mention they can run \`codegraph init\` if it comes up, but don't run it yourself.
-- Index lags file writes by ~1 second.
+- The index trails file writes by the watcher's quiet window: about 0.3 s after a one- or two-file save, about 2 s after a larger burst (\`CODEGRAPH_WATCH_DEBOUNCE_MS\`), plus the sync itself.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates. A hop marked **matched by name only, unverified** (flow) or **[name match, unverified]** (trail) was bound by the callee's name alone — check that one hop against the source you were given rather than re-reading the whole flow.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;
