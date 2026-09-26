@@ -60,9 +60,9 @@ impl KernelResolver {
         let Some(c) = self.gate_language(name_cand, r) else {
             return Ok(ResolveOutcome::passthrough("member-tail"));
         };
-        // The nameMatch result takes the cross-file visibility post-check; a
-        // rejection leaves the later arms live in TS, so punt — never verdict.
-        if !self.is_visible_across_files(&c.node, r)? {
+        // The nameMatch result takes the post-checks; a rejection leaves the
+        // later arms live in TS, so punt — never verdict.
+        if !self.name_result_stands(&c, r)? {
             return Ok(ResolveOutcome::passthrough("member-tail"));
         }
         let Some(winner) = self.gate_target_kind(c, r)? else {
@@ -316,9 +316,8 @@ impl KernelResolver {
         if name_cand.is_none() {
             name_cand = self.match_method_call_free(r)?;
         }
-        let name_result = self.gate_language(name_cand, r);
-        if let Some(c) = name_result {
-            if self.is_visible_across_files(&c.node, r)? {
+        if let Some(c) = self.gate_language(name_cand, r) {
+            if self.name_result_stands(&c, r)? {
                 cands.push(c);
             }
         }
@@ -589,11 +588,8 @@ impl KernelResolver {
         }
 
         let name_cand = probe!(r, "match_reference_bare", self.match_reference_bare(r)?);
-        let name_result = self.gate_language(name_cand, r);
-        if let Some(c) = name_result {
-            // Post-pipeline visibility check on the committed target — a
-            // rejection must NOT promote a runner-up (#1730/#1745).
-            if self.is_visible_across_files(&c.node, r)? {
+        if let Some(c) = self.gate_language(name_cand, r) {
+            if self.name_result_stands(&c, r)? {
                 cands.push(c);
             }
         }
@@ -665,6 +661,14 @@ impl KernelResolver {
             Some(w) => self.finish(r, w, reported, false),
             None => Ok(ResolveOutcome { candidates: reported, ..ResolveOutcome::unresolved() }),
         }
+    }
+
+    /// resolveOneInner's post-checks on a name match: a definition its
+    /// language keeps file-local cannot be what another file names (#1730),
+    /// and nothing calls into a Nix binding symbolically. A rejection never
+    /// promotes a runner-up (#1745).
+    pub(super) fn name_result_stands(&mut self, c: &KCand, r: &ResolveRefIn) -> Res<bool> {
+        Ok(c.node.language != "nix" && self.is_visible_across_files(&c.node, r)?)
     }
 
     /// No kernel verdict: framework candidates may still exist on the TS
