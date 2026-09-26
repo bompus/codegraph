@@ -55,6 +55,7 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "cobol"
             | "nix"
             | "terraform"
+            | "razor"
     )
 }
 

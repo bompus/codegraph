@@ -828,6 +828,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.85 Resolver port, leg 7e: Razor (2026-09-26)
+
+Razor's one TypeScript-only arm was resolveRazorUsing. A simple type name in a `.razor`/`.cshtml` file resolves through the file's `@using` namespaces and each `_Imports.razor` from its directory up to the root, and only when exactly one node is `<namespace>::<Name>`. The kernel now runs it where TypeScript does: after the prefilter, ahead of the import arm and the frameworks. Razor is admitted.
+
+| Corpus | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|
+| eShopOnWeb (61 Razor/cshtml files) | 5,553 | 0 | identical |
+| Ocelot (C#) | 37,711 | 0 | identical |
+
+The parity fixture gained a Blazor page whose `Product` type resolves through a parent directory's `_Imports.razor`.
+
 ### 5.84 Resolver port, leg 7e: COBOL, Nix and Terraform (2026-09-26)
 
 The three share resolveOneInner's import-only rule with PHP include paths: after the import arm, a ref returns its best candidate (import or framework) or nothing, and never name-matches. The kernel now:

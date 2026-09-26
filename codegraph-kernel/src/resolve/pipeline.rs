@@ -591,6 +591,16 @@ impl KernelResolver {
             }
             return self.store_binding_on_prefilter_miss(r);
         }
+        // A Razor/Blazor simple type through the file's `@using` namespaces
+        // (resolveRazorUsing) — ahead of the import arm and the frameworks.
+        if r.language == "razor" {
+            if let Some(c) = self.resolve_razor_using(r)? {
+                return match self.gate_target_kind(c, r)? {
+                    Some(winner) => self.finish(r, winner, None, true),
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
+        }
 
         let mut cands: Vec<KCand> = Vec::new();
         let import_cand = probe!(r, "resolve_via_import", self.resolve_via_import(r)?);

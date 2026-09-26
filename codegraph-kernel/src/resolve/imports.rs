@@ -887,6 +887,60 @@ impl KernelResolver {
         Ok(None)
     }
 
+    /// getRazorUsings: the file's own `@using` namespaces, then each
+    /// `_Imports.razor` from its directory up to the project root.
+    fn razor_usings(&mut self, file_path: &str) -> Rc<Vec<String>> {
+        if let Some(hit) = self.razor_usings_memo.get(file_path) {
+            return hit.clone();
+        }
+        let using = re!(r"(?m)^\s*@using\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.]*)");
+        let mut out: Vec<String> = Vec::new();
+        let add_from = |this: &mut Self, path: &str, out: &mut Vec<String>| {
+            if let Some(lines) = this.read_file(path) {
+                for c in using.captures_iter(lines.text()) {
+                    let ns = c[1].to_string();
+                    if !out.contains(&ns) {
+                        out.push(ns);
+                    }
+                }
+            }
+        };
+        add_from(self, file_path, &mut out);
+        let mut dir = file_path.rfind('/').map_or("", |i| &file_path[..i]).to_string();
+        loop {
+            let imports = if dir.is_empty() { "_Imports.razor".to_string() } else { format!("{dir}/_Imports.razor") };
+            add_from(self, &imports, &mut out);
+            if dir.is_empty() {
+                break;
+            }
+            dir = dir.rfind('/').map_or(String::new(), |i| dir[..i].to_string());
+        }
+        let out = Rc::new(out);
+        self.razor_usings_memo.insert(file_path.to_string(), out.clone());
+        out
+    }
+
+    /// resolveRazorUsing: a simple type resolves when exactly one node is
+    /// `<using>::<name>` across the file's `@using` set.
+    pub(super) fn resolve_razor_using(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if r.reference_name.contains('.') || r.reference_name.contains("::") {
+            return Ok(None);
+        }
+        let usings = self.razor_usings(&r.file_path);
+        let mut found: Vec<Arc<KNode>> = Vec::new();
+        for ns in usings.iter() {
+            for cand in self.nodes_by_qualified_name(&format!("{ns}::{}", r.reference_name))?.iter() {
+                if !found.iter().any(|f| f.id == cand.id) {
+                    found.push(cand.clone());
+                }
+            }
+        }
+        if found.len() != 1 {
+            return Ok(None);
+        }
+        Ok(Some(KCand { node: found.pop().unwrap(), confidence: 0.9, resolved_by: "import" }))
+    }
+
     /// The resolved import path's file node @0.9, or nothing.
     fn resolve_import_path_to_file_node(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(resolved) = self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)? else {
