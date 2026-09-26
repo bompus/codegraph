@@ -83,7 +83,7 @@ describe('#1711 explore — trimmed file names its elisions', () => {
     const srcDir = path.join(dir, 'src');
     fs.mkdirSync(srcDir);
     // One large observer + noise files so the budget trims rather than shipping whole.
-    const lines: string[] = ['export class EspnDraftObserver {'];
+    const lines: string[] = ['export class DraftObserver {'];
     for (let i = 0; i < 40; i++) {
       lines.push(`  imports${i}() { return ${i}; }`, '');
     }
@@ -102,7 +102,7 @@ describe('#1711 explore — trimmed file names its elisions', () => {
       lines.push(`  calls${i}() { return ${i}; }`, '');
     }
     lines.push('}', '');
-    fs.writeFileSync(path.join(srcDir, 'espn-draft-observer.ts'), lines.join('\n'));
+    fs.writeFileSync(path.join(srcDir, 'draft-observer.ts'), lines.join('\n'));
     for (let i = 1; i <= 20; i++) {
       fs.writeFileSync(path.join(srcDir, `noise${i}.ts`), `export const n${i} = ${i};\n`);
     }
@@ -111,7 +111,7 @@ describe('#1711 explore — trimmed file names its elisions', () => {
     await cg.indexAll();
     const result = await new ToolHandler(cg).execute('codegraph_explore', {
       query:
-        'In this repos ESPN draft observer (espn-draft-observer.ts), name in order the chain of methods from scrapeFullDraftState to the method that calls storage.saveDraftState. One line.',
+        'In this repos draft observer (draft-observer.ts), name in order the chain of methods from scrapeFullDraftState to the method that calls storage.saveDraftState. One line.',
     });
     response = result.content?.[0]?.text ?? '';
   }, 120_000);
@@ -122,7 +122,7 @@ describe('#1711 explore — trimmed file names its elisions', () => {
   });
 
   it('still renders the observer file (ranker chooses the right file)', () => {
-    expect(response).toContain('espn-draft-observer.ts');
+    expect(response).toContain('draft-observer.ts');
   });
 
   it('names elided symbols inside gap markers as name (file:line)', () => {
@@ -140,7 +140,7 @@ describe('#1711 explore — trimmed file names its elisions', () => {
   });
 
   it('biases the file header away from filler-only when symbols were elided', () => {
-    const header = response.split('\n').find((l) => l.includes('**`src/espn-draft-observer.ts`**'));
+    const header = response.split('\n').find((l) => l.includes('**`src/draft-observer.ts`**'));
     expect(header).toBeDefined();
     // Either the header names a chain method, or a named gap does — never
     // neither while the footer asks for exact names.

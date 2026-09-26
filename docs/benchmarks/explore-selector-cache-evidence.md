@@ -12,7 +12,7 @@ The existing guards for stale source, file admission, oversized containers, flow
 
 ## Fixed-source comparison
 
-The exact 16 queries and 13 source-file hashes are from the [ESPN fixture](https://github.com/bompus/chrome-ext-bompus-espn-draft/blob/74fcd4e147020d834a3110ac161cb1f6d10cf4b2/docs/agents/codegraph-retrieval-repro.json), pinned to ESPN source `c570e32b22177ab59d3fa8f4c162419bac196422`. Both engines used the same existing index and a fresh ToolHandler per call. Baseline results are the retained `22ae167837e174fa623dc77c2c4435ecadbc37d0` comparison; candidate results were rerun with each referenced source hash checked. This compares source completeness, not agent answer quality or independently rebuilt indexes.
+The exact 16 queries and 13 source-file hashes are from the private fixture (private checkout at `74fcd4e`), pinned to downstream source `c570e32b22177ab59d3fa8f4c162419bac196422`. Both engines used the same existing index and a fresh ToolHandler per call. Baseline results are the retained `22ae167837e174fa623dc77c2c4435ecadbc37d0` comparison; candidate results were rerun with each referenced source hash checked. This compares source completeness, not agent answer quality or independently rebuilt indexes.
 
 | Case | Evidence | 22ae1678 | Candidate |
 | --- | --- | --- | --- |
@@ -33,4 +33,4 @@ The candidate's maximum response was 24,989 characters; all 16 responses totalle
 - The fixed-source cases caught intermediate candidates that displaced the evaluator, prop wiring or endpoint controls; those candidates were not integrated.
 - Removing an experimental change to the cluster overshoot rule preserved all final evidence results, so that change was removed. The existing overshoot rule is unchanged.
 
-The targeted command is recorded in the [first report](explore-requested-evidence.md#validation-and-reproduction). Direct probes bind the fixture through `CodeGraph.openSync`; they are not deployed MCP or paid agent A/B measurements. Managed deployment checks and the remaining-work board belong to the ESPN repository.
+The targeted command is recorded in the [first report](explore-requested-evidence.md#validation-and-reproduction). Direct probes bind the fixture through `CodeGraph.openSync`; they are not deployed MCP or paid agent A/B measurements. Managed deployment checks and the remaining-work board belong to the downstream repository.

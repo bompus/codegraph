@@ -6,7 +6,7 @@ upstream main, minus this plan file and the alwaysLoad `_meta` that waits on #16
 `"sessions": false` opts out; the repo script is deleted once the fork command works.
 
 Branch `feat/session-index` off `experimental`, worktree `codegraph-sessions`. Ports the prototype
-`scripts/transcript-search.ts` from the bompus-espn-draft repo into CodeGraph as a first-class source, shaped
+`scripts/transcript-search.ts` from a private downstream repo into CodeGraph as a first-class source, shaped
 for an upstream PR.
 
 ## Acceptance
@@ -38,7 +38,7 @@ files); a UI tab; changes to `codegraph.db`'s schema or bulk-load path.
 
 - `bun node_modules/typescript/bin/tsc -p tsconfig.json` clean; fork vitest green for the new files and
   `mcp-tool-annotations`, `mcp-tool-allowlist`.
-- From bompus-espn-draft: `codegraph sessions turn readiness dedupe` returns the C43 session; the MCP
+- From the downstream checkout: `codegraph sessions turn readiness dedupe` returns the C43 session; the MCP
   server lists the tool and answers the same query; `bun scripts/cg-probe.ts` unchanged.
 - Ablation: the separate `sessions.db` stays only because putting the tables in `codegraph.db` touches
   `schema.sql`, `migrations.ts` and `endBulkNodeLoad`'s FTS rebuild — three merge surfaces for no query gain.
@@ -61,6 +61,6 @@ files); a UI tab; changes to `codegraph.db`'s schema or bulk-load path.
       baseline, same environmental files · CLI `sessions turn readiness dedupe` 3 hits over 237 transcripts
       (6.5 s first, 141 ms after) · direct-mode MCP lists explore + sessions with alwaysLoad and answers the
       query · the running server (pid 18176, started before the merge) is left for its owner to restart
-- [x] 8 bompus-espn-draft: `scripts/transcript-search.ts`, its test and the lib additions deleted (repo commit
+- [x] 8 downstream repo: `scripts/transcript-search.ts`, its test and the lib additions deleted (repo commit
       `refactor(transcript-search): drop the repo prototype`); `code-index-research.md` points at
       `codegraph sessions` / `codegraph_sessions` · vp check 0 errors · 1661 tests pass

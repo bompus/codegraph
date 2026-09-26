@@ -6,13 +6,13 @@
 
 ## 1. What we need from a code index
 
-Our use comes first; "best all-around" is the second test. From the ESPN project's `docs/agents/code-index-research.md` (bompus/chrome-ext-bompus-espn-draft) and the fork's own history:
+Our use comes first; "best all-around" is the second test. From our private downstream project's code-index research and the fork's own history:
 
 - **Agent-driven work on a shared host.** Many sessions across Claude Code, Codex, Cursor, OpenCode, AGY and Devin, most of them in their own git worktrees, on one WSL machine that has been OOM-killed by aggregate memory pressure.
 - **One call that answers.** The measured win is an agent that stops reading files because the answer came back complete: verbatim, line-numbered source plus the flow between the named symbols. In the rules-on A/B (Opus, headless, 6 discovery + 3 concept tasks) CodeGraph cut 2 to 2.5 calls per task and kept 6 of 6 correct. Two shapes that return less than source measured worse: a symbols-only answer lost 2 of 18 cells, and gortex's budgeted outline answered 3 of 6.
 - **The index has to be right.** A wrong caller or a wrong edge is what sends the agent back to Grep; a missing one mostly costs a follow-up call.
 - **Local, deterministic, no LLM in the index.** Answers must be reproducible, and nothing leaves the machine.
-- **Fresh in every checkout.** Worktrees had no index in 9 of 11 cases in the ESPN audit; an un-indexed root routes the agent to Grep.
+- **Fresh in every checkout.** Worktrees had no index in 9 of 11 cases in the downstream audit; an un-indexed root routes the agent to Grep.
 - **Also used:** string literals and storage keys (the `literals` table), Markdown sections, and transcript search across hosts (`codegraph_sessions`).
 
 What we do not need, on current evidence: embeddings, LLM-written documentation, large tool catalogues, compact wire formats, PreToolUse hooks. Each was measured null or negative, or has no use here (see the survey's rows L–R).
@@ -49,7 +49,7 @@ repowise's [BENCHMARKS.md](https://github.com/repowise-dev/repowise/blob/main/do
 | Graph build, 35 repositories | 3.65 s median, **757 MB** peak, fastest on 16 | 2.77 s, **75 MB**, fastest on 14 | speed level, memory 10× theirs |
 | Full index, django | **16.4 s** | 367 s (1,058 s with prose) | our clearest win |
 
-The TypeScript result matters most to us: TypeScript is the ESPN project's language and the language of most of the README corpora.
+The TypeScript result matters most to us: TypeScript is our downstream project's language and the language of most of the README corpora.
 
 The precision gap has a likely shape. repowise types a receiver from its declaration where it can, and stores every weaker binding under a named origin with a lower confidence (its cross-file "global unique" match is recorded at 0.50 as a guess); CodeGraph's exact-name and fuzzy strategies bind a call to a same-named definition that passes the gates, with nothing marking it as a guess. The fork already found one instance while writing this: the kernel bound a Python call to a same-named Nix binding, which the TypeScript resolver rejects (fix pending). The 1.5.0 numbers predate the fork's binding model (#27–#38) and the member-access kernel work, so some of the 116 wrong rows may already be fixed — that has to be measured, not assumed (§6, step 1).
 
@@ -98,7 +98,7 @@ Take option B:
 2. **Keep an upstream channel for small fixes only.** Of the fork's 205 non-merge first-parent commits since the merge-base, about 67 are independent TypeScript fixes or features, and 25 of those cherry-pick onto `upstream/main` without conflict. Send those as goodwill in the shape the maintainer actually merges: one concern, under ~600 lines, a fail-to-pass test, no CHANGELOG hunk. Do not wait on them; nothing in our plan depends on them landing.
 3. **Close or re-cut the stalled large PRs** (#1699, #1867, #1737, #1702, #1841) so they stop costing rebases.
 
-This also changes the ESPN project's stated goal of keeping the fork thin so that retiring it stays a one-line swap. That goal assumed upstream would absorb our work; the numbers above say it will not. The ESPN kernel entry should name the fork as the served engine on purpose, not as a temporary divergence.
+This also changes the downstream project's stated goal of keeping the fork thin so that retiring it stays a one-line swap. That goal assumed upstream would absorb our work; the numbers above say it will not. The downstream kernel entry should name the fork as the served engine on purpose, not as a temporary divergence.
 
 ## 6. Priorities for the engine
 
@@ -126,6 +126,6 @@ Explicitly deferred: git-history and code-health layers (repowise's strengths, b
 - CodeGraph upstream releases: https://github.com/colbymchenry/codegraph/releases
 - codebase-memory-mcp: https://github.com/DeusData/codebase-memory-mcp
 - Upstream PR and merge statistics: `gh pr list -R colbymchenry/codegraph --state all --limit 200`, 90 days to 2026-09-25; divergence from `git diff --shortstat upstream/main...origin/fork/consolidated` at merge-base `ba3c21e5`.
-- Our own measurements: [metrics-ledger.md](metrics-ledger.md) §5.38–5.43; the rules-on A/B in the ESPN project's `docs/agents/code-index-research.md`.
+- Our own measurements: [metrics-ledger.md](metrics-ledger.md) §5.38–5.43; the rules-on A/B in the downstream project's code-index research.
 
 Limits: competitor facts are from their own documentation except where repowise measured them; the precision and retrieval figures are for CodeGraph 1.5.0, not this fork; the 67 / 25 upstream-able counts come from a path-and-subject classification and a patch-level apply check, with no build or tests run.

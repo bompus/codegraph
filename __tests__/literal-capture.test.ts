@@ -26,7 +26,7 @@ describe('seedLiteralsInQuery', () => {
       .toEqual(['bompus_custom_ds_players', '--start']);
   });
   it('returns nothing for a symbol-anchored question', () => {
-    expect(seedLiteralsInQuery('callers of espnPlayerKey in shared')).toEqual([]);
+    expect(seedLiteralsInQuery('callers of resolvePlayerKey in shared')).toEqual([]);
   });
 });
 
