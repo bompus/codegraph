@@ -178,6 +178,32 @@ int do_io(struct vfs *v, int fd) { return v->read(fd) + v->write(fd); }
     expect(edges.every((e) => e.via === 'vfs.read' || e.via === 'vfs.write')).toBe(true);
   });
 
+  it('links registrations only to C/C++ functions, never a same-named function in another language', async () => {
+    write('ops.h', `struct ops { int (*read)(int); int (*probe)(int); };\n`);
+    write('impl.c', `int impl_read(int fd) { return fd; }\n`);
+    write('ops.c', `
+#include "ops.h"
+int impl_read(int fd);
+void ops_init(struct ops *o) {
+    o->read = impl_read;   /* defined in impl.c, and also in a Python script */
+    o->probe = gen_probe;  /* defined ONLY in the Python script */
+}
+int use(struct ops *o, int fd) { return o->read(fd) + o->probe(fd); }
+`);
+    write('aaa/gen.py', `def impl_read():\n    return 1\n\ndef gen_probe():\n    return 2\n`);
+    const cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+    const rows: { tgt: string; file: string }[] = (cg as any).db.db
+      .prepare(
+        `SELECT t.name tgt, t.file_path file FROM edges e JOIN nodes t ON t.id = e.target
+         WHERE json_extract(e.metadata,'$.synthesizedBy') = 'fn-pointer-dispatch'`
+      )
+      .all();
+    cg.close?.();
+    expect(rows.filter((r) => r.tgt === 'impl_read').map((r) => r.file)).toEqual(['impl.c']);
+    expect(rows.some((r) => r.file.endsWith('.py'))).toBe(false);
+  });
+
   // Precision boundaries of the bare-assign scanner: `a->f = b->g` is field←field
   // propagation (not a fn registration), `x->f == fn` is a comparison, `x->f = var`
   // names a non-function, and a bare `fp = fn` has no field anchor at all.
