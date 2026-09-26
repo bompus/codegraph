@@ -163,7 +163,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
-- Edges codegraph infers from dynamic dispatch (event handlers, callbacks, React re-renders, calls between front end and back end, external API calls) now come back after you edit a file, a few seconds after you stop typing, instead of staying missing until the next full index. A handler you unregister no longer stays linked either. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns this off.
+- Edges codegraph infers from dynamic dispatch (event handlers, callbacks, React re-renders, calls between front end and back end, external API calls) now come back after you edit a file, a few seconds after you stop typing, instead of staying missing until the next full index. A handler you unregister, or whose registering file you delete, no longer stays linked either. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns this off.
 
 - Indexing and the post-edit refresh of those edges are faster on large JavaScript and TypeScript projects, up to about twice as fast where many components or registries are involved.
 

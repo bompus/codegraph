@@ -1043,8 +1043,13 @@ export class CodeGraph {
         // batched path, never runs synthesis: without this every synthesized
         // edge a changed file wired up (callbacks, React renders, cross-tier
         // HTTP, external endpoints) stayed missing until a full index.
-        if (filesChanged && result.changedFilePaths && process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0') {
-          for (const p of result.changedFilePaths) this.synthesisDirty.add(p);
+        // A pure-removal sync resolves nothing either, and a removed file may
+        // have held the registration behind an edge between two other files.
+        const scopedChange = filesChanged && result.changedFilePaths;
+        const pureRemoval = !filesChanged && result.filesRemoved > 0;
+        if ((scopedChange || pureRemoval) && process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0') {
+          for (const p of result.changedFilePaths ?? []) this.synthesisDirty.add(p);
+          for (const p of result.removedFilePaths ?? []) this.synthesisDirty.add(p);
           if (options.deferSynthesis) this.scheduleSynthesisRefresh();
           else await this.refreshSynthesis();
         }
