@@ -40,6 +40,14 @@ lines.on("line", (line) => {
   } else if (message.method === "tools/call") {
     const name = message.params.name;
     if (name === "crash") process.exit(9);
+    // Dies under the first call only, like a daemon restarting mid-request.
+    if (name === "exit-once") {
+      const marker = path.join(dist, "exit-once.marker");
+      if (!fs.existsSync(marker)) {
+        fs.writeFileSync(marker, "");
+        process.exit(9);
+      }
+    }
     const value = { revision, pid: process.pid, initialized, initializeParams };
     const reply = () =>
       result(message.id, {

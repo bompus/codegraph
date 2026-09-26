@@ -159,7 +159,12 @@ class Backend {
 
 export async function runRefreshLauncher(directory: string, args: string[]): Promise<void> {
   const children = new Set<Backend>();
-  const inflight = new Map<Id, string>();
+  // Each in-flight host request, with its line so a tools/call can be replayed.
+  const inflight = new Map<Id, { method: string; line: string }>();
+  // tools/call ids already replayed once: a call that also takes down the
+  // replacement is reported, not retried forever.
+  const replayed = new Set<Id>();
+  let queued = Promise.resolve();
   const serverRequests = new Set<Id>();
   let initialize: Message | null = null;
   let initialized: Message | null = null;
@@ -189,8 +194,9 @@ export async function runRefreshLauncher(directory: string, args: string[]): Pro
       if (message?.id !== undefined) {
         if (message.method !== undefined) serverRequests.add(message.id);
         else {
-          const method = inflight.get(message.id);
+          const method = inflight.get(message.id)?.method;
           inflight.delete(message.id);
+          replayed.delete(message.id);
           if (message.error === undefined) {
             if (method === "initialize") sessionResult = message.result;
             if (method === "tools/list") toolsResult = message.result;
@@ -201,13 +207,43 @@ export async function runRefreshLauncher(directory: string, args: string[]): Pro
     };
     backend.onFailure = (error) => {
       if (backend !== active) return;
-      for (const id of inflight.keys())
-        errorReply(
-          id,
-          `${error.message}; ${sessionResult && toolsResult ? "request was not replayed" : "reconnect host to finish tool discovery"}`,
-        );
+      // A child that exits under a tool call (its daemon restarted, it was
+      // replaced, it crashed) used to fail the call, and an agent that sees an
+      // error early stops calling codegraph. Every codegraph tool is
+      // read-only, so a tools/call is replayed once on a fresh child; one that
+      // takes the replacement down too is reported.
+      const retry: Array<{ id: Id; line: string }> = [];
+      for (const [id, request] of inflight) {
+        if (sessionResult && toolsResult && request.method === "tools/call" && !replayed.has(id)) {
+          replayed.add(id);
+          retry.push({ id, line: request.line });
+        } else {
+          replayed.delete(id);
+          errorReply(
+            id,
+            `${error.message}; ${sessionResult && toolsResult ? "request was not replayed again" : "reconnect host to finish tool discovery"}`,
+          );
+        }
+      }
       inflight.clear();
       serverRequests.clear();
+      if (retry.length === 0) return;
+      queued = queued
+        .then(async () => {
+          await refresh();
+          for (const { id, line } of retry) {
+            if (closing) return;
+            inflight.set(id, { method: "tools/call", line });
+            try {
+              active.send(line);
+            } catch (sendError) {
+              inflight.delete(id);
+              replayed.delete(id);
+              errorReply(id, `${String(sendError)}; request was not replayed again`);
+            }
+          }
+        })
+        .catch((replayError) => report(String(replayError)));
     };
   };
   attach(active);
@@ -277,12 +313,13 @@ export async function runRefreshLauncher(directory: string, args: string[]): Pro
     if (message?.method === "notifications/initialized" || message?.method === "initialized")
       initialized = message;
     if (message?.id !== undefined && message.method !== undefined)
-      inflight.set(message.id, message.method);
+      inflight.set(message.id, { method: message.method, line });
     try {
       active.send(line);
     } catch (error) {
       if (message?.id !== undefined && message.method !== undefined) {
         inflight.delete(message.id);
+        replayed.delete(message.id);
         errorReply(
           message.id,
           `${String(error)}${sessionResult && toolsResult ? "" : "; reconnect host to finish tool discovery"}`,
@@ -292,7 +329,6 @@ export async function runRefreshLauncher(directory: string, args: string[]): Pro
   };
 
   const lines = createInterface({ input: process.stdin });
-  let queued = Promise.resolve();
   lines.on("line", (line) => {
     const message = parse(line);
     // A child can ask the host a question while a candidate is starting.

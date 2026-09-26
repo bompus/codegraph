@@ -381,10 +381,18 @@ describe("isolated MCP refresh launcher", () => {
     expect((await server.call(2)).result.structuredContent.revision).toBe(B);
   });
 
-  it("reports interrupted calls without replay and restarts for the next request", async () => {
+  it("replays a call once on a fresh child when its child exits under it", async () => {
+    const server = await start();
+    const replayed = await server.call(1, "exit-once");
+    expect(replayed.error).toBeUndefined();
+    expect(replayed.result.structuredContent.revision).toBe(A);
+    expect(server.messages.filter((message) => message.id === 1)).toHaveLength(1);
+  });
+
+  it("reports a call that takes its replacement down too, and restarts for the next request", async () => {
     const server = await start();
     const interrupted = await server.call(1, "crash");
-    expect(interrupted.error?.message).toContain("not replayed");
+    expect(interrupted.error?.message).toContain("not replayed again");
     const recovered = await server.call(2);
     expect(recovered.result.structuredContent.revision).toBe(A);
     expect(server.messages.filter((message) => message.id === 1)).toHaveLength(1);
