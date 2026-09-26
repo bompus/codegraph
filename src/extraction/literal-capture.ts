@@ -23,7 +23,7 @@ const MAX_LITERALS_PER_NODE = 32;
  * A plain word (`ready`, `Error`) has no separator and stays out: it would
  * seed on every function that logs it.
  */
-export function isSeedLiteral(value: string): boolean {
+function isSeedLiteral(value: string): boolean {
   return value.length <= 200 && /^-{0,2}[A-Za-z_][A-Za-z0-9_.:/-]{3,}$/.test(value) && /[_.:/-]/.test(value);
 }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node } from '../src/types';
-import { captureLiterals, isSeedLiteral, seedLiteralsInQuery } from '../src/extraction/literal-capture';
+import { captureLiterals, seedLiteralsInQuery } from '../src/extraction/literal-capture';
 
 function node(id: string, kind: Node['kind'], startLine: number, endLine: number): Node {
   return {
@@ -9,18 +9,15 @@ function node(id: string, kind: Node['kind'], startLine: number, endLine: number
   };
 }
 
-describe('isSeedLiteral', () => {
-  it('keeps storage keys, flags, dotted names and paths', () => {
-    for (const v of ['bompus_custom_ds_players', '--start', '-v', 'draft.pick', 'api/v1/users', 'ns:event'])
-      expect(isSeedLiteral(v), v).toBe(v !== '-v');
-  });
-  it('drops plain words, prose, and values that start with a separator', () => {
-    for (const v of ['ready', 'Error', 'not found', './utils', '../x', '', 'a_b'])
-      expect(isSeedLiteral(v), v).toBe(false);
-  });
-});
-
 describe('seedLiteralsInQuery', () => {
+  it('keeps storage keys, flags, dotted names and paths', () => {
+    for (const v of ['bompus_custom_ds_players', '--start', 'draft.pick', 'api/v1/users', 'ns:event'])
+      expect(seedLiteralsInQuery(`who uses "${v}"`), v).toEqual([v]);
+  });
+  it('drops plain words, prose, short flags and values that start with a separator', () => {
+    for (const v of ['ready', 'Error', 'not found', './utils', '../x', '', 'a_b', '-v'])
+      expect(seedLiteralsInQuery(`who uses "${v}"`), v).toEqual([]);
+  });
   it('finds quoted spans and bare runs, stripping surrounding punctuation', () => {
     expect(seedLiteralsInQuery('who writes "bompus_custom_ds_players" (via --start)?'))
       .toEqual(['bompus_custom_ds_players', '--start']);

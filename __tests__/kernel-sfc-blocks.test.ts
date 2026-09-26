@@ -8,7 +8,8 @@
  * language and otherwise runs the generic extractor on the kernel's tree.
  * Two pins:
  *
- *   1. Every sample SFC extracts a component node plus its script symbols.
+ *   1. Every sample SFC extracts a component node with no error-severity
+ *      extraction errors (the golden dumps pin the nodes but not errors).
  *   2. For a block, the walker path and the generic-extractor path give the
  *      same result — the same agreement the whole-file gate checks, at the
  *      block seam the SFC extractors actually use.
@@ -51,7 +52,7 @@ function canon(result: ExtractionResult) {
 describe.skipIf(!kernelBuilt)('SFC blocks extract through the kernel', () => {
   for (const { rel, lang } of SAMPLES) {
     const name = path.relative(path.join(__dirname, 'fixtures', 'golden'), rel);
-    it(`${name}: extracts a component and its script symbols`, () => {
+    it(`${name}: extracts a component with no extraction errors`, () => {
       const source = fs.readFileSync(rel, 'utf8');
       const result = extractFromSource(rel, source, lang);
       expect(result.nodes.some((n) => n.kind === 'component')).toBe(true);

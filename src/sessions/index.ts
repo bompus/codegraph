@@ -309,20 +309,6 @@ export function sessionsDbPath(projectRoot: string): string {
   return path.join(getCodeGraphDir(projectRoot), SESSIONS_DB_FILENAME);
 }
 
-/**
- * The transcript directory to index for a project: `CODEGRAPH_SESSIONS_DIR`
- * when set (tests, unusual layouts), else Claude Code's store for that
- * project. Null when there is nothing to index, or `codegraph.json` says
- * `"sessions": false`. Codex and Cursor files are gathered separately in
- * `querySessions` when this override is unset.
- */
-export function sessionsSourceDir(projectRoot: string): string | null {
-  if (!loadSessionsEnabled(projectRoot)) return null;
-  const override = process.env.CODEGRAPH_SESSIONS_DIR;
-  if (override) return fs.existsSync(override) ? override : null;
-  return claudeSessionsDir(projectRoot);
-}
-
 export function claudeFilesForProject(projectRoot: string): string[] {
   const files: string[] = [];
   for (const root of projectWorktreeRoots(projectRoot)) {

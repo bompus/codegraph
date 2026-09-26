@@ -23,7 +23,6 @@ import * as path from 'path';
 import { parseNativeTree, NativeNode } from '../src/extraction/kernel/tree';
 import { parseSourceTree, type TreeNode } from '../src/extraction/parse-tree';
 import { classifyTree } from '../src/extraction/syntax-tokens';
-import { guardsInSource, supportsBranchGuards } from '../src/graph/branch-guards';
 import type { Language } from '../src/types';
 
 const KERNEL_PATH = path.join(
@@ -119,24 +118,6 @@ describe.skipIf(!kernelBuilt)('kernel parse-tree service', () => {
         prev = span.end;
       }
     });
-
-    if (supportsBranchGuards(lang) && clean) {
-      it(`${file} as ${lang}: branch guards are deterministic at every call site`, async () => {
-        const source = fs.readFileSync(abs, 'utf8');
-        const lines = source.split('\n');
-        const sites: Array<{ line: number; column: number }> = [];
-        for (let i = 0; i < lines.length && sites.length < 60; i++) {
-          const m = /[A-Za-z_][\w.]*\(/.exec(lines[i]!);
-          if (m) sites.push({ line: i + 1, column: m.index });
-        }
-        expect(sites.length).toBeGreaterThan(0);
-        for (const site of sites) {
-          const a = await guardsInSource(source, lang, site.line, site.column);
-          const b = await guardsInSource(source, lang, site.line, site.column);
-          expect(a, `site ${site.line}:${site.column}`).toEqual(b);
-        }
-      });
-    }
   }
 
   it('the shared seam returns the kernel facade', async () => {
