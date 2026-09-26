@@ -305,7 +305,6 @@ pub(super) struct SourceFile {
     lines: Vec<String>,
     text: OnceCell<String>,
     rust_uses: OnceCell<HashMap<String, String>>,
-    await_lines: OnceCell<Vec<usize>>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -316,7 +315,6 @@ impl SourceFile {
             lines,
             text: OnceCell::new(),
             rust_uses: OnceCell::new(),
-            await_lines: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -324,15 +322,6 @@ impl SourceFile {
     /// The lines rejoined with `\n` (CRLF already normalized).
     pub(super) fn text(&self) -> &str {
         self.text.get_or_init(|| self.lines.join("\n"))
-    }
-
-    /// The lines containing `await` — the only ones an awaited-initializer
-    /// pattern can match.
-    pub(super) fn await_lines(&self) -> impl Iterator<Item = &str> {
-        self.await_lines
-            .get_or_init(|| (0..self.lines.len()).filter(|&i| self.lines[i].contains("await")).collect())
-            .iter()
-            .map(|&i| self.lines[i].as_str())
     }
 
     /// Indices of the lines containing `needle`, ascending — one SIMD pass
@@ -444,6 +433,7 @@ mod method_call;
 mod pipeline;
 mod file_refs;
 mod rust_modules;
+mod awaited;
 use self::tables::*;
 use self::affix::*;
 use self::node_table::*;
@@ -488,6 +478,8 @@ pub struct KernelResolver {
     root_import_memo: HashMap<String, bool>,
     /// matchSelectedStoreCall's per-file selector names (`const a = f((s) =>`).
     selector_names_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// inferEsmAwaitedCallType's per-file index (`None`: no awaited binding).
+    awaited_files: HashMap<String, Option<Rc<awaited::AwaitedFile>>>,
     rust_crate_root_memo: HashMap<String, Option<String>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
@@ -579,6 +571,7 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
             selector_names_memo: HashMap::new(),
+            awaited_files: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             file_cache: FileCache::new(1024),

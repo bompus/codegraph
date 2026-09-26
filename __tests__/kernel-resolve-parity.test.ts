@@ -184,6 +184,11 @@ const FIXTURE: Record<string, string> = {
     '  const adat2 = await unknownFactory();',
     '  adat2.run();',
     '}',
+    'export async function makeEngine(): Promise<Engine> { return new Engine(); }',
+    'export async function top2(): Promise<void> {',
+    '  const eng = await makeEngine();',
+    '  eng.start();',
+    '}',
   ].join('\n'),
   'tool.py': 'def pyhelper():\n    return 1\n\n\nclass Widget:\n    pass\n',
   // `import tool` + `tool.pyhelper()` exercises the python module-member arm.
@@ -582,7 +587,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(use4Fn, 'betaThing.handle', 'src/notify.ts', 'typescript', 'references', 16);
     seed(use4Fn, 'mystery.frobnicate', 'src/notify.ts', 'typescript', 'references', 16);
     seed(use4Fn, 'arr.split', 'src/notify.ts', 'typescript', 'references', 16);
-    seed(nodeId('top', 'notify.ts'), 'adat2.run', 'src/notify.ts', 'typescript', 'references', 18);
+    seed(nodeId('top', 'notify.ts'), 'adat2.run', 'src/notify.ts', 'typescript', 'references', 20);
+    seed(nodeId('top2', 'notify.ts'), 'eng.start', 'src/notify.ts', 'typescript', 'references', 25);
+    seed(nodeId('top2', 'notify.ts'), 'eng.start', 'src/notify.ts', 'typescript', 'calls', 25);
     // Non-bare function_ref: TS's block runs viaImport (member-descent can
     // claim `a.b`) then the `::` member-pointer arm — the only non-bare
     // shape matchFunctionRef resolves.
@@ -1003,10 +1010,17 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(strat3b.targetNodeId).toBe(
       byName('handle', 'method').find((n) => n.qualifiedName === 'Beta::handle')!.id,
     );
-    // mc-await — `const adat2 = await unknownFactory()` may narrow the
-    // receiver through inferEsmAwaitedCallType, which the snapshot doesn't
-    // run — the gate punts rather than guesses.
-    expect(at('adat2.run', 'src/notify.ts', 'references').status).toBe('passthrough');
+    // mc-await — `const adat2 = await unknownFactory()` is an awaited
+    // receiver of unknown type: a terminal miss, never a name guess.
+    expect(at('adat2.run', 'src/notify.ts', 'references').status).toBe('unresolved');
+    // `const eng = await makeEngine()` where makeEngine returns
+    // `Promise<Engine>` types the receiver on both the free and bound arms.
+    const engineStart = byName('start', 'method').find((n) => n.qualifiedName === 'Engine::start')!.id;
+    for (const kind of ['references', 'calls']) {
+      const eng = at('eng.start', 'src/notify.ts', kind);
+      expect(eng.status, kind).toBe('resolved');
+      expect(eng.targetNodeId, kind).toBe(engineStart);
+    }
     // builtin bail — `arr` infers to `Array` (a JS_BUILT_INS member), whose
     // rmot miss returns null in TS rather than letting Strategy 3 guess the
     // unrelated `Service::split` (the bait — @0.7 if the bail is missing).
