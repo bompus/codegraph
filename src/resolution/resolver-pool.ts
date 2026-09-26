@@ -155,18 +155,30 @@ export class ResolverPool {
     return size;
   }
 
-  static tryCreate(dbPath: string, projectRoot: string, kernelDbPath: string | null = null): ResolverPool | null {
+  static tryCreate(
+    dbPath: string,
+    projectRoot: string,
+    kernelDbPath: string | null = null,
+    supertypesComplete = false,
+  ): ResolverPool | null {
     const size = ResolverPool.preflight(dbPath);
     if (size === null) return null;
     const workerScript = path.join(__dirname, 'resolver-worker.js');
     try {
-      return new ResolverPool(workerScript, dbPath, projectRoot, size, kernelDbPath);
+      return new ResolverPool(workerScript, dbPath, projectRoot, size, kernelDbPath, supertypesComplete);
     } catch {
       return null;
     }
   }
 
-  private constructor(workerScript: string, dbPath: string, projectRoot: string, size: number, kernelDbPath: string | null) {
+  private constructor(
+    workerScript: string,
+    dbPath: string,
+    projectRoot: string,
+    size: number,
+    kernelDbPath: string | null,
+    supertypesComplete: boolean,
+  ) {
     // One token per pool: the workers' kernel resolvers key their shared
     // node table on it, so a later pool over a rewritten snapshot at the
     // same path can never pick up this run's table.
@@ -230,7 +242,7 @@ export class ResolverPool {
           readyReject(this.failed!);
         }
       });
-      worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration });
+      worker.postMessage({ type: 'open', dbPath, projectRoot, kernelDbPath, kernelGeneration, supertypesComplete });
       this.workers.push(pw);
     }
   }
@@ -334,8 +346,13 @@ export class ResolverPool {
    * A recycle failure fails the pool — the caller's sequential fallback
    * covers the rest of the run.
    */
-  async recycleWorkers(): Promise<void> {
+  async recycleWorkers(kernelDbPath?: string): Promise<void> {
     if (this.failed) throw this.failed;
+    // A refreshed kernel snapshot gets its own generation: the shared node
+    // table is keyed on it, and the old snapshot's table must not be reused.
+    const kernel = kernelDbPath
+      ? { dbPath: kernelDbPath, generation: `${process.pid}-${Date.now().toString(36)}-${++ResolverPool.poolSeq}` }
+      : undefined;
     await Promise.all(
       this.workers.map(
         (pw) =>
@@ -352,7 +369,7 @@ export class ResolverPool {
               clearTimeout(t);
               resolve();
             });
-            pw.worker.postMessage({ type: 'recycle', id });
+            pw.worker.postMessage({ type: 'recycle', id, kernel });
           })
       )
     );

@@ -125,6 +125,11 @@ pub struct KernelResolverConfig {
     /// with the same `db_path` and generation share one in-memory node table
     /// (see NodeTable); without it the table is private to the instance.
     pub generation: Option<String>,
+    /// True when this connection sees every `extends`/`implements` edge the
+    /// current resolution run will read: the live db, or a snapshot taken
+    /// after the prerequisite phase. Enables the supertype walks; otherwise
+    /// they punt (`btm-supers`/`rmot-supers`) to TS, which reads live edges.
+    pub supertypes_complete: Option<bool>,
 }
 
 /// One unresolved_refs row — mirrors UnresolvedReference/rowId shape so the
@@ -460,6 +465,7 @@ pub struct KernelResolver {
     cpp_include_dirs: Vec<String>,
     node_builtins: HashSet<String>,
     frameworks_active: bool,
+    supertypes_complete: bool,
     framework_names: Option<Vec<String>>,
     ambiguous_ceiling: i64,
 
@@ -559,6 +565,7 @@ impl KernelResolver {
             cpp_include_dirs,
             node_builtins: config.node_builtin_specifiers.into_iter().collect(),
             frameworks_active: config.frameworks_active,
+            supertypes_complete: config.supertypes_complete.unwrap_or(false),
             framework_names: config.framework_names,
             ambiguous_ceiling: config.ambiguous_name_ceiling.unwrap_or(500) as i64,
             bindings_cache: HashMap::new(),

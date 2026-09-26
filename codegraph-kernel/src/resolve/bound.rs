@@ -205,13 +205,39 @@ impl KernelResolver {
             Some(o) => o,
             None => return Ok(None),
         };
+        let member = self.own_bound_member(&owner, method, site)?;
+        if let Some(m) = member {
+            return Ok(Some(bound_member_cand(m)));
+        }
+        if !self.supertypes_complete {
+            return Err(Halt::Punt("btm-supers"));
+        }
+        // matchBoundTypeMember's supertype BFS: `getSupertypeNodes` (the
+        // type's outgoing implements/extends edges, any target kind), each
+        // node visited once, the owner's own-member rule at every step.
+        let mut pending: VecDeque<Arc<KNode>> = self.supertype_nodes(&owner.id)?.into();
+        let mut seen: HashSet<String> = HashSet::from([owner.id.clone()]);
+        while let Some(type_node) = pending.pop_front() {
+            if !seen.insert(type_node.id.clone()) {
+                continue;
+            }
+            if let Some(m) = self.own_bound_member(&type_node, method, site)? {
+                return Ok(Some(bound_member_cand(m)));
+            }
+            pending.extend(self.supertype_nodes(&type_node.id)?);
+        }
+        Ok(None)
+    }
+
+    /// matchBoundTypeMember's per-type member rule: `Owner::method`, a
+    /// method (or a C/C++ callable field) of the site's language family,
+    /// declared in the owner's file (Go: its package directory; C++: anywhere),
+    /// the lone candidate or the owner-file one.
+    fn own_bound_member(&mut self, owner: &KNode, method: &str, site: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         let members: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method))?
             .iter()
             .filter(|n| {
-                // C/C++ function-pointer members are `field` nodes —
-                // `rtc->read(...)` proves `ds1685_priv::read` the same way a
-                // method is proven on its owner.
                 (n.kind == "method"
                     || (n.kind == "field"
                         && (site.language == "c" || site.language == "cpp")))
@@ -223,25 +249,54 @@ impl KernelResolver {
             })
             .cloned()
             .collect();
-        let member = if members.len() == 1 {
+        Ok(if members.len() == 1 {
             members.into_iter().next()
         } else {
-            members
-                .into_iter()
-                .find(|n| n.file_path == owner.file_path)
+            members.into_iter().find(|n| n.file_path == owner.file_path)
+        })
+    }
+
+    /// getSupertypeNodes: the nodes a type's `implements`/`extends` edges
+    /// point at, in edge-table order (the same `WHERE source = ? AND kind
+    /// IN (…)` scan TS runs, so the order matches).
+    pub(super) fn supertype_nodes(&mut self, id: &str) -> Res<Vec<Arc<KNode>>> {
+        let targets: Vec<String> = {
+            let conn = self.conn()?;
+            let mut stmt = conn
+                .prepare("SELECT target FROM edges WHERE source = ?1 AND kind IN ('implements', 'extends')")
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            let rows = stmt.query_map([id], |row| row.get::<_, String>(0)).map_err(|e| Error::from_reason(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<String>, rusqlite::Error>>()
+                .map_err(|e| Error::from_reason(e.to_string()))?
         };
-        match member {
-            Some(m) => Ok(Some(KCand {
-                resolved_by: if m.kind == "field" {
-                    "field-call"
-                } else {
-                    "instance-method"
-                },
-                node: m,
-                confidence: 0.9,
-            })),
-            None => Err(Halt::Punt("btm-supers")),
+        let mut out = Vec::with_capacity(targets.len());
+        for t in targets {
+            if let Some(n) = self.node_by_id(&t)? {
+                out.push(n);
+            }
         }
+        Ok(out)
+    }
+
+    /// context.getSupertypes: the distinct names (first-seen order) of what
+    /// every same-language, supertype-bearing node named `type_name` extends
+    /// or implements, excluding the name itself.
+    fn supertype_names(&mut self, type_name: &str, language: &str) -> Res<Vec<String>> {
+        let type_nodes: Vec<Arc<KNode>> = self
+            .nodes_by_name(type_name)?
+            .iter()
+            .filter(|n| is_supertype_bearing_kind(&n.kind) && n.language == language)
+            .cloned()
+            .collect();
+        let mut names: Vec<String> = Vec::new();
+        for tn in type_nodes {
+            for target in self.supertype_nodes(&tn.id)? {
+                if !target.name.is_empty() && target.name != type_name && !names.contains(&target.name) {
+                    names.push(target.name.clone());
+                }
+            }
+        }
+        Ok(names)
     }
 
     /// resolveMethodOnType — `typeName::methodName` qualified-name suffix
@@ -256,6 +311,20 @@ impl KernelResolver {
         resolved_by: &'static str,
         preferred_fqn: Option<&str>,
     ) -> Res<Option<KCand>> {
+        self.resolve_method_on_type_at(type_name, method, r, confidence, resolved_by, preferred_fqn, 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_method_on_type_at(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+        preferred_fqn: Option<&str>,
+        depth: u32,
+    ) -> Res<Option<KCand>> {
         let want = format!("{}::{}", type_name, method);
         let matches: Vec<Arc<KNode>> = self
             .nodes_by_name(method)?
@@ -269,7 +338,21 @@ impl KernelResolver {
             .cloned()
             .collect();
         if matches.is_empty() {
-            return Err(Halt::Punt("rmot-supers"));
+            if !self.supertypes_complete {
+                return Err(Halt::Punt("rmot-supers"));
+            }
+            // The conformance fallback: the method may live on a supertype
+            // (transitively, depth-capped), still validated by name.
+            if depth < 4 {
+                for supertype in self.supertype_names(type_name, &r.language)? {
+                    if let Some(via) = self.resolve_method_on_type_at(
+                        &supertype, method, r, confidence, resolved_by, preferred_fqn, depth + 1,
+                    )? {
+                        return Ok(Some(via));
+                    }
+                }
+            }
+            return Ok(None);
         }
         if matches.len() > 1 {
             if let Some(fqn) = preferred_fqn {
@@ -500,5 +583,14 @@ impl KernelResolver {
             return self.match_bound_type_member(stripped, method, &r.clone().at(&callee));
         }
         Ok(None)
+    }
+}
+
+/// matchBoundTypeMember's verdict for a member it proved.
+fn bound_member_cand(m: Arc<KNode>) -> KCand {
+    KCand {
+        resolved_by: if m.kind == "field" { "field-call" } else { "instance-method" },
+        node: m,
+        confidence: 0.9,
     }
 }

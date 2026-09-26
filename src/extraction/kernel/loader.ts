@@ -203,6 +203,10 @@ export interface KernelResolverConfig {
    *  one in-memory node table; without it the table is private to the
    *  instance. */
   generation?: string;
+  /** This connection sees every implements/extends edge the run will read
+   *  (the live db, or a snapshot taken after the prerequisite phase), so the
+   *  kernel may walk supertypes itself. */
+  supertypesComplete?: boolean;
 }
 
 /** One pending unresolved_refs row, kernel-read. */
