@@ -667,7 +667,7 @@ async function recordIndexTelemetry(
  */
 async function runInit(
   projectPath: string,
-  options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean },
+  options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; seed?: boolean },
 ): Promise<void> {
   const clack = await importESM('@clack/prompts');
 
@@ -698,6 +698,39 @@ async function runInit(
     }
 
     const { default: CodeGraph, getDatabasePath } = await loadCodeGraph();
+    const dbPath = getDatabasePath(projectPath);
+
+    // A git worktree whose sibling already has a compatible index starts from
+    // a copy of it and syncs only the files that differ (--no-seed opts out).
+    if (options.seed !== false) {
+      const supervision = installCommandSupervision('init', { progressPaths: [dbPath, `${dbPath}-wal`] });
+      let seeded: Awaited<ReturnType<typeof CodeGraph.initFromSibling>> = null;
+      try {
+        process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
+        const progress = createShimmerProgress();
+        seeded = await CodeGraph.initFromSibling(projectPath, { onProgress: progress.onProgress });
+        await progress.stop();
+      } finally {
+        supervision.stop();
+      }
+      if (seeded) {
+        const { source, sync } = seeded;
+        clack.log.success(`Initialized in ${projectPath} from the index in ${source.root}`);
+        clack.log.info(
+          `${formatNumber(source.changedFiles)} files changed since that index's commit; ` +
+          `synced ${formatNumber(sync.filesAdded)} added, ${formatNumber(sync.filesModified)} modified, ` +
+          `${formatNumber(sync.filesRemoved)} removed in ${formatDuration(sync.durationMs)}`
+        );
+        try {
+          const { offerWatchFallback } = await import('../installer');
+          await offerWatchFallback(clack, projectPath, { yes: options.yes });
+        } catch { /* non-fatal */ }
+        clack.outro('Done');
+        seeded.codegraph.destroy();
+        return;
+      }
+    }
+
     const cg = await CodeGraph.init(projectPath, { index: false });
     clack.log.success(`Initialized in ${projectPath}`);
 
@@ -709,7 +742,6 @@ async function runInit(
     // degraded storage from a true wedge (#1231).
     // A closure so we can re-run the exact same supervised, progress-rendered
     // index if the user opts gitignored child repos in below (#1156).
-    const dbPath = getDatabasePath(projectPath);
     const runIndex = async (): Promise<IndexResult> => {
       const supervision = installCommandSupervision('init', { progressPaths: [dbPath, `${dbPath}-wal`] });
       try {
@@ -761,7 +793,8 @@ program
   .option('-f, --force', 'Initialize even if the path looks like your home directory or a filesystem root')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
   .option('-y, --yes', 'Non-interactive: skip every prompt and take the defaults (for scripts / CI / container bootstraps)')
-  .action(async (pathArg: string | undefined, options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean }) => {
+  .option('--no-seed', 'In a git worktree, index from scratch instead of starting from a sibling worktree\'s index')
+  .action(async (pathArg: string | undefined, options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; seed?: boolean }) => {
     await runInit(path.resolve(pathArg || process.cwd()), options);
   });
 

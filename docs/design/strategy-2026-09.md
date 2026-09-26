@@ -111,7 +111,7 @@ Ordered by what moves "the agent stops reading" and by what the outside benchmar
    Gate: the precision replay improves, the golden dumps change only where intended, and the agent A/B shows no recall loss that costs answers.
 3. **Measure and cut the memory floor.** Profile a small-repo index and the idle daemon: Node heap, per-worker node tables and caches, SQLite page cache. Set a target (for example, under 200 MB for a small repository) before optimizing. This is the one cost where we measured 10× worse than a competitor, and it is the one our host actually suffers from.
 4. **Diff-seeded impact in explore** (survey item A). Every review-oriented competitor ships it; we have the impact machinery and no entry point. Add a "what does this diff break" task class to the agent-eval harness first.
-5. **Index artifacts for worktrees** (survey item D). Copy an index into a new worktree and catch up by file hash, so a fresh worktree answers from the first call.
+5. **Index artifacts for worktrees** (survey item D). Copy an index into a new worktree and catch up by file hash, so a fresh worktree answers from the first call. **Done 2026-09-26:** `codegraph init` seeds from the closest compatible sibling worktree index and syncs (ledger 5.58).
 6. **Finish the resolver port, then delete the TypeScript resolver.** Only after steps 1–2, so the kernel moves one design forward instead of two mirrors in step. This removes the dual-maintenance cost for good.
 
 Explicitly deferred: git-history and code-health layers (repowise's strengths, but no measured miss in our use), an LSP/SCIP overlay (survey item G stays gated on a precision gap that heuristics cannot close — step 1 will say whether one exists), and further resolver performance work.
