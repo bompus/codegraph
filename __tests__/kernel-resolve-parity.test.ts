@@ -786,8 +786,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
       byName('m', 'method').find((n) => n.qualifiedName === 'Outer::Sub::m')!.id,
     );
     // `W::nope` passes the prefilter (`W` is a known segment) but misses every
-    // ported arm — the member tail goes back to TS.
-    expect(at('W::nope', 'src/w.cpp', 'calls').status).toBe('passthrough');
+    // name strategy, exact and fuzzy included — a native miss.
+    expect(at('W::nope', 'src/w.cpp', 'calls').status).toBe('unresolved');
 
     // ---- Stage 2 — source-backed member inference ----
     // mc-infer-local → matchBoundTypeMember: `svc = new Service()` then
@@ -978,8 +978,8 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(at('super::sib::sib_fn', 'src/deep/inner.rs', 'calls').targetNodeId).toBe(
       nodeId('sib_fn', 'sib.rs'),
     );
-    // External crate — both anchors miss → ineligible:lang punt.
-    expect(at('ext::module::leaf_fn', 'src/lib.rs', 'calls').status).toBe('passthrough');
+    // External crate — both anchors miss, and so does every name strategy.
+    expect(at('ext::module::leaf_fn', 'src/lib.rs', 'calls').status).toBe('unresolved');
     // `Widget` is a struct, not a module — path-arm miss falls through to
     // the qualified-name arm, matching TS's downstream resolution.
     const widgetNew = at('Widget::new', 'src/lib.rs', 'calls');
@@ -1020,10 +1020,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     ).toBe(nodeId('mod_leaf_fn', 'kmod/sub.rs'));
     // Orphan file: `other/lonely.rs` has no declarant and no `sub.rs`
     // sibling — `crate::sub` misses (root dir = `other/` itself); the arm
-    // falls through and the kernel punts to TS, same as pre-change.
+    // falls through and every name strategy misses too.
     expect(
       at('crate::sub::mod_leaf_fn', 'other/lonely.rs', 'calls').status,
-    ).toBe('passthrough');
+    ).toBe('unresolved');
     // `self.m` → match_rust_self_call — enclosing impl type via caller qname.
     const selfNew = at('self.new', 'src/sub.rs', 'calls');
     expect(selfNew.status).toBe('resolved');
@@ -1037,8 +1037,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(fieldNew.confidence).toBe(0.85);
     expect(fieldNew.targetNodeId).toBe(nodeId('new', 'sub.rs', 'method'));
     // `self.unknown.m` — field not declared on Holder → exclusive
-    // decline (member-tail punt; TS produces the same failed verdict).
-    expect(at('self.unknown.new', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // decline, and the exact/fuzzy tail misses too — the same failed verdict
+    // TS produces.
+    expect(at('self.unknown.new', 'src/sub.rs', 'calls').status).toBe('unresolved');
     // `Self::item` → match_rust_self_path — `Self` binds the caller's impl
     // owner and the leaf resolves by `owner::leaf` qualified name.
     const selfPath = at('Self::new', 'src/sub.rs', 'calls');
@@ -1060,9 +1061,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(selfAssoc.confidence).toBe(0.9);
     expect(selfAssoc.targetNodeId).toBe(nodeId('init', 'sub.rs', 'method'));
     // `Self::Assoc::new` inside the inherent `impl Mode` — no `type Assoc`
-    // decl there, so the arm declines and the member-tail gate punts the
-    // `::` name to TS like any other deep path.
-    expect(at('Self::Assoc::new', 'src/sub.rs', 'calls').status).toBe('passthrough');
+    // decl there, so the arm declines and the exact/fuzzy tail misses the
+    // `::` name like any other deep path.
+    expect(at('Self::Assoc::new', 'src/sub.rs', 'calls').status).toBe('unresolved');
     // `Self::flip` from the free fn `useit` — no impl owner → falls through
     // to strat3, where `flip` is the unique rust method → @0.7, same as TS.
     const freeSelf = at('Self::flip', 'src/sub.rs', 'calls');
@@ -1183,10 +1184,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(luaNew.status).toBe('resolved');
     expect(luaNew.confidence).toBe(0.7);
     expect(luaNew.targetNodeId).toBe(method('new', 'lg.lua'));
-    // `LoggerR$new`: the R6 class declares no `new`; the name strategies
-    // decline and the ref goes back to the TS spine, where exactName/fuzzy
-    // fail the same way (verdict by delegation).
-    expect(at('LoggerR$new', 'src/lg.R').status).toBe('passthrough');
+    // `LoggerR$new`: the R6 class declares no `new`; every name strategy,
+    // exact and fuzzy included, declines natively.
+    expect(at('LoggerR$new', 'src/lg.R').status).toBe('unresolved');
     // lua `require("mod.sub")` is an `imports` ref (prerequisite batch):
     // the suffix match links the module file node @0.9.
     const pre = resolver.readPendingBatch(0, 200, true);

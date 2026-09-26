@@ -108,6 +108,15 @@ pub(super) fn js_member_root_re() -> Rc<Regex> {
     re!(r"^(?:this|window)\.")
 }
 /// CHAIN_SHAPE (index.ts) — `^(.+)\(\)\.(\w+)$`: a call-receiver chain.
+/// PHP_PROP_SHAPE (index.ts) — `$this->prop->method()` encoded
+/// `this->prop.method`.
+pub(super) fn php_prop_shape_re() -> Rc<Regex> {
+    re!(r"^this->[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
+}
+/// CHAIN_LANGUAGES (index.ts): languages whose unresolved chain calls wait
+/// for the conformance pass.
+pub(super) const CHAIN_LANGUAGES: [&str; 10] =
+    ["java", "kotlin", "csharp", "swift", "rust", "go", "scala", "dart", "objc", "pascal"];
 pub(super) fn chain_shape_re() -> Rc<Regex> {
     re!(r"^.+\(\)\.[A-Za-z0-9_]+$")
 }
