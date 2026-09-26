@@ -165,6 +165,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- In JavaScript and TypeScript, a built-in method called on a value codegraph cannot type, such as `this.#items.add(x)` on a Set or `list.map(...)` on an array, no longer links to a project class that happens to have a method with that name.
+
 - Building from source on Windows: `npm run build:kernel` now works from PowerShell and Command Prompt, where it used to reach WSL's `bash` and build for Linux.
 
 - In JavaScript and TypeScript, a call to a parameter or local variable no longer links to an imported or other-file function that merely shares its name (`function toStore(get) { get() }`), and `this.save()` now links to the class's own `save` method instead of an imported `save` function.

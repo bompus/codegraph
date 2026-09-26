@@ -362,6 +362,9 @@ impl KernelResolver {
 
     /// matchByExactName (name-matcher.ts).
     pub(super) fn match_by_exact_name(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if self.is_unknown_receiver_built_in_call(r) {
+            return Ok(None);
+        }
         let bare_js = self.is_bare_js_call(r)?;
         let all_named: Vec<Arc<KNode>> = self
             .nodes_by_name(&r.reference_name)?
@@ -483,6 +486,9 @@ impl KernelResolver {
 
     /// matchFuzzy (name-matcher.ts).
     pub(super) fn match_fuzzy(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if self.is_unknown_receiver_built_in_call(r) {
+            return Ok(None);
+        }
         if self.is_bound_to_bare_import(r)? {
             return Ok(None);
         }

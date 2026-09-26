@@ -1078,12 +1078,23 @@ const isIdentChar = (c: string | undefined): boolean => c !== undefined && /[\w$
  * a receiver. An import binds a lexical name and never answers one.
  */
 export function isMemberCallSite(ref: UnresolvedRef, context: ResolutionContext): boolean {
-  if (ref.referenceKind !== 'calls' || !SHADOWING_LANGUAGES.has(ref.language)) return false;
+  return memberCallReceiver(ref, context) !== null;
+}
+
+/**
+ * The receiver of a bare-named member call ({@link isMemberCallSite}):
+ * `'this'` for `this.x()` / `super.x()`, whose target is the enclosing
+ * class's member, `'other'` for any receiver whose type is unknown here
+ * (`this.#out.push()`, `a.b.filter()`, `(x).then()`), null when the call has
+ * no receiver.
+ */
+export function memberCallReceiver(ref: UnresolvedRef, context: ResolutionContext): 'this' | 'other' | null {
+  if (ref.referenceKind !== 'calls' || !SHADOWING_LANGUAGES.has(ref.language)) return null;
   const name = ref.referenceName;
-  if (name.includes('.')) return false;
+  if (name.includes('.')) return null;
   const line = context.getFileLines?.(ref.filePath)?.[ref.line - 1]
     ?? context.readFile(ref.filePath)?.split('\n')[ref.line - 1];
-  if (line === undefined) return false;
+  if (line === undefined) return null;
   const at = line.slice(ref.column);
   for (let i = at.indexOf(name); i !== -1; i = at.indexOf(name, i + 1)) {
     if (isIdentChar(at[i - 1]) || isIdentChar(at[i + name.length])) continue;
@@ -1094,9 +1105,45 @@ export function isMemberCallSite(ref: UnresolvedRef, context: ResolutionContext)
     if (at[j] !== '(' && at[j] !== '<' && at[j] !== '`') continue;
     let k = i - 1;
     while (at[k] === ' ' || at[k] === '\t') k--;
-    return at[k] === '.';
+    if (at[k] !== '.') return null;
+    k--;
+    if (at[k] === '?') k--;
+    while (at[k] === ' ' || at[k] === '\t') k--;
+    const receiverEnd = k + 1;
+    for (const self of ['this', 'super']) {
+      const start = receiverEnd - self.length;
+      const before = at[start - 1];
+      if (start >= 0 && at.slice(start, receiverEnd) === self && !isIdentChar(before) && before !== '.' && before !== '#') {
+        return 'this';
+      }
+    }
+    return 'other';
   }
-  return false;
+  return null;
+}
+
+/**
+ * Methods of the JavaScript built-ins (Array, Map/Set, Promise, String,
+ * Function, EventTarget/EventEmitter, iterators). Called on a receiver whose
+ * type is unknown, one of these is almost always the built-in, not a project
+ * method that shares its name: `this.#out.push(x)` is `Array.push`.
+ */
+const JS_BUILT_IN_METHODS = new Set([
+  'push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'concat', 'join', 'reverse', 'sort', 'indexOf',
+  'lastIndexOf', 'includes', 'find', 'findIndex', 'findLast', 'findLastIndex', 'filter', 'map', 'forEach',
+  'reduce', 'reduceRight', 'some', 'every', 'flat', 'flatMap', 'fill', 'at', 'keys', 'values', 'entries',
+  'get', 'set', 'has', 'delete', 'clear', 'add',
+  'then', 'catch', 'finally',
+  'split', 'trim', 'trimStart', 'trimEnd', 'startsWith', 'endsWith', 'replace', 'replaceAll', 'match',
+  'matchAll', 'toLowerCase', 'toUpperCase', 'padStart', 'padEnd', 'charAt', 'charCodeAt', 'codePointAt',
+  'substring', 'substr', 'repeat', 'localeCompare', 'normalize',
+  'toString', 'valueOf', 'hasOwnProperty', 'toJSON', 'call', 'apply', 'bind',
+  'on', 'off', 'once', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'next', 'abort',
+]);
+
+/** A built-in method name called on a receiver of unknown type — no project method is it. */
+export function isUnknownReceiverBuiltInCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  return JS_BUILT_IN_METHODS.has(ref.referenceName) && memberCallReceiver(ref, context) === 'other';
 }
 
 export function resolveViaImport(

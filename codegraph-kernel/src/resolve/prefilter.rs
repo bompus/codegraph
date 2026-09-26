@@ -292,16 +292,30 @@ impl KernelResolver {
     /// there, preceded by `.`, marks a receiver. An import binds a lexical
     /// name and never answers one.
     pub(super) fn is_member_call_site(&mut self, r: &ResolveRefIn) -> bool {
+        self.member_call_receiver(r).is_some()
+    }
+
+    /// memberCallReceiver (import-resolver.ts): `Some(true)` for
+    /// `this.x()` / `super.x()`, whose target is the enclosing class's
+    /// member; `Some(false)` for a receiver whose type is unknown here
+    /// (`this.#out.push()`, `a.b.filter()`); `None` without a receiver.
+    pub(super) fn member_call_receiver(&mut self, r: &ResolveRefIn) -> Option<bool> {
         if r.reference_kind != "calls" || !is_esm_family(&r.language) || r.reference_name.contains('.') {
-            return false;
+            return None;
         }
-        let Some(lines) = self.read_file(&r.file_path) else { return false };
-        let Some(line) = lines.get((r.line - 1) as usize) else { return false };
+        let lines = self.read_file(&r.file_path)?;
+        let line = lines.get((r.line - 1) as usize)?;
         member_call_at(js_slice(line, r.column as usize), &r.reference_name)
+    }
+
+    /// isUnknownReceiverBuiltInCall (import-resolver.ts): a JS built-in method
+    /// name called on a receiver of unknown type — no project method is it.
+    pub(super) fn is_unknown_receiver_built_in_call(&mut self, r: &ResolveRefIn) -> bool {
+        JS_BUILT_IN_METHODS.contains(r.reference_name.as_str()) && self.member_call_receiver(r) == Some(false)
     }
 }
 
-fn member_call_at(at: &str, name: &str) -> bool {
+fn member_call_at(at: &str, name: &str) -> Option<bool> {
     let b = at.as_bytes();
     let ident = |i: Option<usize>| i.and_then(|i| b.get(i)).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
     let blank = |i: usize| matches!(b.get(i), Some(b' ' | b'\t'));
@@ -329,9 +343,27 @@ fn member_call_at(at: &str, name: &str) -> bool {
         while k > 0 && blank(k - 1) {
             k -= 1;
         }
-        return k > 0 && b[k - 1] == b'.';
+        if k == 0 || b[k - 1] != b'.' {
+            return None;
+        }
+        k -= 1;
+        if k > 0 && b[k - 1] == b'?' {
+            k -= 1;
+        }
+        while k > 0 && blank(k - 1) {
+            k -= 1;
+        }
+        let receiver = &at[..k];
+        let is_self = ["this", "super"].iter().any(|s| {
+            receiver.ends_with(s)
+                && !matches!(
+                    receiver.as_bytes().get(receiver.len().wrapping_sub(s.len() + 1)),
+                    Some(c) if c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$' || *c == b'.' || *c == b'#'
+                )
+        });
+        return Some(is_self);
     }
-    false
+    None
 }
 
 pub(super) fn innermost_binding<'a>(
