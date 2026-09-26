@@ -507,6 +507,16 @@ const STRUCTURAL_UNSEGMENTED = /如何|怎么|怎麼|在哪|哪里|哪裡|追踪
 const DOC_DATA_EXT = /\.(md|markdown|txt|rst|json|ya?ml|toml|lock|csv|tsv|log|ini|cfg|conf|env|xml|html?|png|jpe?g|gif|svg|pdf)$/i;
 
 /**
+ * Is `prompt` a message the host wrote rather than the user? Claude Code
+ * delivers a finished background task as a `<task-notification>` user turn, and
+ * its task paths, ids and summary trip the keyword gate, so every finished
+ * command front-loaded unrelated source into the conversation.
+ */
+export function isHostNotification(prompt: string): boolean {
+  return /^\s*<(?:task-notification|system-reminder)>/.test(prompt);
+}
+
+/**
  * Does `prompt` contain an explicit structural keyword? A keyword is a strong,
  * self-contained signal, so the front-load hook fires on it directly — no graph
  * check needed. (A *code-token* match, by contrast, is only a candidate the

@@ -159,6 +159,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- The Claude Code prompt hook no longer adds unrelated code to the conversation each time a background task finishes; it now ignores Claude Code's own notifications.
+
 - The codegraph server's query workers no longer load the indexing code they never run, cutting each worker from about 96 MB to about 32 MB and the idle server by about 40 MB.
 
 - In JavaScript and TypeScript monorepos, an import of a workspace package subpath now resolves when the package's `exports` names its source file under a custom condition (for example `"@zod/source": "./src/v4/index.ts"`). Calls through `import * as z from "zod/v4"` now link to the right functions instead of going unresolved; on zod this added about 4,000 correct links.
