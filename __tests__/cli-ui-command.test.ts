@@ -26,7 +26,6 @@ const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 const BASE_ENV = {
   ...process.env,
   CODEGRAPH_NO_DAEMON: '1',
-  CODEGRAPH_WASM_RELAUNCHED: '1',
   NO_COLOR: '1',
 };
 

@@ -60,7 +60,7 @@ run(){ # label, withCodegraph(0/1)
     rsync -a --exclude node_modules --exclude .git --exclude dist --exclude .codegraph "$REPO/" "$tgt/"
     node "$BIN" init "$tgt" >/dev/null 2>&1
     if [ "$wcg" = "1" ]; then
-      printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$tgt" > "$cfg"
+      printf '{"mcpServers":{"codegraph":{"command":"env","args":["node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$tgt" > "$cfg"
       prewarm "$tgt"
     else cp "$OUT/mcp-empty.json" "$cfg"; fi
     ( cd "$tgt" && claude -p "$Q" --output-format stream-json --verbose \

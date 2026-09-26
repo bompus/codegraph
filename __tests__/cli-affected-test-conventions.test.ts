@@ -19,7 +19,7 @@ const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 function affected(cwd: string, args: string[]): string[] {
   const out = execFileSync(process.execPath, [BIN, 'affected', ...args, '--quiet', '-p', cwd], {
     encoding: 'utf-8',
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return out.split('\n').map((s) => s.trim()).filter(Boolean);

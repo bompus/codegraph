@@ -10,7 +10,7 @@ const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 function runCli(cwd: string, args: string[]) {
   return spawnSync(process.execPath, [BIN, ...args, '-p', cwd], {
     encoding: 'utf-8',
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1', NO_COLOR: '1' },
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', NO_COLOR: '1' },
   });
 }
 

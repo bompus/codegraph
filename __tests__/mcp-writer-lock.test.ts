@@ -83,9 +83,6 @@ describe('issue #1740 — direct-mode writer lock', () => {
       CODEGRAPH_MCP_DEBUG: '1',
       CODEGRAPH_NO_WATCHDOG: '1',
       CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: '0',
-      // No re-exec happens any more; the env is harmless and kept for older branches.
-      CODEGRAPH_NO_RELAUNCH: '1',
-      CODEGRAPH_WASM_RELAUNCHED: '1',
     };
     const first = spawnMcp(realRoot, env);
     children.push(first.child);
@@ -122,8 +119,6 @@ describe('issue #1740 — direct-mode writer lock', () => {
       CODEGRAPH_MCP_LOG_ATTACH: '1',
       CODEGRAPH_NO_WATCHDOG: '1',
       CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: '0',
-      CODEGRAPH_NO_RELAUNCH: '1',
-      CODEGRAPH_WASM_RELAUNCHED: '1',
     };
     const a = spawnMcp(realRoot, env);
     const b = spawnMcp(realRoot, env);
@@ -154,8 +149,6 @@ it('a refresh-launcher child waits for the handover instead of exiting', async (
       CODEGRAPH_MCP_DEBUG: '1',
       CODEGRAPH_NO_WATCHDOG: '1',
       CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: '0',
-      CODEGRAPH_NO_RELAUNCH: '1',
-      CODEGRAPH_WASM_RELAUNCHED: '1',
     };
     const first = spawnMcp(realRoot, env);
     children.push(first.child);

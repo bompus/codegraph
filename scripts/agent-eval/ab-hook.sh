@@ -8,9 +8,8 @@
 #   arm [nohook] — codegraph on, no hook   (does the better file-view get picked on its own?)
 #   arm [hook]   — codegraph on, + redirect hook   (does routing close it?)
 #
-# Reliable attach (works nested): each arm pre-warms a persistent daemon and skips
-# the startup re-exec (CODEGRAPH_WASM_RELAUNCHED=1), so claude connects before the
-# agent's first turn. Judge by ACTUAL codegraph usage in parse-run.mjs's "by type",
+# Reliable attach (works nested): each arm pre-warms a persistent daemon, so claude
+# connects before the agent's first turn. Judge by ACTUAL codegraph usage in parse-run.mjs's "by type",
 # not claude's init snapshot (which can read pending even when it then connects).
 #
 # Usage: ab-hook.sh <indexed-repo> "<implementation task>" [runs-per-arm]
@@ -63,7 +62,7 @@ run_one() { # arm-label, run-index, use-hook(0|1)
   rm -rf "$tgt"
   rsync -a --exclude node_modules --exclude .git --exclude dist --exclude .codegraph "$TARGET/" "$tgt/"
   node "$BIN" init "$tgt" >/dev/null 2>&1
-  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$tgt" > "$c"
+  printf '{"mcpServers":{"codegraph":{"command":"env","args":["node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$tgt" > "$c"
   prewarm "$tgt"
   local extra=()
   [ "$hook" = "1" ] && extra=(--settings "$HOOK_SETTINGS")

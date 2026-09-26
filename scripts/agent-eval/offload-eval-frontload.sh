@@ -18,7 +18,7 @@ mkdir -p "$RUNS"
 TARGET=$(cd "$TARGET" && pwd -P)
 
 CFG="$RUNS/mcp-fl-$REPO.json"
-printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","CODEGRAPH_OFFLOAD_DISABLE=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$TARGET" > "$CFG"
+printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_OFFLOAD_DISABLE=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$TARGET" > "$CFG"
 # Generate the hook settings pointing at the persisted hook; enable its debug log so we can
 # count injections (claude passes this env down to the spawned hook process).
 HOOKCFG="$RUNS/frontload-settings.json"

@@ -52,7 +52,9 @@ run() { # arm rep mcp-config usage-log-or-dash
 # MCP configs: env baked into the daemon-spawn command claude uses.
 USAGE="$RUNS/$REPO-usage.jsonl"
 mkcfg() { # file extra-env-pairs(JSON array entries, comma-led or empty)
-  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1"%s,"node","%s","serve","--mcp","--path","%s"]}}}' "$1" "$BIN" "$TARGET"
+  local extra="${1#,}"
+  [ -n "$extra" ] && extra="$extra,"
+  printf '{"mcpServers":{"codegraph":{"command":"env","args":[%s"node","%s","serve","--mcp","--path","%s"]}}}' "$extra" "$BIN" "$TARGET"
 }
 CFG_RAW="$RUNS/mcp-sty-raw-$REPO.json";   mkcfg ',"CODEGRAPH_OFFLOAD_DISABLE=1"' > "$CFG_RAW"
 CFG_REFS="$RUNS/mcp-sty-refs-$REPO.json"; mkcfg ",\"CODEGRAPH_OFFLOAD_USAGE_LOG=$USAGE\"" > "$CFG_REFS"

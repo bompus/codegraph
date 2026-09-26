@@ -18,12 +18,12 @@ CFG="$RUNS/mcp-$REPO-$STYLE.json"
 # verbatim source, no reasoning model). Any other value is an offload style (plain|refs).
 if [ "$STYLE" = "raw" ]; then
   DAEMON_ENV="CODEGRAPH_OFFLOAD_DISABLE=1"
-  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","CODEGRAPH_OFFLOAD_DISABLE=1","node","%s","serve","--mcp","--path","%s"]}}}' \
+  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_OFFLOAD_DISABLE=1","node","%s","serve","--mcp","--path","%s"]}}}' \
     "$BIN" "$TARGET" > "$CFG"
   USAGE="-"
 else
   DAEMON_ENV="CODEGRAPH_OFFLOAD_STYLE=$STYLE CODEGRAPH_OFFLOAD_USAGE_LOG=$USAGE"
-  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","CODEGRAPH_OFFLOAD_STYLE=%s","CODEGRAPH_OFFLOAD_USAGE_LOG=%s","node","%s","serve","--mcp","--path","%s"]}}}' \
+  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_OFFLOAD_STYLE=%s","CODEGRAPH_OFFLOAD_USAGE_LOG=%s","node","%s","serve","--mcp","--path","%s"]}}}' \
     "$STYLE" "$USAGE" "$BIN" "$TARGET" > "$CFG"
 fi
 

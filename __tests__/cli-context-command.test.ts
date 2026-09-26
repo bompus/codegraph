@@ -22,7 +22,7 @@ import { CodeGraph } from '../src';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
-const ENV = { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' };
+const ENV = { ...process.env, CODEGRAPH_NO_DAEMON: '1' };
 
 function runContext(cwd: string, extraArgs: string[], taskParts: string[] = ['parseToken', 'expiry', 'handling']): string {
   return execFileSync(process.execPath, [BIN, 'context', ...extraArgs, '-p', cwd, ...taskParts], {

@@ -66,7 +66,7 @@ run_arm() { # label, N
     rm -rf "$tgt"
     rsync -a --exclude node_modules --exclude .git --exclude dist --exclude .codegraph "$TARGET/" "$tgt/"
     node "$BIN" init "$tgt" >/dev/null 2>&1
-    printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$tgt" > "$c"
+    printf '{"mcpServers":{"codegraph":{"command":"env","args":["node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$tgt" > "$c"
     prewarm "$tgt"
     echo "----- [$label] run $i -----"
     ( cd "$tgt" && claude -p "$TASK" \

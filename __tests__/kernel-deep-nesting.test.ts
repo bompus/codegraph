@@ -322,7 +322,6 @@ describe.skipIf(!kernelBuilt)("kernel deep-nesting guard (#1581)", () => {
         env: {
           ...process.env,
           CODEGRAPH_NO_DAEMON: "1",
-          CODEGRAPH_WASM_RELAUNCHED: "1",
           CODEGRAPH_TELEMETRY: "0",
           DO_NOT_TRACK: "1",
           CODEGRAPH_NO_PROMPT_HOOK: "1",
