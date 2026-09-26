@@ -476,11 +476,47 @@ pub struct KernelResolver {
     file_cache: FileCache,
 }
 
+/// Open `db_path` read-only without ever writing its `-shm` wal-index.
+///
+/// The kernel links its own SQLite build, and POSIX locks never conflict
+/// within one process, so this connection cannot see node:sqlite's locks on
+/// the same file. Opened normally it takes itself for the first connection
+/// and truncates the `-shm` file node:sqlite still has mapped: the next
+/// node:sqlite write into a region past the new end of file is a SIGBUS
+/// (a sync after a large checkout crashed 3 runs in 4). `readonly_shm=1`
+/// opens the `-shm` read-only, and SQLite then reads the WAL through its
+/// heap-memory wal-index instead of the shared one.
+fn open_read_only_shm(db_path: &str) -> rusqlite::Result<Connection> {
+    let uri = format!("file:{}?readonly_shm=1", uri_path(db_path));
+    Connection::open_with_flags(uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
+        .or_else(|_| Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY))
+}
+
+/// A filesystem path as a SQLite URI path: `/` separators, a leading `/`
+/// before a Windows drive letter, and the characters a URI reserves escaped.
+fn uri_path(db_path: &str) -> String {
+    let path = db_path.replace('\\', "/");
+    let mut out = String::with_capacity(path.len() + 8);
+    if path.as_bytes().get(1) == Some(&b':') {
+        out.push('/');
+    }
+    for c in path.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '?' => out.push_str("%3f"),
+            '#' => out.push_str("%23"),
+            ' ' => out.push_str("%20"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 #[napi]
 impl KernelResolver {
     #[napi(constructor)]
     pub fn new(config: KernelResolverConfig) -> Result<Self> {
-        let conn = Connection::open_with_flags(&config.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let conn = open_read_only_shm(&config.db_path)
             .map_err(|e| Error::from_reason(format!("KernelResolver open {}: {e}", config.db_path)))?;
         let root_abs = pos_normalize(&config.project_root);
         let workspaces = config.workspaces.map(|w| WorkspaceK {

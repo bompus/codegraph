@@ -802,6 +802,18 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.56 Kernel connections no longer truncate node:sqlite's wal-index (2026-09-26)
+
+A `codegraph sync` after checking out a commit 115 files away crashed with SIGBUS in 3 runs of 4, in the orphan sweep's first batch after a 413 MB WAL fold. The kernel links its own SQLite build, and POSIX locks never conflict within one process, so its read-only connection could not see node:sqlite's lock on the `-shm` file, took itself for the first connection, and truncated the file. node:sqlite still had the 26 regions the large WAL had needed mapped; its next write past the first 32 KB region touched a page beyond the end of the file. Pool workers were already safe (they read a `.kr-snapshot` copy); the main-thread kernel on the live file was not.
+
+Kernel connections now open with `readonly_shm=1`: the `-shm` is opened read-only, so the kernel can neither truncate nor rebuild it, and SQLite reads the WAL through its heap-memory wal-index.
+
+| Check | Before | After |
+|---|---|---|
+| Sync after a 30-commit checkout (codegraph, 1,148 files) | 3/4 SIGBUS | 5/5 clean, 13.2–14.0 s (unchanged) |
+| Edges vs the same sync with `CODEGRAPH_KERNEL_RESOLVE=0` | — | 84,368 = 84,368, identical |
+| `kernel-shm-coexistence.test.ts` (child process) | signal | exit 0 |
+
 ### 5.55 Cross-language name matches (2026-09-26)
 
 The language gate covered `references`/`function_ref` (same family) and `imports` (two known families), so a `calls`, `instantiates` or `extends` ref took any same-named symbol in any language: a lone candidate in another language resolved at 0.5. On codegraph's own index that gave 527 Rust `Ok(..)` calls onto a Scala enum member in a fixture, 307 Rust `.map`/`.any` calls onto TypeScript methods, and Python `round` onto a TypeScript function; on Exposed, JavaScript `forEach`/`apply` onto Kotlin methods; on ktor, Rust `Send`/`WebRtc` onto Kotlin classes. The framework strategy added Go `Context` onto a C struct in a vendored grammar and C#/Svelte types onto Dart fixture classes.
