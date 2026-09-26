@@ -26,7 +26,7 @@ import { QueryPool, resolvePoolSize } from './query-pool';
 // ~800ms, closing the "No such tool available" cold-start race that made headless
 // agents flounder. require() is sync + cached on the CommonJS build.
 const loadCodeGraph = (): typeof import('../index').default =>
-  (require('../index') as typeof import('../index')).default;
+  (require('../codegraph') as typeof import('../codegraph')).default;
 
 /** How often the per-tool-call retry may re-run the sub-project down-scan. */
 const RETRY_SUBSCAN_TTL_MS = 5_000;

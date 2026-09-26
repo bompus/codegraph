@@ -158,6 +158,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- The codegraph server's query workers no longer load the indexing code they never run, cutting each worker from about 96 MB to about 32 MB and the idle server by about 40 MB.
+
 - In JavaScript and TypeScript monorepos, an import of a workspace package subpath now resolves when the package's `exports` names its source file under a custom condition (for example `"@zod/source": "./src/v4/index.ts"`). Calls through `import * as z from "zod/v4"` now link to the right functions instead of going unresolved; on zod this added about 4,000 correct links.
 - A barrel's `export * as ns from "./x"` no longer leaks the members of `./x` into the barrel itself, so a name the barrel also star-exports from another module resolves to that module instead of a same-named member of the namespaced one.
 - `ns.member` calls through a namespace import now follow a named re-export (`export { clone } from "./util"`) inside a star-exported module.

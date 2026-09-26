@@ -802,6 +802,20 @@ Extraction-layer leg closing the last documented NgRx gap: `export const { selec
 
 **Index cost on the final build** (all arms active, cold `init`, `/usr/bin/time -v`): ngrx example-app S (795 nodes) 0.97s / 315 MB peak RSS; paperless-ngx M (23k nodes) 4.84s / 1.59 GB; discourse L (167.7k nodes) 20.8s / **4.57 GB** — the largest corpus's peak RSS is the one number in this arc that bears watching; no pre-arc baseline exists for comparison (the kernel was already the parser).
 
+### 5.46 Query workers skip the indexing stacks (2026-09-26)
+
+§5.45 left each query worker at ~96 MB anonymous. Loading the library through `src/index.ts` pulled 187 modules (4.5 MB of JavaScript: tree-sitter extraction, the callback synthesizer, the name matcher, the resolver) and every open built an extraction orchestrator and a resolver, none of which a read-only worker uses. The `CodeGraph` class moved to `src/codegraph.ts`; `src/index.ts` stays the public entry and hands the extraction, resolution and watcher modules over (`provideStacks`), while a caller that loads `codegraph.ts` directly — query workers, the MCP engine — loads them on first use, and the orchestrator and resolver are built on first use.
+
+| | before | after |
+|---|---|---|
+| modules loaded by a worker (`codegraph` + `mcp/tools`) | 187 | 60 |
+| RSS added by that load | +44 MB | +25 MB |
+| daemon on bloc, idle, anonymous | 148 MB | 109 MB |
+| same after an 8-way explore burst, anonymous | 531 MB (5 workers) | 303 MB (6 workers) |
+| per extra worker, anonymous | ~96 MB | ~32 MB |
+
+**Gate**: full suite 305 files / 5,190 tests (one test that samples a call line from the engine's own source now reads `src/codegraph.ts`).
+
 ### 5.45 Memory floor — parse pool sized to the project, idle query workers retired (2026-09-25)
 
 Strategy priority 3 (docs/design/strategy-2026-09.md): repowise builds its graph in 75 MB where CodeGraph 1.5.0 peaked at 757 MB. Measured on this host (15 cores, `/usr/bin/time` max RSS, `nice -n 10`):
