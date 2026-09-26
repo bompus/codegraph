@@ -832,6 +832,29 @@ impl KernelResolver {
 }
 
 
+impl KernelResolver {
+    /// A name-parameterized regex with no Affix split form (a pattern that
+    /// must match the name case-insensitively, say), compiled once per thread
+    /// and pattern. Bounded: the cache is dropped whole past 4,096 entries.
+    fn cached_regex(pattern: &str) -> Res<Rc<Regex>> {
+        thread_local! {
+            static CACHE: RefCell<HashMap<String, Rc<Regex>>> = RefCell::new(HashMap::new());
+        }
+        CACHE.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            if let Some(re) = cache.get(pattern) {
+                return Ok(re.clone());
+            }
+            let re = Rc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
+            if cache.len() >= 4096 {
+                cache.clear();
+            }
+            cache.insert(pattern.to_string(), re.clone());
+            Ok(re)
+        })
+    }
+}
+
 impl From<&KCand> for KernelCandidateOut {
     fn from(c: &KCand) -> Self {
         KernelCandidateOut {

@@ -56,6 +56,9 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "nix"
             | "terraform"
             | "razor"
+            | "cfml"
+            | "cfscript"
+            | "cfquery"
     )
 }
 

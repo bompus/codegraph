@@ -168,6 +168,20 @@ impl KernelResolver {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
         }
+        // A CFML supertype written as a component path answers alone, ahead
+        // of the prefilter (resolveCfmlComponentPath).
+        if (r.language == "cfml" || r.language == "cfscript")
+            && (r.reference_kind == "extends" || r.reference_kind == "implements")
+            && (r.reference_name.contains('.') || r.reference_name.contains('/'))
+        {
+            return match self.resolve_cfml_component_path(r)? {
+                Some(c) => match self.gate_target_kind(c, r)? {
+                    Some(winner) => self.finish(r, winner, None, true),
+                    None => Ok(ResolveOutcome::unresolved()),
+                },
+                None => Ok(ResolveOutcome::unresolved()),
+            };
+        }
         // Prefilter — `existenceName` strips arkts' leading '.';
         // matchJsStoreBindingCall needs a dot-free name, so a non-bare
         // `Foo::bar` can still reach it — punt when the source check applies.
