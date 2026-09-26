@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { planFrontload, findIndexedSubprojectRoots, unsafeIndexRootReason, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens, PROMPT_HOOK_INJECTION_MAX, CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT, capPromptHookInjection } from '../src/directory';
+import { planFrontload, findIndexedSubprojectRoots, unsafeIndexRootReason, isStructuralPrompt, hasStructuralKeyword, isHostNotification, extractCodeTokens, PROMPT_HOOK_INJECTION_MAX, CLAUDE_CODE_INLINE_HOOK_OUTPUT_LIMIT, capPromptHookInjection } from '../src/directory';
 
 // Make the built-in exports configurable so HOME can point at a real temp
 // fixture without changing the process environment or the user's home files.
@@ -160,6 +160,14 @@ describe('findIndexedSubprojectRoots', () => {
 });
 
 describe('hasStructuralKeyword — keyword signal fires the hook directly (#994)', () => {
+  it('host notifications are not user prompts, even when their text trips the keyword gate', () => {
+    const note = '<task-notification>\n<task-id>b1</task-id>\n<summary>Background command "Run the hook-enabled A/B" completed</summary>\n</task-notification>';
+    expect(isHostNotification(note)).toBe(true);
+    expect(isHostNotification('  <system-reminder>x</system-reminder>')).toBe(true);
+    expect(isHostNotification('how does the <task-notification> parser work')).toBe(false);
+    expect(isHostNotification('what calls the task notification handler?')).toBe(false);
+  });
+
   it('English keywords match with word boundaries so "flow" ≠ "flower"', () => {
     expect(hasStructuralKeyword('how does article publish work')).toBe(true);
     expect(hasStructuralKeyword('where is the token validated')).toBe(true);
