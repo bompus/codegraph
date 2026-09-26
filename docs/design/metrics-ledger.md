@@ -828,6 +828,25 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.84 Resolver port, leg 7e: COBOL, Nix and Terraform (2026-09-26)
+
+The three share resolveOneInner's import-only rule with PHP include paths: after the import arm, a ref returns its best candidate (import or framework) or nothing, and never name-matches. The kernel now:
+
+- **COBOL:** resolves copybook members (`COPY CUSTREC`) by case-insensitive file stem, with `.cpy` over a program file and a same-directory hit breaking a tier. The first of equals wins, in `getNodesByKind('file')` order, which the kernel reads with the same statement. This arm is placed ahead of the external-import check.
+- **Nix:** resolves static path imports (`import ./x.nix`) to file nodes and lets them pass the prefilter. A Nix ref's name match now stays in its own file, completing the Nix rule the kernel already applied in the other direction (nothing names a Nix binding).
+- **Shared rule:** applies the import-only rule to COBOL copybooks, Nix path imports and every Terraform ref, on the bare route as well as the non-bare one.
+
+All three are admitted.
+
+| Corpus | Language | Kernel-handled refs | Punts | Dump |
+|---|---|---|---|---|
+| AWS mainframe carddemo | cobol | 6,821 | 0 | identical |
+| NixOS/nixos-hardware | nix | 4,623 | 0 | identical |
+| terraform-aws-vpc | terraform | 6,916 | 0 | identical |
+| laravel (PHP include arm, now shared) | php | 242,213 | 0 | identical |
+
+The parity fixture gained a Nix module with a present and a missing path import, a COBOL program copying a present and a compiler-supplied copybook, and a Terraform module.
+
 ### 5.83 Resolver port, leg 7e: Erlang (2026-09-26)
 
 Erlang's TypeScript-only handling (#1610) came in four pieces, and the kernel now ports them all:

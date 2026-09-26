@@ -179,7 +179,8 @@ impl KernelResolver {
         } else {
             &r.reference_name
         };
-        let pre_pass = probe!(r, "pre-pass", self.has_any_possible_match(existence)
+        let pre_pass = probe!(r, "pre-pass", is_nix_path_import_ref(r)
+            || self.has_any_possible_match(existence)
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));
         if !pre_pass {
@@ -310,7 +311,7 @@ impl KernelResolver {
         // import arm or not at all — a name match would bind `inc/db.php` to
         // an unrelated `db.php` (#660). cobol / nix / terraform share the arm
         // in TS but are unmigrated languages.
-        if is_php_include_path_ref(r) {
+        if is_import_only_ref(r) {
             return if cands.is_empty() { Ok(self.refused()) } else { self.settle(r, cands) };
         }
 
@@ -621,6 +622,9 @@ impl KernelResolver {
             return self.finish(r, winner, None, true);
         }
 
+        if is_import_only_ref(r) {
+            return if cands.is_empty() { Ok(self.refused()) } else { self.settle(r, cands) };
+        }
         let name_cand = match self.match_erlang_reference(r)? {
             Some(erlang) => erlang,
             None => probe!(r, "match_reference_bare", self.match_reference_bare(r)?),
@@ -705,7 +709,12 @@ impl KernelResolver {
     /// and nothing calls into a Nix binding symbolically. A rejection never
     /// promotes a runner-up (#1745).
     pub(super) fn name_result_stands(&mut self, c: &KCand, r: &ResolveRefIn) -> Res<bool> {
-        Ok(c.node.language != "nix" && self.is_visible_across_files(&c.node, r)?)
+        if !self.is_visible_across_files(&c.node, r)? {
+            return Ok(false);
+        }
+        // Nix binds lexically or through explicit imports: a Nix ref's name
+        // match stays in its own file, and nothing else can name a Nix binding.
+        Ok(if r.language == "nix" { c.node.file_path == r.file_path } else { c.node.language != "nix" })
     }
 
     /// No kernel verdict: framework candidates may still exist on the TS

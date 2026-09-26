@@ -52,6 +52,9 @@ pub(super) fn is_migrated_language(lang: &str) -> bool {
             | "properties"
             | "pascal"
             | "erlang"
+            | "cobol"
+            | "nix"
+            | "terraform"
     )
 }
 
@@ -416,6 +419,29 @@ pub(super) fn is_esm_import_language(lang: &str) -> bool {
         lang,
         "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "svelte" | "vue" | "astro"
     )
+}
+
+/// isCobolCopybookRef (import-resolver.ts): a COBOL `imports` ref names a
+/// copybook member, resolved to a file or not at all.
+pub(super) fn is_cobol_copybook_ref(r: &ResolveRefIn) -> bool {
+    r.language == "cobol" && r.reference_kind == "imports"
+}
+
+/// isNixPathImportRef (import-resolver.ts): a static project-path import
+/// (`import ./x.nix`), never a channel, attribute or dynamic expression.
+pub(super) fn is_nix_path_import_ref(r: &ResolveRefIn) -> bool {
+    r.language == "nix"
+        && r.reference_kind == "imports"
+        && (r.reference_name.starts_with("./") || r.reference_name.starts_with("../"))
+        && !r.reference_name.chars().any(|c| c.is_whitespace() || "{}()[];\"'<>$".contains(c))
+}
+
+/// resolveOneInner's import-only refs: a PHP include path, a COBOL copybook,
+/// a Nix path import or any Terraform ref resolves through the import arm
+/// (and frameworks) only — a name match would bind an unrelated same-named
+/// file or cross a module boundary Terraform forbids.
+pub(super) fn is_import_only_ref(r: &ResolveRefIn) -> bool {
+    is_php_include_path_ref(r) || is_cobol_copybook_ref(r) || is_nix_path_import_ref(r) || r.language == "terraform"
 }
 
 /// isPhpIncludePathRef (import-resolver.ts): a PHP `imports` ref shaped like

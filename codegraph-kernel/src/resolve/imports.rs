@@ -265,7 +265,11 @@ impl KernelResolver {
         from_file: &str,
         language: &str,
     ) -> Res<Option<String>> {
-        // (COBOL copybook arm omitted: `cobol` is not a migrated language.)
+        // A COBOL copybook member names a library member, not a path — ahead
+        // of the external check, which would take a bare name for a package.
+        if language == "cobol" {
+            return self.resolve_cobol_copybook(import_path, from_file);
+        }
         if self.is_external_import(import_path, language) {
             return Ok(None);
         }
@@ -550,6 +554,11 @@ impl KernelResolver {
             }
             return Ok(None);
         }
+        // COBOL COPY / EXEC SQL INCLUDE: the copybook member to its file, or
+        // nothing (compiler-supplied members like SQLCA stay unresolved).
+        if is_cobol_copybook_ref(r) {
+            return self.resolve_import_path_to_file_node(r);
+        }
         // PHP include/require: the literal path resolves against the including
         // file's directory (php.ini `include_path` isn't modeled), with `.php`
         // tried when the literal omits it. A path that names no indexed file
@@ -570,6 +579,10 @@ impl KernelResolver {
                 .iter()
                 .find(|n| n.kind == "file" && n.file_path == resolved)
                 .map(|n| KCand { node: n.clone(), confidence: 0.9, resolved_by: "import" }));
+        }
+        // Nix static path imports resolve to file nodes only.
+        if is_nix_path_import_ref(r) {
+            return self.resolve_import_path_to_file_node(r);
         }
         // TS/JS path-shaped `imports` ref whose referenceName IS the module
         // specifier — the module ref of `import … from './x'` or a dynamic
@@ -872,6 +885,80 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+
+    /// The resolved import path's file node @0.9, or nothing.
+    fn resolve_import_path_to_file_node(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(resolved) = self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)? else {
+            return Ok(None);
+        };
+        let basename = pos_basename(&resolved).to_string();
+        Ok(self
+            .nodes_by_name(&basename)?
+            .iter()
+            .find(|n| n.kind == "file" && n.file_path == resolved)
+            .map(|n| KCand { node: n.clone(), confidence: 0.9, resolved_by: "import" }))
+    }
+
+    /// resolveCobolCopybook: the member against indexed file stems,
+    /// case-insensitively; `.cpy` outranks a program file, a same-directory
+    /// hit breaks a tier, and the first of equals (file-node order) wins.
+    fn resolve_cobol_copybook(&mut self, member: &str, from_file: &str) -> Res<Option<String>> {
+        if self.cobol_copybooks.is_none() {
+            let conn = self.conn()?;
+            // getNodesByKind('file') verbatim, so the order matches TS.
+            let mut stmt = conn
+                .prepare("SELECT * FROM nodes WHERE kind = ?1")
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            let rows = stmt
+                .query_map(["file"], |row| row.get::<_, String>("file_path"))
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            let mut index: HashMap<String, Vec<String>> = HashMap::new();
+            for path in rows {
+                let path = path.map_err(|e| Error::from_reason(e.to_string()))?;
+                let normalized = path.replace('\\', "/");
+                let base = normalized.rsplit('/').next().unwrap_or("");
+                let stem = match base.rfind('.') {
+                    Some(dot) if dot > 0 => &base[..dot],
+                    _ => base,
+                };
+                index.entry(stem.to_lowercase()).or_default().push(path.clone());
+            }
+            drop(stmt);
+            self.cobol_copybooks = Some(index);
+        }
+        let Some(candidates) = self.cobol_copybooks.as_ref().and_then(|i| i.get(&member.to_lowercase())) else {
+            return Ok(None);
+        };
+        let from_norm = from_file.replace('\\', "/");
+        let from_dir = match from_norm.rfind('/') {
+            Some(i) => &from_norm[..i],
+            None => "",
+        };
+        let mut best: Option<&String> = None;
+        let mut best_score = -1;
+        for candidate in candidates {
+            let normalized = candidate.replace('\\', "/");
+            let ext = normalized.rfind('.').map_or(normalized.as_str(), |i| &normalized[i..]).to_lowercase();
+            let mut score = 0;
+            if ext == ".cpy" {
+                score += 4;
+            } else if ext == ".cbl" || ext == ".cob" || ext == ".cobol" {
+                score += 2;
+            }
+            let dir = match normalized.rfind('/') {
+                Some(i) => &normalized[..i],
+                None => "",
+            };
+            if dir == from_dir {
+                score += 1;
+            }
+            if score > best_score {
+                best_score = score;
+                best = Some(candidate);
+            }
+        }
+        Ok(best.cloned())
     }
 
     /// resolveLuaRequire (import-resolver.ts): a Lua/Luau `imports` ref is a
