@@ -828,6 +828,27 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.71 Pool workers kept the kernel only by luck (2026-09-26)
+
+Two faults in the worker-kernel path, found when a laravel run reported `handled=0` with the pool on and 88% native without it.
+
+1. **Snapshot open.** Since the `readonly_shm=1` change (#145), a worker opened its snapshot, a copy of the db file with no `-shm`, through a URI that fails at the first query ("unable to open database file"). The open itself is lazy, so the plain read-only fallback never ran. The worker caught the error and resolved in TypeScript for the rest of the run. Whether it happened depended on whether some other connection had already created the copy's `-shm`: on laravel every worker failed, while on ktor and vitest they happened to succeed. Snapshots now open `immutable=1`, which reads the file as-is and creates nothing next to it.
+2. **Snapshot completeness (leg 6a, §5.67).** The pool's creation and the post-prerequisite refresh both ran after a batch settled but before its supertype edges were inserted. The prefetch ends the prerequisite phase as soon as it reads the first calls page, so when the batch just settled was the last prerequisite batch, workers got a snapshot labelled complete that lacked that batch's `extends`/`implements` edges, and a supertype walk over it returned a definite miss. On laravel that left 52 refs failed that TypeScript resolves. The loop now counts prerequisite batches read but not yet persisted, and calls a snapshot complete only when the phase is over and that count is zero.
+
+With both fixed, every pooled corpus dumps identically with the kernel on and off, and no worker falls back:
+
+| Corpus | Native | Dump |
+|---|---|---|
+| laravel (PHP) | 93.8% (was 0% with the pool) | identical (was 52 refs short) |
+| ktor | 99.0% | identical |
+| vitest | 97.3% | identical |
+| exposed | 97.2% | identical |
+| Ocelot | 96.2% | identical |
+| celery | 99.9% | identical |
+| vite | 97.9% | identical |
+
+The earlier pooled gates (§5.67–§5.70) stand: their workers had opened the kernel, and they re-dump identically here.
+
 ### 5.70 Resolver port, Phase 6 leg 6c: iteration receivers (2026-09-26)
 
 Go range variables and Kotlin `let`/`also` lambda receivers punted as `mc-iteration` whenever the declaration could come from one of those constructs, because inferIterationReceiver walks a parse tree. The kernel is the parser, so it now walks the tree-sitter tree itself, using the facade's `descendantForPosition` rule (the first child, named or not, whose span holds the point) with byte columns converted to UTF-16 the way the serialized tree reports them. The Go arms (a typed owner's slice field, a declared slice/array/map, a factory whose signature returns a slice) use `Affix` patterns; the factory call goes through the bound-receiver claim, as TS's callback does. The thread's cached parser is shared with the tree service.

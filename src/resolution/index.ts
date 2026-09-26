@@ -992,9 +992,9 @@ export class ReferenceResolver {
    * conn on the real -shm races node:sqlite's wal-index state — the two
    * SQLite builds' intra-process locks can't see each other).
    */
-  initKernelResolver(dbPath?: string | null, generation?: string, supertypesComplete = false): void {
+  initKernelResolver(dbPath?: string | null, generation?: string, supertypesComplete = false, snapshot = false): void {
     this.kernelResolverTried = true;
-    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath, generation, supertypesComplete);
+    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath, generation, supertypesComplete, snapshot);
   }
 
   /**
@@ -1070,7 +1070,7 @@ export class ReferenceResolver {
     return this.kernelReaderSnapshot;
   }
 
-  private openKernelResolver(parallelDbPath: string | undefined, generation?: string, supertypesComplete = false): KernelResolverLike | null {
+  private openKernelResolver(parallelDbPath: string | undefined, generation?: string, supertypesComplete = false, snapshot = false): KernelResolverLike | null {
     if (process.env.CODEGRAPH_KERNEL_RESOLVE === '0') return null;
     const kernelModule = getKernel();
     if (!kernelModule?.KernelResolver) return null;
@@ -1104,6 +1104,7 @@ export class ReferenceResolver {
         ambiguousNameCeiling: resolveAmbiguousNameCeiling(),
         generation,
         supertypesComplete,
+        snapshot,
       });
     } catch (err) {
       logDebug('Kernel resolver unavailable; staying on the TypeScript path', {
@@ -2276,7 +2277,13 @@ export class ReferenceResolver {
     // ends lacks some of them, so its kernel punts those walks to TS until
     // the snapshot is refreshed at the phase boundary.
     let inPrereqPhase = true;
-    let prereqBatchesSettled = 0;
+    // Prerequisite batches read whose supertype edges are not inserted yet.
+    // The prefetch reads the first calls page (ending the phase) while the
+    // last prerequisite batch is still in flight, so the phase flag alone
+    // says nothing about what the db holds.
+    let prereqUnpersisted = 0;
+    let prereqBatchesPersisted = 0;
+    const supertypesPersisted = (): boolean => !inPrereqPhase && prereqUnpersisted === 0;
     let snapshotComplete = false;
     const createPool = async (t0: number, why: string): Promise<ResolverPool | null> => {
       poolEngageTried = true;
@@ -2303,7 +2310,7 @@ export class ReferenceResolver {
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
         console.error(`[pool-timing] kernel-reader snapshot: ${kernelDbPath ?? 'unavailable — workers run kernel-less'}`);
       }
-      snapshotComplete = kernelDbPath !== null && !inPrereqPhase;
+      snapshotComplete = kernelDbPath !== null && supertypesPersisted();
       const p = ResolverPool.tryCreate(parallel.dbPath, this.projectRoot, kernelDbPath, snapshotComplete);
       p?.ready().then(
         () => {
@@ -2648,6 +2655,7 @@ export class ReferenceResolver {
         next = readPage(afterRowId, prerequisites);
       }
       if (next.refs.length > 0) afterRowId = next.refs[next.refs.length - 1]!.rowId!;
+      if (next.refs.length > 0 && next.prereq) prereqUnpersisted++;
       return next;
     };
     tLp = Date.now();
@@ -2666,7 +2674,6 @@ export class ReferenceResolver {
 
       const tBatch = Date.now();
       const result = await settleBatch(inFlight, batch);
-      if (batch.prereq) prereqBatchesSettled++;
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] batch ${inFlight.mode}: ${batch.refs.length} refs in ${Date.now() - tBatch}ms`);
       if (process.env.CODEGRAPH_RESOLVE_DEBUG) {
         const accounted = result.resolved.length + result.unresolved.length;
@@ -2736,12 +2743,12 @@ export class ReferenceResolver {
       // First idle boundary past the prerequisite phase: every supertype edge
       // this run reads is now persisted. Hand the workers a snapshot that has
       // them (a fresh copy only if a prerequisite batch wrote any).
-      if (pool && poolReady && !snapshotComplete && !inPrereqPhase && this.kernelReaderSnapshot && parallel?.foldWalForSnapshot) {
+      if (pool && poolReady && !snapshotComplete && supertypesPersisted() && this.kernelReaderSnapshot && parallel?.foldWalForSnapshot) {
         snapshotComplete = true;
         tLp = Date.now();
         try {
           const stale = this.kernelReaderSnapshot;
-          const fresh = prereqBatchesSettled > 0
+          const fresh = prereqBatchesPersisted > 0
             ? await this.refreshKernelReaderSnapshot(parallel.foldWalForSnapshot)
             : stale;
           if (fresh) {
@@ -2818,6 +2825,10 @@ export class ReferenceResolver {
       for (let i = 0; i < supertypeEdges.length; i += PERSIST_CHUNK) {
         this.queries.insertEdges(supertypeEdges.slice(i, i + PERSIST_CHUNK));
         await maybeYield();
+      }
+      if (batch.prereq) {
+        prereqUnpersisted--;
+        prereqBatchesPersisted++;
       }
       lp('insertEdges', tLp);
 

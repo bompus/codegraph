@@ -130,6 +130,10 @@ pub struct KernelResolverConfig {
     /// after the prerequisite phase. Enables the supertype walks; otherwise
     /// they punt (`btm-supers`/`rmot-supers`) to TS, which reads live edges.
     pub supertypes_complete: Option<bool>,
+    /// `db_path` is a private checkpointed copy nothing writes (a pool
+    /// worker's snapshot). Opened `immutable=1`: no locks and no `-wal`/`-shm`
+    /// — a copy has no `-shm`, and `readonly_shm=1` can't open one without it.
+    pub snapshot: Option<bool>,
 }
 
 /// One unresolved_refs row — mirrors UnresolvedReference/rowId shape so the
@@ -503,6 +507,16 @@ fn open_read_only_shm(db_path: &str) -> rusqlite::Result<Connection> {
         .or_else(|_| Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY))
 }
 
+/// Open a snapshot copy that no connection writes. A copied WAL-mode file has
+/// no `-shm`; `readonly_shm=1` then fails at the first query ("unable to open
+/// database file" — the open itself is lazy, so the fallback above never
+/// runs), and a plain read-only open would create one. `immutable=1` reads
+/// the file as-is.
+fn open_immutable(db_path: &str) -> rusqlite::Result<Connection> {
+    let uri = format!("file:{}?immutable=1", uri_path(db_path));
+    Connection::open_with_flags(uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
+}
+
 /// A filesystem path as a SQLite URI path: `/` separators, a leading `/`
 /// before a Windows drive letter, and the characters a URI reserves escaped.
 fn uri_path(db_path: &str) -> String {
@@ -527,7 +541,11 @@ fn uri_path(db_path: &str) -> String {
 impl KernelResolver {
     #[napi(constructor)]
     pub fn new(config: KernelResolverConfig) -> Result<Self> {
-        let conn = open_read_only_shm(&config.db_path)
+        let conn = if config.snapshot.unwrap_or(false) {
+            open_immutable(&config.db_path)
+        } else {
+            open_read_only_shm(&config.db_path)
+        }
             .map_err(|e| Error::from_reason(format!("KernelResolver open {}: {e}", config.db_path)))?;
         let root_abs = pos_normalize(&config.project_root);
         let workspaces = config.workspaces.map(|w| WorkspaceK {
