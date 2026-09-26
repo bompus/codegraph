@@ -266,6 +266,19 @@ export async function runRefreshLauncher(directory: string, args: string[]): Pro
       return;
     }
     if (active.alive && (revision === active.revision || revision === incompatibleRevision)) return;
+    // With the active child dead (its daemon was stopped for a deployment,
+    // say) there is nothing left to keep serving, so a changed session
+    // contract is reported instead of refused: tools whose name and schema
+    // survived keep working until the host reconnects, where refusing would
+    // fail every call for the rest of the session.
+    const replacingDead = !active.alive;
+    const contractChanged = (reason: string): void => {
+      if (!replacingDead) {
+        incompatibleRevision = revision;
+        throw new Error(reason);
+      }
+      report(`${reason}; serving it anyway because the previous child exited`);
+    };
     const candidate = create(revision);
     // No host messages have been routed here yet. A replacement requiring a
     // host interaction during preflight cannot be switched transparently.
@@ -278,16 +291,12 @@ export async function runRefreshLauncher(directory: string, args: string[]): Pro
       const version = (result as { serverInfo?: { version?: string } })?.serverInfo?.version;
       if (typeof version !== "string" || !version.endsWith(`+${revision}`))
         throw new Error("Replacement build revision mismatch");
-      if (!isDeepStrictEqual(contract(result), contract(sessionResult))) {
-        incompatibleRevision = revision;
-        throw new Error("Session contract changed; reconnect host");
-      }
+      if (!isDeepStrictEqual(contract(result), contract(sessionResult)))
+        contractChanged("Session contract changed; reconnect host");
       candidate.send(JSON.stringify(initialized));
       const tools = await candidate.request("tools/list");
-      if (!isDeepStrictEqual(tools, toolsResult)) {
-        incompatibleRevision = revision;
-        throw new Error("Tool definitions changed; reconnect host");
-      }
+      if (!isDeepStrictEqual(tools, toolsResult))
+        contractChanged("Tool definitions changed; reconnect host");
       if (closing || inflight.size || serverRequests.size || !candidate.alive)
         throw new Error("Session no longer idle");
       if (revisionAt(directory) !== revision)
