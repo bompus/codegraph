@@ -9,14 +9,12 @@
 //! `getUnresolvedReferencesBatchAfter`) and `resolveChunk` is the `settle`
 //! stage — one verdict per ref, admitted by TypeScript in input order.
 //!
-//! Eligibility (kernel v1): `referenceName` carries none of the separators a
-//! skipped strategy keys on (`.`, `:`, `/`, `\`, `#`, `$`, `(`, `)`) and the
-//! language emits binding rows (BINDINGS_LANGUAGES in
-//! src/extraction/kernel/index.ts). Bare `function_ref` refs resolve
-//! natively on their dedicated arm; `this.`/`Cls::m` shapes carry a
-//! separator and stay behind. Everything else — receivers, chains, include
-//! paths, qualified names — returns `passthrough` and the TypeScript path
-//! resolves it unchanged.
+//! The kernel is the only resolver: every ref gets a verdict here, and the
+//! TypeScript side runs the framework resolvers over it (the candidate list
+//! a verdict carries under active frameworks). The arms are ports of the
+//! TypeScript resolver's strategies (`resolveOneInner`, `name-matcher.ts`,
+//! `import-resolver.ts`), which were removed once every language ran here
+//! (resolution-binding-model-plan.md, Phase 6 leg 7f).
 //!
 //! Determinism is part of the contract: every query reproduces its
 //! TypeScript ORDER BY verbatim because `findBestMatch` is first-max, and
@@ -128,7 +126,7 @@ pub struct KernelResolverConfig {
     /// True when this connection sees every `extends`/`implements` edge the
     /// current resolution run will read: the live db, or a snapshot taken
     /// after the prerequisite phase. Enables the supertype walks; otherwise
-    /// they punt (`btm-supers`/`rmot-supers`) to TS, which reads live edges.
+    /// they miss.
     pub supertypes_complete: Option<bool>,
     /// `db_path` is a private checkpointed copy nothing writes (a pool
     /// worker's snapshot). Opened `immutable=1`: no locks and no `-wal`/`-shm`
@@ -140,8 +138,7 @@ pub struct KernelResolverConfig {
     pub query_lookups: Option<bool>,
 }
 
-/// One unresolved_refs row — mirrors UnresolvedReference/rowId shape so the
-/// TS side can feed passthrough refs straight into the existing pipeline.
+/// One unresolved_refs row — mirrors the UnresolvedReference/rowId shape.
 #[napi(object)]
 #[derive(Clone)]
 pub struct ResolveRefIn {
@@ -184,9 +181,9 @@ pub struct KernelCandidateOut {
 ///   - `resolved`    — verdict (gates + alias forwarding applied). `isFinal`
 ///                     marks the import early-win; under frameworks it can
 ///                     still be displaced by a ≥0.9 framework hit.
-///   - `unresolved`  — terminal miss (do not let TS "rescue" it).
-///   - `passthrough` — kernel declined; run the full TS pipeline. `reason`
-///                     names the gate that punted (diagnostics only).
+///   - `unresolved`  — a miss. With a candidate list (`[]` included) the
+///                     framework merge still runs; `reason` marks a ref the
+///                     deferred passes retry (`defer`, `defer-this`).
 /// `candidates` is populated only when `frameworksActive` and the kernel
 /// produced a non-final verdict — the raw [import?, name?] list for the TS
 /// first-max merge.
@@ -755,7 +752,6 @@ impl KernelResolver {
             };
             if let Some(t0) = t0 {
                 let key = match o.status.as_str() {
-                    "passthrough" => format!("punt:{}|{}|{}", o.reason.as_deref().unwrap_or(""), r.reference_kind, r.language),
                     "resolved" => format!("hit:{}|{}|{}", o.resolved_by.as_deref().unwrap_or(""), r.reference_kind, r.language),
                     st => format!("{st}|{}|{}", r.reference_kind, r.language),
                 };
@@ -764,6 +760,17 @@ impl KernelResolver {
             out.push(o);
         }
         Ok(out)
+    }
+
+    /// resolveViaImport for one ref: what a framework resolver reaches through
+    /// `context.resolveImport` (expo-modules' imported-receiver lookup).
+    #[napi]
+    pub fn resolve_via_import_ref(&mut self, r: ResolveRefIn) -> Result<ResolveOutcome> {
+        match self.resolve_via_import_member(&r) {
+            Ok(Some(c)) => Ok(ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None)),
+            Ok(None) => Ok(ResolveOutcome::unresolved()),
+            Err(Halt::Napi(e)) => Err(e),
+        }
     }
 
     /// resolveDeferredThisMemberRefs' per-ref match (matchDeferredThisMember),

@@ -154,8 +154,9 @@ preset says exactly this for PHP.
 
 Each of these cost real debugging time; they are not hypothetical.
 
-1. **A `references` edge cannot cross a language family.** `applyLanguageGate`
-   in `name-matcher.ts` filters `references` candidates to
+1. **A `references` edge cannot cross a language family.** The kernel's
+   language gate (`apply_language_gate` in `codegraph-kernel/src/resolve/names.rs`) filters
+   `references` candidates to
    `sameLanguageFamily`, so a `.js` router config can never name a `.vue`
    component — it silently binds to a same-named `.js` function in a store
    instead. Bind a route to its component with **`calls`**, which

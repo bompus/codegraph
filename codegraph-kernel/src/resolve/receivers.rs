@@ -6,11 +6,7 @@ impl KernelResolver {
     // -----------------------------------------------------------------------
     // Stage-2 member-access arms — matchMethodCall(requireReceiverEvidence)
     // and its source-backed inference helpers (name-matcher.ts). Every helper
-    // returns `Some` for a proven edge, `None` for a provable TS `null`, and
-    // punts (Halt::Punt) when the next step needs state the snapshot can't
-    // see — live supertype edges (getSupertypes/getSupertypeNodes),
-    // tree-sitter parsing (inferGuardedReceiver / inferIterationReceiver), or
-    // unported arms.
+    // returns `Some` for a proven edge and `None` for a miss.
     // -----------------------------------------------------------------------
 
     /// enclosingScopeStartLine — 1-based start line of the tightest
@@ -586,8 +582,7 @@ impl KernelResolver {
 
     /// matchReference's chain arms in TS dispatch order — at most one runs
     /// per language: cppChain (c/cpp), scopedChain (php/rust), dottedChain
-    /// (the dot-notation list). A provable `null` lets the member-tail punt
-    /// reproduce the unported TS tail exactly.
+    /// (the dot-notation list). A miss continues to the member tail.
     pub(super) fn match_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         match r.language.as_str() {
             "c" | "cpp" => self.match_cpp_call_chain(r),

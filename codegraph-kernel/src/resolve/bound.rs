@@ -8,7 +8,7 @@ const TYPE_OWNER_KINDS: [&str; 6] = ["class", "struct", "interface", "component"
 impl KernelResolver {
     /// resolveBoundType — the declared type's owner node: Java type-parameter
     /// bounds first, then its lexical binding, then (non-ESM) the visible
-    /// unique candidate. Punt propagates from viaImport's source arms.
+    /// unique candidate.
     pub(super) fn resolve_bound_type(
         &mut self,
         ty: &str,
@@ -192,9 +192,8 @@ impl KernelResolver {
         Ok(if visible.len() == 1 { Some(visible[0].clone()) } else { None })
     }
 
-    /// matchBoundTypeMember — owner's own `QName::method` member. A miss is a
-    /// PUNT, not a refusal: TS next walks live supertype edges the snapshot
-    /// can't see, so the TS spine must re-derive the miss.
+    /// matchBoundTypeMember — owner's own `QName::method` member. A miss is
+    /// not a refusal: the caller next walks the supertype edges.
     pub(super) fn match_bound_type_member(
         &mut self,
         ty: &str,

@@ -828,6 +828,16 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.92 Resolver port, leg 7f (part 3b, step 2): the TypeScript spine is deleted (2026-09-26)
+
+Nothing reached the TypeScript strategies after §5.91, so they are gone: `resolveOne`/`resolveOneInner`, every `name-matcher.ts` strategy, `resolveViaImport` and the other TypeScript import strategies, `receiver-iteration.ts`, `js-builtins.ts`, and five `ResolutionContext` members (`getMethodMatches`, `getSupertypes`, `getSupertypeNodes`, `getReExports`, `getNodesByLowerName`) with their caches. About 7,500 lines of `src/` go. `name-matcher.ts` (4,721 lines) becomes `gates.ts` (134: the language-family gates, the ambiguity ceiling, binding helpers); `import-resolver.ts` drops from 2,547 to 1,021 lines and keeps the import-path helpers the synthesizers and framework resolvers use.
+
+- expo-modules was the one framework resolver that called `resolveViaImport` directly. It now goes through `context.resolveImport`, backed by a new kernel method, `resolveViaImportRef`.
+- The resolver warm-up no longer builds the known-names set. That set fed only the TypeScript prefilter, and its `SELECT DISTINCT name` scan was measured at up to 28s during `codegraph sync` on the Linux kernel index.
+- 54 unit tests that drove deleted functions directly are removed; the end-to-end tests stay. Stale "punt"/"passthrough" comments in the kernel are rewritten.
+
+Gate: all 28 gate corpora dump identically to the 9cc255a7 build, default and with the pool forced on (56 of 56); incremental sync identical on ktor, celery and Ocelot. `init` wall-clock is flat within noise on most corpora (vitest 4.3 → 4.4s, ktor 7.8 → 7.9s, laravel 18.2 → 17.1s) and drops on pasdoc, 61.2 → 51.7s. Full suite: 316 files, 5,179 tests.
+
 ### 5.91 Resolver port, leg 7f (part 3b, step 1): every path resolves through the kernel (2026-09-26)
 
 No resolution path falls back to TypeScript any more:

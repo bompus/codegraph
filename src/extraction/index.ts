@@ -1824,7 +1824,6 @@ export class ExtractionOrchestrator {
       getNodesByName: () => [],
       getNodesByQualifiedName: () => [],
       getNodesByKind: () => [],
-      getNodesByLowerName: () => [],
       getImportMappings: () => [],
       getAllFiles: () => files,
       getProjectRoot: () => rootDir,

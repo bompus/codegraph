@@ -20,7 +20,7 @@ try {
   (require('node:module') as { enableCompileCache?: () => void }).enableCompileCache?.();
 } catch { /* cache is best-effort */ }
 
-import { parentPort, threadId } from 'worker_threads';
+import { parentPort } from 'worker_threads';
 import { createDatabase, SqliteDatabase } from '../db/sqlite-adapter';
 import { QueryBuilder } from '../db/queries';
 import { ReferenceResolver } from './index';
@@ -141,9 +141,6 @@ port.on('message', (msg: InMessage) => {
         break;
       }
       case 'close': {
-        try {
-          resolver?.dumpResolveProfile(`worker#${threadId}`);
-        } catch { /* diagnostics never block shutdown */ }
         try {
           db?.close();
         } catch {

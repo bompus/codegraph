@@ -5,9 +5,8 @@ use super::*;
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Non-bare c/cpp `imports` refs — the #include-path slice (resolveOneInner
-    // restricted). Measured on the linux corpus this leg resolves ~388k of
-    // the ~393k ineligible:name edges; everything it can't prove punts to the
-    // full TS spine rather than guessing.
+    // restricted). A path the kernel cannot prove continues to the name arms
+    // rather than guessing.
     // -----------------------------------------------------------------------
 
     /// The resolveOneInner ordering for `(c|cpp, 'imports', non-bare)`:
@@ -36,8 +35,8 @@ impl KernelResolver {
             let winner = match self.gate_target_kind(c, r)? {
                 Some(w) => w,
                 None => {
-                    // A gated-out ≥0.9 import can still lose to a ≥0.9
-                    // framework hit — only the full TS spine distinguishes.
+                    // A gated-out ≥0.9 import: a final miss that only a ≥0.9
+                    // framework hit overturns.
                     return Ok(self.gated_import());
                 }
             };
@@ -146,10 +145,9 @@ impl KernelResolver {
         self.finish_pre_framework(r, cand).map(Some)
     }
 
-    /// resolveOneInner for non-bare refs in migrated languages. Ported arms
-    /// run in TS order; every unported arm punts so the TS spine re-derives
-    /// the outcome. A bound-receiver claim is terminal — a refusal never
-    /// falls through to name matching.
+    /// resolveOneInner for non-bare refs, arms in the original TS order. A
+    /// bound-receiver claim is terminal — a refusal never falls through to
+    /// name matching.
     pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
@@ -170,7 +168,7 @@ impl KernelResolver {
         }
         // Prefilter — `existenceName` strips arkts' leading '.';
         // matchJsStoreBindingCall needs a dot-free name, so a non-bare
-        // `Foo::bar` can still reach it — punt when the source check applies.
+        // `Foo::bar` can still reach it.
         let existence = if r.language == "arkts" && r.reference_name.starts_with('.') {
             &r.reference_name[1..]
         } else if r.language == "erlang" {
@@ -193,7 +191,7 @@ impl KernelResolver {
         // names, in order: viaImport (a `.` member-descent can still claim
         // an `a.b` function_ref), then the `::` member-pointer arm (the
         // only non-bare shape matchFunctionRef resolves; `.`/`this.` forms
-        // always miss in it). A miss punts back to that same block.
+        // always miss in it).
         if r.reference_kind == "function_ref" {
             // `this.<member>`: the class-scoped arm answers alone — before the
             // import lookup, with no fallback (resolveThisMemberFnRef).
@@ -534,8 +532,8 @@ impl KernelResolver {
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which
         // needs no bindings rows — run it ahead of the eligibility gate.
-        // A miss falls through for migrated rust (qualified-name/exact arms
-        // mirror matchReference's continuation) and punts otherwise.
+        // A miss falls through to the ordinary route (the qualified-name and
+        // exact arms mirror matchReference's continuation).
         if is_rust_path_ref(r) {
             if let Some(o) = self.resolve_rust_path_ref(r)? {
                 return Ok(o);
@@ -545,8 +543,8 @@ impl KernelResolver {
             Route::Unresolved => Ok(ResolveOutcome::unresolved()),
             Route::CInclude => self.resolve_c_include_import_ref(r),
             // Member-access slice (§5.16): boundReceiver's DB sub-arms, the
-            // import member descent, filePath and qualifiedName — the rest
-            // of the member matchers punt back to the TS spine.
+            // import member descent, filePath, qualifiedName and the member
+            // matchers.
             Route::NonBare => probe!(r, "resolve_nonbare_ref", self.resolve_nonbare_ref(r)),
             Route::Bare => self.resolve_bare_ref(r),
         }
@@ -622,11 +620,10 @@ impl KernelResolver {
             let winner = match self.gate_target_kind(c, r)? {
                 Some(w) => w,
                 None => {
-                    // A gated-out ≥0.9 import resolves to nothing in the TS
-                    // spine — its <0.9 framework candidates were discarded by
-                    // the early return — but a ≥0.9 framework hit would have
-                    // pre-empted the import entirely. Only the full TS spine
-                    // can distinguish; hand it back when frameworks are live.
+                    // A gated-out ≥0.9 import resolves to nothing — its <0.9
+                    // framework candidates are discarded — but a ≥0.9
+                    // framework hit would have pre-empted the import: a final
+                    // miss the framework merge may still overturn.
                     return Ok(self.gated_import());
                 }
             };
@@ -811,7 +808,7 @@ enum Route {
     Unresolved,
 }
 
-/// ref_is_eligible, split so a passthrough names its gate.
+/// Which pipeline a ref takes.
 fn route(r: &ResolveRefIn) -> Route {
     // Only the `unknown` placeholder (an undetected file) is unmigrated: no
     // arm can place a ref from it.

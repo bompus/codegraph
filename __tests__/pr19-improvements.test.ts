@@ -226,17 +226,6 @@ export function funcC(): void { console.log('c'); }
 });
 
 // =============================================================================
-// Best-Candidate Resolution
-// =============================================================================
-
-describe('Best-Candidate Resolution', () => {
-  it.skipIf(!HAS_SQLITE)('should be testable via the resolution module types', async () => {
-    const { ReferenceResolver } = await import('../src/resolution');
-    expect(typeof ReferenceResolver.prototype.resolveOne).toBe('function');
-  });
-});
-
-// =============================================================================
 // Schema v2 Migration
 // =============================================================================
 

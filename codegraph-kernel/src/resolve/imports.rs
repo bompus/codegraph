@@ -456,8 +456,7 @@ impl KernelResolver {
 
     /// resolveViaImport for a name with no `.` or `/` (a bare name, a C++
     /// `::` type, a C/C++ include path): the member variant's `.`/`/`-gated
-    /// arms cannot fire for it, so this is that function without the punt,
-    /// which only the member descent raises.
+    /// arms cannot fire for it.
     pub(super) fn resolve_via_import(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         self.resolve_via_import_member(r)
     }
@@ -504,9 +503,7 @@ impl KernelResolver {
 
     /// resolveViaImport (import-resolver.ts): the C/C++ include arm, the ESM
     /// `import('./x')`-path arm, the go/java/python/lua/module-file arms, and
-    /// the imports loop with the `localName.member` descent. Returns Punt
-    /// where TS would read source the kernel doesn't port (the member descent
-    /// only).
+    /// the imports loop with the `localName.member` descent.
     pub(super) fn resolve_via_import_member(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if self.is_member_call_site(r) || self.is_shadowed_import_name(r)? {
             return Ok(None);
@@ -639,7 +636,7 @@ impl KernelResolver {
             }
         }
         // (Rust `::` paths never reach here — resolve_rust_path_ref runs
-        // ahead of the gate and `::`+`.` names punt.)
+        // ahead of the route.)
         if let Some(c) = self.resolve_lua_require(r)? {
             return Ok(Some(c));
         }
