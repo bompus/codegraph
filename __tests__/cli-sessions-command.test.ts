@@ -17,7 +17,7 @@ import { CodeGraph } from '../src';
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 function sessions(cwd: string, transcripts: string | undefined, args: string[]): string {
-  const env: NodeJS.ProcessEnv = { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' };
+  const env: NodeJS.ProcessEnv = { ...process.env, CODEGRAPH_NO_DAEMON: '1' };
   if (transcripts) env.CODEGRAPH_SESSIONS_DIR = transcripts;
   else env.CLAUDE_CONFIG_DIR = path.join(cwd, 'no-claude-here');
   return execFileSync(process.execPath, [BIN, 'sessions', ...args, '-p', cwd], {

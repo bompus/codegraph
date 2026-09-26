@@ -38,7 +38,6 @@ function spawnServer(cwd: string, handshakeTimeoutMs: number): ChildProcessWitho
       CODEGRAPH_NO_DAEMON: '1',
       // Single process (there is no re-exec any more) so exit-code and
       // liveness assertions observe the server itself.
-      CODEGRAPH_WASM_RELAUNCHED: '1',
       // One less helper child; the liveness watchdog is not under test.
       CODEGRAPH_NO_WATCHDOG: '1',
       CODEGRAPH_TELEMETRY: '0',

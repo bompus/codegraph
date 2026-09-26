@@ -23,7 +23,7 @@ function runNode(cwd: string, extraArgs: string[]): { stdout: string; stderr: st
   try {
     const stdout = execFileSync(process.execPath, [BIN, 'node', ...extraArgs, '-p', cwd], {
       encoding: 'utf-8',
-      env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
+      env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { stdout, stderr: '', code: 0 };

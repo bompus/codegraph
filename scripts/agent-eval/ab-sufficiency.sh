@@ -35,7 +35,7 @@ node "$BIN" init "$TGT" >/dev/null 2>&1 && echo "indexed copy ($(node "$BIN" sta
 echo "###### repo=$REPO  runs/arm=$RUNS"
 echo "###### Q=$Q"; echo
 echo '{"mcpServers":{}}' > "$OUT/mcp-empty.json"
-printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$TGT" > "$OUT/mcp-cg.json"
+printf '{"mcpServers":{"codegraph":{"command":"env","args":["node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$TGT" > "$OUT/mcp-cg.json"
 
 prewarm(){
   pkill -9 -f "serve --mcp --path $TGT" 2>/dev/null

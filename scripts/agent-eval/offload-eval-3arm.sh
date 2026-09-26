@@ -52,8 +52,8 @@ run() { # arm rep mcp-config usage-log-or-dash
 
 CFG_OFF="$RUNS/mcp-offload-$REPO.json"; CFG_RAW="$RUNS/mcp-raw-$REPO.json"; CFG_NOCG="$RUNS/mcp-nocg.json"
 USAGE="$RUNS/$REPO-usage.jsonl"
-printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","CODEGRAPH_OFFLOAD_USAGE_LOG=%s","node","%s","serve","--mcp","--path","%s"]}}}' "$USAGE" "$BIN" "$TARGET" > "$CFG_OFF"
-printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","CODEGRAPH_OFFLOAD_DISABLE=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$TARGET" > "$CFG_RAW"
+printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_OFFLOAD_USAGE_LOG=%s","node","%s","serve","--mcp","--path","%s"]}}}' "$USAGE" "$BIN" "$TARGET" > "$CFG_OFF"
+printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_OFFLOAD_DISABLE=1","node","%s","serve","--mcp","--path","%s"]}}}' "$BIN" "$TARGET" > "$CFG_RAW"
 printf '{"mcpServers":{}}' > "$CFG_NOCG"
 
 # REP_START lets a later batch ADD reps without clobbering earlier jsonls

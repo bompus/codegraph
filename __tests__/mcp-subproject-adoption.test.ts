@@ -29,7 +29,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
   return spawn(process.execPath, [BIN, 'serve', '--mcp', '--no-watch'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
   }) as ChildProcessWithoutNullStreams;
 }
 

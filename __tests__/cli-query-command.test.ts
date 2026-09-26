@@ -22,7 +22,7 @@ const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 function query(cwd: string, extraArgs: string[]): string {
   return execFileSync(process.execPath, [BIN, 'query', 'parseToken', ...extraArgs, '-p', cwd], {
     encoding: 'utf-8',
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
     stdio: ['ignore', 'pipe', 'ignore'], // drop stderr (SQLite experimental warning)
   });
 }

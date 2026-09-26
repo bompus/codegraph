@@ -77,7 +77,7 @@ describe.skipIf(process.platform === 'win32')('index/init orphan supervision (#9
       const errFd = fs.openSync(${JSON.stringify(stderrLog)}, 'a');
       const child = spawn(process.execPath, ['-e', ${JSON.stringify(childSrc)}], {
         stdio: ['ignore', 'pipe', errFd],
-        env: { ...process.env, CODEGRAPH_NO_WATCHDOG: '1', CODEGRAPH_PPID_POLL_MS: '200', CODEGRAPH_WASM_RELAUNCHED: '1' },
+        env: { ...process.env, CODEGRAPH_NO_WATCHDOG: '1', CODEGRAPH_PPID_POLL_MS: '200' },
         detached: true,
       });
       child.unref();

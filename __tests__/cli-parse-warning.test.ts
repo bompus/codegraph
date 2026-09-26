@@ -34,7 +34,6 @@ describe('CLI parse warnings (#1522)', () => {
       env: {
         ...process.env,
         CODEGRAPH_NO_DAEMON: '1',
-        CODEGRAPH_WASM_RELAUNCHED: '1',
         CODEGRAPH_TELEMETRY: '0',
         NO_COLOR: '1',
       },

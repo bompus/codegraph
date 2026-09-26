@@ -26,8 +26,7 @@
 # Reliable attach (works even when this is itself run nested inside a Claude
 # session): each arm PRE-WARMS a persistent codegraph daemon for its target so
 # claude connects to an already-bound, index-loaded daemon instantly — before
-# the agent's first turn — and SKIPS codegraph's startup re-exec via
-# CODEGRAPH_WASM_RELAUNCHED=1. Without this, on a multi-step task the agent
+# the agent's first turn. Without this, on a multi-step task the agent
 # dives into Read/grep before codegraph finishes its ~2-3s startup (worse under
 # the CPU contention of a nested run) and runs with NO codegraph.
 #
@@ -129,10 +128,10 @@ prewarm() { # target — spawn a persistent daemon (current $BIN) and wait for i
 
 run_arm() { # label, target-copy — runs the task $RUNS times against one build
   local label="$1" tgt="$2" c="$OUT/mcp-$1.json"
-  # Connect to the pre-warmed daemon; skip the startup re-exec for a fast attach.
+  # Connect to the pre-warmed daemon for a fast attach.
   # CODEGRAPH_EXPLORE_DEBUG points explore's per-file allocation diagnostic at a
   # sidecar (no-op on builds predating it; never perturbs the response).
-  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_WASM_RELAUNCHED=1","CODEGRAPH_EXPLORE_DEBUG=%s","node","%s","serve","--mcp","--path","%s"]}}}' \
+  printf '{"mcpServers":{"codegraph":{"command":"env","args":["CODEGRAPH_EXPLORE_DEBUG=%s","node","%s","serve","--mcp","--path","%s"]}}}' \
     "$OUT/explore-$label.jsonl" "$BIN" "$tgt" > "$c"
   rm -f "$OUT/explore-$label.jsonl"
   echo "############## ARM [$label] ##############"
