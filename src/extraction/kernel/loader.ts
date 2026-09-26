@@ -210,6 +210,9 @@ export interface KernelResolverConfig {
   /** `dbPath` is a private checkpointed copy nothing writes (a pool
    *  worker's snapshot): open it `immutable=1`, with no `-wal`/`-shm`. */
   snapshot?: boolean;
+  /** Answer node lookups with indexed queries instead of loading the node
+   *  table — cheaper for small batches such as an incremental sync. */
+  queryLookups?: boolean;
 }
 
 /** One pending unresolved_refs row, kernel-read. */

@@ -1,6 +1,7 @@
 //! Row types and the per-run read-only node table the pool workers share.
 
 use super::*;
+use rusqlite::OptionalExtension;
 
 // ---------------------------------------------------------------------------
 // Row types (mirror src/types.ts Node + db/schema.sql bindings).
@@ -331,6 +332,102 @@ pub(super) fn node_table_for(db_path: &str, generation: Option<&str>, conn: &Con
     tables.retain(|_, weak| weak.strong_count() > 0);
     tables.insert(key, Arc::downgrade(&table));
     Ok(table)
+}
+
+/// Per-key query results for a resolver that never loads the node table.
+/// Every statement orders rows exactly as `NodeTable::load_inner` groups them
+/// (rowid breaks ties), and each node id maps to one shared `Arc`.
+#[derive(Default)]
+pub(super) struct QueryLookups {
+    by_name: HashMap<String, NodeList>,
+    by_lower: HashMap<String, NodeList>,
+    by_qname: HashMap<String, NodeList>,
+    by_file: HashMap<String, NodeList>,
+    by_id: HashMap<String, Option<Arc<KNode>>>,
+    known_files: HashMap<String, bool>,
+    /// `SELECT path FROM files`, sorted — the Lua/Rust file buckets.
+    sorted_files: Option<Arc<Vec<String>>>,
+}
+
+pub(super) enum LookupKey<'a> {
+    Name(&'a str),
+    Lower(&'a str),
+    QualifiedName(&'a str),
+    File(&'a str),
+}
+
+impl QueryLookups {
+    fn canonical(&mut self, n: KNode) -> Arc<KNode> {
+        match self.by_id.get(&n.id) {
+            Some(Some(existing)) => existing.clone(),
+            _ => {
+                let id = n.id.clone();
+                let n = Arc::new(n);
+                self.by_id.insert(id, Some(n.clone()));
+                n
+            }
+        }
+    }
+
+    pub(super) fn nodes(&mut self, conn: &Connection, key: LookupKey<'_>) -> rusqlite::Result<NodeList> {
+        let (memo_hit, sql, arg) = match key {
+            LookupKey::Name(k) => (self.by_name.get(k), "WHERE name = ?1 ORDER BY file_path, start_line, rowid", k.to_string()),
+            LookupKey::Lower(k) => (
+                self.by_lower.get(&k.to_ascii_lowercase()),
+                "WHERE lower(name) = ?1 ORDER BY rowid",
+                k.to_ascii_lowercase(),
+            ),
+            LookupKey::QualifiedName(k) => (self.by_qname.get(k), "WHERE qualified_name = ?1 ORDER BY rowid", k.to_string()),
+            LookupKey::File(k) => (self.by_file.get(k), "WHERE file_path = ?1 ORDER BY start_line, rowid", k.to_string()),
+        };
+        if let Some(hit) = memo_hit {
+            return Ok(hit.clone());
+        }
+        let mut stmt = conn.prepare(&format!("SELECT {NODE_COLS} FROM nodes {sql}"))?;
+        let rows: Vec<KNode> = stmt.query_map([&arg], KNode::from_row)?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        let list: NodeList = Arc::new(rows.into_iter().map(|n| self.canonical(n)).collect());
+        let memo = match key {
+            LookupKey::Name(_) => &mut self.by_name,
+            LookupKey::Lower(_) => &mut self.by_lower,
+            LookupKey::QualifiedName(_) => &mut self.by_qname,
+            LookupKey::File(_) => &mut self.by_file,
+        };
+        memo.insert(arg, list.clone());
+        Ok(list)
+    }
+
+    pub(super) fn node_by_id(&mut self, conn: &Connection, id: &str) -> rusqlite::Result<Option<Arc<KNode>>> {
+        if let Some(hit) = self.by_id.get(id) {
+            return Ok(hit.clone());
+        }
+        let sql = format!("SELECT {NODE_COLS} FROM nodes WHERE id = ?1");
+        let row = conn.query_row(&sql, [id], KNode::from_row).optional()?;
+        let n = row.map(|n| self.canonical(n));
+        self.by_id.insert(id.to_string(), n.clone());
+        Ok(n)
+    }
+
+    pub(super) fn known_file(&mut self, conn: &Connection, path: &str) -> rusqlite::Result<bool> {
+        if let Some(&hit) = self.known_files.get(path) {
+            return Ok(hit);
+        }
+        let hit = conn.query_row("SELECT 1 FROM files WHERE path = ?1", [path], |_| Ok(())).optional()?.is_some();
+        self.known_files.insert(path.to_string(), hit);
+        Ok(hit)
+    }
+
+    pub(super) fn sorted_files(&mut self, conn: &Connection) -> rusqlite::Result<Arc<Vec<String>>> {
+        if let Some(files) = &self.sorted_files {
+            return Ok(files.clone());
+        }
+        let mut stmt = conn.prepare("SELECT path FROM files")?;
+        let mut files: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?;
+        files.sort();
+        let files = Arc::new(files);
+        self.sorted_files = Some(files.clone());
+        Ok(files)
+    }
 }
 
 /// safeJsonParse for the `["a","b"]` shape type_parameters is stored as —

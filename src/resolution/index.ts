@@ -57,6 +57,10 @@ const SCOPED_CHAIN_LANGUAGES = new Set(['rust']);
 
 /** The extractor's chained-receiver encoding: `<inner>().<method>`. */
 const CHAIN_SHAPE = /^(.+)\(\)\.(\w+)$/;
+/** Below this many refs a sync's kernel looks nodes up by query instead of
+ *  loading the whole node table: the load is a fixed cost that per-name
+ *  queries only overtake near 16k refs (measured on ktor, ledger §5.74). */
+const SYNC_NODE_TABLE_MIN_REFS = 15_000;
 
 /** PHP `$this->prop->method()` encoded as `this->prop.method` — no `()`, so CHAIN_SHAPE misses it. */
 const PHP_PROP_SHAPE = /^this->\w+\.\w+$/;
@@ -992,9 +996,17 @@ export class ReferenceResolver {
    * conn on the real -shm races node:sqlite's wal-index state — the two
    * SQLite builds' intra-process locks can't see each other).
    */
-  initKernelResolver(dbPath?: string | null, generation?: string, supertypesComplete = false, snapshot = false): void {
+  initKernelResolver(
+    dbPath?: string | null,
+    generation?: string,
+    supertypesComplete = false,
+    snapshot = false,
+    queryLookups = false,
+  ): void {
     this.kernelResolverTried = true;
-    this.kernelResolver = dbPath === null ? null : this.openKernelResolver(dbPath, generation, supertypesComplete, snapshot);
+    this.kernelResolver = dbPath === null
+      ? null
+      : this.openKernelResolver(dbPath, generation, supertypesComplete, snapshot, queryLookups);
   }
 
   /**
@@ -1070,7 +1082,13 @@ export class ReferenceResolver {
     return this.kernelReaderSnapshot;
   }
 
-  private openKernelResolver(parallelDbPath: string | undefined, generation?: string, supertypesComplete = false, snapshot = false): KernelResolverLike | null {
+  private openKernelResolver(
+    parallelDbPath: string | undefined,
+    generation?: string,
+    supertypesComplete = false,
+    snapshot = false,
+    queryLookups = false,
+  ): KernelResolverLike | null {
     if (process.env.CODEGRAPH_KERNEL_RESOLVE === '0') return null;
     const kernelModule = getKernel();
     if (!kernelModule?.KernelResolver) return null;
@@ -1105,6 +1123,9 @@ export class ReferenceResolver {
         generation,
         supertypesComplete,
         snapshot,
+        // CODEGRAPH_KERNEL_QUERY_LOOKUPS=1 forces query mode everywhere — a
+        // dev switch for gating it against the table on full indexes.
+        queryLookups: queryLookups || process.env.CODEGRAPH_KERNEL_QUERY_LOOKUPS === '1',
       });
     } catch (err) {
       logDebug('Kernel resolver unavailable; staying on the TypeScript path', {
@@ -1702,16 +1723,59 @@ export class ReferenceResolver {
    * liveness-watchdog thread (#850/#1091) and a retry set is unbounded when
    * a large edit lands many popular symbol names at once.
    */
-  async resolveAndPersistListYielding(refs: UnresolvedReference[]): Promise<ResolutionResult> {
+  async resolveAndPersistListYielding(
+    refs: UnresolvedReference[],
+    options: {
+      onProgress?: (current: number, total: number) => void;
+      /** The caller's WAL valve: stopped while the kernel conn is open (see
+       *  resolveAndPersistBatched's quiesceValveForKernel), restarted after. */
+      walValve?: { stop(): void; start(): void; drain(): Promise<void> } | null;
+    } = {},
+  ): Promise<ResolutionResult> {
+    const valve = options.walValve ?? null;
+    if (valve) {
+      valve.stop();
+      await valve.drain();
+    }
+    // The live db: prerequisites persist before the rest resolves, so every
+    // supertype edge the walks read is already written. A small batch looks
+    // nodes up by query: loading the whole node table costs more than it.
+    this.initKernelResolver(
+      this.queries.getDatabasePath() ?? undefined,
+      undefined,
+      true,
+      false,
+      refs.length < SYNC_NODE_TABLE_MIN_REFS,
+    );
+    try {
+      return await this.resolveAndPersistListInner(refs, options.onProgress);
+    } finally {
+      this.closeKernel();
+      valve?.start();
+    }
+  }
+
+  private async resolveAndPersistListInner(
+    refs: UnresolvedReference[],
+    onProgress?: (current: number, total: number) => void,
+    done = 0,
+    total = refs.length,
+  ): Promise<ResolutionResult> {
     const prerequisites = refs.filter(ReferenceResolver.isPrerequisite);
     if (prerequisites.length > 0 && prerequisites.length < refs.length) {
-      const first = await this.resolveAndPersistListYielding(prerequisites);
-      const rest = await this.resolveAndPersistListYielding(refs.filter((ref) => !ReferenceResolver.isPrerequisite(ref)));
+      const first = await this.resolveAndPersistListInner(prerequisites, onProgress, done, total);
+      const rest = await this.resolveAndPersistListInner(
+        refs.filter((ref) => !ReferenceResolver.isPrerequisite(ref)),
+        onProgress,
+        done + prerequisites.length,
+        total,
+      );
       return ReferenceResolver.mergeResults(first, rest);
     }
     const maybeYield = createYielder();
-    const result = await this.resolveBatchYielding(refs, maybeYield);
+    const result = await this.resolveBatchKernelFirst(refs, maybeYield);
     await this.persistResolutionResult(result, maybeYield);
+    onProgress?.(done + refs.length, total);
     return result;
   }
 
@@ -1897,6 +1961,124 @@ export class ReferenceResolver {
     };
   }
 
+  /** One kernel `resolveChunk` over `refs`, in order. Throws on any native failure. */
+  private resolveChunkWithKernel(kernel: KernelResolverLike, refs: UnresolvedReference[]): ResolveOutcome[] {
+    const kernelRows: ResolveRefIn[] = refs.map((raw) => ({
+      rowId: raw.rowId,
+      fromNodeId: raw.fromNodeId,
+      referenceName: raw.referenceName,
+      referenceKind: raw.referenceKind,
+      line: raw.line,
+      column: raw.column,
+      candidates: raw.candidates ? JSON.stringify(raw.candidates) : undefined,
+      filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId) || '',
+      language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId) || '',
+      failureReason: raw.failureReason,
+    }));
+    const outcomes = kernel.resolveChunk(kernelRows);
+    if (outcomes.length !== refs.length) {
+      throw new Error(`kernel resolveChunk returned ${outcomes.length} outcomes for ${refs.length} refs`);
+    }
+    return outcomes;
+  }
+
+  /**
+   * Settle one ref from its kernel outcome: a passthrough runs the full
+   * TypeScript pipeline, anything else goes through the framework merge.
+   */
+  private settleKernelRef(
+    raw: UnresolvedReference,
+    outcome: ResolveOutcome,
+    stats: { handled: number; passthrough: number; reasons: Record<string, number>; frameworkMerge: number; frameworkMergeWithCands: number },
+  ): { ref: UnresolvedRef; result: ResolvedRef | null } {
+    const ref: UnresolvedRef = {
+      fromNodeId: raw.fromNodeId,
+      referenceName: raw.referenceName,
+      referenceKind: raw.referenceKind,
+      line: raw.line,
+      column: raw.column,
+      filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
+      language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
+      rowId: raw.rowId,
+    };
+    if (outcome.status === 'passthrough') {
+      stats.passthrough++;
+      const reason = outcome.reason ?? 'unknown';
+      stats.reasons[reason] = (stats.reasons[reason] ?? 0) + 1;
+      ref.kernelReason = reason;
+      return { ref, result: this.resolveOneTimed(ref) };
+    }
+    stats.handled++;
+    // unresolved + a kernel candidate list = the no_candidates marker;
+    // settleKernelOutcome still runs the framework merge over it.
+    // candidates=[] merges can only produce framework candidates —
+    // candidates=[…] is a real first-max over kernel + framework hits.
+    if (outcome.candidates && this.frameworks.length > 0) {
+      if (outcome.candidates.length === 0) stats.frameworkMerge++;
+      else stats.frameworkMergeWithCands++;
+    }
+    return { ref, result: this.settleKernelOutcome(ref, outcome) };
+  }
+
+  /**
+   * resolveBatchYielding with the kernel first: each chunk resolves natively
+   * and only its passthroughs run the TypeScript pipeline. A native failure
+   * drops the kernel and the rest of the batch runs in TypeScript.
+   */
+  private async resolveBatchKernelFirst(
+    batch: UnresolvedReference[],
+    maybeYield: MaybeYield,
+  ): Promise<ResolutionResult> {
+    const kernel = this.kernelResolver;
+    if (!kernel) return this.resolveBatchYielding(batch, maybeYield);
+    this.warmCaches();
+    this.advanceSupertypeGeneration();
+    const resolved: ResolvedRef[] = [];
+    const unresolved: UnresolvedRef[] = [];
+    const byMethod: Record<string, number> = {};
+    const stats = { handled: 0, passthrough: 0, reasons: {} as Record<string, number>, frameworkMerge: 0, frameworkMergeWithCands: 0 };
+    const CHUNK = 500;
+    let i = 0;
+    for (; i < batch.length; i += CHUNK) {
+      const chunk = batch.slice(i, i + CHUNK);
+      let outcomes: ResolveOutcome[];
+      try {
+        outcomes = this.resolveChunkWithKernel(kernel, chunk);
+      } catch (err) {
+        logDebug('Kernel resolution failed during sync; staying on the TypeScript path', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        this.closeKernel();
+        break;
+      }
+      for (let k = 0; k < chunk.length; k++) {
+        const { ref, result } = this.settleKernelRef(chunk[k]!, outcomes[k]!, stats);
+        if (result) {
+          resolved.push(result);
+          byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;
+        } else {
+          unresolved.push(ref);
+        }
+        const y = maybeYield();
+        if (y) await y;
+      }
+    }
+    if (i < batch.length) {
+      const rest = await this.resolveBatchYielding(batch.slice(i), maybeYield);
+      resolved.push(...rest.resolved);
+      unresolved.push(...rest.unresolved);
+      for (const [k, v] of Object.entries(rest.stats.byMethod)) byMethod[k] = (byMethod[k] || 0) + v;
+    }
+    if (this.profileStages) {
+      console.error(`[resolve-profile] sync kernel: handled=${stats.handled} passthrough=${stats.passthrough}`);
+    }
+    return {
+      resolved,
+      unresolved,
+      stats: { total: batch.length, resolved: resolved.length, unresolved: unresolved.length, byMethod },
+    };
+  }
+
   /**
    * Resolve a list of refs and return everything the ADMISSION side needs to
    * persist the outcome: resolutions, failures, the deferred post-pass refs
@@ -2005,54 +2187,9 @@ export class ReferenceResolver {
     if (!this.kernelResolverTried) this.initKernelResolver(this.queries.getDatabasePath() ?? undefined, undefined, true);
     if (this.kernelResolver) {
       try {
-        const kernelRows: ResolveRefIn[] = refs.map((raw) => ({
-          rowId: raw.rowId,
-          fromNodeId: raw.fromNodeId,
-          referenceName: raw.referenceName,
-          referenceKind: raw.referenceKind,
-          line: raw.line,
-          column: raw.column,
-          candidates: raw.candidates ? JSON.stringify(raw.candidates) : undefined,
-          filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId) || '',
-          language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId) || '',
-          failureReason: raw.failureReason,
-        }));
-        const outcomes = this.kernelResolver.resolveChunk(kernelRows);
-        if (outcomes.length !== refs.length) {
-          throw new Error(`kernel resolveChunk returned ${outcomes.length} outcomes for ${refs.length} refs`);
-        }
+        const outcomes = this.resolveChunkWithKernel(this.kernelResolver, refs);
         for (let i = 0; i < refs.length; i++) {
-          const raw = refs[i]!;
-          const ref: UnresolvedRef = {
-            fromNodeId: raw.fromNodeId,
-            referenceName: raw.referenceName,
-            referenceKind: raw.referenceKind,
-            line: raw.line,
-            column: raw.column,
-            filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
-            language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
-            rowId: raw.rowId,
-          };
-          const outcome = outcomes[i]!;
-          if (outcome.status === 'passthrough') {
-            kernelStats.passthrough++;
-            const reason = outcome.reason ?? 'unknown';
-            kernelStats.reasons[reason] = (kernelStats.reasons[reason] ?? 0) + 1;
-            ref.kernelReason = reason;
-          } else {
-            kernelStats.handled++;
-            // unresolved + a kernel candidate list = the no_candidates marker;
-            // settleKernelOutcome still runs the framework merge over it.
-            // candidates=[] merges can only produce framework candidates —
-            // candidates=[…] is a real first-max over kernel + framework hits.
-            if (outcome.candidates && this.frameworks.length > 0) {
-              if (outcome.candidates.length === 0) kernelStats.frameworkMerge++;
-              else kernelStats.frameworkMergeWithCands++;
-            }
-          }
-          const result = outcome.status === 'passthrough'
-            ? this.resolveOneTimed(ref)
-            : this.settleKernelOutcome(ref, outcome);
+          const { ref, result } = this.settleKernelRef(refs[i]!, outcomes[i]!, kernelStats);
           if (result) {
             resolved.push(result);
             byMethod[result.resolvedBy] = (byMethod[result.resolvedBy] || 0) + 1;

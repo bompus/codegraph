@@ -19,8 +19,23 @@ impl KernelResolver {
         Ok(self.table.get_or_init(|| table))
     }
 
+    /// A query-mode lookup: `f` runs against the memo and the connection.
+    fn with_lookups<T>(
+        &self,
+        f: impl FnOnce(&mut QueryLookups, &Connection) -> rusqlite::Result<T>,
+    ) -> Option<Res<T>> {
+        let cell = self.lookups.as_ref()?;
+        Some(match self.conn() {
+            Ok(conn) => f(&mut cell.borrow_mut(), conn).map_err(|e| Error::from_reason(e.to_string()).into()),
+            Err(e) => Err(e),
+        })
+    }
+
     /// queries.getNodesByName — ORDER BY file_path, start_line.
     pub(super) fn nodes_by_name(&self, name: &str) -> Res<NodeList> {
+        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
+            return r;
+        }
         let t = self.table()?;
         Ok(t.by_name.get(name).cloned().unwrap_or_else(|| t.empty.clone()))
     }
@@ -28,18 +43,27 @@ impl KernelResolver {
     /// queries.getNodesByLowerName — `WHERE lower(name) = lower(?)`, no
     /// ORDER BY (rowid order, same as the TS reader).
     pub(super) fn nodes_by_lower_name(&self, name: &str) -> Res<NodeList> {
+        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Lower(name))) {
+            return r;
+        }
         let t = self.table()?;
         Ok(t.by_lower().get(&name.to_ascii_lowercase()).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesByQualifiedName — no ORDER BY (TS uses rowid order).
     pub(super) fn nodes_by_qualified_name(&self, qname: &str) -> Res<NodeList> {
+        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::QualifiedName(qname))) {
+            return r;
+        }
         let t = self.table()?;
         Ok(t.by_qname.get(qname).cloned().unwrap_or_else(|| t.empty.clone()))
     }
 
     /// queries.getNodesInFile — ORDER BY start_line.
     pub(super) fn nodes_in_file(&self, file_path: &str) -> Res<NodeList> {
+        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::File(file_path))) {
+            return r;
+        }
         let t = self.table()?;
         Ok(t.by_file.get(file_path).cloned().unwrap_or_else(|| t.empty.clone()))
     }
@@ -54,18 +78,32 @@ impl KernelResolver {
 
     /// queries.getNodeById.
     pub(super) fn node_by_id(&self, id: &str) -> Res<Option<Arc<KNode>>> {
+        if let Some(r) = self.with_lookups(|l, c| l.node_by_id(c, id)) {
+            return r;
+        }
         Ok(self.table()?.by_id.get(id).cloned())
     }
 
     /// knownSymbols membership (`SELECT DISTINCT name FROM nodes`); false
     /// once closed.
     pub(super) fn known_name(&self, name: &str) -> bool {
+        if let Some(r) = self.with_lookups(|l, c| l.nodes(c, LookupKey::Name(name))) {
+            return r.is_ok_and(|list| !list.is_empty());
+        }
         self.table().is_ok_and(|t| t.by_name.contains_key(name))
     }
 
     /// knownFiles membership (`SELECT path FROM files`); false once closed.
     pub(super) fn known_file(&self, path: &str) -> bool {
+        if let Some(r) = self.with_lookups(|l, c| l.known_file(c, path)) {
+            return r.unwrap_or(false);
+        }
         self.table().is_ok_and(|t| t.files.contains(path))
+    }
+
+    /// Every indexed path, sorted — query mode's source for the file buckets.
+    pub(super) fn sorted_files(&self) -> Option<Arc<Vec<String>>> {
+        self.with_lookups(|l, c| l.sorted_files(c)).map(|r| r.unwrap_or_default())
     }
 
     /// queries.getBindings — ORDER BY rowid.
