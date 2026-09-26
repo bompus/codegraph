@@ -75,7 +75,8 @@ port.on('message', (msg: InMessage) => {
         resolver.initKernelResolver(
           msg.kernelDbPath && msg.kernelDbPath !== msg.dbPath ? msg.kernelDbPath : null,
           msg.kernelGeneration,
-          msg.supertypesComplete === true
+          msg.supertypesComplete === true,
+          true
         );
         if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[pool-timing] worker open: db=${tDb - tOpen}ms init=${Date.now() - tDb}ms`);
         port.postMessage({ type: 'ready' });
@@ -101,7 +102,7 @@ port.on('message', (msg: InMessage) => {
         // edge the rest of the run reads is in it, so the kernel walks them.
         if (msg.kernel && resolver) {
           resolver.closeKernel();
-          resolver.initKernelResolver(msg.kernel.dbPath, msg.kernel.generation, true);
+          resolver.initKernelResolver(msg.kernel.dbPath, msg.kernel.generation, true, true);
         }
         port.postMessage({ type: 'recycled', id: msg.id });
         break;

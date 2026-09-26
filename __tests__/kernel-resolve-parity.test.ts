@@ -452,6 +452,36 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(py.status).toBe('resolved');
   });
 
+  it('reads a pool worker snapshot, a copy with no -wal or -shm', async () => {
+    // Pool workers resolve over a checkpointed copy of the db file. A copy
+    // has no -shm, and a `readonly_shm=1` open fails at its first query
+    // there — every worker then fell back to TypeScript for the whole run.
+    const kernel = getKernel();
+    const graph = await project(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (graph as any).db.db as import('node:sqlite').DatabaseSync;
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const live = path.join(tempDir!, '.codegraph', 'codegraph.db');
+    const snap = `${live}.kr-snapshot`;
+    fs.copyFileSync(live, snap);
+    const resolver = new kernel!.KernelResolver!({
+      dbPath: snap,
+      projectRoot: tempDir!,
+      cppIncludeDirs: [],
+      nodeBuiltinSpecifiers: [...builtinModules],
+      frameworksActive: false,
+      snapshot: true,
+    });
+    try {
+      expect(Array.isArray(resolver.readPendingBatch(0, 10, false))).toBe(true);
+    } finally {
+      resolver.close();
+    }
+    // Read as-is: nothing is created next to the copy.
+    expect(fs.existsSync(`${snap}-shm`)).toBe(false);
+    expect(fs.existsSync(`${snap}-wal`)).toBe(false);
+  });
+
   it('resolves byte-identically to the TypeScript fallback', async () => {
     const withKernel = dump(await project(true));
     await cg!.close();

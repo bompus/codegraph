@@ -207,6 +207,9 @@ export interface KernelResolverConfig {
    *  (the live db, or a snapshot taken after the prerequisite phase), so the
    *  kernel may walk supertypes itself. */
   supertypesComplete?: boolean;
+  /** `dbPath` is a private checkpointed copy nothing writes (a pool
+   *  worker's snapshot): open it `immutable=1`, with no `-wal`/`-shm`. */
+  snapshot?: boolean;
 }
 
 /** One pending unresolved_refs row, kernel-read. */
