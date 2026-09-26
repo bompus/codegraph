@@ -195,6 +195,28 @@ const FIXTURE: Record<string, string> = {
     'go() -> em:f(1), em:g(2), apply(em, g, [3]).',
   ].join('\n'),
   'src/em.app.src': '{application, em, [{mod, {em, []}}, {applications, [kernel, em_user]}]}.\n',
+  // Import-only languages: a Nix path import, a COBOL copybook and Terraform
+  // refs resolve through the import arm (and frameworks) or not at all.
+  'nix/mod.nix': '{ imports = [ ./part.nix ./missing.nix ]; y = nixonly 1; }\n',
+  'nix/part.nix': '{ z = 2; }\n',
+  'cob/PROG.cbl': [
+    '       IDENTIFICATION DIVISION.',
+    '       PROGRAM-ID. PROG.',
+    '       DATA DIVISION.',
+    '       WORKING-STORAGE SECTION.',
+    '       COPY CUSTREC.',
+    '       COPY SQLCA.',
+    '       PROCEDURE DIVISION.',
+    '           STOP RUN.',
+  ].join('\n'),
+  'cob/CUSTREC.cpy': '       01 CUST-REC.\n          05 CUST-ID PIC 9(5).\n',
+  'tf/main.tf': [
+    'variable "region" { default = "us-east-1" }',
+    'module "net" { source = "./net" }',
+    'resource "aws_s3_bucket" "b" { bucket = var.region }',
+    'output "o" { value = module.net.id }',
+  ].join('\n'),
+  'tf/net/main.tf': 'output "id" { value = "x" }\n',
   // Markdown links resolve to the linked file by path.
   'README.md': '# Fixture\n\nSee [util](src/util.ts).\n',
   // PHP include paths resolve to files only: relative to the including file,
