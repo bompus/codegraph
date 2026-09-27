@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Solid Router registered JSX and configuration trees now link to exact components, including static lazy imports, nested paths and router bases, without duplicate React routes.
+
 - Angular Router registered route arrays now link to exact component classes, including nested children and static lazy imports; imported route edits refresh their registrations during sync.
 
 - Astro pages now link to their exact components and source-declared navigation; exported HTTP methods in `.ts`/`.js` endpoints link to their handlers, while type-only declarations and `.mjs` files are excluded.

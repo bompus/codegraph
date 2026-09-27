@@ -37,6 +37,9 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` `.astro` pages linked to components; `.ts`/`.js` HTTP-method exports linked to handlers; anchors and `Astro.redirect` link to local pages |
 | **Angular Router** | `provideRouter` / `RouterModule.forRoot` arrays, nested children, relative component imports and static lazy components/route arrays/NgModules |
+| **Solid Router** | Imported `Router`/`Route` JSX and registered literal configuration, nested paths, path arrays and bases; imported/local components and static lazy defaults |
+
+Solid Router emits leaf routes, preserving nested path composition even when a child begins with `/`. Parent components and the router root remain layouts. Cross-file configuration, other router variants, dynamic/spread declarations, inline/anonymous components and lazy re-exports are unsupported.
 
 Route resolution is automatic — there's nothing to configure. If a framework file is recognized, its routes appear in the graph after the next index or sync.
 

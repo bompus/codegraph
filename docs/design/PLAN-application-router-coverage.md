@@ -1,4 +1,4 @@
-Status: steps 1–4 and 6 landed in fork/consolidated; 5 and 7–13 pending
+Status: steps 1–4, 6 and 8 landed or in review; 5, 7 and 9–13 pending
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
@@ -7,7 +7,7 @@ Status: steps 1–4 and 6 landed in fork/consolidated; 5 and 7–13 pending
 - [ ] 5 RedwoodSDK — imported `rwsdk/router` declarations, method tables, and statically resolvable registration/prefix context. Gate: shared proof, `defineApp`/`render` composition, and interrupters excluded from page roots.
 - [x] 6 Angular Router — registered arrays, nested children and static lazy imports bind exact classes; imported table add/edit/delete after reopening and fresh workers pass; build passes, 117 WASM focused/control tests pass, full native suite 4,484 pass / 46 skip; independent review clear.
 - [ ] 7 Analog — default file routes and page components using Analog-specific index, dot, parameter, and layout conventions. Gate: shared proof and fixtures that distinguish parent layouts from matching pages.
-- [ ] 8 Solid Router — imported JSX/config declarations, nested path composition, and router base. Gate: shared proof, nested matching semantics, component links, and unrelated JSX negatives.
+- [x] 8 Solid Router — registered JSX/config and static lazy imports bind exact components; nested bases/splats, mutations, scoped introduction and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,523 pass / 46 skip; independent review clear.
 - [ ] 9 SolidStart — pinned-version file routes, default page exports, and HTTP-method exports. Gate: shared proof, page/API coexistence, layouts, and dynamic parameters.
 - [ ] 10 Qwik City — default file routes, page components, and method-specific endpoint exports. Gate: shared proof, parameters, layouts, and `onRequest`/middleware exclusions.
 - [ ] 11 Vike — default `+Page` conventions and literal `+route` overrides. Gate: shared proof, parameters, exact component links, and no fallback route when an unsupported override changes routing.
