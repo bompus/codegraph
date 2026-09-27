@@ -30,6 +30,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Analog default file pages now link to their component classes, preserving its directory layouts, dotted paths and dynamic segments when the platform plugin and file router are registered.
+
+- Angular Router registered route arrays now link to exact component classes, including nested children and static lazy imports; imported route edits refresh their registrations during sync.
+
 - Waku filesystem pages now produce exact named or anonymous component roots, with dynamic parameters and literal static-path expansion; layouts, slices, APIs and unsupported configuration are excluded.
 
 - Waku programmatic `createPages` registrations now expose literal `createPage` routes and exact local/imported component roots, including async callbacks, static paths and exact-path declarations.

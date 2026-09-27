@@ -37,6 +37,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` `.astro` pages linked to components; `.ts`/`.js` HTTP-method exports linked to handlers; anchors and `Astro.redirect` link to local pages |
 | **Angular Router** | `provideRouter` / `RouterModule.forRoot` arrays, nested children, relative component imports and static lazy components/route arrays/NgModules |
+| **Analog** | Registered default `src/app/pages/**/*.page.ts` pages, linked to named default classes; directory layouts, dot paths, index/pathless segments and parameters |
 | **Solid Router** | Imported `Router`/`Route` JSX and registered literal configuration, nested paths, path arrays and bases; imported/local components and static lazy defaults |
 | **SolidStart** | Default file pages and HTTP-method exports; exact local targets, nested layouts, groups, parameters and GET-to-HEAD fallback |
 | **Vike** | Default JS/TS `+Page` modules and nearest inherited literal `+route` overrides; exact local named components and `@` parameters |
@@ -56,6 +57,8 @@ SolidStart coverage targets version 2.0.4: option-free `solidStart()` in Vite an
 Solid Router emits leaf routes, preserving nested path composition even when a child begins with `/`. Parent components and the router root remain layouts. Cross-file configuration, other router variants, dynamic/spread declarations, inline/anonymous components and lazy re-exports are unsupported.
 
 Route resolution is automatic — there's nothing to configure. If a framework file is recognized, its routes appear in the graph after the next index or sync.
+
+Analog requires the platform plugin in a default-root Vite config and option-free `provideFileRouter()` registration. Custom roots, extra route directories, `app/routes`, route metadata overrides, router options, optional catchalls, Markdown and anonymous/re-exported defaults remain unsupported. A directory makes its corresponding page a layout; a dotted filename alone does not. The Vite config may be an object or a `defineConfig` callback that directly returns one, as the create-analog templates write it; `prerender.routes` is allowed.
 
 Angular follows literal or constant route arrays from runtime router imports. `forChild` contributes routes only through a statically imported lazy NgModule. Route nodes belong to the registration file, and imported table changes refresh that owner. Redirects, named outlets, custom matchers, dynamic factories, conditional registrations, spread objects, path aliases and re-export modules remain unsupported. No navigation is inferred.
 
