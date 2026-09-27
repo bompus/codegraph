@@ -18,10 +18,11 @@
  * The cross-compile form is what the release workflow uses (e.g.
  * --target x86_64-apple-darwin --platform darwin-x64 on a macos-arm runner).
  */
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
+import { kernelSourceStamp, stampPath } from './kernel-stamp.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const crate = path.join(root, 'codegraph-kernel');
@@ -87,6 +88,10 @@ mkdirSync(destDir, { recursive: true });
 // signature still verifies, which makes it maddening to diagnose).
 rmSync(dest, { force: true });
 copyFileSync(lib, dest);
+// The sources this build came from, so ensure-kernel.mjs can tell a stale prebuild.
+const stamp = kernelSourceStamp(root);
+if (stamp) writeFileSync(stampPath(dest), `${stamp}\n`);
+else rmSync(stampPath(dest), { force: true });
 console.log(`[kernel] staged ${dest} (${Math.round(statSync(dest).size / (1024 * 1024))}M)`);
 
 /** Run a command in the crate; true on success. Exits on failure unless allowed. */
