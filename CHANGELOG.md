@@ -197,6 +197,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A one-file sync is faster on large JavaScript and TypeScript projects: codegraph remembers which files each inference step found nothing in and skips them until they change. Syncs also use less memory.
+
 - Nuxt page routes now link to the page component they render, and `index` folders no longer leak into the URL (`pages/account/index/[page].vue` is `/account/:page`).
 
 - When several C files define a function with the same name, a C function-pointer call now links to the one the registering file can actually see (not a `static` function in another file, a header it does not include, a C++ method or a test program), or to none, instead of whichever came first. On the Linux kernel this removes 861 links, most of them wrong, and adds 160.

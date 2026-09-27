@@ -190,6 +190,66 @@ With Milestone 1's ownership, deleting and re-inserting ~330k edges shrinks to
 the re-run passes' edges. The `ALWAYS` passes still re-run on every sync;
 measure them one by one before designing anything for them.
 
+## Content-only skip cache (built 2026-09-26)
+
+Most passes read every file of their languages and drop nearly all of them on a
+test of the bytes alone: no `x[k](` for the object registry, no `emit(` or
+`.on(` for the emitter pass, no JSX for the JSX-child pass. A sync paid that
+read-and-test for every file on every run.
+
+`synth_skips` (schema 15) records, per pass, the files it dropped for content
+alone, keyed by the SHA-256 of the bytes it read. That is the same digest as
+`files.content_hash`, so a skip applies only while the file's indexed hash still
+equals it; an edited, reverted or deleted file is read again. The rows belong to
+one build: `SYNTH_SKIPS_VERSION` is the package version plus a fingerprint of the
+compiled `src/resolution/` modules, and any other version is ignored and
+replaced. Only a decision that depends on the file's bytes alone may be
+recorded; a pass that drops a file because of the graph or another file does not
+record it. `src/resolution/synth-skips.ts` owns the helpers, and pool workers
+send their recorded skips back for the main thread to write.
+
+Passes using it: object registry, EventEmitter, window messages, JSX children,
+Vue templates, Vuex dispatch, Pinia stores, NgRx effects, React Native events
+(which also stops reading file types it never matches) and the cross-tier pass.
+The same change stopped a sync from detecting frameworks twice when the
+resolver was created fresh.
+
+`__tests__/synth-skips.test.ts` checks that a sync using the skips ends with the
+same synthesized edges as a fresh index after a skipped file gains a registry,
+reverts to its skipped bytes, or is deleted, and after a build change.
+
+### Measured (2026-09-26, idle host)
+
+Paired one-file syncs, `fork/consolidated` `57b56018` against the branch,
+alternating base, branch, branch, base, median of four syncs:
+
+| Corpus | Before | After | Peak memory |
+|---|---|---|---|
+| gin | 0.39 s | 0.39 s | 212 → 212 MiB |
+| Alamofire | 0.55 s | 0.52 s | 263 → 226 MiB |
+| pretix | 2.53 s | 2.32 s | 585 → 577 MiB |
+| CPython | 4.98 s | 4.79 s | 1,059 → 863 MiB |
+| discourse | 5.91 s | 5.13 s | 1,065 → 969 MiB |
+| supabase | 6.19 s | 5.15 s | 967 → 928 MiB |
+| n8n | 13.79 s | 9.38 s | 1,616 → 1,374 MiB |
+
+The object-registry pass on n8n went from 3.2 s to 0.02 s. The estimate before
+building was 3.5–4× on n8n; the result is 1.47×, because the costliest passes
+that remain do their work on files the content test keeps:
+
+- The cross-tier pass matches about half of n8n's JavaScript and TypeScript
+  files (any `.get(`); its work there depends on the graph, since the receiver
+  can be an imported client. About 2 s on n8n.
+- JSX children match most `.tsx` files on supabase (about 1 s); Pinia about
+  0.9 s on n8n.
+- Framework detection still reads every JavaScript file when no dependency
+  names a framework (the HTTP-routing check), about 0.5 s per detection on n8n.
+- Kernel resolution retries every previously failed reference on each sync
+  (1,236 on n8n), about 1 s, plus 0.4 s to close the kernel connection.
+- Full-table SQLite reads, about 1 s in total.
+
+Each of these needs its own cache or scoping, not a larger skip set.
+
 ## Costs and risks
 
 - **Size.** The contribution tables add rows proportional to registrations,

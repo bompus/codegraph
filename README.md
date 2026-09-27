@@ -144,17 +144,17 @@ Paired runs against upstream `main` at `ba3c21e` (2026-09-16, newer than its 1.6
 
 On supabase almost all of upstream's time goes to writing parse results to SQLite (60.7 s against the fork's 3.7 s). The fork's first index skips per-row foreign-key checks and index upkeep.
 
-**One-file sync** (edit one file, `codegraph sync`):
+**One-file sync** (edit one file, `codegraph sync`; re-measured on an idle host, median of four syncs):
 
 | Corpus | Upstream | Fork |
 |---|---|---|
-| gin | 0.41 s | 0.43 s |
-| Alamofire | 0.54 s | 0.59 s |
-| pretix | 1.15 s | 2.77 s |
-| CPython | 1.46 s | 5.91 s |
-| discourse | 5.78 s | 5.79 s |
-| supabase | 1.27 s | 6.68 s |
-| n8n | 12.2 s | 14.2 s |
+| gin | 0.38 s | 0.39 s |
+| Alamofire | 0.51 s | 0.51 s |
+| pretix | 1.11 s | 2.27 s |
+| CPython | 1.44 s | 4.37 s |
+| discourse | 5.57 s | 4.68 s |
+| supabase | 1.56 s | 4.63 s |
+| n8n | 12.1 s | 9.4 s |
 
 The fork's sync does more: it rebuilds the links inferred from events, callbacks and function pointers, which upstream leaves stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the rebuild off, trading it for the same staleness.
 
@@ -170,7 +170,7 @@ The precision gain comes mostly from declining uncertain links rather than resol
 ### What it costs
 
 - **Larger database:** 14–22% bigger on six of the seven corpora above, and 40% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower one-file syncs on large projects:** up to 5× upstream's time (supabase; table above), because the fork keeps inferred links correct on every sync. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
+- **Slower one-file syncs on large projects:** about 2–3× upstream's time on pretix, CPython and supabase (table above), because the fork keeps inferred links correct on every sync. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
 - **Fewer edges on some projects:** 3–13% fewer on pretix, CPython, discourse and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
 - **Slower full index on discourse:** 5% slower, the one corpus of the seven where the fork is not faster.
 
