@@ -618,6 +618,29 @@ export class DatabaseConnection {
   }
 
   /**
+   * Backfill every WAL frame into the dbfile so a plain file copy is a
+   * complete database; true only when that happened. The caller is the only
+   * writer and is parked on this.
+   *
+   * TRUNCATE alone is not enough: it also waits for every reader to leave
+   * the WAL, so an idle reader's mark — or another checkpointer holding the
+   * lock, like the WAL valve's timer pass on a big WAL — turns it into busy
+   * even though a PASSIVE pass could backfill everything. A complete PASSIVE
+   * result is enough for the copy. `settle` runs before each attempt (the
+   * caller drains its valve there).
+   */
+  async foldWalForCopy(settle?: () => Promise<void>): Promise<boolean> {
+    const complete = (r: { busy: number; log: number; checkpointed: number } | null): boolean =>
+      !!r && r.busy === 0 && r.log === r.checkpointed;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await settle?.();
+      if (complete(await this.checkpointWalTruncate())) return true;
+      if (complete(await this.checkpointWalPassive())) return true;
+    }
+    return false;
+  }
+
+  /**
    * Shrink a leftover oversized WAL (#1431). A SIGKILL'd session — the #850
    * liveness watchdog, OOM, a crash — leaves its WAL on disk, the next session
    * appends to the same file, and (pre-#1431) nothing ever truncated it:

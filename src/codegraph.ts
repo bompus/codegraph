@@ -1569,11 +1569,10 @@ export class CodeGraph {
       // Full fold for the worker-kernel snapshot copy: off-thread (a multi-GB
       // backfill must not stall the #850 watchdog), true only when every WAL
       // frame reached the dbfile — a partial fold would hand workers a stale
-      // graph, so the resolver declines to snapshot instead.
-      foldWalForSnapshot: async () => {
-        const r = await this.db.checkpointWalTruncate();
-        return !!r && r.busy === 0 && r.log === r.checkpointed;
-      },
+      // graph, so the resolver declines to snapshot instead. The valve is
+      // drained first: its timer pass holding the checkpoint lock is what
+      // made the fold report busy and cost the whole pool.
+      foldWalForSnapshot: () => this.db.foldWalForCopy(async () => { await walValve?.drain(); }),
     });
   }
 
