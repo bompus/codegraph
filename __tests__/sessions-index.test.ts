@@ -179,8 +179,12 @@ describe('what gets indexed and how hits rank', () => {
     const hits = index.search('timer runtime checkout');
     // The skill body is not indexed, and the pasted log's matching paragraph
     // is its own passage rather than one 5 KB row.
-    expect(hits).toHaveLength(1);
+    expect(hits.filter((h) => !h.partial)).toHaveLength(1);
+    expect(hits[0]!.partial).toBeUndefined();
     expect(hits[0]!.snippet).not.toMatch(/alpha|charlie/);
+    // The every-word query ran short, so some-word hits follow, marked.
+    expect(hits.slice(1).every((h) => h.partial)).toBe(true);
+    expect(hits.fallback).toBeUndefined();
 
     const wide = index.search('timer runtime checkout', { any: true });
     expect(wide[0]!.snippet).toMatch(/runtime/);

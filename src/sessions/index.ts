@@ -98,6 +98,8 @@ export interface SessionHit {
   file: string;
   /** BM25 rank; lower is better, relative within one query only. */
   score: number;
+  /** Holds only some of the query words: the every-word query ran short. */
+  partial?: boolean;
 }
 
 export interface SessionSearchOptions {
@@ -327,10 +329,11 @@ export class SessionsIndex {
 
   /**
    * Best hits first: passages holding more of the distinct query words, then
-   * BM25. The every-word query runs first; when it finds nothing (a long
-   * question rarely has every word in one passage) the any-word query gets a
-   * turn, and `fallback` says so. Identical passages (a report quoted in two
-   * sessions, a repeated "continue") collapse to their best-ranked copy.
+   * BM25. The every-word query runs first. When it fills fewer than `limit`
+   * slots (a long question rarely has every word in one passage), hits from
+   * the any-word query follow, each marked `partial`; `fallback` says every
+   * hit is partial. Identical passages (a report quoted in two sessions, a
+   * repeated "continue") collapse to their best-ranked copy.
    */
   search(raw: string, opts: SessionSearchOptions = {}): SessionHit[] & { fallback?: boolean } {
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 100));
@@ -348,35 +351,35 @@ export class SessionsIndex {
         params.push(value);
       }
     }
-    const tries = opts.any ? [true] : [false, true];
-    for (const any of tries) {
+    const select = this.db.prepare(
+      `SELECT docs.rowid AS id, files.session, files.title, docs.role, docs.ts, docs.file, docs.text,
+              snippet(docs, 0, '[', ']', '…', 24) AS snippet, bm25(docs) AS score
+       FROM docs JOIN files ON files.path = docs.file
+       WHERE ${['docs MATCH ?', ...where].join(' AND ')}
+       ORDER BY score LIMIT ?`,
+    );
+    const hits: SessionHit[] & { fallback?: boolean } = [];
+    const seen = new Set<string>();
+    for (const any of opts.any ? [true] : [false, true]) {
       const q = ftsQuery(raw, any);
-      if (!q) break;
-      const rows = this.db
-        .prepare(
-          `SELECT files.session, files.title, docs.role, docs.ts, docs.file, docs.text,
-                  snippet(docs, 0, '[', ']', '…', 24) AS snippet, bm25(docs) AS score
-           FROM docs JOIN files ON files.path = docs.file
-           WHERE ${['docs MATCH ?', ...where].join(' AND ')}
-           ORDER BY score LIMIT ?`,
-        )
-        .all(q, ...params, Math.max(limit * 20, 100)) as Array<SessionHit & { text: string }>;
-      if (rows.length === 0) continue;
+      if (!q || hits.length === limit) break;
+      const rows = select.all(q, ...params, Math.max(limit * 20, 100)) as Array<
+        SessionHit & { id: number; text: string }
+      >;
       const cover = new Map(rows.map((r) => [r, coverage(stems, r.text)]));
       rows.sort((a, b) => cover.get(b)! - cover.get(a)! || a.score - b.score);
-      const seen = new Set<string>();
-      const hits: SessionHit[] & { fallback?: boolean } = [];
-      for (const { text, ...hit } of rows) {
+      for (const { id, text, ...hit } of rows) {
+        // The row id catches the every-word hits again; the text key, repeats.
         const key = text.toLowerCase().replace(/\s+/g, ' ').slice(0, 500);
-        if (seen.has(key)) continue;
+        if (seen.has(key) || seen.has(`#${id}`)) continue;
         seen.add(key);
-        hits.push(hit);
+        seen.add(`#${id}`);
+        hits.push(any && !opts.any ? { ...hit, partial: true } : hit);
         if (hits.length === limit) break;
       }
-      if (any && !opts.any) hits.fallback = true;
-      return hits;
     }
-    return [];
+    if (hits.length > 0 && hits.every((h) => h.partial)) hits.fallback = true;
+    return hits;
   }
 
   close(): void {
@@ -522,11 +525,13 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
   const lines = [head + ':', ''];
   if (result.fallback) {
     lines.push('No passage holds every word; these hits match some of them, most words first.', '');
+  } else if (hits.some((h) => h.partial)) {
+    lines.push('Hits marked "some words" hold only part of the query; they follow the passages that hold every word.', '');
   }
   for (const h of hits) {
     const title = h.title ? ` · ${h.title}` : '';
     lines.push(`## ${h.session}${title}`);
-    lines.push(`${h.role} · ${h.ts} · ${h.file}`);
+    lines.push(`${h.role} · ${h.ts} · ${h.file}${h.partial && !result.fallback ? ' · some words' : ''}`);
     lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     lines.push('');
   }
