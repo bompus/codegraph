@@ -21,6 +21,8 @@ import { memoryBudgetBytes } from './memory-budget';
 export interface SynthPassResult {
   edges: Edge[];
   ms: number;
+  /** Content-only skips the pass recorded, as [pass, path, content hash]. */
+  skips?: Array<[string, string, string]>;
 }
 
 export interface ChunkResult {
@@ -185,7 +187,7 @@ export class ResolverPool {
         readyReject = reject;
       });
       const pw: PoolWorker = { worker, ready, busy: 0 };
-      worker.on('message', (msg: { type: string; id?: number; message?: string; edges?: Edge[]; ms?: number } & Partial<ChunkResult>) => {
+      worker.on('message', (msg: { type: string; id?: number; message?: string; edges?: Edge[]; ms?: number; skips?: Array<[string, string, string]> } & Partial<ChunkResult>) => {
         if (msg.type === 'ready') {
           readyResolve();
         } else if (msg.type === 'result' && msg.id !== undefined) {
@@ -204,7 +206,7 @@ export class ResolverPool {
           pw.busy--;
           const waiter = this.synthWaiters.get(msg.id);
           this.synthWaiters.delete(msg.id);
-          waiter?.resolve({ edges: msg.edges ?? [], ms: msg.ms ?? 0 });
+          waiter?.resolve({ edges: msg.edges ?? [], ms: msg.ms ?? 0, skips: msg.skips });
         } else if (msg.type === 'recycled' && msg.id !== undefined) {
           const waiter = this.recycleWaiters.get(msg.id);
           this.recycleWaiters.delete(msg.id);

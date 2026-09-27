@@ -277,3 +277,13 @@ CREATE TABLE IF NOT EXISTS near_duplicates (
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (other_id) REFERENCES nodes(id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+-- Files a synthesis pass skipped for reasons that depend only on their bytes
+-- (src/resolution/synth-skips.ts). A row counts only while content_hash still
+-- equals the file's current hash, so an edit, revert or delete invalidates it;
+-- the whole table is dropped when the build version changes.
+CREATE TABLE IF NOT EXISTS synth_skips (
+    pass TEXT NOT NULL,
+    path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY (pass, path)
+) WITHOUT ROWID;

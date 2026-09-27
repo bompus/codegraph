@@ -44,6 +44,7 @@ import type { Edge, Language, Node } from '../types';
 import type { ResolutionContext } from './types';
 import type { MaybeYield } from './cooperative-yield';
 import { stripCommentsForRegex } from './strip-comments';
+import { skipped, recordSkip } from './synth-skips';
 import { resolveImportPath } from './import-resolver';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { isTestPath } from '../search/query-utils';
@@ -969,13 +970,17 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
   for (const file of ctx.getAllFiles()) {
     if (!JS_FILE.test(file) || isTestPath(file) || isGeneratedFile(file)) continue;
     if ((++scanned & 63) === 0) await onYield();
+    if (skipped(ctx, 'tierEdges', file)) continue;
     const content = ctx.readFile(file);
     if (!content) continue;
     // Without routes a call can still name an external endpoint.
     const wantsHttp = HTTP_GATE.test(content);
     const wantsQueue = QUEUE_GATE.test(content);
     const wantsEvents = EVENT_GATE.test(content);
-    if (!wantsHttp && !wantsQueue && !wantsEvents) continue;
+    if (!wantsHttp && !wantsQueue && !wantsEvents) {
+      recordSkip(ctx, 'tierEdges', file, content);
+      continue;
+    }
     let facts = cache.get(file);
     if (facts === undefined) {
       facts = readFacts(ctx, file);

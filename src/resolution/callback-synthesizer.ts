@@ -22,6 +22,7 @@
  * tagged `provenance:'heuristic'`. See docs/design/callback-edge-synthesis.md.
  */
 import type { Edge, Language, Node, NodeKind } from '../types';
+import { SynthSkips, SYNTH_SKIPS_VERSION, skipped, recordSkip } from './synth-skips';
 import type { QueryBuilder } from '../db/queries';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
@@ -361,11 +362,12 @@ async function eventEmitterEdges(ctx: ResolutionContext, onYield: MaybeYield): P
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
+    if (skipped(ctx, 'emitterEdges', file)) continue;
     const content = ctx.readFile(file);
     if (!content) continue;
     const hasEmit = content.includes('.emit(') || content.includes('.fire(') || content.includes('.dispatchEvent(');
     const hasOn = content.includes('.on(') || content.includes('.once(') || content.includes('.addListener(');
-    if (!hasEmit && !hasOn) continue;
+    if (!hasEmit && !hasOn) { recordSkip(ctx, 'emitterEdges', file, content); continue; }
     const nodesInFile = ctx.getNodesInFile(file);
     const lineOf = makeLineAt(content, 1);
 
@@ -479,8 +481,12 @@ async function windowMessageEdges(ctx: ResolutionContext, onYield: MaybeYield): 
   let scannedFiles = 0;
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
+    if (skipped(ctx, 'windowMessageEdges', file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!content.includes('postMessage') && !content.includes('addEventListener'))) continue;
+    if (!content || (!content.includes('postMessage') && !content.includes('addEventListener'))) {
+      recordSkip(ctx, 'windowMessageEdges', file, content);
+      continue;
+    }
     const nodesInFile = ctx.getNodesInFile(file);
     if (!nodesInFile.some((n) => n.language && JS_FAMILY.includes(n.language))) continue;
     const lineOf = makeLineAt(content, 1);
@@ -1581,8 +1587,12 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
+    if (skipped(ctx, 'jsxEdges', file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!content.includes('</') && !content.includes('/>'))) continue; // JSX-file gate
+    if (!content || (!content.includes('</') && !content.includes('/>'))) { // JSX-file gate
+      recordSkip(ctx, 'jsxEdges', file, content);
+      continue;
+    }
     // File-level language gate, not merely a project-level one: mixed C/JS
     // monorepos must not interpret `"<Foo/>"` inside C as JSX (#1560).
     const parents = ctx.getNodesInFile(file).filter(
@@ -1670,8 +1680,12 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!/\.(?:vue|[cm]?[jt]s)$/.test(file)) continue;
+    if (skipped(ctx, 'vueEdges', file)) continue;
     const content = ctx.readFile(file);
-    if (!content || !content.includes('.component(') || !VUE_APP_GATE_RE.test(content)) continue;
+    if (!content || !content.includes('.component(') || !VUE_APP_GATE_RE.test(content)) {
+      recordSkip(ctx, 'vueEdges', file, content);
+      continue;
+    }
     VUE_APP_COMPONENT_RE.lastIndex = 0;
     let am: RegExpExecArray | null;
     while ((am = VUE_APP_COMPONENT_RE.exec(content))) {
@@ -1848,6 +1862,17 @@ const RN_JVM_EMIT_RE = /\.emit\s*\(\s*"([^"]+)"\s*,/g;
 // statement and stops at a block boundary, so the wrapper DEFINITION (whose `(`
 // is followed by `… ) {`) never matches. Multi-line tolerant. (java/kotlin/swift)
 const RN_NATIVE_SENDEVENT_RE = /\bsendEvent\s*\([^;{}]*?"([^"]+)"/g;
+/** The JS files the listener patterns below read. */
+const RN_JS_FILE = /\.(?:jsx?|tsx?|mjs|cjs)$/;
+/** Necessary for either JS listener pattern: `.on(` / `.once(` / `.addListener(` then a quoted event. */
+const RN_JS_LISTENER_GATE = /\.(?:on|once|addListener)\(\s*['"]/;
+/** `re.test` for a global regex, leaving `lastIndex` at 0 for the loops that follow. */
+function reTest(re: RegExp, text: string): boolean {
+  re.lastIndex = 0;
+  const hit = re.test(text);
+  re.lastIndex = 0;
+  return hit;
+}
 
 async function rnEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
   let scannedFiles = 0;
@@ -1859,8 +1884,27 @@ async function rnEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Promis
 
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
+    // Only these four kinds of file are read below; everything else would
+    // cost a read and a node lookup for nothing.
+    const isObjC = file.endsWith('.m') || file.endsWith('.mm');
+    const isSwift = file.endsWith('.swift');
+    const isJvm = file.endsWith('.java') || file.endsWith('.kt');
+    const isJs = RN_JS_FILE.test(file);
+    if (!isObjC && !isSwift && !isJvm && !isJs) continue;
+    if (skipped(ctx, 'rnEventEdgesList', file)) continue;
     const content = ctx.readFile(file);
     if (!content) continue;
+    // Each branch below needs its own pattern to match; none matching is a
+    // content-only reason to skip the file.
+    const candidate =
+      (isObjC && reTest(RN_OBJC_SEND_RE, content)) ||
+      (isSwift && (reTest(RN_SWIFT_SEND_RE, content) || reTest(RN_NATIVE_SENDEVENT_RE, content))) ||
+      (isJvm && (reTest(RN_JVM_EMIT_RE, content) || reTest(RN_NATIVE_SENDEVENT_RE, content))) ||
+      (isJs && RN_JS_LISTENER_GATE.test(content));
+    if (!candidate) {
+      recordSkip(ctx, 'rnEventEdgesList', file, content);
+      continue;
+    }
 
     const nodesInFile = ctx.getNodesInFile(file);
     const lineOf = makeLineAt(content, 1);
@@ -2767,7 +2811,10 @@ function resolveRegistryHandler(ctx: ResolutionContext, name: string, chained: s
   return cands.find((n) => n.kind === 'method') ?? null;
 }
 
+const REGISTRY_PASS = 'registryEdges';
+
 async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  const skips = ctx.synthSkips;
   let scannedFiles = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
@@ -2776,15 +2823,20 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
     if ((++scannedFiles & 15) === 0) await onYield();
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
     if (!REGISTRY_JS_EXT.test(file)) continue;
+    // Every `continue` below until step 3 depends only on the file's bytes, so
+    // it is recorded and a later run skips the file unread (synth-skips.ts).
+    if (skips?.has(REGISTRY_PASS, file)) continue;
     const content = ctx.readFile(file);
+    if (!content) continue;
+    const skip = (): void => skips?.record(REGISTRY_PASS, file, content);
     // Cheap pre-filter: a member access BY NAME (`ident[ident` or `ident['…'`)
     // — the var-dispatch and alias-literal shapes respectively.
-    if (!content || !/[\w$]\s*\[\s*[A-Za-z_$'"]/.test(content)) continue;
+    if (!/[\w$]\s*\[\s*[A-Za-z_$'"]/.test(content)) { skip(); continue; }
     // Skip minified/generated bundles (draco, three.min, base64…): their pervasive `h[x](...)`
     // calls + single-letter `{a:b}` literals are a false-positive minefield. Average line
     // length is the reliable tell — real source ~30–80, minified in the hundreds/thousands.
     const newlines = (content.match(/\n/g)?.length ?? 0) + 1;
-    if (content.length / newlines > 200) continue;
+    if (content.length / newlines > 200) { skip(); continue; }
     const safe = stripCommentsForRegex(content, /\.(?:jsx?|mjs|cjs)$/.test(file) ? 'javascript' : 'typescript');
 
     // 1. Dispatch sites: `(new )?<ref>[<ident-key>]` followed by a call or a chained method.
@@ -2814,7 +2866,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
     while ((cm2 = REGISTRY_COMPUTED_ALIAS_RE.exec(safe))) {
       computedAliases.push({ var: cm2[1]!, ref: cm2[2]!, litKey: cm2[5] ?? null, pos: cm2.index });
     }
-    if (!dispatches.length && !literalAccesses.length && !computedAliases.length) continue;
+    if (!dispatches.length && !literalAccesses.length && !computedAliases.length) { skip(); continue; }
     // Normalize a leading `this.` so a class FIELD-INITIALIZER registry (`commands = {…}`)
     // matches a `this.commands[k]` dispatch, not just the constructor form `this.commands = {…}`.
     const norm = (r: string) => r.replace(/^this\./, '');
@@ -2852,7 +2904,7 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
         registries.set(lhs, { names, literalKeys, line: lineOf(safe, am.index) });
       }
     }
-    if (!registries.size) continue;
+    if (!registries.size) { skip(); continue; }
 
     // 2b. Post-declaration augmentation: `registry['k'] = fn` / `registry[KEY] = fn`
     //     / `registry.k = fn` — entries appended after the literal (Prebid's
@@ -3066,8 +3118,12 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!PINIA_CONSUMER_EXT.test(file)) continue;
+    if (skipped(ctx, 'piniaEdges:stores', file)) continue;
     const content = ctx.readFile(file);
-    if (!content || !content.includes('defineStore')) continue;
+    if (!content || !content.includes('defineStore')) {
+      recordSkip(ctx, 'piniaEdges:stores', file, content);
+      continue;
+    }
     PINIA_FACTORY_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = PINIA_FACTORY_RE.exec(content))) factoryFile.set(m[1]!, file);
@@ -3079,8 +3135,12 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!PINIA_CONSUMER_EXT.test(file)) continue;
+    if (skipped(ctx, 'piniaEdges', file)) continue;
     const content = ctx.readFile(file);
-    if (!content || !content.includes('Store')) continue;
+    if (!content || !content.includes('Store')) {
+      recordSkip(ctx, 'piniaEdges', file, content);
+      continue;
+    }
     const safe = stripCommentsForRegex(content, /\.(?:jsx?|mjs|cjs)$/.test(file) ? 'javascript' : 'typescript');
 
     // 2. Bind store vars in this file: `const <var> = <known-factory>(...)`.
@@ -3197,8 +3257,12 @@ async function vuexDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield): P
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!PINIA_CONSUMER_EXT.test(file)) continue;
+    if (skipped(ctx, 'vuexEdges', file)) continue;
     const content = ctx.readFile(file);
-    if (!content || (!content.includes('dispatch(') && !content.includes('commit('))) continue;
+    if (!content || (!content.includes('dispatch(') && !content.includes('commit('))) {
+      recordSkip(ctx, 'vuexEdges', file, content);
+      continue;
+    }
     const safe = stripCommentsForRegex(content, /\.(?:jsx?|mjs|cjs)$/.test(file) ? 'javascript' : 'typescript');
     const nodesInFile = ctx.getNodesInFile(file);
     const fallback = nodesInFile.find((n) => n.kind === 'component'); // .vue top-level
@@ -4251,8 +4315,19 @@ async function ngrxEffectEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
   for (const file of ctx.getAllFiles()) {
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!NGRX_TS_EXT.test(file)) continue;
+    if (skipped(ctx, 'ngrxEdges', file)) continue;
     const content = ctx.readFile(file);
     if (!content) continue;
+    if (
+      !content.includes('.dispatch(') &&
+      !(content.includes('.select(') && content.includes('@ngrx')) &&
+      !content.includes('@ngrx/effects') &&
+      !content.includes('ofType(') &&
+      !content.includes('createEffect(')
+    ) {
+      recordSkip(ctx, 'ngrxEdges', file, content);
+      continue;
+    }
     if (content.includes('.dispatch(')) tsDispatchFiles.push(file);
     // `.select(` reads count only in files that import @ngrx — that gate keeps
     // Akita-style `store.select` APIs and unrelated `.select` protocols out.
@@ -5704,7 +5779,7 @@ export async function synthesizeCallbackEdges(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number }> } | null,
+  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }> } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -5726,7 +5801,7 @@ async function synthesizeWith(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number }> } | null,
+  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }> } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -5787,6 +5862,10 @@ async function synthesizeWith(
   // (the Kotlin pass was the OOM culprit on the pure-C Linux kernel, #1212).
   // Passes without an explicit language filter always run.
   const langs = queries.getDistinctFileLanguages();
+  // Content-only skips from earlier runs; new ones are saved after the passes.
+  const skips = new SynthSkips(queries.loadSynthSkips(SYNTH_SKIPS_VERSION));
+  ctx = { ...ctx, synthSkips: skips };
+  const workerSkips: Array<[string, string, string]> = [];
   const has = (...ls: string[]): boolean => ls.some((l) => langs.has(l));
   const NONE: Edge[] = [];
 
@@ -5868,6 +5947,7 @@ async function synthesizeWith(
         try {
           const out = await pool.runSynthPass(pass.name);
           passEdges[i] = out.edges;
+          if (out.skips) workerSkips.push(...out.skips);
           markPass(pass.name, out.ms);
         } catch (err) {
           if (graphNodes > MAIN_RETRY_MAX_NODES) {
@@ -5900,6 +5980,7 @@ async function synthesizeWith(
     merged.push(e);
   }
   __mark('dedupe-merge');
+  queries.saveSynthSkips(SYNTH_SKIPS_VERSION, [...workerSkips, ...skips.take()]);
   // External endpoint nodes the http pass points at: created here, on the
   // writer, because passes may run on read-only workers. insertEdges drops an
   // edge whose target does not exist, so they go in first.
