@@ -38,8 +38,8 @@
  */
 
 import type { Language, Node } from '../../types';
-import type { Node as SyntaxNode } from 'web-tree-sitter';
-import { getParser } from '../../extraction/grammars';
+import type { TreeNode as SyntaxNode } from '../../extraction/parse-tree';
+import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { httpHandlerReferences } from './http-routing';
 import type {
   FrameworkExtractionResult,
@@ -78,9 +78,7 @@ export function extractTanstackServerRoutes(filePath: string, content: string) {
   if (!content.includes('server') || !/@tanstack\/(?:react|solid)-router/.test(content))
     return result;
   const language = languageForFile(filePath);
-  const parser = getParser(language);
-  if (!parser) throw new Error(`TanStack server extraction requires the ${language} grammar`);
-  const tree = parser.parse(content);
+  const tree = parseSourceTreeSync(content, language);
   if (!tree) return result;
   const field = (n: SyntaxNode, name: string) => n.childForFieldName(name);
   const unwrap = (n: SyntaxNode | null): SyntaxNode | null => {
