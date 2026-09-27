@@ -35,7 +35,7 @@ import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '.
 import { isDistinctiveIdentifier, isTestFile, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
 import { groupDefinitions, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
-import { querySessions, formatSessionHits, NoSessionsError } from '../sessions';
+import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning } from '../sessions';
 import {
   existsSync,
   readFileSync,
@@ -1570,7 +1570,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_sessions',
-    description: 'Search this project\'s earlier agent sessions — what a previous session asked, decided, tried or was told — when the question is about rationale or history rather than code ("why is X like this", "what did the last session do about Y", "did we already try Z"). Full-text search (stemmed, ranked) over the prose of Claude Code, Codex, Cursor/T3, OpenCode, AGY, and Devin transcripts for this project: prompts, replies, compaction summaries; tool traffic stays out. Each hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, `devin:`), role, time, transcript path and the matching passage. Common words are dropped; passages holding every remaining word come first, then passages holding some of them, marked "some words". Harness-injected text (skill bodies, system reminders, summarizer input) is not indexed. Not for code questions — codegraph_explore answers those.',
+    description: 'Search this project\'s earlier agent sessions — what a previous session asked, decided, tried or was told — when the question is about rationale or history rather than code ("why is X like this", "what did the last session do about Y", "did we already try Z"). Full-text search (stemmed, ranked) over the prose of Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin, and Grok transcripts for this project, plus the last 2000 git commit messages: prompts, replies, compaction summaries; tool traffic stays out. Each hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, `devin:`, `grok:`, or `git:` for commits), role, time, transcript path and the matching passage. Common words are dropped; passages holding every remaining word come first, then passages holding some of them, marked "some words". Harness-injected text (skill bodies, system reminders, summarizer input) is not indexed. Not for code questions — codegraph_explore answers those.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1585,8 +1585,8 @@ export const tools: ToolDefinition[] = [
         },
         role: {
           type: 'string',
-          description: 'Only one kind of doc: "user" (prompts), "assistant" (replies) or "summary" (compaction summaries).',
-          enum: ['user', 'assistant', 'summary'],
+          description: 'Only one kind of doc: "user" (prompts), "assistant" (replies), "summary" (compaction summaries) or "commit" (git commit messages).',
+          enum: ['user', 'assistant', 'summary', 'commit'],
         },
         sinceDays: {
           type: 'number',
@@ -3398,6 +3398,35 @@ export class ToolHandler {
   }
 
   /**
+   * Which earlier agent sessions mentioned the entry symbols by name, from the
+   * session index as it stands (no refresh). Only identifier-shaped names are
+   * looked up; '' when none was mentioned or the project has no session index.
+   * The rationale behind a symbol ("why is it like this") lives there, and
+   * `codegraph_sessions` with the name reads it.
+   */
+  private buildDiscussedSection(projectRoot: string, subgraph: Subgraph): string {
+    const names = subgraph.roots
+      .map((id) => subgraph.nodes.get(id)?.name)
+      .filter((n): n is string => !!n)
+      .slice(0, 5);
+    // Never let history break a code answer: any failure drops the section.
+    try {
+      const mentions = sessionsMentioning(projectRoot, names);
+      if (mentions.size === 0) return '';
+      const lines = ['**Discussed in earlier sessions** (codegraph_sessions with the name reads them)', ''];
+      for (const [name, { total, recent }] of mentions) {
+        const list = recent.map((m) => `${m.session} (${String(m.ts).slice(0, 10)})`).join(', ');
+        const more = total > recent.length ? `, +${total - recent.length} more` : '';
+        lines.push(`- \`${name}\`: ${list}${more}`);
+      }
+      lines.push('');
+      return lines.join('\n');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
    * One line per symbol: where it is, who calls it, and which tests cover it.
    * `includeLeaves` keeps symbols nothing calls, which a change list must show
    * and a blast radius leaves out.
@@ -4967,6 +4996,8 @@ export class ToolHandler {
       ? this.buildChangesSection(cg, changes, changedNodes)
       : this.buildBlastRadiusSection(cg, subgraph);
     if (blastRadius) graphLines.push(blastRadius);
+    const discussed = this.buildDiscussedSection(projectRoot, subgraph);
+    if (discussed) graphLines.push(discussed);
 
     // Relationship map — show how symbols connect
     const significantEdges = subgraph.edges.filter(e =>

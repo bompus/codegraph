@@ -1370,7 +1370,7 @@ program
  *
  * The CLI face of the codegraph_sessions MCP tool: full-text search over the
  * agent-session transcripts that belong to the project (Claude Code, Codex,
- * and Cursor/T3, OpenCode, AGY, and Devin), refreshed on every call. Same text as the tool
+ * and Cursor/T3, OpenCode, AGY, Devin, and Grok, plus git commit messages), refreshed on every call. Same text as the tool
  * so a subagent without MCP gets the same answer through the shell.
  */
 program
@@ -1378,7 +1378,7 @@ program
   .description('Search the project\'s agent-session transcripts: what an earlier session asked, decided or was told (same output as the codegraph_sessions MCP tool)')
   .option('-p, --path <path>', 'Project path')
   .option('-l, --limit <number>', 'Maximum hits', '10')
-  .option('-r, --role <role>', 'Only user, assistant or summary docs')
+  .option('-r, --role <role>', 'Only user, assistant, summary or commit docs')
   .option('--since <days>', 'Only docs from the last N days')
   .option('--session <id-prefix>', 'Only one session (id prefix)')
   .option('--any', 'OR the words instead of requiring all of them')

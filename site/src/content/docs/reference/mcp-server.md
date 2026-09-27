@@ -17,7 +17,7 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 `codegraph_explore` It's Read-equivalent: give it a natural-language question or a bag of symbol and file names, and it returns the **verbatim, line-numbered source** of the relevant symbols grouped by file — the same shape the `Read` tool gives you — plus the call paths between them (including dynamic-dispatch hops like callbacks, React re-render, and JSX children that grep can't follow) and a blast-radius summary of what depends on them. One call usually answers the whole question.
 
-`codegraph_sessions` searches this project's earlier agent sessions (Claude Code, Codex, Cursor/T3, OpenCode, AGY and Devin transcripts) for what a previous session asked, decided or tried. It answers "why is X like this" questions, which the code graph cannot. Set `"sessions": false` in `codegraph.json` to turn it off.
+`codegraph_sessions` searches this project's earlier agent sessions (Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin and Grok transcripts, plus git commit messages) for what a previous session asked, decided or tried. It answers "why is X like this" questions, which the code graph cannot. Set `"sessions": false` in `codegraph.json` to turn it off.
 
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
