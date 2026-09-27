@@ -3409,21 +3409,21 @@ export class ToolHandler {
       .map((id) => subgraph.nodes.get(id)?.name)
       .filter((n): n is string => !!n)
       .slice(0, 5);
-    let mentions: ReturnType<typeof sessionsMentioning>;
+    // Never let history break a code answer: any failure drops the section.
     try {
-      mentions = sessionsMentioning(projectRoot, names);
+      const mentions = sessionsMentioning(projectRoot, names);
+      if (mentions.size === 0) return '';
+      const lines = ['**Discussed in earlier sessions** (codegraph_sessions with the name reads them)', ''];
+      for (const [name, { total, recent }] of mentions) {
+        const list = recent.map((m) => `${m.session} (${String(m.ts).slice(0, 10)})`).join(', ');
+        const more = total > recent.length ? `, +${total - recent.length} more` : '';
+        lines.push(`- \`${name}\`: ${list}${more}`);
+      }
+      lines.push('');
+      return lines.join('\n');
     } catch {
       return '';
     }
-    if (mentions.size === 0) return '';
-    const lines = ['**Discussed in earlier sessions** (codegraph_sessions with the name reads them)', ''];
-    for (const [name, { total, recent }] of mentions) {
-      const list = recent.map((m) => `${m.session} (${m.ts.slice(0, 10)})`).join(', ');
-      const more = total > recent.length ? `, +${total - recent.length} more` : '';
-      lines.push(`- \`${name}\`: ${list}${more}`);
-    }
-    lines.push('');
-    return lines.join('\n');
   }
 
   /**

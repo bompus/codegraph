@@ -515,7 +515,9 @@ export function querySessions(
     }
     const roots = index.rememberRoots(projectWorktreeRoots(projectRoot));
     const records = collectRecords(roots, projectRemotes(projectRoot), projectRoot);
-    if (records.length === 0) throw new NoSessionsError(projectRoot);
+    // Commit messages alone are not session history: without a transcript the
+    // guidance (which hosts, how to opt out) says more than "0 hits".
+    if (records.every((r) => r.path.startsWith('git:'))) throw new NoSessionsError(projectRoot);
     const stats = index.refreshRecords(records);
     return result(stats, index.search(query, opts));
   } finally {
@@ -570,12 +572,13 @@ export function sessionsMentioning(
     const query = db.prepare(
       `SELECT files.session, files.title, max(docs.ts) AS ts
        FROM docs JOIN files ON files.path = docs.file
-       WHERE docs MATCH ? AND docs.role != 'commit'
+       WHERE docs MATCH ? AND docs.role != 'commit' AND instr(lower(docs.text), lower(?)) > 0
        GROUP BY files.session ORDER BY ts DESC`,
     );
     for (const name of wanted) {
-      // A quoted string is one phrase: `build_index` matches "build index" in order.
-      const rows = query.all(`"${name.replace(/"/g, '')}"`) as SessionMention[];
+      // FTS narrows (a quoted name is one phrase, so `build_index` reaches
+      // "build index"); instr keeps only text that spells the name itself.
+      const rows = query.all(`"${name.replace(/"/g, '')}"`, name) as SessionMention[];
       if (rows.length) out.set(name, { total: rows.length, recent: rows.slice(0, perName) });
     }
   } catch {

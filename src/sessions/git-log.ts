@@ -25,11 +25,14 @@ function git(root: string, args: string[]): string | null {
 }
 
 /**
- * HEAD's commit time (ms) and hash, the record's change signature; null outside
- * a git checkout or in a repository with no commits.
+ * The time (ms) and hash of the newest commit touching `root`, the record's
+ * change signature; null outside a git checkout or with no commits. `-- .`
+ * scopes both this and the log to `root`, so a project that is a subdirectory
+ * of a larger repository (a monorepo package, a tracked home directory) gets
+ * its own commits, not the whole repository's.
  */
 export function gitHead(root: string): { mtime: number; sha: string } | null {
-  const out = git(root, ['log', '-1', '--format=%ct %H'])?.trim();
+  const out = git(root, ['log', '-1', '--format=%ct %H', '--', '.'])?.trim();
   if (!out) return null;
   const [ct, sha] = out.split(' ');
   return { mtime: Number(ct) * 1000, sha: sha! };
@@ -37,7 +40,7 @@ export function gitHead(root: string): { mtime: number; sha: string } | null {
 
 /** One doc per commit: `<short sha> <subject>` then the body, role `commit`. */
 export function gitCommitDocs(root: string): SessionDoc[] {
-  const out = git(root, ['log', `-n${GIT_LOG_MAX}`, `--format=%h${FIELD}%aI${FIELD}%s${FIELD}%b${RECORD}`]);
+  const out = git(root, ['log', `-n${GIT_LOG_MAX}`, `--format=%h${FIELD}%aI${FIELD}%s${FIELD}%b${RECORD}`, '--', '.']);
   if (!out) return [];
   const docs: SessionDoc[] = [];
   for (const rec of out.split(RECORD)) {

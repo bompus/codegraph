@@ -52,8 +52,27 @@ const ROLE_OF: Record<string, SessionDoc['role']> = {
   agent_message_chunk: 'assistant',
 };
 
-/** A user chunk that is a harness block, not the person's words. */
-const HARNESS_BLOCK = /^\s*<[a-z_]+>[\s\S]*<\/[a-z_]+>\s*$/;
+/** Blocks a host appends to a prompt; a person's own `<task>` or `<code>` stays. */
+const HARNESS_TAGS = new Set([
+  'runtime_info',
+  'pull_request_linking',
+  'system-reminder',
+  'environment_context',
+  'user_instructions',
+  'skills_instructions',
+]);
+const TAGGED_BLOCK = /<([a-z_-]+)>[\s\S]*?<\/\1>/g;
+
+/** A user chunk with the host's blocks removed. */
+function withoutHarness(text: string): string {
+  return text.replace(TAGGED_BLOCK, (block, tag: string) => (HARNESS_TAGS.has(tag) ? '' : block));
+}
+
+/** ACP timestamps are seconds; tolerate milliseconds and junk (empty = the file's time). */
+function isoFrom(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '';
+  return new Date(value > 1e11 ? value : value * 1000).toISOString();
+}
 
 function titleOf(file: string): string | null {
   try {
@@ -72,7 +91,14 @@ export function parseGrokTranscript(file: string): { session: string; title: str
   let ts = '';
   let buf: string[] = [];
   const emit = (): void => {
-    const text = buf.join('').trim();
+    // Agent chunks are pieces of one stream. User chunks are usually whole
+    // blocks: joined on a blank line unless one side already has whitespace.
+    const text = buf
+      .reduce((acc, piece) => {
+        if (!acc || role !== 'user' || /\s$/.test(acc) || /^\s/.test(piece)) return acc + piece;
+        return `${acc}\n\n${piece}`;
+      }, '')
+      .trim();
     if (role && text.length >= MIN_DOC_CHARS) docs.push({ ts, role, text });
     role = null;
     buf = [];
@@ -86,18 +112,20 @@ export function parseGrokTranscript(file: string): { session: string; title: str
       continue;
     }
     const update = row.params?.update;
-    const r = ROLE_OF[update?.sessionUpdate ?? ''];
-    const text = typeof update?.content?.text === 'string' ? update.content.text : '';
-    if (!r || !text) {
-      // Anything between chunks (a tool call, a thought) ends the message.
-      if (update?.sessionUpdate !== 'agent_thought_chunk') emit();
+    const kind = update?.sessionUpdate ?? '';
+    const r = ROLE_OF[kind];
+    if (!r) {
+      // A tool call or other event between chunks ends the message; a thought does not.
+      if (kind !== 'agent_thought_chunk') emit();
       continue;
     }
-    if (r === 'user' && HARNESS_BLOCK.test(text)) continue;
+    let text = typeof update?.content?.text === 'string' ? update.content.text : '';
+    if (r === 'user') text = withoutHarness(text);
+    if (!text.trim()) continue; // An empty or non-text chunk neither adds to nor ends the message.
     if (role !== r) {
       emit();
       role = r;
-      ts = new Date((row.timestamp ?? 0) * 1000).toISOString();
+      ts = isoFrom(row.timestamp);
     }
     buf.push(text);
   }

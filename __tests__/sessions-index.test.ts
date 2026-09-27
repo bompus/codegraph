@@ -65,6 +65,7 @@ const savedEnv = { ...process.env };
 beforeEach(() => {
   // Point every host at nothing by default, so no test reads the developer's own stores.
   process.env.CODEGRAPH_DEVIN_DIR = path.join(os.tmpdir(), 'codegraph-no-devin');
+  process.env.CODEGRAPH_GROK_DIR = path.join(os.tmpdir(), 'codegraph-no-grok');
 });
 afterEach(() => {
   // Under Bun (a contributor running vitest on it), node:sqlite keeps the file
@@ -816,10 +817,15 @@ describe('querySessions (project entry point)', () => {
       [
         chunk('user_message_chunk', 'why does flushRingBuffer drop '),
         chunk('user_message_chunk', 'the oldest entries first?'),
-        chunk('user_message_chunk', '<runtime_info>host boilerplate</runtime_info>\n\n<other>more</other>'),
+        chunk('user_message_chunk', '<runtime_info>host boilerplate</runtime_info>\n\n<pull_request_linking>more</pull_request_linking>'),
+        chunk('agent_message_chunk', ''),
         chunk('agent_thought_chunk', 'private thinking that must not index'),
         chunk('agent_message_chunk', 'flushRingBuffer drops the oldest so '),
+        { timestamp: 1_700_000_000, params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'image' } } } },
         chunk('agent_message_chunk', 'the newest context survives.'),
+        { timestamp: 1_700_000_001, params: { update: { sessionUpdate: 'tool_call', title: 'read' } } },
+        // A person's own tagged prompt stays; a junk timestamp does not throw.
+        { timestamp: 'soon', params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '<task>Refactor the ring buffer flush</task>' } } } },
         { timestamp: 1_700_000_001, params: { update: { sessionUpdate: 'tool_call', title: 'read' } } },
       ],
       1_700_000_000,
@@ -833,7 +839,9 @@ describe('querySessions (project entry point)', () => {
     expect(parsed.docs.map((d) => [d.role, d.text])).toEqual([
       ['user', 'why does flushRingBuffer drop the oldest entries first?'],
       ['assistant', 'flushRingBuffer drops the oldest so the newest context survives.'],
+      ['user', '<task>Refactor the ring buffer flush</task>'],
     ]);
+    expect(parsed.docs[2]!.ts).toBe('');
 
     const commits = querySessions(project, 'unbounded heap', { role: 'commit' });
     expect(commits.hits).toHaveLength(1);
@@ -844,8 +852,42 @@ describe('querySessions (project entry point)', () => {
     expect(isDistinctiveName('flushRingBuffer')).toBe(true);
     expect(isDistinctiveName('ring_buffer')).toBe(true);
     expect(isDistinctiveName('search')).toBe(false);
-    const mentions = sessionsMentioning(project, ['flushRingBuffer', 'search', 'neverMentionedName']);
+    const mentions = sessionsMentioning(project, ['flushRingBuffer', 'search', 'neverMentionedName', 'ring_buffer']);
+    // "ring buffer" in prose is not the identifier `ring_buffer`.
     expect([...mentions.keys()]).toEqual(['flushRingBuffer']);
     expect(mentions.get('flushRingBuffer')).toMatchObject({ total: 1, recent: [{ session: `grok:${sid}`, title: 'ring buffer' }] });
+  });
+
+  it('keeps commits to a subdirectory project and needs a transcript to search at all', () => {
+    const repo = fs.realpathSync(fixtureDir());
+    const project = path.join(repo, 'packages', 'app');
+    fs.mkdirSync(path.join(project, '.codegraph'), { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CODEX_HOME = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = fixtureDir();
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    fs.writeFileSync(path.join(project, 'a.txt'), 'x');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'y');
+    git('add', '.');
+    git('commit', '-q', '-m', 'app: keep the retry budget small');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'z');
+    git('commit', '-q', '-am', 'root: unrelated retry change elsewhere');
+
+    // Commits alone are not session history.
+    expect(() => querySessions(project, 'retry')).toThrow(NoSessionsError);
+
+    const grok = fixtureDir();
+    process.env.CODEGRAPH_GROK_DIR = grok;
+    writeJsonl(
+      path.join(grok, encodeURIComponent(project), 's1', 'updates.jsonl'),
+      [{ timestamp: 1_700_000_000, params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'a session in the app package' } } } }],
+      1_700_000_000,
+    );
+    const hits = querySessions(project, 'retry', { role: 'commit' }).hits;
+    expect(hits.map((h) => h.snippet)).toEqual([expect.stringMatching(/budget small/)]);
   });
 });
