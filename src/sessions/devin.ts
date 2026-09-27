@@ -56,7 +56,11 @@ export function devinSessionsForProject(roots: readonly string[]): StoredSession
     const db = openStore(dbPath);
     if (!db) continue;
     try {
-      const count = db.prepare('SELECT count(*) AS n FROM message_nodes WHERE session_id = ?');
+      // Row count and total message length: a node rewritten in place (a reply
+      // still streaming when first indexed) changes the length.
+      const signature = db.prepare(
+        'SELECT count(*) AS n, total(length(chat_message)) AS len FROM message_nodes WHERE session_id = ?',
+      );
       const sessions = db
         .prepare('SELECT id, working_directory, title, last_activity_at, hidden FROM sessions')
         .all() as Array<{
@@ -69,21 +73,21 @@ export function devinSessionsForProject(roots: readonly string[]): StoredSession
       for (const row of sessions) {
         const cwd = row.working_directory?.trim();
         if (row.hidden !== 0 || !cwd || cwd === '/' || !cwdInRoots(cwd, roots)) continue;
-        const n = (count.get(row.id) as { n: number } | undefined)?.n ?? 0;
-        if (n === 0) continue;
+        const sig = signature.get(row.id) as { n: number; len: number } | undefined;
+        if (!sig?.n) continue;
         out.push({
           path: `devin:${dbPath}:${row.id}`,
           mtime: (row.last_activity_at ?? 0) * 1000,
-          size: n,
+          size: sig.n + Math.round(sig.len),
           session: `devin:${row.id}`,
           title: row.title,
           docs: () => {
             const store = openStore(dbPath);
-            if (!store) return [];
+            if (!store) return null;
             try {
               return docsForSession(store, row.id);
             } catch {
-              return [];
+              return null;
             } finally {
               store.close();
             }

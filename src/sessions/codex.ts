@@ -8,7 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
 import { walkSessionJsonl } from './collect';
-import { cwdInRoots } from './project-roots';
+import { cwdInRoots, resolveExisting } from './project-roots';
 
 interface CodexLine {
   timestamp?: string;
@@ -98,23 +98,27 @@ function sessionMeta(file: string): { cwd: string | null; remote: string | null 
   return { cwd: null, remote: null };
 }
 
-/** `https://host/o/r.git`, `git@host:o/r` and `ssh://git@host/o/r` compare equal. */
+/**
+ * `https://host/o/r.git`, `git@host:o/r`, `ssh://git@host:2222/o/r` and
+ * `https://host/o/r/` compare equal: scheme, user, port, `.git` and trailing
+ * slashes are dropped.
+ */
 export function normalizeRemote(url: string): string {
-  return url
-    .trim()
-    .replace(/^[a-z+]+:\/\//i, '')
-    .replace(/^[^@/]+@/, '')
-    .replace(':', '/')
-    .replace(/\.git$/, '')
-    .replace(/\/+$/, '')
-    .toLowerCase();
+  let u = url.trim();
+  const scheme = /^[a-z+]+:\/\//i.test(u);
+  u = u.replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]+@/, '');
+  // With a scheme, `host:2222/` is a port; without one, `host:o/r` is scp form.
+  u = scheme ? u.replace(/^([^/:]+):\d+(?=\/)/, '$1') : u.replace(':', '/');
+  return u.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '').toLowerCase();
 }
 
 /**
- * Codex rollouts whose session ran in one of `roots`, or whose recorded git
- * remote is one of the project's (`remotes`, normalized): a worktree removed
- * before the index first saw it leaves no root behind, but its sessions still
- * name the repository.
+ * Codex rollouts whose session ran in one of `roots`, or ran in a directory
+ * that no longer exists and recorded one of the project's git remotes
+ * (`remotes`, normalized): a worktree removed before the index first saw it
+ * leaves no root behind, but its sessions still name the repository. A live
+ * directory never matches by remote, so another clone that shares a remote
+ * (a fork's upstream) keeps its own sessions.
  */
 export function codexFilesForProject(roots: readonly string[], remotes: readonly string[] = []): string[] {
   const dir = codexSessionsDir();
@@ -123,7 +127,8 @@ export function codexFilesForProject(roots: readonly string[], remotes: readonly
   return walkSessionJsonl(dir).filter((file) => {
     const { cwd, remote } = sessionMeta(file);
     if (cwd !== null && cwdInRoots(cwd, roots)) return true;
-    return remote !== null && wanted.has(normalizeRemote(remote));
+    const gone = cwd === null || resolveExisting(cwd) === null;
+    return gone && remote !== null && wanted.has(normalizeRemote(remote));
   });
 }
 

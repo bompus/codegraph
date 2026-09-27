@@ -12,37 +12,61 @@
  */
 import type { SessionDoc } from './claude-code';
 
-/** Markers matched in the first `INJECTED_HEAD` characters, lowercased. */
-const INJECTED_MARKERS = [
+/** Prefixes (lowercased, after leading whitespace) of text a host wrote. */
+const INJECTED_PREFIXES = [
   'base directory for this skill',
   '<task-notification>',
-  '<command-message>',
-  '<command-name>',
   '<system-reminder>',
   '<local-command-stdout>',
-  'conversation to summarize',
-  'now summarize the conversation',
-  'output a summary',
-  'output a new summary',
-  '=== message 0',
   '<recommended_plugins>',
   '<environment_context>',
   '<skills_instructions>',
   '<user_instructions>',
   '# agents.md instructions',
 ];
-const INJECTED_HEAD = 300;
+
+/**
+ * Phrases of a summarizer's instructions, matched in the first
+ * `SUMMARIZER_HEAD` characters, and only in text long enough to carry a whole
+ * conversation: "can you output a summary of the failing tests?" is a prompt.
+ */
+const SUMMARIZER_MARKERS = [
+  'conversation to summarize',
+  'now summarize the conversation',
+  'output a summary',
+  'output a new summary',
+  '=== message 0',
+];
+const SUMMARIZER_HEAD = 300;
+const SUMMARIZER_MIN = 4000;
 
 /** True for user-role prose a host injected; see the module comment. */
 export function isInjectedDoc(role: SessionDoc['role'], text: string): boolean {
   if (role !== 'user') return false;
-  const head = text.slice(0, INJECTED_HEAD).toLowerCase();
-  return INJECTED_MARKERS.some((m) => head.includes(m));
+  const head = text.trimStart().slice(0, SUMMARIZER_HEAD).toLowerCase();
+  if (INJECTED_PREFIXES.some((p) => head.startsWith(p))) return true;
+  return text.length >= SUMMARIZER_MIN && SUMMARIZER_MARKERS.some((m) => head.includes(m));
+}
+
+/**
+ * A slash command as the user typed it, `/name args`, from the
+ * `<command-message>`/`<command-name>`/`<command-args>` block a host records;
+ * null when `text` is not such a block or the command had no arguments (a bare
+ * `/clear` says nothing worth finding).
+ */
+export function slashCommandText(text: string): string | null {
+  const head = text.trimStart().toLowerCase();
+  if (!head.startsWith('<command-message>') && !head.startsWith('<command-name>')) return null;
+  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim();
+  if (!args) return null;
+  const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(text)?.[1]?.trim() ?? '';
+  return `${name} ${args}`.trim();
 }
 
 /** Docs longer than this are indexed as paragraph-bounded passages. */
 export const PASSAGE_LIMIT = 4000;
 const PASSAGE_TARGET = 2000;
+const PASSAGE_MIN = 200;
 
 /**
  * Cut `text` into chunks near `PASSAGE_TARGET` characters on paragraph
@@ -56,7 +80,9 @@ export function splitPassages(text: string): string[] {
   for (const raw of text.split(/\n\s*\n/)) {
     let block = raw.trim();
     while (block.length > 2 * PASSAGE_TARGET) {
+      // A line break, else a space, else a hard cut: never mid-word when avoidable.
       let cut = block.lastIndexOf('\n', 2 * PASSAGE_TARGET);
+      if (cut < PASSAGE_TARGET / 2) cut = block.lastIndexOf(' ', 2 * PASSAGE_TARGET);
       if (cut < PASSAGE_TARGET / 2) cut = 2 * PASSAGE_TARGET;
       pieces.push(block.slice(0, cut).trim());
       block = block.slice(cut).trim();
@@ -72,7 +98,9 @@ export function splitPassages(text: string): string[] {
     }
     current = current ? `${current}\n\n${piece}` : piece;
   }
-  if (current) chunks.push(current);
+  // A short tail joins the passage before it rather than ranking on its own.
+  if (current && current.length < PASSAGE_MIN && chunks.length) chunks.push(`${chunks.pop()}\n\n${current}`);
+  else if (current) chunks.push(current);
   return chunks;
 }
 
@@ -80,7 +108,12 @@ export function splitPassages(text: string): string[] {
 export function indexableDocs(docs: readonly SessionDoc[]): SessionDoc[] {
   const out: SessionDoc[] = [];
   for (const d of docs) {
-    if (isInjectedDoc(d.role, d.text)) continue;
+    const command = d.role === 'user' ? slashCommandText(d.text) : null;
+    if (command !== null) {
+      out.push({ ...d, text: command });
+      continue;
+    }
+    if (isInjectedDoc(d.role, d.text) || /^\s*<command-(message|name)>/i.test(d.text)) continue;
     for (const text of splitPassages(d.text)) out.push({ ...d, text });
   }
   return out;

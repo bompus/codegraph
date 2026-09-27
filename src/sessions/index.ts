@@ -174,7 +174,8 @@ type TranscriptRecord = {
   path: string;
   mtime: number;
   size: number;
-  load: () => LoadedTranscript;
+  /** Null when the source could not be read now; the record is retried next query. */
+  load: () => LoadedTranscript | null;
 };
 
 export class SessionsIndex {
@@ -299,6 +300,10 @@ export class SessionsIndex {
         return null;
       }
       const loaded = rec.load();
+      if (loaded === null) {
+        this.db.exec('COMMIT');
+        return null;
+      }
       const docs = indexableDocs(loaded.docs);
       this.dropDocs.run(rec.path);
       for (const d of docs) {
@@ -457,7 +462,10 @@ function collectRecords(roots: readonly string[], remotes: readonly string[]): T
       path: session.path,
       mtime: session.mtime,
       size: session.size,
-      load: () => ({ session: session.session, title: session.title, docs: session.docs() }),
+      load: () => {
+        const docs = session.docs();
+        return docs && { session: session.session, title: session.title, docs };
+      },
     });
   }
   return records;

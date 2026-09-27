@@ -44,34 +44,55 @@ function rows<T>(db: Db, sql: string, ...params: string[]): T[] {
 
 type SessionRow = { id: string; directory: string | null; title: string | null; time_updated: number };
 
+/**
+ * Per version: where its sessions live, the change signature of one session's
+ * rows, and its reader. The signature is the newest row update and the row
+ * count, so a reply still streaming when first indexed is read again once it
+ * completes. `time_updated` precedes `data` in both tables, so neither query
+ * reads message bodies.
+ */
+const VERSIONS = [
+  {
+    table: 'session',
+    signature: 'SELECT count(*) AS n, max(time_updated) AS t FROM part WHERE session_id = ?',
+    load: v1Docs,
+  },
+  {
+    table: 'session_v2',
+    signature: 'SELECT count(*) AS n, max(time_updated) AS t FROM session_message WHERE session_id = ?',
+    load: v2Docs,
+  },
+];
+
 export function opencodeSessionsForProject(roots: readonly string[]): StoredSession[] {
   const dbPath = opencodeDbPath();
   if (!fs.existsSync(dbPath)) return [];
   const db = openStore(dbPath);
   if (!db) return [];
   try {
-    const out: StoredSession[] = [];
-    const v1 = new Set<string>();
-    const tables: Array<{ table: string; count: string; load: typeof v1Docs }> = [
-      { table: 'session', count: 'SELECT count(*) AS n FROM message WHERE session_id = ?', load: v1Docs },
-      { table: 'session_v2', count: 'SELECT count(*) AS n FROM session_message WHERE session_id = ?', load: v2Docs },
-    ];
-    for (const { table, count, load } of tables) {
-      for (const row of rows<SessionRow>(db, `SELECT id, directory, title, time_updated FROM ${table}`)) {
-        if (table === 'session') v1.add(row.id);
-        else if (v1.has(row.id)) continue;
-        const cwd = row.directory?.trim();
-        if (!cwd || cwd === '/' || !cwdInRoots(cwd, roots)) continue;
-        const n = rows<{ n: number }>(db, count, row.id)[0]?.n ?? 0;
-        out.push({
-          path: `opencode:${dbPath}:${row.id}`,
-          mtime: row.time_updated || 0,
-          size: n,
-          session: `opencode:${row.id}`,
-          title: row.title,
-          docs: () => withStore(dbPath, (store) => load(store, row.id)),
-        });
+    // A session present in both versions is read from the copy updated last:
+    // OpenCode 2 keeps writing a migrated session to its own tables only.
+    const chosen = new Map<string, { row: SessionRow; version: (typeof VERSIONS)[number] }>();
+    for (const version of VERSIONS) {
+      for (const row of rows<SessionRow>(db, `SELECT id, directory, title, time_updated FROM ${version.table}`)) {
+        const prior = chosen.get(row.id);
+        if (prior && (prior.row.time_updated || 0) >= (row.time_updated || 0)) continue;
+        chosen.set(row.id, { row, version });
       }
+    }
+    const out: StoredSession[] = [];
+    for (const { row, version } of chosen.values()) {
+      const cwd = row.directory?.trim();
+      if (!cwd || cwd === '/' || !cwdInRoots(cwd, roots)) continue;
+      const sig = rows<{ n: number; t: number | null }>(db, version.signature, row.id)[0];
+      out.push({
+        path: `opencode:${dbPath}:${row.id}`,
+        mtime: Math.max(row.time_updated || 0, sig?.t ?? 0),
+        size: sig?.n ?? 0,
+        session: `opencode:${row.id}`,
+        title: row.title,
+        docs: () => withStore(dbPath, (store) => version.load(store, row.id)),
+      });
     }
     return out;
   } finally {
@@ -79,13 +100,14 @@ export function opencodeSessionsForProject(roots: readonly string[]): StoredSess
   }
 }
 
-function withStore(dbPath: string, read: (db: Db) => SessionDoc[]): SessionDoc[] {
+/** `read` on a fresh read-only connection, or null when the store cannot be read. */
+function withStore(dbPath: string, read: (db: Db) => SessionDoc[]): SessionDoc[] | null {
   const db = openStore(dbPath);
-  if (!db) return [];
+  if (!db) return null;
   try {
     return read(db);
   } catch {
-    return [];
+    return null;
   } finally {
     db.close();
   }
@@ -99,11 +121,9 @@ function pushDoc(docs: SessionDoc[], ts: number, role: string, text: string): vo
 }
 
 function v1Docs(db: Db, sessionId: string): SessionDoc[] {
-  const messages = rows<{ id: string; time_created: number; data: string }>(
-    db,
-    'SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created',
-    sessionId,
-  );
+  const messages = db
+    .prepare('SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created')
+    .all(sessionId) as Array<{ id: string; time_created: number; data: string }>;
   const parts = db.prepare('SELECT data FROM part WHERE message_id = ?');
   const docs: SessionDoc[] = [];
   for (const msg of messages) {
@@ -130,11 +150,11 @@ function v1Docs(db: Db, sessionId: string): SessionDoc[] {
 
 /** OpenCode 2: user rows carry `text`, assistant rows a `content` list of typed parts. */
 function v2Docs(db: Db, sessionId: string): SessionDoc[] {
-  const messages = rows<{ type: string; time_created: number; data: string }>(
-    db,
-    "SELECT type, time_created, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq",
-    sessionId,
-  );
+  const messages = db
+    .prepare(
+      "SELECT type, time_created, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq",
+    )
+    .all(sessionId) as Array<{ type: string; time_created: number; data: string }>;
   const docs: SessionDoc[] = [];
   for (const msg of messages) {
     let body: { text?: unknown; content?: unknown };

@@ -8,7 +8,7 @@
  * forgotten), and the project-level switches: `CODEGRAPH_SESSIONS_DIR`, the
  * Claude Code slug lookup, and `"sessions": false` in codegraph.json.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -34,6 +34,8 @@ import {
   formatSessionHits,
 } from '../src/sessions';
 import { clearProjectConfigCache } from '../src/project-config';
+import { isInjectedDoc, slashCommandText, splitPassages, indexableDocs } from '../src/sessions/noise';
+import { normalizeRemote } from '../src/sessions/codex';
 import { createDatabase } from '../src/db/sqlite-adapter';
 
 const at = '2026-09-04T20:00:00.000Z';
@@ -57,6 +59,10 @@ const writeJsonl = (file: string, entries: unknown[], mtimeSec: number): void =>
   fs.utimesSync(file, mtimeSec, mtimeSec);
 };
 const savedEnv = { ...process.env };
+beforeEach(() => {
+  // Point every host at nothing by default, so no test reads the developer's own stores.
+  process.env.CODEGRAPH_DEVIN_DIR = path.join(os.tmpdir(), 'codegraph-no-devin');
+});
 afterEach(() => {
   // Under Bun (a contributor running vitest on it), node:sqlite keeps the file
   // handle of a prepared statement until GC even after `close()`, so the temp
@@ -153,6 +159,70 @@ describe('remembered roots', () => {
     // /wt/a was removed: it is no longer passed in, but stays remembered.
     expect(index.rememberRoots(['/repo']).sort()).toEqual(['/repo', '/wt/a']);
     expect(cwdInRoots('/wt/a/src', index.rememberRoots(['/repo']))).toBe(true);
+    index.close();
+  });
+});
+
+describe('noise rules', () => {
+  it('drops host text by its opening, not by a phrase a person could type', () => {
+    expect(isInjectedDoc('user', '  <system-reminder>\nstuff</system-reminder>')).toBe(true);
+    expect(isInjectedDoc('user', 'Base directory for this skill: /x')).toBe(true);
+    expect(isInjectedDoc('user', 'can you output a summary of the failing tests?')).toBe(false);
+    expect(isInjectedDoc('user', 'fix this <system-reminder> quoted in the middle')).toBe(false);
+    expect(isInjectedDoc('user', 'Your task: output a summary of this conversation.\n' + 'x '.repeat(3000))).toBe(true);
+    expect(isInjectedDoc('assistant', '<system-reminder>')).toBe(false);
+  });
+
+  it('keeps what a slash command asked for and drops a bare one', () => {
+    const cmd = '<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>add retry to the uploader</command-args>';
+    expect(slashCommandText(cmd)).toBe('/review add retry to the uploader');
+    expect(slashCommandText('<command-name>/clear</command-name>\n<command-args></command-args>')).toBeNull();
+    const docs = indexableDocs([
+      { ts: at, role: 'user', text: cmd },
+      { ts: at, role: 'user', text: '<command-name>/clear</command-name>' },
+    ]);
+    expect(docs.map((d) => d.text)).toEqual(['/review add retry to the uploader']);
+  });
+
+  it('cuts long prose at spaces and folds a short tail into the passage before it', () => {
+    const words = 'lorem ipsum '.repeat(700).trim(); // one 8 KB paragraph, no line breaks
+    const parts = splitPassages(words);
+    expect(parts.length).toBeGreaterThan(1);
+    // Every cut falls between words.
+    expect(parts.every((p) => /^(lorem|ipsum)\b/.test(p) && /\b(lorem|ipsum)$/.test(p))).toBe(true);
+    expect(parts.every((p) => p.length >= 200)).toBe(true);
+    expect(splitPassages('a'.repeat(3000) + '\n\n' + 'b'.repeat(1200) + '\n\nshort tail').at(-1)).toMatch(/short tail$/);
+    expect(splitPassages('a'.repeat(3000) + '\n\n' + 'b'.repeat(1200) + '\n\nshort tail').every((p) => p.length >= 200)).toBe(true);
+  });
+
+  it('normalizes remotes across schemes, users, ports and suffixes', () => {
+    const want = 'example.com/acme/widget';
+    for (const url of [
+      'https://example.com/acme/widget.git',
+      'git@example.com:acme/widget',
+      'ssh://git@example.com:2222/acme/widget.git',
+      'https://example.com/acme/widget.git/',
+      'HTTPS://Example.com/Acme/Widget/',
+    ]) {
+      expect(normalizeRemote(url)).toBe(want);
+    }
+  });
+});
+
+describe('unreadable sources', () => {
+  it('retries a record whose source could not be read instead of storing it empty', () => {
+    const index = SessionsIndex.open(':memory:');
+    let readable = false;
+    const record = {
+      path: 'store:1',
+      mtime: 1,
+      size: 1,
+      load: () => (readable ? { session: 'store:1', title: null, docs: [{ ts: at, role: 'user' as const, text: 'the flaky store came back online' }] } : null),
+    };
+    expect(index.refreshRecords([record]).refreshed).toBe(0);
+    readable = true;
+    expect(index.refreshRecords([record]).refreshed).toBe(1);
+    expect(index.search('flaky store')).toHaveLength(1);
     index.close();
   });
 });
@@ -487,7 +557,22 @@ describe('querySessions (project entry point)', () => {
       1_700_000_000,
     );
     expect(codexFilesForProject([project], ['https://example.com/acme/widget']).sort()).toEqual([match, retired].sort());
+    // A live clone that shares the remote keeps its own sessions.
+    const liveClone = path.join(codexHome, 'sessions', 'rollout-clone.jsonl');
+    writeJsonl(
+      liveClone,
+      [
+        {
+          timestamp: at,
+          type: 'session_meta',
+          payload: { session_id: 'codex-clone', cwd: other, git: { repository_url: 'https://example.com/acme/widget' } },
+        },
+      ],
+      1_700_000_000,
+    );
+    expect(codexFilesForProject([project], ['https://example.com/acme/widget'])).not.toContain(liveClone);
     fs.rmSync(retired);
+    fs.rmSync(liveClone);
     expect(parseCodexTranscript(match).docs.map((d) => d.role)).toEqual(['user', 'assistant']);
     expect(parseCodexTranscript(match).docs[0]!.text).not.toMatch(/recommended_plugins/);
     expect(cursorFilesForProject([project])).toEqual([cursorFile]);
@@ -572,6 +657,9 @@ describe('querySessions (project entry point)', () => {
     `);
     const addV2 = db.prepare('INSERT INTO session_v2 (id, directory, title, time_updated) VALUES (?, ?, ?, ?)');
     addV2.run('ses_match', project, 'opencode match', 1_700_000_000_000);
+    // Migrated, then continued in OpenCode 2 only: the newer v2 copy wins.
+    db.prepare('INSERT INTO session (id, directory, title, time_updated) VALUES (?, ?, ?, ?)').run('ses_moved', project, 'moved', 1_600_000_000_000);
+    addV2.run('ses_moved', project, 'moved', 1_800_000_000_000);
     addV2.run('ses_v2', project, 'opencode two', 1_700_000_000_000);
     const addV2Msg = db.prepare(
       'INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)',
@@ -587,6 +675,7 @@ describe('querySessions (project entry point)', () => {
       JSON.stringify({ content: [{ type: 'reasoning', text: 'hidden reasoning text' }, { type: 'text', text: 'Yes, OpenCode two kept it.' }] }),
     );
     addV2Msg.run('m4', 'ses_v2', 'system', 3, 1_700_000_000_000, JSON.stringify({ text: 'system prompt must not index' }));
+    addV2Msg.run('m5', 'ses_moved', 'user', 1, 1_800_000_000_000, JSON.stringify({ text: 'continued write-time dedupe in version two' }));
     db.close();
 
     const agy = fixtureDir();
@@ -623,8 +712,9 @@ describe('querySessions (project entry point)', () => {
     );
 
     const oc = opencodeSessionsForProject([project]);
-    expect(oc.map((s) => s.session)).toEqual(['opencode:ses_match', 'opencode:ses_v2']);
-    expect(oc[1]!.docs().map((d) => [d.role, d.text])).toEqual([
+    expect(oc.map((s) => s.session)).toEqual(['opencode:ses_match', 'opencode:ses_moved', 'opencode:ses_v2']);
+    expect(oc[1]!.docs()!.map((d) => d.text)).toEqual(['continued write-time dedupe in version two']);
+    expect(oc[2]!.docs()!.map((d) => [d.role, d.text])).toEqual([
       ['user', 'does OpenCode two keep write-time dedupe?'],
       ['assistant', 'Yes, OpenCode two kept it.'],
     ]);
@@ -635,7 +725,7 @@ describe('querySessions (project entry point)', () => {
 
     const result = querySessions(project, 'write-time dedupe');
     expect([...new Set(result.hits.map((h) => h.session))].sort()).toEqual(
-      [`agy:${cid}`, 'opencode:ses_match', 'opencode:ses_v2'].sort(),
+      [`agy:${cid}`, 'opencode:ses_match', 'opencode:ses_moved', 'opencode:ses_v2'].sort(),
     );
     expect(result.hits.some((h) => h.snippet.includes('duplicate'))).toBe(false);
   });
@@ -685,7 +775,7 @@ describe('querySessions (project entry point)', () => {
     db.close();
 
     expect(devinSessionsForProject([project]).map((s) => s.session)).toEqual(['devin:brisk-otter']);
-    expect(devinSessionsForProject([project])[0]!.docs().map((d) => d.role)).toEqual(['user', 'assistant']);
+    expect(devinSessionsForProject([project])[0]!.docs()!.map((d) => d.role)).toEqual(['user', 'assistant']);
 
     const result = querySessions(project, 'write-time dedupe');
     expect([...new Set(result.hits.map((h) => h.session))]).toEqual(['devin:brisk-otter']);
