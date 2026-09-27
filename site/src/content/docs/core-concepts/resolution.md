@@ -10,7 +10,7 @@ Extraction produces nodes and raw edges; **resolution** turns names into real co
 After parsing, CodeGraph resolves:
 
 - **Imports** → the source files they point at, including tsconfig/jsconfig path aliases (each file uses its nearest config's `paths`), workspace packages (an entry that points at uncommitted `dist/` output maps back to its `src/` file) and cargo workspace members.
-- **Calls** → their definitions, by import resolution and name matching.
+- **Calls** → their definitions, by import resolution and name matching. A member call such as `i18n.baseText()` resolves through the receiver's type: a `new` or type annotation, or the value a factory like `useI18n()` returns. Vue single-file components get the same treatment as TypeScript files.
 - **Inheritance** → `extends` / `implements` between types.
 
 ## Framework awareness

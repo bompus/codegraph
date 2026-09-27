@@ -426,7 +426,7 @@ pub(super) fn crosses_code_boundary(a: &str, b: &str) -> bool {
 
 /// ESM_FAMILY (name-matcher.ts).
 pub(super) fn is_esm_family(lang: &str) -> bool {
-    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts")
+    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "vue")
 }
 
 /// ESM_IMPORT_LANGUAGES (import-resolver.ts): imports are ES specifiers.

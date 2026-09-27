@@ -829,6 +829,27 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.96 Vue member calls and factories that return a typed module value (2026-09-27)
+
+Re-check of n8n's `i18n.baseText` recall after §5.94: 369 resolved calls into `I18nClass::baseText` (upstream 1,298), with 4,170 `%baseText` refs unresolved. Two causes:
+
+- **Factory without a return annotation.** `const i18n = useI18n()` ends in a factory call, and the ESM factory tail needs the callee's declared return type. n8n's `useI18n() { return i18n; }` has none (938 `.ts` refs). When the callee is an unannotated function whose only `return` is a bare identifier bound to a declaration or local, the tail now takes that binding's type from its `new`/annotation site. Any other body (a second `return`, a returned expression) declines.
+- **Vue outside the ESM family.** The kernel's `is_esm_family` and the receiver-type patterns left out `vue`, so `.vue` member calls skipped the bound-receiver claim and fell to name matching (2,739 refs). `vue` now joins the family on the kernel and TS sides (the TS side only stamps `unknown-receiver`).
+
+Full index, fresh `.codegraph/`, same `dist`, kernel of `0b3e2b9c` vs the branch kernel:
+
+| Corpus | Edges | Added | Removed |
+|---|---|---|---|
+| n8n | 1,272,164 → 1,265,982 | calls 4,097 (`I18nClass::*` 4,086) | calls 8,902, imports 1,076, instantiates 292, references 9, all from `.vue` |
+| nocodb | 65,370 → 64,819 | — | calls 275, instantiates 140, imports 88, references 48, all from `.vue` |
+| supabase | 330,937 → 330,912 | — | calls 17, instantiates 6, imports 2, all from `.vue` |
+
+`I18nClass::baseText` incoming calls on n8n: **369 → 4,415**. The removals are name matches the ESM rules decline. Sampled: `computed()` → `SyntaxNode::computed` (4,828) and `ref()` → a `.vue` file's `WorkingToolEntry::ref` (2,038), both imported from `vue`; `import { ref } from 'vue'` → a test mock constant (612); `onMounted`/`provide`/`isEqual`/`useStorage`/`useDocumentVisibility`/`Draggable` imports from `vue`, lodash, `@vueuse/core`, `vuedraggable` bound to project files; `new Date()` → a Deno lib declaration; `new Map()` → nocodb's `Map.vue`; `Icon` from `@iconify/vue` → nocodb's `Icon.vue`. The `supabase.auth.*`/`router.*` member calls that had resolved to the imported constant are the same deeper-receiver decline TS files already get.
+
+Cost: n8n full index, back to back, base 63.5 s vs branch 71.4 s at load 1.7 → 2.3 (resolving 27.8 → 30.0 s); the kernel profile shows no `vue` label above 0.8 s. Two earlier pairs measured under outside load ran ~150 s for both arms.
+
+Gates: precision cases on vite/vitest/svelte all held (vite edges unchanged at 28,223); golden dumps: `vue-sfc` gains `failure_reason: unknown-receiver` on two refs that stay unresolved, no edge change; `returned-binding-factory` cases fail on the old kernel (the two positive `.ts` cases) and pass on the new one; full suite 339 files / 5,582 tests.
+
 ### 5.95 Sync fixed costs: ignore fast path, slice-based comment stripping, Pinia receiver search (2026-09-27)
 
 Profile of a one-file n8n sync after §5.94: the `.gitignore` filter over 24,435 files (~300 ms), comment stripping for the synthesis passes (~330 ms self), the Pinia pass (~520 ms) and the tier pass (~600 ms).

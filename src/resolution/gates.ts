@@ -123,7 +123,7 @@ export function innermostBinding(rows: Binding[], name: string, line?: number): 
 }
 
 /** Languages whose module boundary is `import`/`export` (or CommonJS). */
-const ESM_FAMILY = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts']);
+const ESM_FAMILY = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx', 'arkts', 'vue']);
 
 /** Ordinary member calls covered by the migrated binding model. */
 export function isBindingReceiverCall(ref: UnresolvedRef): boolean {

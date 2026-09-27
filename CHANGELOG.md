@@ -197,6 +197,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Member calls in Vue single-file components now resolve through their receiver's type and imports, the same way they do in TypeScript files. Before, `<script setup>` code fell back to matching the method name anywhere in the project, so `computed()` or `ref()` imported from `vue` could land on an unrelated project symbol of the same name. A call on a value returned by an unannotated factory, such as `const i18n = useI18n(); i18n.baseText(...)`, now reaches the method when the factory just returns a typed module value.
+
 - In a JavaScript or TypeScript monorepo, imports between packages now reach the right file. Each package's own `tsconfig.json` or `jsconfig.json` `paths` apply to its files, so `@/logger` in one app no longer lands in another app's `src/`. A workspace package whose `main`, `module` or `exports` point at a `dist/` folder that isn't committed now resolves to the source file that builds it. Calls through those imports used to fall back to matching the name anywhere in the project.
 
 - A one-file sync is faster on large JavaScript and TypeScript projects: codegraph remembers which files each inference step and the framework check found nothing in and skips them until they change, and reads only the symbols each step can use. Checking the project's files against `.gitignore` and preparing source text for the inference steps also take less time. Syncs also use less memory.
