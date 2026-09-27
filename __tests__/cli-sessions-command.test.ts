@@ -76,8 +76,14 @@ describe('codegraph sessions — CLI command', () => {
     expect(users.hits.map((h: { role: string }) => h.role)).toEqual(['user']);
     // Second run: nothing re-read.
     expect(users.index.refreshed).toBe(0);
-    expect(JSON.parse(sessions(tempDir, transcripts, ['newline', 'nonexistentword', '--json'])).hits).toEqual([]);
-    expect(JSON.parse(sessions(tempDir, transcripts, ['newline', 'nonexistentword', '--any', '--json'])).hits).toHaveLength(1);
+    // No passage holds both words: the any-word fallback answers and says so.
+    const partial = JSON.parse(sessions(tempDir, transcripts, ['newline', 'nonexistentword', '--json']));
+    expect(partial.hits).toHaveLength(1);
+    expect(partial.fallback).toBe(true);
+    expect(partial.hits[0].file).toMatch(/abcd-0001\.jsonl$/);
+    const any = JSON.parse(sessions(tempDir, transcripts, ['newline', 'nonexistentword', '--any', '--json']));
+    expect(any.hits).toHaveLength(1);
+    expect(any.fallback).toBeUndefined();
   });
 
   it('a project without transcripts gets guidance, not an error', () => {

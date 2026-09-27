@@ -9,8 +9,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from '../db/sqlite-adapter';
-import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
-import { cwdBelongsToProject } from './project-roots';
+import { MIN_DOC_CHARS, type SessionDoc, type StoredSession } from './claude-code';
+import { cwdInRoots } from './project-roots';
 
 export function devinDataDir(): string {
   if (process.env.CODEGRAPH_DEVIN_DIR) return process.env.CODEGRAPH_DEVIN_DIR;
@@ -40,24 +40,23 @@ function contentText(content: unknown): string {
     .join('\n');
 }
 
-export function devinSessionsForProject(projectRoot: string): Array<{
-  path: string;
-  mtime: number;
-  size: number;
-  session: string;
-  title: string | null;
-  docs: SessionDoc[];
-}> {
-  const out: ReturnType<typeof devinSessionsForProject> = [];
+function openStore(dbPath: string): ReturnType<typeof createDatabase>['db'] | null {
+  try {
+    const { db } = createDatabase(dbPath, { readOnly: true });
+    db.pragma('busy_timeout = 5000');
+    return db;
+  } catch {
+    return null;
+  }
+}
+
+export function devinSessionsForProject(roots: readonly string[]): StoredSession[] {
+  const out: StoredSession[] = [];
   for (const dbPath of devinDbPaths()) {
-    let db: ReturnType<typeof createDatabase>['db'];
+    const db = openStore(dbPath);
+    if (!db) continue;
     try {
-      db = createDatabase(dbPath, { readOnly: true }).db;
-    } catch {
-      continue;
-    }
-    try {
-      db.pragma('busy_timeout = 5000');
+      const count = db.prepare('SELECT count(*) AS n FROM message_nodes WHERE session_id = ?');
       const sessions = db
         .prepare('SELECT id, working_directory, title, last_activity_at, hidden FROM sessions')
         .all() as Array<{
@@ -69,17 +68,26 @@ export function devinSessionsForProject(projectRoot: string): Array<{
       }>;
       for (const row of sessions) {
         const cwd = row.working_directory?.trim();
-        if (row.hidden !== 0 || !cwd || cwd === '/' || !cwdBelongsToProject(cwd, projectRoot)) continue;
-        const docs = docsForSession(db, row.id);
-        if (docs.length === 0) continue;
-        const size = docs.reduce((n, d) => n + d.text.length, 0);
+        if (row.hidden !== 0 || !cwd || cwd === '/' || !cwdInRoots(cwd, roots)) continue;
+        const n = (count.get(row.id) as { n: number } | undefined)?.n ?? 0;
+        if (n === 0) continue;
         out.push({
           path: `devin:${dbPath}:${row.id}`,
           mtime: (row.last_activity_at ?? 0) * 1000,
-          size,
+          size: n,
           session: `devin:${row.id}`,
           title: row.title,
-          docs,
+          docs: () => {
+            const store = openStore(dbPath);
+            if (!store) return [];
+            try {
+              return docsForSession(store, row.id);
+            } catch {
+              return [];
+            } finally {
+              store.close();
+            }
+          },
         });
       }
     } catch {
