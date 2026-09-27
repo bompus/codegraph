@@ -3129,6 +3129,8 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
     while ((m = PINIA_FACTORY_RE.exec(content))) factoryFile.set(m[1]!, file);
   }
   if (!factoryFile.size) return [];
+  // Every link starts at a factory's name, bound or called: a file naming none has nothing to link.
+  const namesFactory = new RegExp(`\\b(?:${[...factoryFile.keys()].join('|')})\\b`);
 
   const edges: Edge[] = [];
   const seen = new Set<string>();
@@ -3141,6 +3143,7 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
       recordSkip(ctx, 'piniaEdges', file, content);
       continue;
     }
+    if (!namesFactory.test(content)) continue;
     const safe = stripCommentsForRegex(content, /\.(?:jsx?|mjs|cjs)$/.test(file) ? 'javascript' : 'typescript');
 
     // 2. Bind store vars in this file: `const <var> = <known-factory>(...)`.
@@ -3184,7 +3187,7 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
 
     PINIA_CALL_RE.lastIndex = 0;
     let cm: RegExpExecArray | null;
-    while ((cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
+    while (varStore.size > 0 && (cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
       const storeFile = varStore.get(cm[1]!);
       if (!storeFile) continue;
       linkCall(storeFile, cm[2]!, cm.index);
