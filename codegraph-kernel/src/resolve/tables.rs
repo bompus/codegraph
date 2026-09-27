@@ -312,6 +312,7 @@ pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::Hash
 /// (`f.name`), or the conservative claim for names the kernel does not know.
 pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
     match framework {
+        "angular" => name.starts_with("angular-component:"),
         "astro" => {
             name == "astro-page-component" || name.starts_with("astro-href:") || name == "Astro.redirect"
         }
