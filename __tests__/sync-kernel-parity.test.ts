@@ -38,8 +38,17 @@ const BEFORE: Record<string, string> = {
 };
 
 // The edit: main.ts gains an inherited call and an import of `later`, which
-// util.ts now exports — the old `later()` ref failed and is retried.
+// util.ts now exports — the old `later()` ref failed and is retried. svc.ts
+// passes an inherited method as a value, a `this.<member>` ref the scoped
+// resolve defers to its post-pass.
 const AFTER: Record<string, string> = {
+  'src/svc.ts': [
+    "import { Base } from './base';",
+    'export class Svc extends Base {',
+    '  run() { return 2; }',
+    '  wire() { setTimeout(this.greet); }',
+    '}',
+  ].join('\n'),
   'src/util.ts': 'export function helper() { return 3; }\nexport function later() { return 4; }\n',
   'src/main.ts': [
     "import { Svc } from './svc';",
@@ -72,7 +81,7 @@ function write(files: Record<string, string>): void {
   }
 }
 
-async function syncedGraph(): Promise<{ edges: string[]; syncChunks: number }> {
+async function syncedGraph(): Promise<{ edges: string[]; syncChunks: number; batchedRuns: number }> {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-sync-kernel-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd: tempDir!, stdio: 'pipe' });
   write(BEFORE);
@@ -86,8 +95,10 @@ async function syncedGraph(): Promise<{ edges: string[]; syncChunks: number }> {
   // Counted from here: only the sync's own native chunks.
   const proto = getKernel()!.KernelResolver!.prototype as { resolveChunk: (...a: unknown[]) => unknown };
   const chunk = vi.spyOn(proto, 'resolveChunk');
+  const batched = vi.spyOn(cg, 'resolveReferencesBatched');
   await cg.sync();
   const syncChunks = chunk.mock.calls.length;
+  const batchedRuns = batched.mock.calls.length;
   chunk.mockRestore();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = (cg as any).db.db as import('node:sqlite').DatabaseSync;
@@ -96,7 +107,7 @@ async function syncedGraph(): Promise<{ edges: string[]; syncChunks: number }> {
        FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
       ORDER BY src, tgt, kind, metadata`,
   ).all() as unknown as { src: string; tgt: string; kind: string; metadata: string | null }[];
-  return { edges: rows.map((r) => `${r.kind} ${r.src} -> ${r.tgt} ${r.metadata ?? ''}`), syncChunks };
+  return { edges: rows.map((r) => `${r.kind} ${r.src} -> ${r.tgt} ${r.metadata ?? ''}`), syncChunks, batchedRuns };
 }
 
 describe.skipIf(!kernelBuilt)('incremental sync through the kernel', () => {
@@ -106,5 +117,8 @@ describe.skipIf(!kernelBuilt)('incremental sync through the kernel', () => {
     // The edit's new edges exist: the inherited call and the retried import.
     expect(viaKernel.edges.some((e) => e.startsWith('calls main -> Base::greet'))).toBe(true);
     expect(viaKernel.edges.some((e) => e.startsWith('calls main -> later'))).toBe(true);
+    expect(viaKernel.edges.some((e) => e.startsWith('references Svc::wire -> Base::greet'))).toBe(true);
+    // The deferred ref is not an orphan: no whole-index resolve and resynthesis.
+    expect(viaKernel.batchedRuns).toBe(0);
   });
 });
