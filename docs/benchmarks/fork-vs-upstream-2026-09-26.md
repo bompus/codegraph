@@ -165,7 +165,8 @@ the paired before/after on the idle host is in the design doc.
 A fourth round (`perf/sync-fixed-costs`, 2026-09-27) keeps the resolver's file
 list for the whole sync instead of re-reading the `files` table on each of
 about 35 requests. Measured the same way against the fork at `19be510f`, which
-had the third round. The README's fork column uses the right-hand figures.
+had the third round. A fifth round (below) supersedes its right-hand figures in
+the README.
 
 | Corpus | Fork `19be510f` | Fork `perf/sync-fixed-costs` |
 |---|---|---|
@@ -180,6 +181,30 @@ had the third round. The README's fork column uses the right-hand figures.
 Other sessions held the 1-minute load at 2–5, and at 3–7 during n8n. The
 pretix difference is within its spread (1.59–1.79 s on the branch), and one
 5.34 s base sync on discourse raises that base median.
+
+A fifth round (`perf/sync-kernel-resolve`, 2026-09-27) stops a sync from
+treating its own deferred `this.<member>` references as leftovers from a
+crashed run. Those rows stay pending until a later pass in the same sync
+settles them, and counting them started the whole-project resolver and a full
+rebuild of the inferred links. Measured the same way against the fork at
+`32ad57cd`, which had the fourth round. The README's fork column uses the
+right-hand figures.
+
+| Corpus | Fork `32ad57cd` | Fork `perf/sync-kernel-resolve` |
+|---|---|---|
+| gin | 0.38 s, 210 MiB | 0.37 s, 211 MiB |
+| Alamofire | 0.48 s, 225 MiB | 0.47 s, 226 MiB |
+| pretix | 1.78 s, 570 MiB | 1.64 s, 569 MiB |
+| CPython | 4.03 s, 843 MiB | 3.50 s, 845 MiB |
+| discourse | 3.22 s, 937 MiB | 3.29 s, 803 MiB |
+| supabase | 3.17 s, 970 MiB | 3.19 s, 970 MiB |
+| n8n | 6.19 s, 1,228 MiB | 4.90 s, 961 MiB |
+
+Only a sync whose changed file holds such a reference gains: the n8n and
+discourse files do, the other five do not, and their differences are
+run-to-run spread (CPython's base arm ran at a 1-minute load up to 8). On
+discourse the median includes each arm's noisier first sync; the second syncs
+went from 3.1–3.3 s to 2.7 s.
 
 Upstream's sync does not rebuild links inferred from dynamic dispatch (events,
 callbacks, function pointers), so they go stale until a full index

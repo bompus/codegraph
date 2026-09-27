@@ -3261,6 +3261,20 @@ export class QueryBuilder {
     return row.count;
   }
 
+  /** Pending rows outside `rowIds` — the pending count less rows a caller still owns. */
+  getUnresolvedReferencesCountExcluding(rowIds: ReadonlySet<number>): number {
+    let count = this.getUnresolvedReferencesCount();
+    const ids = [...rowIds];
+    for (let i = 0; i < ids.length && count > 0; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const row = this.db
+        .prepare(`SELECT COUNT(*) as count FROM unresolved_refs WHERE status = 'pending' AND id IN (${chunk.map(() => '?').join(',')})`)
+        .get(...chunk) as { count: number };
+      count -= row.count;
+    }
+    return count;
+  }
+
   /**
    * Get a batch of PENDING unresolved references using LIMIT/OFFSET
    * pagination. Used to process references in bounded memory chunks; failed

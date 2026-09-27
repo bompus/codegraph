@@ -1091,7 +1091,10 @@ export class CodeGraph {
           for (const p of result.removedFilePaths ?? []) this.synthesisDirty.add(p);
         }
 
-        const orphanCount = this.queries.getUnresolvedReferencesCount();
+        // Refs the scoped path deferred to the passes below are still pending
+        // but not orphans; counting them ran the whole batched resolver and a
+        // full synthesis on every sync of a file with a deferred ref.
+        const orphanCount = this.resolver.countOrphanedReferences();
         if (orphanCount > 0) {
           // The sweep ends in a full synthesis pass. Dropping the stale edges
           // first makes that pass the refresh, instead of synthesizing twice.

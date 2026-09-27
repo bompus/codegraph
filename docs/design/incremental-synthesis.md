@@ -384,6 +384,45 @@ The pretix difference is within its run-to-run spread, and one slow base sync
 What remains on an n8n sync: kernel resolution about 0.9 s, freeing the
 kernel's node table about 0.35 s, and the ignore filter about 0.3 s.
 
+## Fifth round (built 2026-09-27)
+
+The kernel-resolution cost left above was not resolution. The scoped sync
+defers `this.<member>` function references to a pass that runs after the
+supertype edges exist (`resolveDeferredThisMemberRefs`), and their rows stay
+`pending` until it does. The orphan sweep, which exists to finish refs a
+killed run left behind, ran before that pass and counted them. Any sync of a
+file with such a reference then ran the whole batched resolver, which loaded
+the full node table (about 0.75 s on n8n, and 0.35 s to free it), and ended in
+a full synthesis pass instead of the incremental refresh.
+
+The sweep now counts pending rows outside the resolver's deferred row ids, so
+a real orphan still triggers it. When the batched path does run on fewer than
+15,000 pending refs, it looks nodes up by query, as the scoped path already
+did. A one-file n8n sync yields identical edges before and after, as do full
+indexes of gin and Alamofire.
+
+### Measured (2026-09-27)
+
+Same method, `fork/consolidated` `32ad57cd` against the branch, median of four:
+
+| Corpus | Before | After | Peak memory |
+|---|---|---|---|
+| gin | 0.38 s | 0.37 s | 210 → 211 MiB |
+| Alamofire | 0.48 s | 0.47 s | 225 → 226 MiB |
+| pretix | 1.78 s | 1.64 s | 570 → 569 MiB |
+| CPython | 4.03 s | 3.50 s | 843 → 845 MiB |
+| discourse | 3.22 s | 3.29 s | 937 → 803 MiB |
+| supabase | 3.17 s | 3.19 s | 970 → 970 MiB |
+| n8n | 6.19 s | 4.90 s | 1,228 → 961 MiB |
+
+Only the n8n and discourse benchmark files hold a deferred reference; the
+other differences are run-to-run spread. Discourse's second syncs went from
+3.1–3.3 s to 2.7 s; its median includes the noisier first syncs.
+
+What remains on an n8n sync: the failed-ref retry (about 1,200 refs, 0.25 s,
+most of them imports that never resolve), the ignore filter about 0.3 s, and
+the registry and tier synthesis passes.
+
 ## Costs and risks
 
 - **Size.** The contribution tables add rows proportional to registrations,

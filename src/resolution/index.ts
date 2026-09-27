@@ -932,6 +932,15 @@ export class ReferenceResolver {
     return unresolved.filter((ref) => ref.rowId == null || !this.deferredRowIds.has(ref.rowId));
   }
 
+  /**
+   * Pending refs no pass will settle: the pending count less the rows this
+   * resolver deferred to resolveChainedCallsViaConformance and
+   * resolveDeferredThisMemberRefs, which stay pending until those run.
+   */
+  countOrphanedReferences(): number {
+    return this.queries.getUnresolvedReferencesCountExcluding(this.deferredRowIds);
+  }
+
   private deferReference(ref: UnresolvedRef, queue: UnresolvedRef[]): void {
     queue.push(ref);
     if (ref.rowId != null) this.deferredRowIds.add(ref.rowId);
@@ -1417,7 +1426,8 @@ export class ReferenceResolver {
     const openMainKernel = async (): Promise<KernelResolverLike> => {
       if (kernel) return kernel;
       await quiesceValveForKernel();
-      this.initKernelResolver(parallel?.dbPath, undefined, true);
+      // A sync's few pending refs look nodes up by query, as in liveKernel.
+      this.initKernelResolver(parallel?.dbPath, undefined, true, false, total < SYNC_NODE_TABLE_MIN_REFS);
       kernel = this.kernelResolver!;
       return kernel;
     };
