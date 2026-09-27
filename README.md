@@ -149,12 +149,12 @@ On supabase almost all of upstream's time goes to writing parse results to SQLit
 | Corpus | Upstream | Fork |
 |---|---|---|
 | gin | 0.38 s | 0.37 s |
-| Alamofire | 0.51 s | 0.48 s |
-| pretix | 1.11 s | 1.69 s |
-| CPython | 1.44 s | 3.65 s |
-| discourse | 5.57 s | 3.56 s |
-| supabase | 1.56 s | 3.48 s |
-| n8n | 12.1 s | 6.24 s |
+| Alamofire | 0.51 s | 0.47 s |
+| pretix | 1.11 s | 1.75 s |
+| CPython | 1.44 s | 3.43 s |
+| discourse | 5.57 s | 3.46 s |
+| supabase | 1.56 s | 3.36 s |
+| n8n | 12.1 s | 6.01 s |
 
 The fork's sync does more: it rebuilds the links inferred from events, callbacks and function pointers, which upstream leaves stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the rebuild off, trading it for the same staleness.
 
@@ -170,7 +170,7 @@ The precision gain comes mostly from declining uncertain links rather than resol
 ### What it costs
 
 - **Larger database:** 14–22% bigger on six of the seven corpora above, and 40% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower one-file syncs on large projects:** about 1.5× upstream's time on pretix, 2.2× on supabase and 2.5× on CPython (table above), because the fork keeps inferred links correct on every sync. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
+- **Slower one-file syncs on large projects:** about 1.6× upstream's time on pretix, 2.2× on supabase and 2.4× on CPython (table above), because the fork keeps inferred links correct on every sync. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
 - **Fewer edges on some projects:** 3–13% fewer on pretix, CPython, discourse and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
 - **Slower full index on discourse:** 5% slower, the one corpus of the seven where the fork is not faster.
 

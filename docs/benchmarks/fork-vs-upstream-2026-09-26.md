@@ -138,7 +138,8 @@ of the changes reach Python-only work.
 
 A third round (`perf/sync-node-reads`, 2026-09-27) filters the synthesis passes'
 node scans in SQL. Measured the same way against the fork at `41e7f7df`, which
-had the second round. The README's fork column uses the right-hand figures.
+had the second round. A fourth round (below) supersedes its right-hand figures
+in the README.
 
 | Corpus | Fork `41e7f7df` | Fork `perf/sync-node-reads` |
 |---|---|---|
@@ -160,6 +161,25 @@ The first measurement, taken during the full-index batch with fork `76cdf8d4`,
 read higher for the fork (pretix 2.77 s, CPython 5.91 s, supabase 6.68 s, n8n
 14.2 s). Part of that gap is the skip cache and part is host load at the time;
 the paired before/after on the idle host is in the design doc.
+
+A fourth round (`perf/sync-fixed-costs`, 2026-09-27) keeps the resolver's file
+list for the whole sync instead of re-reading the `files` table on each of
+about 35 requests. Measured the same way against the fork at `19be510f`, which
+had the third round. The README's fork column uses the right-hand figures.
+
+| Corpus | Fork `19be510f` | Fork `perf/sync-fixed-costs` |
+|---|---|---|
+| gin | 0.37 s, 213 MiB | 0.37 s, 211 MiB |
+| Alamofire | 0.48 s, 228 MiB | 0.47 s, 225 MiB |
+| pretix | 1.70 s, 590 MiB | 1.75 s, 571 MiB |
+| CPython | 3.58 s, 834 MiB | 3.43 s, 840 MiB |
+| discourse | 3.93 s, 926 MiB | 3.46 s, 945 MiB |
+| supabase | 3.51 s, 933 MiB | 3.36 s, 970 MiB |
+| n8n | 6.14 s, 1,239 MiB | 6.01 s, 1,220 MiB |
+
+Other sessions held the 1-minute load at 2–5, and at 3–7 during n8n. The
+pretix difference is within its spread (1.59–1.79 s on the branch), and one
+5.34 s base sync on discourse raises that base median.
 
 Upstream's sync does not rebuild links inferred from dynamic dispatch (events,
 callbacks, function pointers), so they go stale until a full index
