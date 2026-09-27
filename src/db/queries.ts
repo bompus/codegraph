@@ -3962,15 +3962,16 @@ export class QueryBuilder {
   loadSynthSkips(version: string, pass?: string): Map<string, Set<string>> {
     const out = new Map<string, Set<string>>();
     if (this.getMetadata(SYNTH_SKIPS_VERSION_KEY) !== version) return out;
-    const sql =
-      'SELECT s.pass AS pass, s.path AS path FROM synth_skips s JOIN files f ON f.path = s.path AND f.content_hash = s.content_hash' +
-      (pass === undefined ? '' : ' WHERE s.pass = ?');
-    const stmt = this.db.prepare(sql);
-    const rows = (pass === undefined ? stmt.iterate() : stmt.iterate(pass)) as Iterable<{ pass: string; path: string }>;
+    const rows = this.db
+      .prepare('SELECT s.path AS path, s.passes AS passes FROM synth_skips s JOIN files f ON f.path = s.path AND f.content_hash = s.content_hash')
+      .iterate() as Iterable<{ path: string; passes: string }>;
     for (const row of rows) {
-      let set = out.get(row.pass);
-      if (!set) out.set(row.pass, (set = new Set()));
-      set.add(row.path);
+      for (const name of row.passes.split(' ')) {
+        if (pass !== undefined && name !== pass) continue;
+        let set = out.get(name);
+        if (!set) out.set(name, (set = new Set()));
+        set.add(row.path);
+      }
     }
     return out;
   }
@@ -3987,8 +3988,20 @@ export class QueryBuilder {
         this.db.exec('DELETE FROM synth_skips');
         this.setMetadata(SYNTH_SKIPS_VERSION_KEY, version);
       }
-      const insert = this.db.prepare('INSERT OR REPLACE INTO synth_skips (pass, path, content_hash) VALUES (?, ?, ?)');
-      for (const [pass, filePath, hash] of rows) insert.run(pass, filePath, hash);
+      const byFile = new Map<string, { hash: string; passes: Set<string> }>();
+      for (const [pass, filePath, hash] of rows) {
+        let entry = byFile.get(filePath);
+        if (!entry || entry.hash !== hash) byFile.set(filePath, (entry = { hash, passes: new Set() }));
+        entry.passes.add(pass);
+      }
+      const read = this.db.prepare('SELECT content_hash AS hash, passes FROM synth_skips WHERE path = ?');
+      const write = this.db.prepare('INSERT OR REPLACE INTO synth_skips (path, content_hash, passes) VALUES (?, ?, ?)');
+      for (const [filePath, { hash, passes }] of byFile) {
+        // Passes that skipped the same bytes earlier still hold; a different hash replaces them.
+        const prev = read.get(filePath) as { hash: string; passes: string } | undefined;
+        if (prev?.hash === hash) for (const name of prev.passes.split(' ')) passes.add(name);
+        write.run(filePath, hash, [...passes].sort().join(' '));
+      }
     })();
   }
 

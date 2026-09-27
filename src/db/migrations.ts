@@ -302,10 +302,17 @@ CREATE TABLE IF NOT EXISTS synth_skips (
   },
   {
     version: 16,
-    description: 'Index synthesis skips by path, so a deleted file drops its rows',
+    description: 'Store synthesis skips one row per file, listing the passes that skipped it',
     up: (db) => {
-      // Keep in lockstep with schema.sql.
-      db.exec('CREATE INDEX IF NOT EXISTS idx_synth_skips_path ON synth_skips(path);');
+      // Keep in lockstep with schema.sql. The rows are a cache: dropping them costs one full scan.
+      db.exec(`
+DROP TABLE IF EXISTS synth_skips;
+CREATE TABLE synth_skips (
+    path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    passes TEXT NOT NULL
+) WITHOUT ROWID;
+      `);
     },
   },
 ];

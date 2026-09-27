@@ -33,7 +33,7 @@ const synthesized = (cg: CodeGraph): string[] =>
 const skipped = (cg: CodeGraph, pass: string): string[] =>
   (dbOf(cg).prepare(
     `SELECT s.path AS path FROM synth_skips s JOIN files f ON f.path = s.path AND f.content_hash = s.content_hash
-      WHERE s.pass = ? ORDER BY s.path`,
+      WHERE ' ' || s.passes || ' ' LIKE '% ' || ? || ' %' ORDER BY s.path`,
   ).all(pass) as Array<{ path: string }>).map((r) => r.path);
 const storedRows = (cg: CodeGraph, file: string): number =>
   (dbOf(cg).prepare('SELECT COUNT(*) AS n FROM synth_skips WHERE path = ?').get(file) as { n: number }).n;
@@ -114,7 +114,7 @@ describe('content-only synthesis skips', () => {
     const db = dbOf(cg);
     db.prepare("UPDATE project_metadata SET value = 'older-build' WHERE key = 'synth_skips_version'").run();
     // A wrong skip for the registry file: a different build must not apply it.
-    db.prepare("INSERT OR REPLACE INTO synth_skips (pass, path, content_hash) SELECT 'registryEdges', path, content_hash FROM files WHERE path = 'src/registry.ts'").run();
+    db.prepare("INSERT OR REPLACE INTO synth_skips (path, content_hash, passes) SELECT path, content_hash, 'registryEdges' FROM files WHERE path = 'src/registry.ts'").run();
     write('src/other.ts', 'export const values = [1, 2];\n');
     await cg.sync();
     expect(synthesized(cg)).toEqual(await fresh());
