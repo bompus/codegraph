@@ -7,6 +7,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readFile } from 'fs/promises';
+import { extractReactRouterConfig } from './resolution/frameworks/react-router';
 import {
   Node,
   NodeKind,
@@ -1020,6 +1022,27 @@ export class CodeGraph {
             console.error(
               `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${result.definitionDelta.length} changed names, ${rebound} edges re-opened)`
             );
+          }
+        }
+
+        // Config module refs name files, not symbols, so symbol-name retries cannot
+        // recover them when a missing/default-less page later gains its export.
+        if (filesChanged) {
+          const configFiles = new Set(
+            this.queries
+              .getNodesByKind('route')
+              .filter((n) => n.id.startsWith('route:react-router:'))
+              .map((n) => n.filePath),
+          );
+          for (const file of configFiles) {
+            const source = await readFile(path.join(this.projectRoot, file), 'utf8').catch((error) => {
+              if (error.code === 'ENOENT') return null;
+              throw error;
+            });
+            if (source === null) continue;
+            const refs = extractReactRouterConfig(file, source).references;
+            for (const ref of refs) this.queries.deleteEdgesBySource(ref.fromNodeId);
+            await this.resolver.resolveAndPersistListYielding(refs);
           }
         }
 

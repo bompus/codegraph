@@ -324,7 +324,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         // react-native-bridge's claimsReference returns false — JS-visible
         // method names reach the resolver through the name-exists arm.
         "react-native-bridge" => false,
-        "react-router" => rr_nav_re().is_match(name),
+        "react-router" => rr_nav_re().is_match(name) || name.starts_with("react-router-module:"),
         "rails" => rails_claim_re().is_match(name),
         "spring" => name.ends_with(":prefix"),
         "sveltekit-router" => matches!(name, "goto" | "redirect"),
