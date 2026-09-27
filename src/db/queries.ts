@@ -235,6 +235,19 @@ function rowToFileRecord(row: FileRow): FileRecord {
 }
 
 /**
+ * SQL-side pre-filter for {@link QueryBuilder.iterateNodesByKind}. Each list is
+ * OR-ed and the lists are AND-ed. `LIKE` is ASCII case-insensitive and treats
+ * `_` as a wildcard, so a name or signature filter is a superset: callers keep
+ * their exact check and use this only to skip turning non-candidate rows into
+ * objects (on a large graph that conversion was most of a sync's scan cost).
+ */
+export interface NodeScanFilter {
+  languages?: readonly Language[];
+  nameLike?: readonly string[];
+  signatureLike?: readonly string[];
+}
+
+/**
  * Query builder for the knowledge graph database
  */
 export class QueryBuilder {
@@ -1271,11 +1284,22 @@ export class QueryBuilder {
    * dynamic-edge synthesizers only scan-and-filter, so they iterate to keep
    * memory O(1) in the node count rather than O(nodes) (#610).
    */
-  *iterateNodesByKind(kind: NodeKind): IterableIterator<Node> {
+  *iterateNodesByKind(kind: NodeKind, filter?: NodeScanFilter): IterableIterator<Node> {
     // Fresh statement per call (not a cached one): an iterator holds an open
     // cursor, so a shared statement would conflict across overlapping scans.
-    const stmt = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
-    for (const row of stmt.iterate(kind)) {
+    let sql = 'SELECT * FROM nodes WHERE kind = ?';
+    const params: string[] = [kind];
+    const anyOf = (column: string, op: '=' | 'LIKE', values: readonly string[]): void => {
+      sql += ` AND (${values.map(() => `${column} ${op} ?`).join(' OR ')})`;
+      params.push(...values);
+    };
+    if (filter?.languages) anyOf('language', '=', filter.languages);
+    if (filter?.nameLike) anyOf('name', 'LIKE', filter.nameLike);
+    if (filter?.signatureLike) anyOf('signature', 'LIKE', filter.signatureLike);
+    // rowid order is what the kind index yields unfiltered; pin it so a filter
+    // that makes the planner pick another index cannot reorder the scan.
+    if (filter) sql += ' ORDER BY rowid';
+    for (const row of this.db.prepare(sql).iterate(...params)) {
       yield rowToNode(row as NodeRow);
     }
   }

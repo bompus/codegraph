@@ -23,7 +23,7 @@
  */
 import type { Edge, Language, Node, NodeKind } from '../types';
 import { SynthSkips, SYNTH_SKIPS_VERSION, skipped, recordSkip } from './synth-skips';
-import type { QueryBuilder } from '../db/queries';
+import type { NodeScanFilter, QueryBuilder } from '../db/queries';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex, withStripMemo } from './strip-comments';
@@ -197,10 +197,19 @@ function dispatcherField(src: string): string | null {
  * is gigabytes on a symbol-dense project) just to iterate it once is what OOM'd
  * #610. Iterating keeps memory O(1) in the node count.
  */
-function* methodAndFunctionNodes(queries: QueryBuilder): IterableIterator<Node> {
-  yield* queries.iterateNodesByKind('method');
-  yield* queries.iterateNodesByKind('function');
+function* methodAndFunctionNodes(queries: QueryBuilder, filter?: NodeScanFilter): IterableIterator<Node> {
+  yield* queries.iterateNodesByKind('method', filter);
+  yield* queries.iterateNodesByKind('function', filter);
 }
+
+// SQL superset of REGISTRAR_NAME | DISPATCHER_NAME, so the observer pass reads
+// only candidate rows; the regexes still decide.
+const FIELD_CHANNEL_NAMES: NodeScanFilter = {
+  nameLike: [
+    'on%', 'subscribe', 'addListener', 'addEventListener', 'register', 'watch', 'listen', 'addCallback',
+    '%emit%', '%trigger%', '%notify%', '%dispatch%', '%fire%', '%publish%', '%flush%',
+  ],
+};
 
 /** Phase 1: field-backed observer channels (registrar/dispatcher share a store). */
 async function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
@@ -208,7 +217,7 @@ async function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext, 
   const dispatchers: Array<{ node: Node; field: string }> = [];
 
   let scanned = 0;
-  for (const m of methodAndFunctionNodes(queries)) {
+  for (const m of methodAndFunctionNodes(queries, FIELD_CHANNEL_NAMES)) {
     if ((++scanned & 255) === 0) await onYield(); // #1091: yield mid-scan on huge graphs
     const isReg = REGISTRAR_NAME.test(m.name);
     const isDisp = DISPATCHER_NAME.test(m.name);
@@ -294,7 +303,7 @@ async function closureCollectionEdges(queries: QueryBuilder, ctx: ResolutionCont
   // watchdog on its own (#1091, #1235).
   let scanned = 0;
   let matchTick = 0;
-  for (const m of methodAndFunctionNodes(queries)) {
+  for (const m of methodAndFunctionNodes(queries, { languages: [...CC_LANGUAGES] as Language[] })) {
     if ((++scanned & 127) === 0) await onYield();
     if (!CC_LANGUAGES.has(m.language)) continue;
     const content = ctx.readFile(m.filePath);
@@ -768,7 +777,7 @@ async function arkuiStateBuildEdges(queries: QueryBuilder, ctx: ResolutionContex
   let scanned255 = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const struct of queries.iterateNodesByKind('struct')) {
+  for (const struct of queries.iterateNodesByKind('struct', { languages: ['arkts'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (struct.language !== 'arkts') continue;
     const children = queries.getOutgoingEdges(struct.id, ['contains'])
@@ -1108,14 +1117,14 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield): Pr
   // never the whole struct kind — that array is O(nodes) on struct-heavy
   // repos like the Linux kernel (#1212).
   const goStructs: Node[] = [];
-  for (const s of queries.iterateNodesByKind('struct')) {
+  for (const s of queries.iterateNodesByKind('struct', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (s.language === 'go') goStructs.push(s);
   }
   const structMethods = new Map<string, Set<string>>();
   for (const s of goStructs) structMethods.set(s.id, methodNameSet(s.id));
 
-  for (const iface of queries.iterateNodesByKind('interface')) {
+  for (const iface of queries.iterateNodesByKind('interface', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
 
     if ((++scanned255 & 63) === 0) await onYield();
@@ -1180,7 +1189,7 @@ async function goCrossFileMethodContainsEdges(queries: QueryBuilder, onYield: Ma
     return i >= 0 ? p.slice(0, i) : '';
   };
 
-  for (const method of queries.iterateNodesByKind('method')) {
+  for (const method of queries.iterateNodesByKind('method', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
 
     if ((++scanned255 & 63) === 0) await onYield();
@@ -1420,7 +1429,7 @@ async function goGrpcStubImplEdges(queries: QueryBuilder, onYield: MaybeYield): 
   const methodNamesByStruct = new Map<string, Set<string>>();
   const methodNodesByStruct = new Map<string, Node[]>();
   const goStructs: Node[] = [];
-  for (const s of queries.iterateNodesByKind('struct')) {
+  for (const s of queries.iterateNodesByKind('struct', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (s.language !== 'go') continue;
     goStructs.push(s);
@@ -2247,7 +2256,7 @@ async function rnCrossPlatformEdges(queries: QueryBuilder, onYield: MaybeYield):
   // impls in ≥2 native languages can pair, so the per-method JS-caller check
   // below only runs for genuine cross-platform candidates.
   const byName = new Map<string, Node[]>();
-  for (const m of queries.iterateNodesByKind('method')) {
+  for (const m of queries.iterateNodesByKind('method', { languages: [...NATIVE] as Language[] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (!NATIVE.has(m.language)) continue;
     const key = norm(m.name);
@@ -2371,7 +2380,7 @@ async function mybatisJavaXmlEdges(queries: QueryBuilder, onYield: MaybeYield): 
   // stream below. Same rowid stream order as matching inline, so the edge
   // output is byte-identical when mappers do exist.
   const xmlMethods: Node[] = [];
-  for (const m of queries.iterateNodesByKind('method')) {
+  for (const m of queries.iterateNodesByKind('method', { languages: ['xml'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (m.language === 'xml') xmlMethods.push(m);
   }
@@ -2379,7 +2388,7 @@ async function mybatisJavaXmlEdges(queries: QueryBuilder, onYield: MaybeYield): 
 
   // Index Java methods by `<ClassName>::<methodName>` for O(1) lookup.
   const javaIndex = new Map<string, Node[]>();
-  for (const m of queries.iterateNodesByKind('method')) {
+  for (const m of queries.iterateNodesByKind('method', { languages: ['java', 'kotlin'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (m.language !== 'java' && m.language !== 'kotlin') continue;
     const parts = m.qualifiedName.split('::');
@@ -2490,7 +2499,7 @@ async function ginMiddlewareChainEdges(queries: QueryBuilder, ctx: ResolutionCon
   let scannedFiles = 0;
   // 1. Find the chain dispatcher(s): a Go method that invokes a `handlers` slice by index.
   const dispatchers: Node[] = [];
-  for (const n of queries.iterateNodesByKind('method')) {
+  for (const n of queries.iterateNodesByKind('method', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (n.language !== 'go') continue;
     const content = ctx.readFile(n.filePath);
@@ -2658,7 +2667,7 @@ async function reduxThunkEdges(queries: QueryBuilder, ctx: ResolutionContext, on
   let scanned255 = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const node of queries.iterateNodesByKind('constant')) {
+  for (const node of queries.iterateNodesByKind('constant', { signatureLike: ['%createThunk%', '%createAsyncThunk%'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     // Cheap gate: the initializer (captured in `signature`) must be a create(Async)Thunk call —
     // avoids reading every constant's body on a large repo.
@@ -3064,7 +3073,7 @@ async function rtkQueryEdges(queries: QueryBuilder, ctx: ResolutionContext, onYi
   let scanned255 = 0;
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  for (const hook of queries.iterateNodesByKind('function')) {
+  for (const hook of queries.iterateNodesByKind('function', { signatureLike: [RTK_GENERATED_HOOK_SIGNATURE] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     // Only our extracted generated-hook bindings (sentinel) — not a real hook fn.
     if (hook.signature !== RTK_GENERATED_HOOK_SIGNATURE) continue;
@@ -4904,7 +4913,7 @@ async function nixOptionPathEdges(queries: QueryBuilder, onYield: MaybeYield): P
   const byFile = new Map<string, Rec[]>();
   let scanned = 0;
   for (const kind of ['variable', 'function'] as NodeKind[]) {
-    for (const node of queries.iterateNodesByKind(kind)) {
+    for (const node of queries.iterateNodesByKind(kind, { languages: ['nix'] })) {
       if ((++scanned255 & 63) === 0) await onYield();
       if ((++scanned & 0x3fff) === 0 && onYield) await onYield();
       if (node.language !== 'nix') continue;
@@ -5017,7 +5026,7 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
   // Cheap language gate: no Erlang modules → no cost beyond one streamed
   // kind scan (never a materialized array of every namespace — #1212).
   const erlangModules: Node[] = [];
-  for (const n of queries.iterateNodesByKind('namespace')) {
+  for (const n of queries.iterateNodesByKind('namespace', { languages: ['erlang'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
     if (n.language === 'erlang') erlangModules.push(n);
   }
