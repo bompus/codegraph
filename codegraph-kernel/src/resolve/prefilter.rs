@@ -215,10 +215,8 @@ impl KernelResolver {
         if source.starts_with("@/") || source.starts_with("src/") {
             return Ok(false);
         }
-        if let Some(aliases) = &self.aliases {
-            if aliases.patterns.iter().any(|p| source.starts_with(&p.prefix)) {
-                return Ok(false);
-            }
+        if self.is_alias_prefix(&source, &r.file_path) {
+            return Ok(false);
         }
         if let Some(ws) = &self.workspaces {
             if self.resolve_workspace_import(&source).is_some() {

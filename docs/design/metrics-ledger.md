@@ -55,6 +55,7 @@ Each row is one gated change. "Edges" is the resolved-edge total on the pinned c
 | Phase 3: C++ | nlohmann/json | 24,640 → 24,647 | import 644 → 686; 319 ties re-broken |
 | C++ iterator ADL ties | nlohmann/json | 22,817 → 22,587 | 93 wrong `calls`→`begin` removed; 12 correct implicit-this members remain; exact-match 7,146 → 6,916 |
 | C++ `Type(...)` constructor retarget | nlohmann/json | 22,587 → 22,587 | main-header `items()` now `calls` the `iteration_proxy` constructor instead of only `instantiates` the class |
+| Monorepo imports: nested tsconfig `paths`, workspace `dist/` → `src/` (§5.94) | vite / vitest / svelte | 28,198 → 28,223 / 71,113 → 71,125 / 70,591 → 70,935 | svelte test samples' `tick`/`writable` move from a test helper to the runtime; vitest gains only |
 
 Reading: the binding table removes wrong cross-file links (bare imports, parameters, file-local names) and replaces name guesses with import-resolved edges; the big wins are where a language had no import mappings at all (Kotlin) or no export flags (Python). The remaining churn is same-name tie-breaks, which the receiver rule (Phase 2b) is meant to settle.
 
@@ -827,6 +828,29 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` exposed | 1/1 absent, 1/1 present held; 77,711 → 77,705 edges |
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
+
+### 5.94 Monorepo imports: nested tsconfig `paths`, workspace packages published from `dist/` (2026-09-27)
+
+Two resolution gaps made cross-package imports in TypeScript monorepos fall back to project-wide name matching.
+
+- **Nested configs.** Only the root `tsconfig.json`/`jsconfig.json`/`tsconfig.base.json` was read, so a package's own `"@/*": ["./src/*"]` was ignored. Each indexed JS/TS file now takes the `paths` of its nearest nested config (with `extends`), tried before the root config's. A miss or a declaration-only hit falls back to the root aliases and then the workspace package: vitest's `test/e2e/tsconfig.json` maps `vitest` to an uncommitted `dist/index.d.ts`, and scoping without the fallback lost 8,323 calls there.
+- **Workspace entries into build output.** `main`/`module`/`types` and `exports` targets under `dist/`, `build/`, `lib/`, `out/`, `esm/`, `cjs/` (with `dist/esm/`-style sub-folders) map to the one `src/` file that compiles to them, when that output is absent and all conditions agree; `"./*": "./dist/*.mjs"` enumerates the source tree (bounded at 5,000 entries).
+
+Full index, fresh `.codegraph/`, `dist` of the branch vs `dist` of `d789d3d8`, same checkout:
+
+| Corpus | Edges | Failed `imports` refs | Removed edges re-pointed at the same site |
+|---|---|---|---|
+| n8n | 1,211,201 → 1,272,164 | 97,024 → 65,914 | calls 3,284 of 3,319; imports, references, extends all |
+| supabase | 313,781 → 330,937 | 59,237 → 43,270 | calls 632 re-pointed (each app's `@/` now its own) |
+| svelte | 70,591 → 70,935 | 2,930 → 2,705 | — |
+| vitest | 71,113 → 71,125 | 5,662 → 5,652 | nothing removed |
+| vite | 28,198 → 28,223 | 4,034 → 4,018 | 21 imports re-pointed |
+
+Sampled n8n rebinds: `sleep` from `@n8n/utils` (was `node-cli`'s dev util), `isRecord` from `@n8n/utils` (was a compatibility guard), `UnexpectedError` from `n8n-workflow` (was the engine's copy), event-bus `.on/.off` to the importing package's bus (was `@n8n/agents`'). `Container.get` calls on `@n8n/di`: **27 → 5,302**, the gap the README had put down to member-call recall; the import itself had not resolved. The 35 dropped n8n calls are one `super()` in the engine's error base that had fanned out to unrelated constructors.
+
+Cost: n8n full index, back to back, base 80.6 s vs branch 77.0 s (resolving 32.5 → 31.7 s, linking 14.1 → 12.8 s); fewer failed imports leave less name-matching fallback. Loading 21 scopes takes 75 ms and the workspace entries 62 ms on n8n.
+
+Gates: precision cases on vite/vitest/svelte all held; golden dumps unchanged; full suite 337 files / 5,574 tests; new `monorepo-import-recall` cases fail on the old kernel and pass on the new one; new `workspace-source-entries` cases cover the dist → src mapping and the cases it leaves alone.
 
 ### 5.93 Near-duplicate refresh on sync: cached pair scores, one-scan banding (2026-09-26)
 

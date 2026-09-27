@@ -9,7 +9,7 @@ Extraction produces nodes and raw edges; **resolution** turns names into real co
 
 After parsing, CodeGraph resolves:
 
-- **Imports** → the source files they point at (including tsconfig path aliases and cargo workspace members).
+- **Imports** → the source files they point at, including tsconfig/jsconfig path aliases (each file uses its nearest config's `paths`), workspace packages (an entry that points at uncommitted `dist/` output maps back to its `src/` file) and cargo workspace members.
 - **Calls** → their definitions, by import resolution and name matching.
 - **Inheritance** → `extends` / `implements` between types.
 

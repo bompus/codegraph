@@ -278,7 +278,11 @@ export function loadProjectAliases(projectRoot: string): AliasMap | null {
     }
   }
   if (!effective) return null;
+  return aliasMapFromOptions(effective, projectRoot, usedFile);
+}
 
+/** The {@link AliasMap} a config's effective options define, or null without usable `paths`. */
+function aliasMapFromOptions(effective: EffectiveOptions, projectRoot: string, usedFile: string | null): AliasMap | null {
   // With no explicit baseUrl, `paths` targets are relative to the config that
   // declared them — which is the project root only when that config is the
   // root one (the pre-`extends` assumption).
@@ -319,6 +323,71 @@ export function loadProjectAliases(projectRoot: string): AliasMap | null {
   });
 
   return { baseUrl, patterns };
+}
+
+/** A nested config's aliases, applying to every file under `dir`. */
+export interface AliasScope {
+  /** Project-relative directory holding the config, forward slashes, no trailing slash. */
+  dir: string;
+  map: AliasMap;
+}
+
+/** Files whose imports a tsconfig/jsconfig `paths` map can govern. */
+const ALIASED_SOURCE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
+
+/**
+ * Aliases declared by configs below the project root, one scope per nested
+ * `tsconfig.json`/`jsconfig.json` that governs at least one of `files` and
+ * defines `paths` (its own or through `extends`). tsc applies the nearest
+ * config to each file, so a monorepo package's `@/*` means that package's
+ * `src/`; the root config alone mapped every package's `@/` to one place or
+ * nowhere. A nested config without `paths` adds no scope, leaving its files
+ * on the root aliases as before. Ordered deepest first for
+ * {@link scopedAliasesForFile}.
+ */
+export function loadScopedAliases(projectRoot: string, files: readonly string[]): AliasScope[] {
+  const nearest = new Map<string, string | null>();
+  const configFor = (dir: string): string | null => {
+    if (dir === '' || dir === '.') return null;
+    const memo = nearest.get(dir);
+    if (memo !== undefined) return memo;
+    let found: string | null = null;
+    for (const name of ['tsconfig.json', 'jsconfig.json']) {
+      if (fs.existsSync(path.join(projectRoot, dir, name))) { found = `${dir}/${name}`; break; }
+    }
+    if (found === null) {
+      const slash = dir.lastIndexOf('/');
+      found = configFor(slash === -1 ? '' : dir.slice(0, slash));
+    }
+    nearest.set(dir, found);
+    return found;
+  };
+  const configs = new Set<string>();
+  for (const file of files) {
+    if (!ALIASED_SOURCE.test(file)) continue;
+    const slash = file.lastIndexOf('/');
+    const config = slash === -1 ? null : configFor(file.slice(0, slash));
+    if (config) configs.add(config);
+  }
+  const scopes: AliasScope[] = [];
+  for (const config of configs) {
+    const options = loadEffectiveOptions(path.join(projectRoot, config), new Set(), 0);
+    const map = options?.paths ? aliasMapFromOptions(options, projectRoot, config) : null;
+    if (map) scopes.push({ dir: config.slice(0, config.lastIndexOf('/')), map });
+  }
+  return scopes.sort((a, b) => b.dir.length - a.dir.length);
+}
+
+/**
+ * The aliases of the deepest nested config enclosing `filePath`, or null.
+ * Resolution tries them before the root config's, which stay the fallback: a
+ * nested config can point at build output the checkout does not contain.
+ */
+export function scopedAliasesForFile(filePath: string, scopes: readonly AliasScope[]): AliasMap | null {
+  for (const scope of scopes) {
+    if (filePath.startsWith(scope.dir) && filePath[scope.dir.length] === '/') return scope.map;
+  }
+  return null;
 }
 
 /**

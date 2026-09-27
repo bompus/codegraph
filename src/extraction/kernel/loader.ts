@@ -188,6 +188,8 @@ export interface KernelResolverConfig {
   dbPath: string;
   projectRoot: string;
   aliases?: KernelAliasMapIn;
+  /** Nested tsconfig/jsconfig aliases, deepest `dir` first; a file under `dir` uses `map` instead of `aliases`. */
+  scopedAliases?: { dir: string; map: KernelAliasMapIn }[];
   workspaces?: KernelWorkspaceIn;
   goModulePath?: string;
   cppIncludeDirs?: string[];

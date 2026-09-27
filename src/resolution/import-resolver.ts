@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Binding, Language } from '../types';
 import { UnresolvedRef,  ResolutionContext, ImportMapping } from './types';
-import { applyAliases } from './path-aliases';
+import { applyAliases, type AliasMap } from './path-aliases';
 import { resolveWorkspaceImport } from './workspace-packages';
 
 /**
@@ -92,7 +92,7 @@ function resolveImportPathUncached(
   // bare-specifier heuristic can consult the project's tsconfig
   // alias map first (custom prefixes like `@components/*` would
   // otherwise be misclassified as npm).
-  if (isExternalImport(importPath, language, context)) {
+  if (isExternalImport(importPath, language, context, fromFile)) {
     return null;
   }
 
@@ -105,7 +105,7 @@ function resolveImportPathUncached(
   }
 
   // Handle absolute/aliased imports (like @/ or src/)
-  const aliased = resolveAliasedImport(importPath, projectRoot, language, context);
+  const aliased = resolveAliasedImport(importPath, projectRoot, language, context, fromFile);
   if (aliased) return aliased;
 
   // C/C++ include directory search: when neither relative nor aliased
@@ -232,7 +232,8 @@ const RUST_STDLIB_ROOTS = new Set(['std', 'core', 'alloc', 'proc_macro']);
 function isExternalImport(
   importPath: string,
   language: Language,
-  context?: ResolutionContext
+  context?: ResolutionContext,
+  fromFile?: string
 ): boolean {
   // Relative imports are not external
   if (importPath.startsWith('.')) {
@@ -255,10 +256,10 @@ function isExternalImport(
       return true;
     }
     // Project-defined alias prefix? Treat as local.
-    const aliases = context?.getProjectAliases?.();
-    if (aliases) {
-      for (const pat of aliases.patterns) {
-        if (importPath.startsWith(pat.prefix)) return false;
+    if (context) {
+      const { scoped, root } = aliasMapsFor(context, fromFile);
+      for (const aliases of [scoped, root]) {
+        if (aliases?.patterns.some(pat => importPath.startsWith(pat.prefix))) return false;
       }
     }
     // Scoped packages or bare specifiers that don't start with aliases
@@ -400,6 +401,16 @@ const EMITTED_SPECIFIER_LANGUAGES: ReadonlySet<string> = new Set([
   'typescript', 'tsx', 'javascript', 'jsx', 'vue', 'svelte', 'astro', 'arkts',
 ]);
 
+/** The tsconfig `paths` maps for `fromFile`: its nearest nested config's, then the root's. */
+function aliasMapsFor(context: ResolutionContext, fromFile?: string): { scoped: AliasMap | null; root: AliasMap | null } {
+  return {
+    scoped: fromFile !== undefined ? context.getScopedAliasesFor?.(fromFile) ?? null : null,
+    root: context.getProjectAliases?.() ?? null,
+  };
+}
+
+const DECLARATION_FILE = /\.d\.[cm]?ts$/;
+
 /**
  * Resolve an aliased/absolute import.
  *
@@ -415,7 +426,8 @@ function resolveAliasedImport(
   importPath: string,
   projectRoot: string,
   language: Language,
-  context: ResolutionContext
+  context: ResolutionContext,
+  fromFile: string
 ): string | null {
   const extensions = EXTENSION_RESOLUTION[language] || [];
   const tryWithExt = (basePath: string): string | null => {
@@ -428,13 +440,19 @@ function resolveAliasedImport(
   };
 
   // 1. Project tsconfig/jsconfig paths.
-  const aliasMap = context.getProjectAliases?.();
-  if (aliasMap) {
-    const candidates = applyAliases(importPath, aliasMap, projectRoot);
-    for (const c of candidates) {
-      const hit = tryWithExt(c);
-      if (hit) return hit;
-    }
+  //    The nearest nested config first. Its targets can name build output the
+  //    checkout lacks, so a miss or a declaration-only hit falls back to the
+  //    root config's aliases and the workspace package's source.
+  const { scoped, root } = aliasMapsFor(context, fromFile);
+  let declaration: string | null = null;
+  for (const c of scoped ? applyAliases(importPath, scoped, projectRoot) : []) {
+    const hit = tryWithExt(c);
+    if (hit && !DECLARATION_FILE.test(hit)) return hit;
+    declaration ??= hit;
+  }
+  for (const c of root ? applyAliases(importPath, root, projectRoot) : []) {
+    const hit = tryWithExt(c);
+    if (hit) return hit;
   }
 
   // 1.5 Workspace packages (`@scope/ui/widgets` → `packages/ui/widgets`).
@@ -448,6 +466,7 @@ function resolveAliasedImport(
       if (hit) return hit;
     }
   }
+  if (declaration) return declaration;
 
   // 2. Hard-coded fallback list. Kept for projects that use these
   //    conventional aliases without declaring them in tsconfig.
@@ -1022,7 +1041,7 @@ export function isBoundToOutOfRepoImport(
   if (!ESM_IMPORT_LANGUAGES.has(ref.language)) return false;
   for (const imp of context.getImportMappings(ref.filePath, ref.language)) {
     if (imp.localName !== name) continue;
-    return isExternalImport(imp.source, ref.language, context);
+    return isExternalImport(imp.source, ref.language, context, ref.filePath);
   }
   return false;
 }

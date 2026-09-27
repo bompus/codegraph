@@ -7,8 +7,30 @@ impl KernelResolver {
     // Import machinery (import-resolver.ts)
     // -----------------------------------------------------------------------
 
+    /// scopedAliasesForFile (path-aliases.ts): the aliases of the deepest
+    /// nested config enclosing `from_file`.
+    fn scoped_aliases_for(&self, from_file: &str) -> Option<&KernelAliasMapIn> {
+        self.scoped_aliases
+            .iter()
+            .find(|s| {
+                from_file.len() > s.dir.len()
+                    && from_file.starts_with(&s.dir)
+                    && from_file.as_bytes()[s.dir.len()] == b'/'
+            })
+            .map(|s| &s.map)
+    }
+
+    /// Whether a `paths` pattern of the file's nested config or the root
+    /// config claims `import_path`.
+    pub(super) fn is_alias_prefix(&self, import_path: &str, from_file: &str) -> bool {
+        self.scoped_aliases_for(from_file)
+            .into_iter()
+            .chain(self.aliases.as_ref())
+            .any(|m| m.patterns.iter().any(|p| import_path.starts_with(&p.prefix)))
+    }
+
     /// isExternalImport (import-resolver.ts), context-aware.
-    pub(super) fn is_external_import(&self, import_path: &str, language: &str) -> bool {
+    pub(super) fn is_external_import(&self, import_path: &str, language: &str, from_file: &str) -> bool {
         if import_path.starts_with('.') {
             return false;
         }
@@ -19,10 +41,8 @@ impl KernelResolver {
             if ESM_BUILTIN_MODULES.contains(&import_path) {
                 return true;
             }
-            if let Some(aliases) = &self.aliases {
-                if aliases.patterns.iter().any(|p| import_path.starts_with(&p.prefix)) {
-                    return false;
-                }
+            if self.is_alias_prefix(import_path, from_file) {
+                return false;
             }
             if !import_path.starts_with("@/")
                 && !import_path.starts_with("~/")
@@ -97,8 +117,7 @@ impl KernelResolver {
 
     /// applyAliases (path-aliases.ts): candidate paths relative to
     /// projectRoot in tsconfig priority order.
-    pub(super) fn apply_aliases(&self, import_path: &str) -> Vec<String> {
-        let Some(alias_map) = &self.aliases else { return Vec::new() };
+    pub(super) fn apply_aliases(&self, import_path: &str, alias_map: &KernelAliasMapIn) -> Vec<String> {
         for pat in &alias_map.patterns {
             if !import_path.starts_with(&pat.prefix) {
                 continue;
@@ -196,12 +215,33 @@ impl KernelResolver {
         &mut self,
         import_path: &str,
         language: &str,
+        from_file: &str,
     ) -> Res<Option<String>> {
-        if self.aliases.is_some() {
-            for c in self.apply_aliases(import_path) {
-                if let Some(hit) = self.probe_extensions(&c, language) {
+        // The nearest nested config first. Its targets can name build output
+        // the checkout lacks (`"vitest": ["./dist/index.d.ts"]`), so a miss or
+        // a declaration-only hit falls back to the root config's aliases and
+        // the workspace package's source.
+        let scoped = self
+            .scoped_aliases_for(from_file)
+            .map(|m| self.apply_aliases(import_path, m))
+            .unwrap_or_default();
+        let mut declaration = None;
+        for c in scoped {
+            if let Some(hit) = self.probe_extensions(&c, language) {
+                if !is_declaration_file(&hit) {
                     return Ok(Some(hit));
                 }
+                declaration.get_or_insert(hit);
+            }
+        }
+        let root = self
+            .aliases
+            .as_ref()
+            .map(|m| self.apply_aliases(import_path, m))
+            .unwrap_or_default();
+        for c in root {
+            if let Some(hit) = self.probe_extensions(&c, language) {
+                return Ok(Some(hit));
             }
         }
         if self.workspaces.is_some() {
@@ -210,6 +250,9 @@ impl KernelResolver {
                     return Ok(Some(hit));
                 }
             }
+        }
+        if declaration.is_some() {
+            return Ok(declaration);
         }
         for (alias, replacement) in FALLBACK_ALIASES {
             if let Some(rest) = import_path.strip_prefix(alias) {
@@ -270,14 +313,14 @@ impl KernelResolver {
         if language == "cobol" {
             return self.resolve_cobol_copybook(import_path, from_file);
         }
-        if self.is_external_import(import_path, language) {
+        if self.is_external_import(import_path, language, from_file) {
             return Ok(None);
         }
         let from_dir = pos_dirname(&pos_resolve(&self.root_abs, from_file)).to_string();
         if import_path.starts_with('.') {
             return self.resolve_relative_import(import_path, &from_dir, language);
         }
-        if let Some(aliased) = self.resolve_aliased_import(import_path, language)? {
+        if let Some(aliased) = self.resolve_aliased_import(import_path, language, from_file)? {
             return Ok(Some(aliased));
         }
         if language == "c" || language == "cpp" {
@@ -496,7 +539,7 @@ impl KernelResolver {
             if imp.local_name != r.reference_name {
                 continue;
             }
-            return Ok(self.is_external_import(&imp.source, &r.language));
+            return Ok(self.is_external_import(&imp.source, &r.language, &r.file_path));
         }
         Ok(false)
     }
@@ -1339,4 +1382,8 @@ impl KernelResolver {
         }
         Ok(Some(candidates[0].clone()))
     }
+}
+
+fn is_declaration_file(path: &str) -> bool {
+    [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
 }

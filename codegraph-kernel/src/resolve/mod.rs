@@ -85,6 +85,14 @@ pub struct KernelAliasMapIn {
     pub patterns: Vec<KernelAliasPatternIn>,
 }
 
+/// A nested tsconfig/jsconfig's aliases: files under `dir` (project-relative)
+/// use `map` in place of the root config's.
+#[napi(object)]
+pub struct KernelScopedAliasIn {
+    pub dir: String,
+    pub map: KernelAliasMapIn,
+}
+
 #[napi(object)]
 pub struct KernelWorkspaceIn {
     /// Import-source path prefix → workspace package name (longest prefix wins).
@@ -102,6 +110,8 @@ pub struct KernelResolverConfig {
     pub db_path: String,
     pub project_root: String,
     pub aliases: Option<KernelAliasMapIn>,
+    /// Deepest `dir` first, as path-aliases.ts orders them.
+    pub scoped_aliases: Option<Vec<KernelScopedAliasIn>>,
     pub workspaces: Option<KernelWorkspaceIn>,
     pub go_module_path: Option<String>,
     /// Already-resolved compile_commands include dirs (may be empty →
@@ -467,6 +477,7 @@ pub struct KernelResolver {
     root_abs: String,
     /// AliasMap (project-aliases.ts), as the TS side passes it.
     aliases: Option<KernelAliasMapIn>,
+    scoped_aliases: Vec<KernelScopedAliasIn>,
     workspaces: Option<WorkspaceK>,
     go_module_path: Option<String>,
     cpp_include_dirs: Vec<String>,
@@ -592,6 +603,7 @@ impl KernelResolver {
             project_root: config.project_root,
             root_abs,
             aliases: config.aliases,
+            scoped_aliases: config.scoped_aliases.unwrap_or_default(),
             workspaces,
             go_module_path: config.go_module_path,
             cpp_include_dirs,
