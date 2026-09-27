@@ -215,7 +215,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         ReceiverPattern { affix: Affix::new("", tail, true, true, false).lead(lead), guard }
     };
     let mut m: HashMap<&'static str, Vec<ReceiverPattern>> = HashMap::new();
-    for lang in ["typescript", "javascript", "tsx", "jsx", "arkts"] {
+    for lang in ["typescript", "javascript", "tsx", "jsx", "arkts", "vue"] {
         m.insert(
             lang,
             vec![

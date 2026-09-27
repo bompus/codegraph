@@ -61,7 +61,10 @@ impl KernelResolver {
         });
         // `!returnType` — an empty annotation/returnType fails the same way.
         let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
-            return Ok(None);
+            if awaited || callee.kind != "function" {
+                return Ok(None);
+            }
+            return self.returned_binding_member(&callee, method, r);
         };
         let promise_re = re!(r"^Promise<(.+)>$");
         let ty = if awaited {
@@ -72,6 +75,57 @@ impl KernelResolver {
             return_type
         };
         self.match_bound_type_member(&ty, method, &r.clone().at(&callee))
+    }
+
+    /// An unannotated factory whose only `return` hands back one binding —
+    /// `export function useI18n() { return i18n; }` over
+    /// `const i18n: I18nClass = new I18nClass()`: the binding's declared or
+    /// constructed type carries the method. Any other body shape declines.
+    fn returned_binding_member(&mut self, callee: &KNode, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(lines) = self.read_file(&callee.file_path) else {
+            return Ok(None);
+        };
+        let lo = (callee.start_line - 1).max(0) as usize;
+        let hi = (callee.end_line.max(callee.start_line) as usize).min(lines.len());
+        if lo >= hi {
+            return Ok(None);
+        }
+        let return_kw = re!(r"(?-u:\b)return(?-u:\b)");
+        let return_ident = re!(r"^\s*return\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*(?://.*)?$");
+        let mut returned: Option<(String, i64)> = None;
+        for (i, line) in lines[lo..hi].iter().enumerate() {
+            if !return_kw.is_match(line) {
+                continue;
+            }
+            let Some(m) = return_ident.captures(line) else {
+                return Ok(None);
+            };
+            if returned.is_some() {
+                return Ok(None);
+            }
+            returned = Some((m[1].to_string(), (lo + i + 1) as i64));
+        }
+        let Some((ident, line)) = returned else {
+            return Ok(None);
+        };
+        let bindings = self.bindings(&callee.file_path)?;
+        let Some(binding) = innermost_binding(&bindings, &ident, Some(line)).cloned() else {
+            return Ok(None);
+        };
+        if binding.kind != "decl" && binding.kind != "local" {
+            return Ok(None);
+        }
+        let mut site = r.clone().at(callee).naming(&format!("{ident}.{method}"), "calls");
+        site.language = callee.language.clone();
+        site.line = binding.line;
+        site.from_node_id = binding.node_id.clone().unwrap_or_else(|| callee.id.clone());
+        let Some(ty) = self.infer_local_receiver_type(&ident, &site, true)? else {
+            return Ok(None);
+        };
+        if TS_PRIMITIVE_TYPES.contains(ty.as_str()) {
+            return Ok(None);
+        }
+        self.match_bound_type_member(&ty, method, &site)
     }
 
     /// The factory call a binding's initializer ends in — `= f(…)` or
