@@ -117,8 +117,8 @@ median of the four syncs per arm, capped at 13G.
 
 A second round of sync work (`perf/sync-detect`, 2026-09-27) was measured the
 same way against the fork at `013f814a`, which already had the table above's
-skip cache. The README's fork column uses the right-hand figures; its upstream
-column is the table above.
+skip cache. A third round (below) supersedes its right-hand figures in the
+README; the README's upstream column is the table above.
 
 | Corpus | Fork `013f814a` | Fork `perf/sync-detect` |
 |---|---|---|
@@ -135,6 +135,26 @@ arms. The alternating order spreads that over both arms, and one outlier on
 each (a 7.09 s base sync on discourse, an 8.35 s branch sync on n8n) falls
 outside the median. The CPython difference is within run-to-run spread: none
 of the changes reach Python-only work.
+
+A third round (`perf/sync-node-reads`, 2026-09-27) filters the synthesis passes'
+node scans in SQL. Measured the same way against the fork at `41e7f7df`, which
+had the second round. The README's fork column uses the right-hand figures.
+
+| Corpus | Fork `41e7f7df` | Fork `perf/sync-node-reads` |
+|---|---|---|
+| gin | 0.39 s, 217 MiB | 0.37 s, 211 MiB |
+| Alamofire | 0.48 s, 227 MiB | 0.48 s, 228 MiB |
+| pretix | 1.77 s, 578 MiB | 1.69 s, 586 MiB |
+| CPython | 4.50 s, 881 MiB | 3.65 s, 849 MiB |
+| discourse | 4.02 s, 968 MiB | 3.56 s, 932 MiB |
+| supabase | 3.88 s, 973 MiB | 3.48 s, 977 MiB |
+| n8n | 6.66 s, 1,230 MiB | 6.24 s, 1,236 MiB |
+
+A live draft room paused the run after CPython; the last three corpora ran
+once it ended, at a 1-minute load of 2–4 from other sessions. Supabase's base
+syncs spread from 3.55 s to 4.37 s, so its difference is mostly noise. The
+base column also sits below the second round's right-hand figures (pretix 1.85
+s, n8n 6.95 s) on the same code, which is the run-to-run spread between days.
 
 The first measurement, taken during the full-index batch with fork `76cdf8d4`,
 read higher for the fork (pretix 2.77 s, CPython 5.91 s, supabase 6.68 s, n8n

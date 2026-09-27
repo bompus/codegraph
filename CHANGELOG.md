@@ -197,7 +197,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
-- A one-file sync is faster on large JavaScript and TypeScript projects: codegraph remembers which files each inference step and the framework check found nothing in and skips them until they change. Syncs also use less memory.
+- A one-file sync is faster on large JavaScript and TypeScript projects: codegraph remembers which files each inference step and the framework check found nothing in and skips them until they change, and reads only the symbols each step can use. Syncs also use less memory.
 
 - Nuxt page routes now link to the page component they render, and `index` folders no longer leak into the URL (`pages/account/index/[page].vue` is `/account/:page`).
 
