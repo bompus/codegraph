@@ -1599,6 +1599,9 @@ export class ReferenceResolver {
           }
         }
       } catch (err) {
+        if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+          console.error(`[pool-timing] kernel snapshot refresh failed, resolving on the main thread: ${err instanceof Error ? err.message : String(err)}`);
+        }
         logDebug('Kernel snapshot refresh failed; resolving on the main thread', {
           error: err instanceof Error ? err.message : String(err),
         });

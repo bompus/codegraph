@@ -829,6 +829,19 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.97 Full index sometimes lost its resolver pool to a checkpoint race (2026-09-27)
+
+n8n full indexes were bimodal: most runs took 68–80 s, but about one in three took 172–179 s with a lower memory peak (~3.2 GB vs ~5.2 GB), all of the extra time in "Resolving refs". Cause: after the prerequisite phase the resolver refreshes its kernel snapshot, and the fold before the copy was a single TRUNCATE checkpoint with a 2 s busy timeout. When the WAL valve's timer pass was already backfilling a large WAL (420 MB here), the TRUNCATE queued behind its checkpoint lock and returned `busy=1, log=-1`. The refresh counted that as failure, destroyed the six-worker pool and resolved the remaining ~1.6M refs on the main thread. The fallback was logged only at debug level.
+
+The fold now drains the valve first, and when TRUNCATE still reports busy (an idle reader's WAL mark also blocks it) it accepts a complete PASSIVE backfill, which is all the file copy needs; up to three attempts. A refresh failure now also prints under `CODEGRAPH_SYNTH_TIMINGS`.
+
+| n8n full index, same `dist` and kernel | Runs | Pool kept | Wall |
+|---|---|---|---|
+| before (two batches, load 1.5–4.7) | 10 | 7 | 68–80 s ×7, 172–179 s ×3 |
+| after (load 0.9–3.8) | 8 | 8 | 69–77 s |
+
+The "~150 s for both arms" pairs noted in §5.96 were this race, not outside load. Gates: a new `wal-deferral` case holds a read transaction on the live db, checks the fold still succeeds and that a copy of the dbfile has every row, and fails with the old TRUNCATE-only fold; full suite 339 files / 5,583 tests.
+
 ### 5.96 Vue member calls and factories that return a typed module value (2026-09-27)
 
 Re-check of n8n's `i18n.baseText` recall after §5.94: 369 resolved calls into `I18nClass::baseText` (upstream 1,298), with 4,170 `%baseText` refs unresolved. Two causes:

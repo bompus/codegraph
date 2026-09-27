@@ -17,6 +17,8 @@ import { DatabaseConnection } from '../src/db';
 import { WalCheckpointValve, WalValveAbortError, resolveWalValveMb } from '../src/db/wal-valve';
 import CodeGraph from '../src/index';
 
+const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+
 let tmpDir: string;
 
 beforeEach(() => {
@@ -86,6 +88,31 @@ describe('DatabaseConnection WAL helpers', () => {
     expect(res!.log).toBeGreaterThan(0);
     expect(res!.checkpointed).toBe(res!.log);
     db.close();
+  });
+
+  it('foldWalForCopy leaves a complete dbfile while a reader holds a WAL mark', async () => {
+    const db = openDb();
+    db.setWalAutocheckpoint(0);
+    writeRows(db, 500);
+    const dbFile = path.join(tmpDir, 'test.db');
+    // An idle reader inside a read transaction, like a pool worker between
+    // batches: it blocks TRUNCATE but not a full backfill.
+    const reader = new DatabaseSync(dbFile, { readOnly: true });
+    reader.exec('BEGIN');
+    reader.prepare('SELECT count(*) AS c FROM t').get();
+    try {
+      expect(await db.foldWalForCopy()).toBe(true);
+      expect((await db.checkpointWalTruncate())!.busy).toBe(1);
+      const copy = path.join(tmpDir, 'copy.db');
+      fs.copyFileSync(dbFile, copy);
+      const snap = new DatabaseSync(copy, { readOnly: true });
+      expect(snap.prepare('SELECT count(*) AS c FROM t').get()).toEqual({ c: 500 });
+      snap.close();
+    } finally {
+      reader.exec('COMMIT');
+      reader.close();
+      db.close();
+    }
   });
 });
 
