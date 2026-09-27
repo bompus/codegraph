@@ -829,6 +829,18 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.95 Sync fixed costs: ignore fast path, slice-based comment stripping, Pinia receiver search (2026-09-27)
+
+Profile of a one-file n8n sync after §5.94: the `.gitignore` filter over 24,435 files (~300 ms), comment stripping for the synthesis passes (~330 ms self), the Pinia pass (~520 ms) and the tier pass (~600 ms).
+
+- **Ignore matcher.** `ignore` tests each path against every rule in turn (170 on n8n: defaults plus the root `.gitignore`). One regex joining all rules now answers the common case, no rule matches, in one test; any match goes through the stock rule walk, so negations and order decide as before. It reads `ignore`'s rule list, which is not public API; a reshaped release switches the fast path off (a test pins that it is on). Scan filter 302 → 116 ms in isolation.
+- **`stripCStyle`.** Split the text into a char array and joined it back; it now copies unchanged slices and rewrites only comments. Output byte-identical on every JS/TS/Java/C#/Swift/C file of n8n and supabase (31,697 files, both string modes): 3.39 s → 0.72 s on n8n. A result joined from slices of a two-byte string stays two-byte after its non-Latin-1 comments are blanked, and the tier regexes ran 31% slower over it (1.69 → 2.22 s); such a result is re-encoded to one byte (1.73 s).
+- **Pinia bound calls.** `<var>.<method>(` was found by matching every `a.b(` and dropping unbound receivers; the search now names the bound receivers. A receiver is a whole word followed by `.`, so an unbound match never covers the start of a bound one and the same calls are found.
+
+Equality: full index with the base and new build on n8n, nocodb, supabase, koel, firefly-iii and discourse — files, node ids and every edge column hash identical. Full suite 338 files / 5,577 tests.
+
+n8n one-file sync (`packages/cli/src/server.ts`, same index, B N N B, three steady-state syncs per arm after a warm-up): 4.70 → 4.16 s median (the seven-corpus sync bench is in `docs/benchmarks/fork-vs-upstream-2026-09-26.md`, sixth round); scan 495 → 313 ms, tier 600 → 540 ms, Pinia 525 → 270 ms, resynthesis 2.39 → 2.07 s. Tier's remaining cost is its HTTP/queue/event regexes over files whose results depend on other files; cutting it needs a per-file result cache, not attempted here.
+
 ### 5.94 Monorepo imports: nested tsconfig `paths`, workspace packages published from `dist/` (2026-09-27)
 
 Two resolution gaps made cross-package imports in TypeScript monorepos fall back to project-wide name matching.

@@ -32,6 +32,7 @@ import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
+import { withNoMatchFastPath } from './ignore-prefilter';
 import { detectFrameworks, detectFrameworksWithSkips } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
@@ -427,7 +428,7 @@ function listGitIgnoredDirectories(rootDir: string): string[] {
  * opt-in).
  */
 export function buildDefaultIgnore(rootDir: string): Ignore {
-  const ig = ignore().add(DEFAULT_IGNORE_PATTERNS);
+  const ig = withNoMatchFastPath(ignore().add(DEFAULT_IGNORE_PATTERNS));
   const rootGitignore = path.join(rootDir, '.gitignore');
   if (fs.existsSync(rootGitignore)) ig.add(readGitignorePatterns(rootGitignore));
   const extra = readGitExcludeExtraPatterns(rootDir);
@@ -441,7 +442,7 @@ export function buildDefaultIgnore(rootDir: string): Ignore {
  * whose gitignore semantics their own `git ls-files` already enforced (#514).
  */
 function defaultsOnlyIgnore(): Ignore {
-  return ignore().add(DEFAULT_IGNORE_PATTERNS);
+  return withNoMatchFastPath(ignore().add(DEFAULT_IGNORE_PATTERNS));
 }
 
 /**

@@ -148,13 +148,13 @@ On supabase almost all of upstream's time goes to writing parse results to SQLit
 
 | Corpus | Upstream | Fork |
 |---|---|---|
-| gin | 0.38 s | 0.37 s |
+| gin | 0.38 s | 0.36 s |
 | Alamofire | 0.51 s | 0.47 s |
-| pretix | 1.11 s | 1.64 s |
-| CPython | 1.44 s | 3.50 s |
-| discourse | 5.57 s | 3.29 s |
-| supabase | 1.56 s | 3.19 s |
-| n8n | 12.1 s | 4.90 s |
+| pretix | 1.11 s | 1.51 s |
+| CPython | 1.44 s | 3.38 s |
+| discourse | 5.57 s | 2.63 s |
+| supabase | 1.56 s | 2.83 s |
+| n8n | 12.1 s | 4.31 s |
 
 The fork's sync does more: it rebuilds the links inferred from events, callbacks and function pointers, which upstream leaves stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the rebuild off, trading it for the same staleness.
 
@@ -170,7 +170,7 @@ The precision gain comes mostly from declining uncertain links rather than resol
 ### What it costs
 
 - **Larger database:** 14–22% bigger on six of the seven corpora above, and 40% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower one-file syncs on large projects:** about 1.5× upstream's time on pretix, 2.0× on supabase and 2.4× on CPython (table above), because the fork keeps inferred links correct on every sync. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
+- **Slower one-file syncs on large projects:** about 1.4× upstream's time on pretix, 1.8× on supabase and 2.3× on CPython (table above), because the fork keeps inferred links correct on every sync. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
 - **Fewer edges on some projects:** 3–13% fewer on pretix, CPython, discourse and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
 - **Slower full index on discourse:** 5% slower, the one corpus of the seven where the fork is not faster.
 
