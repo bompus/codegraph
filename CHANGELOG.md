@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Qwik City default index pages and method exports now produce exact route roots, including anonymous `component$` defaults and their body calls, with layouts and generic middleware excluded.
+
 - Vike default `+Page` modules now link to exact local components, with nearest inherited literal `+route` overrides and guards against guessed paths under unsupported routing configuration.
 
 - SolidStart 2 default file routes now link to exact page and HTTP handlers, including page/API coexistence, nested layouts, parameters and GET-to-HEAD fallback.

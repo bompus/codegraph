@@ -36,6 +36,7 @@ import { detectFrameworks } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
+import { extractQwikCityRoutes, isQwikCityRoute } from '../resolution/frameworks/qwik-city';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2714,14 +2715,17 @@ export class ExtractionOrchestrator {
     const angular = frameworks.includes('angular') && isAngularRegistrationFile(content);
     const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
     const vike = frameworks.includes('vike') && isVikePage(filePath);
-    if (!angular && !solidStart && !vike) return result;
+    const qwikCity = frameworks.includes('qwik-city') && isQwikCityRoute(filePath);
+    if (!angular && !solidStart && !vike && !qwikCity) return result;
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
     const context = this.frameworkSourceContext!;
     const extracted = angular
       ? extractAngularRoutes(filePath, content, context)
       : solidStart
         ? extractSolidStartRoutes(filePath, content, context)
-        : extractVikeRoutes(filePath, content, context);
+        : vike
+          ? extractVikeRoutes(filePath, content, context)
+          : extractQwikCityRoutes(filePath, content, context, result);
     result.nodes.push(...extracted.nodes);
     result.unresolvedReferences.push(...extracted.references);
     return result;
@@ -3262,7 +3266,7 @@ export class ExtractionOrchestrator {
       this.detectedFrameworkNames = null;
       const detected = this.ensureDetectedFrameworks(currentFiles);
       for (const [framework, matches] of [
-        ['solid-start', isSolidStartRoute], ['vike', isVikePage],
+        ['solid-start', isSolidStartRoute], ['vike', isVikePage], ['qwik-city', isQwikCityRoute],
       ] as const) {
         if (!detected.includes(framework) && !this.queries.getNodesByKind('route').some(n => n.id.startsWith(`route:${framework}:`))) continue;
         const scope = this.scopedSyncMatcher();
