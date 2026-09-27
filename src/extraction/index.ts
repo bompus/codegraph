@@ -37,7 +37,7 @@ import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/f
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
 import { extractQwikCityRoutes, isQwikCityRoute } from '../resolution/frameworks/qwik-city';
-import { extractWakuRoutes, isWakuPage } from '../resolution/frameworks/waku';
+import { extractWakuRoutes, isWakuRouteFile } from '../resolution/frameworks/waku';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 
@@ -2717,7 +2717,7 @@ export class ExtractionOrchestrator {
     const solidStart = frameworks.includes('solid-start') && isSolidStartRoute(filePath);
     const vike = frameworks.includes('vike') && isVikePage(filePath);
     const qwikCity = frameworks.includes('qwik-city') && isQwikCityRoute(filePath);
-    const waku = frameworks.includes('waku') && isWakuPage(filePath);
+    const waku = frameworks.includes('waku') && isWakuRouteFile(filePath);
     if (!angular && !solidStart && !vike && !qwikCity && !waku) return result;
     result = materializeKernelResult(result, filePath, detectLanguage(filePath)!);
     const context = this.frameworkSourceContext!;
@@ -3271,7 +3271,7 @@ export class ExtractionOrchestrator {
       const detected = this.ensureDetectedFrameworks(currentFiles);
       for (const [framework, matches] of [
         ['solid-start', isSolidStartRoute], ['vike', isVikePage], ['qwik-city', isQwikCityRoute],
-        ['waku', isWakuPage],
+        ['waku', isWakuRouteFile],
       ] as const) {
         if (!detected.includes(framework) && !this.queries.getNodesByKind('route').some(n => n.id.startsWith(`route:${framework}:`))) continue;
         const scope = this.scopedSyncMatcher();
