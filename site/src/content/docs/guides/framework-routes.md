@@ -32,6 +32,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Vapor** | `app.get("x", use: handler)` |
 | **React Router** | JSX/data-router pages; literal framework-mode `app/routes.ts` arrays with `route`, `index`, `layout`, and `prefix`, linked to named default components |
 | **SvelteKit** | Route component nodes |
+| **TanStack Router / Start** | Page routes plus literal `server.handlers` method tables and `createHandlers` callbacks on exported file routes; middleware is excluded from handler links |
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |
 | **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax) |
@@ -41,5 +42,7 @@ Route resolution is automatic — there's nothing to configure. If a framework f
 React Router framework mode assumes the default `app/` directory. Computed arrays, custom app directories, `relative` helpers, anonymous defaults, and re-exports remain unsupported. Layout helpers contribute nesting without creating extra pages; an index page takes precedence over its parent layout.
 
 The JavaScript HTTP readers require a recognized package import (ES modules or CommonJS), except for the global `Bun.serve`. They follow immutable local router bindings and literal declarations, without executing your application. Named handlers produce references; direct calls inside inline handlers produce call edges. Static responses have an endpoint without an invented handler. Member handlers remain unresolved by this reader.
+
+TanStack Start server routes support imported `createFileRoute` calls assigned to exported `const Route`. Computed/spread tables, custom factories, member handlers, and `update` chains remain unsupported. RPC functions created with `createServerFn` are not presented as public route URLs.
 
 Computed paths, spread configuration, cross-file mounts, plugin factories, mutable router aliases, and runtime method replacement are outside this static reading. Imports and captured router bindings must precede their use in source. Vixeny builders with options are omitted because their effective paths depend on the terminal operation. Nuxt custom route configuration, page metadata overrides, non-Vue page extensions, and custom server handler wrappers are not interpreted. Re-index after upgrading to add the new endpoints to an existing graph.

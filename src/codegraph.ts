@@ -902,6 +902,8 @@ export class CodeGraph {
         // to controllers in unchanged files. The pass is idempotent and cheap
         // (regex over *.module.ts only).
         if (result.filesAdded > 0 || result.filesModified > 0) {
+          // Re-detect frameworks: a sync can add the dependency and the route together.
+          this.resolver.initialize();
           this.resolver.runPostExtract();
         } else if (result.filesRemoved > 0) {
           // A pure-removal sync still resolves refs below — the deletion path
