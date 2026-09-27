@@ -27,7 +27,7 @@ import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
-import { loadProjectAliases, type AliasMap } from './path-aliases';
+import { loadProjectAliases, loadScopedAliases, scopedAliasesForFile, type AliasMap, type AliasScope } from './path-aliases';
 import { loadGoModule, type GoModule } from './go-module';
 import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packages';
 import { logDebug } from '../errors';
@@ -136,6 +136,7 @@ export class ReferenceResolver {
   // `null` = computed and absent. Treated as immutable for the
   // resolver's lifetime; callers re-create the resolver if config changes.
   private projectAliases: AliasMap | null | undefined = undefined;
+  private aliasScopes: AliasScope[] | undefined = undefined;
   // go.mod module path. Same lazy/immutable convention as projectAliases.
   private goModule: GoModule | null | undefined = undefined;
   // Monorepo workspace member packages. Same lazy/immutable convention.
@@ -433,6 +434,13 @@ export class ReferenceResolver {
         return this.projectAliases;
       },
 
+      getAliasScopes: () => {
+        this.aliasScopes ??= loadScopedAliases(this.projectRoot, this.context.getAllFiles());
+        return this.aliasScopes;
+      },
+
+      getScopedAliasesFor: (filePath: string) => scopedAliasesForFile(filePath, this.context.getAliasScopes!()),
+
       getGoModule: () => {
         if (this.goModule === undefined) {
           this.goModule = loadGoModule(this.projectRoot);
@@ -671,6 +679,10 @@ export class ReferenceResolver {
       aliases: aliases
         ? { baseUrl: aliases.baseUrl, patterns: aliases.patterns }
         : undefined,
+      scopedAliases: this.context.getAliasScopes!().map(({ dir, map }) => ({
+        dir,
+        map: { baseUrl: map.baseUrl, patterns: map.patterns },
+      })),
       workspaces: workspaces
         ? {
             sourceEntries: toKv(workspaces.sourceEntries),

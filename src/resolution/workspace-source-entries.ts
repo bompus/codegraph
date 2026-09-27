@@ -201,20 +201,132 @@ function existingSourceEntries(projectRoot: string, member: string, name: string
   return result;
 }
 
+/**
+ * Build-output directories a package's published entries point into, longest
+ * first. `tsc` with `rootDir: src` writes `src/a/b.ts` to `<out>/a/b.js`, so the
+ * part after the prefix is the path under `src/`.
+ */
+const OUTPUT_PREFIXES = ['dist/esm/', 'dist/cjs/', 'dist/es/', 'dist/src/', 'dist/', 'build/', 'lib/', 'out/', 'esm/', 'cjs/'];
+/** Emitted or declaration extension → the source extensions that produce it. */
+const EMITTED_EXTENSION = /\.(?:d\.[cm]?ts|[cm]?js|jsx)$/;
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+/** Bounds the file walk behind a wildcard export. */
+const WILDCARD_FILE_BUDGET = 5000;
+
+/** `src/`-relative stem of a build-output target (`./dist/esm/a/index.js` → `a/index`), or null. */
+function outputStem(target: string): string | null {
+  if (!target.startsWith('./')) return null;
+  const rel = target.slice(2);
+  const prefix = OUTPUT_PREFIXES.find(p => rel.startsWith(p));
+  if (!prefix || !EMITTED_EXTENSION.test(rel)) return null;
+  return rel.slice(prefix.length).replace(EMITTED_EXTENSION, '');
+}
+
+/** The one existing source file for a `src/`-relative stem, or null when none or several exist. */
+function sourceForStem(directory: string, stem: string): string | null {
+  const hits = SOURCE_EXTENSIONS.map(ext => path.join(directory, 'src', stem + ext)).filter(p => fs.existsSync(p));
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+function projectRelative(projectRoot: string, member: string, abs: string): string | null {
+  const relative = path.relative(projectRoot, abs).replace(/\\/g, '/');
+  return relative.startsWith('../') || !relative.startsWith(member + '/') ? null : relative;
+}
+
+/**
+ * Public entries that point at build output which is not in the checkout
+ * (`"main": "dist/index.js"`, `"./*": "./dist/*.mjs"`), mapped to the `src/`
+ * file that compiles to them. A monorepo imports its sibling packages through
+ * these entries; without the mapping each import resolved nowhere and every
+ * imported name fell back to a project-wide name match. A subpath is mapped
+ * only when all its targets agree on one existing source file, and never when
+ * a target itself exists (the build output is then what the name refers to).
+ */
+function builtOutputSourceEntries(projectRoot: string, member: string, name: string, manifest: Record<string, unknown>): Map<string, string> {
+  const result = new Map<string, string>();
+  const directory = path.join(projectRoot, member);
+  const exports = manifest.exports;
+  const rootExports: Record<string, unknown> = exports === undefined
+    ? { '.': ['source', 'module', 'main', 'types', 'typings'].map(f => manifest[f]).filter((v): v is string => typeof v === 'string').map(v => v.startsWith('./') ? v : `./${v}`) }
+    : typeof exports === 'object' && exports !== null && !Array.isArray(exports) && Object.keys(exports).some(k => k.startsWith('.'))
+      ? exports as Record<string, unknown> : { '.': exports };
+  for (const [subpath, value] of Object.entries(rootExports)) {
+    if (subpath !== '.' && !subpath.startsWith('./')) continue;
+    const targets = allTargets(value).filter(t => t.startsWith('./'));
+    const outputs = targets.filter(t => outputStem(t) !== null);
+    // Build output in the checkout is what the name refers to: leave it alone.
+    if (outputs.some(t => fs.existsSync(path.resolve(directory, t.split('*')[0]!)))) continue;
+    const specifier = name + (subpath === '.' ? '' : subpath.slice(1));
+    if (!subpath.includes('*')) {
+      // A manifest field naming committed source (`"module": "src/index.ts"`) wins outright.
+      const direct = new Set(targets.map(t => path.resolve(directory, t))
+        .filter(p => SOURCE_FILE.test(p) && !/\.d\.[cm]?ts$/.test(p) && fs.existsSync(p)));
+      const mapped = new Set(targets.map(t => {
+        const stem = outputStem(t);
+        return stem === null ? null : sourceForStem(directory, stem);
+      }));
+      const sources = direct.size ? direct : mapped;
+      const source = sources.size === 1 ? [...sources][0] : null;
+      const relative = source ? projectRelative(projectRoot, member, source) : null;
+      if (relative) result.set(specifier, relative);
+      continue;
+    }
+    // `./*` → `./dist/*.mjs`: every target must place the capture at the same
+    // `src/` position, and the subpath may hold exactly one `*`.
+    const [subPrefix, subSuffix, ...extra] = subpath.slice(2).split('*');
+    if (extra.length || subSuffix) continue;
+    const stems = new Set(targets.map(t => t.split('*').length === 2 ? outputStem(t.replace('*', '\0')) : null));
+    if (stems.size !== 1 || stems.has(null)) continue;
+    const [stemPrefix, stemSuffix] = [...stems][0]!.split('\0') as [string, string];
+    if (stemSuffix) continue;
+    const srcRoot = path.join(directory, 'src');
+    const found = new Map<string, string[]>();
+    let seen = 0;
+    const walk = (rel: string): void => {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(path.join(srcRoot, rel), { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (++seen > WILDCARD_FILE_BUDGET) return;
+        const child = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { if (e.name !== 'node_modules' && !e.name.startsWith('.')) walk(child); continue; }
+        const ext = SOURCE_EXTENSIONS.find(x => e.name.endsWith(x));
+        if (!ext || /\.d\.[cm]?ts$/.test(e.name) || !child.startsWith(stemPrefix)) continue;
+        const capture = child.slice(stemPrefix.length, -ext.length);
+        const key = `${name}/${subPrefix}${capture}`;
+        const list = found.get(key) ?? [];
+        list.push(path.join(srcRoot, child));
+        found.set(key, list);
+      }
+    };
+    walk('');
+    if (seen > WILDCARD_FILE_BUDGET) continue;
+    for (const [key, files] of found) {
+      if (files.length !== 1 || result.has(key)) continue;
+      const relative = projectRelative(projectRoot, member, files[0]!);
+      if (relative) result.set(key, relative);
+    }
+  }
+  return result;
+}
+
 /** Exact public specifier → source file, relative to the indexed project. */
 export function loadWorkspaceSourceEntries(projectRoot: string, member: string, name: string): Map<string, string> {
   let result = new Map<string, string>();
   const directory = path.join(projectRoot, member);
   let exports: unknown;
   let scripts: Record<string, unknown>;
+  let manifest: Record<string, unknown>;
   try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
+    manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
     exports = manifest.exports;
-    scripts = manifest.scripts ?? {};
+    scripts = (manifest.scripts ?? {}) as Record<string, unknown>;
   }
   catch { return result; }
-  if (!exports) return result;
+  if (!exports) return builtOutputSourceEntries(projectRoot, member, name, manifest);
   result = existingSourceEntries(projectRoot, member, name, exports);
+  for (const [specifier, source] of builtOutputSourceEntries(projectRoot, member, name, manifest)) {
+    if (!result.has(specifier)) result.set(specifier, source);
+  }
   const configs = ['rolldown', 'rollup'].flatMap(tool => ['ts', 'mts', 'js', 'mjs'].map(ext => `${tool}.config.${ext}`))
     .filter(file => fs.existsSync(path.join(directory, file)));
   if (configs.length !== 1) return result;

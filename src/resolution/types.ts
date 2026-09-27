@@ -166,6 +166,10 @@ export interface ResolutionContext {
    * compile without modification; production resolver implements it.
    */
   getProjectAliases?(): import('./path-aliases').AliasMap | null;
+  /** Aliases of nested tsconfig/jsconfig files, deepest first (path-aliases.ts). */
+  getAliasScopes?(): import('./path-aliases').AliasScope[];
+  /** The aliases of the nearest nested config enclosing a file, tried before the root's. */
+  getScopedAliasesFor?(filePath: string): import('./path-aliases').AliasMap | null;
   /**
    * Go module info from `go.mod` at the project root. Returns `null`
    * when the project has no `go.mod` (non-Go projects, pre-modules

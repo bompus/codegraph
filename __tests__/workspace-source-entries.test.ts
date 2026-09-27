@@ -119,3 +119,47 @@ describe('workspace exports conditions naming committed source', () => {
     expect(targets).toContain('packages/zod/src/v4/index.ts');
   });
 });
+
+describe('workspace entries that point at uncommitted build output', () => {
+  function pkg(manifest: Record<string, unknown>, files: string[]) {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-workspace-built-'));
+    fs.mkdirSync(path.join(dir, 'packages/p'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+    fs.writeFileSync(path.join(dir, 'packages/p/package.json'), JSON.stringify({ name: '@s/p', ...manifest }));
+    for (const f of files) {
+      fs.mkdirSync(path.dirname(path.join(dir, 'packages/p', f)), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/p', f), 'export const x = 1;\n');
+    }
+    return new Map(loadWorkspaceSourceEntries(dir, 'packages/p', '@s/p'));
+  }
+
+  it('maps main and module fields without exports', () => {
+    expect(pkg({ main: 'dist/index.js', types: 'dist/index.d.ts' }, ['src/index.ts']))
+      .toEqual(new Map([['@s/p', 'packages/p/src/index.ts']]));
+    expect(pkg({ main: 'dist/index.js', module: 'src/index.ts' }, ['src/index.ts']))
+      .toEqual(new Map([['@s/p', 'packages/p/src/index.ts']]));
+  });
+
+  it('maps exact exports whose conditions agree on one source file', () => {
+    expect(pkg({ exports: {
+      '.': { types: './dist/esm/index.d.ts', import: './dist/esm/index.js', require: './dist/cjs/index.js' },
+      './common': { import: './dist/esm/common/index.js' },
+    } }, ['src/index.ts', 'src/common/index.ts'])).toEqual(new Map([
+      ['@s/p', 'packages/p/src/index.ts'], ['@s/p/common', 'packages/p/src/common/index.ts'],
+    ]));
+  });
+
+  it('enumerates a wildcard export from the source tree', () => {
+    expect(pkg({ exports: { './*': { types: './dist/*.d.ts', import: './dist/*.mjs' } } }, ['src/a.ts', 'src/sub/b.ts', 'src/c.d.ts']))
+      .toEqual(new Map([['@s/p/a', 'packages/p/src/a.ts'], ['@s/p/sub/b', 'packages/p/src/sub/b.ts']]));
+  });
+
+  it('leaves entries alone when build output is present, sources disagree, or none exists', () => {
+    expect(pkg({ main: 'dist/index.js' }, ['src/index.ts', 'dist/index.js'])).toEqual(new Map());
+    expect(pkg({ exports: { '.': { import: './dist/index.js', require: './dist/main.js' } } }, ['src/index.ts', 'src/main.ts'])).toEqual(new Map());
+    expect(pkg({ main: 'dist/index.js' }, ['src/index.ts', 'src/index.js'])).toEqual(new Map());
+    expect(pkg({ main: 'dist/index.js' }, ['src/other.ts'])).toEqual(new Map());
+    expect(pkg({ exports: { './*': './dist/*.mjs' } }, ['src/a.ts', 'dist/a.mjs'])).toEqual(new Map());
+  });
+});
