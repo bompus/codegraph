@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from '../db/sqlite-adapter';
 import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
-import { cwdBelongsToProject } from './project-roots';
+import { cwdInRoots } from './project-roots';
 
 const FILE_URI = /file:\/\/(\/[\w./@+\-]+)/g;
 
@@ -85,8 +85,8 @@ export function conversationWorkspaces(root: string, id: string): string[] {
   return [...new Set(found)];
 }
 
-function belongs(projectRoot: string, workspaces: string[]): boolean {
-  return workspaces.some((ws) => cwdBelongsToProject(ws, projectRoot));
+function belongs(roots: readonly string[], workspaces: string[]): boolean {
+  return workspaces.some((ws) => cwdInRoots(ws, roots));
 }
 
 function userRequest(content: string): string {
@@ -124,7 +124,7 @@ export function parseAgyTranscript(file: string): { session: string; title: stri
   return { session: `agy:${id}`, title: null, docs };
 }
 
-export function agyFilesForProject(projectRoot: string): string[] {
+export function agyFilesForProject(roots: readonly string[]): string[] {
   const root = antigravityDir();
   const brain = path.join(root, 'brain');
   if (!fs.existsSync(brain)) return [];
@@ -132,7 +132,7 @@ export function agyFilesForProject(projectRoot: string): string[] {
   for (const dirent of fs.readdirSync(brain, { withFileTypes: true })) {
     if (!dirent.isDirectory()) continue;
     const workspaces = conversationWorkspaces(root, dirent.name);
-    if (!belongs(projectRoot, workspaces)) continue;
+    if (!belongs(roots, workspaces)) continue;
     const full = path.join(brain, dirent.name, '.system_generated', 'logs', 'transcript_full.jsonl');
     const short = path.join(brain, dirent.name, '.system_generated', 'logs', 'transcript.jsonl');
     if (fs.existsSync(full)) files.push(full);

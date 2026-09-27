@@ -14,6 +14,7 @@
  *
  * Readers live beside this file, one per agent host (Claude Code, Codex, Cursor).
  */
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createDatabase, type SqliteDatabase, type SqliteStatement } from '../db/sqlite-adapter';
@@ -27,11 +28,12 @@ import {
   transcriptTitle,
   walkJsonl,
 } from './claude-code';
-import { parseCodexTranscript, codexFilesForProject } from './codex';
+import { parseCodexTranscript, codexFilesForProject, normalizeRemote } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
 import { parseAgyTranscript, agyFilesForProject } from './agy';
 import { opencodeSessionsForProject } from './opencode';
 import { devinSessionsForProject } from './devin';
+import { indexableDocs } from './noise';
 import { projectWorktreeRoots } from './project-roots';
 
 export const SESSIONS_DB_FILENAME = 'sessions.db';
@@ -40,7 +42,7 @@ export const SESSIONS_DB_FILENAME = 'sessions.db';
 export const BUSY_TIMEOUT_MS = 5000;
 
 /** Bump when the readers' notion of prose changes, so existing indexes rebuild. */
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 
 /**
  * `busy_timeout` does cover an ordinary lock wait on this pragma: a connection
@@ -92,8 +94,12 @@ export interface SessionHit {
   ts: string;
   /** The matching passage with `[match]` marks, about 24 tokens wide. */
   snippet: string;
+  /** The transcript the hit came from: a file path, or `host:<db>:<id>` for SQLite stores. */
+  file: string;
   /** BM25 rank; lower is better, relative within one query only. */
   score: number;
+  /** Holds only some of the query words: the every-word query ran short. */
+  partial?: boolean;
 }
 
 export interface SessionSearchOptions {
@@ -110,12 +116,46 @@ export interface SessionSearchOptions {
 }
 
 /**
+ * Words too common to narrow a search. A question phrased in full ("why did we
+ * keep the timer") would otherwise demand "why", "did" and "we" appear in the
+ * same passage, and match nothing.
+ */
+const STOPWORDS = new Set(
+  `a about after an and any are as at be been but by can could did do does don for from get got had has
+  have how i if in into is it its just keep of on or our s should so still t than that the their them then
+  there these they this to us use used using was we were what whats when where which while who why will
+  with would you`.split(/\s+/),
+);
+
+/** The query's words minus stopwords; all of them when every word is a stopword. */
+export function queryWords(raw: string): string[] {
+  const words = raw.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  const kept = words.filter((w) => !STOPWORDS.has(w.toLowerCase()));
+  return kept.length ? kept : words;
+}
+
+/**
  * Every word quoted, ANDed or ORed, so a flag, a path or punctuation in the
  * query can never break FTS5's MATCH syntax. Porter stemming happens inside
  * FTS5, so "merging" reaches "merged".
  */
 export function ftsQuery(raw: string, any = false): string {
-  return (raw.match(/[\p{L}\p{N}_]+/gu) ?? []).map((w) => `"${w}"`).join(any ? ' OR ' : ' ');
+  return queryWords(raw)
+    .map((w) => `"${w}"`)
+    .join(any ? ' OR ' : ' ');
+}
+
+/** A crude stem, enough to count "merging" and "merged" as one query word. */
+function stem(word: string): string {
+  const w = word.toLowerCase();
+  const m = /^(.{3,}?)(?:ing|ed|es|s)$/.exec(w);
+  return m ? m[1]! : w;
+}
+
+/** How many distinct query words `text` holds, by stem prefix. */
+function coverage(stems: readonly string[], text: string): number {
+  const tokens = text.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+  return stems.filter((s) => tokens.some((t) => t.startsWith(s))).length;
 }
 
 interface FileRow {
@@ -134,7 +174,8 @@ type TranscriptRecord = {
   path: string;
   mtime: number;
   size: number;
-  load: () => LoadedTranscript;
+  /** Null when the source could not be read now; the record is retried next query. */
+  load: () => LoadedTranscript | null;
 };
 
 export class SessionsIndex {
@@ -148,6 +189,7 @@ export class SessionsIndex {
       CREATE TABLE IF NOT EXISTS files (
         path TEXT PRIMARY KEY, session TEXT NOT NULL, title TEXT, mtime REAL NOT NULL, size INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS roots (path TEXT PRIMARY KEY);
       CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(
         text, file UNINDEXED, role UNINDEXED, ts UNINDEXED, tokenize = 'porter unicode61'
       );
@@ -258,24 +300,51 @@ export class SessionsIndex {
         return null;
       }
       const loaded = rec.load();
+      if (loaded === null) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+      const docs = indexableDocs(loaded.docs);
       this.dropDocs.run(rec.path);
-      for (const d of loaded.docs) {
+      for (const d of docs) {
         this.addDoc.run(d.text, rec.path, d.role, d.ts || new Date(rec.mtime).toISOString());
       }
       this.putFile.run(rec.path, loaded.session, loaded.title, rec.mtime, rec.size);
       this.db.exec('COMMIT');
-      return loaded.docs.length;
+      return docs.length;
     } catch (err) {
       this.db.exec('ROLLBACK');
       throw err;
     }
   }
 
-  search(raw: string, opts: SessionSearchOptions = {}): SessionHit[] {
-    const q = ftsQuery(raw, opts.any);
-    if (!q) return [];
-    const where = ['docs MATCH ?'];
-    const params: Array<string | number> = [q];
+  /**
+   * Remember `roots` and return them with every root remembered before. A
+   * removed worktree drops out of `git worktree list`, but its transcripts
+   * still belong to the project; the remembered root keeps them matched.
+   */
+  rememberRoots(roots: readonly string[]): string[] {
+    const put = this.db.prepare('INSERT OR IGNORE INTO roots (path) VALUES (?)');
+    this.db.transaction(() => {
+      for (const r of roots) put.run(r);
+    })();
+    const known = (this.db.prepare('SELECT path FROM roots').all() as Array<{ path: string }>).map((r) => r.path);
+    return [...new Set([...roots, ...known])];
+  }
+
+  /**
+   * Best hits first: passages holding more of the distinct query words, then
+   * BM25. The every-word query runs first. When it fills fewer than `limit`
+   * slots (a long question rarely has every word in one passage), hits from
+   * the any-word query follow, each marked `partial`; `fallback` says every
+   * hit is partial. Identical passages (a report quoted in two sessions, a
+   * repeated "continue") collapse to their best-ranked copy.
+   */
+  search(raw: string, opts: SessionSearchOptions = {}): SessionHit[] & { fallback?: boolean } {
+    const limit = Math.max(1, Math.min(opts.limit ?? 10, 100));
+    const stems = [...new Set(queryWords(raw).map(stem))];
+    const where: string[] = [];
+    const params: string[] = [];
     const filters: Array<[string, string | undefined]> = [
       ['docs.role = ?', opts.role],
       ['docs.ts >= ?', opts.sinceIso],
@@ -287,16 +356,35 @@ export class SessionsIndex {
         params.push(value);
       }
     }
-    params.push(Math.max(1, Math.min(opts.limit ?? 10, 100)));
-    return this.db
-      .prepare(
-        `SELECT files.session, files.title, docs.role, docs.ts,
-                snippet(docs, 0, '[', ']', '…', 24) AS snippet, bm25(docs) AS score
-         FROM docs JOIN files ON files.path = docs.file
-         WHERE ${where.join(' AND ')}
-         ORDER BY score LIMIT ?`,
-      )
-      .all(...params) as SessionHit[];
+    const select = this.db.prepare(
+      `SELECT docs.rowid AS id, files.session, files.title, docs.role, docs.ts, docs.file, docs.text,
+              snippet(docs, 0, '[', ']', '…', 24) AS snippet, bm25(docs) AS score
+       FROM docs JOIN files ON files.path = docs.file
+       WHERE ${['docs MATCH ?', ...where].join(' AND ')}
+       ORDER BY score LIMIT ?`,
+    );
+    const hits: SessionHit[] & { fallback?: boolean } = [];
+    const seen = new Set<string>();
+    for (const any of opts.any ? [true] : [false, true]) {
+      const q = ftsQuery(raw, any);
+      if (!q || hits.length === limit) break;
+      const rows = select.all(q, ...params, Math.max(limit * 20, 100)) as Array<
+        SessionHit & { id: number; text: string }
+      >;
+      const cover = new Map(rows.map((r) => [r, coverage(stems, r.text)]));
+      rows.sort((a, b) => cover.get(b)! - cover.get(a)! || a.score - b.score);
+      for (const { id, text, ...hit } of rows) {
+        // The row id catches the every-word hits again; the text key, repeats.
+        const key = text.toLowerCase().replace(/\s+/g, ' ').slice(0, 500);
+        if (seen.has(key) || seen.has(`#${id}`)) continue;
+        seen.add(key);
+        seen.add(`#${id}`);
+        hits.push(any && !opts.any ? { ...hit, partial: true } : hit);
+        if (hits.length === limit) break;
+      }
+    }
+    if (hits.length > 0 && hits.every((h) => h.partial)) hits.fallback = true;
+    return hits;
   }
 
   close(): void {
@@ -309,9 +397,9 @@ export function sessionsDbPath(projectRoot: string): string {
   return path.join(getCodeGraphDir(projectRoot), SESSIONS_DB_FILENAME);
 }
 
-export function claudeFilesForProject(projectRoot: string): string[] {
+export function claudeFilesForProject(roots: readonly string[]): string[] {
   const files: string[] = [];
-  for (const root of projectWorktreeRoots(projectRoot)) {
+  for (const root of roots) {
     const dir = claudeSessionsDir(root);
     if (dir) files.push(...walkJsonl(dir));
   }
@@ -320,13 +408,30 @@ export function claudeFilesForProject(projectRoot: string): string[] {
 
 type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' | 'agy' };
 
-function hostedTranscripts(projectRoot: string): HostedTranscript[] {
+function hostedTranscripts(roots: readonly string[], remotes: readonly string[]): HostedTranscript[] {
   const out: HostedTranscript[] = [];
-  for (const file of claudeFilesForProject(projectRoot)) out.push({ file, host: 'claude' });
-  for (const file of codexFilesForProject(projectRoot)) out.push({ file, host: 'codex' });
-  for (const file of cursorFilesForProject(projectRoot)) out.push({ file, host: 'cursor' });
-  for (const file of agyFilesForProject(projectRoot)) out.push({ file, host: 'agy' });
+  for (const file of claudeFilesForProject(roots)) out.push({ file, host: 'claude' });
+  for (const file of codexFilesForProject(roots, remotes)) out.push({ file, host: 'codex' });
+  for (const file of cursorFilesForProject(roots)) out.push({ file, host: 'cursor' });
+  for (const file of agyFilesForProject(roots)) out.push({ file, host: 'agy' });
   return out;
+}
+
+/**
+ * The project's git remote URLs, normalized. Codex records the repository URL
+ * of each session, which still matches after the session's worktree is gone.
+ */
+export function projectRemotes(projectRoot: string): string[] {
+  try {
+    const out = execFileSync('git', ['config', '--get-regexp', '^remote\\..*\\.url$'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return [...new Set(out.split('\n').map((l) => l.split(' ')[1]).filter(Boolean).map((u) => normalizeRemote(u!)))];
+  } catch {
+    return [];
+  }
 }
 
 function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscript {
@@ -341,25 +446,26 @@ function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscr
   };
 }
 
-function collectRecords(projectRoot: string): TranscriptRecord[] {
-  const records: TranscriptRecord[] = hostedTranscripts(projectRoot).map((h) => {
-    const st = fs.statSync(h.file);
-    return { path: h.file, mtime: st.mtimeMs, size: st.size, load: () => loadHosted(h.file, h.host) };
-  });
-  for (const session of opencodeSessionsForProject(projectRoot)) {
-    records.push({
-      path: session.path,
-      mtime: session.mtime,
-      size: session.size,
-      load: () => ({ session: session.session, title: session.title, docs: session.docs }),
-    });
+function collectRecords(roots: readonly string[], remotes: readonly string[]): TranscriptRecord[] {
+  const records: TranscriptRecord[] = [];
+  for (const h of hostedTranscripts(roots, remotes)) {
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(h.file);
+    } catch {
+      continue; // Removed between listing and stat.
+    }
+    records.push({ path: h.file, mtime: st.mtimeMs, size: st.size, load: () => loadHosted(h.file, h.host) });
   }
-  for (const session of devinSessionsForProject(projectRoot)) {
+  for (const session of [...opencodeSessionsForProject(roots), ...devinSessionsForProject(roots)]) {
     records.push({
       path: session.path,
       mtime: session.mtime,
       size: session.size,
-      load: () => ({ session: session.session, title: session.title, docs: session.docs }),
+      load: () => {
+        const docs = session.docs();
+        return docs && { session: session.session, title: session.title, docs };
+      },
     });
   }
   return records;
@@ -368,6 +474,8 @@ function collectRecords(projectRoot: string): TranscriptRecord[] {
 export interface SessionsQueryResult {
   index: SessionsIndexStats;
   hits: SessionHit[];
+  /** True when no passage held every word and the hits match any of them. */
+  fallback?: boolean;
 }
 
 /**
@@ -387,15 +495,21 @@ export function querySessions(
     if (override) {
       if (!fs.existsSync(override)) throw new NoSessionsError(projectRoot);
       const stats = index.refreshListed(walkJsonl(override), (file) => loadHosted(file, 'claude'));
-      return { index: stats, hits: index.search(query, opts) };
+      return result(stats, index.search(query, opts));
     }
-    const records = collectRecords(projectRoot);
+    const roots = index.rememberRoots(projectWorktreeRoots(projectRoot));
+    const records = collectRecords(roots, projectRemotes(projectRoot));
     if (records.length === 0) throw new NoSessionsError(projectRoot);
     const stats = index.refreshRecords(records);
-    return { index: stats, hits: index.search(query, opts) };
+    return result(stats, index.search(query, opts));
   } finally {
     index.close();
   }
+}
+
+function result(index: SessionsIndexStats, found: ReturnType<SessionsIndex['search']>): SessionsQueryResult {
+  const hits = [...found];
+  return found.fallback ? { index, hits, fallback: true } : { index, hits };
 }
 
 export class NoSessionsError extends Error {
@@ -414,16 +528,21 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
   const { hits, index } = result;
   const head = `Sessions matching "${query}" — ${hits.length} hit${hits.length === 1 ? '' : 's'} across ${index.files} transcript${index.files === 1 ? '' : 's'}`;
   if (hits.length === 0) {
-    return `${head}.\nNo transcript prose matches every word. Fewer words, a stem ("merge" also finds "merged", "merging"), or any=true (OR the words) widen the search.`;
+    return `${head}.\nNo transcript prose holds any of these words. A stem ("merge" also finds "merged", "merging") or a different term may find it.`;
   }
   const lines = [head + ':', ''];
+  if (result.fallback) {
+    lines.push('No passage holds every word; these hits match some of them, most words first.', '');
+  } else if (hits.some((h) => h.partial)) {
+    lines.push('Hits marked "some words" hold only part of the query; they follow the passages that hold every word.', '');
+  }
   for (const h of hits) {
     const title = h.title ? ` · ${h.title}` : '';
     lines.push(`## ${h.session}${title}`);
-    lines.push(`${h.role} · ${h.ts}`);
+    lines.push(`${h.role} · ${h.ts} · ${h.file}${h.partial && !result.fallback ? ' · some words' : ''}`);
     lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     lines.push('');
   }
-  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, or `devin:`); the transcript itself is the next step when the snippet is not enough.');
+  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, or `devin:`); the path after the timestamp is the transcript to read when the snippet is not enough.');
   return lines.join('\n');
 }

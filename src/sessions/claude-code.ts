@@ -40,6 +40,22 @@ interface Entry {
 /** Shorter text is a "yes"/"ok" turn — noise in a prose index. */
 export const MIN_DOC_CHARS = 20;
 
+/**
+ * A session a SQLite-backed host (OpenCode, Devin) lists cheaply: `mtime` and
+ * `size` summarize its message rows, and `docs()` reopens the store only when
+ * the index finds the session changed. `docs()` returns null when the store
+ * could not be read (busy, mid-migration), so the session is retried on the
+ * next query instead of being recorded as empty.
+ */
+export interface StoredSession {
+  path: string;
+  mtime: number;
+  size: number;
+  session: string;
+  title: string | null;
+  docs: () => SessionDoc[] | null;
+}
+
 /** Claude Code's config dir: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`. */
 function claudeConfigDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');

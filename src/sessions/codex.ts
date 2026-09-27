@@ -7,7 +7,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
-import { cwdBelongsToProject, walkSessionJsonl } from './collect';
+import { walkSessionJsonl } from './collect';
+import { cwdInRoots, resolveExisting } from './project-roots';
 
 interface CodexLine {
   timestamp?: string;
@@ -18,6 +19,7 @@ interface CodexLine {
     type?: string;
     role?: string;
     content?: unknown;
+    git?: { repository_url?: string };
   };
 }
 
@@ -29,11 +31,13 @@ export function codexSessionsDir(): string {
   return path.join(codexHome(), 'sessions');
 }
 
+/** Instruction blocks Codex prepends as their own content parts. */
 function injectedBlob(text: string): boolean {
   return (
     text.startsWith('<recommended_plugins>') ||
     text.startsWith('<environment_context>') ||
     text.startsWith('<skills_instructions>') ||
+    text.startsWith('<user_instructions>') ||
     text.startsWith('# AGENTS.md instructions')
   );
 }
@@ -53,26 +57,78 @@ function messageText(content: unknown): string {
   return parts.join('\n');
 }
 
-function sessionCwd(file: string): string | null {
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-    if (!line) continue;
-    try {
-      const row = JSON.parse(line) as CodexLine;
-      if (row.type === 'session_meta' && row.payload?.cwd) return row.payload.cwd;
-      if (row.type === 'turn_context' && row.payload?.cwd) return row.payload.cwd;
-    } catch {
-      // Live truncated line.
+/** Past this, a first line is not a `session_meta` record worth parsing. */
+const FIRST_LINE_MAX = 4 * 1024 * 1024;
+
+/**
+ * The file's first line, read in chunks until its newline: `session_meta`
+ * comes first and carries the cwd, so there is no need to read (and JSON-parse)
+ * a multi-megabyte rollout to decide whether it belongs to the project.
+ */
+function firstLine(file: string): string {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const chunks: Buffer[] = [];
+    const buf = Buffer.alloc(64 * 1024);
+    let total = 0;
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, total);
+      if (n === 0) break;
+      const nl = buf.subarray(0, n).indexOf(0x0a);
+      chunks.push(Buffer.from(buf.subarray(0, nl === -1 ? n : nl)));
+      total += n;
+      if (nl !== -1 || total >= FIRST_LINE_MAX) break;
     }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
   }
-  return null;
 }
 
-export function codexFilesForProject(projectRoot: string): string[] {
+/** A session's cwd and git remote from its `session_meta` line. */
+function sessionMeta(file: string): { cwd: string | null; remote: string | null } {
+  try {
+    const row = JSON.parse(firstLine(file)) as CodexLine;
+    if (row.type === 'session_meta') {
+      return { cwd: row.payload?.cwd ?? null, remote: row.payload?.git?.repository_url ?? null };
+    }
+  } catch {
+    // Empty or truncated file from a session that just started.
+  }
+  return { cwd: null, remote: null };
+}
+
+/**
+ * `https://host/o/r.git`, `git@host:o/r`, `ssh://git@host:2222/o/r` and
+ * `https://host/o/r/` compare equal: scheme, user, port, `.git` and trailing
+ * slashes are dropped.
+ */
+export function normalizeRemote(url: string): string {
+  let u = url.trim();
+  const scheme = /^[a-z+]+:\/\//i.test(u);
+  u = u.replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]+@/, '');
+  // With a scheme, `host:2222/` is a port; without one, `host:o/r` is scp form.
+  u = scheme ? u.replace(/^([^/:]+):\d+(?=\/)/, '$1') : u.replace(':', '/');
+  return u.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * Codex rollouts whose session ran in one of `roots`, or ran in a directory
+ * that no longer exists and recorded one of the project's git remotes
+ * (`remotes`, normalized): a worktree removed before the index first saw it
+ * leaves no root behind, but its sessions still name the repository. A live
+ * directory never matches by remote, so another clone that shares a remote
+ * (a fork's upstream) keeps its own sessions.
+ */
+export function codexFilesForProject(roots: readonly string[], remotes: readonly string[] = []): string[] {
   const dir = codexSessionsDir();
   if (!fs.existsSync(dir)) return [];
+  const wanted = new Set(remotes.map(normalizeRemote));
   return walkSessionJsonl(dir).filter((file) => {
-    const cwd = sessionCwd(file);
-    return cwd !== null && cwdBelongsToProject(cwd, projectRoot);
+    const { cwd, remote } = sessionMeta(file);
+    if (cwd !== null && cwdInRoots(cwd, roots)) return true;
+    const gone = cwd === null || resolveExisting(cwd) === null;
+    return gone && remote !== null && wanted.has(normalizeRemote(remote));
   });
 }
 
