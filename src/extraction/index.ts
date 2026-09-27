@@ -3267,16 +3267,6 @@ export class ExtractionOrchestrator {
           filesModified++;
         }
       }
-      if (detected.includes('analog') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:analog:'))) {
-        const scope = this.scopedSyncMatcher();
-        for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {
-          if (!isAnalogPage(filePath) || filesToIndex.includes(filePath) || scope.ignores(filePath) || !fs.existsSync(path.join(this.rootDir, filePath))) continue;
-          filesToIndex.push(filePath);
-          this.conventionInvalidatedFiles.add(filePath);
-          changedFilePaths.push(filePath);
-          filesModified++;
-        }
-      }
       if (detected.includes('angular') || this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:angular:'))) {
         const scope = this.scopedSyncMatcher();
         for (const filePath of new Set([...this.queries.getAllFilePaths(), ...currentFiles])) {

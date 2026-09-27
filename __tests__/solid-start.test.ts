@@ -284,3 +284,38 @@ describe('SolidStart 2 default routes', () => {
     },
   );
 });
+
+describe('SolidStart 1 default routes (app.config)', () => {
+  let cg: CodeGraph | undefined;
+  let dir: string;
+  const write = (file: string, source: string) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), source);
+  };
+  afterEach(() => {
+    cg?.close();
+    cg = undefined;
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const setup = (config: string) => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-solid-start-v1-'));
+    write('package.json', JSON.stringify({ dependencies: { '@solidjs/start': '1.3.2', '@solidjs/router': '0.15.3', vinxi: '0.5.7' } }));
+    write('app.config.ts', config);
+    write('src/app.tsx', `import {Router} from '@solidjs/router'; import {FileRoutes} from '@solidjs/start/router'; export default function App(){return <Router root={props => <main>{props.children}</main>}><FileRoutes /></Router>}`);
+    write('src/routes/about.tsx', 'export default function About(){return <main/>}');
+  };
+  const routes = () => cg!.getNodesByKind('route').filter((n) => n.id.startsWith('route:solid-start:')).map((n) => n.name).sort();
+
+  it('reads the generated app.config.ts (vinxi) and ignores one that moves the routes', async () => {
+    // solidjs/templates solid-start-v1: `defineConfig({ ssr, server, vite })`.
+    setup(`import { defineConfig } from "@solidjs/start/config";\nexport default defineConfig({\n  ssr: true,\n  server: { preset: "" },\n  vite: { plugins: [] }\n});\n`);
+    cg = await CodeGraph.init(dir, { index: true });
+    expect(routes()).toEqual(['/about']);
+    cg.close();
+    cg = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+    setup(`import { defineConfig } from "@solidjs/start/config";\nexport default defineConfig({ routeDir: "pages" });\n`);
+    cg = await CodeGraph.init(dir, { index: true });
+    expect(routes()).toEqual([]);
+  });
+});

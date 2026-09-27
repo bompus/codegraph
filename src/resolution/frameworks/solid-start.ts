@@ -1,6 +1,7 @@
-import type { Node as SyntaxNode } from 'web-tree-sitter';
+import type { TreeNode as SyntaxNode } from '../../extraction/parse-tree';
 import type { FrameworkResolver, FrameworkExtractionResult, ResolutionContext } from '../types';
-import { detectLanguage, getParser } from '../../extraction/grammars';
+import { detectLanguage } from '../../extraction/grammars';
+import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { dependsOn } from './package-deps';
 
 const ROOT = 'src/routes/';
@@ -51,11 +52,43 @@ function object(node: SyntaxNode | null | undefined): Map<string, SyntaxNode> | 
 }
 
 function plugin(context: ResolutionContext): boolean {
+  // SolidStart 1.x (vinxi) configures in app.config: `export default
+  // defineConfig({...})` from '@solidjs/start/config'. Pages live under
+  // src/routes unless the config moves the app (`appRoot`) or the routes
+  // (`routeDir`).
+  for (const extension of ['ts', 'js', 'mts', 'mjs']) {
+    const file = `app.config.${extension}`;
+    const content = context.readFile(file);
+    if (content === null) continue;
+    const tree = parseSourceTreeSync(content, detectLanguage(file)!);
+    if (!tree) return false;
+    try {
+      const root = tree.rootNode;
+      const exported = root.namedChildren.find(
+        (n) => n.type === 'export_statement' && n.children.some((c) => c.type === 'default'),
+      );
+      const config = exported?.childForFieldName('value');
+      if (
+        config?.type !== 'call_expression' ||
+        !imports(root, '@solidjs/start/config', 'defineConfig').has(
+          config.childForFieldName('function')?.text ?? '',
+        )
+      )
+        return false;
+      const args =
+        config.childForFieldName('arguments')?.namedChildren.filter((n) => n.type !== 'comment') ?? [];
+      if (!args.length) return true;
+      const fields = object(args[0]);
+      return args.length === 1 && fields !== null && !fields.has('appRoot') && !fields.has('routeDir');
+    } finally {
+      tree.delete();
+    }
+  }
   for (const extension of ['ts', 'js', 'mts', 'mjs']) {
     const file = `vite.config.${extension}`;
     const content = context.readFile(file);
     if (content === null) continue;
-    const tree = getParser(detectLanguage(file)!)?.parse(content);
+    const tree = parseSourceTreeSync(content, detectLanguage(file)!);
     if (!tree) return false;
     try {
       const root = tree.rootNode;
@@ -102,7 +135,7 @@ function fileRoutes(context: ResolutionContext): boolean {
     const file = `src/app.${extension}`;
     const content = context.readFile(file);
     if (content === null) continue;
-    const tree = getParser(detectLanguage(file)!)?.parse(content);
+    const tree = parseSourceTreeSync(content, detectLanguage(file)!);
     if (!tree) return false;
     try {
       const root = tree.rootNode;
@@ -205,7 +238,7 @@ type Target = { name: string; line: number; column: number; endLine: number; end
 type Module = { exports: Map<string, Target | null> };
 function moduleExports(file: string, content: string): Module {
   const result: Module = { exports: new Map() };
-  const tree = getParser(detectLanguage(file)!)?.parse(content);
+  const tree = parseSourceTreeSync(content, detectLanguage(file)!);
   if (!tree) return result;
   try {
     const bindings = new Map<string, SyntaxNode>();
