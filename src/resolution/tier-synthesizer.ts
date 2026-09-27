@@ -263,6 +263,12 @@ interface FileFacts {
   queues: Map<string, string>;
   /** The file holds a socket server (a gateway, `io.on('connection')`, `new Server(…)`). */
   socketServer: boolean;
+  /**
+   * Set while collecting when a result read more than this file's content (an
+   * import's target, a project-wide name, a framework's route). A file that
+   * collects nothing without it stays empty until its content changes.
+   */
+  live: boolean;
 }
 
 const CLIENT_FACTORY =
@@ -312,6 +318,7 @@ function readFacts(ctx: ResolutionContext, file: string): FileFacts | null {
     defaultClient,
     queues,
     socketServer: SOCKET_SERVER_FILE.test(safe),
+    live: false,
   };
 }
 
@@ -325,6 +332,7 @@ function importedFacts(
   const lang: Language = facts.file.endsWith('x') ? 'tsx' : 'typescript';
   const im = ctx.getImportMappings(facts.file, lang).find((i) => i.localName === localName);
   if (!im) return null;
+  facts.live = true;
   // The mappings name the module as written; the file it is comes from the
   // same resolution the import resolver uses (aliases, extensions, index files).
   const resolved = im.resolvedPath ?? resolveImportPath(im.source, facts.file, lang, ctx);
@@ -525,7 +533,10 @@ function collectHttpSites(ctx: ResolutionContext, facts: FileFacts, sites: HttpS
   const add = (index: number, open: number, verb: string | null, baseURL: string | null): void => {
     const line = lineOf(index);
     const callee = safe.slice(index, open).replace(/\s+/g, '').replace(/<.*>$/, '');
-    if (facts.routeLines.has(line)) return; // a registration the resolver already read
+    if (facts.routeLines.has(line)) {
+      facts.live = true;
+      return; // a registration the resolver already read
+    }
     const fn = enclosingFn(nodes, line);
     if (!fn) return;
     const args = argumentsAt(safe, open);
@@ -614,6 +625,7 @@ function handlerNode(ctx: ResolutionContext, facts: FileFacts, text: string, lin
   const m = HANDLER_ARG.exec(text.trimStart());
   if (!m) return null;
   if (m[1]) {
+    facts.live = true;
     const name = m[1].split('.').pop()!;
     const candidates = ctx.getNodesByName(name).filter((n) => n.kind === 'function' || n.kind === 'method');
     const local = candidates.filter((n) => n.filePath === facts.file);
@@ -987,9 +999,14 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
       cache.set(file, facts);
     }
     if (!facts) continue;
+    const before = httpSites.length + producers.length + consumers.length + dispatches.length + handlers.length;
     if (wantsHttp) collectHttpSites(ctx, facts, httpSites, cache);
     if (wantsQueue) collectQueue(ctx, facts, producers, consumers, cache);
     if (wantsEvents) collectEvents(ctx, facts, dispatches, handlers, cache);
+    // Nothing collected on this file's content alone: it stays empty until it changes.
+    if (!facts.live && httpSites.length + producers.length + consumers.length + dispatches.length + handlers.length === before) {
+      recordSkip(ctx, 'tierEdges', file, content);
+    }
   }
 
   const edges: Edge[] = [];

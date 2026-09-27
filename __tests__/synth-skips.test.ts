@@ -175,3 +175,31 @@ describe('content-only framework detection skips', () => {
     expect(skipped(cg, 'detect:http-routing')).not.toContain('src/app.ts');
   });
 });
+
+describe('content-only cross-tier skips', () => {
+  let cg: CodeGraph;
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-skips-'));
+    write('src/store.ts', 'export const store = new Map<string, string>();\n');
+    write('src/calls.ts', "import { store } from './store';\nexport function load() {\n  return store.get('/users');\n}\n");
+    write('src/cache.ts', "const memo = new Map<string, number>();\nexport function read() {\n  return memo.get('k');\n}\n");
+    cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+  });
+
+  afterEach(() => {
+    try { cg.close(); } catch { /* already closed */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('skips a file whose calls go nowhere on its content alone, never one whose calls depend on an import', async () => {
+    expect(skipped(cg, 'tierEdges')).toContain('src/cache.ts');
+    expect(skipped(cg, 'tierEdges')).not.toContain('src/calls.ts');
+    // The import becomes an HTTP client: the unchanged caller now makes a request.
+    write('src/store.ts', "import axios from 'axios';\nexport const store = axios.create({ baseURL: 'https://api.example.com' });\n");
+    await cg.sync();
+    expect(synthesized(cg).some((e) => e.includes('https://api.example.com/users'))).toBe(true);
+    expect(synthesized(cg)).toEqual(await fresh());
+  });
+});
