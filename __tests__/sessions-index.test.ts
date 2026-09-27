@@ -36,6 +36,9 @@ import {
 import { clearProjectConfigCache } from '../src/project-config';
 import { isInjectedDoc, slashCommandText, splitPassages, indexableDocs } from '../src/sessions/noise';
 import { normalizeRemote } from '../src/sessions/codex';
+import { parseGrokTranscript, grokFilesForProject } from '../src/sessions/grok';
+import { sessionsMentioning, isDistinctiveName } from '../src/sessions/index';
+import { execFileSync } from 'child_process';
 import { createDatabase } from '../src/db/sqlite-adapter';
 
 const at = '2026-09-04T20:00:00.000Z';
@@ -77,6 +80,7 @@ afterEach(() => {
     'CODEGRAPH_OPENCODE_DB',
     'CODEGRAPH_ANTIGRAVITY_DIR',
     'CODEGRAPH_DEVIN_DIR',
+    'CODEGRAPH_GROK_DIR',
   ]) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
@@ -780,5 +784,68 @@ describe('querySessions (project entry point)', () => {
     const result = querySessions(project, 'write-time dedupe');
     expect([...new Set(result.hits.map((h) => h.session))]).toEqual(['devin:brisk-otter']);
     expect(formatSessionHits('write-time dedupe', result)).toContain('devin:');
+  });
+
+  it('indexes Grok chunks, commit messages, and finds sessions that name a symbol', () => {
+    const project = fs.realpathSync(fixtureDir());
+    fs.mkdirSync(path.join(project, '.codegraph'));
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CODEX_HOME = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = fixtureDir();
+    process.env.CODEGRAPH_DEVIN_DIR = fixtureDir();
+
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: project, stdio: 'pipe' });
+    git('init', '-q');
+    fs.writeFileSync(path.join(project, 'a.txt'), 'x');
+    git('add', 'a.txt');
+    git('commit', '-q', '-m', 'keep the ring buffer bounded', '-m', 'Unbounded growth ate the heap on long sessions.');
+
+    const grok = fixtureDir();
+    process.env.CODEGRAPH_GROK_DIR = grok;
+    const sid = '01a0-grok-session';
+    const file = path.join(grok, encodeURIComponent(project), sid, 'updates.jsonl');
+    const chunk = (sessionUpdate: string, text: string) => ({
+      timestamp: 1_700_000_000,
+      params: { update: { sessionUpdate, content: { type: 'text', text } } },
+    });
+    writeJsonl(
+      file,
+      [
+        chunk('user_message_chunk', 'why does flushRingBuffer drop '),
+        chunk('user_message_chunk', 'the oldest entries first?'),
+        chunk('user_message_chunk', '<runtime_info>host boilerplate</runtime_info>\n\n<other>more</other>'),
+        chunk('agent_thought_chunk', 'private thinking that must not index'),
+        chunk('agent_message_chunk', 'flushRingBuffer drops the oldest so '),
+        chunk('agent_message_chunk', 'the newest context survives.'),
+        { timestamp: 1_700_000_001, params: { update: { sessionUpdate: 'tool_call', title: 'read' } } },
+      ],
+      1_700_000_000,
+    );
+    fs.writeFileSync(path.join(path.dirname(file), 'summary.json'), JSON.stringify({ session_summary: 'ring buffer' }));
+    writeJsonl(path.join(grok, encodeURIComponent('/elsewhere'), 'x', 'updates.jsonl'), [chunk('user_message_chunk', 'another project entirely here')], 1);
+
+    expect(grokFilesForProject([project])).toEqual([file]);
+    const parsed = parseGrokTranscript(file);
+    expect(parsed.title).toBe('ring buffer');
+    expect(parsed.docs.map((d) => [d.role, d.text])).toEqual([
+      ['user', 'why does flushRingBuffer drop the oldest entries first?'],
+      ['assistant', 'flushRingBuffer drops the oldest so the newest context survives.'],
+    ]);
+
+    const commits = querySessions(project, 'unbounded heap', { role: 'commit' });
+    expect(commits.hits).toHaveLength(1);
+    expect(commits.hits[0]!.session).toBe(`git:${path.basename(project)}`);
+    expect(commits.hits[0]!.snippet).toMatch(/Unbounded/);
+    expect(querySessions(project, 'boilerplate').hits).toEqual([]);
+
+    expect(isDistinctiveName('flushRingBuffer')).toBe(true);
+    expect(isDistinctiveName('ring_buffer')).toBe(true);
+    expect(isDistinctiveName('search')).toBe(false);
+    const mentions = sessionsMentioning(project, ['flushRingBuffer', 'search', 'neverMentionedName']);
+    expect([...mentions.keys()]).toEqual(['flushRingBuffer']);
+    expect(mentions.get('flushRingBuffer')).toMatchObject({ total: 1, recent: [{ session: `grok:${sid}`, title: 'ring buffer' }] });
   });
 });

@@ -23,7 +23,8 @@ import * as path from 'path';
 export interface SessionDoc {
   /** ISO timestamp of the entry. */
   ts: string;
-  role: 'user' | 'assistant' | 'summary';
+  /** `commit` is a git commit message (see `git-log.ts`), not a transcript entry. */
+  role: 'user' | 'assistant' | 'summary' | 'commit';
   text: string;
 }
 

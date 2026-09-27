@@ -12,7 +12,8 @@
  * session costs tens of milliseconds; the first index of a few hundred
  * transcripts takes about a second.
  *
- * Readers live beside this file, one per agent host (Claude Code, Codex, Cursor).
+ * Readers live beside this file, one per agent host (Claude Code, Codex, Cursor,
+ * OpenCode, AGY, Devin, Grok), plus `git-log.ts` for commit messages.
  */
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
@@ -31,6 +32,8 @@ import {
 import { parseCodexTranscript, codexFilesForProject, normalizeRemote } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
 import { parseAgyTranscript, agyFilesForProject } from './agy';
+import { parseGrokTranscript, grokFilesForProject } from './grok';
+import { gitCommitDocs, gitHead } from './git-log';
 import { opencodeSessionsForProject } from './opencode';
 import { devinSessionsForProject } from './devin';
 import { indexableDocs } from './noise';
@@ -406,7 +409,7 @@ export function claudeFilesForProject(roots: readonly string[]): string[] {
   return files;
 }
 
-type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' | 'agy' };
+type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' | 'agy' | 'grok' };
 
 function hostedTranscripts(roots: readonly string[], remotes: readonly string[]): HostedTranscript[] {
   const out: HostedTranscript[] = [];
@@ -414,6 +417,7 @@ function hostedTranscripts(roots: readonly string[], remotes: readonly string[])
   for (const file of codexFilesForProject(roots, remotes)) out.push({ file, host: 'codex' });
   for (const file of cursorFilesForProject(roots)) out.push({ file, host: 'cursor' });
   for (const file of agyFilesForProject(roots)) out.push({ file, host: 'agy' });
+  for (const file of grokFilesForProject(roots)) out.push({ file, host: 'grok' });
   return out;
 }
 
@@ -438,6 +442,7 @@ function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscr
   if (host === 'codex') return parseCodexTranscript(file);
   if (host === 'cursor') return parseCursorTranscript(file);
   if (host === 'agy') return parseAgyTranscript(file);
+  if (host === 'grok') return parseGrokTranscript(file);
   const entries = parseEntries(file);
   return {
     session: `claude:${sessionIdOf(file)}`,
@@ -446,7 +451,7 @@ function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscr
   };
 }
 
-function collectRecords(roots: readonly string[], remotes: readonly string[]): TranscriptRecord[] {
+function collectRecords(roots: readonly string[], remotes: readonly string[], projectRoot?: string): TranscriptRecord[] {
   const records: TranscriptRecord[] = [];
   for (const h of hostedTranscripts(roots, remotes)) {
     let st: fs.Stats;
@@ -456,6 +461,17 @@ function collectRecords(roots: readonly string[], remotes: readonly string[]): T
       continue; // Removed between listing and stat.
     }
     records.push({ path: h.file, mtime: st.mtimeMs, size: st.size, load: () => loadHosted(h.file, h.host) });
+  }
+  const head = projectRoot ? gitHead(projectRoot) : null;
+  if (head && projectRoot) {
+    records.push({
+      path: `git:${projectRoot}`,
+      mtime: head.mtime,
+      // The hash's leading bits: a rebase or reset to an older commit changes
+      // HEAD without moving its time forward.
+      size: parseInt(head.sha.slice(0, 8), 16),
+      load: () => ({ session: `git:${path.basename(projectRoot)}`, title: 'commit messages', docs: gitCommitDocs(projectRoot) }),
+    });
   }
   for (const session of [...opencodeSessionsForProject(roots), ...devinSessionsForProject(roots)]) {
     records.push({
@@ -498,7 +514,7 @@ export function querySessions(
       return result(stats, index.search(query, opts));
     }
     const roots = index.rememberRoots(projectWorktreeRoots(projectRoot));
-    const records = collectRecords(roots, projectRemotes(projectRoot));
+    const records = collectRecords(roots, projectRemotes(projectRoot), projectRoot);
     if (records.length === 0) throw new NoSessionsError(projectRoot);
     const stats = index.refreshRecords(records);
     return result(stats, index.search(query, opts));
@@ -512,10 +528,68 @@ function result(index: SessionsIndexStats, found: ReturnType<SessionsIndex['sear
   return found.fallback ? { index, hits, fallback: true } : { index, hits };
 }
 
+/**
+ * An identifier worth looking up in session prose: camelCase, PascalCase with
+ * an inner capital, or snake_case, at least 6 characters. A plain word like
+ * `search` or `open` appears in hundreds of sessions that never meant the symbol.
+ */
+export function isDistinctiveName(name: string): boolean {
+  return name.length >= 6 && (/^[A-Za-z_$][\w$]*[a-z][A-Z]/.test(name) || /[A-Za-z]_[A-Za-z]/.test(name));
+}
+
+export interface SessionMention {
+  session: string;
+  title: string | null;
+  /** Latest time the session mentioned the name. */
+  ts: string;
+}
+
+/**
+ * Transcripts that mention each of `names`, most recent first, from the
+ * session index as it stands: no refresh, so a code query never waits on
+ * transcript I/O. Empty when the project opted out or never indexed sessions.
+ * Commit messages are left out; the graph already knows where code came from.
+ */
+export function sessionsMentioning(
+  projectRoot: string,
+  names: readonly string[],
+  perName = 3,
+): Map<string, { total: number; recent: SessionMention[] }> {
+  const out = new Map<string, { total: number; recent: SessionMention[] }>();
+  const wanted = [...new Set(names.filter(isDistinctiveName))];
+  const dbPath = sessionsDbPath(projectRoot);
+  if (wanted.length === 0 || !fs.existsSync(dbPath) || !loadSessionsEnabled(projectRoot)) return out;
+  let db: SqliteDatabase;
+  try {
+    db = createDatabase(dbPath, { readOnly: true }).db;
+    db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  } catch {
+    return out;
+  }
+  try {
+    const query = db.prepare(
+      `SELECT files.session, files.title, max(docs.ts) AS ts
+       FROM docs JOIN files ON files.path = docs.file
+       WHERE docs MATCH ? AND docs.role != 'commit'
+       GROUP BY files.session ORDER BY ts DESC`,
+    );
+    for (const name of wanted) {
+      // A quoted string is one phrase: `build_index` matches "build index" in order.
+      const rows = query.all(`"${name.replace(/"/g, '')}"`) as SessionMention[];
+      if (rows.length) out.set(name, { total: rows.length, recent: rows.slice(0, perName) });
+    }
+  } catch {
+    // An index from an older version or mid-rebuild: no mentions rather than an error.
+  } finally {
+    db.close();
+  }
+  return out;
+}
+
 export class NoSessionsError extends Error {
   constructor(projectRoot: string) {
     super(
-      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, Cursor, OpenCode, AGY, or Devin ` +
+      `No agent-session transcripts to index for ${projectRoot}: no Claude Code, Codex, Cursor, OpenCode, AGY, Devin, or Grok ` +
         'transcripts belong to this project, CODEGRAPH_SESSIONS_DIR points nowhere, ' +
         'or codegraph.json sets "sessions": false.',
     );
@@ -543,6 +617,6 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
     lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     lines.push('');
   }
-  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, or `devin:`); the path after the timestamp is the transcript to read when the snippet is not enough.');
+  lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, `devin:`, `grok:`, or `git:` for commit messages); the path after the timestamp is the transcript to read when the snippet is not enough.');
   return lines.join('\n');
 }
