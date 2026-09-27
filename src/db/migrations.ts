@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 
 /**
  * Migration definition
@@ -298,6 +298,14 @@ CREATE TABLE IF NOT EXISTS synth_skips (
     PRIMARY KEY (pass, path)
 ) WITHOUT ROWID;
       `);
+    },
+  },
+  {
+    version: 16,
+    description: 'Index synthesis skips by path, so a deleted file drops its rows',
+    up: (db) => {
+      // Keep in lockstep with schema.sql.
+      db.exec('CREATE INDEX IF NOT EXISTS idx_synth_skips_path ON synth_skips(path);');
     },
   },
 ];

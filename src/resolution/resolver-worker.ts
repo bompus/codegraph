@@ -60,7 +60,7 @@ port.on('message', (msg: InMessage) => {
         const tDb = Date.now();
         queries = new QueryBuilder(db);
         resolver = new ReferenceResolver(msg.projectRoot, queries);
-        resolver.initialize();
+        resolver.initialize(false);
         // This worker's own KernelResolver over the pool's checkpointed
         // SNAPSHOT copy — never the live file. The kernel links a second
         // SQLite build whose intra-process wal-index locks can't see

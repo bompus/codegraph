@@ -4,6 +4,9 @@ import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import type { Node } from '../../types';
 import type { FrameworkExtractionResult, FrameworkResolver, UnresolvedRef } from '../types';
 import { dependsOn } from './package-deps';
+import { recordSkip, skipped } from '../synth-skips';
+
+const DETECT_PASS = 'detect:http-routing';
 
 type Framework = 'hono' | 'elysia' | 'fastify' | 'hyper-express' | 'koa' | 'h3' | 'vixeny';
 type Binding =
@@ -622,9 +625,13 @@ export const httpRoutingResolver: FrameworkResolver = {
       context.fileExists('bun.lock') ||
       context.fileExists('bun.lockb') ||
       context.fileExists('bunfig.toml') ||
-      context
-        .getAllFiles()
-        .some((f) => /\.[cm]?[jt]sx?$/.test(f) && SOURCE_HINT.test(context.readFile(f) ?? ''))
+      context.getAllFiles().some((f) => {
+        if (!/\.[cm]?[jt]sx?$/.test(f) || skipped(context, DETECT_PASS, f)) return false;
+        const source = context.readFile(f);
+        if (source !== null && SOURCE_HINT.test(source)) return true;
+        recordSkip(context, DETECT_PASS, f, source);
+        return false;
+      })
     );
   },
   resolve: () => null,

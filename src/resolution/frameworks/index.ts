@@ -5,6 +5,7 @@
  */
 
 import { FrameworkResolver, ResolutionContext } from '../types';
+import { SynthSkips, SYNTH_SKIPS_VERSION } from '../synth-skips';
 import type { Language } from '../../types';
 import { drupalResolver } from './drupal';
 import { laravelResolver } from './laravel';
@@ -140,6 +141,51 @@ export function detectFrameworks(context: ResolutionContext): FrameworkResolver[
       return false;
     }
   });
+}
+
+/** Detectors that record content-only skips, one pass name each. */
+export const DETECT_SKIP_PASSES = ['detect:http-routing'] as const;
+
+interface SkipStore {
+  loadSynthSkips(version: string, pass?: string): Map<string, Set<string>>;
+  saveSynthSkips(version: string, rows: ReadonlyArray<readonly [string, string, string]>): void;
+}
+
+/**
+ * `detectFrameworks`, letting detectors that scan every source file skip the
+ * files an earlier run found nothing in (src/resolution/synth-skips.ts). A
+ * skip is valid only while the file's indexed hash is its current content, so
+ * a caller that runs before this run's edits are stored passes them as
+ * `stale`: those files are read again. `persist: false` reads the skips
+ * without writing any (a read-only connection).
+ */
+export function detectFrameworksWithSkips(
+  context: ResolutionContext,
+  store: SkipStore,
+  options: { stale?: ReadonlySet<string>; persist?: boolean } = {}
+): FrameworkResolver[] {
+  let known = new Map<string, Set<string>>();
+  try {
+    for (const pass of DETECT_SKIP_PASSES) {
+      const files = store.loadSynthSkips(SYNTH_SKIPS_VERSION, pass).get(pass);
+      if (!files) continue;
+      if (options.stale) for (const file of options.stale) files.delete(file);
+      known.set(pass, files);
+    }
+  } catch {
+    known = new Map(); // No skip table yet: detect from the files alone.
+  }
+  const skips = new SynthSkips(known);
+  const detected = detectFrameworks({ ...context, synthSkips: skips });
+  const rows = skips.take();
+  if (options.persist !== false && rows.length > 0) {
+    try {
+      store.saveSynthSkips(SYNTH_SKIPS_VERSION, rows);
+    } catch {
+      // Skips are an optimization; never fail detection over them.
+    }
+  }
+  return detected;
 }
 
 /**

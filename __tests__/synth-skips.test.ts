@@ -29,9 +29,14 @@ const synthesized = (cg: CodeGraph): string[] =>
       ORDER BY 1, 2, 3, 4, 5`,
   ).all() as Array<Record<string, unknown>>).map((r) => JSON.stringify(r));
 
+// The skips that apply now: a row whose hash no longer matches its file stays in the table but never applies.
 const skipped = (cg: CodeGraph, pass: string): string[] =>
-  (dbOf(cg).prepare('SELECT path FROM synth_skips WHERE pass = ? ORDER BY path').all(pass) as Array<{ path: string }>)
-    .map((r) => r.path);
+  (dbOf(cg).prepare(
+    `SELECT s.path AS path FROM synth_skips s JOIN files f ON f.path = s.path AND f.content_hash = s.content_hash
+      WHERE s.pass = ? ORDER BY s.path`,
+  ).all(pass) as Array<{ path: string }>).map((r) => r.path);
+const storedRows = (cg: CodeGraph, file: string): number =>
+  (dbOf(cg).prepare('SELECT COUNT(*) AS n FROM synth_skips WHERE path = ?').get(file) as { n: number }).n;
 
 async function fresh(): Promise<string[]> {
   const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'synth-skips-fresh-'));
@@ -101,7 +106,7 @@ describe('content-only synthesis skips', () => {
     expect(synthesized(cg)).toEqual(await fresh());
     fs.rmSync(path.join(dir, 'src/other.ts'));
     await cg.sync();
-    expect(skipped(cg, 'registryEdges')).not.toContain('src/other.ts');
+    expect(storedRows(cg, 'src/other.ts')).toBe(0);
     expect(synthesized(cg)).toEqual(await fresh());
   });
 
@@ -114,5 +119,59 @@ describe('content-only synthesis skips', () => {
     await cg.sync();
     expect(synthesized(cg)).toEqual(await fresh());
     expect(skipped(cg, 'registryEdges')).not.toContain('src/registry.ts');
+  });
+});
+
+describe('content-only framework detection skips', () => {
+  let cg: CodeGraph;
+  const routes = (g: CodeGraph): string[] =>
+    (dbOf(g).prepare(
+      `SELECT n.id AS id, t.qualified_name AS target FROM nodes n
+         LEFT JOIN edges e ON e.source = n.id LEFT JOIN nodes t ON t.id = e.target
+        WHERE n.kind = 'route' ORDER BY 1, 2`,
+    ).all() as Array<Record<string, unknown>>).map((r) => JSON.stringify(r));
+  const freshRoutes = async (): Promise<string[]> => {
+    const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'detect-skips-fresh-'));
+    try {
+      fs.cpSync(dir, copy, { recursive: true, filter: (p) => !p.includes(`${path.sep}.codegraph`) });
+      const g = await CodeGraph.init(copy, { silent: true });
+      await g.indexAll();
+      const out = routes(g);
+      g.close();
+      return out;
+    } finally {
+      fs.rmSync(copy, { recursive: true, force: true });
+    }
+  };
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'detect-skips-'));
+    write('package.json', '{ "name": "app" }\n');
+    write('src/app.ts', PLAIN);
+    write('src/users.ts', 'export function listUsers() { return []; }\n');
+    cg = await CodeGraph.init(dir, { silent: true });
+    await cg.indexAll();
+  });
+
+  afterEach(() => {
+    try { cg.close(); } catch { /* already closed */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('detects a framework a skipped file gains on sync, and matches a fresh index', async () => {
+    expect(skipped(cg, 'detect:http-routing')).toContain('src/app.ts');
+    expect(routes(cg)).toEqual([]);
+    write('src/app.ts', [
+      "import { Hono } from 'hono';",
+      "import { listUsers } from './users';",
+      'const app = new Hono();',
+      "app.get('/users', listUsers);",
+      'export default app;',
+      '',
+    ].join('\n'));
+    await cg.sync();
+    expect(routes(cg).some((r) => r.includes('/users'))).toBe(true);
+    expect(routes(cg)).toEqual(await freshRoutes());
+    expect(skipped(cg, 'detect:http-routing')).not.toContain('src/app.ts');
   });
 });

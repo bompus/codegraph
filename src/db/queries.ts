@@ -277,6 +277,7 @@ export class QueryBuilder {
     insertFile?: SqliteStatement;
     updateFile?: SqliteStatement;
     deleteFile?: SqliteStatement;
+    deleteSynthSkips?: SqliteStatement;
     getFileByPath?: SqliteStatement;
     getAllFiles?: SqliteStatement;
     insertUnresolved?: SqliteStatement;
@@ -3021,6 +3022,10 @@ export class QueryBuilder {
         this.stmts.deleteFile = this.db.prepare('DELETE FROM files WHERE path = ?');
       }
       this.stmts.deleteFile.run(filePath);
+      if (!this.stmts.deleteSynthSkips) {
+        this.stmts.deleteSynthSkips = this.db.prepare('DELETE FROM synth_skips WHERE path = ?');
+      }
+      this.stmts.deleteSynthSkips.run(filePath);
     })();
   }
 
@@ -3972,17 +3977,15 @@ export class QueryBuilder {
 
   /**
    * Store newly skipped files for `version`, replacing rows an older build
-   * wrote and pruning rows whose file changed or was removed.
+   * wrote. A row whose file has since changed stays until the pass records
+   * that file again; it never applies, because loading matches the hash.
+   * `deleteFile` drops a removed file's rows.
    */
   saveSynthSkips(version: string, rows: ReadonlyArray<readonly [string, string, string]>): void {
     this.db.transaction(() => {
       if (this.getMetadata(SYNTH_SKIPS_VERSION_KEY) !== version) {
         this.db.exec('DELETE FROM synth_skips');
         this.setMetadata(SYNTH_SKIPS_VERSION_KEY, version);
-      } else {
-        this.db.exec(
-          'DELETE FROM synth_skips WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.path = synth_skips.path AND f.content_hash = synth_skips.content_hash)'
-        );
       }
       const insert = this.db.prepare('INSERT OR REPLACE INTO synth_skips (pass, path, content_hash) VALUES (?, ?, ?)');
       for (const [pass, filePath, hash] of rows) insert.run(pass, filePath, hash);
@@ -4027,6 +4030,7 @@ export class QueryBuilder {
     this.db.exec('DELETE FROM bindings');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
+      this.db.exec('DELETE FROM synth_skips');
     })();
   }
 }

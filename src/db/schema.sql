@@ -287,3 +287,4 @@ CREATE TABLE IF NOT EXISTS synth_skips (
     content_hash TEXT NOT NULL,
     PRIMARY KEY (pass, path)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_synth_skips_path ON synth_skips(path);
