@@ -124,6 +124,7 @@ Dispatch and framework coverage the fork adds:
 | Waku | `src/pages` filesystem pages and `createPage` calls registered through `createPages`, linked to their page components |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
+| RedwoodSDK routes | `defineApp` route trees (`route`, `index`, `render`, `layout`, `prefix`, method tables), linked to their handlers |
 
 ### Measured results
 
@@ -479,6 +480,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Angular Router** | `provideRouter(routes)` / `RouterModule.forRoot(routes)` literal or constant arrays, nested `children`, and static lazy `loadComponent` / `loadChildren` imports, each linked to its component class |
 | **Analog** | `src/app/pages/**/*.page.ts` files (`index`, dot segments, `[param]`, `[...rest]` and `(group)` names) bound to the page's default component class; a page with a same-named folder is a layout, not a route | — |
 | **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page links to its component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
+| **RedwoodSDK** | Literal `defineApp([...])` trees with `route`, `index`, `render`, `layout` and `prefix`, plus `{ get, post, … }` method tables; each route links to its final handler and becomes a page once that handler is shown to return JSX | — |
 
 ### Routers — routes *and* the navigation between them
 

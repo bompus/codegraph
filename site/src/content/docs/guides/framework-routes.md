@@ -36,6 +36,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |
 | **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` `.astro` pages linked to components; `.ts`/`.js` HTTP-method exports linked to handlers; anchors and `Astro.redirect` link to local pages |
+| **RedwoodSDK** | Registered `defineApp` trees with `route`, `index`, `render`, `layout`, `prefix` and standard method tables; exact handlers and JSX page classification |
 | **Angular Router** | `provideRouter` / `RouterModule.forRoot` arrays, nested children, relative component imports and static lazy components/route arrays/NgModules |
 | **Analog** | Registered default `src/app/pages/**/*.page.ts` pages, linked to named default classes; directory layouts, dot paths, index/pathless segments and parameters |
 | **Solid Router** | Imported `Router`/`Route` JSX and registered literal configuration, nested paths, path arrays and bases; imported/local components and static lazy defaults |
@@ -61,6 +62,8 @@ Route resolution is automatic — there's nothing to configure. If a framework f
 Analog requires the platform plugin in a default-root Vite config and option-free `provideFileRouter()` registration. Custom roots, extra route directories, `app/routes`, route metadata overrides, router options, optional catchalls, Markdown and anonymous/re-exported defaults remain unsupported. A directory makes its corresponding page a layout; a dotted filename alone does not. The Vite config may be an object or a `defineConfig` callback that directly returns one, as the create-analog templates write it; `prerender.routes` is allowed.
 
 Angular follows literal or constant route arrays from runtime router imports. `forChild` contributes routes only through a statically imported lazy NgModule. Route nodes belong to the registration file, and imported table changes refresh that owner. Redirects, named outlets, custom matchers, dynamic factories, conditional registrations, spread objects, path aliases and re-export modules remain unsupported. No navigation is inferred.
+
+RedwoodSDK handler arrays use the final handler as the route root. A route stays `ANY /path` until its handler is shown to return JSX. Cross-file route arrays, custom methods, mutations, dynamic paths, ambiguous method tables and wrapped/anonymous exported components remain unsupported.
 
 Astro supports default roots, `[param]`/`[...rest]` filenames and exported handlers, including `ALL` as `ANY`. Type-only exports, underscore-prefixed paths and `.mjs` endpoints are excluded. Custom routing configuration, Markdown/MDX, cross-file re-exports, client transition calls and navigation to rest routes remain unsupported.
 

@@ -177,6 +177,9 @@ export class ReferenceResolver {
   runPostExtract(): number {
     let updated = 0;
     this.clearCaches();
+    // A pass that opens the kernel through resolveImport must not leave its
+    // small-lookup mode behind for the resolution run that follows.
+    const kernelWasOpen = !!this.kernelResolver;
     for (const fw of this.frameworks) {
       if (!fw.postExtract) continue;
       try {
@@ -191,6 +194,7 @@ export class ReferenceResolver {
         });
       }
     }
+    if (!kernelWasOpen) this.closeKernel();
     if (updated > 0) this.clearCaches();
     return updated;
   }
@@ -268,8 +272,9 @@ export class ReferenceResolver {
     return {
       // The kernel's import arm; open whenever frameworks resolve refs.
       resolveImport: (ref) => {
-        const kernel = this.kernelResolver;
-        if (!kernel) return null;
+        // postExtract runs before resolution opens a kernel; open the live one
+        // (runPostExtract closes it again).
+        const kernel = this.kernelResolver ?? this.liveKernel(1);
         return this.kernelVerdict(ref, kernel.resolveViaImportRef({
           rowId: ref.rowId,
           fromNodeId: ref.fromNodeId,
