@@ -346,6 +346,44 @@ What remains on an n8n sync: kernel resolution about 0.9 s, `git ls-files`
 about 0.4 s, closing the kernel connection about 0.4 s, and the class and
 constant scans that still read their whole kind (tens of milliseconds each).
 
+## Fourth round (built 2026-09-27)
+
+A profile of an n8n sync put three fixed costs next to kernel resolution:
+
+- **The resolver's file list.** The framework detectors and synthesis passes
+  asked the resolver context for every indexed path about 35 times per sync,
+  and each request re-read the `files` table: about 230 ms. The resolver now
+  keeps the list as long as its node-kind cache and hands each caller a copy.
+- **Freeing the kernel's node table** on close took about 0.35 s of the sync.
+  Moving the free onto a short-lived thread gave no measurable gain in a
+  paired A/B on CPython and n8n, so it was not kept.
+- **The ignore filter** in the file scan, about 0.3 s: roughly 220 rules
+  checked against 36,000 paths. A persisted per-path decision cache would need
+  every writer, the watcher included, to invalidate it when a rule file
+  changes, and watcher-scoped syncs skip the scan anyway. Prefiltering to
+  source files first saves about 50 ms but changes the scan's skip counts.
+  Neither was built.
+
+### Measured (2026-09-27)
+
+Same method, `fork/consolidated` `19be510f` against the branch, median of four:
+
+| Corpus | Before | After | Peak memory |
+|---|---|---|---|
+| gin | 0.37 s | 0.37 s | 213 → 211 MiB |
+| Alamofire | 0.48 s | 0.47 s | 228 → 225 MiB |
+| pretix | 1.70 s | 1.75 s | 590 → 571 MiB |
+| CPython | 3.58 s | 3.43 s | 834 → 840 MiB |
+| discourse | 3.93 s | 3.46 s | 926 → 945 MiB |
+| supabase | 3.51 s | 3.36 s | 933 → 970 MiB |
+| n8n | 6.14 s | 6.01 s | 1,239 → 1,220 MiB |
+
+The pretix difference is within its run-to-run spread, and one slow base sync
+(5.34 s) raises discourse's base median.
+
+What remains on an n8n sync: kernel resolution about 0.9 s, freeing the
+kernel's node table about 0.35 s, and the ignore filter about 0.3 s.
+
 ## Costs and risks
 
 - **Size.** The contribution tables add rows proportional to registrations,
