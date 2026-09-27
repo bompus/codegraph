@@ -127,6 +127,10 @@ export class ReferenceResolver {
   // it between passes. Callers must treat the returned array as read-only.
   private nodesByKindCache = new Map<Node['kind'], Node[]>();
   private knownFiles: Set<string> | null = null;
+  // `getAllFiles` for the context: the framework detectors and synthesis
+  // passes call it dozens of times per sync, each a full `files` read. Same
+  // lifetime as nodesByKindCache; callers get a copy, so they may sort it.
+  private allFilesCache: string[] | null = null;
   private cachesWarmed = false;
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
   // `null` = computed and absent. Treated as immutable for the
@@ -241,6 +245,7 @@ export class ReferenceResolver {
     this.fileLinesCache.clear();
     this.nodesByKindCache.clear();
     this.knownFiles = null;
+    this.allFilesCache = null;
     this.cachesWarmed = false;
     // The import-resolver's per-context memos assume the
     // same stable window as the caches above — drop them together.
@@ -365,9 +370,7 @@ export class ReferenceResolver {
 
       getProjectRoot: () => this.projectRoot,
 
-      getAllFiles: () => {
-        return this.queries.getAllFilePaths();
-      },
+      getAllFiles: () => (this.allFilesCache ??= this.queries.getAllFilePaths()).slice(),
 
       listDirectories: (relativePath: string) => {
         const target = relativePath === '.' || relativePath === ''
