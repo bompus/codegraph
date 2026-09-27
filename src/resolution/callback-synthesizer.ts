@@ -5983,6 +5983,8 @@ async function synthesizeWith(
     }
   }
 
+  // The passes timed themselves (markPass); dedupe-merge times only the merge.
+  markT.t = Date.now();
   const merged: Edge[] = [];
   const seen = new Set<string>();
   for (const e of passEdges.flat()) {
