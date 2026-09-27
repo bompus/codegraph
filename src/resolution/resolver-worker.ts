@@ -21,6 +21,7 @@ try {
 } catch { /* cache is best-effort */ }
 
 import { parentPort } from 'worker_threads';
+import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
 import { createDatabase, SqliteDatabase } from '../db/sqlite-adapter';
 import { QueryBuilder } from '../db/queries';
 import { ReferenceResolver } from './index';
@@ -128,8 +129,10 @@ port.on('message', (msg: InMessage) => {
         void (async () => {
           const t0 = Date.now();
           try {
-            const edges = await pass.run(q, r.getResolutionContext(), createYielder());
-            port.postMessage({ type: 'synth-result', id: msg.id, edges, ms: Date.now() - t0 });
+            // Skips read here, written by the main thread: this connection is read-only.
+            const skips = new SynthSkips(q.loadSynthSkips(SYNTH_SKIPS_VERSION, pass.name));
+            const edges = await pass.run(q, { ...r.getResolutionContext(), synthSkips: skips }, createYielder());
+            port.postMessage({ type: 'synth-result', id: msg.id, edges, ms: Date.now() - t0, skips: skips.take() });
           } catch (err) {
             port.postMessage({
               type: 'error',

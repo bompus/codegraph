@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 14;
+export const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * Migration definition
@@ -278,6 +278,25 @@ CREATE TABLE IF NOT EXISTS near_dup_scores (
     FOREIGN KEY (b) REFERENCES nodes(id) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_near_dup_scores_b ON near_dup_scores(b);
+      `);
+    },
+  },
+  {
+    version: 15,
+    description: 'Files each synthesis pass skipped, keyed by content hash',
+    up: (db) => {
+      // Keep in lockstep with schema.sql.
+      db.exec(`
+-- Files a synthesis pass skipped for reasons that depend only on their bytes
+-- (src/resolution/synth-skips.ts). A row counts only while content_hash still
+-- equals the file's current hash, so an edit, revert or delete invalidates it;
+-- the whole table is dropped when the build version changes.
+CREATE TABLE IF NOT EXISTS synth_skips (
+    pass TEXT NOT NULL,
+    path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY (pass, path)
+) WITHOUT ROWID;
       `);
     },
   },

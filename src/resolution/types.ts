@@ -139,6 +139,12 @@ export interface ResolutionContext {
   getProjectRoot(): string;
   /** Get all files */
   getAllFiles(): string[];
+
+  /**
+   * Content-only skip decisions from earlier synthesis runs (synth-skips.ts).
+   * Set only while synthesis passes run; absent everywhere else.
+   */
+  synthSkips?: import('./synth-skips').SynthSkips;
   /**
    * Look up a node by its id. Lets matchers derive the FROM-symbol's
    * enclosing-class scope (Swift implicit-self method scoping, `this.X`

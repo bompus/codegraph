@@ -98,15 +98,27 @@ README lists as the fork's largest.
 
 ## One-file sync: fork vs upstream (Node 24)
 
+Re-measured later the same day on an idle host (no other session's capped jobs
+running, 1-minute load 1.5–4 from the benchmark's own workers), with the fork at
+`perf/incremental-sync` (the sync skip cache, [`docs/design/incremental-synthesis.md`](../design/incremental-synthesis.md)).
+Each arm indexes once, then times two one-file syncs, each adding a line to the
+same file; arms alternate upstream, fork, fork, upstream. The table gives the
+median of the four syncs per arm, capped at 13G.
+
 | Corpus | Edited file | Upstream | Fork |
 |---|---|---|---|
-| gin | `gin.go` | 0.41 s, 173 MiB | 0.43 s, 215 MiB |
-| Alamofire | `Source/Core/Session.swift` | 0.54 s, 209 MiB | 0.59 s, 266 MiB |
-| pretix | `src/pretix/base/models/orders.py` | 1.15 s, 449 MiB | 2.77 s, 587 MiB |
-| CPython | `Lib/os.py` | 1.46 s, 509 MiB | 5.91 s, 1,061 MiB |
-| discourse | `app/models/user.rb` | 5.78 s, 884 MiB | 5.79 s, 1,087 MiB |
-| supabase | `apps/studio/data/projects/clone-mutation.ts` | 1.27 s, 335 MiB | 6.68 s, 942 MiB |
-| n8n | `packages/cli/src/active-executions.ts` | 12.2 s, 1,345 MiB | 14.2 s, 1,625 MiB |
+| gin | `gin.go` | 0.38 s, 172 MiB | 0.39 s, 212 MiB |
+| Alamofire | `Source/Core/Session.swift` | 0.51 s, 210 MiB | 0.51 s, 223 MiB |
+| pretix | `src/pretix/base/models/orders.py` | 1.11 s, 441 MiB | 2.27 s, 578 MiB |
+| CPython | `Lib/os.py` | 1.44 s, 509 MiB | 4.37 s, 866 MiB |
+| discourse | `app/models/user.rb` | 5.57 s, 936 MiB | 4.68 s, 970 MiB |
+| supabase | `apps/studio/data/projects/clone-mutation.ts` | 1.56 s, 332 MiB | 4.63 s, 929 MiB |
+| n8n | `packages/cli/src/active-executions.ts` | 12.1 s, 1,414 MiB | 9.4 s, 1,344 MiB |
+
+The first measurement, taken during the full-index batch with fork `76cdf8d4`,
+read higher for the fork (pretix 2.77 s, CPython 5.91 s, supabase 6.68 s, n8n
+14.2 s). Part of that gap is the skip cache and part is host load at the time;
+the paired before/after on the idle host is in the design doc.
 
 Upstream's sync does not rebuild links inferred from dynamic dispatch (events,
 callbacks, function pointers), so they go stale until a full index

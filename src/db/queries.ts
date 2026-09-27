@@ -54,6 +54,8 @@ function isLowValueFile(filePath: string, generated?: ReadonlySet<string>): bool
 }
 
 const SQLITE_PARAM_CHUNK_SIZE = 500;
+/** project_metadata key naming the build that wrote the synth_skips rows. */
+const SYNTH_SKIPS_VERSION_KEY = 'synth_skips_version';
 
 /**
  * A SQL predicate: is the node aliased `alias` a member an INTERFACE declares?
@@ -3944,6 +3946,47 @@ export class QueryBuilder {
         WHERE d.node_id = ? ORDER BY d.score DESC, n.file_path, n.start_line LIMIT ?`,
     ).all(nodeId, limit) as Array<NodeRow & { near_dup_score: number }>;
     return rows.map((row) => ({ node: rowToNode(row), score: row.near_dup_score }));
+  }
+
+  /**
+   * The files each synthesis pass skipped for content-only reasons, valid for
+   * `version`: a row counts while its hash still equals the file's current
+   * hash. A different stored version means an older build wrote the rows, so
+   * none apply.
+   */
+  loadSynthSkips(version: string, pass?: string): Map<string, Set<string>> {
+    const out = new Map<string, Set<string>>();
+    if (this.getMetadata(SYNTH_SKIPS_VERSION_KEY) !== version) return out;
+    const sql =
+      'SELECT s.pass AS pass, s.path AS path FROM synth_skips s JOIN files f ON f.path = s.path AND f.content_hash = s.content_hash' +
+      (pass === undefined ? '' : ' WHERE s.pass = ?');
+    const stmt = this.db.prepare(sql);
+    const rows = (pass === undefined ? stmt.iterate() : stmt.iterate(pass)) as Iterable<{ pass: string; path: string }>;
+    for (const row of rows) {
+      let set = out.get(row.pass);
+      if (!set) out.set(row.pass, (set = new Set()));
+      set.add(row.path);
+    }
+    return out;
+  }
+
+  /**
+   * Store newly skipped files for `version`, replacing rows an older build
+   * wrote and pruning rows whose file changed or was removed.
+   */
+  saveSynthSkips(version: string, rows: ReadonlyArray<readonly [string, string, string]>): void {
+    this.db.transaction(() => {
+      if (this.getMetadata(SYNTH_SKIPS_VERSION_KEY) !== version) {
+        this.db.exec('DELETE FROM synth_skips');
+        this.setMetadata(SYNTH_SKIPS_VERSION_KEY, version);
+      } else {
+        this.db.exec(
+          'DELETE FROM synth_skips WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.path = synth_skips.path AND f.content_hash = synth_skips.content_hash)'
+        );
+      }
+      const insert = this.db.prepare('INSERT OR REPLACE INTO synth_skips (pass, path, content_hash) VALUES (?, ?, ?)');
+      for (const [pass, filePath, hash] of rows) insert.run(pass, filePath, hash);
+    })();
   }
 
   getMetadata(key: string): string | null {
