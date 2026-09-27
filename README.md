@@ -117,6 +117,7 @@ Dispatch and framework coverage the fork adds:
 | Remix / React Router file routes | The default `app/routes/` file convention (and `flatRoutes()`), linked to each page's default component |
 | Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |
 | Solid Router | `<Route>` JSX and route-config arrays, linked to their (possibly lazy) components |
+| SolidStart | `src/routes/` file pages and API endpoints, linked to their components and handlers |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 
@@ -486,6 +487,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 | **TanStack Router** | `createFileRoute('/posts/$postId')` (file-based) and `createRoute({ path, getParentRoute })` composed up its parent chain (code-based); `_pathless` segments, `(group)` folders, `__root` and `<Outlet/>` layouts are not addresses; TanStack Start `server.handlers` (and `createHandlers`) in those files become method-qualified endpoints (`GET /api/users`) | `navigate({ to })`, a thrown `redirect({ to })`, `<Link to>` / `<Navigate to>` — where `to` is the route PATTERN and the values ride beside it in `params` |
 | **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` with the view each entry names, plus Nuxt `pages/` file-based routes (root index pages, Nuxt 4 route groups), `server/api/` and `server/routes/` endpoints (method suffixes such as `.get.ts`, catch-alls) and route middleware | `router.push` / `replace`, `$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
 | **Solid Router** | Imported `Router`/`Route` JSX and route-config arrays (`path`, `component`, `children`) in the same file as the `<Router>`, with static `lazy(() => import(...))` components. An array imported from another file (the official template's `routes.ts`) is not read yet | — |
+| **SolidStart** | SolidStart 1 (`app.config` with `defineConfig`) and 2 (the `solidStart()` Vite plugin): `src/routes/` file routes (`[param]`, `[[optional]]`, `[...rest]`, `(group)` folders, `index`), each page bound to its default component; exported `GET`/`POST`/… functions in API route files become endpoints | — |
 | **SvelteKit** | `src/routes/**/+page.svelte` (`[slug]` → `:slug`, `[[opt]]` → `:opt?`), joined to the `+page.server.js` beside it so a loader's guard belongs to its page | `goto('/x')`, `redirect(status, '/x')` from a load or form action, and the plain `<a href>` that is a link in a SvelteKit app |
 
 In a repository holding several apps, each app's routes are matched only against navigation written inside that app.
