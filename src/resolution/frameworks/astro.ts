@@ -7,7 +7,8 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
-import { getParser, detectLanguage } from '../../extraction/grammars';
+import { detectLanguage } from '../../extraction/grammars';
+import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { generateNodeId } from '../../extraction/tree-sitter-helpers';
 import { httpHandlerReferences } from './http-routing';
 import {
@@ -202,9 +203,7 @@ export const astroResolver: FrameworkResolver = {
           /<!--[\s\S]*?-->|\{\/\*[\s\S]*?\*\/\}|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
           (s) => s.replace(/[^\r\n]/g, ' '),
         );
-      const parser = getParser('tsx');
-      if (!parser) throw new Error('Astro anchor extraction requires the tsx grammar');
-      const tree = parser.parse(`<>${markup}</>`);
+      const tree = parseSourceTreeSync(`<>${markup}</>`, 'tsx');
       if (tree)
         try {
           for (const tag of tree.rootNode.descendantsOfType([
@@ -280,10 +279,7 @@ export const astroResolver: FrameworkResolver = {
             column: 0,
           });
         } else if (content.includes('export')) {
-          const parser = getParser(node.language);
-          if (!parser)
-            throw new Error(`Astro endpoint extraction requires the ${node.language} grammar`);
-          const tree = parser.parse(content);
+          const tree = parseSourceTreeSync(content, node.language);
           if (!tree) return { nodes, references };
           try {
             const methods = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL)$/;
