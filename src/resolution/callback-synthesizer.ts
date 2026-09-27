@@ -3113,7 +3113,6 @@ async function rtkQueryEdges(queries: QueryBuilder, ctx: ResolutionContext, onYi
 const PINIA_CONSUMER_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs|vue)$/;
 const PINIA_FACTORY_RE = /\b(?:export\s+)?const\s+(\w+)\s*=\s*defineStore\s*\(/g;
 const PINIA_BIND_RE = /\bconst\s+(\w+)\s*=\s*(?:await\s+)?(\w+)\s*\(/g;
-const PINIA_CALL_RE = /(\w+)\s*\.\s*(\w+)\s*\(/g;
 // Unbound store calls: `useXStore().action()` — the factory name itself is the
 // static anchor, so no `const s = useXStore()` binding is needed. Only callee
 // names in `factoryFile` qualify, so `useAnything().method()` stays silent.
@@ -3194,12 +3193,17 @@ async function piniaStoreEdges(ctx: ResolutionContext, onYield: MaybeYield): Pro
       added++;
     };
 
-    PINIA_CALL_RE.lastIndex = 0;
     let cm: RegExpExecArray | null;
-    while (varStore.size > 0 && (cm = PINIA_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {
-      const storeFile = varStore.get(cm[1]!);
-      if (!storeFile) continue;
-      linkCall(storeFile, cm[2]!, cm.index);
+    if (varStore.size > 0) {
+      // `<var>.<method>(` for the bound names only. Searching every
+      // `a.b(` and dropping unbound receivers finds the same calls: a
+      // receiver is a whole word followed by `.`, so an unbound match
+      // never covers the start of a bound one.
+      const boundCall = new RegExp(`\\b(?:${[...varStore.keys()].join('|')})\\s*\\.\\s*(\\w+)\\s*\\(`, 'g');
+      while ((cm = boundCall.exec(safe)) && added < PINIA_FANOUT_CAP) {
+        const receiver = cm[0].slice(0, cm[0].search(/[\s.]/));
+        linkCall(varStore.get(receiver)!, cm[1]!, cm.index);
+      }
     }
     PINIA_DIRECT_CALL_RE.lastIndex = 0;
     while ((cm = PINIA_DIRECT_CALL_RE.exec(safe)) && added < PINIA_FANOUT_CAP) {

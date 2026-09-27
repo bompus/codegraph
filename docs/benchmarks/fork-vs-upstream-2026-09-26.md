@@ -206,6 +206,27 @@ run-to-run spread (CPython's base arm ran at a 1-minute load up to 8). On
 discourse the median includes each arm's noisier first sync; the second syncs
 went from 3.1–3.3 s to 2.7 s.
 
+A sixth round (`perf/sync-ignore-tier`, 2026-09-27) cuts fixed costs every
+sync pays on a large JavaScript or TypeScript project: checking the file list
+against `.gitignore`, stripping comments before the inference passes read a
+file, and finding Pinia store calls. Measured the same way against the fork at
+`6a536f8a`. The README's fork column uses the right-hand figures.
+
+| Corpus | Fork `6a536f8a` | Fork `perf/sync-ignore-tier` |
+|---|---|---|
+| gin | 0.36 s, 211 MiB | 0.36 s, 211 MiB |
+| Alamofire | 0.46 s, 224 MiB | 0.47 s, 222 MiB |
+| pretix | 1.54 s, 572 MiB | 1.51 s, 561 MiB |
+| CPython | 3.42 s, 843 MiB | 3.38 s, 859 MiB |
+| discourse | 2.71 s, 802 MiB | 2.63 s, 803 MiB |
+| supabase | 3.08 s, 971 MiB | 2.83 s, 819 MiB |
+| n8n | 5.43 s, 952 MiB | 4.31 s, 974 MiB |
+
+The first n8n run was discarded: the host's load rose to 5 during it. In the
+rerun each arm's first sync, which writes the skip cache, took 6.3–6.9 s; the
+second syncs went from 4.5–4.6 s to 3.9–4.2 s. gin, Alamofire and CPython
+differ by run-to-run spread.
+
 Upstream's sync does not rebuild links inferred from dynamic dispatch (events,
 callbacks, function pointers), so they go stale until a full index
 (colbymchenry/codegraph#1988). The fork rebuilds them and refreshes

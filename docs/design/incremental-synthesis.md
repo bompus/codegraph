@@ -423,6 +423,30 @@ What remains on an n8n sync: the failed-ref retry (about 1,200 refs, 0.25 s,
 most of them imports that never resolve), the ignore filter about 0.3 s, and
 the registry and tier synthesis passes.
 
+### Fixed costs: ignore filter, comment stripping, Pinia (2026-09-27)
+
+Three costs every n8n sync paid regardless of the file changed:
+
+- The `.gitignore` filter tested each of 24,435 paths against every rule in
+  turn (170 rules). One regex joining all rules answers the common case, no
+  rule matches; a path some rule matches still goes through `ignore`'s own
+  rule walk (`src/extraction/ignore-prefilter.ts`).
+- `stripCStyle` built a per-character array for every file the synthesis
+  passes read; it now copies unchanged slices. A result that no longer holds a
+  non-Latin-1 character is re-encoded to one byte, since the passes' regexes
+  run about a third slower over two-byte text.
+- The Pinia pass matched every `a.b(` call and dropped unbound receivers; it
+  now searches for the bound receivers only.
+
+Full indexes of n8n, nocodb, supabase, koel, firefly-iii and discourse are
+identical before and after (files, node ids, every edge column). On the n8n
+benchmark file the scan went from 495 to 313 ms, Pinia from 525 to 270 ms and
+tier from 600 to 540 ms; the second syncs went from 4.5–4.6 s to 3.9–4.2 s
+(benchmark table in `docs/benchmarks/fork-vs-upstream-2026-09-26.md`).
+
+Tier's remaining time is its HTTP, queue and event regexes over files whose
+results depend on other files. Cutting it needs a per-file result cache.
+
 ## Costs and risks
 
 - **Size.** The contribution tables add rows proportional to registrations,

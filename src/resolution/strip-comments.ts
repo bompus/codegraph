@@ -319,53 +319,80 @@ function stripRuby(src: string): string {
 // ---------- C-style (JS/TS/Java/C#/Swift) ----------
 
 function stripCStyle(src: string, allowSingleQuoteStrings: boolean): string {
-  const out = src.split('');
+  // Unchanged text is copied in slices and only comments are rewritten: on a
+  // whole project this runs over every JS/TS file, where a char array cost
+  // more than the regex passes that read the result.
+  const parts: string[] = [];
+  let copied = 0;
   let i = 0;
   const n = src.length;
 
   while (i < n) {
-    const c = src[i]!;
-    const c2 = src[i + 1] ?? '';
+    const c = src.charCodeAt(i);
 
-    // Block comment
-    if (c === '/' && c2 === '*') {
-      const start = i;
-      i += 2;
-      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
-      if (i < n) i += 2;
-      blankRange(out, start, i, src);
-      continue;
-    }
-
-    // Line comment
-    if (c === '/' && c2 === '/') {
-      const start = i;
-      while (i < n && src[i] !== '\n') i++;
-      blankRange(out, start, i, src);
-      continue;
+    if (c === SLASH) {
+      const c2 = src.charCodeAt(i + 1);
+      // Block comment
+      if (c2 === STAR) {
+        const close = src.indexOf('*/', i + 2);
+        const end = close === -1 ? n : close + 2;
+        parts.push(src.slice(copied, i), blankSlice(src, i, end));
+        i = copied = end;
+        continue;
+      }
+      // Line comment
+      if (c2 === SLASH) {
+        const newline = src.indexOf('\n', i + 2);
+        const end = newline === -1 ? n : newline;
+        parts.push(src.slice(copied, i), blankSlice(src, i, end));
+        i = copied = end;
+        continue;
+      }
     }
 
     // String literals
-    if (c === '"' || (allowSingleQuoteStrings && c === "'") || c === '`') {
-      const quote = c;
+    if (c === DQUOTE || (allowSingleQuoteStrings && c === SQUOTE) || c === BACKTICK) {
       i++;
-      while (i < n && src[i] !== quote) {
-        if (src[i] === '\\' && i + 1 < n) {
+      while (i < n) {
+        const d = src.charCodeAt(i);
+        if (d === c) break;
+        if (d === BACKSLASH && i + 1 < n) {
           i += 2;
           continue;
         }
         // Template literal can span lines; regular strings break on newline (treat as unterminated)
-        if (quote !== '`' && src[i] === '\n') break;
+        if (c !== BACKTICK && d === NEWLINE) break;
         i++;
       }
-      if (i < n && src[i] === quote) i++;
+      if (i < n && src.charCodeAt(i) === c) i++;
       continue;
     }
 
     i++;
   }
 
-  return out.join('');
+  if (copied === 0) return src;
+  parts.push(src.slice(copied));
+  const out = parts.join('');
+  // Slices of a two-byte string stay two-byte even once the comments that
+  // held its only non-Latin-1 characters are blanked, and the regex passes
+  // run about a third slower over two-byte text. Re-encode such a result.
+  return NON_LATIN1.test(out) ? out : Buffer.from(out, 'latin1').toString('latin1');
+}
+
+const NON_LATIN1 = /[^\x00-\xff]/;
+
+const SLASH = 0x2f;
+const STAR = 0x2a;
+const DQUOTE = 0x22;
+const SQUOTE = 0x27;
+const BACKTICK = 0x60;
+const BACKSLASH = 0x5c;
+const NEWLINE = 0x0a;
+
+/** `blankRange` for a slice: every UTF-16 unit but `\n` becomes a space. */
+function blankSlice(src: string, start: number, end: number): string {
+  return src.slice(start, end).replace(/[^\n]/g, ' ');
 }
 
 // ---------- PHP ----------
