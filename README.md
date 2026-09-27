@@ -128,29 +128,35 @@ Dispatch and framework coverage the fork adds:
 
 ### Measured results
 
-Paired runs against upstream `main` at `ba3c21e` (2026-09-16, newer than its 1.6.0 release), measured 2026-09-26 on a 16-vCPU WSL2 host with Node 24: the same five corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md).
+Paired runs against upstream `main` at `ba3c21e` (2026-09-16, newer than its 1.6.0 release), measured 2026-09-26 on a 16-vCPU WSL2 host with Node 24: seven corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md).
 
 **Full index** (`codegraph init`):
 
 | Corpus | Time | Peak memory | Database |
 |---|---|---|---|
-| gin (Go, 119 files) | 0.90 → 0.77 s (−14%) | 478 → 261 MiB (−45%) | 7.8 → 9.5 MiB (+22%) |
-| Alamofire (Swift, 129 files) | 1.40 → 1.28 s (−9%) | 602 → 483 MiB (−20%) | 16.9 → 19.3 MiB (+14%) |
-| pretix (Python + JS, 1,473 files) | 11.6 → 8.5 s (−26%) | 2.65 → 2.19 GiB (−17%) | 117 → 141 MiB (+21%) |
-| CPython (C + Python, 3,710 files) | 33.4 → 27.4 s (−18%) | 4.24 → 3.63 GiB (−14%) | 451 → 542 MiB (+20%) |
-| discourse (Ruby + JS, 20,278 files) | 22.5 → 24.8 s (+11%) | 3.46 → 2.87 GiB (−17%) | 370 → 424 MiB (+15%) |
+| gin (Go, 119 files) | 0.87 → 0.79 s (−10%) | 492 → 293 MiB (−41%) | 7.8 → 9.5 MiB (+22%) |
+| Alamofire (Swift, 129 files) | 1.41 → 1.31 s (−7%) | 617 → 480 MiB (−22%) | 16.9 → 19.3 MiB (+14%) |
+| pretix (Python + JS, 1,473 files) | 12.3 → 10.4 s (−16%) | 2.65 → 2.26 GiB (−15%) | 117 → 141 MiB (+21%) |
+| CPython (C + Python, 3,710 files) | 33.4 → 28.0 s (−16%) | 4.20 → 3.58 GiB (−15%) | 451 → 542 MiB (+20%) |
+| discourse (Ruby + JS, 20,278 files) | 24.1 → 25.3 s (+5%) | 3.46 → 2.98 GiB (−14%) | 370 → 424 MiB (+15%) |
+| supabase (React + Next.js + TS, 10,718 files) | 80.5 → 24.1 s (−70%) | 5.02 → 4.07 GiB (−19%) | 327 → 459 MiB (+40%) |
+| n8n (Vue + TS, 24,435 files) | 105.7 → 98.3 s (−7%) | 8.17 → 4.92 GiB (−40%) | 1.43 → 1.70 GiB (+19%) |
+
+On supabase almost all of upstream's time goes to writing parse results to SQLite (60.7 s against the fork's 3.7 s). The fork's first index skips per-row foreign-key checks and index upkeep.
 
 **One-file sync** (edit one file, `codegraph sync`):
 
 | Corpus | Upstream | Fork |
 |---|---|---|
-| gin | 0.36 s | 0.38 s |
-| Alamofire | 0.48 s | 0.53 s |
-| pretix | 1.14 s | 2.66 s |
-| CPython | 0.68 s | 4.31 s |
-| discourse | 2.72 s | 4.70 s |
+| gin | 0.41 s | 0.43 s |
+| Alamofire | 0.54 s | 0.59 s |
+| pretix | 1.15 s | 2.77 s |
+| CPython | 1.46 s | 5.91 s |
+| discourse | 5.78 s | 5.79 s |
+| supabase | 1.27 s | 6.68 s |
+| n8n | 12.2 s | 14.2 s |
 
-The fork's sync does more: it rebuilds the links inferred from events, callbacks and function pointers, which upstream leaves stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). With `CODEGRAPH_SYNC_RESYNTHESIS=0` the fork's sync takes as long as upstream's (pretix 1.08 s, CPython 0.8–1.5 s), at the cost of the same staleness.
+The fork's sync does more: it rebuilds the links inferred from events, callbacks and function pointers, which upstream leaves stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the rebuild off, trading it for the same staleness.
 
 Measured separately:
 
@@ -159,26 +165,28 @@ Measured separately:
 | New git worktree ready to query | full index: 5.8–6.1 s, 1.6 GB | seeded from a sibling's index: 0.8–0.9 s, 184 MB | svelte, 8,217 files; ledger §5.58 |
 | Retained call links that are correct | 59 of 120 (49%), release 1.5.0 | 46 of 66 (70%) | [precision replay, 2026-09](docs/benchmarks/precision-replay-2026-09.md) |
 
-The precision gain comes mostly from declining uncertain links rather than resolving more. TypeScript member-call recall dropped on those rows and is the fork's largest known gap. The fork's own before/after measurements, which compare revisions of the fork rather than the fork with upstream, are in the measurement ledger, [`docs/design/metrics-ledger.md`](docs/design/metrics-ledger.md).
+The precision gain comes mostly from declining uncertain links rather than resolving more. On n8n, most of the call links upstream keeps and the fork drops are test globals and library calls bound to unrelated same-named code (`it` to a TypeORM test helper, `path.join` to a query builder's `join`). The same n8n check also shows the cost: a member call on an imported, exported instance, such as `Container.get` (5,276 links), is declined. TypeScript member-call recall is the fork's largest known gap. The fork's own before/after measurements, which compare revisions of the fork rather than the fork with upstream, are in the measurement ledger, [`docs/design/metrics-ledger.md`](docs/design/metrics-ledger.md).
 
 ### What it costs
 
-- **Larger database:** 14–22% bigger on the five corpora above. It holds Markdown, binding rows and more nodes.
-- **Slower one-file syncs on large projects:** 1.7–6× upstream's time (table above), because the fork keeps inferred links correct on every sync. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
-- **Fewer edges on some projects:** 3–13% fewer on pretix, CPython and discourse, because the fork declines links it cannot confirm (see the precision row above).
-- **Slower full index on discourse:** 11% slower, the one corpus of the five where the fork is not faster.
+- **Larger database:** 14–22% bigger on six of the seven corpora above, and 40% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
+- **Slower one-file syncs on large projects:** up to 5× upstream's time (supabase; table above), because the fork keeps inferred links correct on every sync. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
+- **Fewer edges on some projects:** 3–13% fewer on pretix, CPython, discourse and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
+- **Slower full index on discourse:** 5% slower, the one corpus of the seven where the fork is not faster.
 
 ### Runtimes
 
-The fork builds identical graphs on each runtime below. Full index, same five-corpus method, fork build:
+The fork builds identical graphs on each runtime below. Full index, same method, fork build:
 
-| Runtime | Full test suite | pretix | CPython | discourse |
-|---|---|---|---|---|
-| Node.js 24.21.0 (the supported line) | passes | 8.25 s, 2.29 GiB | 25.07 s, 3.54 GiB | 22.42 s, 2.91 GiB |
-| Node.js 26.10.0 | passes | 8.72 s, 1.97 GiB | 26.23 s, 3.35 GiB | 20.87 s, 2.61 GiB |
-| Bun 1.4.2 | passes (`npm run test:bun`) | 7.50 s, 1.28 GiB | 26.89 s, 2.87 GiB | 21.16 s, 2.29 GiB |
+| Corpus | Node.js 24.21.0 (the supported line) | Node.js 26.10.0 | Bun 1.4.2 |
+|---|---|---|---|
+| pretix | 8.63 s, 2.25 GiB | 9.45 s, 1.98 GiB | 7.58 s, 1.33 GiB |
+| CPython | 28.7 s, 3.48 GiB | 28.7 s, 3.08 GiB | 27.9 s, 2.66 GiB |
+| discourse | 24.1 s, 3.05 GiB | 24.6 s, 2.69 GiB | 24.5 s, 2.38 GiB |
+| supabase | 25.5 s, 4.06 GiB | 24.5 s, 3.44 GiB | 24.3 s, 3.31 GiB |
+| n8n | 91.7 s, 4.93 GiB | 92.7 s, 4.34 GiB | 89.6 s, 3.93 GiB |
 
-Bun uses the least memory on all three and is fastest on pretix. Under Bun one test is skipped for a Bun bug that is filed upstream ([oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)).
+The full test suite passes on all three (under Bun, `npm run test:bun`). Bun uses the least memory on every corpus and is fastest or level on each. Under Bun one test is skipped for a Bun bug that is filed upstream ([oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)).
 
 The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kernel) sections further down are upstream's own measurements of upstream builds; the fork has not re-run them. The fork's comparison from 2026-09-06, before the kernel became the only parser, is kept in [`docs/fork/history-2026-09-06.md`](docs/fork/history-2026-09-06.md).
 
