@@ -336,7 +336,8 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "terraform" => terra_claim_re().is_match(name),
         "vue-router" => vue_nav_re().is_match(name),
         "aspnet" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
-        | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "rust" | "svelte"
+        | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "react-router-files" | "rust"
+        | "svelte"
         | "swiftui" | "uikit" | "vapor" | "vue" => false,
         _ => true,
     }
