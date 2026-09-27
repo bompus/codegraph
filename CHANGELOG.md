@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Astro pages now link to their exact components and source-declared navigation; exported HTTP methods in `.ts`/`.js` endpoints link to their handlers, while type-only declarations and `.mjs` files are excluded.
+
 - TanStack Start server routes now link to their HTTP handlers while keeping API-only files out of the page map, including routes introduced after initial indexing.
 
 - React Router framework-mode pages now appear with their page components and navigation, including nested routes and pathless layouts.

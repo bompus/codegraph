@@ -312,6 +312,9 @@ pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::Hash
 /// (`f.name`), or the conservative claim for names the kernel does not know.
 pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
     match framework {
+        "astro" => {
+            name == "astro-page-component" || name.starts_with("astro-href:") || name == "Astro.redirect"
+        }
         "cics" => name.starts_with("cics-transid:"),
         "django" => name == "_iterable_class" || name.ends_with(".urls"),
         "drupal" => {
@@ -332,7 +335,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "tanstack-router" => tanstack_nav_re().is_match(name),
         "terraform" => terra_claim_re().is_match(name),
         "vue-router" => vue_nav_re().is_match(name),
-        "aspnet" | "astro" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
+        "aspnet" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "rust" | "svelte"
         | "swiftui" | "uikit" | "vapor" | "vue" => false,
         _ => true,
