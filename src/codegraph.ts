@@ -151,6 +151,17 @@ export class CodeGraph {
   private get resolver(): ReferenceResolver {
     return (this.lazyResolver ??= resolution().createResolver(this.projectRoot, this.queries));
   }
+
+  /**
+   * Detect frameworks against the files as they are now. A resolver created
+   * by this call has just detected them, so detecting again would repeat the
+   * same work (a full read of every source file for some detectors).
+   */
+  private redetectFrameworks(): ReferenceResolver {
+    if (!this.lazyResolver) return this.resolver;
+    this.lazyResolver.initialize();
+    return this.lazyResolver;
+  }
   private graphManager!: GraphQueryManager;
   private traverser!: GraphTraverser;
   private contextBuilder!: ContextBuilder;
@@ -618,7 +629,7 @@ export class CodeGraph {
         // chance to see the actual project before resolution runs.
         if (result.success && result.filesIndexed > 0) {
           const tReinit = Date.now();
-          this.resolver.initialize();
+          this.redetectFrameworks();
           // Cross-file finalization (e.g. NestJS RouterModule prefixes). Runs
           // before resolution so updated names show up in subsequent reads.
           this.resolver.runPostExtract();
@@ -903,7 +914,7 @@ export class CodeGraph {
         // (regex over *.module.ts only).
         if (result.filesAdded > 0 || result.filesModified > 0) {
           // Re-detect frameworks: a sync can add the dependency and the route together.
-          this.resolver.initialize();
+          this.redetectFrameworks();
           this.resolver.runPostExtract();
         } else if (result.filesRemoved > 0) {
           // A pure-removal sync still resolves refs below — the deletion path
