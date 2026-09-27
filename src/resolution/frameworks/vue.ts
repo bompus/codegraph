@@ -74,6 +74,9 @@ const NUXT_AUTO_IMPORTS = new Set([
  */
 const NUXT_VIRTUAL_MODULES = ['#imports', '#components', '#app', '#build', '#head'];
 
+/** Reference name prefix binding a Nuxt page route to its own file's component. */
+const NUXT_PAGE = 'nuxt-page:';
+
 export const vueResolver: FrameworkResolver = {
   name: 'vue',
 
@@ -97,7 +100,17 @@ export const vueResolver: FrameworkResolver = {
     return allFiles.some((f) => f.endsWith('.vue'));
   },
 
+  claimsReference: (name) => name.startsWith(NUXT_PAGE),
+
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+    if (ref.referenceName.startsWith(NUXT_PAGE)) {
+      const file = ref.referenceName.slice(NUXT_PAGE.length);
+      const component = context.getNodesInFile(file).find((n) => n.kind === 'component');
+      return component
+        ? { original: ref, targetNodeId: component.id, confidence: 1, resolvedBy: 'framework' }
+        : null;
+    }
+
     // Pattern 1: Vue compiler macros (defineProps, defineEmits, etc.)
     if (VUE_COMPILER_MACROS.has(ref.referenceName)) {
       return {
@@ -197,8 +210,9 @@ export const vueResolver: FrameworkResolver = {
     if (pagesIndex !== -1 && normalized.endsWith('.vue')) {
       const routePath = filePathToNuxtRoute(normalized, pagesIndex + '/pages/'.length);
       if (routePath !== null) {
+        const id = `route:${filePath}:${routePath}:1`;
         nodes.push({
-          id: `route:${filePath}:${routePath}:1`,
+          id,
           kind: 'route',
           name: routePath,
           qualifiedName: `${filePath}::route:${routePath}`,
@@ -209,6 +223,19 @@ export const vueResolver: FrameworkResolver = {
           endColumn: 0,
           language: 'vue',
           updatedAt: now,
+        });
+        // The page IS this file's component. A bare name would be ambiguous
+        // (every `index.vue` is a component named `index`), so the reference
+        // names the file and `resolve` binds it to that file's component.
+        // `calls`, as every component-backed screen binds (route-roots.ts).
+        references.push({
+          fromNodeId: id,
+          referenceName: `${NUXT_PAGE}${filePath}`,
+          referenceKind: 'calls',
+          line: 1,
+          column: 0,
+          filePath,
+          language: 'vue',
         });
       }
     }
@@ -359,15 +386,15 @@ function resolveComponent(
 function filePathToNuxtRoute(normalized: string, afterPagesStart: number): string | null {
   const afterPages = normalized.substring(afterPagesStart);
 
-  // Remove the .vue extension
-  const withoutExt = afterPages
+  // Drop the .vue extension, `(group)` folders and every `index` segment:
+  // Nuxt reads `index` as an empty segment wherever it appears, so
+  // `pages/account/index/[page].vue` is `/account/:page`, not only a
+  // trailing `index.vue`.
+  const withoutIndex = afterPages
     .replace(/\.vue$/, '')
     .split('/')
-    .filter((part) => !/^\([^/]+\)$/.test(part))
+    .filter((part) => !/^\([^/]+\)$/.test(part) && part !== 'index')
     .join('/');
-
-  // Remove /index suffix (index.vue -> parent route)
-  const withoutIndex = withoutExt.replace(/(^|\/)index$/, '');
 
   // Convert Nuxt param syntax [param] to :param
   let route =
