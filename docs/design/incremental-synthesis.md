@@ -309,6 +309,43 @@ What remains on an n8n sync (about 6.9 s): kernel resolution about 0.9 s,
 full-table node reads for the method and function passes about 1.2 s, `git
 ls-files` about 0.4 s, and closing the kernel connection about 0.4 s.
 
+## Third round (built 2026-09-27)
+
+Most passes that scan a node kind keep a handful of rows: one language, a
+name pattern, or a signature. They read every row of the kind and dropped the
+rest in JavaScript. On n8n the observer pass alone turned about 68,000 method
+and function rows into objects per sync; 3,500 of them have a registrar or
+dispatcher name, and the Swift/Kotlin closure pass matches none. `iterateNodesByKind` now takes an
+optional filter (languages, `LIKE` patterns on the name or signature) that the
+query applies. The patterns are a superset of each pass's own check, which
+stays, and a filtered scan orders by rowid, the order the kind index gives an
+unfiltered one. A fresh index yields identical edges with and without the
+change on gin, Alamofire and halo.
+
+On n8n the node-scan cost went from about 710 ms to about 180 ms, and callback
+synthesis from about 3.0 s to 2.4 s.
+
+### Measured (2026-09-27)
+
+Same method, `fork/consolidated` `41e7f7df` against the branch, median of four:
+
+| Corpus | Before | After | Peak memory |
+|---|---|---|---|
+| gin | 0.39 s | 0.37 s | 217 → 211 MiB |
+| Alamofire | 0.48 s | 0.48 s | 227 → 228 MiB |
+| pretix | 1.77 s | 1.69 s | 578 → 586 MiB |
+| CPython | 4.50 s | 3.65 s | 881 → 849 MiB |
+| discourse | 4.02 s | 3.56 s | 968 → 932 MiB |
+| supabase | 3.88 s | 3.48 s | 973 → 977 MiB |
+| n8n | 6.66 s | 6.24 s | 1,230 → 1,236 MiB |
+
+Supabase's base syncs ranged from 3.55 s to 4.37 s under load from other
+sessions; its difference is mostly noise.
+
+What remains on an n8n sync: kernel resolution about 0.9 s, `git ls-files`
+about 0.4 s, closing the kernel connection about 0.4 s, and the class and
+constant scans that still read their whole kind (tens of milliseconds each).
+
 ## Costs and risks
 
 - **Size.** The contribution tables add rows proportional to registrations,
