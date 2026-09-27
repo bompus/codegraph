@@ -36,8 +36,9 @@
  */
 
 import type { Language, Node } from '../../types';
-import type { Node as SyntaxNode } from 'web-tree-sitter';
-import { detectLanguage, getParser } from '../../extraction/grammars';
+import type { TreeNode as SyntaxNode } from '../../extraction/parse-tree';
+import { detectLanguage } from '../../extraction/grammars';
+import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { resolveImportPath } from '../import-resolver';
 import type { FrameworkResolver, ResolutionContext, ResolvedRef, UnresolvedRef } from '../types';
 import { dependsOn } from './package-deps';
@@ -184,8 +185,7 @@ export const reactRouterResolver: FrameworkResolver = {
       const targetPath = resolveImportPath('./' + module, ref.filePath, ref.language, context);
       if (!targetPath) return null;
       const source = context.readFile(targetPath);
-      const parser = getParser(detectLanguage(targetPath)!);
-      const tree = source === null ? null : parser?.parse(source);
+      const tree = source === null ? null : parseSourceTreeSync(source, detectLanguage(targetPath)!);
       if (!tree) return null;
       let target: Node | undefined;
       try {
@@ -281,9 +281,7 @@ export function extractReactRouterConfig(filePath: string, content: string) {
   )
     return { nodes, references };
   const language = detectLanguage(filePath)!;
-  const parser = getParser(language);
-  if (!parser) throw new Error(`React Router extraction requires the ${language} grammar`);
-  const tree = parser.parse(content);
+  const tree = parseSourceTreeSync(content, language);
   if (!tree) return { nodes, references };
   const unwrap = (node: SyntaxNode | null): SyntaxNode | null => {
     while (
