@@ -118,6 +118,7 @@ Dispatch and framework coverage the fork adds:
 | Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |
 | Solid Router | `<Route>` JSX and route-config arrays, linked to their (possibly lazy) components |
 | SolidStart | `src/routes/` file pages and API endpoints, linked to their components and handlers |
+| Vike | `+Page` filesystem routes and `+route` overrides, linked to their page components |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 
@@ -488,6 +489,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 | **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` with the view each entry names, plus Nuxt `pages/` file-based routes (root index pages, Nuxt 4 route groups), `server/api/` and `server/routes/` endpoints (method suffixes such as `.get.ts`, catch-alls) and route middleware | `router.push` / `replace`, `$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
 | **Solid Router** | Imported `Router`/`Route` JSX and route-config arrays (`path`, `component`, `children`) in the same file as the `<Router>`, with static `lazy(() => import(...))` components. An array imported from another file (the official template's `routes.ts`) is not read yet | — |
 | **SolidStart** | SolidStart 1 (`app.config` with `defineConfig`) and 2 (the `solidStart()` Vite plugin): `src/routes/` file routes (`[param]`, `[[optional]]`, `[...rest]`, `(group)` folders, `index`), each page bound to its default component; exported `GET`/`POST`/… functions in API route files become endpoints | — |
+| **Vike** | `+Page` files under `pages/` (filesystem routing, `index`, `(group)` folders, `@param` segments) and `+route` string overrides, each bound to its page component | — |
 | **SvelteKit** | `src/routes/**/+page.svelte` (`[slug]` → `:slug`, `[[opt]]` → `:opt?`), joined to the `+page.server.js` beside it so a loader's guard belongs to its page | `goto('/x')`, `redirect(status, '/x')` from a load or form action, and the plain `<a href>` that is a link in a SvelteKit app |
 
 In a repository holding several apps, each app's routes are matched only against navigation written inside that app.

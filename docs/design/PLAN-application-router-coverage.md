@@ -1,4 +1,4 @@
-Status: steps 1–4, 6, 8 and 9 landed or in review; 5, 7 and 10–13 pending
+Status: steps 1–4, 6, 8, 9 and 11 landed or in review; 5, 7, 10, 12 and 13 pending
 
 - [x] 1 React Router framework mode — seven official-fixture pages bind exact components; nested index/navigation, config/module sync and fresh compiled workers verified; build passes, 112 WASM focused/control tests pass, full native suite 4,353 pass / 46 skip; independent review clear.
 - [x] 2 TanStack Start server routes — literal method tables and `createHandlers` bind handlers/calls; page/API coexistence and full/scoped sync verified; build passes, 62 WASM focused/control tests pass, full native suite 4,375 pass / 46 skip; independent review clear.
@@ -10,7 +10,7 @@ Status: steps 1–4, 6, 8 and 9 landed or in review; 5, 7 and 10–13 pending
 - [x] 8 Solid Router — registered JSX/config and static lazy imports bind exact components; nested bases/splats, mutations, scoped introduction and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,523 pass / 46 skip; independent review clear.
 - [x] 9 SolidStart — pinned default pages and HTTP handlers bind exact targets; file hierarchy, page/API coexistence, scoped/reopened sync and fresh workers pass; build passes, 115 WASM focused/control tests pass, full native suite 4,542 pass / 46 skip; independent review clear.
 - [ ] 10 Qwik City — default file routes, page components, and method-specific endpoint exports. Gate: shared proof, parameters, layouts, and `onRequest`/middleware exclusions.
-- [ ] 11 Vike — default `+Page` conventions and literal `+route` overrides. Gate: shared proof, parameters, exact component links, and no fallback route when an unsupported override changes routing.
+- [x] 11 Vike — default `+Page` conventions and inherited literal `+route` overrides bind exact components; config/scoped/reopened sync and fresh workers pass; build passes, 126 WASM focused/control tests pass, full native suite 4,592 pass / 46 skip; independent review clear.
 - [ ] 12 Waku filesystem routes — default pages, parameters, and layout exclusions for a pinned version. Gate: shared proof and `_root`/`_layout`/`_slices` controls.
 - [ ] 13 Waku programmatic routes — literal `createPage` declarations within the documented `createPages` registration. Gate: shared proof, async registration syntax without executing it, and computed path negatives.
 
