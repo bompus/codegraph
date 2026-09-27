@@ -197,8 +197,8 @@ test of the bytes alone: no `x[k](` for the object registry, no `emit(` or
 `.on(` for the emitter pass, no JSX for the JSX-child pass. A sync paid that
 read-and-test for every file on every run.
 
-`synth_skips` (schema 15) records, per pass, the files it dropped for content
-alone, keyed by the SHA-256 of the bytes it read. That is the same digest as
+`synth_skips` (schema 15; one row per file since schema 16) records, per pass,
+the files it dropped for content alone, keyed by the SHA-256 of the bytes it read. That is the same digest as
 `files.content_hash`, so a skip applies only while the file's indexed hash still
 equals it; an edited, reverted or deleted file is read again. The rows belong to
 one build: `SYNTH_SKIPS_VERSION` is the package version plus a fingerprint of the
@@ -249,6 +249,65 @@ that remain do their work on files the content test keeps:
 - Full-table SQLite reads, about 1 s in total.
 
 Each of these needs its own cache or scoping, not a larger skip set.
+
+## Second round (built 2026-09-27)
+
+Four changes to the costs listed above:
+
+- **Framework detection.** The HTTP-routing check records the JavaScript
+  files it read without finding a framework hint as `detect:http-routing`
+  skips. The extraction phase of a sync passes the files it is re-indexing as
+  stale, because their indexed hash is still the old one at that point. The
+  resolver persists its detection skips; pool workers load them read-only.
+  About 1.0 s to 0.34 s on n8n.
+- **Cross-tier pass, empty files.** 2,205 of the 2,350 n8n files that pass the
+  cross-tier gates add nothing. A file now records a skip when it collected
+  nothing and never read past its own content: an import's target, a
+  project-wide name lookup, or a framework route on the same line. A `live`
+  flag on the file's facts marks each of those reads. About 2.2 s to 0.6 s on
+  n8n.
+- **Pinia.** The consumer scan reads only files that name one of the store
+  factories, and skips the bound-call scan when the file binds none. Both are
+  exact: every link starts at a factory's name.
+- **Table shape.** One row per (pass, file) meant 248,563 rows on n8n, read
+  twice per sync. Schema 16 stores one row per file with a space-separated
+  pass list (24,435 rows). Saving merges passes recorded against the same
+  hash, and a new hash replaces the row.
+
+`__tests__/synth-skips.test.ts` adds two cases. A framework import added to a
+skipped file must produce the routes a fresh index does. A caller whose
+receiver comes from an import must not be skipped, and must gain its HTTP edge
+when only the imported module changes. Removing the `live` mark on an
+import's target fails the second.
+
+### Measured (2026-09-27)
+
+Same method, `fork/consolidated` `013f814a` against the branch, median of four:
+
+| Corpus | Before | After | Peak memory |
+|---|---|---|---|
+| gin | 0.39 s | 0.39 s | 216 → 217 MiB |
+| Alamofire | 0.53 s | 0.54 s | 225 → 226 MiB |
+| pretix | 2.34 s | 1.85 s | 579 → 580 MiB |
+| CPython | 4.41 s | 4.62 s | 903 → 902 MiB |
+| discourse | 5.04 s | 4.04 s | 979 → 945 MiB |
+| supabase | 4.72 s | 3.56 s | 930 → 971 MiB |
+| n8n | 9.54 s | 6.95 s | 1,386 → 1,261 MiB |
+
+Other sessions raised the load to 4–7 during the discourse and n8n arms;
+CPython's difference is within run-to-run spread.
+
+Not done:
+
+- Retrying only the failed references that could now resolve: about 0.24 s on
+  n8n, and narrowing to the changed definitions misses an export or kind
+  change that keeps a name.
+- Storing Pinia's per-file facts (a new table) for about 0.5 s on Vue-heavy
+  projects.
+
+What remains on an n8n sync (about 6.9 s): kernel resolution about 0.9 s,
+full-table node reads for the method and function passes about 1.2 s, `git
+ls-files` about 0.4 s, and closing the kernel connection about 0.4 s.
 
 ## Costs and risks
 

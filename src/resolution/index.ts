@@ -24,7 +24,7 @@ import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolv
 import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
-import { detectFrameworks } from './frameworks';
+import { detectFrameworksWithSkips } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
@@ -161,9 +161,10 @@ export class ReferenceResolver {
   /**
    * Initialize the resolver (detect frameworks, etc.)
    */
-  initialize(): void {
+  /** `persist: false` on a read-only connection: reuse detection skips without writing them. */
+  initialize(persist = true): void {
     this.clearCaches();
-    this.frameworks = detectFrameworks(this.context);
+    this.frameworks = detectFrameworksWithSkips(this.context, this.queries, { persist });
   }
 
   /**

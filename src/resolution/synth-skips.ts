@@ -20,15 +20,22 @@ import { CodeGraphPackageVersion } from '../mcp/version';
  * The code that owns the rows. A local or development build keeps the package
  * version while its pass logic changes, so the version alone would let a new
  * pass reuse skips an older one decided. The fingerprint of this directory's
- * compiled modules, where every synthesis pass lives, changes with any edit.
+ * compiled modules, where every synthesis pass and framework detector lives,
+ * changes with any edit.
  */
 function codeFingerprint(): string {
   const hash = crypto.createHash('sha256');
-  try {
-    for (const name of fs.readdirSync(__dirname).filter((n) => /\.(?:js|ts)$/.test(n)).sort()) {
-      hash.update(name);
-      hash.update(fs.readFileSync(path.join(__dirname, name)));
+  const walk = (dir: string, rel: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), `${rel}${entry.name}/`);
+      else if (/\.(?:js|ts)$/.test(entry.name)) {
+        hash.update(rel + entry.name);
+        hash.update(fs.readFileSync(path.join(dir, entry.name)));
+      }
     }
+  };
+  try {
+    walk(__dirname, '');
   } catch {
     // Unreadable sources: a random stamp, so no skips are ever reused.
     hash.update(String(Math.random()));

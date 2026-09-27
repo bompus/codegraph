@@ -282,8 +282,7 @@ CREATE TABLE IF NOT EXISTS near_duplicates (
 -- equals the file's current hash, so an edit, revert or delete invalidates it;
 -- the whole table is dropped when the build version changes.
 CREATE TABLE IF NOT EXISTS synth_skips (
-    pass TEXT NOT NULL,
-    path TEXT NOT NULL,
+    path TEXT PRIMARY KEY,
     content_hash TEXT NOT NULL,
-    PRIMARY KEY (pass, path)
+    passes TEXT NOT NULL -- space-separated pass names
 ) WITHOUT ROWID;

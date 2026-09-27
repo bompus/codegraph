@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 
 /**
  * Migration definition
@@ -296,6 +296,21 @@ CREATE TABLE IF NOT EXISTS synth_skips (
     path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     PRIMARY KEY (pass, path)
+) WITHOUT ROWID;
+      `);
+    },
+  },
+  {
+    version: 16,
+    description: 'Store synthesis skips one row per file, listing the passes that skipped it',
+    up: (db) => {
+      // Keep in lockstep with schema.sql. The rows are a cache: dropping them costs one full scan.
+      db.exec(`
+DROP TABLE IF EXISTS synth_skips;
+CREATE TABLE synth_skips (
+    path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    passes TEXT NOT NULL
 ) WITHOUT ROWID;
       `);
     },

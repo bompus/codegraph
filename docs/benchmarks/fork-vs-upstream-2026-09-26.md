@@ -115,6 +115,27 @@ median of the four syncs per arm, capped at 13G.
 | supabase | `apps/studio/data/projects/clone-mutation.ts` | 1.56 s, 332 MiB | 4.63 s, 929 MiB |
 | n8n | `packages/cli/src/active-executions.ts` | 12.1 s, 1,414 MiB | 9.4 s, 1,344 MiB |
 
+A second round of sync work (`perf/sync-detect`, 2026-09-27) was measured the
+same way against the fork at `013f814a`, which already had the table above's
+skip cache. The README's fork column uses the right-hand figures; its upstream
+column is the table above.
+
+| Corpus | Fork `013f814a` | Fork `perf/sync-detect` |
+|---|---|---|
+| gin | 0.39 s, 216 MiB | 0.39 s, 217 MiB |
+| Alamofire | 0.53 s, 225 MiB | 0.54 s, 226 MiB |
+| pretix | 2.34 s, 579 MiB | 1.85 s, 580 MiB |
+| CPython | 4.41 s, 903 MiB | 4.62 s, 902 MiB |
+| discourse | 5.04 s, 979 MiB | 4.04 s, 945 MiB |
+| supabase | 4.72 s, 930 MiB | 3.56 s, 971 MiB |
+| n8n | 9.54 s, 1,386 MiB | 6.95 s, 1,261 MiB |
+
+Other sessions raised the 1-minute load to 4–7 during the discourse and n8n
+arms. The alternating order spreads that over both arms, and one outlier on
+each (a 7.09 s base sync on discourse, an 8.35 s branch sync on n8n) falls
+outside the median. The CPython difference is within run-to-run spread: none
+of the changes reach Python-only work.
+
 The first measurement, taken during the full-index batch with fork `76cdf8d4`,
 read higher for the fork (pretix 2.77 s, CPython 5.91 s, supabase 6.68 s, n8n
 14.2 s). Part of that gap is the skip cache and part is host load at the time;

@@ -32,7 +32,7 @@ import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
-import { detectFrameworks } from '../resolution/frameworks';
+import { detectFrameworks, detectFrameworksWithSkips } from '../resolution/frameworks';
 import { extractAngularRoutes, isAngularRegistrationFile } from '../resolution/frameworks/angular';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
@@ -1878,13 +1878,17 @@ export class ExtractionOrchestrator {
   /**
    * Detect frameworks on demand using the current scanned files (or a fresh
    * scan if none are provided). Cached on the orchestrator so repeat calls
-   * inside a single run don't re-scan.
+   * inside a single run don't re-scan. A sync passes the files whose content
+   * it is about to re-index as `stale`; every other file's indexed hash is its
+   * current content, so detectors may reuse the skips recorded against it.
    */
-  private ensureDetectedFrameworks(files?: string[]): string[] {
+  private ensureDetectedFrameworks(files?: string[], stale?: ReadonlySet<string>): string[] {
     if (this.detectedFrameworkNames !== null) return this.detectedFrameworkNames;
     const fileList = files ?? scanDirectory(this.rootDir);
     const context = this.buildDetectionContext(fileList);
-    this.detectedFrameworkNames = detectFrameworks(context).map((r) => r.name);
+    this.detectedFrameworkNames = (
+      stale ? detectFrameworksWithSkips(context, this.queries, { stale }) : detectFrameworks(context)
+    ).map((r) => r.name);
     // Route extractors resolve imports across the whole project, not just this run's files.
     this.frameworkSourceContext = this.buildDetectionContext([...new Set([...this.queries.getAllFilePaths(), ...fileList])]);
     return this.detectedFrameworkNames;
@@ -3272,7 +3276,7 @@ export class ExtractionOrchestrator {
         ? this.queries.getNodesByKind('route').some((n) => n.id.startsWith(`route:react-router:${n.filePath}:file:`))
         : previous.includes('react-router-files');
       this.detectedFrameworkNames = null;
-      const detected = this.ensureDetectedFrameworks(currentFiles);
+      const detected = this.ensureDetectedFrameworks(currentFiles, new Set(filesToIndex));
       for (const [framework, matches] of [
         ['solid-start', isSolidStartRoute], ['vike', isVikePage], ['qwik-city', isQwikCityRoute],
         ['waku', isWakuRouteFile], ['analog', isAnalogPage],
