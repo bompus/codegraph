@@ -7,7 +7,8 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
-import { detectLanguage, getParser } from '../../extraction/grammars';
+import { detectLanguage } from '../../extraction/grammars';
+import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { httpHandlerReferences } from './http-routing';
 
 /**
@@ -238,8 +239,7 @@ export const vueResolver: FrameworkResolver = {
         updatedAt: now,
       };
       nodes.push(node);
-      const parser = getParser(node.language);
-      const tree = parser?.parse(content);
+      const tree = parseSourceTreeSync(content, node.language);
       if (tree)
         try {
           for (const statement of tree.rootNode.namedChildren) {

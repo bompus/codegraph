@@ -1,5 +1,6 @@
-import type { Node as SyntaxNode } from 'web-tree-sitter';
-import { detectLanguage, getParser } from '../../extraction/grammars';
+import type { TreeNode as SyntaxNode } from '../../extraction/parse-tree';
+import { detectLanguage } from '../../extraction/grammars';
+import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import type { Node } from '../../types';
 import type { FrameworkExtractionResult, FrameworkResolver, UnresolvedRef } from '../types';
 import { dependsOn } from './package-deps';
@@ -177,9 +178,7 @@ export function extractHttpRoutes(
   };
   if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(filePath) || !SOURCE_HINT.test(source)) return result;
   const language = detectLanguage(filePath);
-  const parser = getParser(language);
-  if (!parser) throw new Error(`HTTP routing requires the loaded ${language} grammar`);
-  const tree = parser.parse(source);
+  const tree = parseSourceTreeSync(source, language);
   if (!tree) return result;
   const pending: PendingRoute[] = [];
   const scopes: Scope[] = [new Map([['Bun', { kind: 'module', source: 'bun' }]])];

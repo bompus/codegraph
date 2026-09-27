@@ -112,6 +112,7 @@ Dispatch and framework coverage the fork adds:
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
 | Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
 | C function pointers | `x->f = fn;` assignments, alongside table initializers |
+| HTTP routes | Literal routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny; Nuxt `server/routes/`, method suffixes and route groups |
 
 ### Measured results
 
@@ -410,7 +411,7 @@ CodeGraph's parsing engine is a **native Rust kernel**, and it is the only parse
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
 | **20+ Languages** | TypeScript, JavaScript, ArkTS, Python, Go, Rust, Java, C#, VB.NET, PHP, Ruby, C, C++, CUDA, Objective-C, Metal, Swift, Kotlin, Scala, Dart, Lua, Luau, R, Nix, Erlang, CFML, COBOL, Solidity, Terraform/OpenTofu, Svelte, Vue, Astro, Liquid, Pascal/Delphi, and Markdown documentation |
-| **Framework-aware Routes** | Recognizes web-framework routing files and links URL patterns to their handlers across 17 frameworks |
+| **Framework-aware Routes** | Recognizes web-framework routing files and links URL patterns to their handlers; the frameworks are listed under [Framework-aware Routes](#framework-aware-routes) |
 | **Mixed iOS / React Native / Expo** | Closes cross-language flows that static parsing misses: Swift ↔ ObjC bridging, React Native legacy bridge + TurboModules + Fabric view components, native → JS event emitters, Expo Modules |
 | **100% Local** | No data leaves your machine. No API keys. No external services. SQLite database only |
 
@@ -453,6 +454,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Flask** | `@app.route('/path', methods=[...])`, blueprint routes |
 | **FastAPI** | `@app.get(...)`, `@router.post(...)`, all standard methods |
 | **Express** | `app.get(...)`, `router.post(...)` with middleware chains |
+| **Hono / Elysia / Fastify / Koa / H3 / Hyper-Express / Bun / Effect / Vixeny** | Literal routes on each framework's app or router builder (`new Hono().get('/users', handler)`), with same-file prefixes and mounts; an imported handler is linked, an inline one contributes its direct calls. Fastify routes are read from a local `Fastify()` instance only: plugin route files (`export default async function (fastify) { … }`, loaded by `@fastify/autoload`) are not read yet |
 | **NestJS** | `@Controller` + `@Get/@Post/...`, GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
 | **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
@@ -475,7 +477,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 | **Next.js** | App Router `app/**/page.tsx` and Pages Router pages (`(group)` stripped, `[slug]` → `:slug`); `app/api/**/route.ts` exports and `pages/api/*` are endpoints, not screens | `router.push` / `replace` / `prefetch`, `redirect()` / `permanentRedirect()` in a server action or page, `NextResponse.redirect(new URL(…))` in middleware, `<Link href>` and internal `<a href>` |
 | **React Router** | `<Route path component/element>` (v5 and v6) and `createBrowserRouter([{ path, element }])` | `history.push` / `replace`, `useNavigate`'s `navigate`, a loader's `redirect`, `<Link to>` / `<NavLink to>` / `<Navigate to>` / react-router-bootstrap's `<LinkContainer to>` |
 | **TanStack Router** | `createFileRoute('/posts/$postId')` (file-based) and `createRoute({ path, getParentRoute })` composed up its parent chain (code-based); `_pathless` segments, `(group)` folders, `__root` and `<Outlet/>` layouts are not addresses | `navigate({ to })`, a thrown `redirect({ to })`, `<Link to>` / `<Navigate to>` — where `to` is the route PATTERN and the values ride beside it in `params` |
-| **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` with the view each entry names, plus Nuxt `pages/` file-based routes, `server/api/` endpoints and route middleware | `router.push` / `replace`, `$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
+| **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` with the view each entry names, plus Nuxt `pages/` file-based routes (root index pages, Nuxt 4 route groups), `server/api/` and `server/routes/` endpoints (method suffixes such as `.get.ts`, catch-alls) and route middleware | `router.push` / `replace`, `$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
 | **SvelteKit** | `src/routes/**/+page.svelte` (`[slug]` → `:slug`, `[[opt]]` → `:opt?`), joined to the `+page.server.js` beside it so a loader's guard belongs to its page | `goto('/x')`, `redirect(status, '/x')` from a load or form action, and the plain `<a href>` that is a link in a SvelteKit app |
 
 In a repository holding several apps, each app's routes are matched only against navigation written inside that app.
