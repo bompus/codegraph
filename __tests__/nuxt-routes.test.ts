@@ -23,6 +23,10 @@ describe('Nuxt default file routes', () => {
     ['app/pages/[...slug].vue', '/*slug'],
     ['apps/site/app/pages/users-[group]/[id].vue', '/users-:group/:id'],
     ['app\\pages\\index.vue', '/'],
+    // Nuxt reads `index` as an empty segment anywhere, not only a trailing index.vue.
+    ['pages/account/index/[page].vue', '/account/:page'],
+    ['pages/index/[typeOrId]/view.vue', '/:typeOrId/view'],
+    ['pages/reindex.vue', '/reindex'],
     ['server/api/index.get.ts', 'GET /api'],
     ['server/api/users/[id].post.ts', 'POST /api/users/:id'],
     ['server/api/users/index.ts', 'ANY /api/users'],
@@ -88,6 +92,29 @@ describe('Nuxt server routes through indexing', () => {
     graph = undefined;
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
     dir = undefined;
+  });
+
+  it('links each page route to its own file\'s component, even when names repeat', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-nuxt-pages-'));
+    fs.mkdirSync(path.join(dir, 'pages/account'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ dependencies: { nuxt: '^4.0.0' } }),
+    );
+    fs.writeFileSync(path.join(dir, 'pages/index.vue'), '<template><p>Home</p></template>');
+    fs.writeFileSync(path.join(dir, 'pages/account/index.vue'), '<template><p>Account</p></template>');
+    graph = await CodeGraph.init(dir, { index: true });
+    const routes = graph.getNodesByKind('route').sort((a, b) => a.name.localeCompare(b.name));
+    expect(routes.map((n) => n.name)).toEqual(['/', '/account']);
+    for (const route of routes) {
+      const component = graph
+        .getNodesByKind('component')
+        .find((n) => n.filePath === route.filePath);
+      expect(component).toBeDefined();
+      expect(graph.getOutgoingEdges(route.id)).toContainEqual(
+        expect.objectContaining({ target: component!.id, kind: 'calls' }),
+      );
+    }
   });
 
   it('resolves a method-qualified endpoint to its imported handler', async () => {

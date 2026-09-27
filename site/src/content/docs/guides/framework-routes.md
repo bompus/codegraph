@@ -34,7 +34,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **SvelteKit** | Route component nodes |
 | **TanStack Router / Start** | Page routes plus literal `server.handlers` method tables and `createHandlers` callbacks on exported file routes; middleware is excluded from handler links |
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |
-| **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
+| **Vue Router** / **Nuxt** | Vue route tables; `.vue` pages in `pages/` or Nuxt 4 `app/pages/`, each linked to its page component, with `index` folders, dynamic/optional/catch-all segments and route groups; `server/api/` and `server/routes/` with method suffixes; route middleware |
 | **Astro** | `src/pages/` `.astro` pages linked to components; `.ts`/`.js` HTTP-method exports linked to handlers; anchors and `Astro.redirect` link to local pages |
 | **RedwoodSDK** | Registered `defineApp` trees with `route`, `index`, `render`, `layout`, `prefix` and standard method tables; exact handlers and JSX page classification |
 | **Angular Router** | `provideRouter` / `RouterModule.forRoot` arrays, nested children, relative component imports and static lazy components/route arrays/NgModules |

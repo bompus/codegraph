@@ -94,8 +94,10 @@ direct calls from inline handlers. They do not add Screens navigation.
 `http-routing.test.ts` covers all nine through full indexing and imported-handler
 resolution, as well as false-positive controls, prefixes and same-file mounts.
 
-Nuxt file routing in `frameworks/vue.ts` now includes root index pages, Nuxt 4
-route groups, server method suffixes, `server/routes/` and server catch-all
+Nuxt file routing in `frameworks/vue.ts` now includes root index pages, `index`
+folders anywhere in the path, a `calls` link from each page route to its own
+file's component (a `nuxt-page:` reference, since every `index.vue` shares a
+name), Nuxt 4 route groups, server method suffixes, `server/routes/` and server catch-all
 segments. `nuxt-routes.test.ts` checks extraction and imported-handler resolution;
 the existing Next Pages/App Router and Vue navigation tests remain controls.
 This update does not re-verify the older coverage rows above.

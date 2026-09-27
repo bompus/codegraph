@@ -342,10 +342,11 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "qwik-city" => name.starts_with("qwik-target:") || name.starts_with("qwik-default:"),
         "waku" => name.starts_with("waku-target:") || name.starts_with("waku-component:"),
         "vue-router" => vue_nav_re().is_match(name),
+        "vue" => name.starts_with("nuxt-page:"),
         "aspnet" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "react-router-files" | "redwood"
         | "rust" | "svelte"
-        | "swiftui" | "uikit" | "vapor" | "vue" => false,
+        | "swiftui" | "uikit" | "vapor" => false,
         _ => true,
     }
 }
