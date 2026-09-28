@@ -434,6 +434,9 @@ impl KernelResolver {
                 )? {
                     return Ok(Some(hit));
                 }
+                if let Some(hit) = self.resolve_object_literal_binding(&holder, &method_name, r)? {
+                    return Ok(Some(hit));
+                }
             }
         }
 
@@ -616,6 +619,9 @@ impl KernelResolver {
                     0.85,
                     "instance-method",
                 )? {
+                    return Ok(Some(hit));
+                }
+                if let Some(hit) = self.resolve_object_literal_binding(holder, &method_name, r)? {
                     return Ok(Some(hit));
                 }
             }

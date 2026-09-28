@@ -2835,8 +2835,7 @@ export function remoteUse() { return obj.m(); }
         .sort();
     };
 
-    // Fork: kernel port pending (Scala companions/#1932); see the upstream merge follow-ups.
-    it.skip('resolves same-file and imported calls through shorthand and identifier-valued members', async () => {
+    it('resolves same-file and imported calls through shorthand and identifier-valued members', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-1932-'));
       fs.writeFileSync(
         path.join(tmpDir, 'a.ts'),
@@ -4372,7 +4371,7 @@ object Main {
   describe('Scala companion object vs extends resolution', () => {
     for (const parentKind of ['trait', 'class'] as const) {
       for (const objectFirst of [true, false]) {
-        // Fork: kernel port pending (Scala companions/#1932); see the upstream merge follow-ups.
+        // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
         it.skip.each([false, true])(
           `resolves ${parentKind} companions (objectFirst=${objectFirst}, imported=%s) through every impact depth`,
           async (imported) => {
@@ -4416,7 +4415,7 @@ object Main {
       }
     }
 
-    // Fork: kernel port pending (Scala companions/#1932); see the upstream merge follow-ups.
+    // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
     it.skip.each([false, true])('rejects a sole singleton parent (imported=%s)', async (imported) => {
       fs.writeFileSync(path.join(tempDir, 'OnlyObject.scala'),
         'package contracts\nobject OnlyObject { def value(): Int = 1 }\n');
@@ -4442,7 +4441,7 @@ object Main {
       expect(cg.getIncomingEdges(inherited.id).some((e) => e.kind === 'calls' && e.source === run.id)).toBe(true);
     });
 
-    // Fork: kernel port pending (Scala companions/#1932); see the upstream merge follow-ups.
+    // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
     it.skip('resolves inherited methods through a singleton receiver', async () => {
       fs.writeFileSync(path.join(tempDir, 'Service.scala'),
         'trait Service { def inherited(): Int = 1 }\n' +
@@ -4455,7 +4454,7 @@ object Main {
       expect(cg.getIncomingEdges(inherited.id).some((e) => e.kind === 'calls' && e.source === use.id)).toBe(true);
     });
 
-    // Fork: kernel port pending (Scala companions/#1932); see the upstream merge follow-ups.
+    // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
     it.skip('keeps object method calls anchored to their receiver', async () => {
       fs.writeFileSync(path.join(tempDir, 'Api.scala'),
         'class API { def send(): Int = 2 }\n' +

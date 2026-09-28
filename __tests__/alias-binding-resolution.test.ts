@@ -68,8 +68,7 @@ describe('calls through an alias binding reach the aliased symbol', () => {
   });
 
   describe.each(['ts', 'js'])('object member boundaries (%s)', (ext) => {
-    // Fork: kernel port pending (#1932/#2034); see the upstream merge follow-ups.
-    it.skip.each([
+    it.each([
       ['sibling literals', 'const first = { wrong }; export const api = { run: right };', 'run', true],
       ['unicode before literal', "const label = 'é🙂'; export const api = { run: right };", 'run', true],
       ['absent sibling member', 'const first = { wrong }; export const api = { right };', 'wrong', false],
@@ -133,8 +132,7 @@ export function later() {
     for (const name of ['parameter', 'value', 'later']) expect(outer).not.toContain(name);
   });
 
-  // Fork: kernel port pending (#1932/#2034); see the upstream merge follow-ups.
-  it.skip('resolves renamed imports at the literal and ignores unrelated nested bindings', async () => {
+  it('resolves renamed imports at the literal and ignores unrelated nested bindings', async () => {
     await index({
       'target.ts': 'export function actual() { return 1; }',
       'impl.ts': `import { actual as renamed } from './target';

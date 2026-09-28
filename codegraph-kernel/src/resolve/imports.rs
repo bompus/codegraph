@@ -800,9 +800,8 @@ impl KernelResolver {
     }
 
     /// resolveObjectLiteralAlias (import-resolver.ts): `Api.upload()` where
-    /// `Api` is `{ upload, other: impl }` — a shorthand or `key: ident`
-    /// property naming a binding of the object's file. The binding resolves
-    /// to a symbol declared there, else through that file's own imports.
+    /// `Api` is `{ upload, other: impl }` — the binding a shorthand or
+    /// `key: ident` property names in the object's file (#1932).
     fn resolve_object_literal_alias(
         &mut self,
         container: &Arc<KNode>,
@@ -815,81 +814,9 @@ impl KernelResolver {
         if !re!(r"\.(?:[cm]?[jt]sx?)$").is_match(&container.file_path) {
             return Ok(None);
         }
-        if !re!(r"^[A-Za-z_$][A-Za-z0-9_$]*$").is_match(member) {
-            return Ok(None);
-        }
-        let Some(lines) = self.read_file(&container.file_path) else {
-            return Ok(None);
-        };
-        let from = ((container.start_line - 1).max(0) as usize).min(lines.len());
-        let to = (container.end_line.max(0) as usize).clamp(from, lines.len());
-        let extent = lines[from..to].join("\n");
-        let Some(brace) = extent.find('{') else {
-            return Ok(None);
-        };
-        let body = &extent[brace..];
-        // TS splices `member` into its regexes unescaped, where an
-        // identifier's `$` is an end anchor: such a member never matches.
-        if member.contains('$') {
-            return Ok(None);
-        }
-        // `[{,\s]MEMBER\s*:\s*(IDENT)\s*[,}]`, then `[{,\s]MEMBER\s*[,}]`.
-        static KEYED: LazyLock<Affix> = LazyLock::new(|| {
-            Affix::new(r"[{,\s]", r"\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,}]", false, false, false)
-        });
-        static SHORTHAND: LazyLock<Affix> =
-            LazyLock::new(|| Affix::new(r"[{,\s]", r"\s*[,}]", false, false, false));
-        let binding = match KEYED.capture(body, member) {
-            Some(b) => b.to_string(),
-            None if SHORTHAND.is_match(body, member) => member.to_string(),
-            None => return Ok(None),
-        };
-        let calls = r.reference_kind == "calls";
-        let accepts = |n: &KNode| {
-            let callable = matches!(n.kind.as_str(), "function" | "method" | "class");
-            callable || (!calls && matches!(n.kind.as_str(), "constant" | "variable" | "component"))
-        };
-        let cand = |node| KCand { node, confidence: 0.9, resolved_by: "import" };
-
-        // Declared in the object's own file, outside the literal.
-        let mut local: Vec<Arc<KNode>> = self
-            .nodes_in_file(&container.file_path)?
-            .iter()
-            .filter(|n| n.name == binding && n.id != container.id && accepts(n))
-            .cloned()
-            .collect();
-        local.sort_by_key(|n| (n.start_line, n.start_column));
-        if let Some(n) = local.into_iter().next() {
-            return Ok(Some(cand(n)));
-        }
-
-        // Imported into the object's file.
-        let imports = self.import_mappings(&container.file_path)?;
-        for imp in imports.iter() {
-            if imp.local_name != binding || imp.is_namespace {
-                continue;
-            }
-            let Some(path) =
-                self.resolve_import_path(&imp.source, &container.file_path, &container.language)?
-            else {
-                continue;
-            };
-            let want = ExportWant {
-                is_default: imp.is_default,
-                is_namespace: false,
-                exported_name: if imp.is_default { "default".to_string() } else { imp.exported_name.clone() },
-                member_name: None,
-            };
-            let mut visited = HashSet::new();
-            if let Some(target) =
-                self.find_exported_symbol(&path, &want, &container.language, &mut visited, 0)?
-            {
-                if accepts(&target) {
-                    return Ok(Some(cand(target)));
-                }
-            }
-        }
-        Ok(None)
+        Ok(self
+            .resolve_object_literal_binding(container, member, r)?
+            .map(|hit| KCand { confidence: 0.9, resolved_by: "import", ..hit }))
     }
 
     /// resolveImportedInstanceMember (import-resolver.ts): `store.notify()`

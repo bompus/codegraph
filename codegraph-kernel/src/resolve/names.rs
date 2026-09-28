@@ -688,6 +688,18 @@ impl KernelResolver {
         if candidates.is_empty() {
             return Ok(None);
         }
+        // Only the literal's own winning property counts; one that names a
+        // binding resolves through resolve_object_literal_binding (#1932).
+        match self.object_literal_property(container, member) {
+            LiteralProperty::Absent | LiteralProperty::Found { binding: Some(_), .. } => return Ok(None),
+            LiteralProperty::Found { start, end, binding: None } => {
+                candidates.retain(|c| self.literal_property_contains(container, c, start, end));
+                if candidates.is_empty() {
+                    return Ok(None);
+                }
+            }
+            LiteralProperty::Unreadable => {}
+        }
         // Drop members nested inside another callable's body in the literal.
         let bodies: Vec<&Arc<KNode>> = inside.iter().filter(|n| callable(n)).collect();
         candidates.retain(|c| {
