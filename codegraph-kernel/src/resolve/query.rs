@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// src/file-limits.ts MAX_SOURCE_FILE_SIZE_BYTES: extraction skips anything
+/// larger, so resolution does not read it either.
+const MAX_SOURCE_FILE_SIZE_BYTES: u64 = 1024 * 1024;
+
+/// A source file's text, or None for a missing file, a non-file, or one over
+/// the size limit. The size check comes before the read, so a package archive
+/// that import metadata points at (`file:*.har`) is never loaded.
+fn read_source(path: impl AsRef<std::path::Path>) -> Option<String> {
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_SOURCE_FILE_SIZE_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
 impl KernelResolver {
     /// The live connection — errors once close() has run. Statements borrow
     /// it, so the Option indirection stays inside this accessor.
@@ -163,8 +178,7 @@ impl KernelResolver {
         if let Some(v) = self.file_cache.get(rel) {
             return v.clone();
         }
-        let v = std::fs::read_to_string(pos_resolve(&self.root_abs, rel))
-            .ok()
+        let v = read_source(pos_resolve(&self.root_abs, rel))
             .map(|s| {
                 let normalized = s.replace("\r\n", "\n");
                 Rc::new(SourceFile::new(normalized.split('\n').map(str::to_string).collect()))
@@ -495,4 +509,24 @@ pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<String> {
     rows.iter()
         .find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
         .map(|r| r.name.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_source_refuses_directories_and_oversized_files() {
+        let dir = std::env::temp_dir().join(format!("cg-read-source-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let at_limit = dir.join("at-limit.ts");
+        std::fs::write(&at_limit, "a".repeat(MAX_SOURCE_FILE_SIZE_BYTES as usize)).unwrap();
+        let over = dir.join("over.har");
+        std::fs::write(&over, "a".repeat(MAX_SOURCE_FILE_SIZE_BYTES as usize + 1)).unwrap();
+        assert_eq!(read_source(&at_limit).map(|s| s.len()), Some(MAX_SOURCE_FILE_SIZE_BYTES as usize));
+        assert_eq!(read_source(&over), None);
+        assert_eq!(read_source(&dir), None);
+        assert_eq!(read_source(&dir.join("missing.ts")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
