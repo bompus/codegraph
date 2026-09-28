@@ -128,35 +128,35 @@ Dispatch and framework coverage the fork adds:
 
 ### Measured results
 
-Paired runs against upstream `main` at `ba3c21e` (2026-09-16, newer than its 1.6.0 release; upstream changes merged since then have not been re-measured), measured 2026-09-26 on a 16-vCPU WSL2 host with Node 24: seven corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md).
+Paired runs against upstream `main` at `e63fe2e` (2026-09-27, the last merged upstream commit), measured 2026-09-28 on a 16-vCPU WSL2 host with Node 24: seven corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-28.md`](docs/benchmarks/fork-vs-upstream-2026-09-28.md).
 
 **Full index** (`codegraph init`):
 
 | Corpus | Time | Peak memory | Database |
 |---|---|---|---|
-| gin (Go, 119 files) | 0.87 → 0.79 s (−10%) | 492 → 293 MiB (−41%) | 7.8 → 9.5 MiB (+22%) |
-| Alamofire (Swift, 129 files) | 1.41 → 1.31 s (−7%) | 617 → 480 MiB (−22%) | 16.9 → 19.3 MiB (+14%) |
-| pretix (Python + JS, 1,473 files) | 12.3 → 10.4 s (−16%) | 2.65 → 2.26 GiB (−15%) | 117 → 141 MiB (+21%) |
-| CPython (C + Python, 3,710 files) | 33.4 → 28.0 s (−16%) | 4.20 → 3.58 GiB (−15%) | 451 → 542 MiB (+20%) |
-| discourse (Ruby + JS, 20,278 files) | 24.1 → 25.3 s (+5%) | 3.46 → 2.98 GiB (−14%) | 370 → 424 MiB (+15%) |
-| supabase (React + Next.js + TS, 10,718 files) | 80.5 → 24.1 s (−70%) | 5.02 → 4.07 GiB (−19%) | 327 → 459 MiB (+40%) |
-| n8n (Vue + TS, 24,435 files) | 105.7 → 98.3 s (−7%) | 8.17 → 4.92 GiB (−40%) | 1.43 → 1.70 GiB (+19%) |
+| gin (Go, 119 files) | 0.89 → 0.86 s (−3%) | 514 → 308 MiB (−40%) | 8.4 → 10.1 MiB (+20%) |
+| Alamofire (Swift, 129 files) | 1.33 → 1.27 s (−5%) | 639 → 479 MiB (−25%) | 17.3 → 19.5 MiB (+13%) |
+| pretix (Python + JS, 1,473 files) | 9.64 → 8.91 s (−8%) | 2.77 → 1.73 GiB (−37%) | 126 → 148 MiB (+17%) |
+| CPython (C + Python, 3,710 files) | 33.0 → 26.7 s (−19%) | 4.66 → 3.48 GiB (−25%) | 495 → 578 MiB (+17%) |
+| discourse (Ruby + JS, 20,278 files) | 21.8 → 22.9 s (+5%) | 3.49 → 2.53 GiB (−27%) | 386 → 431 MiB (+11%) |
+| supabase (React + Next.js + TS, 10,718 files) | 19.9 → 21.6 s (+8%) | 4.50 → 3.49 GiB (−22%) | 341 → 463 MiB (+36%) |
+| n8n (Vue + TS, 24,435 files) | 104.7 → 71.7 s (−32%) | 8.18 → 5.05 GiB (−38%) | 1.44 → 1.68 GiB (+17%) |
 
-On supabase almost all of upstream's time goes to writing parse results to SQLite (60.7 s against the fork's 3.7 s). The fork's first index skips per-row foreign-key checks and index upkeep.
+Upstream's supabase index dropped from 80.5 s at `ba3c21e` (almost all of it spent writing parse results to SQLite) to 19.9 s here, so the fork's former 70% lead there is gone.
 
-**One-file sync** (edit one file, `codegraph sync`; measured on an idle host, median of four syncs):
+**One-file sync** (edit one file, `codegraph sync`; median of four syncs):
 
 | Corpus | Upstream | Fork |
 |---|---|---|
-| gin | 0.38 s | 0.36 s |
-| Alamofire | 0.51 s | 0.47 s |
-| pretix | 1.11 s | 1.51 s |
-| CPython | 1.44 s | 3.38 s |
-| discourse | 5.57 s | 2.63 s |
-| supabase | 1.56 s | 2.83 s |
-| n8n | 12.1 s | 4.31 s |
+| gin | 0.46 s | 0.38 s |
+| Alamofire | 0.67 s | 0.47 s |
+| pretix | 3.08 s | 1.75 s |
+| CPython | 7.59 s | 3.88 s |
+| discourse | 6.24 s | 2.76 s |
+| supabase | 6.60 s | 3.01 s |
+| n8n | 13.8 s | 4.29 s |
 
-The fork's sync does more than upstream's did at `ba3c21e`: it rebuilds the links inferred from events, callbacks and function pointers, which that upstream left stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream fixed #1988 on 2026-09-27 by rerunning every synthesis pass after a sync, so its sync times above are now low; they will be re-measured. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
+Both builds now rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass; the fork reruns only the passes the changed files can affect, which is why its syncs take about half the time or less on the larger corpora. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
 Measured separately:
 
@@ -169,14 +169,13 @@ The precision gain comes mostly from declining uncertain links rather than resol
 
 ### What it costs
 
-- **Larger database:** 14–22% bigger on six of the seven corpora above, and 40% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower one-file syncs on large projects:** about 1.4× upstream's time on pretix, 1.8× on supabase and 2.3× on CPython (table above), because the fork keeps inferred links correct on every sync. Those upstream times predate upstream's own refresh (#2033), which adds work to its syncs, so the gap is smaller than shown. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
-- **Fewer edges on some projects:** 3–13% fewer on pretix, CPython, discourse and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
-- **Slower full index on discourse:** 5% slower, the one corpus of the seven where the fork is not faster.
+- **Larger database:** 11–20% bigger on six of the seven corpora above, and 36% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
+- **Slower full index on discourse and supabase:** 5% and 8% slower. On the other five corpora the fork is faster.
+- **Fewer edges on some projects:** 5–16% fewer on pretix, CPython and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
 
 ### Runtimes
 
-The fork builds identical graphs on each runtime below. Full index, same method, fork build:
+The fork builds identical graphs on each runtime below. Full index, same method, fork build `76cdf8d4`, measured 2026-09-26 ([`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md)):
 
 | Corpus | Node.js 24.21.0 (the supported line) | Node.js 26.10.0 | Bun 1.4.2 |
 |---|---|---|---|
