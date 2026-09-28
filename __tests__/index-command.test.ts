@@ -13,7 +13,7 @@
  * library) is covered.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -68,6 +68,12 @@ function startDetachedProcess(): number {
   ].join(' ');
   const pid = Number(execFileSync(process.execPath, ['-e', source], { encoding: 'utf8' }).trim());
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('could not start daemon fixture');
+  // Registered at spawn: a setup step that throws before the test's own
+  // try/finally (a socket path too long to listen on) would otherwise leave
+  // this detached process running after the suite exits.
+  onTestFinished(() => {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  });
   return pid;
 }
 
@@ -149,13 +155,9 @@ describe('codegraph index — full re-index keeps the graph populated (#874)', (
       }),
     );
 
-    try {
-      expect(() => runCodegraph(['index', '--quiet'], tempDir)).toThrow(/could not verify.*daemon/i);
-      expect(isAlive(daemonPid)).toBe(true);
-      expect(fs.existsSync(lockPath)).toBe(true);
-    } finally {
-      if (isAlive(daemonPid)) process.kill(daemonPid, 'SIGKILL');
-    }
+    expect(() => runCodegraph(['index', '--quiet'], tempDir)).toThrow(/could not verify.*daemon/i);
+    expect(isAlive(daemonPid)).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(true);
   });
 });
 

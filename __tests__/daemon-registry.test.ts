@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
 import { execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
@@ -46,6 +46,12 @@ function startDetachedProcess(): number {
   ].join(' ');
   const pid = Number(execFileSync(process.execPath, ['-e', source], { encoding: 'utf8' }).trim());
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('could not start daemon fixture');
+  // Registered at spawn: a setup step that throws before the test's own
+  // try/finally (a socket path too long to listen on) would otherwise leave
+  // this detached process running after the suite exits.
+  onTestFinished(() => {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  });
   return pid;
 }
 
@@ -96,7 +102,6 @@ describe('daemon-registry', () => {
       expect(isProcessAlive(pid)).toBe(true);
       expect(fs.existsSync(getDaemonPidPath(root))).toBe(true);
     } finally {
-      if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -137,7 +142,6 @@ describe('daemon-registry', () => {
       expect(isProcessAlive(pid)).toBe(false);
     } finally {
       kill.mockRestore();
-      if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
       await new Promise<void>(resolve => server.close(() => resolve()));
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -165,7 +169,6 @@ describe('daemon-registry', () => {
       expect(isProcessAlive(pid)).toBe(true);
       expect(fs.readFileSync(pidPath, 'utf8')).toBe(replacement);
     } finally {
-      if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
