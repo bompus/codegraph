@@ -1207,6 +1207,45 @@ def plain_import_caller():
       expect(fileImports.map((e) => e.target)).toContain(moduleFile!.id);
     });
 
+    it('never resolves an absolute Python import into a subpackage of another package', async () => {
+      // `import json` is the stdlib module: `src/app/json/` is importable as
+      // `app.json`, never as `json`, because `src/app/` is itself a package.
+      // A top-level package under `src/` still resolves.
+      fs.mkdirSync(path.join(tempDir, 'src', 'app', 'json'), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, 'src', 'app', '__init__.py'), '');
+      fs.writeFileSync(path.join(tempDir, 'src', 'app', 'json', '__init__.py'), 'def load(fp):\n    return 1\n');
+      fs.writeFileSync(path.join(tempDir, 'src', 'app', 'util.py'), 'def helper():\n    return 2\n');
+      fs.mkdirSync(path.join(tempDir, 'tests'));
+      fs.writeFileSync(
+        path.join(tempDir, 'tests', 'test_config.py'),
+        `import json
+import app.util
+
+def test_load():
+    return json.load(None)
+
+def test_helper():
+    return app.util.helper()
+`
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+
+      const testFile = cg.getNodesByKind('file').find((n) => n.filePath.replace(/\\/g, '/') === 'tests/test_config.py');
+      expect(testFile).toBeDefined();
+      const importTargets = cg
+        .getOutgoingEdges(testFile!.id)
+        .filter((e) => e.kind === 'imports')
+        .map((e) => cg.getNode(e.target)?.filePath.replace(/\\/g, '/'));
+      expect(importTargets).not.toContain('src/app/json/__init__.py');
+      expect(importTargets).toContain('src/app/util.py');
+
+      const load = cg.getNodesByKind('function').find((n) => n.name === 'load');
+      expect(cg.getIncomingEdges(load!.id).map((e) => cg.getNode(e.source)?.name)).not.toContain('test_load');
+      const helper = cg.getNodesByKind('function').find((n) => n.name === 'helper');
+      expect(cg.getIncomingEdges(helper!.id).map((e) => cg.getNode(e.source)?.name)).toContain('test_helper');
+    });
+
     it('attaches Go methods to their receiver type across files (#583, cross-file half)', async () => {
       // In Go a type's methods are commonly declared in a different file from the
       // `type` declaration (`type Box` in box.go, `func (b *Box) Get()` in

@@ -201,6 +201,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A Python standard-library import such as `import json` or `import logging` no longer links to a same-named module inside one of the project's packages (`src/flask/json/`, `src/flask/logging.py`). Those modules are only importable as `flask.json` and `flask.logging`; an absolute import now matches only a module whose import root is not itself a package.
+
 - A call through an object-literal member now resolves in its own file too: `api.run()` where `api` is `{ run }` or `{ run: realImpl }` links to the function the member names, declared in that file or imported into it. Only the literal's own properties count. A nested object, a member body, a comment or a string never supplies one, and the last property with that name wins. A spread or computed key after it hides it, and a parameter or nearer declaration that shadows the name blocks the link. (#1932)
 
 - Python and Go method values such as `self.store.fetch` or `h.GetCycle` now resolve in the native engine, through the receiver's type: `self`/`cls`, an annotated or constructed local, or an instance field. A value whose receiver type is unknown stays unresolved in Go; in Python it links only when exactly one project method has that name. A Python instance attribute that shadows a method (`self.load_dotenv = load_dotenv`) no longer links to a same-named function. A member of a Python import that isn't defined (`task.delay()`) no longer resolves to the imported function. `codegraph status` recommends a re-index to pick these up. (#1820, #2040)
