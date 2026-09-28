@@ -59,6 +59,11 @@ class NodeSqliteAdapter implements SqliteDatabase {
     const { DatabaseSync } = require('node:sqlite');
     this._dbPath = dbPath;
     this._db = opts?.readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
+    // The search `path:` / `name:` filters' exact test where SQLite's ASCII-only
+    // `lower()` is not (queries.ts appendHardFilters). The needle comes lowered.
+    this._db.function('cg_folded_contains', { deterministic: true }, (text: unknown, needle: string) =>
+      typeof text === 'string' && text.toLowerCase().includes(needle) ? 1 : 0,
+    );
   }
 
   /**
