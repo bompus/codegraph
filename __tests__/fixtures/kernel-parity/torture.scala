@@ -181,6 +181,8 @@ class InitWalk {
   val initDirect = helperCall()
   lazy val initLazy = process(1)
   val initAnon = new Runnable { def run(): Unit = helperCall() }
+}
+
 // Markdown path references: code -> documentation edges. Every shape the
 // normalizer branches on, so the two arms have to agree about the rejections
 // (URL, escape above the root) as well as the emissions.

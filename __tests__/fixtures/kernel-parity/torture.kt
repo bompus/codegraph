@@ -288,6 +288,8 @@ class SiblingAccessorK {
         val fromInit = compute()
         register(fromInit)
     }
+}
+
 // Markdown path references: code -> documentation edges. Every shape the
 // normalizer branches on, so the two arms have to agree about the rejections
 // (URL, escape above the root) as well as the emissions.
