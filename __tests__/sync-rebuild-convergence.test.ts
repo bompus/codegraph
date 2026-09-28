@@ -43,7 +43,16 @@ import CodeGraph from '../src/index';
 import { createDatabase } from '../src/db/sqlite-adapter';
 import { ToolHandler } from '../src/mcp/tools';
 
-describe('Incremental sync converges to a full rebuild (CG-33)', () => {
+/**
+ * Every case here builds a real index, and most rebuild it from scratch to
+ * compare against, three to nine index passes each. On a Windows VM with
+ * on-access scanning and a busy host even a single index-and-sync case took
+ * over 5s and the heaviest 35s, so the default timeout measured the machine
+ * rather than the tree (#1773). This bound only catches a hang.
+ */
+const INDEXING_TIMEOUT = { timeout: 60_000 };
+
+describe('Incremental sync converges to a full rebuild (CG-33)', INDEXING_TIMEOUT, () => {
   let testDir: string;
   let cg: CodeGraph;
 
@@ -474,7 +483,7 @@ describe('Incremental sync converges to a full rebuild (CG-33)', () => {
  * cannot fix: without it, re-resolving a reference against the very same graph
  * can still pick a different winner than a rebuild does.
  */
-describe('Same-name candidate order is content-derived, not insertion-derived (CG-33)', () => {
+describe('Same-name candidate order is content-derived, not insertion-derived (CG-33)', INDEXING_TIMEOUT, () => {
   let testDir: string;
   let cg: CodeGraph;
 
@@ -505,7 +514,7 @@ describe('Same-name candidate order is content-derived, not insertion-derived (C
 });
 
 /** Synthesis owns a whole-graph result, including registrations in third files. */
-describe('Synthesized edges converge after sync (#1988)', () => {
+describe('Synthesized edges converge after sync (#1988)', INDEXING_TIMEOUT, () => {
   let dir: string;
   let cg: CodeGraph;
   const write = (file: string, content: string) => fs.writeFileSync(path.join(dir, file), content);

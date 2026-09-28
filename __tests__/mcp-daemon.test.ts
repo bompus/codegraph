@@ -43,6 +43,7 @@ import { rmTempDir } from './rm-temp';
 import { getDaemonSocketPath } from '../src/mcp/daemon-paths';
 import { CodeGraphPackageVersion } from '../src/mcp/version';
 import { once } from 'events';
+import { recordSpawns, removeSpawnLog, settleLosingCandidates } from './daemon-candidates';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
@@ -53,13 +54,15 @@ interface SpawnedServer {
 }
 
 function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}, args: string[] = []): SpawnedServer {
-  const child = spawn(process.execPath, [BIN, 'serve', '--mcp', ...args], {
+  // Record the daemon candidates this launcher spawns, for the teardown.
+  const recorder = recordSpawns(cwd);
+  const child = spawn(process.execPath, [...recorder.args, BIN, 'serve', '--mcp', ...args], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // #618: the daemon-attach log line is now off by default; opt the test
     // harness into it (CODEGRAPH_MCP_LOG_ATTACH=1) so the attach assertions
     // below can still observe a successful attach. A per-test env still wins.
-    env: { CODEGRAPH_MCP_LOG_ATTACH: '1', ...process.env, ...env },
+    env: { CODEGRAPH_MCP_LOG_ATTACH: '1', ...process.env, ...recorder.env, ...env },
   }) as ChildProcessWithoutNullStreams;
   // Swallow spawn/EPIPE errors so killing a child mid-write can't surface as an
   // unhandled error that crashes the vitest worker.
@@ -260,22 +263,28 @@ describe('Shared MCP daemon (issue #411)', () => {
     );
     killTree(...servers.map((s) => s.child));
     await Promise.all(exits);
+    // Racing launchers may each have spawned a daemon candidate, and a loser
+    // can still be starting on a loaded machine. Stopping the winner first
+    // would let it take over the fixture being removed (#1773).
+    await settleLosingCandidates(tempDir, () => readLockPid(realRoot));
     const reaped = await reapDaemons(realRoot);
     servers.length = 0;
+    removeSpawnLog(tempDir);
     await rmTempDir(tempDir);
     // Asserted after the removal so a failed reap still cleans up what it can,
     // and surfaces as itself rather than as the EPERM it would cause next.
     if (!reaped) {
       throw new Error(`reapDaemons exhausted its pass budget on ${realRoot} — a daemon is still alive`);
     }
-  });
+  }, 45_000);
 
   it.runIf(process.platform !== 'win32')('stops despite a socket still waiting for its client hello (#1963)', async () => {
     const server = spawnServer(tempDir);
     servers.push(server);
     sendInitialize(server.child, `file://${tempDir}`, 1);
     await waitFor(() => findResponse(server.stdout, 1), 10000);
-    // The lock pid appears before the socket listens; connect once attached.
+    // The lock is written before the socket is bound; an attached proxy proves
+    // the daemon is listening (#1773).
     await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 10000);
     const pid = await waitFor(() => readLockPid(realRoot), 10000);
     const raw = net.connect(getDaemonSocketPath(realRoot));

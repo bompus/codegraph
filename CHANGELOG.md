@@ -367,6 +367,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 #### MCP / indexing
 
 - Full indexes of large projects no longer sometimes run two to three times slower than usual. A timing clash between two background database maintenance steps could switch reference resolution from several threads to one partway through.
+- On Windows, the shared MCP daemon now waits longer for another program — an antivirus scan, an indexer, or another session reading its lock file — to let go of that file, so it starts instead of leaving the session to fall back to a slower in-process server. (#1773)
 - File watching no longer drops the full re-scan a removed directory asks for when that sync fails, so the deleted files leave the index instead of lingering. (#1964)
 - Daemon startup and cleanup now preserve live legacy PID-only locks while still reclaiming dead or identity-disproved records, preventing two writers from serving the same project.
 - Incremental sync now keeps edge rebinding crash-safe: replacing a resolved edge with its recovery reference commits atomically, so an interruption cannot permanently remove the relationship.
@@ -435,6 +436,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The local MCP proxy now arms the same liveness watchdog as the other launch modes, so a wedged proxy exits instead of lingering and piling up across client restarts on Windows. Thanks @Neurotoxin0 for the report and @snvtac. (#943)
 - The Windows bundle now includes an extensionless `codegraph` launcher, so Git Bash — and the Claude Code prompt hook that runs through it — can find `codegraph` instead of failing with exit code 127. Thanks @Dj-Khalle. (#1278)
 - Running `install.sh` from Git Bash, MSYS or Cygwin on Windows now prints the PowerShell install command instead of failing with "unsupported OS". Thanks @Dnllns. (#1294)
+- Indexing no longer hangs at full CPU when a database write fails partway through; it now stops and reports the error. (#1773)
 
 - **`codegraph --version` now tells you which build you're running, not just which release.** Every spelling — `codegraph version`, `-v`, `-version`, `--version`, `-V` — and the `version` field of `codegraph status --json` printed the published package version alone, so two builds of the same release looked identical and there was no way to confirm the binary in front of you matched the source it was built from. They now report the release plus the build's recorded source revision when there is one; a plain install from npm still prints the plain version, and `codegraph upgrade` still compares against published releases exactly as before.
 
