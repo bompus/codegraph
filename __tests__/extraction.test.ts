@@ -3799,6 +3799,35 @@ int outer(int v) {
     });
   });
 
+  describe('C definitions whose signature a macro supplies', () => {
+    it('names the function after the type slot when an attribute macro took it, and T(X) for a name-wrapping macro', () => {
+      const code = `
+static int helper(void) { return 0; }
+void _Py_NO_RETURN
+exit_thread(void)
+{ helper(); }
+Widget mi_decl_noinline preloading(void) { return helper(); }
+ENCODER(hz)
+{ return helper(); }
+SYSCALL_DEFINE0(sync)
+{ return helper(); }
+`;
+      const result = extractFromSource('mod.c', code);
+      const fns = result.nodes.filter((n) => n.kind === 'function');
+      expect(fns.map((n) => n.name).sort()).toEqual(['ENCODER(hz)', 'SYSCALL_DEFINE0(sync)', 'exit_thread', 'helper', 'preloading']);
+      expect(fns.find((n) => n.name === 'preloading')!.returnType).toBe('Widget');
+      expect(fns.find((n) => n.name === 'ENCODER(hz)')!.returnType).toBeUndefined();
+
+      const helperCalls = result.unresolvedReferences.filter(
+        (r) => r.referenceKind === 'calls' && r.referenceName === 'helper'
+      );
+      const byId = new Map(fns.map((n) => [n.id, n.name]));
+      expect(helperCalls.map((r) => byId.get(r.fromNodeId)).sort()).toEqual(
+        ['ENCODER(hz)', 'SYSCALL_DEFINE0(sync)', 'exit_thread', 'preloading']
+      );
+    });
+  });
+
   describe('C/C++ return type capture (#645)', () => {
     it('captures the normalized return type of a C++ method/function', () => {
       const code = `

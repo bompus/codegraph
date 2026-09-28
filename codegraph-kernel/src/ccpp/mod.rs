@@ -907,9 +907,10 @@ fn declares_function(node: Node) -> bool {
     false
 }
 
-/// A statement keyword the parser took for a definition's type.
+/// A statement keyword the parser took for a definition's type (`catch`
+/// from JavaScript in an EM_JS body).
 fn is_statement_keyword(text: &str) -> bool {
-    matches!(text, "if" | "else" | "while" | "for" | "do" | "switch" | "return")
+    matches!(text, "if" | "else" | "while" | "for" | "do" | "switch" | "return" | "catch")
 }
 
 /// findDeclaratorQualifiedId (languages/c-cpp.ts:13): BFS for the declarator's

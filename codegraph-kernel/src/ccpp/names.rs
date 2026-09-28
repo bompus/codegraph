@@ -10,6 +10,13 @@ impl<'t> Walker<'t> {
         if let Some(name) = self.recover_single_arg_macro_defined_name(node) {
             return name;
         }
+        if let Some((type_name, argument)) = self.paren_declarator_shape(node) {
+            return if self.attribute_declaration_before(node).is_some() {
+                type_name.to_string()
+            } else {
+                format!("{type_name}({argument})")
+            };
+        }
         if self.variant == Variant::Cpp {
             if let Some(hook) = self.extract_cpp_qualified_method_name(node) {
                 return hook;
@@ -143,6 +150,53 @@ impl<'t> Walker<'t> {
         None
     }
 
+    /// `T(X) { … }` with no parameter list: a definition whose signature a
+    /// macro supplies, parsed as type `T` and declarator `(X)`. Two sources:
+    /// a macro that wraps the name (`ENCODER(hz)`, `TARGET(BINARY_OP)`,
+    /// `SYSCALL_DEFINE0(sync)`), named `T(X)` like `STRINGLIB(fn)(…)` already
+    /// is; and an attribute macro that took the type's place, see
+    /// attribute_declaration_before.
+    pub(super) fn paren_declarator_shape(&self, node: Node) -> Option<(&'t str, &'t str)> {
+        if node.kind() != "function_definition" {
+            return None;
+        }
+        let type_node = node.child_by_field_name("type")?;
+        let declarator = node.child_by_field_name("declarator")?;
+        if type_node.kind() != "type_identifier"
+            || declarator.kind() != "parenthesized_declarator"
+            || declarator.named_child_count() != 1
+        {
+            return None;
+        }
+        let argument = declarator.named_child(0)?;
+        if argument.kind() != "identifier" {
+            return None;
+        }
+        Some((self.text(type_node), self.text(argument)))
+    }
+
+    /// `bool mi_decl_noinline _mi_preloading(void)`: the attribute macro reads
+    /// as a variable in a declaration with no `;`, which leaves the real name
+    /// in the definition's type slot and its parameters as `(void)`. The
+    /// unterminated declaration ends on the definition's line or the one
+    /// before.
+    pub(super) fn attribute_declaration_before<'n>(&self, node: Node<'n>) -> Option<Node<'n>> {
+        let prev = node.prev_named_sibling()?;
+        let adjacent = node.start_position().row - prev.end_position().row <= 1;
+        (prev.kind() == "declaration" && adjacent && !self.text(prev).trim_end().ends_with(';'))
+            .then_some(prev)
+    }
+
+    /// A condition a macro misparsed at file level: `catch (e) {` in an
+    /// EM_JS body, or `if mi_unlikely(x) {` whose `if` became an ERROR.
+    fn is_macro_condition(&self, node: Node) -> bool {
+        let Some((type_name, _)) = self.paren_declarator_shape(node) else { return false };
+        is_statement_keyword(type_name)
+            || node.prev_sibling().is_some_and(|p| {
+                self.text(p).rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '_').next().is_some_and(is_statement_keyword)
+            })
+    }
+
     /// recoverCppMacroDefinedName (languages/c-cpp.ts:49).
     pub(super) fn recover_cpp_macro_defined_name(&self, node: Node) -> Option<String> {
         if node.kind() != "function_definition" {
@@ -207,6 +261,10 @@ impl<'t> Walker<'t> {
 
     /// extractCppReturnType: the `type` field, normalized.
     pub(super) fn return_type_of(&self, node: Node) -> Option<String> {
+        if self.paren_declarator_shape(node).is_some() {
+            let decl = self.attribute_declaration_before(node)?;
+            return normalize_cpp_return_type(self.text(decl.child_by_field_name("type")?));
+        }
         let type_node = node.child_by_field_name("type")?;
         normalize_cpp_return_type(self.text(type_node))
     }
@@ -247,6 +305,9 @@ impl<'t> Walker<'t> {
 
     /// cppExtractor.isMisparsedFunction (languages/c-cpp.ts:811). cpp only.
     pub(super) fn is_misparsed_function(&self, name: &str, node: Node) -> bool {
+        if self.is_macro_condition(node) {
+            return true;
+        }
         if self.variant != Variant::Cpp {
             return false;
         }
