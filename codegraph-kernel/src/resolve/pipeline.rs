@@ -436,9 +436,15 @@ impl KernelResolver {
         &mut self,
         alias_node: &KNode,
         member_name: Option<&str>,
+        r: &ResolveRefIn,
     ) -> Res<Option<Arc<KNode>>> {
         if !is_alias_binding_kind(&alias_node.kind) {
             return Ok(None);
+        }
+        // A JS object literal's member follows its lexical binding (#1932).
+        if let Some(m) = member_name.filter(|m| !m.is_empty() && is_object_literal_language(&alias_node.language)) {
+            let at = r.clone().naming(m, "calls");
+            return Ok(self.resolve_object_literal_binding(alias_node, m, &at)?.map(|hit| hit.node));
         }
         let sig = alias_node.signature.as_deref().unwrap_or("").trim();
         let target_name = match member_name {
@@ -679,7 +685,7 @@ impl KernelResolver {
                 .reference_name
                 .rfind('.')
                 .map(|i| &r.reference_name[i + 1..]);
-            if let Some(forwarded) = self.resolve_alias_binding(&winner.node, member_name)? {
+            if let Some(forwarded) = self.resolve_alias_binding(&winner.node, member_name, r)? {
                 if forwarded.id != winner.node.id {
                     winner = KCand {
                         node: forwarded,

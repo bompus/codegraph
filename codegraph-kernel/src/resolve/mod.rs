@@ -458,6 +458,7 @@ mod awaited;
 mod iteration;
 mod this_member;
 mod member_fn_ref;
+mod object_literal;
 mod store;
 mod live_conn;
 use self::tables::*;
@@ -465,6 +466,7 @@ use self::affix::*;
 use self::node_table::*;
 use self::paths::*;
 use self::names::*;
+use self::object_literal::LiteralProperty;
 use self::prefilter::*;
 
 #[napi]
