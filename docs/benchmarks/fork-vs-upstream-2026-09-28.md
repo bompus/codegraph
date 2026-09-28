@@ -1,5 +1,10 @@
 # Fork vs upstream (2026-09-28)
 
+> Superseded for the README by
+> [`fork-vs-upstream-node-bun-2026-09-28.md`](fork-vs-upstream-node-bun-2026-09-28.md),
+> which measures upstream `290e03f7` and the fork on both Node and Bun. The
+> index-time profile below still applies.
+
 Paired measurements behind the README's "Measured results" and "What it costs"
 sections. This replaces the fork-vs-upstream tables of
 [`fork-vs-upstream-2026-09-26.md`](fork-vs-upstream-2026-09-26.md), which

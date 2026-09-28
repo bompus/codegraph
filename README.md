@@ -98,65 +98,97 @@ Compared with upstream `main` at `290e03f`. Each item was checked against upstre
 | Files with syntax errors | Handed to the fallback parser | Extracted from the native parser's error recovery |
 | Name resolution | In TypeScript, by import tracing and name matching over the source text | In the native kernel for every language, reading what each file actually binds (declarations, parameters, imports) for TypeScript/JavaScript, ArkTS, Python, Go, Java, Kotlin, PHP, C, C++ and Rust |
 | Markdown (`.md`, `.mdx`) | — | Indexed |
-| Node.js 25 and newer | Refused | Allowed; Node 26.10.0 and Bun 1.4.2 pass the full suite ([Runtimes](#runtimes)) |
+| Node.js 25 and newer, Bun | Refused | Allowed; Node 26.10.0 and Bun 1.4.2 pass the full suite ([Measured results](#measured-results)) |
 
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
-Dispatch and framework coverage the fork adds:
+Dispatch and framework coverage the fork adds, by kind:
+
+**Dispatch links**
 
 | Addition | What it links |
 |---|---|
+| C function pointers | `x->f = fn;` assignments, alongside table initializers |
 | Drupal hooks | `invokeAll()` / `invoke()` / `alter()` call sites to hook implementations, including Drupal 11 `#[Hook]` attributes |
 | NgRx effects | Dispatched actions to the effects that handle them |
-| `window.postMessage` | Posted messages to their listeners |
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
-| Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
-| C function pointers | `x->f = fn;` assignments, alongside table initializers |
+| `window.postMessage` | Posted messages to their listeners |
+
+**Server endpoints**
+
+| Addition | What it links |
+|---|---|
 | HTTP routes | Literal routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny; Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/`, method suffixes and route groups |
-| React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
-| Remix / React Router file routes | The default `app/routes/` file convention (and `flatRoutes()`), linked to each page's default component |
-| Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |
+| Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
+| TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
+
+**Page routers**
+
+| Addition | What it links |
+|---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
-| Solid Router | `<Route>` JSX and route-config arrays, linked to their (possibly lazy) components |
+| Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |
+| Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
+| Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
+| React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
+| RedwoodSDK routes | `defineApp` route trees (`route`, `index`, `render`, `layout`, `prefix`, method tables), linked to their handlers |
+| Remix / React Router file routes | The default `app/routes/` file convention (and `flatRoutes()`), linked to each page's default component |
+| Solid Router | `<Route>` JSX and route-config arrays, including arrays imported from another file, linked to their (possibly lazy) components |
 | SolidStart | `src/routes/` file pages and API endpoints, linked to their components and handlers |
 | Vike | `+Page` filesystem routes and `+route` overrides, linked to their page components |
-| Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | Waku | `src/pages` filesystem pages and `createPage` calls registered through `createPages`, linked to their page components |
-| TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
-| Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
-| RedwoodSDK routes | `defineApp` route trees (`route`, `index`, `render`, `layout`, `prefix`, method tables), linked to their handlers |
 
 ### Measured results
 
-Paired runs against upstream `main` at `e63fe2e` (2026-09-27, the last merged upstream commit), measured 2026-09-28 on a 16-vCPU WSL2 host with Node 24: seven corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-28.md`](docs/benchmarks/fork-vs-upstream-2026-09-28.md).
+Upstream `main` at `290e03f` against the fork at `48903f5`, each run on Node.js 24.21.0 and on Bun 1.4.2. Measured 2026-09-28 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer. With `CODEGRAPH_ALLOW_UNSAFE_NODE=1` it runs; those numbers, the method and the graph sizes are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md).
 
-**Full index** (`codegraph init`):
+**Full index** (`codegraph init`), time and peak memory:
 
-| Corpus | Time | Peak memory | Database |
+| Corpus | Upstream, Node | Fork, Node | Fork, Bun |
 |---|---|---|---|
-| gin (Go, 119 files) | 0.89 → 0.86 s (−3%) | 514 → 308 MiB (−40%) | 8.4 → 10.1 MiB (+20%) |
-| Alamofire (Swift, 129 files) | 1.33 → 1.27 s (−5%) | 639 → 479 MiB (−25%) | 17.3 → 19.5 MiB (+13%) |
-| pretix (Python + JS, 1,473 files) | 9.64 → 8.91 s (−8%) | 2.77 → 1.73 GiB (−37%) | 126 → 148 MiB (+17%) |
-| CPython (C + Python, 3,710 files) | 33.0 → 26.7 s (−19%) | 4.66 → 3.48 GiB (−25%) | 495 → 578 MiB (+17%) |
-| discourse (Ruby + JS, 20,278 files) | 21.8 → 22.9 s (+5%) | 3.49 → 2.53 GiB (−27%) | 386 → 431 MiB (+11%) |
-| supabase (React + Next.js + TS, 10,718 files) | 19.9 → 21.6 s (+8%) | 4.50 → 3.49 GiB (−22%) | 341 → 463 MiB (+36%) |
-| n8n (Vue + TS, 24,435 files) | 104.7 → 71.7 s (−32%) | 8.18 → 5.05 GiB (−38%) | 1.44 → 1.68 GiB (+17%) |
+| gin (Go, 119 files) | 0.89 s, 519 MiB | 0.81 s, 296 MiB | 0.80 s, 199 MiB |
+| Alamofire (Swift, 129 files) | 1.45 s, 647 MiB | 1.34 s, 493 MiB | 1.29 s, 294 MiB |
+| pretix (Python + JS, 1,473 files) | 9.24 s, 2.75 GiB | 9.15 s, 1.71 GiB | 8.92 s, 1.18 GiB |
+| CPython (C + Python, 3,710 files) | 35.6 s, 4.79 GiB | 26.9 s, 3.43 GiB | 29.7 s, 2.62 GiB |
+| discourse (Ruby + JS, 20,278 files) | 23.2 s, 3.47 GiB | 22.9 s, 2.61 GiB | 20.5 s, 2.44 GiB |
+| supabase (React + Next.js + TS, 10,718 files) | 21.5 s, 4.54 GiB | 21.2 s, 3.38 GiB | 20.9 s, 2.83 GiB |
+| n8n (Vue + TS, 24,435 files) | 112.3 s, 8.08 GiB | 67.0 s, 5.04 GiB | 69.6 s, 4.72 GiB |
 
-Upstream's supabase index dropped from 80.5 s at `ba3c21e` (almost all of it spent writing parse results to SQLite) to 19.9 s here, so the fork's former 70% lead there is gone.
+**One-file sync** (edit one file, `codegraph sync`):
 
-**One-file sync** (edit one file, `codegraph sync`; median of four syncs):
+| Corpus | Upstream, Node | Fork, Node | Fork, Bun |
+|---|---|---|---|
+| gin | 0.46 s | 0.38 s | 0.32 s |
+| Alamofire | 0.69 s | 0.46 s | 0.41 s |
+| pretix | 3.08 s | 1.61 s | 1.49 s |
+| CPython | 7.38 s | 3.78 s | 3.99 s |
+| discourse | 6.64 s | 2.88 s | 2.56 s |
+| supabase | 6.50 s | 2.67 s | 2.53 s |
+| n8n | 14.2 s | 4.46 s | 4.92 s |
 
-| Corpus | Upstream | Fork |
-|---|---|---|
-| gin | 0.46 s | 0.38 s |
-| Alamofire | 0.67 s | 0.47 s |
-| pretix | 3.08 s | 1.75 s |
-| CPython | 7.59 s | 3.88 s |
-| discourse | 6.24 s | 2.76 s |
-| supabase | 6.60 s | 3.01 s |
-| n8n | 13.8 s | 4.29 s |
+Both builds rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass; the fork reruns only the passes the changed files can affect. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
-Both builds now rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass; the fork reruns only the passes the changed files can affect, which is why its syncs take about half the time or less on the larger corpora. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
+**MCP server** on n8n (`codegraph serve --mcp`; memory and CPU summed over the server and the daemon it starts):
+
+| | Upstream, Node | Fork, Node | Fork, Bun |
+|---|---|---|---|
+| Start to first explore answer | 4.05 s | 3.27 s | 2.89 s |
+| Explore, warm median | 1.84 s | 1.43 s | 1.48 s |
+| 8 explores at once | 3.78 s | 2.13 s | 2.51 s |
+| Edited file re-indexed by the watcher | 1.47 s | 0.86 s | 0.67 s |
+| Memory while busy | 5.02 GiB | 3.96 GiB | 3.16 GiB |
+| Memory at idle | 5.27 GiB | 2.40 GiB | 1.22 GiB |
+| CPU at idle, share of one core | 0.48% | 0.29% | 0.59% |
+
+**CLI startup** on gin (`hyperfine`, mean of 20 runs):
+
+| Command | Upstream, Node | Fork, Node | Fork, Bun |
+|---|---|---|---|
+| `codegraph --version` | 67 ms | 33 ms | 27 ms |
+| `codegraph status` | 179 ms | 121 ms | 98 ms |
+| `codegraph explore "<query>"` | 226 ms | 131 ms | 109 ms |
+
+**Node or Bun.** The fork builds the same graph on both, and the full test suite passes on Node.js 24.21.0, Node.js 26.10.0 and Bun 1.4.2 (`npm run test:bun`; one test is skipped under Bun for [oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)). On Bun, peak index memory is 6–40% lower than on Node, the idle MCP server holds 37–49% less memory, and commands start faster. Index and sync times are within about 10% of Node's either way. Bun has two costs. Eight concurrent explores take 12–18% longer, because reads from several worker threads contend inside Bun's SQLite ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084), [#44157](https://github.com/oven-sh/bun/issues/44157)). Idle CPU is about twice Node's, though still under 1% of one core.
 
 Measured separately:
 
@@ -165,31 +197,15 @@ Measured separately:
 | New git worktree ready to query | full index: 5.8–6.1 s, 1.6 GB | seeded from a sibling's index: 0.8–0.9 s, 184 MB | svelte, 8,217 files; ledger §5.58 |
 | Retained call links that are correct | 59 of 120 (49%), release 1.5.0 | 46 of 66 (70%) | [precision replay, 2026-09](docs/benchmarks/precision-replay-2026-09.md) |
 
-The precision gain comes mostly from declining uncertain links rather than resolving more. On n8n, most of the call links upstream keeps and the fork drops are test globals and library calls bound to unrelated same-named code (`it` to a TypeORM test helper, `path.join` to a query builder's `join`). The same n8n check showed a cost: member calls on an imported instance, such as `Container.get` (5,276 links), were declined. The import itself didn't resolve, because `@n8n/di` publishes from a `dist/` folder that isn't committed. Workspace packages now map back to their source, and those calls resolve (ledger §5.94). Vue single-file components had a similar gap: their member calls skipped receiver and import checks, so n8n's `i18n.baseText` calls mostly went unresolved while imports from `vue` or `@vueuse/core` were bound to same-named project code. They now go through the same checks as TypeScript (ledger §5.96). The fork's own before/after measurements, which compare revisions of the fork rather than the fork with upstream, are in the measurement ledger, [`docs/design/metrics-ledger.md`](docs/design/metrics-ledger.md).
+The precision gain comes mostly from declining uncertain links rather than resolving more. On n8n, most of the call links upstream keeps and the fork drops are test globals and library calls bound to unrelated same-named code (`it` to a TypeORM test helper, `path.join` to a query builder's `join`). The fork's before-and-after measurements of its own revisions are in the measurement ledger, [`docs/design/metrics-ledger.md`](docs/design/metrics-ledger.md).
+
+The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kernel) sections further down are upstream's own measurements of upstream builds; the fork has not re-run them.
 
 ### What it costs
 
 - **Larger database:** 11–20% bigger on six of the seven corpora above, and 36% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower full index on discourse and supabase:** 5% and 8% slower. On the other five corpora the fork is faster. A phase profile puts the gap on work upstream skips: on supabase, parsing and storing the 1,978 Markdown files (23% more files, 33% more nodes); on discourse, the 1.2 s near-duplicate pass. The fork's closing maintenance step also ran about 1.3 s longer, most likely its final WAL checkpoint writing the larger database (not confirmed). Resolution, which both builds do, is 19–23% faster on the fork ([profile](docs/benchmarks/fork-vs-upstream-2026-09-28.md#where-the-index-time-goes)).
-- **Fewer edges on some projects:** 5–16% fewer on pretix, CPython and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
-
-### Runtimes
-
-The fork builds identical graphs on each runtime below. Full index, same method, fork build `76cdf8d4`, measured 2026-09-26 ([`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md)):
-
-| Corpus | Node.js 24.21.0 (the supported line) | Node.js 26.10.0 | Bun 1.4.2 |
-|---|---|---|---|
-| pretix | 8.63 s, 2.25 GiB | 9.45 s, 1.98 GiB | 7.58 s, 1.33 GiB |
-| CPython | 28.7 s, 3.48 GiB | 28.7 s, 3.08 GiB | 27.9 s, 2.66 GiB |
-| discourse | 24.1 s, 3.05 GiB | 24.6 s, 2.69 GiB | 24.5 s, 2.38 GiB |
-| supabase | 25.5 s, 4.06 GiB | 24.5 s, 3.44 GiB | 24.3 s, 3.31 GiB |
-| n8n | 91.7 s, 4.93 GiB | 92.7 s, 4.34 GiB | 89.6 s, 3.93 GiB |
-
-The full test suite passes on all three (under Bun, `npm run test:bun`). Bun uses the least memory on every corpus and is fastest or level on each. Under Bun one test is skipped for a Bun bug that is filed upstream ([oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)).
-
-As a long-running MCP server on n8n, Bun 1.4.2 used 43% less idle memory than Node.js 24 and synced a changed file 22% faster, but eight concurrent explores took 46% longer (3.87 s vs 2.65 s). Reads from several worker threads contend inside Bun's SQLite ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084), [#44157](https://github.com/oven-sh/bun/issues/44157)). These numbers will be re-measured once a Bun release includes the fixes.
-
-The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kernel) sections further down are upstream's own measurements of upstream builds; the fork has not re-run them. The fork's comparison from 2026-09-06, before the kernel became the only parser, is kept in [`docs/fork/history-2026-09-06.md`](docs/fork/history-2026-09-06.md).
+- **Fewer edges on some projects:** 5–16% fewer on pretix, CPython and n8n, because the fork declines links it cannot confirm. Some of those were correct links.
+- **On Bun:** slower concurrent explores and higher idle CPU, as above.
 
 ---
 
