@@ -585,6 +585,21 @@ export class QueryBuilder {
     return rows.map((r) => r.id);
   }
 
+  /** Route nodes named exactly one of `names`, in file order. */
+  findRouteNodeIdsByName(names: string[], limit = 12): string[] {
+    if (names.length === 0) return [];
+    const placeholders = names.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM nodes
+         WHERE kind = 'route' AND name IN (${placeholders})
+         ORDER BY file_path, start_line
+         LIMIT ?`
+      )
+      .all(...names, limit) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   /** Which node kinds contribute their name to the segment vocabulary — the
    *  single gate shared by insertNode, updateNode, and the rebuild page query
    *  (getDistinctNodeNames), so the write paths can't drift apart. */

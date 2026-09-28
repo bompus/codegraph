@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node } from '../src/types';
-import { captureLiterals, seedLiteralsInQuery } from '../src/extraction/literal-capture';
+import { captureLiterals, seedLiteralsInQuery, seedRouteNamesInQuery } from '../src/extraction/literal-capture';
 
 function node(id: string, kind: Node['kind'], startLine: number, endLine: number): Node {
   return {
@@ -24,6 +24,27 @@ describe('seedLiteralsInQuery', () => {
   });
   it('returns nothing for a symbol-anchored question', () => {
     expect(seedLiteralsInQuery('callers of resolvePlayerKey in shared')).toEqual([]);
+  });
+});
+
+describe('seedRouteNamesInQuery', () => {
+  it('a method before the path names that route only', () => {
+    expect(seedRouteNamesInQuery('What does GET /explorer/questions/:questionId do?'))
+      .toEqual(['GET /explorer/questions/:questionId']);
+  });
+  it('a bare path names the page route and the path under every method', () => {
+    const names = seedRouteNamesInQuery('What renders the /blog/:slug page?');
+    expect(names[0]).toBe('/blog/:slug');
+    expect(names).toContain('POST /blog/:slug');
+  });
+  it('writes bracketed and braced params the way route nodes store them', () => {
+    expect(seedRouteNamesInQuery('post /users/[id]/orders/{orderId}'))
+      .toEqual(['POST /users/:id/orders/:orderId']);
+    expect(seedRouteNamesInQuery('Where is GET /blog/[slug]?')).toEqual(['GET /blog/:slug']);
+    expect(seedRouteNamesInQuery('GET /docs/[...path].')).toEqual(['GET /docs/:path']);
+  });
+  it('a lone slash, a relative path or prose names no route', () => {
+    expect(seedRouteNamesInQuery('GET / and src/routes/a.ts, or a/b')).toEqual([]);
   });
 });
 

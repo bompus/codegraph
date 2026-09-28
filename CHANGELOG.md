@@ -205,6 +205,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph_explore` now puts a route's file first when the question names the route. A method and path (`What does GET /explorer/questions/:questionId do?`) or a bare page path (`/blog/:slug`) seeds the matching `route` node, the way a quoted string literal already did. Before, the path reached explore only through word search, and on a Fastify monorepo the route file was missing from the answer while a Next.js `GET` handler elsewhere came first. `[id]` and `{id}` segments in the question match routes stored as `:id`.
+
 - A Python standard-library import such as `import json` or `import logging` no longer links to a same-named module inside one of the project's packages (`src/flask/json/`, `src/flask/logging.py`). Those modules are only importable as `flask.json` and `flask.logging`; an absolute import now matches only a module whose import root is not itself a package.
 
 - A call through an object-literal member now resolves in its own file too: `api.run()` where `api` is `{ run }` or `{ run: realImpl }` links to the function the member names, declared in that file or imported into it. Only the literal's own properties count. A nested object, a member body, a comment or a string never supplies one, and the last property with that name wins. A spread or computed key after it hides it, and a parameter or nearer declaration that shadows the name blocks the link. (#1932)

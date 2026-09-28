@@ -483,7 +483,7 @@ The handful of cases where manual `codegraph sync` makes sense: the watcher is d
 
 ## Framework-aware Routes
 
-CodeGraph detects web-framework routing files and emits `route` nodes linked by `references` edges to their handler classes or functions. Querying callers of a view/controller now surfaces the URL pattern that binds it.
+CodeGraph detects web-framework routing files and emits `route` nodes linked by `references` edges to their handler classes or functions. Querying callers of a view/controller now surfaces the URL pattern that binds it. A `codegraph_explore` question that spells out a route (`GET /api/tasks/:id`, or a bare `/blog/:slug` for a page) starts from that route node, so the file declaring it comes first.
 
 | Framework | Shapes recognized |
 |---|---|

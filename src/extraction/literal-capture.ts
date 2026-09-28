@@ -44,6 +44,39 @@ export function seedLiteralsInQuery(query: string): string[] {
   return [...out];
 }
 
+const ROUTE_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'ALL'];
+
+/**
+ * Route names a query spells out: `GET /api/tasks/:id` or a bare `/blog/:slug`.
+ * Route nodes are named `METHOD /path` (server routes) or `/path` (page
+ * routes), and a leading `/` fails the literal predicate, so these would
+ * otherwise reach explore only through FTS, where the path's words lose to
+ * every symbol sharing one of them. A method in the query picks that route; a
+ * bare path matches it under any method. `[id]` and `{id}` segments are
+ * written `:id`, as the route extractors store them. A lone `/` names no route.
+ * A trailing `?` reads as the question's own, so an optional last segment
+ * (`/:subref?`) matches only when the query writes something after it.
+ */
+export function seedRouteNamesInQuery(query: string): string[] {
+  const out = new Set<string>();
+  const runs = query.split(/\s+/).map((run) => run.replace(/^[("'`]+|[)"'`,;?!]+$/g, ''));
+  runs.forEach((run, i) => {
+    if (!/^\/[\w\-.~:*?[\]{}\/]+$/.test(run) || !/[\w*]/.test(run)) return;
+    const path = run
+      .replace(/\.$/, '')
+      .replace(/\[\[?\.{0,3}(\w+)\]?\]/g, ':$1')
+      .replace(/\{(\w+)\}/g, ':$1');
+    const method = (runs[i - 1] ?? '').toUpperCase();
+    if (ROUTE_METHODS.includes(method)) {
+      out.add(`${method} ${path}`);
+    } else {
+      out.add(path);
+      for (const m of ROUTE_METHODS) out.add(`${m} ${path}`);
+    }
+  });
+  return [...out];
+}
+
 /** Single-line quoted strings; template literals with `${` interpolation are skipped. */
 const STRING_RE = /(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
 
