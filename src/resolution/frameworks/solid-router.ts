@@ -1,5 +1,6 @@
 import type { TreeNode as SyntaxNode } from '../../extraction/parse-tree';
-import type { FrameworkResolver, FrameworkExtractionResult } from '../types';
+import type { Node } from '../../types';
+import type { FrameworkResolver, FrameworkExtractionResult, ResolutionContext } from '../types';
 import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { resolveImportPath } from '../import-resolver';
@@ -25,6 +26,93 @@ const join = (base: string, path: string): string =>
   ('/' + base.replace(/\*.*$/, '').replace(/^\/+|\/+$/g, '') + '/' + path.replace(/^\/+|\/+$/g, ''))
     .replace(/\/+/g, '/')
     .replace(/\/$/, '') || '/';
+/**
+ * Marks, in `qualifiedName`, a route from an exported `RouteDefinition[]`
+ * table: `solid-table:<export names>:<path in the table>`. Where another file
+ * registers the table decides its prefix, which `postExtract` applies.
+ */
+const TABLE_MARKER = 'solid-table:';
+/** A relative or project-alias module (`./page`, `@/routes/home`, `~/page`), not a package. */
+const LOCAL_MODULE = /^(?:\.|[@~#]\/)/;
+
+/** Whether a parameter or block declaration between `site` and the module rebinds `name`. */
+const shadowed = (name: string, site: SyntaxNode): boolean => {
+  for (let scope = site.parent; scope && scope.type !== 'program'; scope = scope.parent) {
+    const params =
+      scope.childForFieldName('parameters') ?? scope.childForFieldName('parameter');
+    if (
+      params &&
+      [
+        params,
+        ...params.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
+      ].some((n) => n.text === name)
+    )
+      return true;
+    if (scope.type === 'statement_block')
+      for (const child of scope.namedChildren) {
+        if (
+          ['function_declaration', 'class_declaration'].includes(child.type) &&
+          child.childForFieldName('name')?.text === name
+        )
+          return true;
+        if (
+          ['lexical_declaration', 'variable_declaration'].includes(child.type) &&
+          child.descendantsOfType('variable_declarator').some((n) => {
+            const pattern = n.childForFieldName('name');
+            return (
+              pattern &&
+              [
+                pattern,
+                ...pattern.descendantsOfType([
+                  'identifier',
+                  'shorthand_property_identifier_pattern',
+                ]),
+              ].some((binding) => binding.text === name)
+            );
+          })
+        )
+          return true;
+      }
+  }
+  return false;
+};
+/** Local name → the names a module exports it under (`default` included). */
+const exportedBindings = (program: SyntaxNode): Map<string, string[]> => {
+  const exported = new Map<string, string[]>();
+  const exportAs = (local: string, name: string) =>
+    exported.set(local, [...(exported.get(local) ?? []), name]);
+  for (const statement of program.namedChildren) {
+    if (statement.type !== 'export_statement' || statement.childForFieldName('source')) continue;
+    const value = statement.childForFieldName('value');
+    if (statement.children.some((n) => n.type === 'default') && value?.type === 'identifier')
+      exportAs(value.text, 'default');
+    for (const spec of statement.descendantsOfType('export_specifier')) {
+      const name = spec.childForFieldName('name')?.text;
+      if (name) exportAs(name, spec.childForFieldName('alias')?.text ?? name);
+    }
+    for (const d of statement.childForFieldName('declaration')?.namedChildren ?? []) {
+      const name = d.childForFieldName('name');
+      if (d.type === 'variable_declarator' && name?.type === 'identifier') exportAs(name.text, name.text);
+    }
+  }
+  return exported;
+};
+/** Route/Router names this file imports from `@solidjs/router`, keyed by local name. */
+const routerHelpers = (program: SyntaxNode): Map<string, string> => {
+  const helpers = new Map<string, string>();
+  for (const statement of program.namedChildren)
+    if (
+      statement.type === 'import_statement' &&
+      !statement.children.some((n) => n.type === 'type') &&
+      literal(statement.childForFieldName('source')) === '@solidjs/router'
+    )
+      for (const spec of statement.descendantsOfType('import_specifier')) {
+        const name = spec.childForFieldName('name')?.text;
+        if (name && ['Route', 'Router'].includes(name) && !spec.children.some((n) => n.type === 'type'))
+          helpers.set(spec.childForFieldName('alias')?.text ?? name, name);
+      }
+  return helpers;
+};
 
 /** Only children of an imported Router are route declarations. */
 export function extractSolidRoutes(filePath: string, content: string): FrameworkExtractionResult {
@@ -36,7 +124,12 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
   try {
     const helpers = new Map<string, string>();
     const bindings = new Map<string, SyntaxNode>();
+    const routeTypes = new Set<string>();
     for (const statement of tree.rootNode.namedChildren) {
+      if (statement.type === 'import_statement' && literal(statement.childForFieldName('source')) === '@solidjs/router')
+        for (const spec of statement.descendantsOfType('import_specifier'))
+          if (spec.childForFieldName('name')?.text === 'RouteDefinition')
+            routeTypes.add(spec.childForFieldName('alias')?.text ?? 'RouteDefinition');
       if (
         statement.type === 'import_statement' &&
         !statement.children.some((n) => n.type === 'type')
@@ -99,46 +192,6 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
             }
       }
     }
-    const shadowed = (name: string, site: SyntaxNode): boolean => {
-      for (let scope = site.parent; scope && scope.type !== 'program'; scope = scope.parent) {
-        const params =
-          scope.childForFieldName('parameters') ?? scope.childForFieldName('parameter');
-        if (
-          params &&
-          [
-            params,
-            ...params.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
-          ].some((n) => n.text === name)
-        )
-          return true;
-        if (scope.type === 'statement_block')
-          for (const child of scope.namedChildren) {
-            if (
-              ['function_declaration', 'class_declaration'].includes(child.type) &&
-              child.childForFieldName('name')?.text === name
-            )
-              return true;
-            if (
-              ['lexical_declaration', 'variable_declaration'].includes(child.type) &&
-              child.descendantsOfType('variable_declarator').some((n) => {
-                const pattern = n.childForFieldName('name');
-                return (
-                  pattern &&
-                  [
-                    pattern,
-                    ...pattern.descendantsOfType([
-                      'identifier',
-                      'shorthand_property_identifier_pattern',
-                    ]),
-                  ].some((binding) => binding.text === name)
-                );
-              })
-            )
-              return true;
-          }
-      }
-      return false;
-    };
     const resolve = (
       raw: SyntaxNode | null | undefined,
       seen = new Set<string>(),
@@ -187,10 +240,13 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
                 n.type,
               ),
           );
+    const registered = new Set<number>();
+    let table: string | null = null;
     const visit = (raw: SyntaxNode | null | undefined, base: string, depth = 0): void => {
       if (depth > 32) return;
       const node = resolve(raw);
       if (!node) return;
+      if (node.type === 'array') registered.add(node.startIndex);
       if (node.type === 'array' || node.type === 'jsx_fragment') {
         for (const child of node.type === 'array' ? node.namedChildren : children(node))
           visit(child, base, depth + 1);
@@ -237,7 +293,8 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
           const fn = value.childForFieldName('function');
           const args = value.childForFieldName('arguments')?.namedChildren;
           const callback = args?.length === 1 ? args[0] : null;
-          const body = unwrap(callback?.childForFieldName('body'));
+          let body = unwrap(callback?.childForFieldName('body'));
+          if (body?.type === 'await_expression') body = unwrap(body.namedChildren[0]);
           const target =
             body?.type === 'call_expression' &&
             body.childForFieldName('function')?.type === 'import'
@@ -249,7 +306,8 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
             helpers.get(fn.text) === 'lazy' &&
             !shadowed(fn.text, fn) &&
             callback?.type === 'arrow_function' &&
-            source?.startsWith('.')
+            source &&
+            LOCAL_MODULE.test(source)
           )
             referenceName = 'solid-lazy:' + source;
         }
@@ -260,7 +318,7 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
           id,
           kind: 'route',
           name: routePath,
-          qualifiedName: `${filePath}::${routePath}`,
+          qualifiedName: `${filePath}::${table ? `${TABLE_MARKER}${table}:` : ''}${routePath}`,
           filePath,
           language,
           startLine: node.startPosition.row + 1,
@@ -290,9 +348,217 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
       if (base === null) continue;
       for (const child of children(node)) visit(child, base);
     }
+    // An exported table typed as RouteDefinition[] is read here even though
+    // another file registers it; one this file registers was read above.
+    const typed = (type: SyntaxNode | null | undefined): boolean => {
+      const text = type?.text.replace(/^:\s*/, '').replace(/\s+/g, '') ?? '';
+      return [...routeTypes].some((t) => text === `${t}[]` || text === `Array<${t}>`);
+    };
+    const tables: [string, SyntaxNode][] = [];
+    for (const [local, names] of exportedBindings(tree.rootNode)) {
+      const raw = bindings.get(local);
+      if (!raw || mutated.has(local)) continue;
+      const declarator = raw.parent;
+      const value = unwrap(raw);
+      if (
+        value?.type === 'array' &&
+        !registered.has(value.startIndex) &&
+        (typed(declarator?.childForFieldName('type')) ||
+          (['satisfies_expression', 'as_expression'].includes(raw.type) && typed(raw.namedChildren[1])))
+      )
+        tables.push([names.join(','), value]);
+    }
+    for (const [names, value] of tables) {
+      // A table another table in this file nests is read through that one.
+      if (
+        tables.some(
+          ([, other]) =>
+            other !== value &&
+            other.descendantsOfType('identifier').some((n) => resolve(n)?.startIndex === value.startIndex),
+        )
+      )
+        continue;
+      table = names;
+      visit(value, '');
+      table = null;
+    }
     return result;
   } finally {
     tree.delete();
+  }
+}
+
+/**
+ * Prefixes each exported route table's routes by where other files register
+ * it: `<Router base>{routes}</Router>`, a `<Route path>` child, or
+ * `children: table` in a route object, through local const tables and tables
+ * that are themselves registered elsewhere. A table registered under one
+ * prefix takes it; none or several leave the paths as written in the table.
+ */
+function solidTableRoutes(context: ResolutionContext): Node[] {
+  const marker = '::' + TABLE_MARKER;
+  const marked: { node: Node; table: string; path: string }[] = [];
+  for (const node of context.iterateNodesByKind?.('route') ?? context.getNodesByKind('route')) {
+    const at = node.qualifiedName.indexOf(marker);
+    if (at < 0 || !node.id.startsWith('route:solid:')) continue;
+    const rest = node.qualifiedName.slice(at + marker.length);
+    const colon = rest.indexOf(':');
+    marked.push({
+      node,
+      table: `${node.filePath}\0${rest.slice(0, colon)}`,
+      path: rest.slice(colon + 1),
+    });
+  }
+  if (!marked.length) return [];
+  const tables = new Set(marked.map((m) => m.table));
+
+  interface Parsed {
+    program: SyntaxNode;
+    helpers: Map<string, string>;
+    exported: Map<string, string[]>;
+    /** Local binding → the table it imports, as `file\0names`. */
+    imports: Map<string, string>;
+  }
+  const parsed = new Map<string, Parsed | null>();
+  const trees: { delete(): void }[] = [];
+  const tableFor = (file: string, name: string): string | undefined =>
+    [...tables].find((t) => {
+      const [f, names] = t.split('\0');
+      return f === file && names!.split(',').includes(name);
+    });
+  const parse = (file: string): Parsed | null => {
+    if (parsed.has(file)) return parsed.get(file)!;
+    const content = context.readFile(file);
+    const language = detectLanguage(file);
+    const tree = content?.includes('@solidjs/router') ? parseSourceTreeSync(content, language) : null;
+    let entry: Parsed | null = null;
+    if (tree) {
+      trees.push(tree);
+      const program = tree.rootNode;
+      const imports = new Map<string, string>();
+      for (const statement of program.namedChildren) {
+        if (statement.type !== 'import_statement' || statement.children.some((n) => n.type === 'type'))
+          continue;
+        const source = literal(statement.childForFieldName('source'));
+        const target = source && LOCAL_MODULE.test(source)
+          ? resolveImportPath(source, file, language, context)
+          : null;
+        if (!target) continue;
+        const clause = statement.namedChildren.find((n) => n.type === 'import_clause');
+        const bound: [string, string][] = [];
+        for (const child of clause?.namedChildren ?? []) {
+          if (child.type === 'identifier') bound.push([child.text, 'default']);
+          if (child.type === 'named_imports')
+            for (const spec of child.namedChildren) {
+              const name = spec.childForFieldName('name')?.text;
+              if (spec.type === 'import_specifier' && name)
+                bound.push([spec.childForFieldName('alias')?.text ?? name, name]);
+            }
+        }
+        for (const [local, name] of bound) {
+          const table = tableFor(target, name);
+          if (table) imports.set(local, table);
+        }
+      }
+      entry = { program, helpers: routerHelpers(program), exported: exportedBindings(program), imports };
+    }
+    parsed.set(file, entry);
+    return entry;
+  };
+
+  // Every prefix a table is registered under; null when one is not a literal.
+  const memo = new Map<string, Set<string> | null>();
+  const tablePrefixes = (table: string): Set<string> | null => {
+    if (memo.has(table)) return memo.get(table)!;
+    memo.set(table, null); // a registration cycle is ambiguous
+    let found: Set<string> | null = new Set();
+    for (const file of context.getAllFiles()) {
+      const entry = parse(file);
+      if (!entry || ![...entry.imports.values()].includes(table)) continue;
+      for (const [local, imported] of entry.imports)
+        if (imported === table)
+          for (const base of uses(file, entry, local, 0) ?? [null]) {
+            if (base === null) found = null;
+            found?.add(base as string);
+          }
+      if (!found) break;
+    }
+    memo.set(table, found);
+    return found;
+  };
+  const cross = (outer: (string | null)[] | null, paths: (string | null)[]) =>
+    outer?.flatMap((o) => paths.map((p) => (o === null || p === null ? null : join(o, p)))) ?? null;
+  const pathsOf = (value: SyntaxNode | null | undefined): (string | null)[] => {
+    const node = unwrap(value);
+    return !node ? [''] : node.type === 'array' ? node.namedChildren.map(literal) : [literal(node)];
+  };
+  // `moduleLevel`: `local` is an import or top-level const, so an inner
+  // declaration of the same name is a different binding.
+  const uses = (file: string, entry: Parsed, local: string, depth: number, moduleLevel = true): (string | null)[] | null =>
+    entry.program
+      .descendantsOfType('identifier')
+      .filter((n) => n.text === local && n.parent?.type !== 'import_specifier' &&
+        n.parent?.type !== 'import_clause' && n.parent?.childForFieldName('name')?.id !== n.id &&
+        !(moduleLevel && shadowed(local, n)))
+      .flatMap((n) => bases(file, entry, n, depth + 1) ?? [null]);
+  // Where the table expression `node` is registered in this file.
+  const bases = (file: string, entry: Parsed, node: SyntaxNode, depth: number): (string | null)[] | null => {
+    if (depth > 16) return null;
+    let current = node;
+    let parent = current.parent;
+    while (parent && ['parenthesized_expression', 'as_expression', 'satisfies_expression',
+      'spread_element', 'jsx_fragment'].includes(parent.type)) {
+      current = parent;
+      parent = current.parent;
+    }
+    if (!parent) return [];
+    if (parent.type === 'array') return bases(file, entry, parent, depth + 1);
+    if (parent.type === 'pair') {
+      const key = parent.childForFieldName('key');
+      if ((key?.type === 'property_identifier' ? key.text : literal(key)) !== 'children') return [];
+      const route = parent.parent!;
+      const pair = route.namedChildren.find((n) => {
+        const k = n.childForFieldName('key');
+        return n.type === 'pair' && (k?.type === 'property_identifier' ? k.text : literal(k)) === 'path';
+      });
+      return cross(bases(file, entry, route, depth + 1), pathsOf(pair?.childForFieldName('value')));
+    }
+    if (parent.type === 'jsx_expression' || parent.type === 'jsx_element') {
+      const element = parent.type === 'jsx_element' ? parent : parent.parent;
+      const opening = element?.namedChildren.find((n) => n.type === 'jsx_opening_element');
+      const helper = entry.helpers.get(opening?.childForFieldName('name')?.text ?? '');
+      if (!element || !opening || !helper) return [];
+      // Props spread onto the element may set its base or path.
+      if (opening.namedChildren.some((n) => n.type === 'jsx_expression')) return null;
+      const attribute = (name: string) =>
+        opening.namedChildren.find((n) => n.type === 'jsx_attribute' && n.namedChildren[0]?.text === name)
+          ?.namedChildren[1];
+      if (helper === 'Router') return pathsOf(attribute('base')).map((b) => (b === null ? null : join('', b)));
+      return cross(bases(file, entry, element, depth + 1), pathsOf(attribute('path')));
+    }
+    if (parent.type === 'variable_declarator' && parent.childForFieldName('value')?.id === current.id) {
+      const name = parent.childForFieldName('name');
+      if (name?.type !== 'identifier') return [];
+      const topLevel = ['program', 'export_statement'].includes(parent.parent?.parent?.type ?? '');
+      const found = uses(file, entry, name.text, depth, topLevel);
+      const exported = entry.exported.get(name.text);
+      const table = exported && exported.map((e) => tableFor(file, e)).find(Boolean);
+      const outer = table ? tablePrefixes(table) : new Set<string>();
+      return found && outer ? [...found, ...outer] : null;
+    }
+    return [];
+  };
+
+  try {
+    const renamed: Node[] = [];
+    for (const { node, table, path } of marked) {
+      const prefixes = tablePrefixes(table);
+      const name = prefixes?.size === 1 ? join([...prefixes][0]!, path) : path;
+      if (node.name !== name) renamed.push({ ...node, name });
+    }
+    return renamed;
+  } finally {
+    for (const tree of trees) tree.delete();
   }
 }
 
@@ -301,6 +567,7 @@ export const solidRouterResolver: FrameworkResolver = {
   languages: ['typescript', 'javascript', 'tsx', 'jsx'],
   detect: (context) => dependsOn(context, '@solidjs/router'),
   extract: extractSolidRoutes,
+  postExtract: solidTableRoutes,
   claimsReference: (name) => name.startsWith('solid-component:') || name.startsWith('solid-lazy:'),
   resolve(ref, context) {
     if (ref.referenceName.startsWith('solid-lazy:')) {

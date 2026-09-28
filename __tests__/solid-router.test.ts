@@ -207,4 +207,96 @@ render(() => (<Router root={App}><Route path="/users" component={Users} /><Route
     });
     expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual(['/', ['Home']]);
   });
+  it('reads exported RouteDefinition tables and marks them for registration prefixes', () => {
+    const table = (source: string) =>
+      extractSolidRoutes('src/routes.ts', source).nodes.map((n) => [n.name, n.qualifiedName]);
+    const type = `import type { RouteDefinition } from '@solidjs/router';`;
+    expect(
+      table(
+        type +
+          `export const routes: RouteDefinition[] = [{path:'/',component:Home},{path:'/docs',children:[{path:'/:id',component:Doc}]}];`,
+      ),
+    ).toEqual([
+      ['/', 'src/routes.ts::solid-table:routes:/'],
+      ['/docs/:id', 'src/routes.ts::solid-table:routes:/docs/:id'],
+    ]);
+    expect(
+      table(type + `const routes = [{path:'/a',component:A}] satisfies RouteDefinition[]; export default routes;`),
+    ).toEqual([['/a', 'src/routes.ts::solid-table:default:/a']]);
+    // A table nested in another exported table is read through its parent only.
+    expect(
+      table(
+        type +
+          `export const admin: RouteDefinition[] = [{path:'/users',component:Users}]; export const routes: RouteDefinition[] = [{path:'/admin',children:admin}];`,
+      ),
+    ).toEqual([['/admin/users', 'src/routes.ts::solid-table:routes:/admin/users']]);
+    // Untyped, unexported, mutated and foreign-typed arrays are not route tables.
+    expect(table(type + `export const items = [{path:'/a',component:A}];`)).toEqual([]);
+    expect(table(type + `const routes: RouteDefinition[] = [{path:'/a',component:A}];`)).toEqual([]);
+    expect(
+      table(type + `export const routes: RouteDefinition[] = [{path:'/a',component:A}]; routes.push(x);`),
+    ).toEqual([]);
+    expect(
+      table(`import type { RouteDefinition } from './types'; export const routes: RouteDefinition[] = [{path:'/a',component:A}];`),
+    ).toEqual([]);
+  });
+  it('prefixes imported route tables by where they are registered', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-solid-tables-'));
+    const write = (file: string, content: string) => {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), content);
+    };
+    write('package.json', JSON.stringify({ dependencies: { '@solidjs/router': '0.16.3' } }));
+    const type = `import type { RouteDefinition } from '@solidjs/router';`;
+    for (const page of ['Home', 'Help', 'Topic', 'Admin'])
+      write(`src/pages/${page}.tsx`, `export default function ${page}(){return <div/>}`);
+    write(
+      'src/help/routes.ts',
+      type +
+        `import {lazy} from 'solid-js'; export const helpRoutes: RouteDefinition[] = [{path:'/',component:lazy(async()=>await import('../pages/Help'))},{path:'/:topic',component:lazy(()=>import('../pages/Topic'))}];`,
+    );
+    write(
+      'src/admin.ts',
+      type + `import Admin from './pages/Admin'; const admin = [{path:'/',component:Admin}] satisfies RouteDefinition[]; export default admin;`,
+    );
+    write(
+      'src/app.tsx',
+      imports +
+        `import {helpRoutes} from './help/routes'; import admin from './admin'; import Home from './pages/Home';` +
+        `const routes = [{path:'/',component:Home},{path:'/help',children:helpRoutes}];` +
+        `export const App = () => <Router base="/app">{routes}<Route path="/admin">{admin}</Route></Router>;`,
+    );
+    cg = await CodeGraph.init(dir, { index: true });
+    const routes = cg.getNodesByKind('route');
+    const roots = routeRoots(cg, routes);
+    expect(routes.map((n) => [n.name, roots.get(n.id)?.node.name]).sort()).toEqual([
+      ['/app', 'Home'],
+      ['/app/admin', 'Admin'],
+      ['/app/help', 'Help'],
+      ['/app/help/:topic', 'Topic'],
+    ]);
+    // A parameter that shadows the import is not a registration of the table.
+    write(
+      'src/app.tsx',
+      imports +
+        `import {helpRoutes} from './help/routes';` +
+        `export const Shell = (helpRoutes: any) => <Router base="/shell">{helpRoutes}</Router>;` +
+        `export const App = () => <Router base="/docs">{helpRoutes}</Router>;`,
+    );
+    await cg.sync();
+    expect(cg.getNodesByKind('route').map((n) => n.name).sort()).toEqual(['/', '/docs', '/docs/:topic']);
+    // Deleting the registering file restores the declared paths.
+    fs.rmSync(path.join(dir, 'src/app.tsx'));
+    await cg.sync();
+    expect(cg.getNodesByKind('route').map((n) => n.name).sort()).toEqual(['/', '/', '/:topic']);
+    // A table registered under two prefixes keeps the paths it declares.
+    write(
+      'src/app.tsx',
+      imports +
+        `import {helpRoutes} from './help/routes'; import admin from './admin';` +
+        `export const App = () => <Router>{helpRoutes}<Route path="/one">{admin}</Route><Route path="/two">{admin}</Route></Router>;`,
+    );
+    await cg.sync();
+    expect(cg.getNodesByKind('route').map((n) => n.name).sort()).toEqual(['/', '/', '/:topic']);
+  });
 });

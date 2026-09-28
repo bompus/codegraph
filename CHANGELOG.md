@@ -49,6 +49,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - SolidStart 2 default file routes now link to exact page and HTTP handlers, including page/API coexistence, nested layouts, parameters and GET-to-HEAD fallback.
 
 - Solid Router registered JSX and configuration trees now link to exact components, including static lazy imports, nested paths and router bases, without duplicate React routes.
+- Solid Router route tables exported from their own file (`export const routes: RouteDefinition[]`, as in the official template's `routes.ts`) are now read, and each route takes the prefix of the `<Router>`, `<Route>` or `children:` entry that registers the table. Lazy imports through a project alias (`@/pages/home`) and `lazy(async () => await import(...))` now resolve too.
 
 - Angular Router registered route arrays now link to exact component classes, including nested children and static lazy imports; imported route edits refresh their registrations during sync.
 
