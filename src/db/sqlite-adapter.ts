@@ -7,7 +7,7 @@
  *
  * CodeGraph ships with a bundled Node runtime, so `node:sqlite` (real SQLite,
  * with WAL + FTS5) is always available — there is no native build step and no
- * wasm fallback. When run from source instead, it requires Node >= 22.5.
+ * wasm fallback. When run from source instead, it requires Node >= 22.13 or Bun >= 1.4.
  */
 
 import { toWslSharedIndexError } from './wsl-shared-index';
@@ -204,8 +204,9 @@ export function createDatabase(dbPath: string, opts?: { readOnly?: boolean }): {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(
       'Failed to open SQLite via the built-in node:sqlite module.\n' +
-      'CodeGraph requires node:sqlite (Node.js 22.5+). Install the self-contained\n' +
-      'CodeGraph release (it bundles a compatible Node), or run on Node 22.5+.\n' +
+      'CodeGraph requires node:sqlite (Node.js 22.13+ or Bun 1.4+). Install the\n' +
+      'self-contained CodeGraph release (it bundles a compatible Node), or run\n' +
+      'on Node 22.13+ or Bun 1.4+.\n' +
       `Underlying error: ${msg}`
     );
   }

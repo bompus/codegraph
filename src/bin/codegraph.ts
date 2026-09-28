@@ -48,7 +48,7 @@ import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
 import { ansiColorsEnabled } from '../ui/color';
 
-import { buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
+import { unsupportedRuntimeBanner } from './node-version-check';
 import { installFatalHandlers } from './fatal-handler';
 import { requireKernel } from '../extraction/kernel/loader';
 import { installCommandSupervision } from './command-supervision';
@@ -100,13 +100,12 @@ async function loadCodeGraph(): Promise<{ default: typeof import('../codegraph')
 const importESM = new Function('specifier', 'return import(specifier)') as
   (specifier: string) => Promise<typeof import('@clack/prompts')>;
 
-const nodeVersion = process.versions.node;
-const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
-// Enforce the supported Node floor. `engines` in package.json only *warns* on
-// install (unless engine-strict), so hard-block here to actually keep users off
-// unsupported versions. See package.json `engines`.
-if (nodeMajor < MIN_NODE_MAJOR) {
-  process.stderr.write(buildNodeTooOldBanner(nodeVersion) + '\n');
+// Enforce the supported Node and Bun floors. `engines` in package.json only
+// *warns* on install (unless engine-strict), so hard-block here to actually keep
+// users off unsupported versions. See package.json `engines`.
+const runtimeBanner = unsupportedRuntimeBanner(process.versions);
+if (runtimeBanner !== null) {
+  process.stderr.write(runtimeBanner + '\n');
   if (!process.env.CODEGRAPH_ALLOW_UNSAFE_NODE) {
     process.exit(1);
   }
