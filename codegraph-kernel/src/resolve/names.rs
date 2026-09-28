@@ -180,7 +180,26 @@ impl KernelResolver {
 
     /// isBareJsCall (name-matcher.ts): a receiver-less JS/TS `calls` ref.
     pub(super) fn is_bare_js_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
-        if r.reference_kind != "calls" || !is_js_family(&r.language) {
+        if !is_js_family(&r.language) {
+            return Ok(false);
+        }
+        self.is_receiver_less_call(r)
+    }
+
+    /// isBareGoCall (name-matcher.ts): a receiver-less Go `calls` ref. A Go
+    /// method is reachable only through a value or a method expression, so
+    /// a bare call never means one (#1857). Read from the source line
+    /// because `pkg.Factory().Method()` reaches the resolver as a bare
+    /// `Method` ref too.
+    pub(super) fn is_bare_go_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "go" {
+            return Ok(false);
+        }
+        self.is_receiver_less_call(r)
+    }
+
+    fn is_receiver_less_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.reference_kind != "calls" {
             return Ok(false);
         }
         // `!name.includes('.')` — dead on the bare path, live for non-bare
@@ -366,6 +385,7 @@ impl KernelResolver {
             return Ok(None);
         }
         let bare_js = self.is_bare_js_call(r)?;
+        let bare_go = self.is_bare_go_call(r)?;
         if bare_js {
             if let Some(c) = self.match_js_store_binding_call(r)? {
                 return Ok(Some(c));
@@ -409,7 +429,8 @@ impl KernelResolver {
             }
             candidates = kept;
         }
-        candidates.retain(|n| !(bare_js && n.kind == "method"));
+        // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
+        candidates.retain(|n| !((bare_js || bare_go) && n.kind == "method"));
         // A C/C++ `field` is reachable only through a receiver — `s.f`,
         // `p->f`, `T::f` — which the extractor encodes as a dotted or
         // `::`-qualified ref, so a bare name can never mean one. C++ keeps
@@ -540,6 +561,7 @@ impl KernelResolver {
                             &r.file_path,
                             Some(r.line),
                         )?));
+            let bare_decline = bare_decline || (only.kind == "method" && self.is_bare_go_call(r)?);
             let shadowed = only.file_path != r.file_path && self.is_shadowed_import_name(r)?;
             let reachable = reachable && !bare_decline && !shadowed && self.is_lexically_reachable(&only, r)?;
             if reachable {
