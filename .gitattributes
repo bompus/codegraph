@@ -1,0 +1,3 @@
+# Upstream and the fork both append CHANGELOG bullets under the same headings;
+# keep both sides instead of stopping the merge on a conflict nobody disputes.
+CHANGELOG.md merge=union

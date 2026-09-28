@@ -222,6 +222,8 @@ point **locates the hole**. Confirm it's dynamic by reading the break symbol's b
 |---|---|
 | `scripts/agent-eval/probe-node.mjs <repo> <sym> [code]` | symbol + trail (callers/callees); `code` adds the body |
 | `scripts/agent-eval/probe-explore.mjs <repo> "<from> <to>"` | relevant source + flow among named symbols (the hole detector) |
+| `probe-explore.mjs <repo> --tasks <tasks.json> --out <dir> [--mcp]` | one JSON row per task (source offset, rendered files, `mustMatch` offsets) plus memory; `--expect <regex>` on a single query exits 1 when it is missing |
+| `scripts/index-metrics.mjs <a.db> <b.db>` | graph counts and a line-insensitive call-edge diff between two indexes |
 | `scripts/agent-eval/{audit,run-agent,itrun}.sh` | agent A/B (headless + interactive); also the `/agent-eval` skill |
 | `sqlite3 <repo>/.codegraph/codegraph.db` | direct edge/node inspection (provenance, metadata, counts) |
 
