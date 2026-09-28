@@ -3755,6 +3755,50 @@ class WidgetFactory { public static function make(): Widget { return new Widget(
     });
   });
 
+  describe('C `if MACRO(cond) {`, `else if MACRO(cond) {` and `MACRO if (cond) {` are not nested functions', () => {
+    it('keeps the misparsed body in the enclosing function and still extracts a GCC nested function', () => {
+      const code = `
+#define mi_likely(x) (__builtin_expect(!!(x),true))
+#define mi_unlikely(x) (__builtin_expect(!!(x),false))
+static int check(int b) { return b; }
+static void retire(int p) { (void)p; }
+static void free_block(int page, int local, int block)
+{
+  if mi_likely(local) {
+    if mi_unlikely(check(page)) {
+      retire(page);
+    }
+  }
+  else if mi_unlikely(check(block)) {
+    retire(block);
+  }
+}
+#define END_THREADS
+static void unlock(int rc)
+{
+  END_THREADS
+  if (rc) {
+    retire(rc);
+  }
+}
+int outer(int v) {
+  int inner(int x) { return check(x); }
+  return inner(v);
+}
+`;
+      const result = extractFromSource('alloc.c', code);
+      const fns = result.nodes.filter((n) => n.kind === 'function').map((n) => n.name).sort();
+      expect(fns).toEqual(['check', 'free_block', 'inner', 'outer', 'retire', 'unlock']);
+
+      const freeBlock = result.nodes.find((n) => n.name === 'free_block')!;
+      const retires = result.unresolvedReferences.filter(
+        (r) => r.referenceKind === 'calls' && r.referenceName === 'retire'
+      );
+      const unlock = result.nodes.find((n) => n.name === 'unlock')!;
+      expect(retires.map((r) => r.fromNodeId)).toEqual([freeBlock.id, freeBlock.id, unlock.id]);
+    });
+  });
+
   describe('C/C++ return type capture (#645)', () => {
     it('captures the normalized return type of a C++ method/function', () => {
       const code = `
