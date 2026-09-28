@@ -140,7 +140,7 @@ Dispatch and framework coverage the fork adds, by kind:
 
 ### Measured results
 
-Upstream `main` at `290e03f` against the fork at `48903f5`, each run on Node.js 24.21.0 and on Bun 1.4.2. Measured 2026-09-28 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer. With `CODEGRAPH_ALLOW_UNSAFE_NODE=1` it runs; those numbers, the method and the graph sizes are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md).
+Upstream `main` at `290e03f` against the fork at `48903f5`, each run on Node.js 24.21.0 and on Bun 1.4.2. Measured 2026-09-28 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer. With `CODEGRAPH_ALLOW_UNSAFE_NODE=1` it runs; those numbers, the method and the graph sizes are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md). The scripts that produced them are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
 
 **Full index** (`codegraph init`), time and peak memory:
 
