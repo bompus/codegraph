@@ -4,7 +4,7 @@ severity: error
 message: >-
   Source reads must go through read_file()/FileCache — a raw
   std::fs::read_to_string bypasses the per-file line cache every other
-  check shares.
+  check shares. read_source is read_file's size-checked reader.
 files:
   - src/resolve/**/*.rs
 rule:
@@ -17,4 +17,4 @@ rule:
           has:
             field: name
             kind: identifier
-            regex: ^read_file$
+            regex: ^read_(file|source)$
