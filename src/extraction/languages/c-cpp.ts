@@ -579,6 +579,15 @@ export function maskCppRawStrings(source: string): { source: string; restore: (b
 }
 
 /**
+ * A C definition whose return type a column-0 macro supplies: `LOCAL(int)`
+ * then `SRE(at)(SRE_STATE *state)` or `tf_q(long long c)` and its `{`. The
+ * grammar reads the macro as the type (`macro_type_specifier`); blanking it
+ * leaves a definition with no type, which C parses as `(at)` or as no
+ * function at all.
+ */
+const C_MACRO_TYPED_DEFINITION_RE = /^[A-Za-z_]\w*\s*\([^()]*\)(?:\s*\([^()]*\))?\s*\{/;
+
+/**
  * Blank annotation-style macro invocations that decorate a declaration but carry
  * NO terminating semicolon — the pervasive Unreal-Engine reflection markup
  * (`UPROPERTY(...)`, `UFUNCTION(...)`, `UCLASS(...)`, `GENERATED_BODY()`,
@@ -610,12 +619,13 @@ export function maskCppRawStrings(source: string): { source: string; restore: (b
  *    an operator (`MAKE(a) + 1`) — all rejected. String/char literals inside the
  *    args are skipped so an embedded `)` can't mis-close the balance.
  *
- * C++-only (wired into cppExtractor). A blanked macro inside a block comment is
- * harmless (comments don't parse), and the rare line-leading no-semicolon
- * ALL-CAPS call that isn't markup only loses that one annotation, never a whole
- * class.
+ * Shared by C and C++. C passes `keepReturnTypeMacros`, which keeps a column-0
+ * macro that a definition follows (see C_MACRO_TYPED_DEFINITION_RE). A blanked
+ * macro inside a block comment is harmless (comments don't parse), and the rare
+ * line-leading no-semicolon ALL-CAPS call that isn't markup only loses that one
+ * annotation, never a whole class.
  */
-export function blankCppAnnotationMacroCalls(source: string): string {
+export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacros = false): string {
   if (!/^[ \t]*[A-Z][A-Z0-9_]{2,}\s*\(/m.test(source)) return source;
   const rawStrings = maskCppRawStrings(source);
   source = rawStrings.source;
@@ -651,6 +661,7 @@ export function blankCppAnnotationMacroCalls(source: string): string {
     // Only markup is followed by the declaration it decorates; a statement call
     // (`;`), init-list item (`,`/`{`), or expression fragment (operator) is not.
     if (!after || !/[A-Za-z_~#]/.test(after)) continue;
+    if (keepReturnTypeMacros && macroStart === m.index && C_MACRO_TYPED_DEFINITION_RE.test(source.slice(j, j + 4096))) continue;
     for (let k = macroStart; k < end; k++) {
       if (chars[k] !== '\n' && chars[k] !== '\r') chars[k] = ' ';
     }
@@ -672,7 +683,8 @@ export function blankCppAnnotationMacroCalls(source: string): string {
  * preserves every byte offset and the surrounding declarations parse clean.
  *
  * Matched tightly so a real identifier can never be touched — ALL of:
- *  - the line consists of ONE ALL-CAPS token (≥4 chars, with `_`), optionally
+ *  - the line consists of ONE ALL-CAPS token (≥4 chars after any leading `_`,
+ *    with `_`; `_TESTFUNC_IMPL` counts), optionally
  *    followed by a same-line comment — a lone lowercase identifier or any
  *    second token disqualifies;
  *  - the PREVIOUS non-blank line does not end in a continuation character
@@ -685,10 +697,10 @@ export function blankCppAnnotationMacroCalls(source: string): string {
  *    string literal, or `;` continuation rejects the match.
  * Shared by C and C++ (the idiom is identical in both).
  */
-const LONE_MACRO_LINE_RE = /^[ \t]*([A-Z][A-Z0-9_]{3,})[ \t]*(?:\/\/[^\n\r]*|\/\*[^\n\r]*\*\/[ \t]*)?\r?$/;
+const LONE_MACRO_LINE_RE = /^[ \t]*(_*[A-Z][A-Z0-9_]{3,})[ \t]*(?:\/\/[^\n\r]*|\/\*[^\n\r]*\*\/[ \t]*)?\r?$/;
 const LONE_MACRO_CONTINUATION_END_RE = /[=+\-*/%&|^<>?:,(\\]$/;
 export function blankLoneMacroLines(source: string): string {
-  if (!/^[ \t]*[A-Z][A-Z0-9_]{3,}[ \t]*\r?$/m.test(source)) return source;
+  if (!/^[ \t]*_*[A-Z][A-Z0-9_]{3,}[ \t]*\r?$/m.test(source)) return source;
   const lines = source.split('\n');
   const content = (l: string): string => l.replace(/\r$/, '').trim();
   let changed = false;
@@ -1751,7 +1763,8 @@ function preParseCSource(source: string): string {
                   )
                 )
               )
-            )
+            ),
+            true
           )
         )
       )
