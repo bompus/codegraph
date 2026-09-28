@@ -579,6 +579,11 @@ pub(super) fn is_supertype_bearing_kind(kind: &str) -> bool {
     matches!(kind, "class" | "struct" | "interface" | "trait" | "protocol" | "enum")
 }
 
+/// A type whose methods have bodies that subclasses inherit.
+pub(super) fn is_class_like(kind: &str) -> bool {
+    matches!(kind, "class" | "struct")
+}
+
 /// isSupertypeTarget (resolution/types.ts): Scala singleton objects are
 /// values, unlike inheritable Ruby modules, so they are never parents.
 pub(super) fn is_supertype_target(node: &KNode) -> bool {
