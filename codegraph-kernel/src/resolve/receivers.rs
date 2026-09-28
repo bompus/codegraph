@@ -180,6 +180,7 @@ impl KernelResolver {
             )?);
             call_idx.min((scope - 1).max(0) as usize)
         };
+        let shadow_scan = is_js_family(&site.language) || site.language == "vue";
         // Every pattern needs the receiver literal in the line, so only the
         // lines containing it are scanned (highest first, as before).
         let scanned = probe!(site, "il:scan", {
@@ -190,9 +191,19 @@ impl KernelResolver {
                 if (i as usize) < start_idx {
                     break;
                 }
-                if let Some(t) = self.infer_match_line(&lines[i as usize], &scan_receiver, pats, preserve)? {
+                let line = &lines[i as usize];
+                if let Some(t) = self.infer_match_line(line, &scan_receiver, pats, preserve)? {
                     hit = Some(t);
                     break;
+                }
+                // `const x = f(…)` shadows every declaration above it while its
+                // block is open; when the callee's return annotation is known,
+                // it types `x` instead of an outer same-named declaration.
+                if shadow_scan && block_reaches(&lines, i as usize, call_idx) {
+                    if let Some(t) = self.untyped_local_call_type(&lines, i as usize, &scan_receiver, site, preserve)? {
+                        hit = Some(t);
+                        break;
+                    }
                 }
             }
             hit
@@ -211,6 +222,122 @@ impl KernelResolver {
             return self.infer_php_assigned_property_type(&scan_receiver, &lines, call_idx);
         }
         Ok(None)
+    }
+
+    /// `const|let|var NAME = f(…)` or `A.f(…)` with no annotation, the call
+    /// ending the initializer: the return annotation every `f` (same-file ones
+    /// first) or `A::f` agrees on, unwrapping `T | undefined` and `Pick<T, …>`
+    /// wrappers. The type must be declared, or imported under its own name,
+    /// in the factory's module, and not collide with a different same-named
+    /// type in the caller. `await` forms belong to infer_esm_awaited_call_type.
+    fn untyped_local_call_type(
+        &mut self,
+        lines: &[String],
+        at: usize,
+        name: &str,
+        site: &ResolveRefIn,
+        preserve: bool,
+    ) -> Res<Option<String>> {
+        let decl = re!(r"(?-u:\b)(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*))?\s*(?:<[^>]*>)?\(");
+        let Some(m) = decl.captures_iter(&lines[at]).find(|m| &m[1] == name && &m[2] != "await") else {
+            return Ok(None);
+        };
+        if !call_ends_initializer(&lines[at..lines.len().min(at + 80)], m.get(0).unwrap().end()) {
+            return Ok(None);
+        }
+        let candidates: Vec<Arc<KNode>> = match m.get(3) {
+            Some(method) => {
+                let want = format!("{}::{}", &m[2], method.as_str());
+                self.nodes_by_name(method.as_str())?
+                    .iter()
+                    .filter(|n| {
+                        n.kind == "method"
+                            && is_esm_family(&n.language)
+                            && (n.qualified_name == want || n.qualified_name.ends_with(&format!("::{want}")))
+                    })
+                    .cloned()
+                    .collect()
+            }
+            None => {
+                let fns: Vec<Arc<KNode>> = self
+                    .nodes_by_name(&m[2])?
+                    .iter()
+                    .filter(|n| n.kind == "function" && is_esm_family(&n.language))
+                    .cloned()
+                    .collect();
+                let local: Vec<Arc<KNode>> = fns.iter().filter(|n| n.file_path == site.file_path).cloned().collect();
+                if local.is_empty() { fns } else { local }
+            }
+        };
+        // Copies of one declaration (vendored trees) count as one when they
+        // agree on the annotation.
+        let mut anns = candidates
+            .iter()
+            .map(|n| n.signature.as_deref().and_then(signature_return_annotation));
+        let Some(Some(ret)) = anns.next() else {
+            return Ok(None);
+        };
+        if !anns.all(|a| a == Some(ret)) {
+            return Ok(None);
+        }
+        let mut parts = ret.split('|').map(str::trim);
+        let head = parts.next().unwrap_or("");
+        if parts.any(|p| p != "undefined" && p != "null") {
+            return Ok(None);
+        }
+        if !re!(r"^[A-Z][\w$]*(?:<.*>)?$").is_match(head) {
+            return Ok(None);
+        }
+        // `Pick<T, …>`-style wrappers keep T's members; pattern captures never
+        // include type arguments, so neither does the result.
+        let mut bare = head.split('<').next().unwrap_or(head).trim_end();
+        if matches!(bare, "Pick" | "Omit" | "Partial" | "Required" | "Readonly" | "NonNullable") {
+            let args = &head[bare.len()..];
+            bare = args.trim_start_matches('<').split([',', '<', '>']).next().unwrap_or("").trim();
+            if !re!(r"^[A-Z][\w$]*$").is_match(bare) {
+                return Ok(None);
+            }
+        }
+        if bare == "Promise" {
+            return Ok(None);
+        }
+        let mut factory_files: Vec<&str> = candidates.iter().map(|n| n.file_path.as_str()).collect();
+        factory_files.sort_unstable();
+        factory_files.dedup();
+        for file in &factory_files {
+            if !self.names_type_as_itself(file, bare)? {
+                return Ok(None);
+            }
+        }
+        if !factory_files.contains(&site.file_path.as_str()) && self.declares_type(&site.file_path, bare)? {
+            let own = self.import_mappings(&site.file_path)?.iter().any(|m| m.local_name == bare);
+            if !own {
+                return Ok(None);
+            }
+        }
+        Ok(self
+            .normalize_inferred_type_name(bare)?
+            .map(|t| if preserve { bare.to_string() } else { t }))
+    }
+
+    /// `file` declares a class/interface/type alias named `name`.
+    fn declares_type(&mut self, file: &str, name: &str) -> Res<bool> {
+        Ok(self
+            .nodes_in_file(file)?
+            .iter()
+            .any(|n| n.name == name && matches!(n.kind.as_str(), "class" | "interface" | "type_alias")))
+    }
+
+    /// `name` in `file` means the type of that name: declared there, or
+    /// imported without a rename.
+    fn names_type_as_itself(&mut self, file: &str, name: &str) -> Res<bool> {
+        if self.declares_type(file, name)? {
+            return Ok(true);
+        }
+        Ok(self
+            .import_mappings(file)?
+            .iter()
+            .any(|m| m.local_name == name && m.exported_name == name && !m.is_namespace))
     }
 
     /// inferLocalReceiverType for CFML. A `variables.`/`this.` receiver is
@@ -742,6 +869,50 @@ impl KernelResolver {
         }))
     }
 
+}
+
+/// No non-blank line between `decl` and `call` is indented less than `decl`,
+/// so the block holding the declaration is still open at the call.
+fn block_reaches(lines: &[String], decl: usize, call: usize) -> bool {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let base = indent(&lines[decl]);
+    lines[decl + 1..=call].iter().all(|l| l.trim().is_empty() || indent(l) >= base)
+}
+
+/// The call whose `(` ends at byte `open_end` of `lines[0]` closes and is
+/// followed by `;`, the end of the text, or a line break that does not
+/// continue the expression (`.x`, `(…)`, `[…]`, `?.`).
+fn call_ends_initializer(lines: &[String], open_end: usize) -> bool {
+    let text = lines.join("\n");
+    let bytes = text.as_bytes();
+    let mut depth = 1;
+    let mut i = open_end;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    if depth > 0 {
+        return false;
+    }
+    let after = text[i..].trim_start_matches([' ', '\t']);
+    if after.is_empty() || after.starts_with(';') {
+        return true;
+    }
+    after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix('\n'))
+        .is_some_and(|next| !next.trim_start().starts_with(['.', '(', '[', '?']))
+}
+
+/// The `: T` after a signature's parameter list, trimmed.
+fn signature_return_annotation(signature: &str) -> Option<&str> {
+    let after = &signature[signature.rfind(')')? + 1..];
+    let ret = after.trim_start().strip_prefix(':')?.trim();
+    (!ret.is_empty()).then_some(ret)
 }
 
 pub(super) fn cpp_last_segment(name: &str) -> String {
