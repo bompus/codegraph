@@ -201,6 +201,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- When live file watching has stopped or is still catching up, an answer that draws on files changed since their last sync is no longer withheld. The response names those files and still answers: source is read from disk as before, and the notice says their symbols, callers and callees may be out of date until `codegraph sync` runs. The auto-sync DISABLED and RECOVERING banners now say the same instead of telling the agent to read files itself.
+
 - A sync whose rebuild of dynamic-dispatch edges (callbacks, event handlers, C function-pointer tables) failed no longer leaves the index without them until the next edit. The failure is now logged, recorded in the index, and retried by the next `codegraph sync`, including after a restart. C function-pointer edges also no longer depend on which file was indexed last: when two files define a struct with the same name but different fields, a sync and a full re-index now pick the same layout.
 
 - A `codegraph_sessions` query on a machine with a large OpenCode or Devin history no longer takes seconds. Each query used to load every message of every matching OpenCode and Devin session before checking whether anything had changed; it now lists sessions by their update time and message count and reads messages only for sessions that changed. Codex rollouts are matched by their first line instead of being parsed whole. On one machine with 900 transcripts, a query after no new activity went from 5.8 s to 0.16 s.

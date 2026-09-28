@@ -201,7 +201,7 @@ describe('MCP staleness banner', () => {
 
     expect(text.startsWith('⚠️')).toBe(true);
     expect(text).toMatch(/auto-sync is DISABLED/i);
-    expect(text).toMatch(/Read files directly/i);
+    expect(text).not.toMatch(/Read files directly/i);
     expect(text).toContain('OS watch/file limit exhausted'); // the degrade reason
     expect(text).toMatch(/alphaOnly/); // the real result still follows the banner
   });
