@@ -195,7 +195,7 @@ Measured separately:
 | What | Upstream | Fork | Source |
 |---|---|---|---|
 | New git worktree ready to query | full index: 5.8–6.1 s, 1.6 GB | seeded from a sibling's index: 0.8–0.9 s, 184 MB | svelte, 8,217 files; ledger §5.58 |
-| Retained call links that are correct | 59 of 120 (49%), release 1.5.0 | 46 of 66 (70%) | [precision replay, 2026-09](docs/benchmarks/precision-replay-2026-09.md) |
+| Retained call links that are correct | 48 of 85 (56%) | 52 of 71 (73%) | repowise's 120 graded rows, TypeScript, Python, C# and Kotlin; [precision replay](docs/benchmarks/precision-replay-2026-09.md#re-run-on-upstream-main-and-the-fork-2026-09-28) |
 
 The precision gain comes mostly from declining uncertain links rather than resolving more. On n8n, most of the call links upstream keeps and the fork drops are test globals and library calls bound to unrelated same-named code (`it` to a TypeORM test helper, `path.join` to a query builder's `join`). The fork's before-and-after measurements of its own revisions are in the measurement ledger, [`docs/design/metrics-ledger.md`](docs/design/metrics-ledger.md).
 

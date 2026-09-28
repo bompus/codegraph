@@ -8,7 +8,11 @@ Per row: locate the call site (exact line, else the nearest line within +-40
 holding the source fragment, or the callee name when a row has no source text),
 then report what the fork binds there for the same callee name: `same` target,
 `changed` target (grade by hand), `dropped` (left unresolved) or `absent`.
-Writes replay-<langs>.json beside the counts it prints."""
+Writes replay-<langs>.json beside the counts it prints. CG_DIR names the index
+directory inside each repository (default .codegraph), and OUT_TAG, when set,
+is added to the output file name, so one scratch directory can hold indexes and
+results from two builds. Indexes from builds that do not record failure
+reasons still replay; their dropped rows show no reason."""
 import json,os,re,sqlite3,sys,collections
 base="repowise-bench/graph/experiments/g1-edge-precision/rows"
 def frag_of(src):
@@ -48,6 +52,7 @@ def same_target(target, t):
     g=norm("::".join(parts)); f=norm(t[1])
     k=min(len(g),2)
     return f[-k:]==g[-k:] if g else True
+CG_DIR=os.environ.get("CG_DIR",".codegraph")
 out=collections.Counter(); detail=[]
 langs=sys.argv[1:]
 for lang in langs:
@@ -58,7 +63,7 @@ for lang in langs:
         lines=open(p,encoding="utf-8",errors="replace").read().split("\n")
         L=locate(lines,r["line"],frag_of(r["source_line"]) if r.get("source_line") else tname_of(r["target"]))
         if L is None: out[(lang,r["verdict"],"unlocated")]+=1; detail.append((lang,r["verdict"],"unlocated",r["file"],r["line"],r["target"],"")); continue
-        db=sqlite3.connect(f"repos/{repo}/.codegraph/codegraph.db")
+        db=sqlite3.connect(f"repos/{repo}/{CG_DIR}/codegraph.db")
         tn=tname_of(r["target"]); hp,hl=hint_of(r["target"])
         rows=db.execute("""select t.name,t.qualified_name,t.file_path,t.start_line,t.kind,e.kind,e.metadata from edges e join nodes s on e.source=s.id join nodes t on e.target=t.id
              where s.file_path=? and e.line=? and e.kind in ('calls','instantiates','references') and t.name=?""",(r["file"],L,tn)).fetchall()
@@ -69,9 +74,12 @@ for lang in langs:
             out[(lang,r["verdict"],status)]+=1
             detail.append((lang,r["verdict"],status,r["file"],L,r["target"],f"{t[1]} ({t[2]}:{t[3]}, {t[4]}) via {json.loads(t[6] or '{}').get('resolvedBy')}"))
         else:
-            u=db.execute("select reference_name,status,failure_reason from unresolved_refs where file_path=? and line=? and (reference_name=? or reference_name like ?)",(r["file"],L,tn,'%.'+tn)).fetchall()
+            cols={c[1] for c in db.execute("pragma table_info(unresolved_refs)")}
+            pick=",".join(c for c in ("reference_name","status","failure_reason") if c in cols)
+            u=db.execute(f"select {pick} from unresolved_refs where file_path=? and line=? and (reference_name=? or reference_name like ?)",(r["file"],L,tn,'%.'+tn)).fetchall()
             status="dropped" if u else "absent"
             out[(lang,r["verdict"],status)]+=1
             detail.append((lang,r["verdict"],status,r["file"],L,r["target"],str(u[:1])))
 for k in sorted(out): print(k,out[k])
-json.dump(detail,open(f"replay-{'-'.join(langs)}.json","w"),indent=1)
+tag=os.environ.get("OUT_TAG")
+json.dump(detail,open(f"replay-{'-'.join(langs)}{'-'+tag if tag else ''}.json","w"),indent=1)
