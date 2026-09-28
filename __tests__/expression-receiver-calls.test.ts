@@ -42,6 +42,38 @@ const files: Record<string, string> = {
     '  greet() { return this.hello() + super.hello(); }\n' +
     '}\n',
   'src/helper.js': 'export function helper() { return 2; }\n',
+  // The factory's `Bark` is a renamed import; the caller's own `Bark` class
+  // is a different type.
+  'src/grow.ts': "import { Leaf as Bark } from './shadow';\nexport function grow(): Bark { return new Bark(); }\n",
+  'src/grow-use.ts':
+    "import { grow } from './grow';\n" +
+    'class Bark { label() { return 1; } }\n' +
+    'export function useGrow() {\n' +
+    '  const b = grow();\n' +
+    '  return b.label();\n' +
+    '}\n',
+  // `w` is typed `Tree | undefined` in one function and re-declared from a
+  // call inside a callback further down; the callback's `w` is a `Leaf`.
+  // The `t` inside `each` is a `Tree`, not the closed `make` block's `Leaf`.
+  'src/shadow.ts':
+    'export interface Tree { label(): string }\n' +
+    'export function keep(w: Tree | undefined) { return w?.label(); }\n' +
+    'declare function suite(fn: () => void): void;\n' +
+    'export class Leaf<T> { label() { return \'leaf\'; } }\n' +
+    'function load(): Readonly<Leaf<string>> { return new Leaf<string>(); }\n' +
+    'suite(() => {\n' +
+    '  const w = load();\n' +
+    '  w.label();\n' +
+    '});\n' +
+    // A `const t` whose block has closed does not type a later `t`.
+    'declare function each(fn: (t: Tree) => void): void;\n' +
+    'export function make() {\n' +
+    '  const t = load();\n' +
+    '  return t;\n' +
+    '}\n' +
+    'each((t) => {\n' +
+    '  t.label();\n' +
+    '});\n',
   'k/src/lib.rs':
     'pub fn lens(v: Vec<String>) -> Vec<usize> { v.iter().map(|s| s.len()).collect() }\n' +
     'pub fn opt(o: Option<u8>) -> Option<u16> { o.map(|x| x as u16) }\n',
@@ -94,6 +126,18 @@ describe('expression receivers', () => {
     expect(calleesOf('typed', 'use.ts')).toEqual(['GraphAdapter::map']);
     expect(calleesOf('fresh', 'use.ts')).toEqual(['Runner::run', 'helper']);
     expect(calleesOf('greet', 'use.ts')).toEqual(['Base::hello']);
+  });
+
+  it('`const x = f()` takes f\'s return type over an outer same-named declaration', () => {
+    expect(calleesOf('keep', 'src/shadow.ts')).toEqual(['Tree::label']);
+    const callersOf = (qn: string) => {
+      const target = cg.getNodesByName('label').find((n) => n.qualifiedName === qn)!;
+      return cg.getCallers(target.id).map(({ node: n }) => n.name).sort();
+    };
+    expect(callersOf('Tree::label')).toEqual(['keep', 'shadow.ts']);
+    // `grow(): Bark` is the renamed `Leaf`, never the caller's own `Bark`.
+    expect(callersOf('Leaf::label')).toEqual(['shadow.ts', 'useGrow']);
+    expect(calleesOf('useGrow', 'src/grow-use.ts')).not.toContain('Bark::label');
   });
 
   it('Kotlin: a bare-named call does not bind to a JavaScript function', () => {

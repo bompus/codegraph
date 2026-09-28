@@ -1033,11 +1033,13 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(svcRun.targetNodeId).toBe(
       byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
     );
-    // br:factory — `made = Service.create()` ends in a factory call, but the
-    // TS extractor leaves `return_type` NULL (the `: Service` lives only in
-    // `signature`), so the tail bails exactly like TS and the ref stays
-    // unresolved.
-    expect(at('made.run', 'src/main.ts', 'calls').status).toBe('unresolved');
+    // `made = Service.create()` takes the `: Service` annotation from the
+    // factory's signature, so `made.run` binds to the class method.
+    const madeRun = at('made.run', 'src/main.ts', 'calls');
+    expect(madeRun.status).toBe('resolved');
+    expect(madeRun.targetNodeId).toBe(
+      byName('run', 'method').find((n) => n.qualifiedName === 'Service::run')!.id,
+    );
     // A chain says nothing about what its inner call returns — no guess.
     expect(at('api.prepare().all', 'src/main.ts', 'calls').status).toBe('unresolved');
     // A store accessor chain resolves inside the identified store; `api`'s
