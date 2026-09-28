@@ -76,9 +76,13 @@ import { isTestPath } from '../search/query-utils';
 const COLORS_ENABLED = ansiColorsEnabled();
 
 // Lazy-load heavy modules (CodeGraph, runInstaller) to keep CLI startup fast.
-async function loadCodeGraph(): Promise<typeof import('../index')> {
+// The class module, not the '../index' barrel: the barrel eagerly imports the
+// parser, resolver and watcher stacks, which read-only commands (explore,
+// node, query...) never use. CodeGraph loads them itself on first index/sync.
+async function loadCodeGraph(): Promise<{ default: typeof import('../codegraph').CodeGraph; getDatabasePath: typeof import('../db').getDatabasePath }> {
   try {
-    return await import('../index');
+    const [{ default: CodeGraph }, { getDatabasePath }] = await Promise.all([import('../codegraph'), import('../db')]);
+    return { default: CodeGraph, getDatabasePath };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const [red, reset] = COLORS_ENABLED ? ['\x1b[31m', '\x1b[0m'] : ['', ''];
@@ -1585,10 +1589,8 @@ program
         `${lead}\n${projects.map((p) => `  - projectPath: "${p}"`).join('\n')}\n`;
 
       if (plan.exploreRoot) {
-        // The class module, not the '../index' barrel: this runs on every
-        // prompt, and the barrel's eager imports cost ~30 MB private memory
-        // and ~60 ms. A load failure falls to the catch below (exit 0),
-        // where loadCodeGraph() would print and exit 1.
+        // Imported directly: a load failure must fall to the catch below
+        // (exit 0), where loadCodeGraph() would print and exit 1.
         const { default: CodeGraph } = await import('../codegraph');
         const cg = await CodeGraph.open(plan.exploreRoot);
         try {
