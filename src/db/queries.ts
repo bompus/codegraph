@@ -1777,11 +1777,17 @@ export class QueryBuilder {
     // nameMatchBonus) can promote results that BM25 alone undervalues.
     const ftsLimit = Math.max(limit * 5, 100);
 
+    // Rank on (rowid, score) alone and read full rows for the page only: sorting
+    // every match with all its columns cost 2-3x as much on a 151k-node index.
+    // Joining by rowid skips the content-table read of `id` and its index lookup.
+    // Ties keep FTS rowid order, as the single-query form gave implicitly.
     let sql = `
-      SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) as score
-      FROM nodes_fts
-      JOIN nodes ON nodes_fts.id = nodes.id
-      WHERE nodes_fts MATCH ?
+      SELECT nodes.*, ranked.score
+      FROM (
+        SELECT nodes_fts.rowid AS rid, bm25(nodes_fts, 0, 20, 5, 1, 2) as score
+        FROM nodes_fts
+        JOIN nodes ON nodes.rowid = nodes_fts.rowid
+        WHERE nodes_fts MATCH ?
     `;
 
     const params: (string | number)[] = [ftsQuery];
@@ -1796,7 +1802,12 @@ export class QueryBuilder {
       params.push(...languages);
     }
 
-    sql += ' ORDER BY score LIMIT ? OFFSET ?';
+    sql += `
+        ORDER BY score, rid LIMIT ? OFFSET ?
+      ) ranked
+      JOIN nodes ON nodes.rowid = ranked.rid
+      ORDER BY ranked.score, ranked.rid
+    `;
     params.push(ftsLimit, offset);
 
     try {

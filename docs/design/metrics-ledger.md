@@ -829,6 +829,17 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.100 Explore full-text search: rank first, read rows for the page (2026-09-28)
+
+Follow-up to §5.99. `searchNodesFTS` joined `nodes` on `nodes_fts.id = nodes.id` and sorted every match with all its columns by `bm25`. `id` in an external-content FTS table is read back from `nodes`, and the join then looked it up again through the `id` index. The query now ranks `(rowid, score)` in a subquery, joined by rowid for the kind and language filters, and reads full rows only for the page it returns. Ties order by rowid, which the single-query form also gave.
+
+| trezor-suite (151k nodes) | Before | After |
+|---|---|---|
+| 8 FTS queries, explore's 21-kind filter, limit 100 | 84.3 ms | 36.7 ms |
+| Same, 8 definition kinds | 69.9 ms | 24.3 ms |
+| 10-question explore round median, paired runs | 4,776 / 4,797 ms | 4,469 / 4,558 ms (about −6%) |
+| Explore output | | byte-identical on all 10 questions |
+
 ### 5.99 Explore SQL: covering index for name lookups, cheap size counts (2026-09-28)
 
 Follow-up to §5.98's per-statement profile. Two changes:
