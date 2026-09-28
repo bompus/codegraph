@@ -205,6 +205,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A search for a name the whole project imports now finds the definition. On Flask, `codegraph query Flask` listed `flask` imports and missed `class Flask` below `--limit 60`: the exact-name lookup kept the first 20 case-insensitive matches, and every one was an import. It now takes definitions first, then exact case, and the class ranks first at the default limit.
+
 - A search with `path:` or `name:` no longer comes back empty when better-scoring matches sit outside the filter. The filters ran after results were cut to the limit, and the candidate queries were capped before them too, so `codegraph query "search path:ui-server" --limit 3` found nothing on this repository. Every candidate query now applies both filters in SQL, folding case the same way for non-ASCII filters such as `path:Pâtisserie`, and the cut to the limit comes last.
 - A C function whose signature a macro supplies now gets a usable name. `bool mi_decl_noinline _mi_preloading(void)` and `void _Py_NO_RETURN\nPyThread_exit_thread(void)`, where an attribute macro takes the type's place, were stored as `(void)`, so no call reached them. They now carry their own names. A name-wrapping macro such as `TARGET(BINARY_OP) {`, `ENCODER(hz)` or `SYSCALL_DEFINE0(sync)` was stored as `(BINARY_OP)` and is now `TARGET(BINARY_OP)`, like `STRINGLIB(utf16_encode)` already was. A file-level `catch (e) {` from an EM_JS body is no longer a function. On CPython 528 functions are renamed, 6 bogus ones are gone, and 14 calls now reach `_mi_preloading`, `PyThread_hang_thread` and others. Re-index to pick this up.
 
