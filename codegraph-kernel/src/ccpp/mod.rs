@@ -593,6 +593,8 @@ impl<'t> Walker<'t> {
             // callable field only if the typedef is known.
             self.register_fn_typedefs(node);
             skip_children = self.extract_type_alias(node);
+        } else if self.is_attribute_prototype_part(node) {
+            skip_children = true;
         } else if kind == "declaration" && !self.inside_class_like() {
             self.extract_variable(node);
             self.scan_fn_ref_subtree(node, 0);

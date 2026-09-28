@@ -3828,6 +3828,22 @@ SYSCALL_DEFINE0(sync)
     });
   });
 
+  describe('C prototypes whose attribute macro ends a declaration early', () => {
+    it('yields neither a variable nor a file-level call, and keeps a real file-level macro call', () => {
+      const code = `
+void _Py_NO_RETURN
+exit_thread(void);
+static PyObject *Py_PRESERVE_NONE_CC tail_error(TAIL_CALL_PARAMS);
+int counter = 0;
+REGISTER(counter);
+`;
+      const result = extractFromSource('proto.h', code);
+      expect(result.nodes.filter((n) => n.kind === 'variable').map((n) => n.name)).toEqual(['counter']);
+      const calls = result.unresolvedReferences.filter((r) => r.referenceKind === 'calls').map((r) => r.referenceName);
+      expect(calls).toEqual(['REGISTER']);
+    });
+  });
+
   describe('C/C++ return type capture (#645)', () => {
     it('captures the normalized return type of a C++ method/function', () => {
       const code = `
