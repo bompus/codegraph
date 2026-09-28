@@ -9,7 +9,9 @@ import { QueryPool } from '../src/mcp/query-pool';
 import { Worker } from 'worker_threads';
 import { __setFsWatchForTests } from '../src/sync/watcher';
 
-describe('a degraded index refuses answers from changed files (#1959)', () => {
+// Fork: a degraded index names the changed files and still answers; rendered
+// source is drift-guarded (#1474), so only graph facts from those files can lag.
+describe('a degraded index names changed files and still answers (#1959)', () => {
   let root: string;
   let cg: CodeGraph;
   let handler: ToolHandler;
@@ -49,7 +51,7 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('names a changed file without serving its result, but keeps unaffected source available', async () => {
+  it('names a changed file and serves its current source', async () => {
     const alphaPath = path.join(root, 'alpha.ts');
     const primed = await handler.execute('codegraph_explore', { query: 'alphaOnly' });
     expect(primed.content[0].text).toContain('export function alphaOnly');
@@ -60,28 +62,25 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     fs.utimesSync(alphaPath, before.atime, before.mtime);
 
     const session = new ExploreSessionState();
-    const refused = await handler.execute('codegraph_explore', { query: 'alphaOnly' }, session);
-    expect(refused.isError).toBeFalsy();
-    expect(refused.content[0].text).toContain('alpha.ts');
-    expect(refused.content[0].text).toContain('cannot answer from this index');
-    expect(refused.content[0].text).not.toContain('export function alphaOnly');
-    expect(session.view().projects).toEqual([]);
+    const flagged = await handler.execute('codegraph_explore', { query: 'alphaOnly' }, session);
+    expect(flagged.isError).toBeFalsy();
+    expect(flagged.content[0].text).toContain('after their last sync');
+    expect(flagged.content[0].text).toContain('- alpha.ts');
+    expect(flagged.content[0].text).toContain('return 9');
 
     const unaffected = await handler.execute('codegraph_explore', { query: 'betaOnly' }, session);
     expect(unaffected.content[0].text).toContain('export function betaOnly');
     expect(unaffected.content[0].text).toContain('auto-sync is DISABLED');
 
-    // Let the ordinary sync see a definite metadata change, then ensure the
-    // same session receives the source it was not shown before.
+    // Once an ordinary sync catches the file up, the notice goes away.
     fs.utimesSync(alphaPath, before.atime, new Date(before.mtimeMs + 2000));
     await cg.sync();
-    const refreshed = await handler.execute('codegraph_explore', { query: 'alphaOnly' }, session);
-    expect(refreshed.content[0].text).toContain('export function alphaOnly');
+    const refreshed = await handler.execute('codegraph_explore', { query: 'alphaOnly' });
     expect(refreshed.content[0].text).toContain('return 9');
-    expect(refreshed.content[0].text).not.toContain('cannot answer from this index');
+    expect(refreshed.content[0].text).not.toContain('after their last sync');
   });
 
-  it('refuses a graph answer that names a changed file, and serves one that does not', async () => {
+  it('flags a graph answer that names a changed file, and not one that does not', async () => {
     const callers = await handler.execute('codegraph_callers', { symbol: 'alphaOnly' });
     expect(callers.content[0].text).toContain('gammaUses');
 
@@ -90,18 +89,19 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
       "import { alphaOnly } from './alpha';\nexport function gammaUses() { return 0; }\n"
     );
 
-    const refused = await handler.execute('codegraph_callers', { symbol: 'alphaOnly' });
-    expect(refused.isError).toBeFalsy();
-    expect(refused.content[0].text).toContain('cannot answer from this index');
-    expect(refused.content[0].text).toContain('- gamma.ts');
-    expect(refused.content[0].text).not.toContain('gammaUses');
+    const flagged = await handler.execute('codegraph_callers', { symbol: 'alphaOnly' });
+    expect(flagged.isError).toBeFalsy();
+    expect(flagged.content[0].text).toContain('after their last sync');
+    expect(flagged.content[0].text).toContain('- gamma.ts');
+    expect(flagged.content[0].text).toContain('gammaUses');
 
     const search = await handler.execute('codegraph_search', { query: 'gammaUses' });
-    expect(search.content[0].text).toContain('cannot answer from this index');
+    expect(search.content[0].text).toContain('after their last sync');
+    expect(search.content[0].text).toContain('gammaUses');
 
     const unaffected = await handler.execute('codegraph_search', { query: 'betaOnly' });
     expect(unaffected.content[0].text).toContain('beta.ts');
-    expect(unaffected.content[0].text).not.toContain('cannot answer from this index');
+    expect(unaffected.content[0].text).not.toContain('after their last sync');
   });
   it.each([false, true])('preserves spaces and Unicode through provenance (pooled=%s)', async pooled => {
     if (pooled) {
@@ -120,23 +120,24 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     fs.utimesSync(path.join(root, relative), before.atime, before.mtime);
     const result = await handler.execute('codegraph_search', { query: 'unicodeSymbol' });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain('cannot answer from this index');
+    expect(result.content[0].text).toContain('after their last sync');
+    expect(result.content[0].text).toContain('unicodeSymbol');
     expect(result.structuredContent).toEqual({ freshness: { stale: [relative], unchecked: [] } });
     expect(result).not.toHaveProperty('_cgAnswerFiles');
   });
 
   it.each(['codegraph_search', 'codegraph_explore', 'codegraph_callers', 'codegraph_callees', 'codegraph_impact'])(
-    'refuses deleted contributing files in %s', async tool => {
+    'flags deleted contributing files in %s', async tool => {
       fs.unlinkSync(path.join(root, 'alpha.ts'));
       const result = await handler.execute(tool, { query: 'alphaOnly', symbol: 'alphaOnly' });
       expect(result.isError).toBeFalsy();
-      expect(result.content[0].text).toContain('cannot answer from this index');
-      expect(result.content[0].text).toContain('alpha.ts');
+      expect(result.content[0].text).toContain('after their last sync');
+      expect(result.content[0].text).toContain('- alpha.ts');
       expect(result).not.toHaveProperty('_cgExploreEmission');
     },
   );
 
-  it('refuses rather than silently validating only the first 200 contributing files', async () => {
+  it('says so rather than silently validating only the first 200 contributing files', async () => {
     for (let i = 0; i < 201; i++) {
       fs.writeFileSync(path.join(root, `caller${i}.ts`),
         `import { alphaOnly } from './alpha'; export function caller${i}() { return alphaOnly(); }\n`);
@@ -148,7 +149,7 @@ describe('a degraded index refuses answers from changed files (#1959)', () => {
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain('validation budget');
     expect((result.structuredContent!.freshness as { unchecked: string[] }).unchecked.length).toBeGreaterThan(0);
-    expect(result.content[0].text).not.toContain('**Impact');
+    expect(result.content[0].text).toContain('alphaOnly');
   });
 
 });

@@ -201,6 +201,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- When live file watching has stopped or is still catching up, an answer that draws on files changed since their last sync is no longer withheld. The response names those files and still answers: source is read from disk as before, and the notice says their symbols, callers and callees may be out of date until `codegraph sync` runs. The auto-sync DISABLED and RECOVERING banners now say the same instead of telling the agent to read files itself.
+
 - A `codegraph_sessions` query on a machine with a large OpenCode or Devin history no longer takes seconds. Each query used to load every message of every matching OpenCode and Devin session before checking whether anything had changed; it now lists sessions by their update time and message count and reads messages only for sessions that changed. Codex rollouts are matched by their first line instead of being parsed whole. On one machine with 900 transcripts, a query after no new activity went from 5.8 s to 0.16 s.
 
 - Member calls in Vue single-file components now resolve through their receiver's type and imports, the same way they do in TypeScript files. Before, `<script setup>` code fell back to matching the method name anywhere in the project, so `computed()` or `ref()` imported from `vue` could land on an unrelated project symbol of the same name. A call on a value returned by an unannotated factory, such as `const i18n = useI18n(); i18n.baseText(...)`, now reaches the method when the factory just returns a typed module value.

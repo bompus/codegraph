@@ -1348,15 +1348,16 @@ export function formatStaleFooter(stale: PendingFile[]): string {
  * Whole-index degradation banner (issue #876). Emitted at the top of a read
  * tool response when live watching has permanently stopped — at which point
  * `getPendingFiles()` is empty, so the per-file banner above can't fire even
- * though the index is now FROZEN and silently drifting stale. Leads with the
- * agent-actionable instruction (Read directly) and carries the reason, which
- * already names the operator remedy (`codegraph sync` / git hooks).
+ * though the index is now FROZEN and silently drifting stale. Says what can
+ * lag (source is re-read from disk and drift-guarded, #1474; the graph is
+ * not) and carries the reason, which names the operator remedy
+ * (`codegraph sync` / git hooks).
  */
 export function formatDegradedBanner(reason: string | null): string {
   return (
     '⚠️ CodeGraph auto-sync is DISABLED — live file watching stopped, so the index is ' +
-    'frozen and any file edited since then is stale here. Read files directly to confirm ' +
-    'current content before relying on it.' +
+    'frozen. Source shown here is read from disk; symbols, callers and callees in files ' +
+    'edited since then may be out of date until `codegraph sync` runs.' +
     (reason ? `\n  Reason: ${reason}` : '')
   );
 }
@@ -1365,8 +1366,8 @@ export function formatDegradedBanner(reason: string | null): string {
 export function formatRecoveringBanner(): string {
   return (
     '⚠️ CodeGraph auto-sync is RECOVERING — file watching restarted after lock contention, ' +
-    'but the full index catch-up has not completed. Read files directly to confirm ' +
-    'current content before relying on these results.'
+    'but the full index catch-up has not completed. Source shown here is read from disk; ' +
+    'symbols, callers and callees in files edited since the last sync may be out of date until it finishes.'
   );
 }
 
@@ -2665,19 +2666,22 @@ export class ToolHandler {
       if (!raw.isError && answeredFrom && (wasDegraded || project.isWatcherDegraded?.())) {
         const validation = await validateAnswerFiles(project.getProjectRoot(), answeredFrom);
         if (validation.stale.length || validation.unchecked.length) {
-          // Rejected source must not enter the session's emission history.
-          const lines = ['⚠️ CodeGraph cannot answer from this index:'];
+          // Answer anyway and name the files: rendered source is re-read from
+          // disk and drift-guarded (#1474), so what can lag is the graph —
+          // symbols, callers and callees taken from these files.
+          const lines: string[] = [];
           if (validation.stale.length) {
-            lines.push('These files changed or became unavailable after their last sync:',
+            lines.push('⚠️ These files changed or were removed after their last sync; results taken from them may be out of date until the next `codegraph sync`:',
               ...validation.stale.map(file => `- ${file}`));
           }
           if (validation.unchecked.length) {
-            lines.push(`Freshness could not be verified within the validation budget for ${validation.unchecked.length} files:`,
+            lines.push(`⚠️ Freshness could not be checked within the validation budget for ${validation.unchecked.length} files; results from them may also be out of date:`,
               ...validation.unchecked.slice(0, 20).map(file => `- ${file}`));
-            if (validation.unchecked.length > 20) lines.push(`- … ${validation.unchecked.length - 20} more (narrow the query)`);
+            if (validation.unchecked.length > 20) lines.push(`- … ${validation.unchecked.length - 20} more`);
           }
-          lines.push('Retry after a successful codegraph sync, or narrow the query.');
-          return { ...this.textResult(lines.join('\n')), structuredContent: { freshness: validation } };
+          const [first, ...rest] = raw.content;
+          if (first?.type === 'text') raw.content = [{ ...first, text: `${lines.join('\n')}\n\n${first.text}` }, ...rest];
+          raw.structuredContent = { ...raw.structuredContent, freshness: validation };
         }
       }
       // Record + STRIP before anything else touches the result: the emission is
@@ -7998,7 +8002,7 @@ export class ToolHandler {
         recovering
           ? '- File watching restarted; full index catch-up has not completed.'
           : `- ${cg.getWatcherDegradedReason() ?? 'live file watching stopped'}`,
-        '- The index may be stale; Read files directly for current content.'
+        '- Source is read from disk; symbols, callers and callees in edited files may be out of date until `codegraph sync` runs.'
       );
     }
 
