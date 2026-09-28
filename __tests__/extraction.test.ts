@@ -3799,6 +3799,59 @@ int outer(int v) {
     });
   });
 
+  describe('C definitions a misparse swallows into a function body', () => {
+    it('lifts file-level definitions out of a body an #ifdef pair left open', () => {
+      const code = `
+int
+set_wakeup_fd(int fd)
+{
+    if (fd < 0) {
+        return -1;
+    }
+
+static int
+send_signal(int pid, int sig)
+{
+    return kill(pid, sig);
+}
+
+int
+get_timer(int which)
+{
+    int inner(int x) { return getitimer(x); }
+    return inner(which);
+}
+`;
+      const result = extractFromSource('signal.c', code);
+      const fns = result.nodes.filter((n) => n.kind === 'function').map((n) => n.qualifiedName).sort();
+      expect(fns).toEqual(['get_timer', 'get_timer::inner', 'send_signal', 'set_wakeup_fd']);
+      const file = result.nodes.find((n) => n.kind === 'file')!;
+      const sendSignal = result.nodes.find((n) => n.name === 'send_signal')!;
+      expect(result.edges.some((e) => e.kind === 'contains' && e.source === file.id && e.target === sendSignal.id)).toBe(true);
+    });
+
+    it('does not make a function of a statement macro followed by a blank line and an if', () => {
+      const code = `
+static void release(int err)
+{
+    Py_BEGIN_ALLOW_THREADS
+    err = raise(err);
+    _Py_END_SUPPRESS_IPH
+    Py_END_ALLOW_THREADS
+
+    if (err) {
+        report(err);
+    }
+}
+`;
+      const result = extractFromSource('signal.c', code);
+      expect(result.nodes.filter((n) => n.kind === 'function').map((n) => n.name)).toEqual(['release']);
+      const release = result.nodes.find((n) => n.name === 'release')!;
+      const report = result.unresolvedReferences.find((r) => r.referenceName === 'report')!;
+      expect(report.fromNodeId).toBe(release.id);
+    });
+  });
+
   describe('C definitions whose signature a macro supplies', () => {
     it('names the function after the type slot when an attribute macro took it, and T(X) for a name-wrapping macro', () => {
       const code = `

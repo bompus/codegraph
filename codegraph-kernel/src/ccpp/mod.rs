@@ -844,18 +844,24 @@ impl<'t> Walker<'t> {
         // `if mi_likely(x) {` as type `mi_likely`, declarator `(x)`, and
         // `else if mi_unlikely(x) {` as type `else`, declarator `mi_unlikely(x)`,
         // and a statement macro without a semicolon (`Py_END_ALLOW_THREADS`)
-        // before `if (x) {` as type `Py_END_ALLOW_THREADS`, declarator `if(x)`.
-        // All stay part of the enclosing body.
+        // before `if (x) {` as type `Py_END_ALLOW_THREADS`, declarator `if(x)`,
+        // or, with a blank line in between, declarator `Py_END_ALLOW_THREADS(x)`
+        // holding `if` as an ERROR. All stay part of the enclosing body.
         if kind == "function_definition"
             && declares_function(node)
             && !node.child_by_field_name("type").is_some_and(|t| is_statement_keyword(self.text(t)))
+            && !self.declarator_swallows_keyword(node)
         {
             let nested_name = self.extract_name(node);
             if !nested_name.is_empty()
                 && nested_name != "<anonymous>"
                 && !is_statement_keyword(&nested_name)
             {
-                self.extract_function(node);
+                if self.is_swallowed_file_level_definition(node) {
+                    self.extract_outside_enclosing_function(node);
+                } else {
+                    self.extract_function(node);
+                }
                 return;
             }
         }
@@ -883,6 +889,32 @@ impl<'t> Walker<'t> {
         }
     }
 
+    /// `Py_END_ALLOW_THREADS` then a blank line then `if (err) {` parses as a
+    /// definition whose function_declarator holds the `if` as an ERROR child.
+    fn declarator_swallows_keyword(&self, node: Node) -> bool {
+        function_declarator_of(node).is_some_and(|d| {
+            named_kids(d).any(|c| c.kind() == "ERROR" && is_statement_keyword(self.text(c).trim()))
+        })
+    }
+
+    /// A definition inside a function body that is really a file-level one: an
+    /// `#ifdef` / `#else` pair that each open a brace for one `}` leaves the body
+    /// unclosed, and every later function in the file parses inside it. GCC
+    /// rejects a `static` nested function, and a real one is indented.
+    fn is_swallowed_file_level_definition(&self, node: Node) -> bool {
+        node.start_position().column == 0
+            || named_kids(node).any(|c| c.kind() == "storage_class_specifier" && self.text(c) == "static")
+    }
+
+    /// Extract with the enclosing function scopes cut off, so the node's parent
+    /// and qualified name are what they would be at file level.
+    fn extract_outside_enclosing_function(&mut self, node: Node<'t>) {
+        let depth = self.stack.iter().position(|s| matches!(s.kind, "function" | "method")).unwrap_or(self.stack.len());
+        let enclosing = self.stack.split_off(depth);
+        self.extract_function(node);
+        self.stack.extend(enclosing);
+    }
+
     // --- inheritance ---------------------------------------------------------
 
     // --- fn-ref capture (#756, cFamilySpec) ----------------------------------
@@ -896,17 +928,21 @@ impl<'t> Walker<'t> {
 /// A definition whose declarator, under pointer / reference / attribute
 /// wrappers, is a function_declarator.
 fn declares_function(node: Node) -> bool {
+    function_declarator_of(node).is_some()
+}
+
+fn function_declarator_of(node: Node) -> Option<Node> {
     let mut decl = node.child_by_field_name("declarator");
     while let Some(d) = decl {
         match d.kind() {
-            "function_declarator" => return true,
+            "function_declarator" => return Some(d),
             "pointer_declarator" | "reference_declarator" | "attributed_declarator" => {
                 decl = d.child_by_field_name("declarator").or_else(|| d.named_child(0));
             }
-            _ => return false,
+            _ => return None,
         }
     }
-    false
+    None
 }
 
 /// A statement keyword the parser took for a definition's type (`catch`
