@@ -37,12 +37,17 @@ runtime comparison (Node 24, Node 26, Bun), which was not re-run.
 
   Shallow clones, no dependencies installed.
 - **Re-run corpora.** Another session's benchmark overlapped the first pass.
-  Most arms repeated within 5%, but the CPython index (11% spread upstream, 20%
-  fork), the supabase index (21% upstream) and one CPython fork sync (30%) did
-  not. CPython and supabase were measured again on a quiet host: the runner also
-  required a load under 1.5 and no other process above 50% of a core over a
-  5-second sample. The tables use the re-run for those two corpora. Their
+  Most arms repeated within 5%. Gin's sub-second upstream arm spread 9% on
+  index and 13% on one sync. The CPython index (11% spread upstream, 20% fork),
+  the supabase index (21% upstream) and one CPython fork sync (30%) spread
+  further. CPython and supabase were measured again on a quiet host: the
+  runner also required a load under 1.5 and no other process above 50% of a
+  core over a 5-second sample. The tables use the re-run for those two
+  corpora; their first-pass runs are superseded, not averaged in. The re-run's
   repeats agree within 5%.
+- **Failures.** None. All 108 timed runs exited 0: 36 index runs (28 in the
+  first pass, 8 in the re-run) and 72 syncs (56 and 16). The untimed `init`
+  before each sync pair is not included in any figure.
 
 ## Full index
 
@@ -98,3 +103,15 @@ Upstream's refresh ([#2033](https://github.com/colbymchenry/codegraph/pull/2033)
 now reruns every inference pass after a sync. The fork reruns only the passes
 the changed files can affect ([`docs/design/incremental-synthesis.md`](../design/incremental-synthesis.md)),
 and is now faster on all seven corpora.
+
+## Decision
+
+The README's "Measured results" and "What it costs" sections now use these
+figures. Its "slower one-file syncs" cost is removed, and the slower full index
+on discourse (+5%) and supabase (+8%) is listed instead. More runs would not
+change the sync result: every corpus's gap exceeds its run spread, the
+narrowest being gin (21% gap, 13% spread). Supabase's index slowdown held on
+the quiet re-run. Discourse's +5% is close to its 4% run spread, but the
+2026-09-26 run measured the same +5%. The next step is to profile where the
+fork's extra index time goes on those two corpora (parsing, store or
+resolution) before deciding whether to work on it.
