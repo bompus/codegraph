@@ -385,7 +385,7 @@ impl KernelResolver {
     // -----------------------------------------------------------------------
 
     /// gateLanguage (index.ts): drop import/name results crossing a family.
-    pub(super) fn gate_language(&self, cand: Option<KCand>, r: &ResolveRefIn) -> Option<KCand> {
+    pub(super) fn gate_language(&mut self, cand: Option<KCand>, r: &ResolveRefIn) -> Option<KCand> {
         let cand = cand?;
         let tgt = cand.node.language.as_str();
         // getLanguageFromNodeId is the node's language — already in hand.
@@ -400,7 +400,7 @@ impl KernelResolver {
         if r.reference_kind == "imports" && crosses_known_family(tgt, &r.language) {
             return None;
         }
-        if crosses_code_boundary(tgt, &r.language) {
+        if crosses_code_boundary(tgt, &r.language) && !self.has_bridge_evidence(&cand.node, r) {
             return None;
         }
         Some(cand)

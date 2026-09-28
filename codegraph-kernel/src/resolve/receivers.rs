@@ -101,7 +101,7 @@ impl KernelResolver {
                     }) {
                         continue;
                     }
-                    if guard1_tail_re().is_match(rest) {
+                    if guard1_tail_re().is_match(rest) && !nullable_union_tail_re().is_match(rest) {
                         continue;
                     }
                 } else if pat.guard == 2 {

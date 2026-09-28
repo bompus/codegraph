@@ -8,7 +8,7 @@ impl KernelResolver {
     // -----------------------------------------------------------------------
 
     /// applyLanguageGate (name-matcher.ts).
-    pub(super) fn apply_language_gate(&self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
+    pub(super) fn apply_language_gate(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Vec<Arc<KNode>> {
         if r.reference_kind == "references" || r.reference_kind == "function_ref" {
             return candidates
                 .into_iter()
@@ -26,8 +26,62 @@ impl KernelResolver {
         }
         candidates
             .into_iter()
-            .filter(|c| !crosses_code_boundary(&c.language, &r.language))
+            .filter(|c| !crosses_code_boundary(&c.language, &r.language) || self.has_bridge_evidence(c, r))
             .collect()
+    }
+
+    /// hasBridgeEvidence (name-matcher.ts): a call may cross a language
+    /// boundary only through a framework export or the C ABI, scoped to the
+    /// named free function (#1986).
+    pub(super) fn has_bridge_evidence(&mut self, c: &KNode, r: &ResolveRefIn) -> bool {
+        if r.reference_kind != "calls" {
+            return false;
+        }
+        // Expo's extractor creates explicit JS exports resolved by name.
+        if code_interop_group(&r.language) == Some("web")
+            && c.id.starts_with("expo-module:")
+            && c.is_exported
+            && (c.language == "swift" || c.language == "kotlin")
+        {
+            return true;
+        }
+        if c.kind != "function" {
+            return false;
+        }
+        let name = regex::escape(&c.name);
+        let decl = |lines: &[String], from: i64| -> String {
+            let lo = (from.max(1) - 1) as usize;
+            let hi = (c.end_line.max(0) as usize).min(lines.len());
+            lines.get(lo..hi).map(|ls| ls.iter().map(|l| strip_line_comments(l)).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+        };
+        if code_interop_group(&r.language) == Some("native") {
+            let Some(src) = self.read_file(&c.file_path) else { return false };
+            if c.language == "go" {
+                // `//export NAME` on the line above `func NAME(` in a cgo file.
+                let at = (c.start_line - 1) as usize;
+                return imports_cgo(&src)
+                    && at >= 1
+                    && src.get(at - 1).is_some_and(|l| l.trim_end() == format!("//export {}", c.name))
+                    && src.get(at).is_some_and(|l| {
+                        regex::Regex::new(&format!(r"^func {name}\s*\(")).is_ok_and(|re| re.is_match(l))
+                    });
+            }
+            if c.language == "rust" {
+                return regex::Regex::new(&format!(r#"(?-u:\b)pub\s+extern\s+"C"\s+fn\s+{name}(?-u:\b)"#))
+                    .is_ok_and(|re| re.is_match(&decl(&src, c.start_line)));
+            }
+        }
+        if c.language == "c" || c.language == "cpp" {
+            let Some(src) = self.read_file(&r.file_path) else { return false };
+            if r.language == "go" {
+                return imports_cgo(&src) && r.reference_name == format!("C.{}", c.name);
+            }
+            if r.language == "rust" {
+                return regex::Regex::new(&format!(r#"extern\s+"C"\s*\{{[^}}]*(?-u:\b)fn\s+{name}\s*\("#))
+                    .is_ok_and(|re| re.is_match(&stripped_text(&src)));
+            }
+        }
+        false
     }
 
     /// isLexicallyReachable (name-matcher.ts): a function nested in a
@@ -1091,4 +1145,15 @@ pub(super) fn compute_path_proximity(file_path1: &str, file_path2: &str) -> i64 
     let mut dir1: Vec<String> = file_path1.split('/').map(|s| s.to_string()).collect();
     dir1.pop();
     path_proximity_from_dirs(&dir1, file_path2)
+}
+
+/// The file's lines with `//` and one-line `/* */` comments removed, rejoined.
+fn stripped_text(src: &SourceFile) -> String {
+    src.iter().map(|l| strip_line_comments(l)).collect::<Vec<_>>().join("\n")
+}
+
+/// A Go file that imports the cgo pseudo-package `"C"`.
+fn imports_cgo(src: &SourceFile) -> bool {
+    !src.lines_containing("\"C\"").is_empty()
+        && re!(r#"(?-u:\b)import\s+(?:\(\s*)?"C""#).is_match(&stripped_text(src))
 }
