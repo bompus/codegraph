@@ -230,9 +230,11 @@ export class ReferenceResolver {
    */
   synthesisRuns = 0;
 
-  async resynthesize(): Promise<number> {
+  async resynthesize(onProgress?: (done: number, total: number) => void): Promise<number> {
     this.clearCaches();
-    return synthesizeCallbackEdges(this.queries, this.context);
+    const edges = await synthesizeCallbackEdges(this.queries, this.context, onProgress);
+    this.queries.setSynthesisPending(false);
+    return edges;
   }
 
   /**
@@ -2045,6 +2047,7 @@ export class ReferenceResolver {
         parallel?.backpressure
       );
       this.synthesisRuns++;
+      this.queries.setSynthesisPending(false);
     } catch {
       // synthesis is additive and optional; ignore failures
     }
