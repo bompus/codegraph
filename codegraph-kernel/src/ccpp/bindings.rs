@@ -7,14 +7,19 @@ impl<'t> Walker<'t> {
     /// Parameter names of a function definition: the identifier inside each
     /// `parameter_declaration`, under any pointer / reference / array wrapping.
     pub(super) fn parameter_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
-        let mut out = Vec::new();
-        let Some(mut decl) = node.child_by_field_name("declarator") else { return out };
+        let Some(mut decl) = node.child_by_field_name("declarator") else { return Vec::new() };
         while matches!(decl.kind(), "pointer_declarator" | "reference_declarator") {
             match decl.child_by_field_name("declarator").or_else(|| decl.named_child(0)) {
                 Some(i) => decl = i,
                 None => break,
             }
         }
+        self.declarator_parameter_names(decl)
+    }
+
+    /// Parameter identifiers of a function_declarator.
+    fn declarator_parameter_names(&self, decl: Node<'t>) -> Vec<Node<'t>> {
+        let mut out = Vec::new();
         if decl.kind() != "function_declarator" {
             return out;
         }
@@ -56,13 +61,13 @@ impl<'t> Walker<'t> {
         self.push_binding_row(BINDING_DECL, name, node_idx, (1, self.line_count), line, None, true, storage);
     }
 
-    pub(super) fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
+    pub(super) fn emit_decl_binding(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>, is_static: Option<bool>) {
         if matches!(kind, "file" | "import") {
             return;
         }
         let line = self.line_of(node);
         match self.enclosing_scope() {
-            None => { let st = self.has_static_storage(node); self.file_level_decl_row(name, row, line, st); }
+            None => { let st = is_static.unwrap_or_else(|| self.has_static_storage(node)); self.file_level_decl_row(name, row, line, st); }
             Some(scope) => self.push_binding_row(BINDING_LOCAL, name, row, scope, line, None, false, None),
         }
     }
@@ -87,8 +92,17 @@ impl<'t> Walker<'t> {
 
     /// One `param` row per parameter name, scoped to the function.
     pub(super) fn emit_param_bindings(&mut self, node: Node<'t>) {
-        let scope = (self.line_of(node), node.end_position().row as u32 + 1);
         let names = self.parameter_names(node);
+        self.push_param_rows(names, (self.line_of(node), node.end_position().row as u32 + 1));
+    }
+
+    /// Parameter bindings of a function_declarator, over an explicit scope.
+    pub(super) fn emit_declarator_param_bindings(&mut self, decl: Node<'t>, scope: (u32, u32)) {
+        let names = self.declarator_parameter_names(decl);
+        self.push_param_rows(names, scope);
+    }
+
+    fn push_param_rows(&mut self, names: Vec<Node<'t>>, scope: (u32, u32)) {
         for n in names {
             let name = self.text(n).to_string();
             let line = self.line_of(n);
