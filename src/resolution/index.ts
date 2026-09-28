@@ -37,6 +37,7 @@ import { lexicalPathWithinRoot, safeJsonParse } from '../utils';
 import { builtinModules } from 'module';
 import { getKernel, type KernelResolverLike, type ResolveRefIn, type ResolveOutcome } from '../extraction/kernel/loader';
 import { LRUCache } from './lru-cache';
+import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
 
 // SUPERTYPE_TARGET_KINDS (the kinds an extends/implements edge may TARGET)
 // lives in ./types — the name-matcher needs the same set to restrict its
@@ -188,10 +189,19 @@ export class ReferenceResolver {
     // A pass that opens the kernel through resolveImport must not leave its
     // small-lookup mode behind for the resolution run that follows.
     const kernelWasOpen = !!this.kernelResolver;
+    // Content-only skips let a pass that scans every file for a registration
+    // re-read only the files that changed since it last found none there.
+    let skips: SynthSkips;
+    try {
+      skips = new SynthSkips(this.queries.loadSynthSkips(SYNTH_SKIPS_VERSION));
+    } catch {
+      skips = new SynthSkips(new Map());
+    }
+    const context = { ...this.context, synthSkips: skips };
     for (const fw of this.frameworks) {
       if (!fw.postExtract) continue;
       try {
-        const nodes = fw.postExtract(this.context);
+        const nodes = fw.postExtract(context);
         for (const node of nodes) {
           this.queries.updateNode(node);
           updated++;
@@ -200,6 +210,14 @@ export class ReferenceResolver {
         logDebug(`Framework '${fw.name}' postExtract failed`, {
           error: err instanceof Error ? err.message : String(err),
         });
+      }
+    }
+    const rows = skips.take();
+    if (rows.length > 0) {
+      try {
+        this.queries.saveSynthSkips(SYNTH_SKIPS_VERSION, rows);
+      } catch {
+        // Skips are an optimization; never fail the pass over them.
       }
     }
     if (!kernelWasOpen) this.closeKernel();

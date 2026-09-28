@@ -117,7 +117,41 @@ These are bounded fixtures, not whole-framework recall measurements. Hyper-Expre
 Koa and Vixeny have synthetic indexing tests only: the inspected official fixtures
 import relative framework source, which the package-provenance reader deliberately
 does not infer. Dynamic paths, cross-file mounts, runtime mutation and plugin
-factories remain outside coverage. Vixeny options require terminal-operation
+factories remain outside coverage, except for Fastify plugin files.
+
+Fastify plugin files (added 2026-09-28). A default-exported function
+(`export default`, `module.exports =`, or a top-level `const` or function
+declaration either one names) is a plugin when its first parameter is
+`fastify` or the file names a Fastify package or `FastifyInstance`/`FastifyPlugin*`
+type. Routes declared on that parameter carry a `fastify-plugin:` marker in
+`qualifiedName`; `postExtract` then applies literal `register(AutoLoad, { dir })`
+registrations, following @fastify/autoload 6.5.0
+([source](https://github.com/fastify/fastify-autoload/blob/fcfe8a2d0382c1cbd90a16b4e18239dece9b4aa7/index.js)):
+directory prefixes, index files hiding their siblings, autohooks files, the
+default ignore of dot-named entries,
+literal `options.prefix`, `routeParams`, `appendAutoPrefix`,
+`dirNameRoutePrefix: false` and literal `autoPrefix`, `prefixOverride`,
+`autoConfig.prefix` and `autoload = false` exports. Options forwarded from the
+caller (`opts`, `{ ...opts }`) are taken to carry no prefix. `fastify-plugin`
+wrapped exports, route-object exports, filter/pattern/`maxDepth`/`encapsulate`
+options, a prefix on the context that registers autoload, and `dir` values
+other than `join(__dirname | import.meta.dirname, 'literal'…)` are not modelled,
+nor is an `export { autoPrefix }` clause; those files keep their in-file paths.
+The file scan for registrations records content-only skips, so a sync re-reads
+only files that changed, and deleting the registering file restores the paths. Files autoload does not load keep theirs too,
+since `postExtract` can rename a node but not remove it.
+
+| Repository (pinned) | Routes before → after |
+|---|---|
+| [fastify/demo](https://github.com/fastify/demo/tree/5cd560125b3c2f0d42192bc7f493e8e3b9e75e52) | 1 → 15 |
+| [riccardoperra/codeimage](https://github.com/riccardoperra/codeimage/tree/27b185f18d36f2baec3a8cc5a43e8794586096c3) | 4 → 16 (`/api/v1/project/:id/clone` from `options.prefix` and `routeParams`) |
+| [jamcalli/Pulsarr](https://github.com/jamcalli/Pulsarr/tree/c3faac0e8cc115a66e20ea21f532e7a3e1c7beb3) | 12 → 173 (159 route calls under `src/routes`) |
+| [pingcap/ossinsight](https://github.com/pingcap/ossinsight/tree/d98a10e7244cfc9e2d1da02bace1c2a9fe9d7738) | 71 → 106; 8 `GET /` routes renamed to their mounted paths |
+
+Explore probes: a bare route name (`DELETE /v1/approval/requests/:id` on
+Pulsarr) and the demo's upload question return the route file first. In
+ossinsight, Next.js handlers named `GET` outrank a full route name in
+unfiltered search; that ranking gap is shared by every framework's routes. Vixeny options require terminal-operation
 dataflow and are omitted. See the [route guide](../../site/src/content/docs/guides/framework-routes.md)
 for the supported declaration shapes and Nuxt configuration limits.
 

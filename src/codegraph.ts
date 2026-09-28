@@ -933,8 +933,10 @@ export class CodeGraph {
           // itself, so the changed-files branch is already covered.)
           this.resolver.clearCaches();
           // RedwoodSDK classifies a route as a page from its handler's JSX, so
-          // deleting a handler file must re-run that pass.
-          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:redwood:')))
+          // deleting a handler file must re-run that pass; a route prefixed by
+          // where another file registers it must drop a deleted registration.
+          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:redwood:') ||
+            n.qualifiedName.includes('::fastify-plugin:')))
             this.resolver.runPostExtract();
         }
 

@@ -200,6 +200,11 @@ const root=new Hono(); root.route('/book',child); child.get('/late',handler);`),
     ).toEqual(['GET /api/x']);
     expect(
       names(
+        `import Fastify from 'fastify'; Fastify().register(async (api) => { api.get('/',handler) }, {prefix:'/api'});`,
+      ),
+    ).toEqual(['GET /api']);
+    expect(
+      names(
         `import {wrap} from 'vixeny'; wrap({wrap:{startsWith:'/api'}})().get({path:'/x',f:handler})`,
       ),
     ).toEqual([]);
@@ -269,6 +274,53 @@ HttpRouter.add('HEAD','/unsupported',handler);`),
     ).toEqual([]);
   });
 
+  it('reads the routes of a default-exported Fastify plugin and marks them for autoload', () => {
+    const plugin = (file: string, source: string) =>
+      extractHttpRoutes(file, source).nodes.map((n) => n.qualifiedName);
+    expect(
+      plugin(
+        'routes/root.js',
+        `module.exports = async function (fastify, opts) { fastify.get('/', async function () { return 1 }) }`,
+      ),
+    ).toEqual(['routes/root.js::fastify-plugin:GET /']);
+    expect(
+      plugin(
+        'routes/example/index.ts',
+        `import { type FastifyPluginAsync } from 'fastify'
+const example: FastifyPluginAsync = async (fastify, opts): Promise<void> => {
+  fastify.get('/', handler)
+  fastify.register(async (v1) => { v1.post('/items', handler) }, { prefix: '/v1' })
+}
+export default example`,
+      ),
+    ).toEqual([
+      'routes/example/index.ts::fastify-plugin:GET /',
+      'routes/example/index.ts::fastify-plugin:POST /v1/items',
+    ]);
+    expect(
+      plugin(
+        'routes/api/index.ts',
+        `import { FastifyInstance } from 'fastify'
+export default async function (app: FastifyInstance) { app.get('/', handler) }`,
+      ),
+    ).toEqual(['routes/api/index.ts::fastify-plugin:GET /']);
+  });
+
+  it('does not treat other exported functions as Fastify plugins', () => {
+    // No Fastify evidence: an Express-style module taking `app`.
+    expect(names(`module.exports = function (app) { app.get('/x', handler) }`)).toEqual([]);
+    // fastify-plugin shares the parent context; a non-default function is not loaded.
+    expect(
+      names(`const fp = require('fastify-plugin'); module.exports = fp(async (fastify) => { fastify.get('/x', handler) })`),
+    ).toEqual([]);
+    expect(names(`export function helper(fastify) { fastify.get('/x', handler) }`)).toEqual([]);
+    // A route on an app the file builds itself is not rooted in the plugin.
+    expect(
+      extract(`import Fastify from 'fastify'; const app = Fastify(); app.get('/x', handler);
+export default async function (fastify) {}`).nodes.map((n) => n.qualifiedName),
+    ).toEqual(['server.ts::GET /x']);
+  });
+
   it('keeps Express extraction from duplicating foreign route calls in a mixed file', () => {
     const source =
       "import {Hono} from 'hono'; import express from 'express'; const app=new Hono(); const router=express.Router(); app.get('/hono',handler); router.get('/express',handler)";
@@ -321,6 +373,81 @@ describe('HTTP routes through indexing and resolution', () => {
     expect(cg.getOutgoingEdges(routes[0].id)).toContainEqual(
       expect.objectContaining({ target: handler!.id, kind: 'references' }),
     );
+  });
+
+  it('mounts Fastify plugin files at their @fastify/autoload directory prefix', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-http-route-'));
+    const write = (file: string, source: string) => {
+      fs.mkdirSync(path.dirname(path.join(dir!, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir!, file), source);
+    };
+    const route = (p: string) =>
+      `module.exports = async function (fastify) { fastify.get('${p}', async function () { return 1 }) }\n`;
+    write(
+      'package.json',
+      JSON.stringify({ dependencies: { fastify: '*', '@fastify/autoload': '*' } }),
+    );
+    const app = `const path = require('node:path')
+const AutoLoad = require('@fastify/autoload')
+module.exports = async function (fastify, opts) {
+  fastify.register(AutoLoad, { dir: path.join(__dirname, 'routes'), options: Object.assign({}, opts) })
+  fastify.register(AutoLoad, { dir: path.join(__dirname, 'params'), routeParams: true, options: { prefix: '/p' } })
+}
+`;
+    write('app.js', app);
+    write('routes/root.js', route('/'));
+    write('routes/example/index.js', route('/'));
+    write('routes/example/ignored.js', route('/ignored'));
+    write('routes/example/deep/list.js', route('/list'));
+    write('routes/example/autohooks.js', route('/hook'));
+    write(
+      'routes/moved.js',
+      `export default async function (fastify) { fastify.get('/', handler) }\nexport const autoPrefix = '/elsewhere'\n`,
+    );
+    write(
+      'routes/bare.js',
+      `module.exports = async function (fastify) { fastify.get('/list', handler) }\nmodule.exports.autoPrefix = 'bare'\n`,
+    );
+    write('routes/_hidden/.drafts/x.js', route('/x'));
+    write('params/users/_id/profile.js', route('/'));
+    write('elsewhere/unloaded.js', route('/stays'));
+    cg = await CodeGraph.init(dir, { index: true });
+    const names = () =>
+      cg!
+        .getNodesByKind('route')
+        .map((n) => `${n.filePath} ${n.name}`)
+        .sort();
+    // Files autoload never loads (siblings of an index file, hooks, dot
+    // directories, files outside a registered dir) keep the paths they declare.
+    const loaded = [
+      'elsewhere/unloaded.js GET /stays',
+      'params/users/_id/profile.js GET /p/users/:id',
+      'routes/_hidden/.drafts/x.js GET /x',
+      'routes/bare.js GET /bare/list',
+      'routes/example/autohooks.js GET /hook',
+      'routes/example/deep/list.js GET /example/deep/list',
+      'routes/example/ignored.js GET /ignored',
+      'routes/example/index.js GET /example',
+      'routes/moved.js GET /elsewhere',
+      'routes/root.js GET /',
+    ];
+    expect(names()).toEqual(loaded);
+
+    // Dropping the registration restores the in-file paths on sync.
+    write('app.js', app.replace(/.*'routes'.*\n/, ''));
+    await cg.sync();
+    expect(names()).toContain('routes/example/index.js GET /');
+    expect(names()).toContain('routes/example/deep/list.js GET /list');
+    expect(names()).toContain('params/users/_id/profile.js GET /p/users/:id');
+    // Restoring it after syncs that cached skips for the other files.
+    write('app.js', app);
+    await cg.sync();
+    expect(names()).toEqual(loaded);
+    // Deleting the registering file restores the in-file paths too.
+    fs.rmSync(path.join(dir, 'app.js'));
+    await cg.sync();
+    expect(names()).toContain('routes/example/index.js GET /');
+    expect(names()).toContain('params/users/_id/profile.js GET /');
   });
 
   it('detects a standalone Bun server without a dependency manifest', () => {
