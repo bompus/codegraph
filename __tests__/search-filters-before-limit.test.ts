@@ -47,6 +47,13 @@ describe('searchNodes applies path: and name: before the limit', () => {
     // SQLite's lower() folds ASCII only; these match only with Unicode folding.
     q.insertNode(makeNode('eclair', 'renderÉclair', 'src/Pâtisserie/Éclair.ts'));
     q.insertNode(makeNode('kelvin', 'renderTemp', 'src/\u212Aelvin/temp.ts'));
+    // Off-scope rows holding the two code points JS lowercases into ASCII
+    // (U+0130, U+212A) outrank and outnumber an ordinary in-scope `paint`.
+    for (let i = 0; i < 75; i++) {
+      q.insertNode(makeNode(`dotted-${i}`, 'paint', `src/\u0130cons/p${i}.ts`));
+      q.insertNode(makeNode(`kelvin-${i}`, 'paint', `src/\u212Aits/p${i}.ts`));
+    }
+    q.insertNode(makeNode('paint-target', 'paintTarget', 'lib/target/paint.ts'));
     // A word-final Σ lowercases to ς, not σ.
     q.insertNode(makeNode('sigma', 'renderΟΔΟΣ', 'src/greek/odos.ts'));
   });
@@ -78,7 +85,7 @@ describe('searchNodes applies path: and name: before the limit', () => {
     expect(q.searchNodes('render path:PÂTISSERIE', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
   });
 
-  it('a non-ASCII filter narrows the candidates too, not only the final gate', () => {
+  it('a non-ASCII filter narrows the candidates before the cap', () => {
     // Filter-only fetches go in name order, and all 150 `render` rows sort
     // ahead of `renderÉclair`; the `render` query ranks them above it as well.
     expect(q.searchNodes('path:PÂTISSERIE', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
@@ -86,6 +93,12 @@ describe('searchNodes applies path: and name: before the limit', () => {
     expect(q.searchNodes('render path:pâtisserie', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
     expect(q.searchNodes('render name:éclair path:src', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
     expect(q.searchNodes('name:οδος', { limit: 1 }).map((r) => r.node.id)).toEqual(['sigma']);
+  });
+
+  it('rows an ASCII filter must fold in JS do not crowd out an ordinary match', () => {
+    expect(q.searchNodes('paint path:target', { limit: 1 }).map((r) => r.node.id)).toEqual(['paint-target']);
+    expect(q.searchNodes('path:target', { limit: 1 }).map((r) => r.node.id)).toEqual(['paint-target']);
+    expect(q.searchNodes('paint name:target', { limit: 1 }).map((r) => r.node.id)).toEqual(['paint-target']);
   });
 
   it('an ASCII filter still matches a code point that lowercases into ASCII', () => {

@@ -178,9 +178,7 @@ function referenceNameTail(referenceName: string): string {
  */
 /**
  * The `path:` / `name:` hard filters of a search query. They go into every
- * candidate query's SQL so a capped fetch cannot fill with rows the final gate
- * would drop. The SQL must only ever keep a superset of what the JS gate in
- * `searchNodes` accepts, since a row it drops is never recovered.
+ * candidate query's SQL, so a capped fetch cannot fill with rows outside them.
  */
 interface HardFilters {
   paths: string[];
@@ -188,11 +186,12 @@ interface HardFilters {
 }
 
 /**
- * SQLite's `lower()` folds ASCII only. For an ASCII filter value that matches
- * JS `toLowerCase()` except on the two code points that lowercase into ASCII
- * (U+0130 to `i̇`, U+212A to `k`), so rows holding either pass through to the JS
- * gate. A non-ASCII value becomes a case-sensitive GLOB whose character classes
- * hold every code point that lowercases to the value's own (see foldingGlob).
+ * A value keeps exactly the rows where
+ * `column.toLowerCase().includes(value.toLowerCase())`, OR'd within a list and
+ * AND'd across the two. SQLite's `lower()` folds
+ * ASCII only, so `instr` is exact for an ASCII value except on rows holding
+ * U+0130 or U+212A, the two code points JS lowercases into ASCII; those rows and
+ * non-ASCII values go to `cg_folded_contains` (registered in sqlite-adapter).
  */
 function appendHardFilters(hard: HardFilters | undefined, params: (string | number)[]): string {
   if (!hard) return '';
@@ -200,49 +199,17 @@ function appendHardFilters(hard: HardFilters | undefined, params: (string | numb
   for (const [column, values] of [['nodes.file_path', hard.paths], ['nodes.name', hard.names]] as const) {
     if (values.length === 0) continue;
     const matches = values.map((v) => {
+      const lowered = v.toLowerCase();
       if (/^[\x00-\x7f]*$/.test(v)) {
-        params.push(v);
-        return `instr(lower(${column}), lower(?)) > 0`;
+        params.push(lowered, lowered);
+        return `instr(lower(${column}), ?) > 0 OR ((instr(${column}, '\u0130') > 0 OR instr(${column}, '\u212a') > 0) AND cg_folded_contains(${column}, ?))`;
       }
-      params.push(foldingGlob(v));
-      return `${column} GLOB ?`;
+      params.push(lowered);
+      return `cg_folded_contains(${column}, ?)`;
     });
-    sql += ` AND (${matches.join(' OR ')} OR ${column} GLOB '*[\u0130\u212a]*')`;
+    sql += ` AND (${matches.join(' OR ')})`;
   }
   return sql;
-}
-
-let upperByLower: Map<string, string[]> | undefined;
-
-/**
- * A GLOB matching what `s.toLowerCase().includes(value.toLowerCase())` accepts:
- * each code point of the lowered value becomes a class of every code point that
- * lowercases to it. U+0130 is the only code point whose lowercase is longer
- * than one, and appendHardFilters passes rows holding it through. Σ is the one
- * whose lowercase depends on its neighbours.
- */
-function foldingGlob(value: string): string {
-  if (!upperByLower) {
-    upperByLower = new Map();
-    for (let cp = 0; cp < 0x110000; cp++) {
-      if (cp >= 0xd800 && cp < 0xe000) continue;
-      const c = String.fromCodePoint(cp);
-      const lower = c.toLowerCase();
-      if (lower === c || [...lower].length !== 1) continue;
-      const uppers = upperByLower.get(lower);
-      if (uppers) uppers.push(c);
-      else upperByLower.set(lower, [c]);
-    }
-    // Σ lowercases to final ς at the end of a word, to σ elsewhere.
-    upperByLower.set('\u03c2', ['\u03a3']);
-  }
-  let glob = '*';
-  for (const ch of value.toLowerCase()) {
-    const uppers = upperByLower.get(ch);
-    if (uppers) glob += `[${ch}${uppers.join('')}]`;
-    else glob += ch === '*' || ch === '?' || ch === '[' ? `[${ch}]` : ch;
-  }
-  return glob + '*';
 }
 
 function rowToNode(row: NodeRow): Node {
@@ -1664,26 +1631,8 @@ export class QueryBuilder {
       results.sort((a, b) => b.score - a.score);
     }
 
-    // path: + name: are a hard gate. The candidate queries already narrowed
-    // on them in SQL where that is exact (see appendHardFilters); this pass
-    // applies them with Unicode case folding. Filter before trimming to
-    // `limit`, or out-of-scope matches that scored higher crowd the in-scope
-    // ones out.
-    if (pathFilters.length > 0) {
-      const lowered = pathFilters.map((p) => p.toLowerCase());
-      results = results.filter((r) => {
-        const fp = r.node.filePath.toLowerCase();
-        return lowered.some((p) => fp.includes(p));
-      });
-    }
-    if (nameFilters.length > 0) {
-      const lowered = nameFilters.map((n) => n.toLowerCase());
-      results = results.filter((r) => {
-        const nm = r.node.name.toLowerCase();
-        return lowered.some((n) => nm.includes(n));
-      });
-    }
-
+    // path: and name: already narrowed every candidate query (appendHardFilters),
+    // so the cut to `limit` cannot drop an in-scope match for an out-of-scope one.
     return results.length > limit ? results.slice(0, limit) : results;
   }
 
