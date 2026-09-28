@@ -56,6 +56,24 @@ function isLowValueFile(filePath: string, generated?: ReadonlySet<string>): bool
 const SQLITE_PARAM_CHUNK_SIZE = 500;
 
 /**
+ * A SQL predicate: is the node aliased `alias` a member an INTERFACE declares?
+ *
+ * `method_signature` / `property_signature` enter the graph as `method` /
+ * `property` nodes hung off their interface by a `contains` edge (#1638). They
+ * have no body and originate no behaviour, so for a structural judgement about
+ * a FILE they are the interface restated, not an extra thing the file declares.
+ * See {@link QueryBuilder.getAmbientDeclarationPathsAmong}, the one caller, for
+ * why treating them as opaque would break that rule in three places at once.
+ *
+ * Seeks `idx_edges_target_kind`, so it costs a key lookup per row rather than a
+ * join over the whole edge table.
+ */
+const IS_INTERFACE_MEMBER = (alias: string): string => `EXISTS (
+  SELECT 1 FROM edges ce JOIN nodes owner ON owner.id = ce.source
+   WHERE ce.target = ${alias}.id AND ce.kind = 'contains' AND owner.kind = 'interface'
+)`;
+
+/**
  * How much of the exact-name bonus a `deprioritize`d path keeps (#982). Damped
  * rather than zeroed: a query that genuinely targets that tree must still rank
  * it, the same "discount, don't erase" rule the path penalty follows.
@@ -226,6 +244,9 @@ export class QueryBuilder {
   private projectNameTokens: Set<string> = new Set();
   private isDeprioritizedPath: ((filePath: string) => boolean) | undefined;
 
+  // FTS5 availability flag — detected once at construction time (#1532)
+  private _fts5Available: boolean | undefined;
+
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache: Map<string, Node> = new Map();
   private readonly maxCacheSize = 1000;
@@ -257,11 +278,14 @@ export class QueryBuilder {
     getUnresolvedByName?: SqliteStatement;
     getNodesByName?: SqliteStatement;
     getNodesByNamePrefix?: SqliteStatement;
+    getFileNodesByNamePrefix?: SqliteStatement;
     getNodesByQualifiedNameExact?: SqliteStatement;
     getNodesByLowerName?: SqliteStatement;
     getUnresolvedCount?: SqliteStatement;
     getUnresolvedBatch?: SqliteStatement;
     getUnresolvedBatchAfter?: SqliteStatement;
+    getUnresolvedPrerequisitesAfter?: SqliteStatement;
+    getUnresolvedDependentsAfter?: SqliteStatement;
     deleteRefsByRowIdsFull?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
@@ -320,6 +344,13 @@ export class QueryBuilder {
 
   constructor(db: SqliteDatabase) {
     this.db = db;
+    // Detect FTS5 availability once (#1532)
+    try {
+      db.prepare("SELECT * FROM nodes_fts LIMIT 0").get();
+      this._fts5Available = true;
+    } catch {
+      this._fts5Available = false;
+    }
   }
 
   /**
@@ -922,11 +953,29 @@ export class QueryBuilder {
   getNodesByFile(filePath: string): Node[] {
     if (!this.stmts.getNodesByFile) {
       this.stmts.getNodesByFile = this.db.prepare(
-        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line'
+        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line, id'
       );
     }
     const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
     return rows.map(rowToNode);
+  }
+
+  /**
+   * Get all nodes in several files at once — one chunked `IN` query rather than
+   * one {@link getNodesByFile} per file (#1975).
+   */
+  getNodesByFiles(filePaths: readonly string[]): Node[] {
+    const unique = [...new Set(filePaths)];
+    const out: Node[] = [];
+    for (let i = 0; i < unique.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+      const chunk = unique.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT * FROM nodes WHERE file_path IN (${placeholders})`)
+        .all(...chunk) as NodeRow[];
+      for (const row of rows) out.push(rowToNode(row));
+    }
+    return out;
   }
 
   /**
@@ -1106,7 +1155,7 @@ export class QueryBuilder {
    */
   getNodesByKind(kind: NodeKind): Node[] {
     if (!this.stmts.getNodesByKind) {
-      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
+      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
     }
     const rows = this.stmts.getNodesByKind.all(kind) as NodeRow[];
     return rows.map(rowToNode);
@@ -1122,7 +1171,10 @@ export class QueryBuilder {
   *iterateNodesByKind(kind: NodeKind): IterableIterator<Node> {
     // Fresh statement per call (not a cached one): an iterator holds an open
     // cursor, so a shared statement would conflict across overlapping scans.
-    const stmt = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
+    // Synthesis uses first/last-match precedence and caps: insertion order
+    // changes on sync. idx_nodes_kind streams this canonical order without
+    // materializing/sorting all of a large project's methods in memory.
+    const stmt = this.db.prepare('SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
     for (const row of stmt.iterate(kind)) {
       yield rowToNode(row as NodeRow);
     }
@@ -1149,7 +1201,7 @@ export class QueryBuilder {
     // Fresh statement per call — an iterator holds an open cursor (see
     // iterateNodesByKind).
     const stmt = this.db.prepare(
-      "SELECT * FROM nodes WHERE language = ? AND decorators LIKE '%' || ? || '%'"
+      "SELECT * FROM nodes WHERE language = ? AND decorators LIKE '%' || ? || '%' ORDER BY file_path, start_line, id"
     );
     for (const row of stmt.iterate(language, `"${decorator}"`)) {
       yield rowToNode(row as NodeRow);
@@ -1188,7 +1240,7 @@ export class QueryBuilder {
   getNodesByName(name: string): Node[] {
     if (!this.stmts.getNodesByName) {
       this.stmts.getNodesByName = this.db.prepare(
-        'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line'
+        'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line, id'
       );
     }
     const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
@@ -1209,13 +1261,27 @@ export class QueryBuilder {
     return rows.map(rowToNode);
   }
 
+  /** File nodes whose basename starts with `prefix`, without a result cap. */
+  getFileNodesByNamePrefix(prefix: string): Node[] {
+    if (!this.stmts.getFileNodesByNamePrefix) {
+      this.stmts.getFileNodesByNamePrefix = this.db.prepare(
+        "SELECT * FROM nodes WHERE kind = 'file' AND name >= ? AND name < ? ORDER BY name"
+      );
+    }
+    const rows = this.stmts.getFileNodesByNamePrefix.all(
+      prefix,
+      prefix + '￿'
+    ) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
   /**
    * Get nodes by exact qualified name match (uses idx_nodes_qualified_name index)
    */
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {
     if (!this.stmts.getNodesByQualifiedNameExact) {
       this.stmts.getNodesByQualifiedNameExact = this.db.prepare(
-        'SELECT * FROM nodes WHERE qualified_name = ?'
+        'SELECT * FROM nodes WHERE qualified_name = ? ORDER BY file_path, start_line, id'
       );
     }
     const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
@@ -1280,9 +1346,9 @@ export class QueryBuilder {
     const kinds = mergedKinds;
     const languages = mergedLanguages;
 
-    // First try FTS5 with prefix matching
+    // First try FTS5 with prefix matching (skip if FTS5 not available, #1532)
     let results = text
-      ? this.searchNodesFTS(text, { kinds, languages, limit, offset })
+      ? (this._fts5Available !== false ? this.searchNodesFTS(text, { kinds, languages, limit, offset }) : [])
       // Over-fetch by 5× when running filter-only (no text). The
       // post-scoring path: + name: filters can be very selective, so
       // a smaller multiplier risks returning fewer than `limit`
@@ -1487,6 +1553,51 @@ export class QueryBuilder {
       }
     }
     return results;
+  }
+
+  /** Bounded miss diagnostics, independent of relevance filters and ranking. */
+  getExploreMissDiagnostics(query: string): {
+    matched: string[]; unmatched: string[]; candidates: string[]; limited: boolean;
+  } {
+    const words = [...new Set((query.match(/[\p{L}\p{N}]+/gu) ?? []).map(w => w.toLowerCase()))];
+    const checked = words.filter(w => w.length <= 64).slice(0, 16);
+    const limited = checked.length !== words.length;
+    if (checked.length === 0) return { matched: [], unmatched: [], candidates: [], limited };
+
+    // EXISTS uses FTS postings and the segment primary key, never source scans.
+    // Vocab rows can outlive deleted definitions, so verify them against nodes.
+    const rows = this.db.prepare(`
+      WITH words(word, pattern) AS (VALUES ${checked.map(() => '(?, ?)').join(', ')})
+      SELECT word, (
+        EXISTS (SELECT 1 FROM nodes_fts WHERE nodes_fts MATCH pattern)
+        OR EXISTS (
+          SELECT 1 FROM name_segment_vocab v WHERE v.segment = word
+          AND EXISTS (SELECT 1 FROM nodes n WHERE n.name = v.name AND n.kind NOT IN ('file', 'import'))
+        )
+      ) AS matched FROM words
+    `).all(...checked.flatMap(w => [w, `{name qualified_name signature docstring} : "${w}"*`])) as
+      Array<{ word: string; matched: number }>;
+
+    const names = this.db.prepare(`
+      SELECT name FROM (
+        SELECT v.name FROM name_segment_vocab v
+        WHERE v.segment IN (${checked.map(() => '?').join(', ')})
+        AND EXISTS (SELECT 1 FROM nodes n WHERE n.name = v.name AND n.kind NOT IN ('file', 'import'))
+        LIMIT 12
+      )
+      UNION ALL
+      SELECT name FROM (
+        SELECT n.name FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid
+        WHERE nodes_fts MATCH ? AND n.kind NOT IN ('file', 'import')
+        LIMIT 12
+      )
+    `).all(...checked, `name : (${checked.map(w => `"${w}"*`).join(' OR ')})`) as Array<{ name: string }>;
+    return {
+      matched: rows.filter(r => r.matched).map(r => r.word),
+      unmatched: rows.filter(r => !r.matched).map(r => r.word),
+      candidates: [...new Set(names.map(r => r.name))].slice(0, 12),
+      limited,
+    };
   }
 
   /**
@@ -1765,6 +1876,32 @@ export class QueryBuilder {
   // Edge Operations
   // ===========================================================================
 
+  /** Must run before file replacement/deletion cascades the endpoint edges. */
+  hasSynthesizedEdgesTouchingFile(filePath: string): boolean {
+    const owned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
+    for (const endpoint of ['source', 'target']) {
+      if (this.db.prepare(`SELECT 1 FROM nodes n JOIN edges e ON e.${endpoint} = n.id
+        WHERE n.file_path = ? AND ${owned} LIMIT 1`).get(filePath)) return true;
+    }
+    // Wiring often lives in a third file, with neither endpoint in it.
+    return !!this.db.prepare(`SELECT 1 FROM edges e WHERE ${owned}
+      AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END >= ?
+      AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END < ? LIMIT 1`
+    ).get(`${filePath}:`, `${filePath};`);
+  }
+
+  wasSynthesisInput(filePath: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM synthesis_inputs WHERE file_path = ?').get(filePath);
+  }
+
+  replaceSynthesisInputs(files: string[]): void {
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM synthesis_inputs');
+      const insert = this.db.prepare('INSERT INTO synthesis_inputs(file_path) VALUES (?)');
+      for (const file of files) insert.run(file);
+    })();
+  }
+
   /**
    * Insert a new edge
    */
@@ -1836,7 +1973,8 @@ export class QueryBuilder {
   }
 
   /**
-   * Get outgoing edges from a node
+   * Get outgoing edges from a node. Preserve the source/kind index order
+   * (calls before imports/references), then break ties deterministically.
    */
   getOutgoingEdges(sourceId: string, kinds?: EdgeKind[], provenance?: string): Edge[] {
     if ((kinds && kinds.length > 0) || provenance) {
@@ -1853,29 +1991,33 @@ export class QueryBuilder {
         params.push(provenance);
       }
 
+      sql += ' ORDER BY kind, target, line, col';
       const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesBySource) {
-      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ?');
+      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ? ORDER BY kind, target, line, col');
     }
     const rows = this.stmts.getEdgesBySource.all(sourceId) as EdgeRow[];
     return rows.map(rowToEdge);
   }
 
   /**
-   * Get incoming edges to a node
+   * Get incoming edges to a node. Kind must precede opaque source IDs:
+   * file IDs sort before function IDs, so source-first ordering lets imports
+   * displace actual calls in capped caller lists. Keep deterministic ties
+   * without changing the target/kind index's established kind precedence.
    */
   getIncomingEdges(targetId: string, kinds?: EdgeKind[]): Edge[] {
     if (kinds && kinds.length > 0) {
-      const sql = `SELECT * FROM edges WHERE target = ? AND kind IN (${kinds.map(() => '?').join(',')})`;
+      const sql = `SELECT * FROM edges WHERE target = ? AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY kind, source, line, col`;
       const rows = this.db.prepare(sql).all(targetId, ...kinds) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesByTarget) {
-      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ?');
+      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ? ORDER BY kind, source, line, col');
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
@@ -2062,6 +2204,31 @@ export class QueryBuilder {
   }
 
   /**
+   * Which of `nodeIds` extend or implement a type the resolver could not follow.
+   * An ancestor outside the index (`React.Component`, `stream.Transform`, a
+   * framework interface) leaves no edge, only this `extends` / `implements`
+   * row, so it is the one record that such an ancestor exists (#1973).
+   * Chunked probe over `idx_unresolved_from_node`.
+   */
+  getUnresolvedSupertypeSourcesAmong(nodeIds: Iterable<string>): Set<string> {
+    const unique = [...new Set(nodeIds)];
+    const found = new Set<string>();
+    for (let i = 0; i < unique.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+      const chunk = unique.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT DISTINCT from_node_id AS id FROM unresolved_refs
+            WHERE from_node_id IN (${placeholders})
+              AND reference_kind IN ('extends', 'implements')`
+        )
+        .all(...chunk) as Array<{ id: string }>;
+      for (const row of rows) found.add(row.id);
+    }
+    return found;
+  }
+
+  /**
    * Which of `names` are carried by MORE THAN ONE symbol, at least one of which
    * something points at.
    *
@@ -2184,6 +2351,12 @@ export class QueryBuilder {
    * build script does its work on the way down the file. `instantiates` counts
    * the same way — `new Server(...)` at module scope is the same act.
    *
+   * A call made while initializing a module-level `variable` / `constant` —
+   * `const service = new Service()`, `app = FastAPI()` — is attributed to the
+   * declared name (#693), not to the file, so the file's own edges alone would
+   * miss most of what a real entry point runs. Those names are the file's
+   * top-level code too, so `tops` counts them alongside the file node.
+   *
    * Ranking multiplies the two things an entry point does: it runs (calls), and
    * it wires the project together (distinct other files its symbols reach). One
    * alone is misleading — a registration table makes hundreds of module-level
@@ -2196,12 +2369,25 @@ export class QueryBuilder {
     if (limit <= 0) return [];
     return this.db
       .prepare(
-        `WITH runs AS (
-             SELECT e.source AS id, COUNT(*) AS calls
-               FROM edges e
-               JOIN nodes n ON n.id = e.source
-              WHERE n.kind = 'file' AND e.kind IN ('calls', 'instantiates')
-           GROUP BY e.source
+        `WITH tops AS (
+             SELECT n.id AS file_id, n.id AS src
+               FROM nodes n
+              WHERE n.kind = 'file'
+             UNION ALL
+             SELECT c.source AS file_id, c.target AS src
+               FROM edges c
+               JOIN nodes f ON f.id = c.source
+               JOIN nodes v ON v.id = c.target
+              WHERE c.kind = 'contains'
+                AND f.kind = 'file'
+                AND v.kind IN ('variable', 'constant')
+         ),
+         runs AS (
+             SELECT t.file_id AS id, COUNT(*) AS calls
+               FROM tops t
+               JOIN edges e ON e.source = t.src
+              WHERE e.kind IN ('calls', 'instantiates')
+           GROUP BY t.file_id
          ),
          cand AS (
              SELECT r.id AS id, n.file_path AS fp, r.calls AS calls
@@ -2736,6 +2922,29 @@ export class QueryBuilder {
    *      restricted to the candidate list: the file that imports it is usually
    *      not itself a candidate.
    *
+   * ### Interface MEMBERS are transparent to all four conditions
+   *
+   * A `method_signature` / `property_signature` inside an interface enters the
+   * graph as a `method` / `property` node (#1638). Read literally that would
+   * break every condition here at once: condition 2 sees non-type kinds and
+   * stops flagging, and — worse, because it is silent — condition 4 starts
+   * seeing inbound `calls` edges the moment a call site through the shim's API
+   * finally has a signature to land on. An ambient `.d.ts` would quietly lose
+   * its damping precisely BECAUSE the platform API it declares is widely used.
+   *
+   * So an interface-owned member is treated the way `parameter` already is: it
+   * neither qualifies, disqualifies, nor counts as inbound dependency. That is
+   * not a new judgement call, it is what keeps the rule measuring what it was
+   * measured on — before #1638 these nodes did not exist, so excluding them
+   * reproduces the 0–4% flag rate the thresholds above were tuned against. It
+   * is also the semantically right answer: a signature with no body is on the
+   * same side of the line as the interface that owns it, and a call edge
+   * landing on one is still not a file that can answer a flow question.
+   *
+   * The interface ITSELF is untouched: the `references` edges an importing
+   * module aims at `UploadStorage` still disqualify the file under (4), which
+   * is what keeps a depended-on `types.ts` out of the flag.
+   *
    * Bounded-lookup like {@link getGeneratedPathsAmong}: callers hold a ranked
    * candidate list, so this is a partial-index probe over a handful of paths.
    */
@@ -2751,14 +2960,15 @@ export class QueryBuilder {
       // things the file declares, so they neither qualify nor disqualify.
       const rows = this.db
         .prepare(`
-          SELECT file_path,
-                 SUM(CASE WHEN kind NOT IN ('file','import','export','parameter')
+          SELECT n.file_path AS file_path,
+                 SUM(CASE WHEN n.kind NOT IN ('file','import','export','parameter')
+                           AND NOT ${IS_INTERFACE_MEMBER('n')}
                           THEN 1 ELSE 0 END) AS declared,
-                 SUM(CASE WHEN kind IN ('interface','type_alias','enum','enum_member','namespace')
+                 SUM(CASE WHEN n.kind IN ('interface','type_alias','enum','enum_member','namespace')
                           THEN 1 ELSE 0 END) AS typeDeclared
-          FROM nodes
-          WHERE file_path IN (${placeholders})
-          GROUP BY file_path
+          FROM nodes n
+          WHERE n.file_path IN (${placeholders})
+          GROUP BY n.file_path
         `)
         .all(...chunk) as Array<{ file_path: string; declared: number; typeDeclared: number }>;
       let candidates = rows
@@ -2775,17 +2985,22 @@ export class QueryBuilder {
         );
         candidates = candidates.filter((p) => !hit.has(p));
       };
-      // (3) originates behaviour
+      // (3) originates behaviour — a signature has no body to originate from,
+      // so an edge attributed to one is not evidence about this file.
       disqualify(`
         SELECT DISTINCT n.file_path AS file_path
         FROM edges e JOIN nodes n ON n.id = e.source
         WHERE e.kind IN ('calls','instantiates') AND n.file_path IN ($IN$)
+          AND NOT ${IS_INTERFACE_MEMBER('n')}
       `);
-      // (4) something outside the file depends on it
+      // (4) something outside the file depends on it — but a call that lands on
+      // an interface's own signature is a use of the API, not a dependency on
+      // this file's structure. The edges aimed at the interface still count.
       disqualify(`
         SELECT DISTINCT t.file_path AS file_path
         FROM edges e JOIN nodes t ON t.id = e.target JOIN nodes s ON s.id = e.source
         WHERE t.file_path IN ($IN$) AND s.file_path <> t.file_path
+          AND NOT ${IS_INTERFACE_MEMBER('t')}
       `);
       for (const path of candidates) found.add(path);
     }
@@ -3068,13 +3283,21 @@ export class QueryBuilder {
    * (§7a.2) — while the seek is O(batch) forever. `id` is the rowid alias, so
    * the enumeration order is identical to the OFFSET reader's.
    */
-  getUnresolvedReferencesBatchAfter(afterRowId: number, limit: number): UnresolvedReference[] {
-    if (!this.stmts.getUnresolvedBatchAfter) {
-      this.stmts.getUnresolvedBatchAfter = this.db.prepare(
-        "SELECT * FROM unresolved_refs WHERE status = 'pending' AND id > ? ORDER BY id LIMIT ?"
+  getUnresolvedReferencesBatchAfter(afterRowId: number, limit: number, prerequisites?: boolean): UnresolvedReference[] {
+    // Resolution prerequisites must be committed before dependent calls,
+    // even when an interrupted sync queued their rows in a different order
+    // from a clean index (#1577). Each phase still seeks by row id in bounded
+    // memory; the default preserves the public reader's original enumeration.
+    const key = prerequisites === undefined ? 'getUnresolvedBatchAfter'
+      : prerequisites ? 'getUnresolvedPrerequisitesAfter' : 'getUnresolvedDependentsAfter';
+    if (!this.stmts[key]) {
+      const filter = prerequisites === undefined ? ''
+        : ` AND reference_kind ${prerequisites ? 'IN' : 'NOT IN'} ('imports', 'extends', 'implements')`;
+      this.stmts[key] = this.db.prepare(
+        `SELECT * FROM unresolved_refs WHERE status = 'pending' AND id > ?${filter} ORDER BY id LIMIT ?`
       );
     }
-    const rows = this.stmts.getUnresolvedBatchAfter.all(afterRowId, limit) as UnresolvedRefRow[];
+    const rows = this.stmts[key]!.all(afterRowId, limit) as UnresolvedRefRow[];
     return rows.map((row) => ({
       fromNodeId: row.from_node_id,
       referenceName: row.reference_name,
@@ -3438,6 +3661,21 @@ export class QueryBuilder {
       }
     })();
     return changed;
+  }
+
+  /**
+   * Replace resolution edges with their original unresolved references as one
+   * transaction. If ref insertion fails, the edge deletion is rolled back.
+   */
+  replaceResolutionEdgesWithUnresolvedRefs(
+    edgeIds: number[],
+    refs: UnresolvedReference[]
+  ): number {
+    return this.db.transaction(() => {
+      const changed = this.deleteEdgesByIds(edgeIds);
+      this.insertUnresolvedRefsBatch(refs);
+      return changed;
+    })();
   }
 
   /**

@@ -1,17 +1,13 @@
 /**
- * Removing a temp tree that a detached daemon may still hold.
+ * Removing a temp tree whose last handle the OS releases late.
  *
- * The MCP suites spawn `codegraph serve --mcp`, which can start a DETACHED
- * daemon. A tracked child can be awaited on its `exit` event, and the suites do
- * that, but the daemon is not a child of this process: there is no handle to
- * close and no event to wait on, only the OS releasing its files once the
- * process is gone. Windows does that a beat late and fails the removal with
- * EPERM/EBUSY meanwhile, where POSIX unlinks regardless — which is why this is
- * invisible on CI and reproducible on a Windows contributor's machine.
+ * The watcher suite's end-to-end test drives a real fs.watch. unwatch()
+ * returns before Windows releases the directory handle, and a removal in that
+ * window fails with EPERM, while POSIX unlinks regardless. There is no event to
+ * wait on, so this retries the removal for a short while.
  *
- * Retrying is the honest tool for that residue specifically. Everything with a
- * real holder — a database connection, a tracked child — is closed or awaited
- * at its own site rather than papered over here.
+ * Only use it for that kind of residue. A holder the test owns (a database
+ * connection, a tracked child) should be closed or awaited where it is opened.
  */
 import * as fs from 'node:fs';
 

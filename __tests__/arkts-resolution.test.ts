@@ -27,9 +27,6 @@ describe('ArkTS attribute-chain resolution precision', () => {
   let tmpDir: string | undefined;
   let cg: CodeGraph | undefined;
   afterEach(() => {
-    // Windows refuses to delete a file that still has an open handle, so the
-    // database has to be closed before the temp tree goes. POSIX unlinks an
-    // open file happily, which is why this only ever fails on Windows.
     cg?.close();
     cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -107,9 +104,6 @@ describe('ArkTS ohpm workspace import resolution', () => {
   let tmpDir: string | undefined;
   let cg: CodeGraph | undefined;
   afterEach(() => {
-    // Windows refuses to delete a file that still has an open handle, so the
-    // database has to be closed before the temp tree goes. POSIX unlinks an
-    // open file happily, which is why this only ever fails on Windows.
     cg?.close();
     cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -182,9 +176,6 @@ describe('ArkUI state → build() re-render bridge (assignment-gated)', () => {
   let tmpDir: string | undefined;
   let cg: CodeGraph | undefined;
   afterEach(() => {
-    // Windows refuses to delete a file that still has an open handle, so the
-    // database has to be closed before the temp tree goes. POSIX unlinks an
-    // open file happily, which is why this only ever fails on Windows.
     cg?.close();
     cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -249,9 +240,6 @@ describe('ArkUI @ohos.events.emitter bridge', () => {
   let tmpDir: string | undefined;
   let cg: CodeGraph | undefined;
   afterEach(() => {
-    // Windows refuses to delete a file that still has an open handle, so the
-    // database has to be closed before the temp tree goes. POSIX unlinks an
-    // open file happily, which is why this only ever fails on Windows.
     cg?.close();
     cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -340,9 +328,6 @@ describe('ArkUI router bridge (pushUrl literal → @Entry struct)', () => {
   let tmpDir: string | undefined;
   let cg: CodeGraph | undefined;
   afterEach(() => {
-    // Windows refuses to delete a file that still has an open handle, so the
-    // database has to be closed before the temp tree goes. POSIX unlinks an
-    // open file happily, which is why this only ever fails on Windows.
     cg?.close();
     cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -394,9 +379,6 @@ describe('ohpm main entry (custom barrel + .ts consumer)', () => {
   let tmpDir: string | undefined;
   let cg: CodeGraph | undefined;
   afterEach(() => {
-    // Windows refuses to delete a file that still has an open handle, so the
-    // database has to be closed before the temp tree goes. POSIX unlinks an
-    // open file happily, which is why this only ever fails on Windows.
     cg?.close();
     cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });

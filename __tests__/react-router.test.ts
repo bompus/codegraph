@@ -10,7 +10,7 @@
  * is what the app-root gate has to get right. Mirrors `nextjs.test.ts`.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -229,6 +229,14 @@ describe('react-router: a routed app end to end', () => {
     if (!n) throw new Error(`no symbol ${name}`);
     return n;
   };
+  // A handler written as `const submitHandler = () => {…}` inside a screen is a
+  // symbol of its own (#1669), so a navigation it makes is ITS edge — the same
+  // shape a `useCallback` handler has — and the screen reaches it by calling it.
+  const symIn = (name: string, file: string): Node => {
+    const n = cg.getNodesByName(name).find((n) => n.kind !== 'route' && n.kind !== 'file' && n.kind !== 'import' && n.filePath.endsWith(file));
+    if (!n) throw new Error(`no symbol ${name} in ${file}`);
+    return n;
+  };
   const navs = (from: Node) => cg.getOutgoingEdges(from.id).filter((e) => e.kind === 'navigates');
   const hrefs = (from: Node) =>
     navs(from)
@@ -250,17 +258,24 @@ describe('react-router: a routed app end to end', () => {
 
   it('the payment screen pushes to both pages it leads to — the bounce out and the one on submit', () => {
     const payment = sym('PaymentScreen');
-    expect(hrefs(payment)).toEqual(['/placeorder', '/shipping']);
-    const byHref = new Map(navs(payment).map((e) => [(e.metadata as Record<string, unknown>).href, e]));
+    const submit = symIn('submitHandler', 'PaymentScreen.js');
+    // The bounce-out is the component's own; the push on submit belongs to its handler.
+    expect(hrefs(payment)).toEqual(['/shipping']);
+    expect(hrefs(submit)).toEqual(['/placeorder']);
+    // `onSubmit={submitHandler}` is the screen's reference to it; the Screens
+    // walk below rides that hop.
+    expect(cg.getOutgoingEdges(payment.id).some((e) => e.target === submit.id && e.kind === 'references')).toBe(true);
+    const byHref = new Map([...navs(payment), ...navs(submit)].map((e) => [(e.metadata as Record<string, unknown>).href, e]));
     expect(byHref.get('/shipping')!.target).toBe(route('/shipping').id);
     expect(byHref.get('/placeorder')!.target).toBe(route('/placeorder').id);
     expect(byHref.get('/placeorder')!.metadata).toMatchObject({ navMethod: 'push' });
   });
 
   it('history.replace navigates, and v6’s navigate() with a template hole reaches the :id route', () => {
-    expect(navs(sym('ShippingScreen'))[0]!.target).toBe(route('/payment').id);
-    expect(navs(sym('ShippingScreen'))[0]!.metadata).toMatchObject({ href: '/payment', navMethod: 'replace' });
-    const product = navs(sym('ProductScreen'));
+    const shippingSubmit = symIn('submitHandler', 'ShippingScreen.js');
+    expect(navs(shippingSubmit)[0]!.target).toBe(route('/payment').id);
+    expect(navs(shippingSubmit)[0]!.metadata).toMatchObject({ href: '/payment', navMethod: 'replace' });
+    const product = navs(sym('addToCart'));
     expect(product).toHaveLength(1);
     expect(product[0]!.target).toBe(route('/cart/:id?').id);
     expect(product[0]!.metadata).toMatchObject({ href: '/cart/${…}', navMethod: 'navigate' });
@@ -288,7 +303,8 @@ describe('react-router: a routed app end to end', () => {
     const link = screens.links.find((l) => l.from === at('/payment').id && l.to === at('/placeorder').id)!;
     expect(link).toBeDefined();
     expect(link.sites[0]).toMatchObject({ href: '/placeorder', method: 'push' });
-    expect(link.via).toEqual([]);
+    // The submit handler is the hop between the screen and the push.
+    expect(link.via.map((v) => v.name)).toEqual(['submitHandler']);
     expect(screens.links.find((l) => l.from === at('/shipping').id && l.to === at('/payment').id)).toBeDefined();
     expect(screens.links.find((l) => l.from === at('/product/:id').id && l.to === at('/cart/:id?').id)).toBeDefined();
   });
@@ -477,5 +493,103 @@ describe('react-router: the shapes proshop is written in', () => {
       expect(screens.links.some((l) => l.from === s.id)).toBe(true);
     }
     expect(screens.dropped).toBe(0);
+  });
+});
+
+
+describe('react-router: route declaration boundaries (#1348)', () => {
+  let tmpDir: string;
+  let cg: CodeGraph | undefined;
+
+  afterEach(() => {
+    cg?.close();
+    cg = undefined;
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function index(source: string, extension: string) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rr-boundaries-'));
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ dependencies: { react: '18' } }));
+    fs.writeFileSync(path.join(tmpDir, `App.${extension}`), source);
+    cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const routes = cg.getNodesByKind('route');
+    return {
+      paths: routes.map((route) => route.name).sort(),
+      bindings: routes.flatMap((route) => cg!.getOutgoingEdges(route.id)
+        .filter((edge) => edge.kind === 'references')
+        .map((edge) => `${route.name}->${cg!.getNode(edge.target)?.name}`)).sort(),
+    };
+  }
+
+  it.each(['tsx', 'jsx', 'js'])('keeps nested/index JSX routes and long attributes local in %s', async (extension) => {
+    const result = await index(`
+      import { Routes, Route } from 'react-router-dom';
+      function DashboardHome() { return null; }
+      function Settings() { return null; }
+      function Shell() { return null; }
+      const comparison = count<limit;
+      const fake = '<Route path="/fake" element={<DashboardHome/>}/>';
+      export function App() {
+        return <Routes>
+          <Route path="/dashboard">
+            <Route index element={<DashboardHome/>}/>
+            <Route path="settings" element={<Settings/>}/>
+          </Route>
+          <Route path="/empty"></Route>
+          <Route element={<Settings/>} path="/sibling"/>
+          <Route element={<Shell title="a > b"><Settings path="/nested"/></Shell>}
+            check={/}/.test('}')}
+            handle={{ text: 'path="/borrowed"', nested: { element: <DashboardHome/> } }}
+            title="${'x'.repeat(600)}" path="/long"/>
+          <Route path="/no-element" handle={{ element: <DashboardHome/> }}/>
+          <Route component={Settings} path="/legacy"/>
+        </Routes>;
+      }
+    `, extension);
+    expect(result).toEqual({
+      paths: ['/dashboard', '/empty', '/legacy', '/long', '/no-element', '/sibling', 'settings'],
+      bindings: ['/legacy->Settings', '/long->Shell', '/sibling->Settings', 'settings->Settings'],
+    });
+  });
+
+  it.each(['tsx', 'jsx', 'ts', 'js'])('pairs only direct data-router properties in either order in %s', async (extension) => {
+    const result = await index(`
+      import { createBrowserRouter } from 'react-router-dom';
+      function DataIndex() { return null; }
+      function DataSettings() { return null; }
+      const routes = createBrowserRouter([
+        { path: '/data', children: [
+          { index: true, Component: DataIndex },
+          { Component: DataSettings, path: 'prefs' }
+        ] },
+        { path: '/empty' },
+        { Component: DataSettings, path: '/sibling' },
+        { path: '/metadata', handle: { Component: DataIndex } },
+        { Component: DataSettings, handle: { path: '/not-own' } },
+        { path: '/long', handle: { text: '${'x'.repeat(600)}' }, Component: DataSettings },
+        { 'Component': DataSettings, /* path: '/fake' */ 'path': '/quoted' /* trailing comment */ },
+        { path: '', Component: DataSettings }
+      ]);
+    `, extension);
+    expect(result).toEqual({
+      paths: ['/', '/long', '/quoted', '/sibling', 'prefs'],
+      bindings: ['/->DataSettings', '/long->DataSettings', '/quoted->DataSettings', '/sibling->DataSettings', 'prefs->DataSettings'],
+    });
+  });
+
+  it('keeps nested JSX and comma-containing expressions inside their data-router property', async () => {
+    const result = await index(`
+      import { createMemoryRouter } from 'react-router-dom';
+      function Shell() { return null; }
+      function Child() { return null; }
+      const router = createMemoryRouter([
+        { element: <Shell title="a > b"><Child path="/fake"/>hello, world</Shell>,
+          handle: { text: "}, path: '/fake'", callback: () => ({ path: '/also-fake' }) }, path: '/shell' },
+        { path: '/none', handle: { element: <Child/> } },
+        { path: '/child', element: <Child/> }
+      ]);
+    `, 'tsx');
+    expect(result).toEqual({ paths: ['/child', '/shell'], bindings: ['/child->Child', '/shell->Shell'] });
   });
 });

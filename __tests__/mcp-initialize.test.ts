@@ -16,12 +16,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
-import { rmTempDir } from './rm-temp';
+import { once } from 'events';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
-  return spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+  return spawn(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // Pin to direct (in-process) mode. #172 is a contract about the in-process
@@ -109,18 +110,15 @@ describe('MCP initialize handshake (issue #172)', () => {
   });
 
   afterEach(async () => {
-    // kill() only asks; the child still owns its cwd and the project database
-    // when it returns, and Windows will not delete either out from under a live
-    // process. POSIX removes them regardless, which is why CI never sees this.
-    if (child) {
-      if (child.exitCode === null && child.signalCode === null) {
-        const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
-        child.kill('SIGKILL');
-        await exited;
-      }
-      child = null;
+    // Spawn with the runtime flags so this is the server, not a relauncher
+    // whose grandchild would retain the Windows cwd/database handles.
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close');
+      child.kill('SIGKILL');
+      await closed;
     }
-    await rmTempDir(tempDir);
+    child = null;
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('responds to initialize quickly when no .codegraph exists in cwd', async () => {

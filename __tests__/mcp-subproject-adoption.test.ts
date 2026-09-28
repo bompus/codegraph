@@ -19,14 +19,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
-import { rmTempDir } from './rm-temp';
+import { once } from 'events';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
   // --no-watch keeps the test deterministic; CODEGRAPH_NO_DAEMON keeps the
   // session in direct mode so no detached daemon outlives the test.
-  return spawn(process.execPath, [BIN, 'serve', '--mcp', '--no-watch'], {
+  return spawn(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp', '--no-watch'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
@@ -115,18 +116,15 @@ describe('MCP workspace sub-project adoption (#1606) + no-default diagnostics (#
   });
 
   afterEach(async () => {
-    // kill() only asks; the child still owns its cwd and the project database
-    // when it returns, and Windows will not delete either out from under a live
-    // process. POSIX removes them regardless, which is why CI never sees this.
-    if (child) {
-      if (child.exitCode === null && child.signalCode === null) {
-        const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
-        child.kill('SIGKILL');
-        await exited;
-      }
-      child = null;
+    // Spawn with the runtime flags so this is the server, not a relauncher
+    // whose grandchild would retain the Windows cwd/database handles.
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, 'close');
+      child.kill('SIGKILL');
+      await closed;
     }
-    await rmTempDir(ws);
+    child = null;
+    fs.rmSync(ws, { recursive: true, force: true });
   });
 
   it('adopts the single indexed sub-project below a workspace root as the default project', async () => {
