@@ -59,7 +59,7 @@ const critical = checks.filter((c) => !c.ok && c.severity === 'critical');
 const soft = checks.filter((c) => !c.ok && c.severity === 'soft');
 console.log();
 if (critical.length) {
-  console.log(`RESULT: FAIL (${critical.length} critical) — extractor or grammar wiring is broken. Re-run dump-ast.mjs and fix the node-type mappings.`);
+  console.log(`RESULT: FAIL (${critical.length} critical) — extractor or grammar wiring is broken. Check the grammar's node-types.json and fix the node-type mappings.`);
   process.exit(1);
 }
 if (soft.length) {

@@ -70,8 +70,6 @@ See `docs/design/kernel-only-extraction-plan.md` for the parse-only path.
 
 ### Step 3 — Discover AST node types
 
-`scripts/add-lang/dump-ast.mjs` and `check-grammar.mjs` load grammars through
-`web-tree-sitter`, which this fork no longer installs, so they do not run.
 Get the node types from the grammar itself: its `src/node-types.json`, or
 `tree-sitter parse <sample>` from the grammar's repository (tree-sitter CLI).
 Use a representative sample covering functions, classes/structs, imports and

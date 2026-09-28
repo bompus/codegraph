@@ -2,8 +2,8 @@ import type { TreeNode as SyntaxNode } from '../parse-tree';
 import { getNodeText, getChildByField } from '../tree-sitter-helpers';
 import type { LanguageExtractor } from '../tree-sitter-types';
 
-// Grammar: tree-sitter-terraform (vendored at src/extraction/wasm/tree-sitter-terraform.wasm,
-// built from @tree-sitter-grammars/tree-sitter-hcl, Apache-2.0). The HCL grammar
+// Grammar: tree-sitter-terraform (vendored at codegraph-kernel/grammars/terraform,
+// from @tree-sitter-grammars/tree-sitter-hcl, Apache-2.0). The HCL grammar
 // is intentionally generic: ALL Terraform top-level constructs share the same
 // AST node type `block`, distinguished only by the first `identifier` child
 // (the block "type": resource, variable, data, module, output, locals, …).
