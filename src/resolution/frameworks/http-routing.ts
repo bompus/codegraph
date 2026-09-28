@@ -13,6 +13,7 @@ import { dependsOn } from './package-deps';
 import { recordSkip, skipped } from '../synth-skips';
 
 const DETECT_PASS = 'detect:http-routing';
+const AUTOLOAD_PASS = 'post:fastify-autoload';
 
 type Framework = 'hono' | 'elysia' | 'fastify' | 'hyper-express' | 'koa' | 'h3' | 'vixeny';
 type Binding =
@@ -862,6 +863,7 @@ function pluginExports(file: string, source: string): Map<string, string | boole
 /** Fastify joins a prefix and `/` to the bare prefix. */
 function fastifyJoin(prefix: string, route: string): string {
   if (!prefix) return route;
+  if (!prefix.startsWith('/')) prefix = '/' + prefix;
   return route === '/' ? prefix : prefix.replace(/\/$/, '') + route;
 }
 
@@ -885,10 +887,11 @@ function fastifyAutoloadRoutes(context: ResolutionContext): Node[] {
   const files = context.getAllFiles();
   const registrations: AutoloadRegistration[] = [];
   for (const file of files) {
-    if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(file)) continue;
+    if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) || skipped(context, AUTOLOAD_PASS, file)) continue;
     const source = context.readFile(file);
     if (source && /['"](?:@fastify\/autoload|fastify-autoload)['"]/.test(source))
       registrations.push(...autoloadRegistrations(file, source));
+    else recordSkip(context, AUTOLOAD_PASS, file, source);
   }
   const indexed = new Set(
     files.filter((f) => AUTOLOAD_INDEX.test(path.posix.basename(f))).map((f) => path.posix.dirname(f)),
@@ -903,7 +906,14 @@ function fastifyAutoloadRoutes(context: ResolutionContext): Node[] {
       AUTOLOAD_SCRIPT.test(name) &&
       !AUTOLOAD_HOOKS.test(name) &&
       (AUTOLOAD_INDEX.test(name) || !indexed.has(directory));
-    const covering = loaded ? registrations.filter((r) => file.startsWith(r.dir + '/')) : [];
+    // Autoload's default ignorePattern skips dot-named entries below `dir`.
+    const covering = loaded
+      ? registrations.filter(
+          (r) =>
+            file.startsWith(r.dir + '/') &&
+            !file.slice(r.dir.length + 1).split('/').some((part) => part.startsWith('.')),
+        )
+      : [];
     const exported = covering.length ? pluginExports(file, context.readFile(file) ?? '') : null;
     for (const r of covering) {
       if (!exported || exported.get('autoload') === false) {

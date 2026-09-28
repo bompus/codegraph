@@ -112,7 +112,7 @@ Dispatch and framework coverage the fork adds:
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
 | Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
 | C function pointers | `x->f = fn;` assignments, alongside table initializers |
-| HTTP routes | Literal routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny; Nuxt `server/routes/`, method suffixes and route groups |
+| HTTP routes | Literal routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny; Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/`, method suffixes and route groups |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
 | Remix / React Router file routes | The default `app/routes/` file convention (and `flatRoutes()`), linked to each page's default component |
 | Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |

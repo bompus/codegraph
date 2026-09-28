@@ -127,15 +127,18 @@ type. Routes declared on that parameter carry a `fastify-plugin:` marker in
 `qualifiedName`; `postExtract` then applies literal `register(AutoLoad, { dir })`
 registrations, following @fastify/autoload 6.5.0
 ([source](https://github.com/fastify/fastify-autoload/blob/fcfe8a2d0382c1cbd90a16b4e18239dece9b4aa7/index.js)):
-directory prefixes, index files hiding their siblings, autohooks files,
+directory prefixes, index files hiding their siblings, autohooks files, the
+default ignore of dot-named entries,
 literal `options.prefix`, `routeParams`, `appendAutoPrefix`,
 `dirNameRoutePrefix: false` and literal `autoPrefix`, `prefixOverride`,
 `autoConfig.prefix` and `autoload = false` exports. Options forwarded from the
 caller (`opts`, `{ ...opts }`) are taken to carry no prefix. `fastify-plugin`
 wrapped exports, route-object exports, filter/pattern/`maxDepth`/`encapsulate`
 options, a prefix on the context that registers autoload, and `dir` values
-other than `join(__dirname | import.meta.dirname, 'literal'…)` are not modelled;
-those files keep their in-file paths. Files autoload does not load keep theirs too,
+other than `join(__dirname | import.meta.dirname, 'literal'…)` are not modelled,
+nor is an `export { autoPrefix }` clause; those files keep their in-file paths.
+The file scan for registrations records content-only skips, so a sync re-reads
+only files that changed, and deleting the registering file restores the paths. Files autoload does not load keep theirs too,
 since `postExtract` can rename a node but not remove it.
 
 | Repository (pinned) | Routes before → after |

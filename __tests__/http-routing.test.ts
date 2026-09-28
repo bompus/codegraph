@@ -404,6 +404,11 @@ module.exports = async function (fastify, opts) {
       'routes/moved.js',
       `export default async function (fastify) { fastify.get('/', handler) }\nexport const autoPrefix = '/elsewhere'\n`,
     );
+    write(
+      'routes/bare.js',
+      `module.exports = async function (fastify) { fastify.get('/list', handler) }\nmodule.exports.autoPrefix = 'bare'\n`,
+    );
+    write('routes/_hidden/.drafts/x.js', route('/x'));
     write('params/users/_id/profile.js', route('/'));
     write('elsewhere/unloaded.js', route('/stays'));
     cg = await CodeGraph.init(dir, { index: true });
@@ -412,18 +417,21 @@ module.exports = async function (fastify, opts) {
         .getNodesByKind('route')
         .map((n) => `${n.filePath} ${n.name}`)
         .sort();
-    // Files autoload never loads (siblings of an index file, hooks, files
-    // outside a registered dir) keep the paths they declare.
-    expect(names()).toEqual([
+    // Files autoload never loads (siblings of an index file, hooks, dot
+    // directories, files outside a registered dir) keep the paths they declare.
+    const loaded = [
       'elsewhere/unloaded.js GET /stays',
       'params/users/_id/profile.js GET /p/users/:id',
+      'routes/_hidden/.drafts/x.js GET /x',
+      'routes/bare.js GET /bare/list',
       'routes/example/autohooks.js GET /hook',
       'routes/example/deep/list.js GET /example/deep/list',
       'routes/example/ignored.js GET /ignored',
       'routes/example/index.js GET /example',
       'routes/moved.js GET /elsewhere',
       'routes/root.js GET /',
-    ]);
+    ];
+    expect(names()).toEqual(loaded);
 
     // Dropping the registration restores the in-file paths on sync.
     write('app.js', app.replace(/.*'routes'.*\n/, ''));
@@ -431,6 +439,15 @@ module.exports = async function (fastify, opts) {
     expect(names()).toContain('routes/example/index.js GET /');
     expect(names()).toContain('routes/example/deep/list.js GET /list');
     expect(names()).toContain('params/users/_id/profile.js GET /p/users/:id');
+    // Restoring it after syncs that cached skips for the other files.
+    write('app.js', app);
+    await cg.sync();
+    expect(names()).toEqual(loaded);
+    // Deleting the registering file restores the in-file paths too.
+    fs.rmSync(path.join(dir, 'app.js'));
+    await cg.sync();
+    expect(names()).toContain('routes/example/index.js GET /');
+    expect(names()).toContain('params/users/_id/profile.js GET /');
   });
 
   it('detects a standalone Bun server without a dependency manifest', () => {
