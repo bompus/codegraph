@@ -245,8 +245,9 @@ impl KernelResolver {
             return Ok(candidate.kind != "function"
                 || !c_source_ext_re().is_match(&candidate.file_path)
                 || !self.is_static_c_function(candidate)?
-                || self.c_includes(&r.file_path, &candidate.file_path)?
-                || self.c_sole_includer(candidate, &r.file_path)?);
+                || (matches!(r.language.as_str(), "c" | "cpp")
+                    && (self.c_includes(&r.file_path, &candidate.file_path)?
+                        || self.c_sole_includer(candidate, &r.file_path)?)));
         }
         if lang == "go" {
             let first = candidate.name.chars().next().unwrap_or('_');
