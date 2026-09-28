@@ -464,3 +464,32 @@ describe('prompt-hook injection cap (#1694)', () => {
   });
 });
 
+
+describe('CodeGraph.open stays off the extraction stack', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-open-light-')));
+    fs.writeFileSync(path.join(tmp, 'a.ts'), 'export function alpha() { return 1; }\n');
+    const cg = await CodeGraph.init(tmp, { silent: true });
+    try { await cg.indexAll(); } finally { cg.destroy(); }
+  });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  // The prompt hook opens the index on every prompt with a prose word; loading
+  // the parser/resolver modules there cost ~25 MB and ~50 ms per prompt.
+  it('opens and queries without loading dist/extraction', () => {
+    const script = `
+      const { CodeGraph } = require(${JSON.stringify(path.resolve(__dirname, '../dist/codegraph.js'))});
+      CodeGraph.open(${JSON.stringify(tmp)}).then((cg) => {
+        const found = cg.getNodesByName('alpha').length;
+        cg.destroy();
+        const loaded = Object.keys(require.cache).filter((p) => /[\\\\/]dist[\\\\/]extraction[\\\\/]index\\.js$/.test(p));
+        process.stdout.write(JSON.stringify({ found, loaded }));
+      });
+    `;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 15_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ found: 1, loaded: [] });
+  });
+});
