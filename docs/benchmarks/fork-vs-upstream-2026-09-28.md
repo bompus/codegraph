@@ -112,6 +112,48 @@ on discourse (+5%) and supabase (+8%) is listed instead. More runs would not
 change the sync result: every corpus's gap exceeds its run spread, the
 narrowest being gin (21% gap, 13% spread). Supabase's index slowdown held on
 the quiet re-run. Discourse's +5% is close to its 4% run spread, but the
-2026-09-26 run measured the same +5%. The next step is to profile where the
-fork's extra index time goes on those two corpora (parsing, store or
-resolution) before deciding whether to work on it.
+2026-09-26 run measured the same +5%.
+
+The profile below traces most of both slowdowns to work upstream doesn't do:
+Markdown indexing on supabase and near-duplicate detection on discourse. That
+work is intended, so no fix is planned for it. Two items stay open: the
+near-duplicate pass (0.9–1.2 s per full index) is worth optimizing, and the
+fork's maintenance step ran about 1.2–1.4 s longer on average in the profile,
+for a reason not yet found.
+
+## Where the index time goes
+
+Both builds print per-phase times with `CODEGRAPH_SYNTH_TIMINGS=1`. Each corpus
+ran U F F U on a quiet host (same builds, same flags as above; upstream got its
+own `node_modules`, because it still needs `web-tree-sitter`). All 8 runs
+exited 0. Times are the two runs per arm, in seconds.
+
+| Phase | discourse U | discourse F | supabase U | supabase F |
+|---|---|---|---|---|
+| Wall time | 21.7, 22.5 | 25.1, 22.8 | 19.9, 19.7 | 21.2, 20.2 |
+| Files indexed | 20,033 | 20,277 | 8,738 | 10,716 |
+| Nodes | 163,060 | 167,759 | 113,460 | 151,302 |
+| parse-loop | 7.6, 7.7 | 7.9, 8.0 | 4.1, 4.2 | 5.0, 4.9 |
+| parse-index-rebuild + fts-rebuild | 1.5, 1.5 | 1.6, 1.6 | 1.3, 1.2 | 1.8, 1.8 |
+| resolution | 10.3, 10.4 | 8.7, 8.2 | 12.4, 12.0 | 9.4, 9.3 |
+| callback-synthesis | 1.9, 2.0 | 1.0, 1.0 | 2.0, 2.0 | 2.7, 2.2 |
+| near-duplicates (fork only) | — | 1.2, 1.2 | — | 0.9, 0.9 |
+| maintenance | 0.3, 0.9 | 1.5, 2.4 | 0.5, 0.4 | 1.6, 1.6 |
+
+- **supabase:** the fork indexes 1,978 Markdown files that upstream skips.
+  Every other language's file count matches exactly. The extra files and nodes
+  account for the slower parse, index rebuild and FTS rebuild, and for the
+  larger database.
+- **discourse:** 244 more files (the repo has 258 Markdown files) and 3% more
+  nodes. The visible fork-only cost is the near-duplicate pass.
+- **resolution** is 19% faster on discourse and 23% faster on supabase.
+  Callback synthesis is twice as fast on discourse but 0.5 s slower on
+  supabase, probably because the extra Markdown nodes give the passes more to
+  scan (not measured).
+- **maintenance** runs the same code in both builds (`PRAGMA optimize` plus a
+  passive checkpoint of a 0.5–0.6 GB WAL, on a worker thread), yet the fork
+  was slower in all four runs. A separate supabase pair split the step into
+  WAL-valve drain and pragmas and measured 0.30 s upstream and 0.50 s fork,
+  much less than the profile's gap. One pair doesn't explain the difference;
+  it's still open.
+- Phase times add up to more than the wall time because some phases overlap.
