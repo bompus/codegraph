@@ -146,6 +146,41 @@ impl KernelResolver {
         Ok(is_static)
     }
 
+    /// Whether `includer` has a quoted `#include` that names `included`
+    /// relative to its own directory. The two files then share a translation
+    /// unit, so a `static` function in one is visible in the other: CPython's
+    /// `Modules/clinic/*.c.h` wrappers call `static` `*_impl` functions in the
+    /// `.c` file that includes them.
+    fn c_includes(&self, includer: &str, included: &str) -> Res<bool> {
+        let dir = pos_dirname(includer);
+        Ok(self.nodes_in_file(includer)?.iter().any(|n| {
+            n.kind == "import"
+                && n.signature.as_deref().is_some_and(|s| s.contains('"'))
+                && pos_normalize(&format!("{}/{}", dir, n.name)).trim_start_matches('/') == included
+        }))
+    }
+
+    /// Whether `candidate`'s file includes `fragment` and no other file that
+    /// includes it defines a C function of the same name. A fragment shared by
+    /// several files names a different function in each: Linux
+    /// `fs/minix/itree_common.c` is included by `itree_v1.c` and `itree_v2.c`,
+    /// which each define a `static` `block_to_cpu`.
+    fn c_sole_includer(&self, candidate: &KNode, fragment: &str) -> Res<bool> {
+        if !self.c_includes(&candidate.file_path, fragment)? {
+            return Ok(false);
+        }
+        for n in self.nodes_by_name(&candidate.name)?.iter() {
+            if n.file_path != candidate.file_path
+                && n.kind == "function"
+                && (n.language == "c" || n.language == "cpp")
+                && self.c_includes(&n.file_path, fragment)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// isRustTraitImplMethod (name-matcher.ts) — scan upward for the nearest
     /// `impl` header; `impl Trait for` wins, a top-level item ends the scan.
     pub(super) fn is_rust_trait_impl_method(&mut self, candidate: &KNode) -> Res<bool> {
@@ -209,7 +244,10 @@ impl KernelResolver {
         if lang == "c" || lang == "cpp" {
             return Ok(candidate.kind != "function"
                 || !c_source_ext_re().is_match(&candidate.file_path)
-                || !self.is_static_c_function(candidate)?);
+                || !self.is_static_c_function(candidate)?
+                || (matches!(r.language.as_str(), "c" | "cpp")
+                    && (self.c_includes(&r.file_path, &candidate.file_path)?
+                        || self.c_sole_includer(candidate, &r.file_path)?)));
         }
         if lang == "go" {
             let first = candidate.name.chars().next().unwrap_or('_');
