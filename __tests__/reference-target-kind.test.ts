@@ -223,10 +223,7 @@ describe('reference target-kind gate', () => {
     expect(has(edges, 'FooService', 'IFooService', 'constant')).toBe(false);
     expect(failed.some((r) => r.name === 'IFooService')).toBe(false);
   };
-  // Fork: kernel port pending (value+interface pair, value declared first); see the upstream merge follow-ups.
-  it.skip.each([['value declared first', 'const']])(
-    'binds implements to the interface of a value+interface pair (%s)', bindsValueInterfacePair);
-  it.each([['interface declared first', 'interface']])(
+  it.each([['value declared first', 'const'], ['interface declared first', 'interface']])(
     'binds implements to the interface of a value+interface pair (%s)', bindsValueInterfacePair);
 
   it('still drops an implements whose only same-named target is a value', async () => {
