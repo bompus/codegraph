@@ -423,13 +423,36 @@ impl KernelResolver {
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
         }
+        let mut cand = cand;
         if !is_supertype_target(&cand.node) {
-            return Ok(None);
+            // `export const IFoo = createDecorator<IFoo>(…)` beside `export
+            // interface IFoo` (VS Code's service pattern): the strategy found
+            // the right file and name, so the edge moves to the type (#2055).
+            let Some(ty) = self.same_named_type_of_value(&cand.node)? else {
+                return Ok(None);
+            };
+            cand.node = ty;
         }
         if self.is_bound_to_out_of_repo_import(r)? {
             return Ok(None);
         }
         Ok(Some(cand))
+    }
+
+    /// The one supertype-kind node a TypeScript value shares its name and file with.
+    fn same_named_type_of_value(&self, value: &KNode) -> Res<Option<Arc<KNode>>> {
+        if !matches!(value.kind.as_str(), "constant" | "variable")
+            || !matches!(value.language.as_str(), "typescript" | "tsx")
+        {
+            return Ok(None);
+        }
+        let mut types = self
+            .nodes_in_file(&value.file_path)?
+            .iter()
+            .filter(|n| n.name == value.name && is_supertype_target(n))
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(if types.len() == 1 { types.pop() } else { None })
     }
 
     /// aliasTargetName + resolveAliasBinding (alias-binding.ts). `member_name`
