@@ -45,8 +45,7 @@ afterEach(() => {
 const GO_MOD = 'module example.com/app\n\ngo 1.22\n';
 
 describe('a receiver-less Go call never binds to a method (#1857)', () => {
-  // Fork: kernel port pending (#1857); see the upstream merge follow-ups.
-  it.skip('does not bind a call to a func parameter onto a same-package method', async () => {
+  it('does not bind a call to a func parameter onto a same-package method', async () => {
     const out = await callees(
       {
         'go.mod': GO_MOD,
@@ -74,8 +73,7 @@ describe('a receiver-less Go call never binds to a method (#1857)', () => {
     expect(out.filter((c) => c.startsWith('method:'))).toEqual([]);
   });
 
-  // Fork: kernel port pending (#1857); see the upstream merge follow-ups.
-  it.skip('does not bind a capitalised bare call onto an exported method of an unimported package', async () => {
+  it('does not bind a capitalised bare call onto an exported method of an unimported package', async () => {
     const out = await callees(
       {
         'go.mod': GO_MOD,
