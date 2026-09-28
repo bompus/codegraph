@@ -33,8 +33,49 @@ const join = (base: string, path: string): string =>
  */
 const TABLE_MARKER = 'solid-table:';
 /** A relative or project-alias module (`./page`, `@/routes/home`, `~/page`), not a package. */
-const LOCAL_MODULE = /^(?:\.|\/|[@~#]\/)/;
+const LOCAL_MODULE = /^(?:\.|[@~#]\/)/;
 
+/** Whether a parameter or block declaration between `site` and the module rebinds `name`. */
+const shadowed = (name: string, site: SyntaxNode): boolean => {
+  for (let scope = site.parent; scope && scope.type !== 'program'; scope = scope.parent) {
+    const params =
+      scope.childForFieldName('parameters') ?? scope.childForFieldName('parameter');
+    if (
+      params &&
+      [
+        params,
+        ...params.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
+      ].some((n) => n.text === name)
+    )
+      return true;
+    if (scope.type === 'statement_block')
+      for (const child of scope.namedChildren) {
+        if (
+          ['function_declaration', 'class_declaration'].includes(child.type) &&
+          child.childForFieldName('name')?.text === name
+        )
+          return true;
+        if (
+          ['lexical_declaration', 'variable_declaration'].includes(child.type) &&
+          child.descendantsOfType('variable_declarator').some((n) => {
+            const pattern = n.childForFieldName('name');
+            return (
+              pattern &&
+              [
+                pattern,
+                ...pattern.descendantsOfType([
+                  'identifier',
+                  'shorthand_property_identifier_pattern',
+                ]),
+              ].some((binding) => binding.text === name)
+            );
+          })
+        )
+          return true;
+      }
+  }
+  return false;
+};
 /** Local name → the names a module exports it under (`default` included). */
 const exportedBindings = (program: SyntaxNode): Map<string, string[]> => {
   const exported = new Map<string, string[]>();
@@ -151,46 +192,6 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
             }
       }
     }
-    const shadowed = (name: string, site: SyntaxNode): boolean => {
-      for (let scope = site.parent; scope && scope.type !== 'program'; scope = scope.parent) {
-        const params =
-          scope.childForFieldName('parameters') ?? scope.childForFieldName('parameter');
-        if (
-          params &&
-          [
-            params,
-            ...params.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
-          ].some((n) => n.text === name)
-        )
-          return true;
-        if (scope.type === 'statement_block')
-          for (const child of scope.namedChildren) {
-            if (
-              ['function_declaration', 'class_declaration'].includes(child.type) &&
-              child.childForFieldName('name')?.text === name
-            )
-              return true;
-            if (
-              ['lexical_declaration', 'variable_declaration'].includes(child.type) &&
-              child.descendantsOfType('variable_declarator').some((n) => {
-                const pattern = n.childForFieldName('name');
-                return (
-                  pattern &&
-                  [
-                    pattern,
-                    ...pattern.descendantsOfType([
-                      'identifier',
-                      'shorthand_property_identifier_pattern',
-                    ]),
-                  ].some((binding) => binding.text === name)
-                );
-              })
-            )
-              return true;
-          }
-      }
-      return false;
-    };
     const resolve = (
       raw: SyntaxNode | null | undefined,
       seen = new Set<string>(),
@@ -353,21 +354,31 @@ export function extractSolidRoutes(filePath: string, content: string): Framework
       const text = type?.text.replace(/^:\s*/, '').replace(/\s+/g, '') ?? '';
       return [...routeTypes].some((t) => text === `${t}[]` || text === `Array<${t}>`);
     };
+    const tables: [string, SyntaxNode][] = [];
     for (const [local, names] of exportedBindings(tree.rootNode)) {
       const raw = bindings.get(local);
       if (!raw || mutated.has(local)) continue;
       const declarator = raw.parent;
       const value = unwrap(raw);
       if (
-        value?.type !== 'array' ||
-        registered.has(value.startIndex) ||
-        !(
-          typed(declarator?.childForFieldName('type')) ||
-          (['satisfies_expression', 'as_expression'].includes(raw.type) && typed(raw.namedChildren[1]))
+        value?.type === 'array' &&
+        !registered.has(value.startIndex) &&
+        (typed(declarator?.childForFieldName('type')) ||
+          (['satisfies_expression', 'as_expression'].includes(raw.type) && typed(raw.namedChildren[1])))
+      )
+        tables.push([names.join(','), value]);
+    }
+    for (const [names, value] of tables) {
+      // A table another table in this file nests is read through that one.
+      if (
+        tables.some(
+          ([, other]) =>
+            other !== value &&
+            other.descendantsOfType('identifier').some((n) => resolve(n)?.startIndex === value.startIndex),
         )
       )
         continue;
-      table = names.join(',');
+      table = names;
       visit(value, '');
       table = null;
     }
@@ -481,11 +492,14 @@ function solidTableRoutes(context: ResolutionContext): Node[] {
     const node = unwrap(value);
     return !node ? [''] : node.type === 'array' ? node.namedChildren.map(literal) : [literal(node)];
   };
-  const uses = (file: string, entry: Parsed, local: string, depth: number): (string | null)[] | null =>
+  // `moduleLevel`: `local` is an import or top-level const, so an inner
+  // declaration of the same name is a different binding.
+  const uses = (file: string, entry: Parsed, local: string, depth: number, moduleLevel = true): (string | null)[] | null =>
     entry.program
       .descendantsOfType('identifier')
       .filter((n) => n.text === local && n.parent?.type !== 'import_specifier' &&
-        n.parent?.type !== 'import_clause' && n.parent?.childForFieldName('name')?.id !== n.id)
+        n.parent?.type !== 'import_clause' && n.parent?.childForFieldName('name')?.id !== n.id &&
+        !(moduleLevel && shadowed(local, n)))
       .flatMap((n) => bases(file, entry, n, depth + 1) ?? [null]);
   // Where the table expression `node` is registered in this file.
   const bases = (file: string, entry: Parsed, node: SyntaxNode, depth: number): (string | null)[] | null => {
@@ -514,6 +528,8 @@ function solidTableRoutes(context: ResolutionContext): Node[] {
       const opening = element?.namedChildren.find((n) => n.type === 'jsx_opening_element');
       const helper = entry.helpers.get(opening?.childForFieldName('name')?.text ?? '');
       if (!element || !opening || !helper) return [];
+      // Props spread onto the element may set its base or path.
+      if (opening.namedChildren.some((n) => n.type === 'jsx_expression')) return null;
       const attribute = (name: string) =>
         opening.namedChildren.find((n) => n.type === 'jsx_attribute' && n.namedChildren[0]?.text === name)
           ?.namedChildren[1];
@@ -523,7 +539,8 @@ function solidTableRoutes(context: ResolutionContext): Node[] {
     if (parent.type === 'variable_declarator' && parent.childForFieldName('value')?.id === current.id) {
       const name = parent.childForFieldName('name');
       if (name?.type !== 'identifier') return [];
-      const found = uses(file, entry, name.text, depth);
+      const topLevel = ['program', 'export_statement'].includes(parent.parent?.parent?.type ?? '');
+      const found = uses(file, entry, name.text, depth, topLevel);
       const exported = entry.exported.get(name.text);
       const table = exported && exported.map((e) => tableFor(file, e)).find(Boolean);
       const outer = table ? tablePrefixes(table) : new Set<string>();

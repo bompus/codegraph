@@ -936,7 +936,7 @@ export class CodeGraph {
           // deleting a handler file must re-run that pass; a route prefixed by
           // where another file registers it must drop a deleted registration.
           if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:redwood:') ||
-            n.qualifiedName.includes('::fastify-plugin:')))
+            n.qualifiedName.includes('::fastify-plugin:') || n.qualifiedName.includes('::solid-table:')))
             this.resolver.runPostExtract();
         }
 
