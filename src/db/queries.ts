@@ -176,6 +176,28 @@ function referenceNameTail(referenceName: string): string {
 /**
  * Convert database row to Node object
  */
+/**
+ * The `path:` / `name:` hard filters of a search query. They go into every
+ * candidate query's SQL so a capped fetch cannot fill with rows the final gate
+ * would drop. Both sides are folded with SQLite's ASCII `lower()`; the JS gate
+ * in `searchNodes` still runs last and keeps the Unicode-folded semantics.
+ */
+interface HardFilters {
+  paths: string[];
+  names: string[];
+}
+
+function appendHardFilters(hard: HardFilters | undefined, params: (string | number)[]): string {
+  if (!hard) return '';
+  let sql = '';
+  for (const [column, values] of [['nodes.file_path', hard.paths], ['nodes.name', hard.names]] as const) {
+    if (values.length === 0) continue;
+    sql += ` AND (${values.map(() => `instr(lower(${column}), lower(?)) > 0`).join(' OR ')})`;
+    params.push(...values);
+  }
+  return sql;
+}
+
 function rowToNode(row: NodeRow): Node {
   return {
     id: row.id,
@@ -1503,19 +1525,18 @@ export class QueryBuilder {
     const text = parsed.text;
     const kinds = mergedKinds;
     const languages = mergedLanguages;
+    const hard: HardFilters = { paths: pathFilters, names: nameFilters };
 
     // First try FTS5 with prefix matching (skip if FTS5 not available, #1532)
     let results = text
-      ? (this._fts5Available !== false ? this.searchNodesFTS(text, { kinds, languages, limit, offset }) : [])
-      // Over-fetch by 5× when running filter-only (no text). The
-      // post-scoring path: + name: filters can be very selective, so
-      // a smaller multiplier risks returning fewer than `limit`
-      // results despite the DB having plenty of matches.
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 });
+      ? (this._fts5Available !== false ? this.searchNodesFTS(text, { kinds, languages, limit, offset }, hard) : [])
+      // Over-fetch by 5× when running filter-only (no text) so scoring has
+      // more than `limit` candidates to rank.
+      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 }, hard);
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
-      results = this.searchNodesLike(text, { kinds, languages, limit, offset });
+      results = this.searchNodesLike(text, { kinds, languages, limit, offset }, hard);
     }
 
     // Final fuzzy fallback: scan all known names and keep those within
@@ -1523,7 +1544,7 @@ export class QueryBuilder {
     // returned nothing AND there's a text portion long enough to be
     // worth fuzzing (1-char queries would match too much).
     if (results.length === 0 && text.length >= 3) {
-      results = this.searchNodesFuzzy(text, { kinds, languages, limit });
+      results = this.searchNodesFuzzy(text, { kinds, languages, limit }, hard);
     }
 
     // Supplement: ensure exact name matches are always candidates.
@@ -1560,6 +1581,7 @@ export class QueryBuilder {
           sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
           params.push(...languages);
         }
+        sql += appendHardFilters(hard, params);
         sql += ' LIMIT 20';
         const rows = this.db.prepare(sql).all(...params) as NodeRow[];
         for (const row of rows) {
@@ -1593,16 +1615,12 @@ export class QueryBuilder {
         };
       });
       results.sort((a, b) => b.score - a.score);
-      // Trim to requested limit after rescoring
-      if (results.length > limit) {
-        results = results.slice(0, limit);
-      }
     }
 
-    // Apply path: + name: filters AFTER scoring. Scoring already uses
-    // path/name as a soft signal; the explicit filters here are a hard
-    // gate. Done last so the FTS limit fetched plenty of candidates to
-    // narrow from.
+    // path: + name: are a hard gate. The candidate queries already applied
+    // them in SQL; this pass keeps the Unicode case folding SQLite's lower()
+    // lacks. Filter before trimming to `limit`, or out-of-scope matches that
+    // scored higher crowd the in-scope ones out.
     if (pathFilters.length > 0) {
       const lowered = pathFilters.map((p) => p.toLowerCase());
       results = results.filter((r) => {
@@ -1618,7 +1636,7 @@ export class QueryBuilder {
       });
     }
 
-    return results;
+    return results.length > limit ? results.slice(0, limit) : results;
   }
 
   /**
@@ -1627,11 +1645,10 @@ export class QueryBuilder {
    * candidates ordered by name; the caller's filter pass narrows to
    * what was asked for.
    */
-  private searchAllByFilters(options: {
-    kinds?: NodeKind[];
-    languages?: Language[];
-    limit: number;
-  }): SearchResult[] {
+  private searchAllByFilters(
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number },
+    hard?: HardFilters
+  ): SearchResult[] {
     const { kinds, languages, limit } = options;
     let sql = 'SELECT * FROM nodes WHERE 1=1';
     const params: (string | number)[] = [];
@@ -1643,6 +1660,7 @@ export class QueryBuilder {
       sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
       params.push(...languages);
     }
+    sql += appendHardFilters(hard, params);
     sql += ' ORDER BY name LIMIT ?';
     params.push(limit);
     const rows = this.db.prepare(sql).all(...params) as NodeRow[];
@@ -1659,7 +1677,8 @@ export class QueryBuilder {
    */
   private searchNodesFuzzy(
     text: string,
-    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number }
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number },
+    hard?: HardFilters
   ): SearchResult[] {
     const { kinds, languages, limit } = options;
     const lowered = text.toLowerCase();
@@ -1699,6 +1718,7 @@ export class QueryBuilder {
         sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
         params.push(...languages);
       }
+      sql += appendHardFilters(hard, params);
       sql += ' LIMIT 5';
       const rows = this.db.prepare(sql).all(...params) as NodeRow[];
       for (const row of rows) {
@@ -1761,7 +1781,7 @@ export class QueryBuilder {
   /**
    * FTS5 search with prefix matching
    */
-  private searchNodesFTS(query: string, options: SearchOptions): SearchResult[] {
+  private searchNodesFTS(query: string, options: SearchOptions, hard?: HardFilters): SearchResult[] {
     const { kinds, languages, limit = 100, offset = 0 } = options;
 
     // Add prefix wildcard for better matching (e.g., "auth" matches "AuthService", "authenticate")
@@ -1817,6 +1837,8 @@ export class QueryBuilder {
       params.push(...languages);
     }
 
+    sql += appendHardFilters(hard, params);
+
     sql += `
         ORDER BY score, rid LIMIT ? OFFSET ?
       ) ranked
@@ -1841,7 +1863,7 @@ export class QueryBuilder {
    * LIKE-based substring search for cases where FTS doesn't match
    * Useful for camelCase matching (e.g., "signIn" finds "signInWithGoogle")
    */
-  private searchNodesLike(query: string, options: SearchOptions): SearchResult[] {
+  private searchNodesLike(query: string, options: SearchOptions, hard?: HardFilters): SearchResult[] {
     const { kinds, languages, limit = 100, offset = 0 } = options;
 
     let sql = `
@@ -1885,6 +1907,8 @@ export class QueryBuilder {
       sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
       params.push(...languages);
     }
+
+    sql += appendHardFilters(hard, params);
 
     sql += ' ORDER BY score DESC, length(name) ASC LIMIT ? OFFSET ?';
     params.push(limit, offset);
