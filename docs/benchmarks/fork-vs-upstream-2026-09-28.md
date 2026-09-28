@@ -116,10 +116,9 @@ the quiet re-run. Discourse's +5% is close to its 4% run spread, but the
 
 The profile below traces most of both slowdowns to work upstream doesn't do:
 Markdown indexing on supabase and near-duplicate detection on discourse. That
-work is intended, so no fix is planned for it. Two items stay open: the
-near-duplicate pass (0.9–1.2 s per full index) is worth optimizing, and the
-fork's maintenance step ran about 1.2–1.4 s longer on average in the profile,
-for a reason not yet found.
+work is intended, so no fix is planned for it. The two follow-ups below, the
+near-duplicate pass and the maintenance step, didn't produce a change worth
+making either.
 
 ## Where the index time goes
 
@@ -154,6 +153,29 @@ exited 0. Times are the two runs per arm, in seconds.
   passive checkpoint of a 0.5–0.6 GB WAL, on a worker thread), yet the fork
   was slower in all four runs. A separate supabase pair split the step into
   WAL-valve drain and pragmas and measured 0.30 s upstream and 0.50 s fork,
-  much less than the profile's gap. One pair doesn't explain the difference;
-  it's still open.
+  much less than the profile's gap. See the follow-ups below.
 - Phase times add up to more than the wall time because some phases overlap.
+
+## Follow-ups
+
+**Near-duplicate pass.** Profiled cold on the supabase index (signatures and
+cached scores cleared, 5 runs per build): 0.81–0.92 s. MinHash signing and
+shingling take about 400 ms of that, and scoring candidate pairs, which
+re-reads their bodies, about 200 ms. Two changes were tried and dropped, each
+with identical output:
+- Swapping the signing loop (one hash at a time over a flat array) was slower,
+  267 ms per run against 207 ms.
+- Deciding exclusion once per file instead of per body saved at most 30 ms,
+  inside run-to-run noise.
+
+The pass is about 4% of a full index, so it stays as is.
+
+**Maintenance step.** `PRAGMA optimize`'s analysis isn't the cause: a full
+`ANALYZE` (with `analysis_limit=1000`) of each finished supabase database
+took 3–60 ms. That leaves the final passive WAL checkpoint, which copies the
+finished pages into the database file, and the fork's supabase database is 36%
+larger. In the split probe, upstream's WAL valve was still folding pages when
+maintenance began (113 ms drain) while the fork's had finished, so the two
+builds split the same work differently between resolution and maintenance.
+Confirming that would take instrumented runs of the valve, which isn't worth
+it for about 1 s on a 20 s index. No change is planned.
