@@ -187,6 +187,25 @@ impl<'t> Walker<'t> {
             .then_some(prev)
     }
 
+    /// `static PyObject *Py_PRESERVE_NONE_CC _TAIL_CALL_error(TAIL_CALL_PARAMS);`
+    /// is the prototype form of attribute_declaration_before: the attribute
+    /// macro ends an unterminated declaration, and the name and parameters
+    /// read as a file-level call. True for either half; neither is a variable
+    /// or a call.
+    pub(super) fn is_attribute_prototype_part(&self, node: Node) -> bool {
+        let (decl, stmt) = match node.kind() {
+            "declaration" => (Some(node), node.next_named_sibling()),
+            "expression_statement" => (node.prev_named_sibling(), Some(node)),
+            _ => return false,
+        };
+        let (Some(decl), Some(stmt)) = (decl, stmt) else { return false };
+        decl.kind() == "declaration"
+            && stmt.kind() == "expression_statement"
+            && stmt.named_child(0).is_some_and(|c| c.kind() == "call_expression")
+            && stmt.start_position().row.saturating_sub(decl.end_position().row) <= 1
+            && !self.text(decl).trim_end().ends_with(';')
+    }
+
     /// A condition a macro misparsed at file level: `catch (e) {` in an
     /// EM_JS body, or `if mi_unlikely(x) {` whose `if` became an ERROR.
     fn is_macro_condition(&self, node: Node) -> bool {
