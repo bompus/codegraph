@@ -1,0 +1,218 @@
+{
+  "timestamp": "2026-09-28T23:15:24.814Z",
+  "corpus": "flask",
+  "repo": "https://github.com/pallets/flask.git",
+  "commit": "d73fa1c",
+  "codegraphSha": "2fa833d5",
+  "summary": {
+    "gatingCases": 12,
+    "passed": 12,
+    "byCategory": {
+      "exact": {
+        "cases": 2,
+        "passed": 2,
+        "mrr": 1
+      },
+      "prefix": {
+        "cases": 1,
+        "passed": 1,
+        "mrr": 1
+      },
+      "words": {
+        "cases": 2,
+        "passed": 2,
+        "mrr": 1
+      },
+      "typo": {
+        "cases": 1,
+        "passed": 1,
+        "mrr": 0.333
+      },
+      "filter": {
+        "cases": 2,
+        "passed": 2,
+        "mrr": 1
+      },
+      "scoped": {
+        "cases": 1,
+        "passed": 1,
+        "mrr": 0.5
+      },
+      "unicode": {
+        "cases": 3,
+        "passed": 3,
+        "mrr": 1
+      }
+    },
+    "latency": {
+      "p50": 0.27,
+      "p95": 1.85,
+      "max": 1.85
+    },
+    "knownLimits": 0,
+    "knownLimitsFixed": 0
+  },
+  "results": [
+    {
+      "id": "flask-exact-url-for",
+      "category": "exact",
+      "query": "url_for",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.7323900000000094,
+      "problems": []
+    },
+    {
+      "id": "flask-exact-class",
+      "category": "exact",
+      "query": "Flask",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 1.8502210000000332,
+      "problems": []
+    },
+    {
+      "id": "flask-prefix-send-from",
+      "category": "prefix",
+      "query": "send_from",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.23360300000001644,
+      "problems": []
+    },
+    {
+      "id": "flask-words-snake",
+      "category": "words",
+      "query": "url for",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 1.8022999999999456,
+      "problems": []
+    },
+    {
+      "id": "flask-typo-blueprint",
+      "category": "typo",
+      "query": "Bluprint",
+      "pass": true,
+      "ranks": [
+        3
+      ],
+      "mrr": 0.3333333333333333,
+      "filterViolations": [],
+      "medianMs": 1.1668940000000703,
+      "problems": []
+    },
+    {
+      "id": "flask-filter-path-kind",
+      "category": "filter",
+      "query": "path:src/flask/sansio kind:class",
+      "pass": true,
+      "ranks": [
+        1,
+        2,
+        4
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.2423399999998992,
+      "problems": []
+    },
+    {
+      "id": "flask-filter-method-name",
+      "category": "filter",
+      "query": "kind:method path:src/flask/app.py name:handle",
+      "pass": true,
+      "ranks": [
+        1,
+        2,
+        3
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.24929299999996601,
+      "problems": []
+    },
+    {
+      "id": "flask-scoped-session-transaction",
+      "category": "scoped",
+      "query": "path:src/flask/testing.py open",
+      "pass": true,
+      "ranks": [
+        2
+      ],
+      "mrr": 0.5,
+      "filterViolations": [],
+      "unfilteredRank": 0,
+      "medianMs": 0.27367000000003827,
+      "problems": []
+    },
+    {
+      "id": "flask-unicode-lower",
+      "category": "unicode",
+      "query": "киртест",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.09289599999999609,
+      "problems": []
+    },
+    {
+      "id": "flask-unicode-upper",
+      "category": "unicode",
+      "query": "КИРТЕСТ",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.10738399999991088,
+      "problems": []
+    },
+    {
+      "id": "flask-unicode-name-filter",
+      "category": "unicode",
+      "query": "name:КИРТЕСТ",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.4698110000000497,
+      "problems": []
+    },
+    {
+      "id": "flask-limit-spaced-words",
+      "category": "words",
+      "query": "add url rule",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 1.6522560000000794,
+      "problems": []
+    }
+  ]
+}
