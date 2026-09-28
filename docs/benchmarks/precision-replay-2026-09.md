@@ -1,8 +1,34 @@
-# Call-edge precision: repowise's graded rows replayed on the fork (2026-09-25)
+# Call-edge precision: repowise's graded rows replayed on the fork (2026-09-25, re-run 2026-09-28)
 
 **Question.** repowise's benchmark graded 280 call edges emitted by CodeGraph 1.5.0 and found 58.6% correct (TypeScript 7/30, Kotlin 13/30, Python 19/30, C# 20/30 were the four languages that separated from repowise). The fork has since landed the binding model and the kernel resolver. Which of those graded edges does the fork still emit, and to what? This is step 1 of [the strategy doc](../design/strategy-2026-09.md) §6.
 
 **Answer.** On the same 120 rows for those four languages, the fork's retained edges are **46 correct of 66 (70%)**, against 59 of 120 (49%) for 1.5.0 on the same rows. It got there mostly by declining rather than by resolving better. TypeScript dropped 28 of its 30 rows, including 6 of the 7 correct ones, so the fork's TypeScript member-call recall is now the larger problem. Kotlin is now the least precise language: 12 of its 23 retained edges are still wrong.
+
+## Re-run on upstream `main` and the fork (2026-09-28)
+
+The table above compares the fork with release 1.5.0, the build repowise graded. To compare with current upstream, the same 120 rows were replayed on two fresh indexes of the same checkouts: upstream `main` at `290e03f7` and the fork at `48903f51`, both built from source and run on Node 24.21.0. `replay-repowise-g1.py` now takes `CG_DIR` and `OUT_TAG`, so both indexes sit side by side:
+
+```sh
+CG_DIR=.cg-up OUT_TAG=up python3 replay-repowise-g1.py typescript python csharp kotlin
+CG_DIR=.cg-fork OUT_TAG=fork python3 replay-repowise-g1.py typescript python csharp kotlin
+```
+
+| language | upstream keeps | of which correct | fork keeps | of which correct |
+|---|---|---|---|---|
+| typescript (zod) | 9 | 1 (11%) | 6 | **6 (100%)** |
+| python (celery) | 24 | 16 (67%) | 18 | **16 (89%)** |
+| csharp (Ocelot) | 24 | 18 (75%) | 24 | 18 (75%) |
+| kotlin (javalin, ktor, Exposed) | 28 | 13 (46%) | 23 | **12 (52%)** |
+| **four languages** | **85** | **48 (56%)** | **71** | **52 (73%)** |
+
+Upstream `main` now declines most of zod's rows too (20 of 30 left unresolved), so 1.5.0's 49% is no longer upstream's figure. The rows where the two builds differ:
+
+- **TypeScript.** The fork resolves five `z.string()` / `z.number()` calls, where `z` is `import * as z from "zod/v4"` or `"zod/mini"`, to the `string` and `number` functions in the matching `schemas.ts`. 1.5.0 bound them to methods of a test mock (`Mocker::string`, `Mocker::number`), and upstream still binds 8 rows of that kind to `Mocker`. All five are correct: the namespace import now resolves through the package's own `exports` map.
+- **Python.** The fork rebinds `group(...)` and `signature('t')` to the `celery.canvas` declarations their imports name (correct, as graded above) and declines 4 more of 1.5.0's wrong rows, at the cost of 2 correct ones.
+- **Kotlin.** Upstream keeps all 13 correct rows and 14 wrong ones unchanged. The fork declines 4 correct and 3 wrong rows and rebinds 4: `path("/1") { … }` to the statically imported `ApiBuilder.path`, `TestUtil.test`, and `StringValuesBuilder::append` (correct), and the `getProperty` declaration line (wrong, as in both builds).
+- **C#.** Identical on both builds, including the wrong declaration-line row.
+
+Result files: `replay-typescript-python-csharp-kotlin-{up,fork}.json` in the scratch directory; the changed rows were graded by reading the source at the pinned commit.
 
 ## Method
 
