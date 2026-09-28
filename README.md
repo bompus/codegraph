@@ -170,7 +170,7 @@ The precision gain comes mostly from declining uncertain links rather than resol
 ### What it costs
 
 - **Larger database:** 11–20% bigger on six of the seven corpora above, and 36% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower full index on discourse and supabase:** 5% and 8% slower. On the other five corpora the fork is faster. A phase profile puts the gap on work upstream skips: on supabase, parsing and storing the 1,978 Markdown files (23% more files, 33% more nodes); on discourse, the 1.2 s near-duplicate pass. The fork's closing maintenance step also ran about 1.3 s longer, for a reason not yet found. Resolution, which both builds do, is 19–23% faster on the fork ([profile](docs/benchmarks/fork-vs-upstream-2026-09-28.md#where-the-index-time-goes)).
+- **Slower full index on discourse and supabase:** 5% and 8% slower. On the other five corpora the fork is faster. A phase profile puts the gap on work upstream skips: on supabase, parsing and storing the 1,978 Markdown files (23% more files, 33% more nodes); on discourse, the 1.2 s near-duplicate pass. The fork's closing maintenance step also ran about 1.3 s longer, most likely its final WAL checkpoint writing the larger database (not confirmed). Resolution, which both builds do, is 19–23% faster on the fork ([profile](docs/benchmarks/fork-vs-upstream-2026-09-28.md#where-the-index-time-goes)).
 - **Fewer edges on some projects:** 5–16% fewer on pretix, CPython and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
 
 ### Runtimes
