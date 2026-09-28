@@ -58,7 +58,7 @@ The fork publishes no releases. The install scripts, npm package, badges and `co
 
 ### Install the fork from source
 
-You need Node.js 22.5 or newer, git, and a [Rust toolchain](https://rustup.rs/) for the native kernel.
+You need Node.js 22.13 or newer (or Bun 1.4.0 or newer), git, and a [Rust toolchain](https://rustup.rs/) for the native kernel.
 
 ```bash
 git clone https://github.com/bompus/codegraph.git
@@ -98,7 +98,7 @@ Compared with upstream `main` at `290e03f`. Each item was checked against upstre
 | Files with syntax errors | Handed to the fallback parser | Extracted from the native parser's error recovery |
 | Name resolution | In TypeScript, by import tracing and name matching over the source text | In the native kernel for every language, reading what each file actually binds (declarations, parameters, imports) for TypeScript/JavaScript, ArkTS, Python, Go, Java, Kotlin, PHP, C, C++ and Rust |
 | Markdown (`.md`, `.mdx`) | — | Indexed |
-| Node.js 25 and newer, Bun | Refused | Allowed; Node 26.10.0 and Bun 1.4.2 pass the full suite ([Measured results](#measured-results)) |
+| Node.js 25 and newer, Bun | Refused | Allowed from Node.js 22.13 and Bun 1.4.0, the first releases with an unflagged `node:sqlite`; Node 26.10.0 and Bun 1.4.2 pass the full suite ([Measured results](#measured-results)) |
 
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
@@ -811,8 +811,8 @@ that drive the graph directly: `DatabaseConnection`, `QueryBuilder`,
 - Install from npm (`npm i @colbymchenry/codegraph`) so the matching
   per-platform package — which carries the compiled library and its
   dependencies — is fetched alongside the shim.
-- The API runs on **your** runtime, so it needs **Node 22.5+** for the built-in
-  `node:sqlite` (Electron qualifies when its bundled Node is 22.5+). The CLI and
+- The API runs on **your** runtime, so it needs **Node 22.13+** for the built-in
+  `node:sqlite` (Electron qualifies when its bundled Node is 22.13+). The CLI and
   MCP server are unaffected — they run on the self-contained bundled runtime.
 - TypeScript types ship with the package. As with any Node-targeting library,
   keep `@types/node` available and `skipLibCheck: true` (the common default).

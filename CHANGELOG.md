@@ -25,8 +25,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking Changes
 
-- **The native engine is now the only parser; the older WebAssembly parser is gone.** Every supported language is built into the native engine, so there is no fallback for a platform without a native build. Release bundles cover macOS (Intel and Apple silicon), Linux (x64 and arm64, glibc) and Windows (x64 and arm64); other platforms need a from-source build with a Rust toolchain, and CodeGraph now says so at startup instead of failing later. Installs are about 40% smaller and the MCP server starts one process lighter. `CODEGRAPH_KERNEL_LANGS`, `CODEGRAPH_NO_RELAUNCH` and `CODEGRAPH_ALLOW_UNSAFE_NODE` no longer do anything; `CODEGRAPH_KERNEL=0` now only switches the per-language native walkers off for debugging (every file is still parsed natively).
+- **The native engine is now the only parser; the older WebAssembly parser is gone.** Every supported language is built into the native engine, so there is no fallback for a platform without a native build. Release bundles cover macOS (Intel and Apple silicon), Linux (x64 and arm64, glibc) and Windows (x64 and arm64); other platforms need a from-source build with a Rust toolchain, and CodeGraph now says so at startup instead of failing later. Installs are about 40% smaller and the MCP server starts one process lighter. `CODEGRAPH_KERNEL_LANGS` and `CODEGRAPH_NO_RELAUNCH` no longer do anything; `CODEGRAPH_KERNEL=0` now only switches the per-language native walkers off for debugging (every file is still parsed natively).
 - **Node.js 25 and newer are no longer refused.** The block existed for a V8 bug in compiling the old parser's grammars. Those versions are untested rather than unsupported.
+- **Node.js 22.13 or Bun 1.4.0 is now the minimum.** Both are the first releases where the built-in `node:sqlite` loads without a flag; older ones failed at the first database open. CodeGraph now says so at startup (`CODEGRAPH_ALLOW_UNSAFE_NODE=1` skips the check). `package.json` declares both in `engines`.
 
 ### New Features
 

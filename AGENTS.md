@@ -76,7 +76,7 @@ The public API surface is `src/index.ts`, which re-exports types and the `CodeGr
 ### Module layout
 
 - `src/index.ts` is the public library API; `src/codegraph.ts` is the `CodeGraph` class that wires the system together.
-- `src/db/` owns the `node:sqlite` database, schema, and prepared queries. Source development requires Node 22.5 or newer; published bundles carry their own supported runtime.
+- `src/db/` owns the `node:sqlite` database, schema, and prepared queries. Source development requires Node 22.13 or newer (or Bun 1.4.0 or newer); published bundles carry their own supported runtime.
 - `src/extraction/` parses supported languages; `src/resolution/` connects imports, names, frameworks, callbacks, and cross-tier flows.
 - `src/graph/` owns shared graph derivations. If more than one surface renders a derivation, put it here rather than in an individual handler.
 - `src/context/` and `src/search/` format and retrieve context; `src/sync/` owns watching and git-hook helpers.

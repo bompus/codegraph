@@ -1,6 +1,6 @@
 # Distribution: self-contained bundles
 
-CodeGraph ships a **vendored Node runtime** alongside the app. Because Node 22.5+
+CodeGraph ships a **vendored Node runtime** alongside the app. Because Node 22.13+
 has a built-in real SQLite (`node:sqlite`, with WAL + FTS5), bundling Node means:
 
 - **No native build** — `better-sqlite3` is gone, so there are zero native addons
