@@ -76,6 +76,31 @@ describe('C: a static function is local to its translation unit', () => {
     });
     expect(await calleesOf('coreRun')).toEqual(['core.c:helper']);
   });
+
+  it('resolves a call from a header the unit includes onto its static', async () => {
+    project({
+      'clinic/signal.c.h': 'static int signal_alarm_impl(int s);\n\nint signal_alarm(int s)\n{\n    return signal_alarm_impl(s);\n}\n',
+      'signal.c': '#include "clinic/signal.c.h"\n\nstatic int signal_alarm_impl(int s)\n{\n    return s;\n}\n',
+    });
+    expect(await calleesOf('signal_alarm')).toContain('signal.c:signal_alarm_impl');
+  });
+
+  it('resolves a call from a unit onto a static in a .c file it includes', async () => {
+    project({
+      'xdr.c': '#include "xdr42.c"\n\nvoid encode(void)\n{\n    encode_copy();\n}\n',
+      'xdr42.c': 'static void encode_copy(void)\n{\n}\n',
+    });
+    expect(await calleesOf('encode')).toContain('xdr42.c:encode_copy');
+  });
+
+  it('leaves a shared fragment unlinked when two includers define the static', async () => {
+    project({
+      'itree_common.c': 'void get_block(long n)\n{\n    block_to_cpu(n);\n}\n',
+      'itree_v1.c': 'static long block_to_cpu(long n)\n{\n    return n;\n}\n\n#include "itree_common.c"\n',
+      'itree_v2.c': 'static long block_to_cpu(long n)\n{\n    return n + 1;\n}\n\n#include "itree_common.c"\n',
+    });
+    expect(await calleesOf('get_block')).toEqual([]);
+  });
 });
 
 describe('Kotlin: a private function is class- or file-local', () => {
