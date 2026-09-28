@@ -235,7 +235,8 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
             lang,
             vec![
                 both(r"\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", b"=", 0),
-                both(r"\s*:\s*([A-Z][A-Za-z0-9_.$]*)", b":", 1),
+                // `g: T` or an optional `g?: T`.
+                both(r"\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*)", b"?:", 1),
             ],
         );
     }
@@ -390,6 +391,11 @@ pub(super) static PHP_PROPERTY_TYPE_PATTERNS: LazyLock<Vec<ReceiverPattern>> = L
 /// The lookahead tails of infer_match_line's guards 1 and 2.
 pub(super) fn guard1_tail_re() -> Rc<Regex> {
     re!(r"^\s*(?:<[^>]*>)?\s*[\[|&]")
+}
+/// `T | undefined` / `T | null` (any number of them, nothing else) still
+/// types the receiver as `T`: the call site dereferences it.
+pub(super) fn nullable_union_tail_re() -> Rc<Regex> {
+    re!(r"^\s*(?:<[^>]*>)?(?:\s*\|\s*(?:undefined|null)(?-u:\b))+\s*(?:$|[^\s\[|&])")
 }
 pub(super) fn guard2_tail_re() -> Rc<Regex> {
     re!(r#"^\s*[({"'\[]"#)

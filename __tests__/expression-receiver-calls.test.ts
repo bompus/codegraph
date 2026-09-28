@@ -79,8 +79,8 @@ const calleesOf = (name: string, file: string) =>
     .sort();
 
 describe('expression receivers', () => {
-  // Fork: kernel port pending (expression receivers); see the upstream merge follow-ups.
-  it.skip('TS: a call-result receiver does not bind `.map` to a project method', () => {
+
+  it('TS: a call-result receiver does not bind `.map` to a project method', () => {
     expect(calleesOf('names', 'use.ts')).toEqual(['list']);
     expect(cg.getCallers(node('map', 'adapter.ts').id).map(({ node: n }) => n.name)).toEqual(['typed']);
   });
@@ -90,8 +90,7 @@ describe('expression receivers', () => {
     expect(calleesOf('opt', 'lib.rs')).toEqual([]);
   });
 
-  // Fork: kernel port pending (expression receivers); see the upstream merge follow-ups.
-  it.skip('keeps receiver-typed, bare, constructor, this/super and TS→JS calls', () => {
+  it('keeps receiver-typed, bare, constructor, this/super and TS→JS calls', () => {
     expect(calleesOf('typed', 'use.ts')).toEqual(['GraphAdapter::map']);
     expect(calleesOf('fresh', 'use.ts')).toEqual(['Runner::run', 'helper']);
     expect(calleesOf('greet', 'use.ts')).toEqual(['Base::hello']);
@@ -101,13 +100,11 @@ describe('expression receivers', () => {
     expect(calleesOf('report', 'Diag.kt')).toEqual([]);
   });
 
-  // Fork: kernel port pending (expression receivers); see the upstream merge follow-ups.
-  it.skip('keeps a cross-language call to an exported free function (Swift → cgo)', () => {
+  it('keeps a cross-language call to an exported free function (Swift → cgo)', () => {
     expect(calleesOf('stopTunnel', 'Tunnel.swift')).toEqual(['OpenFluxStop']);
   });
 
-  // Fork: kernel port pending (expression receivers); see the upstream merge follow-ups.
-  it.skip('TS extraction: wrappers peel to the receiver, untyped expressions emit nothing', () => {
+  it('TS extraction: wrappers peel to the receiver, untyped expressions emit nothing', () => {
     const src =
       'async function f(x: X, y: any) {\n' +
       '  (await list()).map(g);\n' +
@@ -126,9 +123,11 @@ describe('expression receivers', () => {
     const refs = extractFromSource('t.ts', src, 'typescript').unresolvedReferences
       .filter((r) => r.referenceKind === 'calls')
       .map((r) => r.referenceName);
+    // Fork: an identifier-rooted chain keeps its full name (`window.Api.start`)
+    // and resolves only on proof; upstream collapses it to the bare `start`.
     expect(refs).toEqual([
       'list().map', 'list', 'x.run', 'y.run', 'x.stop', 'getTarget().install', 'getTarget',
-      'f', 'run', 'go', 'start',
+      'f', 'run', 'go', 'window.Api.start',
     ]);
   });
 });

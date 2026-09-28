@@ -392,7 +392,7 @@ pub(super) fn crosses_known_family(a: &str, b: &str) -> bool {
 /// (ObjC is a C superset; Swift calls both through bridging headers), and
 /// every other programming language is a group of its own. Markup, config
 /// and template languages are absent: framework bridges start there.
-fn code_interop_group(lang: &str) -> Option<&'static str> {
+pub(super) fn code_interop_group(lang: &str) -> Option<&'static str> {
     match lang {
         "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "svelte" | "vue" | "astro" => Some("web"),
         "java" | "kotlin" | "scala" => Some("jvm"),

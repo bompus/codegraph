@@ -82,8 +82,7 @@ describe('cross-language name resolution (#1986)', () => {
     expect(targets('View')).toEqual(expect.arrayContaining(['WebWidget', 'localHandler']));
   });
 
-  // Fork: kernel port pending (#1986); see the upstream merge follow-ups.
-  it.skip('requires ABI evidence for free functions outside the native family', async () => {
+  it('requires ABI evidence for free functions outside the native family', async () => {
     await index({
       'export.go': 'package main\nimport "C"\n//export StopGo\nfunc StopGo() {}\n',
       'export.rs': '#[no_mangle]\npub extern "C" fn stop_rust() {}\n',
