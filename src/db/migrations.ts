@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 
 /**
  * Migration definition
@@ -312,6 +312,18 @@ CREATE TABLE synth_skips (
     content_hash TEXT NOT NULL,
     passes TEXT NOT NULL
 ) WITHOUT ROWID;
+      `);
+    },
+  },
+  {
+    version: 17,
+    description: 'Widen idx_nodes_kind to (kind, name) so name substring scans read only the index',
+    up: (db) => {
+      // Keep in lockstep with schema.sql. Partial legacy fixtures carry no nodes table.
+      if ((db.prepare('PRAGMA table_info(nodes)').all() as unknown[]).length === 0) return;
+      db.exec(`
+        DROP INDEX IF EXISTS idx_nodes_kind;
+        CREATE INDEX idx_nodes_kind ON nodes(kind, name);
       `);
     },
   },
