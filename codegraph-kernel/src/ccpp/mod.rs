@@ -106,6 +106,12 @@ fn has_lower_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"[a-z]").unwrap())
 }
+fn single_arg_macro_replacement_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(
+        r"^(?:[A-Za-z_][A-Za-z0-9_:]*[ \t\r\n]+)+[*& \t\r\n]*([A-Za-z_][A-Za-z0-9_]*)[ \t\r\n]*\([^(){};#]*\)[ \t\r\n]*$"
+    ).unwrap())
+}
 /// normalizeCppReturnType: smart-pointer/optional unwrap.
 fn ret_wrapper_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -302,6 +308,7 @@ pub struct Walker<'t> {
     variant: Variant,
     cols: util::Cols,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     nodes_meta: Vec<NodeMeta>,
@@ -361,6 +368,7 @@ impl<'t> Walker<'t> {
             variant,
             cols: util::Cols::new(source),
             arena: Arena::default(),
+            node_id_allocator: ids::NodeIdAllocator::default(),
             tables: Tables::default(),
             stack: Vec::new(),
             nodes_meta: Vec::new(),
@@ -392,7 +400,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
         // (c/cpp define no resolveBody hook, so createNode's endLine extension
         // for sibling-body grammars never fires — endLine is the node's own.)
         let end_line = node.end_position().row as u32 + 1;
@@ -518,6 +527,18 @@ impl<'t> Walker<'t> {
         let kind = node.kind();
         let mut skip_children = false;
 
+        // C/C++ function-like macros become `constant` nodes carrying the
+        // directive as their signature — a value, never a callee (#1838).
+        // Mirrors tree-sitter.ts visitNode.
+        if kind == "preproc_function_def" {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = self.text(name_node).to_string();
+                let signature = Some(self.text(node).trim().to_string());
+                self.create_node("constant", &name, node, Extra { signature, ..Extra::default() });
+            }
+            return;
+        }
+
         // C++ namespace blocks: prefix-only, no node (#1291/#1093). Anonymous
         // namespaces fall through to the generic walk. (No markdown scan
         // before this early return: a namespace node is never a string.)
@@ -540,7 +561,10 @@ impl<'t> Walker<'t> {
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
 
-        if kind == "function_definition" {
+        if self.is_cpp_constructor_declaration(node) {
+            self.extract_method(node);
+            skip_children = true;
+        } else if kind == "function_definition" {
             // functionTypes for both; cpp's methodTypes also lists it, so
             // inside a class-like scope it extracts as a method.
             if self.inside_class_like() && self.variant == Variant::Cpp {
@@ -632,6 +656,7 @@ impl<'t> Walker<'t> {
 
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
+            signature: self.constructor_signature(node),
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
             return_type: self.return_type_of(node),
             ..Extra::default()
@@ -668,6 +693,7 @@ impl<'t> Walker<'t> {
 
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
+            signature: self.constructor_signature(node),
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
             is_abstract: if self.variant == Variant::Cpp && self.is_cpp_pure_virtual_method_decl(node) {
                 Some(true)
@@ -735,6 +761,11 @@ impl<'t> Walker<'t> {
     fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
         stack_guard!();
         let kind = node.kind();
+        // A function-like macro defined inside a body is still a macro (#1838).
+        if kind == "preproc_function_def" {
+            self.visit_node(node);
+            return;
+        }
         self.maybe_capture_fn_refs(node);
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
@@ -756,12 +787,25 @@ impl<'t> Walker<'t> {
             self.register_fn_typedefs(node);
         }
 
-        // C++ stack construction `Calculator calc(0)` / `Widget w{1,2}` (#1035).
-        if kind == "declaration"
-            && self.variant == Variant::Cpp
-            && self.is_cpp_stack_construction(node)
-        {
-            self.extract_instantiation(node);
+        // C++ stack construction `Calculator calc(0)` / `Widget w{1,2}` (#1035),
+        // plus one constructor ref `ns::T::T/arity` per constructed object (#1839).
+        if kind == "declaration" && self.variant == Variant::Cpp {
+            let (instantiates, arities) = self.cpp_stack_constructions(node);
+            if instantiates {
+                self.extract_instantiation(node);
+            }
+            if !arities.is_empty() && !self.stack.is_empty() {
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    let from = self.top_row();
+                    let class_name = strip_cpp_template_args(self.text(type_node));
+                    if let Some(name) = class_name.split("::").filter(|s| !s.is_empty()).last() {
+                        let calls = crate::buffers::EDGE_CALLS;
+                        for arity in arities {
+                            self.push_ref_at(from, &format!("{class_name}::{name}/{arity}"), calls, node);
+                        }
+                    }
+                }
+            }
         }
 
         // C++ local fn-pointer bindings: declarations and branch reassignments.

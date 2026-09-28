@@ -639,6 +639,17 @@ mod tests {
 /// file scope's name). The three arena puts keep their order — arena bytes
 /// are part of the golden output.
 pub fn push_file_node<'p>(arena: &mut Arena, tables: &mut Tables, file_path: &'p str, line_count: u32) -> &'p str {
+    push_file_node_with_docstring(arena, tables, file_path, line_count, None)
+}
+
+/// `push_file_node` for languages whose files carry a module docstring.
+pub fn push_file_node_with_docstring<'p>(
+    arena: &mut Arena,
+    tables: &mut Tables,
+    file_path: &'p str,
+    line_count: u32,
+    docstring: Option<&str>,
+) -> &'p str {
     let base_name = file_path.rsplit(['/', '\\']).next().unwrap_or(file_path);
     let mut flags = BoolFlags::default();
     flags.set(FLAG_IS_EXPORTED, false);
@@ -656,7 +667,7 @@ pub fn push_file_node<'p>(arena: &mut Arena, tables: &mut Tables, file_path: &'p
         name: name_ref,
         qualified_name: qn_ref,
         id: file_id,
-        docstring: NONE_STR,
+        docstring: arena.put_opt(docstring),
         signature: NONE_STR,
         decorators: NONE_STR,
         type_parameters: NONE_STR,

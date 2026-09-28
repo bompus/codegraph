@@ -45,7 +45,7 @@ const CORPUS: ReadonlyArray<{ name: string; source: string; why: string }> = [
   {
     name: 'torture-multilang',
     source: path.join(FIXTURES, 'kernel-parity'),
-    why: 'one torture file per kernel-routed language (20 languages, 38 files)',
+    why: 'one torture file per kernel-routed language (20 languages, 42 files)',
   },
   {
     name: 'payroll-go',

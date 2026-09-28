@@ -1,6 +1,6 @@
 import type { TreeNode as SyntaxNode } from './parse-tree';
 import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Language } from '../types';
-import { generateNodeId } from './tree-sitter-helpers';
+import { generateNodeId, NodeIdAllocator } from './tree-sitter-helpers';
 import { TreeSitterExtractor } from './tree-sitter';
 import { parseSourceTreeSync } from './parse-tree';
 
@@ -22,6 +22,7 @@ export class CfmlExtractor {
   private source: string;
   private language: Language;
   private nodes: Node[] = [];
+  private nodeIds = new NodeIdAllocator();
   private edges: Edge[] = [];
   private unresolvedReferences: UnresolvedReference[] = [];
   private errors: ExtractionError[] = [];
@@ -171,7 +172,7 @@ export class CfmlExtractor {
    */
   private extractComponent(openTag: SyntaxNode, containerId: string | undefined): SyntaxNode {
     const name = this.tagAttr(openTag, 'name') ?? this.componentNameFromPath();
-    const id = generateNodeId(this.filePath, 'class', name, openTag.startPosition.row + 1);
+    const id = this.nodeIds.generate(this.filePath, 'class', name, openTag.startPosition.row + 1, openTag.startPosition.column);
 
     const classNode: Node = {
       id,
@@ -258,7 +259,7 @@ export class CfmlExtractor {
     if (!name) return;
 
     const kind = parentClassId ? 'method' : 'function';
-    const id = generateNodeId(this.filePath, kind, name, tag.startPosition.row + 1);
+    const id = this.nodeIds.generate(this.filePath, kind, name, tag.startPosition.row + 1, tag.startPosition.column);
     const access = this.tagAttr(tag, 'access');
     const visibility = access === 'private' ? 'private'
       : access === 'package' ? 'internal'

@@ -58,6 +58,7 @@ import { CodeGraphPackageVersion } from './version';
 import {
   releaseWriterLock,
   tryAcquireWriterLock,
+  assertNoRebuild,
   writerLockHeldMessage,
 } from './writer-lock';
 import { registerDaemon, deregisterDaemon } from './daemon-registry';
@@ -212,6 +213,7 @@ export class Daemon {
   async start(): Promise<DaemonStartResult> {
     // #1740: claim the project writer lock before opening/watching so a
     // concurrent direct-mode serve --mcp cannot start a second watcher.
+    assertNoRebuild(this.projectRoot);
     const writer = tryAcquireWriterLock(this.projectRoot, 'daemon');
     if (writer.kind === 'taken') {
       const msg = writerLockHeldMessage(writer.existing, writer.pidPath);
@@ -297,12 +299,7 @@ export class Daemon {
     // writer lock prevents stale-artifact cleanup from racing this ownership
     // check, and the exact snapshot prevents overwriting a replacement record.
     try {
-      if (fs.readFileSync(this.pidPath, 'utf8') !== initialLockContents) {
-        throw new Error('Lost daemon lock ownership after binding.');
-      }
-      const tmpPid = `${this.pidPath}.${process.pid}.bound`;
-      fs.writeFileSync(tmpPid, encodeLockInfo(lock), { mode: 0o600 });
-      fs.renameSync(tmpPid, this.pidPath);
+      refreshDaemonLock(this.pidPath, initialLockContents, lock);
     } catch (err) {
       try { bound.server.close(); } catch { /* best-effort */ }
       this.cleanupLockfile();
@@ -375,7 +372,7 @@ export class Daemon {
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));
       this.server = null;
     }
-    this.engine.stop();
+    await this.engine.stop();
     this.cleanupLockfile();
     deregisterDaemon(this.projectRoot);
     if (process.platform !== 'win32') {
@@ -558,6 +555,42 @@ export class Daemon {
         }
       }
     } catch { /* best-effort; we're exiting anyway */ }
+  }
+}
+
+/**
+ * Publish the bound socket without abandoning a live daemon on a transient
+ * Windows sharing violation. Keep this startup step synchronous: accepting a
+ * client before ownership is refreshed could initialize an engine too early.
+ * Six attempts wait at most 375ms; permanent failures still abort startup.
+ */
+export function refreshDaemonLock(
+  pidPath: string,
+  initialContents: string,
+  lock: DaemonLockInfo,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const tmpPid = `${pidPath}.${process.pid}.bound`;
+  try {
+    fs.writeFileSync(tmpPid, encodeLockInfo(lock), { mode: 0o600 });
+    for (let attempt = 0; ; attempt++) {
+      // A retry must never replace a record whose owner changed while waiting.
+      if (fs.readFileSync(pidPath, 'utf8') !== initialContents) {
+        throw new Error('Lost daemon lock ownership after binding.');
+      }
+      try {
+        fs.renameSync(tmpPid, pidPath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || attempt >= 5) {
+          throw error;
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+      }
+    }
+  } finally {
+    try { fs.unlinkSync(tmpPid); } catch { /* renamed, or best-effort cleanup */ }
   }
 }
 

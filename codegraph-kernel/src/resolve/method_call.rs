@@ -289,7 +289,8 @@ impl KernelResolver {
             return Ok(McShape::Done(Some(c)));
         }
 
-        let dot_re = re!(r"^([A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
+        // `this.#field.method` keeps its ES private field (#1987).
+        let dot_re = re!(r"^((?:this\.#)?[A-Za-z0-9_.]+)\.([A-Za-z0-9_]+:?(?:[A-Za-z0-9_]+:)*)$");
         let mut dot_match = dot_re.captures(&r.reference_name);
         if dot_match.is_none() && r.language == "cpp" {
             let op_re = re!(r"^([A-Za-z0-9_.]+)\.(operator[^A-Za-z0-9_\s.]+)$");

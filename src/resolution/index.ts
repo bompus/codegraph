@@ -16,9 +16,10 @@ import {
   ResolutionContext,
   FrameworkResolver,
   ImportMapping,
-  SUPERTYPE_TARGET_KINDS,
+  isSupertypeTarget,
   isInheritanceRef,
   isImportableKind,
+  CPP_DEFINE_SIGNATURE,
 } from './types';
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
 import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
@@ -27,6 +28,7 @@ import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
+import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
 import { loadProjectAliases, loadScopedAliases, scopedAliasesForFile, type AliasMap, type AliasScope } from './path-aliases';
 import { loadGoModule, type GoModule } from './go-module';
 import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packages';
@@ -262,6 +264,14 @@ export class ReferenceResolver {
     }
     const fullPath = path.join(this.projectRoot, filePath);
     try {
+      // Import resolvers may follow package metadata to an archive (`file:*.har`,
+      // for example). Reject anything extraction would not accept before UTF-8
+      // decoding can multiply a large binary blob into gigabytes of V8 heap.
+      const stats = fs.statSync(fullPath);
+      if (!stats.isFile() || stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
+        this.fileCache.set(filePath, null);
+        return null;
+      }
       const content = fs.readFileSync(fullPath, 'utf-8');
       this.fileCache.set(filePath, content);
       return content;
@@ -2156,12 +2166,28 @@ export class ReferenceResolver {
    *     referent. Without this, filtering by kind alone just relocates the
    *     false edge onto the next same-named local type.
    *
-   * Direction is one-way: this only ever REMOVES an edge, never adds one. A
-   * dropped ref stays in `unresolved_refs` as `failed`, which is the honest
-   * record for a supertype that lives outside the repo — silent beats wrong.
+   * One exception to (1): a TypeScript VALUE that shares its name with a type
+   * in the same file. `export const IFoo = createDecorator<IFoo>('foo')` beside
+   * `export interface IFoo` is how VS Code declares every service, and an
+   * import of `IFoo` resolves to the file with both — a strategy that takes the
+   * first export of that name gets the value. The strategy found the right
+   * file and name; the type declared there is the supertype, so the edge moves
+   * to it rather than being dropped (dropping it lost ~900 `implements` edges
+   * on vscode).
+   *
+   * Otherwise this only ever REMOVES an edge, never adds one. A dropped ref
+   * stays in `unresolved_refs` as `failed`, which is the honest record for a
+   * supertype that lives outside the repo — silent beats wrong.
    */
   private gateTargetKind(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
     if (!result) return result;
+
+    // A `#define` is a value, never a callee (#1838): a macro defined only in
+    // an unrelated file is not what `NAME(x)` here expands to either.
+    if (ref.referenceKind === 'calls') {
+      const target = this.queries.getNodeById(result.targetNodeId);
+      if (target?.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(target.signature ?? '')) return null;
+    }
 
     // An `imports` reference names something importable — never a member that
     // only exists inside a type.
@@ -2172,9 +2198,23 @@ export class ReferenceResolver {
 
     if (!isInheritanceRef(ref)) return result;
     const target = this.queries.getNodeById(result.targetNodeId);
-    if (target && !SUPERTYPE_TARGET_KINDS.has(target.kind)) return null;
+    if (target && !isSupertypeTarget(target)) {
+      const type = this.sameNamedTypeOfValue(target);
+      if (!type) return null;
+      result = { ...result, targetNodeId: type.id };
+    }
     if (isBoundToOutOfRepoImport(ref, this.context)) return null;
     return result;
+  }
+
+  /** The one supertype-kind node a TypeScript value shares its name and file with. */
+  private sameNamedTypeOfValue(value: Node): Node | null {
+    if (value.kind !== 'constant' && value.kind !== 'variable') return null;
+    if (value.language !== 'typescript' && value.language !== 'tsx') return null;
+    const types = this.context
+      .getNodesInFile(value.filePath)
+      .filter((n) => n.name === value.name && isSupertypeTarget(n));
+    return types.length === 1 ? types[0]! : null;
   }
 
   /**

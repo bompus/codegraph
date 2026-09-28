@@ -85,6 +85,7 @@ pub(super) struct Affix {
     /// whose word is common (`e` in minified code occurs a thousand times a
     /// line; `e.target` fails on `.` without a regex call).
     pub(super) tail_lead: Option<&'static [u8]>,
+    pub(super) field_start: bool,
 }
 
 /// One match: where it ends in the line, and group 1's span when any.
@@ -103,7 +104,14 @@ impl Affix {
             bound_after,
             group_in_head,
             tail_lead: None,
+            field_start: false,
         }
+    }
+
+    /// Bound the word like a TS class field name (see `finish_at`).
+    pub(super) fn field_start(mut self) -> Affix {
+        self.field_start = true;
+        self
     }
 
     /// The tail's possible first bytes after optional whitespace (see
@@ -162,7 +170,14 @@ impl Affix {
         tail: Option<&Regex>,
     ) -> Option<AffixMatch> {
         let word_end = at + word.len();
-        if (self.bound_before && !word_boundary_at(line, at))
+        // TS field names: no word, `$` or `#` byte may precede, so a public
+        // `items` never matches `#items` and a private name needs no `\b` (#1987).
+        let bounded_before = if self.field_start {
+            at == 0 || !matches!(line.as_bytes()[at - 1], b'$' | b'#') && !is_word_byte(line.as_bytes()[at - 1])
+        } else {
+            word_boundary_at(line, at)
+        };
+        if (self.bound_before && !bounded_before)
             || (self.bound_after && !word_boundary_at(line, word_end))
         {
             return None;
@@ -393,14 +408,14 @@ pub(super) fn cpp_call_opener_re() -> Rc<Regex> {
 pub(super) static TS_FIELD_TYPE_PATTERNS: LazyLock<[(Affix, bool); 3]> = LazyLock::new(|| {
     [
         (
-            Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:"),
+            Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:").field_start(),
             true,
         ),
         (
-            Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:"),
+            Affix::new("", r"\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"?!:").field_start(),
             false,
         ),
-        (Affix::new("", r"\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"="), false),
+        (Affix::new("", r"\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", true, true, false).lead(b"=").field_start(), false),
     ]
 });
 

@@ -15,8 +15,9 @@ export default defineConfig({
     // restores Node semantics for suites that redirect HOME for isolation.
     // Inherited by the engine project only — the ui project stands alone.
     setupFiles: ['__tests__/bun-homedir.setup.ts', '__tests__/file-tmpdir.setup.ts'],
-    // Every run's temp files go in one directory that is removed afterwards.
-    globalSetup: ['__tests__/run-tmpdir.global-setup.ts'],
+    // Suites that spawn the built CLI need a current dist/ (#1879). Every run's
+    // temp files go in one directory that is removed afterwards.
+    globalSetup: ['__tests__/global-setup-dist.ts', '__tests__/run-tmpdir.global-setup.ts'],
     env: {
       /**
        * The suite spawns real CLI/MCP processes; without this they would write

@@ -42,6 +42,7 @@ import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-
 import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
 import { isDistinctiveIdentifier } from '../search/query-utils';
+import { crossesCodeBoundary } from './gates';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
 const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
@@ -236,7 +237,7 @@ async function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext, 
       (d) => d.node.filePath === reg.node.filePath && d.field === reg.field
     );
     if (chDispatchers.length === 0) continue;
-    const argRe = new RegExp(`${reg.node.name}\\s*\\(\\s*(?:this\\.)?(\\w+)`);
+    const argRe = new RegExp(`${reg.node.name}\\s*\\(\\s*(this\\.\\w+|\\w+)\\s*(?=[,)])`);
     let added = 0;
     for (const e of queries.getIncomingEdges(reg.node.id, ['calls'])) {
       if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
@@ -246,8 +247,15 @@ async function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext, 
       const line = ctx.readFile(caller.filePath)?.split('\n')[e.line - 1];
       const am = line?.match(argRe);
       if (!am) continue;
-      const fn = ctx.getNodesByName(am[1]!).find((n) => n.kind === 'method' || n.kind === 'function');
-      if (!fn) continue;
+      // Reuse the resolved value at this registration site: it retains the
+      // receiver's class/inheritance and import binding, unlike a name lookup.
+      const refs = queries.getOutgoingEdges(caller.id, ['references']).filter(
+        (r) => r.line === e.line && r.metadata?.fnRef === true && r.metadata.refName === am[1]
+      );
+      if (refs.length !== 1) continue;
+      const fn = queries.getNodeById(refs[0]!.target);
+      if (!fn || (fn.kind !== 'method' && fn.kind !== 'function')) continue;
+      if (!am[1]!.startsWith('this.') && fn.filePath !== caller.filePath && refs[0]!.metadata?.resolvedBy !== 'import') continue;
       for (const disp of chDispatchers) {
         if (disp.node.id === fn.id) continue;
         const key = `${disp.node.id}>${fn.id}`;
@@ -1174,9 +1182,10 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield): Pr
  *
  * Go guarantees a method's receiver type is declared in the SAME PACKAGE as the
  * method, and a Go package is a single directory — so this is a deterministic
- * structural link, not a heuristic: find the same-named type in the method's own
- * directory and add the missing `contains` edge (no `provenance: 'heuristic'`,
- * matching the same-file edges extraction already emits). Skips methods that
+ * structural link, not a heuristic: find the same-named type in the method's
+ * own directory and add the missing `contains` edge with no provenance, matching
+ * same-file extraction. Tag synthesis ownership so an incremental
+ * refresh can replace it alongside implicit `implements`. Skips methods that
  * already have a type parent (the same-file case). (#583, cross-file half)
  */
 async function goCrossFileMethodContainsEdges(queries: QueryBuilder, onYield: MaybeYield): Promise<Edge[]> {
@@ -1225,7 +1234,8 @@ async function goCrossFileMethodContainsEdges(queries: QueryBuilder, onYield: Ma
     const key = `${owner.id}>${method.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    edges.push({ source: owner.id, target: method.id, kind: 'contains', line: method.startLine });
+    edges.push({ source: owner.id, target: method.id, kind: 'contains', line: method.startLine,
+      metadata: { synthesizedBy: 'go-method-contains' } });
   }
   return edges;
 }
@@ -1623,7 +1633,7 @@ async function reactJsxChildEdges(ctx: ResolutionContext, onYield: MaybeYield): 
       for (const name of names) {
         if (added >= MAX_JSX_CHILDREN) break;
         const child = jsxChild(ctx, name, file, importsOf);
-        if (!child || child.id === parent.id) continue;
+        if (!child || child.id === parent.id || crossesCodeBoundary(parent.language, child.language)) continue;
         const key = `${parent.id}>${child.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1729,7 +1739,8 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
 
     let added = 0;
     const addEdge = (target: Node | undefined, meta: Record<string, unknown>) => {
-      if (added >= MAX_JSX_CHILDREN || !target || target.id === comp.id) return;
+      if (added >= MAX_JSX_CHILDREN || !target || target.id === comp.id ||
+          crossesCodeBoundary(comp.language, target.language)) return;
       const k = `${comp.id}>${target.id}>${meta.synthesizedBy}`;
       if (seen.has(k)) return;
       seen.add(k);

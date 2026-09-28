@@ -273,7 +273,7 @@ export class CodeGraph {
     // Open the live file FIRST — if that throws (e.g. mid-recreate), the old
     // handle stays in place and the caller retries on the next query, rather
     // than leaving this instance with no connection at all.
-    const fresh = DatabaseConnection.open(dbPath);
+    const fresh = DatabaseConnection.open(dbPath, { readOnly: this.db.readOnly });
     const stale = this.db;
     this.db = fresh;
     this.queries = new QueryBuilder(fresh.getDb());
@@ -401,14 +401,19 @@ export class CodeGraph {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
     const queries = new QueryBuilder(db.getDb());
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
 
-    // Sync if requested
-    if (options.sync) {
-      await instance.sync();
+    // Sync if requested (a read-only connection cannot write)
+    if (options.sync && !options.readOnly) {
+      try {
+        await instance.sync();
+      } catch (err) {
+        instance.destroy();
+        throw err;
+      }
     }
 
     return instance;
@@ -465,7 +470,7 @@ export class CodeGraph {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string): CodeGraph {
+  static openSync(projectRoot: string, options: Pick<OpenOptions, 'readOnly'> = {}): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -481,7 +486,7 @@ export class CodeGraph {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
+    const db = DatabaseConnection.open(dbPath, { readOnly: options.readOnly });
     const queries = new QueryBuilder(db.getDb());
 
     return new CodeGraph(db, queries, resolvedRoot);
@@ -855,8 +860,10 @@ export class CodeGraph {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
-      } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+      } catch (err) {
+        throw new (sync().LockUnavailableError)(
+          `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
+        );
       }
       // Defer WAL auto-checkpointing for the whole incremental run, exactly
       // as indexAll does for the bulk path (#1231): sync's store loop and its
@@ -1094,6 +1101,9 @@ export class CodeGraph {
         // Refs the scoped path deferred to the passes below are still pending
         // but not orphans; counting them ran the whole batched resolver and a
         // full synthesis on every sync of a file with a deferred ref.
+        result.pendingRefsProcessed = 0;
+        result.pendingRefsResolved = 0;
+        result.pendingRefsUnresolved = 0;
         const orphanCount = this.resolver.countOrphanedReferences();
         if (orphanCount > 0) {
           // The sweep ends in a full synthesis pass. Dropping the stale edges
@@ -1108,7 +1118,7 @@ export class CodeGraph {
             total: orphanCount,
           });
 
-          await this.resolveReferencesBatched(
+          const recovery = await this.resolveReferencesBatched(
             (current, total) => {
               options.onProgress?.({
                 phase: 'resolving',
@@ -1125,6 +1135,9 @@ export class CodeGraph {
             },
             walValve
           );
+          result.pendingRefsProcessed = recovery.stats.total;
+          result.pendingRefsResolved = recovery.stats.resolved;
+          result.pendingRefsUnresolved = recovery.stats.unresolved;
           if (this.resolver.synthesisRuns > synthesisRuns) this.synthesisDirty.clear();
         }
 
@@ -1242,15 +1255,9 @@ export class CodeGraph {
     this.watcher = new (sync().FileWatcher)(
       this.projectRoot,
       async (paths?: string[]) => {
+        // A held lock throws LockUnavailableError, so the watcher keeps
+        // pendingFiles and reschedules instead of clearing them (#449).
         const result = await this.sync({ paths, deferSynthesis: true });
-        // sync() returns this exact zero-shape iff it failed to acquire the
-        // file lock (a real empty sync always has filesChecked > 0 because
-        // scanDirectory ran). Surface that to the watcher as a typed error
-        // so it keeps pendingFiles + reschedules instead of clearing them
-        // (#449).
-        if (result.filesChecked === 0 && result.durationMs === 0) {
-          throw new (sync().LockUnavailableError)();
-        }
         const filesChanged = result.filesAdded + result.filesModified + result.filesRemoved;
         return { filesChanged, durationMs: result.durationMs };
       },
@@ -1290,6 +1297,16 @@ export class CodeGraph {
    */
   isWatcherDegraded(): boolean {
     return this.watcher?.isDegraded() ?? false;
+  }
+
+  /** True while the watcher is retrying a sync that lost the write lock. */
+  isWatcherRecovering(): boolean {
+    return this.watcher?.isRecoveringFromLock() ?? false;
+  }
+
+  /** Re-arm a watcher that degraded on lock contention; false if there is none to re-arm. */
+  rearmWatcherAfterLockContention(): boolean {
+    return this.watcher?.rearmAfterLockContention() ?? false;
   }
 
   /** The reason live watching degraded, or null if it is healthy (#876). */
@@ -1745,6 +1762,19 @@ export class CodeGraph {
     return this.queries.getUnresolvedNamesAmong(names);
   }
 
+  /** Lexical evidence for an empty explore result; does not alter retrieval. */
+  getExploreMissDiagnostics(query: string) {
+    return this.queries.getExploreMissDiagnostics(query);
+  }
+
+  /**
+   * Which of the given symbols extend or implement a type outside the index —
+   * an ancestor the resolver could not follow, so it has no edge (#1973).
+   */
+  getUnresolvedSupertypeSourcesAmong(nodeIds: Iterable<string>): Set<string> {
+    return this.queries.getUnresolvedSupertypeSourcesAmong(nodeIds);
+  }
+
   /**
    * The symbols with the most distinct dependents, most first — the index's
    * hubs. Distinct dependents, not edges: a helper called forty times from one
@@ -1862,6 +1892,13 @@ export class CodeGraph {
 
   getNodesInFile(filePath: string): Node[] {
     return this.queries.getNodesByFile(filePath);
+  }
+
+  /**
+   * Get all nodes in several files, in one batched query.
+   */
+  getNodesInFiles(filePaths: readonly string[]): Node[] {
+    return this.queries.getNodesByFiles(filePaths);
   }
 
   /**

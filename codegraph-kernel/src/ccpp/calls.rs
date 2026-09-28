@@ -161,27 +161,117 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// isCppStackConstruction (#1035).
-    pub(super) fn is_cpp_stack_construction(&self, node: Node) -> bool {
-        let Some(type_node) = node.child_by_field_name("type") else { return false };
+    pub(super) fn is_cpp_constructor_declaration(&self, node: Node<'t>) -> bool {
+        if self.variant != Variant::Cpp || node.kind() != "declaration" || node.child_by_field_name("type").is_some() {
+            return false;
+        }
+        let Some(owner) = node.parent().and_then(|p| p.parent()) else { return false };
+        if !matches!(owner.kind(), "class_specifier" | "struct_specifier" | "union_specifier") { return false; }
+        let Some(decl) = node.child_by_field_name("declarator") else { return false };
+        decl.kind() == "function_declarator" && decl.child_by_field_name("declarator").map(|n| self.text(n))
+            == owner.child_by_field_name("name").map(|n| self.text(n))
+    }
+
+    /// cppExtractor.getSignature (languages/c-cpp.ts): a C++ constructor
+    /// definition or class-body prototype carries its parameter
+    /// list as the signature so a local `T obj(args)` can pick the overload
+    /// by arity (#1839); a trailing semicolon marks a prototype. Macro-shaped definitions whose real name was
+    /// recovered from an argument are excluded.
+    pub(super) fn constructor_signature(&self, node: Node<'t>) -> Option<String> {
+        if self.variant != Variant::Cpp || (node.kind() != "function_definition" && !self.is_cpp_constructor_declaration(node)) {
+            return None;
+        }
+        if node.child_by_field_name("type").is_some() || self.recover_cpp_macro_defined_name(node).is_some() {
+            return None;
+        }
+        let params = node.child_by_field_name("declarator")?.child_by_field_name("parameters")?;
+        Some(format!("{}{}", self.text(params), if node.kind() == "declaration" { ";" } else { "" }))
+    }
+
+    /// cppStackConstructions (tree-sitter.ts, #1035 / #1839): whether the
+    /// declaration constructs with arguments (→ `instantiates`), and one
+    /// arity per constructed object (→ `calls T::T/arity`). `extern`,
+    /// pointer / reference / function declarators construct nothing; an
+    /// array's braces hold elements, not constructor arguments.
+    pub(super) fn cpp_stack_constructions(&self, node: Node<'t>) -> (bool, Vec<usize>) {
+        let none = (false, Vec::new());
+        let Some(type_node) = node.child_by_field_name("type") else { return none };
         if !matches!(
             type_node.kind(),
             "type_identifier" | "template_type" | "qualified_identifier"
         ) {
-            return false;
+            return none;
         }
+        let mut instantiates = false;
+        let mut arities = Vec::new();
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
+            if child.kind() == "storage_class_specifier" && self.text(child) == "extern" {
+                return none;
+            }
+            if matches!(child.kind(), "identifier" | "array_declarator") {
+                if child.kind() == "array_declarator" && !self.cpp_object_array(child) { continue; }
+                arities.push(0);
+                continue;
+            }
             if child.kind() != "init_declarator" {
                 continue;
             }
-            if let Some(value) = child.child_by_field_name("value") {
-                if matches!(value.kind(), "argument_list" | "initializer_list") {
-                    return true;
+            let Some(declarator) = child.child_by_field_name("declarator") else { continue };
+            if !matches!(declarator.kind(), "identifier" | "array_declarator") {
+                continue;
+            }
+            let Some(value) = child.child_by_field_name("value") else { continue };
+            if !matches!(value.kind(), "argument_list" | "initializer_list") {
+                continue;
+            }
+            instantiates = true;
+            if declarator.kind() == "identifier" {
+                let count = (0..value.named_child_count())
+                    .filter(|&j| value.named_child(j).map(|n| n.kind() != "comment").unwrap_or(false))
+                    .count();
+                arities.push(count);
+            } else if self.cpp_object_array(declarator) {
+                let mut dimensions = Vec::new();
+                let mut array = Some(declarator);
+                while let Some(n) = array.filter(|n| n.kind() == "array_declarator") {
+                    dimensions.insert(0, n.child_by_field_name("size").map(|s| self.text(s))
+                        .filter(|s| s.bytes().all(|b| b.is_ascii_digit()))
+                        .and_then(|s| s.parse::<usize>().ok()).filter(|&n| n <= 9_007_199_254_740_991));
+                    array = n.child_by_field_name("declarator");
                 }
+                Self::cpp_array_arities(value, &dimensions, &mut arities);
             }
         }
-        false
+        (instantiates, arities)
+    }
+
+    pub(super) fn cpp_array_arities(list: Node<'t>, dimensions: &[Option<usize>], arities: &mut Vec<usize>) {
+        let entries: Vec<_> = (0..list.named_child_count()).filter_map(|j| list.named_child(j))
+            .filter(|n| n.kind() != "comment").collect();
+        let mut elided = false;
+        for entry in &entries {
+            if dimensions.len() > 1 {
+                if entry.kind() == "initializer_list" { Self::cpp_array_arities(*entry, &dimensions[1..], arities); }
+                else { elided = true; }
+            } else {
+                arities.push(if entry.kind() == "initializer_list" {
+                    (0..entry.named_child_count()).filter_map(|j| entry.named_child(j))
+                        .filter(|n| n.kind() != "comment").count()
+                } else { 1 });
+            }
+        }
+        if !elided && (entries.is_empty() || dimensions[0].map(|n| n > entries.len()).unwrap_or(false)) {
+            arities.push(0);
+        }
+    }
+
+    pub(super) fn cpp_object_array(&self, node: Node<'t>) -> bool {
+        let mut element = node.child_by_field_name("declarator");
+        while element.map(|n| n.kind() == "array_declarator").unwrap_or(false) {
+            element = element.and_then(|n| n.child_by_field_name("declarator"));
+        }
+        element.map(|n| n.kind() == "identifier").unwrap_or(false)
     }
 
     /// extractStaticMemberRef — cpp only (c is not in STATIC_MEMBER_LANGS).

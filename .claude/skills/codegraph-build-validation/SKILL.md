@@ -90,3 +90,6 @@ For Windows-specific behavior, use a Windows-local checkout and the host's Power
 - Install the supported Node version, Git, and the matching VC++ redistributable for native packages.
 - Fetch a contributor branch into the Windows-local checkout and install dependencies there.
 - Confirm a suspected platform failure against `origin/fork/consolidated` before attributing it to the current change. Keep Windows-only assertions behind `it.runIf(process.platform === 'win32')`.
+- One failure is expected without symlink privileges (Developer Mode off): `security.test.ts > Session marker symlink resistance > does not follow a pre-planted symlink`.
+- Tests that spawn `serve --mcp` must wait for the child to exit before removing its temp dir, and close every `CodeGraph` or `DatabaseConnection` in `afterEach` or `finally`. An open handle makes the removal fail with `EPERM`; remove temp dirs with `maxRetries`.
+- Windows checkouts may use CRLF, so tests split source lines on `/\r?\n/`.

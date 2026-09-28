@@ -86,6 +86,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     cols: util::Cols,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     md_ref_keys: HashSet<String>,
     stack: Vec<Scope>,
@@ -107,6 +108,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         cols: util::Cols::new(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         md_ref_keys: HashSet::new(),
         stack: Vec::new(),
@@ -149,7 +151,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
 
         // buildQualifiedName (:1447-1460) — non-file stack names, `::`-joined;
         // namespacePrefix always empty (no C++ namespaces, no scala namespace).
@@ -554,7 +557,8 @@ impl<'t> Walker<'t> {
     /// skipped); false for any other node.
     fn extract_type_def(&mut self, node: Node<'t>) -> bool {
         match node.kind() {
-            "class_definition" | "object_definition" => self.extract_class(node, "class"),
+            "class_definition" => self.extract_class(node, "class"),
+            "object_definition" => self.extract_class(node, "module"),
             "trait_definition" => self.extract_class(node, "trait"),
             "enum_definition" => self.extract_enum(node),
             _ => return false,

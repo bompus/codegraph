@@ -10,7 +10,7 @@ Phase 4 notes record the kind-table drift.
 |---|---|---|---|
 | kotlin | fwcd/tree-sitter-kotlin | 0.3.8 tag | see kotlin checklist |
 | lua | tree-sitter-grammars/tree-sitter-lua | v0.4.1 | see lua-luau checklist |
-| scala | tree-sitter/tree-sitter-scala | master@0aca5d0a6f | see scala checklist |
+| scala | tree-sitter/tree-sitter-scala | v0.26.2 | #1823; sha256 in build.rs |
 | dart | UserNobody14/tree-sitter-dart | d4d8f3e | |
 | arkts, arkts-common | npm tree-sitter-arkts 0.2.0 (harmony-contrib) | package `src/` + `common/` (the shared typescript-style scanner header; include path rewritten to `../arkts-common/`) | the vendored wasm is byte-identical to the package's artifact (sha db0812971109457d…) |
 | terraform | npm @tree-sitter-grammars/tree-sitter-hcl 1.2.0 | package `src/` | ABI 15 |

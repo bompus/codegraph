@@ -185,7 +185,7 @@ export class MyBatisExtractor {
       dialect === 'ibatis'
         ? 'select|insert|update|delete|sql|statement|procedure'
         : 'select|insert|update|delete|sql';
-    const stmtRegex = new RegExp(`<(${verbs})\\b([^>]*)>([\\s\\S]*?)</\\1>`, 'g');
+    const stmtRegex = new RegExp(`<(${verbs})\\b([^>]*)>([\\s\\S]*?)</\\1\\s*>`, 'g');
     let m: RegExpExecArray | null;
     while ((m = stmtRegex.exec(body)) !== null) {
       const elemType = m[1]!;
@@ -199,6 +199,7 @@ export class MyBatisExtractor {
       if (!idMatch) continue;
       const id = idMatch[2]!;
       const absoluteIndex = bodyStart + m.index;
+      const openTagLen = elemType.length + attrs.length + 2;
       const startLine = this.getLineNumber(absoluteIndex);
       const endLine = this.getLineNumber(absoluteIndex + m[0].length);
       const { qualifiedName: qualified, name } = this.qualifyStatement(namespace, id);
@@ -242,12 +243,14 @@ export class MyBatisExtractor {
         // matching the fragment node's qualifiedName). Blanket `.`→`::`
         // mangled multi-dot namespaces into `com::example::…` and could never
         // resolve (#cross-mapper include).
-        const refQualified = refid.includes('.')
-          ? `${refid.slice(0, refid.lastIndexOf('.'))}::${refid.slice(refid.lastIndexOf('.') + 1)}`
-          : namespace
-            ? `${namespace}::${refid}`
-            : refid;
-        const includeOffset = absoluteIndex + (m[0].length - m[3]!.length - `</${elemType}>`.length) + inc.index;
+        const dot = refid.lastIndexOf('.');
+        const refQualified =
+          dot >= 0
+            ? `${refid.slice(0, dot)}::${refid.slice(dot + 1)}`
+            : namespace
+              ? `${namespace}::${refid}`
+              : refid;
+        const includeOffset = absoluteIndex + openTagLen + inc.index;
         const line = this.getLineNumber(includeOffset);
         this.unresolvedReferences.push({
           fromNodeId: nodeId,
