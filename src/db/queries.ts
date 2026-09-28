@@ -1596,7 +1596,11 @@ export class QueryBuilder {
           params.push(...languages);
         }
         sql += appendHardFilters(hard, params);
-        sql += ' LIMIT 20';
+        // Definitions before import/export/file rows, then exact case: a name
+        // imported in hundreds of files (`flask`) otherwise fills the 20 slots
+        // before the class that defines it (`Flask`) is reached.
+        sql += " ORDER BY kind IN ('import', 'export', 'file'), name <> ? LIMIT 20";
+        params.push(term);
         const rows = this.db.prepare(sql).all(...params) as NodeRow[];
         for (const row of rows) {
           if (!existingIds.has(row.id)) {
