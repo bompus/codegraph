@@ -12,7 +12,6 @@
  * writes a JSON report next to the recall reports. Exit 1 when any `absent`
  * case is violated or any `present` control is missing.
  */
-import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -21,6 +20,7 @@ import { CodeGraph } from '../../src/index.js';
 import { scoreEdgeCase } from './scoring.js';
 import { edgeCases, PRECISION_CORPORA } from './edge-cases.js';
 import type { EdgeCaseResult, PrecisionReport } from './types.js';
+import { fetchPinned, scrubGitEnv, sh } from './pinned-corpus.js';
 
 const corpusKey = process.argv[2];
 const corpus = corpusKey ? PRECISION_CORPORA[corpusKey] : undefined;
@@ -29,44 +29,10 @@ if (!corpus) {
   process.exit(2);
 }
 
-// A git hook or `git bisect run` exports GIT_DIR and friends naming the ENGINE
-// repository. Inherited, every git call inside the corpus reads the engine
-// instead: the pinned-commit check below saw the engine's HEAD and fetched the
-// corpus commit into the engine checkout, and the indexer listed the engine's
-// files. This is `git rev-parse --local-env-vars`.
-for (const v of [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
-  'GIT_OBJECT_DIRECTORY', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE',
-  'GIT_INDEX_FILE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_REPLACE_REF_BASE', 'GIT_PREFIX', 'GIT_SHALLOW_FILE',
-  'GIT_COMMON_DIR',
-]) delete process.env[v];
+scrubGitEnv();
 
 const reposDir = process.env.EVAL_REPOS ?? path.join(os.tmpdir(), 'codegraph-precision');
 const repoDir = path.join(reposDir, corpus.key);
-
-function sh(cmd: string, args: string[], cwd?: string, quiet = false): string {
-  return execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'ignore' : 'inherit'] }).trim();
-}
-
-function fetchPinned(): void {
-  if (!fs.existsSync(path.join(repoDir, '.git'))) {
-    fs.mkdirSync(repoDir, { recursive: true });
-    sh('git', ['init', '-q'], repoDir);
-    sh('git', ['remote', 'add', 'origin', corpus!.repo], repoDir);
-  }
-  // Fetch and a forced checkout follow, so they must land in the corpus and
-  // nowhere else: refuse a corpus directory git resolves to another repository.
-  const top = sh('git', ['rev-parse', '--show-toplevel'], repoDir, true);
-  if (fs.realpathSync(top) !== fs.realpathSync(repoDir)) {
-    throw new Error(`${repoDir} resolves to the git repository at ${top}, not its own; refusing to fetch or check out there`);
-  }
-  const head = (() => { try { return sh('git', ['rev-parse', 'HEAD'], repoDir, true); } catch { return ''; } })();
-  if (!head.startsWith(corpus!.commit)) {
-    console.log(`fetching ${corpus!.repo} @ ${corpus!.commit}`);
-    sh('git', ['fetch', '-q', '--depth', '1', 'origin', corpus!.commit], repoDir);
-    sh('git', ['checkout', '-q', '--force', 'FETCH_HEAD'], repoDir);
-  }
-}
 
 function resolvedByHistogram(): { resolvedBy: Record<string, number>; edges: number } {
   const db = new DatabaseSync(path.join(repoDir, '.codegraph', 'codegraph.db'), { readOnly: true });
@@ -84,7 +50,7 @@ function resolvedByHistogram(): { resolvedBy: Record<string, number>; edges: num
 }
 
 async function run(): Promise<void> {
-  fetchPinned();
+  fetchPinned(corpus!, repoDir);
   const commit = sh('git', ['rev-parse', '--short', 'HEAD'], repoDir);
   let codegraphSha = 'unknown';
   try { codegraphSha = sh('git', ['rev-parse', '--short', 'HEAD']); } catch {}
