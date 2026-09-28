@@ -44,6 +44,9 @@ describe('searchNodes applies path: and name: before the limit', () => {
     for (let i = 0; i < 150; i++) q.insertNode(makeNode(`src-${i}`, 'render', `src/views/v${i}.ts`));
     q.insertNode(makeNode('lib-target', 'renderLegacyWidget', 'lib/legacy/widget.ts'));
     q.insertNode(makeNode('lib-other', 'zoomPaint', 'lib/legacy/paint.ts'));
+    // SQLite's lower() folds ASCII only; these match only with Unicode folding.
+    q.insertNode(makeNode('eclair', 'renderÉclair', 'src/Pâtisserie/Éclair.ts'));
+    q.insertNode(makeNode('kelvin', 'renderTemp', 'src/\u212Aelvin/temp.ts'));
   });
 
   afterAll(() => {
@@ -65,6 +68,17 @@ describe('searchNodes applies path: and name: before the limit', () => {
     const ids = q.searchNodes('path:lib/legacy', { limit: 1 }).map((r) => r.node.id);
     expect(ids).toHaveLength(1);
     expect(['lib-target', 'lib-other']).toContain(ids[0]);
+  });
+
+  it('name: and path: fold non-ASCII case like the JS gate', () => {
+    expect(q.searchNodes('render name:éclair', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
+    expect(q.searchNodes('render path:pâtisserie/éclair', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
+    expect(q.searchNodes('render path:PÂTISSERIE', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
+  });
+
+  it('an ASCII filter still matches a code point that lowercases into ASCII', () => {
+    // U+212A KELVIN SIGN lowercases to `k`.
+    expect(q.searchNodes('render path:kelvin', { limit: 5 }).map((r) => r.node.id)).toEqual(['kelvin']);
   });
 
   it('still caps the filtered results at the limit', () => {

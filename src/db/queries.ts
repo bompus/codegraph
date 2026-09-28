@@ -179,20 +179,27 @@ function referenceNameTail(referenceName: string): string {
 /**
  * The `path:` / `name:` hard filters of a search query. They go into every
  * candidate query's SQL so a capped fetch cannot fill with rows the final gate
- * would drop. Both sides are folded with SQLite's ASCII `lower()`; the JS gate
- * in `searchNodes` still runs last and keeps the Unicode-folded semantics.
+ * would drop. The SQL must only ever keep a superset of what the JS gate in
+ * `searchNodes` accepts, since a row it drops is never recovered.
  */
 interface HardFilters {
   paths: string[];
   names: string[];
 }
 
+/**
+ * SQLite's `lower()` folds ASCII only. For an ASCII filter value that matches
+ * JS `toLowerCase()` except on the two code points that lowercase into ASCII
+ * (U+0130 to `i̇`, U+212A to `k`), so rows holding either pass through to the JS
+ * gate. A list with a non-ASCII value is left to the JS gate alone.
+ */
 function appendHardFilters(hard: HardFilters | undefined, params: (string | number)[]): string {
   if (!hard) return '';
   let sql = '';
   for (const [column, values] of [['nodes.file_path', hard.paths], ['nodes.name', hard.names]] as const) {
-    if (values.length === 0) continue;
-    sql += ` AND (${values.map(() => `instr(lower(${column}), lower(?)) > 0`).join(' OR ')})`;
+    if (values.length === 0 || values.some((v) => /[^\x00-\x7f]/.test(v))) continue;
+    const matches = values.map(() => `instr(lower(${column}), lower(?)) > 0`);
+    sql += ` AND (${matches.join(' OR ')} OR ${column} GLOB '*[\u0130\u212a]*')`;
     params.push(...values);
   }
   return sql;
@@ -1617,10 +1624,11 @@ export class QueryBuilder {
       results.sort((a, b) => b.score - a.score);
     }
 
-    // path: + name: are a hard gate. The candidate queries already applied
-    // them in SQL; this pass keeps the Unicode case folding SQLite's lower()
-    // lacks. Filter before trimming to `limit`, or out-of-scope matches that
-    // scored higher crowd the in-scope ones out.
+    // path: + name: are a hard gate. The candidate queries already narrowed
+    // on them in SQL where that is exact (see appendHardFilters); this pass
+    // applies them with Unicode case folding. Filter before trimming to
+    // `limit`, or out-of-scope matches that scored higher crowd the in-scope
+    // ones out.
     if (pathFilters.length > 0) {
       const lowered = pathFilters.map((p) => p.toLowerCase());
       results = results.filter((r) => {
