@@ -28,7 +28,7 @@ pub(crate) struct Cand {
     pub column_byte: usize,
     pub row: usize,
     /// Exempt from the defined/imported gate (PHP's HOF-position string
-    /// callables).
+    /// callables, receiver-path member values).
     pub ungated: bool,
 }
 
@@ -42,6 +42,23 @@ impl Cand {
         }
         let p = node.start_position();
         Some(Cand { from, name, line: p.row as u32 + 1, column_byte: node.start_byte(), row: p.row, ungated: false })
+    }
+
+    /// A member value that keeps its receiver path (`self.store.fetch`,
+    /// `c.store.Fetch`, #1820), anchored at the member name. Only statically
+    /// named chains qualify; it skips the defined/imported gate because
+    /// resolution scopes it by receiver instead.
+    pub fn member(from: u32, path: &str, member: Node) -> Option<Cand> {
+        let named = path.contains('.')
+            && path.split('.').all(|part| {
+                !part.is_empty()
+                    && part.bytes().enumerate().all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+            });
+        if !named {
+            return None;
+        }
+        let p = member.start_position();
+        Some(Cand { from, name: path.to_string(), line: p.row as u32 + 1, column_byte: member.start_byte(), row: p.row, ungated: true })
     }
 }
 
