@@ -13,7 +13,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Express** | `app.get(...)`, `router.post(...)` with middleware chains |
 | **Hono** | Imported `Hono` instances, method/path arrays, `basePath()` and same-file `.route()` mounts |
 | **Elysia** | Imported `Elysia` instances, method calls, `.route()`, literal constructor prefixes and `.group()` callbacks |
-| **Fastify** | Imported factories, shorthand methods, `.route({ method, url, handler })`, inline `.register()` callbacks with literal prefixes |
+| **Fastify** | Imported factories, shorthand methods, `.route({ method, url, handler })`, inline `.register()` callbacks with literal prefixes; default-exported plugin files, mounted at their `@fastify/autoload` directory prefix |
 | **Hyper-Express** | Imported `Server` / `Router`, method calls, `.route(path)` chains and same-file `.use()` mounts |
 | **Koa router** | `@koa/router` / `koa-router` instances, named routes, literal prefixes and same-file `.use(path, child.routes())` mounts |
 | **H3** | Imported `H3`, `createRouter` / `createApp`, method calls, `.on()` / `.all()` and same-file router mounts |

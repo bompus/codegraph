@@ -1,8 +1,14 @@
+import * as path from 'path';
 import type { TreeNode as SyntaxNode } from '../../extraction/parse-tree';
 import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import type { Node } from '../../types';
-import type { FrameworkExtractionResult, FrameworkResolver, UnresolvedRef } from '../types';
+import type {
+  FrameworkExtractionResult,
+  FrameworkResolver,
+  ResolutionContext,
+  UnresolvedRef,
+} from '../types';
 import { dependsOn } from './package-deps';
 import { recordSkip, skipped } from '../synth-skips';
 
@@ -65,6 +71,15 @@ const FUNCTIONS = new Set([
 ]);
 const SOURCE_HINT =
   /\bBun\s*\.\s*serve\b|['"](?:hono|elysia|fastify|hyper-express|@koa\/router|koa-router|h3|vixeny|bun|effect\/unstable\/http(?:\/HttpRouter)?)['"]/;
+/** A Fastify plugin file names its instance `fastify`, or imports a Fastify package or type. */
+const FASTIFY_PLUGIN_HINT = /\bfastify\b|\bFastify(?:Instance|Plugin)/;
+const FASTIFY_TYPED = /['"](?:fastify|@fastify\/[\w-]+)['"]|\bFastify(?:Instance|Plugin)/;
+/**
+ * Marks, in `qualifiedName`, a route declared on the instance a default-exported
+ * Fastify plugin receives. Its full path depends on how the plugin is
+ * registered, which `postExtract` reads from @fastify/autoload.
+ */
+export const FASTIFY_PLUGIN_MARKER = 'fastify-plugin:';
 
 function field(node: SyntaxNode, name: string): SyntaxNode | null {
   return node.childForFieldName(name);
@@ -179,11 +194,19 @@ export function extractHttpRoutes(
     references: [] as UnresolvedRef[],
     callStarts: new Set<number>(),
   };
-  if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(filePath) || !SOURCE_HINT.test(source)) return result;
+  if (
+    !/\.(?:[cm]?[jt]s|[jt]sx)$/.test(filePath) ||
+    (!SOURCE_HINT.test(source) && !FASTIFY_PLUGIN_HINT.test(source))
+  )
+    return result;
   const language = detectLanguage(filePath);
   const tree = parseSourceTreeSync(source, language);
   if (!tree) return result;
   const pending: PendingRoute[] = [];
+  const plugin = fastifyPlugin(tree.rootNode, source);
+  const pluginRouter: Router | null = plugin
+    ? { kind: 'router', framework: 'fastify', prefix: '', mounts: [] }
+    : null;
   const scopes: Scope[] = [new Map([['Bun', { kind: 'module', source: 'bun' }]])];
   const scope = () => scopes[scopes.length - 1]!;
   const lookup = (name: string): Binding | null => {
@@ -234,6 +257,8 @@ export function extractHttpRoutes(
     }
   }
   function visitFunction(node: SyntaxNode, first: Binding | null = null): void {
+    if (plugin && node.startIndex === plugin.startIndex && node.type === plugin.type)
+      first ??= pluginRouter;
     scopes.push(new Map());
     const parameters =
       field(node, 'parameters')?.namedChildren ??
@@ -522,13 +547,20 @@ export function extractHttpRoutes(
           }),
     );
   }
+  const rootedInPlugin = (r: Router, seen = new Set<Router>()): boolean => {
+    if (r === pluginRouter) return true;
+    if (seen.has(r)) return false;
+    seen.add(r);
+    return r.mounts.some((m) => rootedInPlugin(m.parent, seen));
+  };
   try {
     visit(tree.rootNode, false);
     const emitted = new Set<string>();
     for (const [index, entry] of pending.entries())
       for (const prefix of prefixes(entry.router, index)) {
+        // Hono and Fastify both serve a prefixed `/` at the bare prefix.
         const path =
-          entry.router.framework === 'hono' && prefix && entry.path === '/'
+          ['hono', 'fastify'].includes(entry.router.framework) && prefix && entry.path === '/'
             ? prefix
             : join(prefix, entry.path)!;
         const line = entry.site.startPosition.row + 1;
@@ -540,7 +572,7 @@ export function extractHttpRoutes(
           id,
           kind: 'route',
           name,
-          qualifiedName: `${filePath}::${name}`,
+          qualifiedName: `${filePath}::${rootedInPlugin(entry.router) ? FASTIFY_PLUGIN_MARKER : ''}${name}`,
           filePath,
           language,
           startLine: line,
@@ -556,6 +588,41 @@ export function extractHttpRoutes(
   } finally {
     tree.delete();
   }
+}
+
+/**
+ * The function a file exports as its default Fastify plugin: `export default`,
+ * or `module.exports =`, of a function or of a top-level `const`/function
+ * declaration naming one. A wrapped export (`fastify-plugin`'s `fp(...)`)
+ * shares its parent's context and is not a route plugin here.
+ */
+function fastifyPlugin(program: SyntaxNode, source: string): SyntaxNode | null {
+  let value: SyntaxNode | null = null;
+  for (const statement of program.namedChildren) {
+    if (statement.type === 'export_statement' && statement.children.some((c) => c.type === 'default'))
+      value = field(statement, 'declaration') ?? field(statement, 'value');
+    const assignment = statement.type === 'expression_statement' ? statement.namedChildren[0] : null;
+    if (assignment?.type === 'assignment_expression' && field(assignment, 'left')?.text === 'module.exports')
+      value = field(assignment, 'right');
+  }
+  value = unwrap(value);
+  if (value?.type === 'identifier') {
+    const name = value.text;
+    value = null;
+    for (const raw of program.namedChildren) {
+      const node = raw.type === 'export_statement' ? (field(raw, 'declaration') ?? raw) : raw;
+      if (node.type === 'function_declaration' && field(node, 'name')?.text === name) value = node;
+      if (node.type === 'lexical_declaration' && node.text.startsWith('const'))
+        for (const d of node.namedChildren)
+          if (field(d, 'name')?.text === name) value = unwrap(field(d, 'value'));
+    }
+  }
+  if (!value || !FUNCTIONS.has(value.type)) return null;
+  const first =
+    field(value, 'parameters')?.namedChildren[0] ?? field(value, 'parameter') ?? null;
+  if (!first) return null;
+  const name = first.type === 'identifier' ? first : field(first, 'pattern');
+  return name?.text === 'fastify' || FASTIFY_TYPED.test(source) ? value : null;
 }
 
 /** Bind a named handler, or the direct calls made by an anonymous handler. */
@@ -616,6 +683,265 @@ export function httpHandlerReferences(route: Node, raw: SyntaxNode | null): Unre
   return references;
 }
 
+// @fastify/autoload 6.5.0 defaults (index.js): which files load, and which are hooks.
+const AUTOLOAD_SCRIPT = /(?:(?:^.?|\.[^d]|[^.]d|[^.][^d])\.ts|\.js|\.cjs|\.mjs|\.cts|\.mts)$/i;
+const AUTOLOAD_INDEX = /^index(?:\.ts|\.js|\.cjs|\.mjs|\.cts|\.mts)$/i;
+const AUTOLOAD_HOOKS = /^[_.]?auto_?hooks(?:\.ts|\.js|\.cjs|\.mjs|\.cts|\.mts)$/i;
+/** Options that change which files load or where they mount are not modelled. */
+const AUTOLOAD_OPTIONS = new Set([
+  'dir',
+  'options',
+  'dirNameRoutePrefix',
+  'routeParams',
+  'appendAutoPrefix',
+  'forceESM',
+  'autoHooks',
+  'cascadeHooks',
+  'overwriteHooks',
+]);
+
+interface AutoloadRegistration {
+  dir: string;
+  prefix: string;
+  dirNames: boolean;
+  routeParams: boolean;
+  appendAutoPrefix: boolean;
+}
+
+function bool(node: SyntaxNode | undefined, fallback: boolean): boolean | null {
+  if (!node) return fallback;
+  node = unwrap(node)!;
+  return node.type === 'true' ? true : node.type === 'false' ? false : null;
+}
+
+/** `path.join(__dirname, 'routes')` or `join(import.meta.dirname, 'routes')`, relative to the project. */
+function autoloadDir(file: string, node: SyntaxNode | undefined): string | null {
+  node = unwrap(node ?? null) ?? undefined;
+  if (node?.type !== 'call_expression') return null;
+  if (!/^(?:path\.)?(?:join|resolve)$/.test(field(node, 'function')?.text ?? '')) return null;
+  const [base, ...rest] = field(node, 'arguments')?.namedChildren ?? [];
+  if (!base || !['__dirname', 'import.meta.dirname'].includes(base.text)) return null;
+  const segments = rest.map(literal);
+  if (!segments.length || segments.some((s) => s === null || s.startsWith('/'))) return null;
+  const dir = path.posix.join(path.posix.dirname(file), ...(segments as string[]));
+  return dir.startsWith('..') ? null : dir;
+}
+
+/** Literal `fastify.register(AutoLoad, { dir, ... })` calls in one file. */
+function autoloadRegistrations(file: string, source: string): AutoloadRegistration[] {
+  const tree = parseSourceTreeSync(source, detectLanguage(file));
+  if (!tree) return [];
+  const out: AutoloadRegistration[] = [];
+  const bindings = new Set<string>();
+  const isAutoload = (node: SyntaxNode | null) =>
+    /^['"](?:@fastify\/autoload|fastify-autoload)['"]$/.test(node?.text ?? '');
+  const walk = (node: SyntaxNode): void => {
+    if (node.type === 'import_statement' && isAutoload(field(node, 'source'))) {
+      for (const item of node.namedChildren.find((n) => n.type === 'import_clause')?.namedChildren ?? []) {
+        if (item.type === 'identifier') bindings.add(item.text);
+        if (item.type === 'named_imports')
+          for (const spec of item.namedChildren)
+            if (['fastifyAutoload', 'default'].includes(field(spec, 'name')?.text ?? ''))
+              bindings.add((field(spec, 'alias') ?? field(spec, 'name'))!.text);
+      }
+      return;
+    }
+    if (node.type === 'variable_declarator') {
+      const value = unwrap(field(node, 'value'));
+      const name = field(node, 'name');
+      if (
+        value?.type === 'call_expression' &&
+        field(value, 'function')?.text === 'require' &&
+        isAutoload(field(value, 'arguments')?.namedChildren[0] ?? null) &&
+        name?.type === 'identifier'
+      )
+        bindings.add(name.text);
+    }
+    if (node.type === 'call_expression') {
+      const callee = field(node, 'function');
+      const args = field(node, 'arguments')?.namedChildren ?? [];
+      if (
+        callee?.type === 'member_expression' &&
+        key(field(callee, 'property')) === 'register' &&
+        bindings.has(args[0]?.text ?? '')
+      ) {
+        const registration = autoloadRegistration(file, args[1] ?? null);
+        if (registration) out.push(registration);
+      }
+    }
+    for (const child of node.namedChildren) walk(child);
+  };
+  try {
+    walk(tree.rootNode);
+  } finally {
+    tree.delete();
+  }
+  return out;
+}
+
+function autoloadRegistration(file: string, raw: SyntaxNode | null): AutoloadRegistration | null {
+  const node = unwrap(raw);
+  if (node?.type !== 'object') return null;
+  const props = properties(node);
+  if (!props.size || [...props.keys()].some((k) => !AUTOLOAD_OPTIONS.has(k))) return null;
+  const dir = autoloadDir(file, props.get('dir'));
+  const dirNames = bool(props.get('dirNameRoutePrefix'), true);
+  const routeParams = bool(props.get('routeParams'), false);
+  const appendAutoPrefix = bool(props.get('appendAutoPrefix'), false);
+  if (!dir || dirNames === null || routeParams === null || appendAutoPrefix === null) return null;
+  // Options forwarded from the caller (`opts`, `{ ...opts }`) are taken to
+  // carry no prefix; only a literal `prefix` key sets one.
+  let prefix: string | null = '';
+  const options = unwrap(props.get('options') ?? null);
+  if (options?.type === 'object')
+    for (const child of options.namedChildren)
+      if (child.type === 'pair' && key(field(child, 'key')) === 'prefix')
+        prefix = literal(field(child, 'value'));
+  if (prefix === null) return null;
+  return { dir, prefix: prefix.replace(/\/$/, ''), dirNames, routeParams, appendAutoPrefix };
+}
+
+/**
+ * The prefix values a plugin file exports for autoload: `autoPrefix`,
+ * `prefixOverride`, `autoConfig.prefix` and `autoload`. Null when one is set
+ * to something other than a literal.
+ */
+function pluginExports(file: string, source: string): Map<string, string | boolean | undefined> | null {
+  const tree = parseSourceTreeSync(source, detectLanguage(file));
+  if (!tree) return null;
+  const out = new Map<string, string | boolean | undefined>();
+  const owners = new Set(['module.exports', 'exports']);
+  try {
+    for (const statement of tree.rootNode.namedChildren) {
+      if (statement.type === 'export_statement' && statement.children.some((c) => c.type === 'default')) {
+        const value = field(statement, 'value') ?? field(field(statement, 'declaration') ?? statement, 'name');
+        if (value?.type === 'identifier') owners.add(value.text);
+      }
+      const assignment = statement.type === 'expression_statement' ? statement.namedChildren[0] : null;
+      if (assignment?.type === 'assignment_expression') {
+        const left = field(assignment, 'left');
+        const right = field(assignment, 'right');
+        if (left?.text === 'module.exports' && right?.type === 'identifier') owners.add(right.text);
+      }
+    }
+    const set = (name: string, value: SyntaxNode | null): boolean => {
+      if (!['autoPrefix', 'prefixOverride', 'autoload', 'autoConfig'].includes(name)) return true;
+      const node = unwrap(value);
+      if (name === 'autoload') {
+        const flag = bool(node ?? undefined, true);
+        out.set(name, flag ?? true);
+        return flag !== null;
+      }
+      if (name === 'autoConfig') {
+        if (node?.type !== 'object' || node.namedChildren.some((n) => n.type === 'spread_element'))
+          return false;
+        const prefix = properties(node).get('prefix');
+        out.set('configPrefix', prefix ? (literal(prefix) ?? undefined) : undefined);
+        return !prefix || literal(prefix) !== null;
+      }
+      const text = literal(node);
+      out.set(name, text ?? undefined);
+      return text !== null;
+    };
+    for (const statement of tree.rootNode.namedChildren) {
+      const declared = statement.type === 'export_statement' ? field(statement, 'declaration') : null;
+      if (declared?.type === 'lexical_declaration')
+        for (const d of declared.namedChildren)
+          if (!set(field(d, 'name')?.text ?? '', field(d, 'value'))) return null;
+      const assignment = statement.type === 'expression_statement' ? statement.namedChildren[0] : null;
+      const left = assignment?.type === 'assignment_expression' ? field(assignment, 'left') : null;
+      if (left?.type === 'member_expression' && owners.has(field(left, 'object')?.text ?? ''))
+        if (!set(key(field(left, 'property')) ?? '', field(assignment!, 'right'))) return null;
+    }
+  } finally {
+    tree.delete();
+  }
+  return out;
+}
+
+/** Fastify joins a prefix and `/` to the bare prefix. */
+function fastifyJoin(prefix: string, route: string): string {
+  if (!prefix) return route;
+  return route === '/' ? prefix : prefix.replace(/\/$/, '') + route;
+}
+
+/**
+ * @fastify/autoload mounts each plugin file under its directory path. This
+ * renames the routes a default-exported plugin declares to the path they are
+ * served at, recomputed from the in-file name kept after the
+ * `qualifiedName` marker, so a repeat run (or a removed registration) is exact.
+ */
+function fastifyAutoloadRoutes(context: ResolutionContext): Node[] {
+  const marked = new Map<string, Node[]>();
+  const routes = context.iterateNodesByKind?.('route') ?? context.getNodesByKind('route');
+  for (const route of routes) {
+    if (!route.qualifiedName.includes(`::${FASTIFY_PLUGIN_MARKER}`)) continue;
+    const list = marked.get(route.filePath) ?? [];
+    list.push(route);
+    marked.set(route.filePath, list);
+  }
+  if (!marked.size) return [];
+
+  const files = context.getAllFiles();
+  const registrations: AutoloadRegistration[] = [];
+  for (const file of files) {
+    if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(file)) continue;
+    const source = context.readFile(file);
+    if (source && /['"](?:@fastify\/autoload|fastify-autoload)['"]/.test(source))
+      registrations.push(...autoloadRegistrations(file, source));
+  }
+  const indexed = new Set(
+    files.filter((f) => AUTOLOAD_INDEX.test(path.posix.basename(f))).map((f) => path.posix.dirname(f)),
+  );
+
+  const updates: Node[] = [];
+  for (const [file, list] of marked) {
+    const name = path.posix.basename(file);
+    const directory = path.posix.dirname(file);
+    let prefix: string | null | undefined;
+    const loaded =
+      AUTOLOAD_SCRIPT.test(name) &&
+      !AUTOLOAD_HOOKS.test(name) &&
+      (AUTOLOAD_INDEX.test(name) || !indexed.has(directory));
+    const covering = loaded ? registrations.filter((r) => file.startsWith(r.dir + '/')) : [];
+    const exported = covering.length ? pluginExports(file, context.readFile(file) ?? '') : null;
+    for (const r of covering) {
+      if (!exported || exported.get('autoload') === false) {
+        prefix = null;
+        break;
+      }
+      const segments = path.posix.relative(r.dir, directory).split('/').filter(Boolean);
+      const dirPrefix = r.dirNames ? segments.map((s) => '/' + s).join('') : '';
+      const autoPrefix = exported.get('autoPrefix') as string | undefined;
+      const override = exported.get('prefixOverride') as string | undefined;
+      // handlePrefixConfig in @fastify/autoload 6.5.0.
+      const base = r.prefix || ((exported.get('configPrefix') as string | undefined) ?? '').replace(/\/$/, '');
+      const own =
+        r.appendAutoPrefix && autoPrefix !== undefined && dirPrefix
+          ? `${dirPrefix}/${autoPrefix}`
+          : (autoPrefix ?? dirPrefix);
+      let full = override !== undefined ? override : own ? base + own.replace(/\/+/g, '/') : base;
+      if (r.routeParams && full)
+        full = /__/.test(full) ? full.replace(/__/g, ':') : full.replace(/\/_/g, '/:');
+      full = full.replace(/\/$/, '');
+      // Two registrations reaching one file at different paths are ambiguous.
+      prefix = prefix === undefined || prefix === full ? full : null;
+      if (prefix === null) break;
+    }
+    for (const route of list) {
+      const original = route.qualifiedName.slice(
+        route.qualifiedName.indexOf(`::${FASTIFY_PLUGIN_MARKER}`) + 2 + FASTIFY_PLUGIN_MARKER.length,
+      );
+      const space = original.indexOf(' ');
+      const renamed = prefix
+        ? `${original.slice(0, space)} ${fastifyJoin(prefix, original.slice(space + 1))}`
+        : original;
+      if (renamed !== route.name) updates.push({ ...route, name: renamed });
+    }
+  }
+  return updates;
+}
+
 export const httpRoutingResolver: FrameworkResolver = {
   name: 'http-routing',
   languages: ['javascript', 'typescript', 'jsx', 'tsx'],
@@ -636,4 +962,5 @@ export const httpRoutingResolver: FrameworkResolver = {
   },
   resolve: () => null,
   extract: extractHttpRoutes,
+  postExtract: fastifyAutoloadRoutes,
 };

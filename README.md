@@ -475,7 +475,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Flask** | `@app.route('/path', methods=[...])`, blueprint routes |
 | **FastAPI** | `@app.get(...)`, `@router.post(...)`, all standard methods |
 | **Express** | `app.get(...)`, `router.post(...)` with middleware chains |
-| **Hono / Elysia / Fastify / Koa / H3 / Hyper-Express / Bun / Effect / Vixeny** | Literal routes on each framework's app or router builder (`new Hono().get('/users', handler)`), with same-file prefixes and mounts; an imported handler is linked, an inline one contributes its direct calls. Fastify routes are read from a local `Fastify()` instance only: plugin route files (`export default async function (fastify) { … }`, loaded by `@fastify/autoload`) are not read yet |
+| **Hono / Elysia / Fastify / Koa / H3 / Hyper-Express / Bun / Effect / Vixeny** | Literal routes on each framework's app or router builder (`new Hono().get('/users', handler)`), with same-file prefixes and mounts; an imported handler is linked, an inline one contributes its direct calls. Fastify plugin files (`export default async function (fastify) { … }`) are read too, and files loaded by a literal `@fastify/autoload` registration get their directory prefix, `autoPrefix`/`prefixOverride` exports and `routeParams` folders |
 | **NestJS** | `@Controller` + `@Get/@Post/...`, GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
 | **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
