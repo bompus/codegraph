@@ -11,6 +11,8 @@ The index-time profile in the first of those still applies.
 
 ## Method
 
+The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runtime/): `run-index-sync.sh`, `run-mcp.sh` and `run-cli.sh`, with the four arms below.
+
 - **Builds.** Upstream `main` at `290e03f7`, the last upstream commit merged
   into the fork, and fork `fork/consolidated` at `48903f51`. Each worktree ran
   `npm ci`, built its own native kernel from source, and ran `npm run build`.
