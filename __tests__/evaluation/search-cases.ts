@@ -64,11 +64,9 @@ export const searchCases: SearchCase[] = [
   { id: 'svelte-words-camel', corpus: 'svelte', category: 'words', query: 'event dispatcher', maxRank: 5,
     expect: [{ name: 'createEventDispatcher', file: 'src/index-client.js' }] },
   { id: 'svelte-limit-camel-words', corpus: 'svelte', category: 'words', query: 'svelte map',
-    expect: [{ name: 'SvelteMap', file: 'reactivity/map.js', kind: 'class' }],
-    knownMiss: 'lowercase words do not match the segments of a camelCase name; only the server constant surfaces' },
+    expect: [{ name: 'SvelteMap', file: 'reactivity/map.js', kind: 'class' }] },
   { id: 'svelte-limit-inflection', corpus: 'svelte', category: 'prefix', query: 'mounting',
-    expect: [{ name: 'mount', file: 'internal/client/render.js' }],
-    knownMiss: 'no stemming: "mounting" does not reach "mount"' },
+    expect: [{ name: 'mount', file: 'internal/client/render.js' }] },
 
   // flask
   { id: 'flask-exact-url-for', corpus: 'flask', category: 'exact', query: 'url_for', maxRank: 1,
@@ -94,6 +92,5 @@ export const searchCases: SearchCase[] = [
   { id: 'flask-unicode-name-filter', corpus: 'flask', category: 'unicode', query: 'name:КИРТЕСТ', maxRank: 1,
     expect: [{ name: 'GET /киртест', file: 'tests/test_basic.py', kind: 'route' }] },
   { id: 'flask-limit-spaced-words', corpus: 'flask', category: 'words', query: 'add url rule', maxRank: 1,
-    expect: [{ name: 'add_url_rule', file: 'sansio/app.py' }],
-    knownMiss: 'the single-word `add` functions outrank add_url_rule (rank 6)' },
+    expect: [{ name: 'add_url_rule', file: 'sansio/app.py' }] },
 ];

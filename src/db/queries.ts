@@ -18,7 +18,7 @@ import { Binding,
   SearchResult,
 } from '../types';
 import { safeJsonParse } from '../utils';
-import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-utils';
+import { getStemVariants, kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-utils';
 import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { splitIdentifierSegments } from '../search/identifier-segments';
@@ -1584,7 +1584,13 @@ export class QueryBuilder {
       const existingIds = new Set(results.map(r => r.node.id));
       const maxFtsScore = Math.max(...results.map(r => r.score));
       const terms = query.split(/\s+/).filter(t => t.length >= 2);
-      for (const term of terms) {
+      // Also the other spellings of the words, which FTS does not reach: the
+      // words joined into one identifier (`svelte map` → SvelteMap, `add url
+      // rule` → add_url_rule) and a one-word query's stems (`mounting` → mount).
+      const words = text.split(/\s+/).filter(t => t.length > 0);
+      if (words.length > 1) terms.push(words.join(''), words.join('_'));
+      else if (words.length === 1) terms.push(...getStemVariants(words[0]!));
+      for (const term of new Set(terms)) {
         let sql = 'SELECT * FROM nodes WHERE lower(name) = lower(?)';
         const params: (string | number)[] = [term];
         if (kinds && kinds.length > 0) {

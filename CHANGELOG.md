@@ -205,6 +205,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A search written as separate words now finds the identifier they spell. `add url rule` ranks `add_url_rule` first instead of sixth behind the one-word `add` functions, and `svelte map` finds the `SvelteMap` class, which it missed entirely. A one-word query also finds its base form: `mounting` finds `mount`.
+
 - A search for a name the whole project imports now finds the definition. On Flask, `codegraph query Flask` listed `flask` imports and missed `class Flask` below `--limit 60`: the exact-name lookup kept the first 20 case-insensitive matches, and every one was an import. It now takes definitions first, then exact case, and the class ranks first at the default limit.
 
 - A search with `path:` or `name:` no longer comes back empty when better-scoring matches sit outside the filter. The filters ran after results were cut to the limit, and the candidate queries were capped before them too, so `codegraph query "search path:ui-server" --limit 3` found nothing on this repository. Every candidate query now applies both filters in SQL, folding case the same way for non-ASCII filters such as `path:Pâtisserie`, and the cut to the limit comes last.

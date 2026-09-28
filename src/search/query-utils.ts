@@ -397,8 +397,14 @@ export function nameMatchBonus(nodeName: string, query: string): number {
   // Exact match: query exactly equals the node name
   if (nameLower === queryLower) return 80;
 
+  // The query's words are the name's words: "add url rule" → add_url_rule
+  if (queryTokens.length > 1 && nameLower.replace(/[_\-]/g, '') === queryLower) return 70;
+
   // Exact match on a query token: "CacheBuilder build" and node name is "build"
   if (queryTokens.length > 1 && queryTokens.includes(nameLower)) return 60;
+
+  // Another form of a one-word query: "mounting" → mount
+  if (queryTokens.length === 1 && getStemVariants(queryLower).includes(nameLower)) return 50;
 
   // Name starts with query — scale by length ratio so "Pod"→"Pod" (exact, handled above)
   // scores much higher than "Pod"→"PodGCControllerOptions" (ratio 0.125).
