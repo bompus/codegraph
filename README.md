@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`ba3c21e`](https://github.com/colbymchenry/codegraph/commit/ba3c21e5), 2026-09-16) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`e63fe2e`](https://github.com/colbymchenry/codegraph/commit/e63fe2ec), 2026-09-27) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -74,7 +74,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `ba3c21e`. Each item was checked against upstream's tree.
+Compared with upstream `main` at `e63fe2e`. Each item was checked against upstream's tree.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -85,7 +85,7 @@ Compared with upstream `main` at `ba3c21e`. Each item was checked against upstre
 | Change questions | — | ✓ | "What did my changes touch?" or `main..HEAD` is answered from the diff: the changed functions, their callers and their tests. |
 | Name-only links marked | — | ✓ | Call links matched only by a function's name, with no import or receiver type behind them, are marked, so an agent knows which hop to check. |
 | Worktree seeding | — | ✓ | `codegraph init` in a new git worktree starts from a sibling worktree's index and re-reads only the files that differ. |
-| Inferred links kept current on sync | — | ✓ | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after each sync, so a sync ends with the graph a full index would build. |
+| Inferred links kept current on sync | Reruns every pass | Reruns the affected passes | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after each sync, so a sync ends with the graph a full index would build. Upstream added a refresh in [#2033](https://github.com/colbymchenry/codegraph/pull/2033) that reruns every pass; the fork reruns only the passes the changed files can affect. |
 | Devin | — | ✓ | `codegraph install` can wire up Devin (CLI and Desktop). |
 | Reloading MCP launcher | — | ✓ (opt-in) | A long-running MCP server picks up a new build without the agent reconnecting. |
 | Build revision in version output | — | ✓ | `codegraph --version` and `status --json` report the source revision the build came from. |
@@ -128,7 +128,7 @@ Dispatch and framework coverage the fork adds:
 
 ### Measured results
 
-Paired runs against upstream `main` at `ba3c21e` (2026-09-16, newer than its 1.6.0 release), measured 2026-09-26 on a 16-vCPU WSL2 host with Node 24: seven corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md).
+Paired runs against upstream `main` at `ba3c21e` (2026-09-16, newer than its 1.6.0 release; upstream changes merged since then have not been re-measured), measured 2026-09-26 on a 16-vCPU WSL2 host with Node 24: seven corpora, alternating runs, median of two. Method, commits and per-run numbers: [`docs/benchmarks/fork-vs-upstream-2026-09-26.md`](docs/benchmarks/fork-vs-upstream-2026-09-26.md).
 
 **Full index** (`codegraph init`):
 
@@ -156,7 +156,7 @@ On supabase almost all of upstream's time goes to writing parse results to SQLit
 | supabase | 1.56 s | 2.83 s |
 | n8n | 12.1 s | 4.31 s |
 
-The fork's sync does more: it rebuilds the links inferred from events, callbacks and function pointers, which upstream leaves stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the rebuild off, trading it for the same staleness.
+The fork's sync does more than upstream's did at `ba3c21e`: it rebuilds the links inferred from events, callbacks and function pointers, which that upstream left stale until the next full index ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream fixed #1988 on 2026-09-27 by rerunning every synthesis pass after a sync, so its sync times above are now low; they will be re-measured. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
 Measured separately:
 
@@ -170,7 +170,7 @@ The precision gain comes mostly from declining uncertain links rather than resol
 ### What it costs
 
 - **Larger database:** 14–22% bigger on six of the seven corpora above, and 40% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
-- **Slower one-file syncs on large projects:** about 1.4× upstream's time on pretix, 1.8× on supabase and 2.3× on CPython (table above), because the fork keeps inferred links correct on every sync. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
+- **Slower one-file syncs on large projects:** about 1.4× upstream's time on pretix, 1.8× on supabase and 2.3× on CPython (table above), because the fork keeps inferred links correct on every sync. Those upstream times predate upstream's own refresh (#2033), which adds work to its syncs, so the gap is smaller than shown. On discourse and n8n the fork's sync is faster. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns that off.
 - **Fewer edges on some projects:** 3–13% fewer on pretix, CPython, discourse and n8n, because the fork declines links it cannot confirm. Some of those are correct links (see above).
 - **Slower full index on discourse:** 5% slower, the one corpus of the seven where the fork is not faster.
 
@@ -187,6 +187,8 @@ The fork builds identical graphs on each runtime below. Full index, same method,
 | n8n | 91.7 s, 4.93 GiB | 92.7 s, 4.34 GiB | 89.6 s, 3.93 GiB |
 
 The full test suite passes on all three (under Bun, `npm run test:bun`). Bun uses the least memory on every corpus and is fastest or level on each. Under Bun one test is skipped for a Bun bug that is filed upstream ([oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)).
+
+As a long-running MCP server on n8n, Bun 1.4.2 used 43% less idle memory than Node.js 24 and synced a changed file 22% faster, but eight concurrent explores took 46% longer (3.87 s vs 2.65 s). Reads from several worker threads contend inside Bun's SQLite ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084), [#44157](https://github.com/oven-sh/bun/issues/44157)). These numbers will be re-measured once a Bun release includes the fixes.
 
 The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kernel) sections further down are upstream's own measurements of upstream builds; the fork has not re-run them. The fork's comparison from 2026-09-06, before the kernel became the only parser, is kept in [`docs/fork/history-2026-09-06.md`](docs/fork/history-2026-09-06.md).
 
