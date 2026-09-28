@@ -386,7 +386,6 @@ export class CodeGraph {
    * @returns A CodeGraph instance
    */
   static async open(projectRoot: string, options: OpenOptions = {}): Promise<CodeGraph> {
-    await extraction().initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized

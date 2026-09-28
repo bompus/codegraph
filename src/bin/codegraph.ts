@@ -1585,7 +1585,11 @@ program
         `${lead}\n${projects.map((p) => `  - projectPath: "${p}"`).join('\n')}\n`;
 
       if (plan.exploreRoot) {
-        const { default: CodeGraph } = await loadCodeGraph();
+        // The class module, not the '../index' barrel: this runs on every
+        // prompt, and the barrel's eager imports cost ~30 MB private memory
+        // and ~60 ms. A load failure falls to the catch below (exit 0),
+        // where loadCodeGraph() would print and exit 1.
+        const { default: CodeGraph } = await import('../codegraph');
         const cg = await CodeGraph.open(plan.exploreRoot);
         try {
           const others = plan.nudgeProjects.length
