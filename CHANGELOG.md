@@ -205,6 +205,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- A C condition that a macro misparses no longer becomes a nested function inside the one that contains it. Three shapes did: `if mi_likely(x) {`, `else if mi_unlikely(x) {`, and a statement macro with no semicolon followed by an `if` (`Py_END_ALLOW_THREADS` then `if (rc) {`). Each produced a node such as `_mi_free_block::(local)` or `_Py_read::if`, and calls in that block linked to it instead of the real function. On CPython 277 such nodes are gone, and their calls now come from the enclosing function. A GCC nested function is still extracted. Re-index to pick this up.
+
 - `codegraph_explore` now puts a route's file first when the question names the route. A method and path (`What does GET /explorer/questions/:questionId do?`) or a bare page path (`/blog/:slug`) seeds the matching `route` node, the way a quoted string literal already did. Before, the path reached explore only through word search, and on a Fastify monorepo the route file was missing from the answer while a Next.js `GET` handler elsewhere came first. `[id]` and `{id}` segments in the question match routes stored as `:id`.
 
 - A Python standard-library import such as `import json` or `import logging` no longer links to a same-named module inside one of the project's packages (`src/flask/json/`, `src/flask/logging.py`). Those modules are only importable as `flask.json` and `flask.logging`; an absolute import now matches only a module whose import root is not itself a package.

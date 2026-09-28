@@ -836,10 +836,23 @@ impl<'t> Walker<'t> {
         // Static-member / value-read: `Foo.BAR`, `Foo->x` (cpp).
         self.extract_static_member_ref(node);
 
-        // Nested NAMED functions become their own nodes.
-        if kind == "function_definition" {
+        // Nested NAMED functions become their own nodes. A real one (GCC nested
+        // function) declares through a function_declarator under a real type.
+        // A macro that supplies a condition's parentheses misparses instead:
+        // `if mi_likely(x) {` as type `mi_likely`, declarator `(x)`, and
+        // `else if mi_unlikely(x) {` as type `else`, declarator `mi_unlikely(x)`,
+        // and a statement macro without a semicolon (`Py_END_ALLOW_THREADS`)
+        // before `if (x) {` as type `Py_END_ALLOW_THREADS`, declarator `if(x)`.
+        // All stay part of the enclosing body.
+        if kind == "function_definition"
+            && declares_function(node)
+            && !node.child_by_field_name("type").is_some_and(|t| is_statement_keyword(self.text(t)))
+        {
             let nested_name = self.extract_name(node);
-            if !nested_name.is_empty() && nested_name != "<anonymous>" {
+            if !nested_name.is_empty()
+                && nested_name != "<anonymous>"
+                && !is_statement_keyword(&nested_name)
+            {
                 self.extract_function(node);
                 return;
             }
@@ -877,6 +890,27 @@ impl<'t> Walker<'t> {
 }
 
 // --- free helpers ------------------------------------------------------------
+
+/// A definition whose declarator, under pointer / reference / attribute
+/// wrappers, is a function_declarator.
+fn declares_function(node: Node) -> bool {
+    let mut decl = node.child_by_field_name("declarator");
+    while let Some(d) = decl {
+        match d.kind() {
+            "function_declarator" => return true,
+            "pointer_declarator" | "reference_declarator" | "attributed_declarator" => {
+                decl = d.child_by_field_name("declarator").or_else(|| d.named_child(0));
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// A statement keyword the parser took for a definition's type.
+fn is_statement_keyword(text: &str) -> bool {
+    matches!(text, "if" | "else" | "while" | "for" | "do" | "switch" | "return")
+}
 
 /// findDeclaratorQualifiedId (languages/c-cpp.ts:13): BFS for the declarator's
 /// `qualified_identifier`, skipping parameter_list + trailing_return_type so a
