@@ -59,7 +59,7 @@ import ignore from 'ignore';
 import { loadDeprioritizePatterns } from './project-config';
 import { CodeGraphPackageVersion } from './mcp/version';
 import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
-import { seedLiteralsInQuery } from './extraction/literal-capture';
+import { seedLiteralsInQuery, seedRouteNamesInQuery } from './extraction/literal-capture';
 import { createYielder } from './resolution/cooperative-yield';
 import { minRefsForPool } from './resolution/resolver-pool';
 
@@ -2499,12 +2499,15 @@ export class CodeGraph {
    * never a symbol name, so resolve it through the literals table to the
    * symbols whose bodies hold it. `CODEGRAPH_LITERAL_SEEDS=0` is the ablation
    * switch; failures (pre-v10 database) degrade to no seeds. Explore's file
-   * sort calls this too, so a holder file ranks as a named file.
+   * sort calls this too, so a holder file ranks as a named file. A route the
+   * query spells out (`GET /api/tasks/:id`) seeds its route node the same way.
    */
   findLiteralSeedIds(query: string): string[] {
     if (process.env.CODEGRAPH_LITERAL_SEEDS === '0') return [];
     try {
-      return this.queries.findNodeIdsByLiteral(seedLiteralsInQuery(query));
+      const routeIds = this.queries.findRouteNodeIdsByName(seedRouteNamesInQuery(query));
+      const literalIds = this.queries.findNodeIdsByLiteral(seedLiteralsInQuery(query));
+      return [...new Set([...routeIds, ...literalIds])];
     } catch {
       return [];
     }
