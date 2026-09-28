@@ -419,7 +419,7 @@ impl KernelResolver {
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
         }
-        if !is_supertype_target_kind(&cand.node.kind) {
+        if !is_supertype_target(&cand.node) {
             return Ok(None);
         }
         if self.is_bound_to_out_of_repo_import(r)? {

@@ -21,7 +21,7 @@ Language support is automatic from the file extension — there's nothing to con
 | Objective-C | `.m`, `.mm`, `.h` | Partial support (classes, protocols, methods, `@property`, `#import`, message sends; `.mm` ObjC++ may parse incompletely) |
 | Swift | `.swift` | Full support |
 | Kotlin | `.kt`, `.kts` | Full support |
-| Scala | `.scala`, `.sc` | Full support (classes, traits, methods, type aliases, Scala 3 enums) |
+| Scala | `.scala`, `.sc` | Full support (classes, traits, objects, methods, type aliases, Scala 3 enums) |
 | Dart | `.dart` | Full support |
 | Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
 | Vue | `.vue` | Full support (script + script-setup, Nuxt page/API/middleware routes) |

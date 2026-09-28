@@ -990,7 +990,7 @@ is written):
 | CUDA | `.cu`, `.cuh` | Full support (kernels and device/host functions, structs, classes, host→kernel call edges through `<<<grid, block>>>` launch syntax — templated launches, function-pointer launches (`auto kernel = &fn<...>`), `dim3{...}` configs, and macro-defined kernels included; `__global__`/`__device__`/`__launch_bounds__` specifiers handled; CUDA in plain `.h`/`.hpp` headers recognized by content) |
 | Swift | `.swift` | Full support |
 | Kotlin | `.kt`, `.kts` | Full support |
-| Scala | `.scala`, `.sc` | Full support (classes, traits, methods, type aliases, Scala 3 enums) |
+| Scala | `.scala`, `.sc` | Full support (classes, traits, objects, methods, type aliases, Scala 3 enums) |
 | Dart | `.dart` | Full support |
 | Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
 | Vue | `.vue` | Full support (script + script-setup extraction, Nuxt page/API/middleware routes) |
