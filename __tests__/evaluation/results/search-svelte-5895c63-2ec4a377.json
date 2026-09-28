@@ -1,0 +1,246 @@
+{
+  "timestamp": "2026-09-28T22:42:35.923Z",
+  "corpus": "svelte",
+  "repo": "https://github.com/sveltejs/svelte.git",
+  "commit": "5895c63",
+  "codegraphSha": "2ec4a377",
+  "summary": {
+    "gatingCases": 12,
+    "passed": 12,
+    "byCategory": {
+      "exact": {
+        "cases": 2,
+        "passed": 2,
+        "mrr": 1
+      },
+      "prefix": {
+        "cases": 2,
+        "passed": 2,
+        "mrr": 1
+      },
+      "typo": {
+        "cases": 2,
+        "passed": 2,
+        "mrr": 1
+      },
+      "filter": {
+        "cases": 4,
+        "passed": 4,
+        "mrr": 0.383
+      },
+      "scoped": {
+        "cases": 1,
+        "passed": 1,
+        "mrr": 1
+      },
+      "words": {
+        "cases": 1,
+        "passed": 1,
+        "mrr": 0.2
+      }
+    },
+    "latency": {
+      "p50": 1.05,
+      "p95": 10.23,
+      "max": 10.23
+    },
+    "knownLimits": 2,
+    "knownLimitsFixed": 0
+  },
+  "results": [
+    {
+      "id": "svelte-exact-dispatcher",
+      "category": "exact",
+      "query": "createEventDispatcher",
+      "pass": true,
+      "ranks": [
+        2,
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 1.2907390000000305,
+      "problems": []
+    },
+    {
+      "id": "svelte-exact-mount",
+      "category": "exact",
+      "query": "mount",
+      "pass": true,
+      "ranks": [
+        2,
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 1.5702500000006694,
+      "problems": []
+    },
+    {
+      "id": "svelte-prefix-create-event",
+      "category": "prefix",
+      "query": "createEvent",
+      "pass": true,
+      "ranks": [
+        2,
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.8273800000006304,
+      "problems": []
+    },
+    {
+      "id": "svelte-prefix-search-param",
+      "category": "prefix",
+      "query": "SvelteURLSearchParam",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 0.6010609999993903,
+      "problems": []
+    },
+    {
+      "id": "svelte-typo-dispatcher",
+      "category": "typo",
+      "query": "createEventDispatchr",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 8.880141999999978,
+      "problems": []
+    },
+    {
+      "id": "svelte-typo-transposed",
+      "category": "typo",
+      "query": "SvelteMpa",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 8.175595000000612,
+      "problems": []
+    },
+    {
+      "id": "svelte-filter-kind-name-path",
+      "category": "filter",
+      "query": "kind:function name:mount path:packages/svelte/src/internal",
+      "pass": true,
+      "ranks": [
+        3,
+        1,
+        4
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "medianMs": 1.0540810000002239,
+      "problems": []
+    },
+    {
+      "id": "svelte-filter-path-kind-only",
+      "category": "filter",
+      "query": "path:reactivity kind:class",
+      "pass": true,
+      "ranks": [
+        6,
+        7,
+        5
+      ],
+      "mrr": 0.2,
+      "filterViolations": [],
+      "medianMs": 0.8956300000008923,
+      "problems": []
+    },
+    {
+      "id": "svelte-filter-lang-kind-text",
+      "category": "filter",
+      "query": "lang:typescript kind:interface Component",
+      "pass": true,
+      "ranks": [
+        3
+      ],
+      "mrr": 0.3333333333333333,
+      "filterViolations": [],
+      "medianMs": 2.3464030000013736,
+      "problems": []
+    },
+    {
+      "id": "svelte-filter-empty",
+      "category": "filter",
+      "query": "kind:function lang:typescript path:packages/svelte/tests name:dispatch",
+      "pass": true,
+      "ranks": [],
+      "mrr": 0,
+      "filterViolations": [],
+      "medianMs": 0.4391330000016751,
+      "problems": []
+    },
+    {
+      "id": "svelte-scoped-set",
+      "category": "scoped",
+      "query": "path:url-search-params set",
+      "pass": true,
+      "ranks": [
+        1
+      ],
+      "mrr": 1,
+      "filterViolations": [],
+      "unfilteredRank": 0,
+      "medianMs": 0.5784979999989446,
+      "problems": []
+    },
+    {
+      "id": "svelte-words-camel",
+      "category": "words",
+      "query": "event dispatcher",
+      "pass": true,
+      "ranks": [
+        5
+      ],
+      "mrr": 0.2,
+      "filterViolations": [],
+      "medianMs": 2.1540770000010525,
+      "problems": []
+    },
+    {
+      "id": "svelte-limit-camel-words",
+      "category": "words",
+      "query": "svelte map",
+      "knownMiss": "lowercase words do not match the segments of a camelCase name; only the server constant surfaces",
+      "pass": false,
+      "ranks": [
+        0
+      ],
+      "mrr": 0,
+      "filterViolations": [],
+      "medianMs": 10.233601000001727,
+      "problems": [
+        "missing SvelteMap (reactivity/map.js)"
+      ]
+    },
+    {
+      "id": "svelte-limit-inflection",
+      "category": "prefix",
+      "query": "mounting",
+      "knownMiss": "no stemming: \"mounting\" does not reach \"mount\"",
+      "pass": false,
+      "ranks": [
+        0
+      ],
+      "mrr": 0,
+      "filterViolations": [],
+      "medianMs": 0.2289550000004965,
+      "problems": [
+        "missing mount (internal/client/render.js)"
+      ]
+    }
+  ]
+}
