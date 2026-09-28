@@ -829,6 +829,26 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.98 Explore read path: node:sqlite vs better-sqlite3 vs bun:sqlite (2026-09-28)
+
+§5.11 item 4 compared the three drivers on inserts only. This run covers reads: `codegraph_explore` through `ToolHandler.executeReadTool` (the query worker's path), 8 fixed questions per index, a read-only connection, 5 timed rounds per process after a warm-up, and each arm run twice in ABCD/DCBA order on an idle host. The two alternate drivers sat behind the `SqliteDatabase` adapter through a bench-only switch that was not landed. Every arm returned byte-identical output for every question.
+
+| Index | Node 24.21 + node:sqlite | Node + better-sqlite3 13.0.3 | Bun 1.4.2 + node:sqlite | Bun + bun:sqlite |
+|---|---|---|---|---|
+| trezor-suite (151k nodes, 387k edges, 14k files), round median | 5,258 ms | 5,214 ms (−0.8%) | 5,847 ms (+11.2%) | 5,666 ms (+7.8%) |
+| this repository, round median | 1,430 ms | 1,401 ms (−2.1%) | 1,548 ms (+8.2%) | 1,582 ms (+10.6%) |
+| Peak RSS, trezor-suite | 823 MB | 976 MB | 541 MB | 545 MB |
+
+Where the time goes (a timing wrapper on every statement call): **80–92% of an explore call is inside SQLite statement calls**, about 4.8 s of a 5.3 s round on trezor-suite (7,600 calls, 198k rows). Moving rows into JS costs about the same in every driver, so the choice of driver doesn't change the result. The largest statements per round:
+
+- FTS5 `MATCH` + `bm25` over `nodes`: 348 ms.
+- Four `name LIKE ? … ORDER BY length(name)` lookups, which can't use an index: about 715 ms combined.
+- `SELECT kind, COUNT(*) FROM edges GROUP BY kind`, run twice per explore call: 159 ms.
+
+The rest is a long tail.
+
+Reading: no driver swap. better-sqlite3 is within noise and would add a native dependency. bun:sqlite is no faster than node:sqlite under Bun, and both Bun arms trail Node by 8–11% on this path, reported on oven-sh/bun#44084 as a data point. The lever for explore latency is the SQL itself: the `LIKE` name lookups and the per-call edge-kind count.
+
 ### 5.97 Full index sometimes lost its resolver pool to a checkpoint race (2026-09-27)
 
 n8n full indexes were bimodal: most runs took 68–80 s, but about one in three took 172–179 s with a lower memory peak (~3.2 GB vs ~5.2 GB), all of the extra time in "Resolving refs". Cause: after the prerequisite phase the resolver refreshes its kernel snapshot, and the fold before the copy was a single TRUNCATE checkpoint with a 2 s busy timeout. When the WAL valve's timer pass was already backfilling a large WAL (420 MB here), the TRUNCATE queued behind its checkpoint lock and returned `busy=1, log=-1`. The refresh counted that as failure, destroyed the six-worker pool and resolved the remaining ~1.6M refs on the main thread. The fallback was logged only at debug level.
