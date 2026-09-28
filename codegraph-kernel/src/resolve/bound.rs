@@ -214,6 +214,27 @@ impl KernelResolver {
         if !self.supertypes_complete {
             return Ok(None);
         }
+        // An inherited class method is the one that runs, so the superclass
+        // chain goes first; an interface on the owner would otherwise answer
+        // with its bodiless declaration.
+        if is_class_like(&owner.kind) {
+            let mut class = owner.clone();
+            let mut chain: HashSet<String> = HashSet::from([owner.id.clone()]);
+            loop {
+                let mut parent = None;
+                for t in self.outgoing_edge_targets(&class.id, &["extends"])? {
+                    if let Some(n) = self.node_by_id(&t)?.filter(|n| is_class_like(&n.kind)) {
+                        parent = Some(n);
+                        break;
+                    }
+                }
+                let Some(parent) = parent.filter(|p| chain.insert(p.id.clone())) else { break };
+                if let Some(m) = self.own_bound_member(&parent, method, site)? {
+                    return Ok(Some(bound_member_cand(m)));
+                }
+                class = parent;
+            }
+        }
         // matchBoundTypeMember's supertype BFS: `getSupertypeNodes` (the
         // type's outgoing implements/extends edges, any target kind), each
         // node visited once, the owner's own-member rule at every step.
