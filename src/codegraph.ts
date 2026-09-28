@@ -47,6 +47,7 @@ import type { ReferenceResolver, ResolutionResult } from './resolution';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
+import { logWarn } from './errors';
 import type { FileWatcher, WatchOptions, PendingFile } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { isGeneratedFile } from './extraction/generated-detection';
@@ -1110,6 +1111,7 @@ export class CodeGraph {
           // first makes that pass the refresh, instead of synthesizing twice.
           const synthesisRuns = this.resolver.synthesisRuns;
           if (this.synthesisDirty.size > 0) {
+            this.queries.setSynthesisPending(true);
             this.queries.deleteAllSynthesizedEdges();
           }
           options.onProgress?.({
@@ -1154,9 +1156,12 @@ export class CodeGraph {
           // member is inherited from a supertype (#808).
           await this.resolver.resolveDeferredThisMemberRefs();
         }
-        if (resynthesis && this.synthesisDirty.size > 0) {
+        // A refresh that failed or was killed left the graph without its
+        // synthesized edges; retry it on any sync, a no-op one included.
+        const retrySynthesis = process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0' && this.queries.isSynthesisPending();
+        if ((resynthesis && this.synthesisDirty.size > 0) || retrySynthesis) {
           if (options.deferSynthesis) this.scheduleSynthesisRefresh();
-          else await this.refreshSynthesis();
+          else await this.refreshSynthesis(options.onProgress);
         }
         if (filesChanged || result.filesRemoved > 0) {
           this.refreshNearDuplicates(result.changedFilePaths, result.filesRemoved > 0);
@@ -1475,18 +1480,22 @@ export class CodeGraph {
    * synthesized edges, never wrong ones. Caller holds the index mutex and
    * file lock.
    */
-  private async refreshSynthesis(): Promise<void> {
-    if (this.synthesisDirty.size === 0) return;
+  private async refreshSynthesis(onProgress?: IndexOptions['onProgress']): Promise<void> {
+    if (this.synthesisDirty.size === 0 && !this.queries.isSynthesisPending()) return;
     const files = [...this.synthesisDirty];
     this.synthesisDirty.clear();
     const t = Date.now();
     try {
+      // Cleared by resynthesize once it completes. Until then the next sync,
+      // in this process or after a restart, retries the rebuild.
+      this.queries.setSynthesisPending(true);
       const dropped = this.queries.deleteAllSynthesizedEdges();
-      const edges = await this.resolver.resynthesize();
+      const edges = await this.resolver.resynthesize((current, total) =>
+        onProgress?.({ phase: 'linking', current, total }));
       this.lastSynthesisMs = Date.now() - t;
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${dropped} dropped, ${edges} synthesized)`);
     } catch (error) {
-      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis failed: ${String(error)}`);
+      logWarn('Synthesized-edge refresh failed; the next sync retries it', { error: String(error) });
     }
   }
 

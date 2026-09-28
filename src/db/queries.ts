@@ -3958,6 +3958,19 @@ export class QueryBuilder {
    * place. Heuristic provenance narrows the scan through its index; markdown
    * and resolver heuristics carry no `synthesizedBy` and stay.
    */
+  /**
+   * Set before synthesized edges are dropped for a rebuild, cleared once a
+   * synthesis pass completes. A set flag on open means the last rebuild failed
+   * or was killed and the graph is missing those edges; sync retries it.
+   */
+  setSynthesisPending(pending: boolean): void {
+    this.setMetadata('synthesis_pending', pending ? '1' : '0');
+  }
+
+  isSynthesisPending(): boolean {
+    return this.getMetadata('synthesis_pending') === '1';
+  }
+
   deleteAllSynthesizedEdges(): number {
     const r = this.db.prepare(
       `DELETE FROM edges WHERE provenance = 'heuristic' AND json_extract(metadata, '$.synthesizedBy') IS NOT NULL`,
