@@ -349,12 +349,29 @@ impl KernelResolver {
                 candidates.push(n.clone());
             }
         }
+        let inits = self.nodes_by_name("__init__.py")?;
         let want = format!("{}/__init__.py", rel);
-        for n in self.nodes_by_name("__init__.py")?.iter() {
+        for n in inits.iter() {
             if n.kind == "file" && n.file_path != exclude_file && is_path_or_tail(&n.file_path, &want) {
                 candidates.push(n.clone());
             }
         }
+        // An absolute import starts at a sys.path root, and a package
+        // directory (one with its own `__init__.py`) is not one: stdlib
+        // `import json` never names `src/flask/json/`.
+        let package_dirs: HashSet<&str> = inits
+            .iter()
+            .filter(|n| n.kind == "file")
+            .map(|n| n.file_path.strip_suffix("__init__.py").unwrap_or(""))
+            .collect();
+        candidates.retain(|n| {
+            let root = n
+                .file_path
+                .strip_suffix(&format!("{rel}/__init__.py"))
+                .or_else(|| n.file_path.strip_suffix(&format!("{rel}.py")))
+                .unwrap_or("");
+            root.is_empty() || !package_dirs.contains(root)
+        });
         for root in ["", "src/"] {
             for suffix in [format!("{}/__init__.py", rel), format!("{}.py", rel)] {
                 let want = format!("{}{}", root, suffix);
