@@ -1632,6 +1632,14 @@ export class CodeGraph {
   // ===========================================================================
 
   /**
+   * Node and file counts plus files per language, without getStats' per-kind
+   * grouping of every node and edge. Budget sizing reads only these.
+   */
+  getSizeStats(): Pick<GraphStats, 'nodeCount' | 'fileCount' | 'filesByLanguage'> {
+    return this.queries.getSizeStats();
+  }
+
+  /**
    * Get statistics about the knowledge graph
    */
   getStats(): GraphStats {

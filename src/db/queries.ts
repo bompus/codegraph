@@ -1975,6 +1975,8 @@ export class QueryBuilder {
    * e.g. "TransportSearchAction" is one FTS token, not matchable by "Search"*.
    *
    * Results are ordered by name length (shorter = more likely to be the core type).
+   * Ties keep kind-then-insertion order, which the idx_nodes_kind walk used to
+   * give implicitly; spelling it out keeps results stable across index shapes.
    */
   findNodesByNameSubstring(
     substring: string,
@@ -2005,7 +2007,7 @@ export class QueryBuilder {
       params.push(...languages);
     }
 
-    sql += ' ORDER BY length(name) ASC LIMIT ?';
+    sql += ' ORDER BY length(name) ASC, kind ASC, nodes.rowid ASC LIMIT ?';
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
@@ -3895,6 +3897,29 @@ export class QueryBuilder {
   }
 
   /**
+   * The project-size figures explore and the tool list size their budgets
+   * from. getStats also groups every node and edge by kind, which costs tens
+   * of milliseconds per call on a large index; these counts stay cheap.
+   */
+  getSizeStats(): Pick<GraphStats, 'nodeCount' | 'fileCount' | 'filesByLanguage'> {
+    const counts = this.db
+      .prepare('SELECT (SELECT COUNT(*) FROM nodes) AS nodes, (SELECT COUNT(*) FROM files) AS files')
+      .get() as { nodes: number; files: number };
+    return { nodeCount: counts.nodes, fileCount: counts.files, filesByLanguage: this.getFilesByLanguage() };
+  }
+
+  private getFilesByLanguage(): Record<Language, number> {
+    const filesByLanguage = {} as Record<Language, number>;
+    const languageRows = this.db
+      .prepare('SELECT language, COUNT(*) as count FROM files GROUP BY language')
+      .all() as Array<{ language: string; count: number }>;
+    for (const row of languageRows) {
+      filesByLanguage[row.language as Language] = row.count;
+    }
+    return filesByLanguage;
+  }
+
+  /**
    * Get graph statistics
    */
   getStats(): GraphStats {
@@ -3922,21 +3947,13 @@ export class QueryBuilder {
       edgesByKind[row.kind as EdgeKind] = row.count;
     }
 
-    const filesByLanguage = {} as Record<Language, number>;
-    const languageRows = this.db
-      .prepare('SELECT language, COUNT(*) as count FROM files GROUP BY language')
-      .all() as Array<{ language: string; count: number }>;
-    for (const row of languageRows) {
-      filesByLanguage[row.language as Language] = row.count;
-    }
-
     return {
       nodeCount: counts.node_count,
       edgeCount: counts.edge_count,
       fileCount: counts.file_count,
       nodesByKind,
       edgesByKind,
-      filesByLanguage,
+      filesByLanguage: this.getFilesByLanguage(),
       dbSizeBytes: 0, // Set by caller using DatabaseConnection.getSize()
       walSizeBytes: 0, // Set by caller using DatabaseConnection.getWalSizeBytes()
       lastUpdated: Date.now(),

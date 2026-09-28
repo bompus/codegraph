@@ -829,6 +829,24 @@ Now two programming languages that cannot name each other's symbols never bind b
 | `eval:precision` javalin | 1/1 absent, 1/1 present held (Kotlin → Java member import kept) |
 | Kernel/TS resolve parity, bridge suites (RN, Expo, Swift/ObjC, cross-tier) | pass |
 
+### 5.99 Explore SQL: covering index for name lookups, cheap size counts (2026-09-28)
+
+Follow-up to §5.98's per-statement profile. Two changes:
+
+- `idx_nodes_kind` is now `(kind, name)` (schema v17). The `name LIKE '%x%'` lookups explore runs per query term and kind set already walked this index for `kind IN (...)`, then read every full row to test `name`. With `name` in the index, the scan never touches the table. The query now spells out the old tie order (`length(name), kind, rowid`); without it, ties followed the index's name order and one of ten trezor-suite answers swapped two RPC files for UI files.
+- Explore and the tool list size their budgets from `getSizeStats()` (node and file counts, files per language) instead of `getStats()`, which also grouped every node and edge by kind on each call.
+
+| trezor-suite (151k nodes, 387k edges) | Before | After |
+|---|---|---|
+| One `LIKE` lookup, 200-row limit | 7–10 ms | 1–2.4 ms |
+| 10-question explore round median, paired runs | 5,884 / 6,551 ms | 5,033 / 5,070 ms (about −15%) |
+| Same, size counts only (index still v16) | | 5,456 / 5,601 ms |
+| Explore output | | byte-identical on all 10 questions, v16 and v17 |
+| Index size / build | `(kind)` 35–38 ms | `(kind, name)` 66–70 ms, 5.3 MB of a 513 MB database |
+| v16 → v17 migration on open | | 86–98 ms |
+
+Read-only connections do not migrate, so an existing index gets the covering index the next time a writable process such as `codegraph index` or `codegraph sync` opens it.
+
 ### 5.98 Explore read path: node:sqlite vs better-sqlite3 vs bun:sqlite (2026-09-28)
 
 §5.11 item 4 compared the three drivers on inserts only. This run covers reads: `codegraph_explore` through `ToolHandler.executeReadTool` (the query worker's path), 8 fixed questions per index, a read-only connection, 5 timed rounds per process after a warm-up, and each arm run twice in ABCD/DCBA order on an idle host. The two alternate drivers sat behind the `SqliteDatabase` adapter through a bench-only switch that was not landed. Every arm returned byte-identical output for every question.

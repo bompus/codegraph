@@ -172,7 +172,7 @@ export function normalizeQuerySpelling(query: string): string {
  * indexed for the doc tier, and the tiers were calibrated on code, so a
  * README-heavy repo must not cross a breakpoint and change its code answers.
  */
-export function codeFileCount(stats: GraphStats): number {
+export function codeFileCount(stats: Pick<GraphStats, 'fileCount' | 'filesByLanguage'>): number {
   return stats.fileCount - (stats.filesByLanguage.markdown ?? 0);
 }
 
@@ -2044,7 +2044,7 @@ export class ToolHandler {
     if (!this.cg) return withRequiredProjectPath(visible);
 
     try {
-      const fileCount = codeFileCount(this.cg.getStats());
+      const fileCount = codeFileCount(this.cg.getSizeStats());
       const budget = getExploreBudget(fileCount);
 
       // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
@@ -4016,7 +4016,7 @@ export class ToolHandler {
       // Total files, not codeFileCount: excluding markdown demotes a doc-heavy
       // repo a tier, and the smaller tier drops the answer's lines and turns off
       // the completeness signal that would say so (measured, 465 vs 589 here).
-      const stats = cg.getStats();
+      const stats = cg.getSizeStats();
       indexedFileCount = stats.fileCount;
       indexedNodeCount = stats.nodeCount;
       budget = getExploreOutputBudget(indexedFileCount);
@@ -7287,7 +7287,7 @@ export class ToolHandler {
     let budgetBlock: string[] = [];
     if (budget.includeBudgetNote) {
       try {
-        const fileCount = codeFileCount(cg.getStats());
+        const fileCount = codeFileCount(cg.getSizeStats());
         const callBudget = getExploreBudget(fileCount);
         budgetBlock = ['', `> **Exploration guidance — advisory only, NOT a quota: this project (~${fileCount.toLocaleString()} files indexed) is usually covered in ≈${callBudget} focused explore calls, and extra calls are never rejected or rate-limited.** If the response above does not fully cover your question, run another codegraph_explore on the uncovered symbols — it is cheaper and more complete than Read. Only stop exploring when the response actually covers the flow you asked about.`];
       } catch {

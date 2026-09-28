@@ -364,6 +364,32 @@ describe('migration v6: dedup edges + add identity index on upgrade (#1034)', ()
   });
 });
 
+describe('migration v17: idx_nodes_kind covers name substring scans', () => {
+  it('widens the index and keeps the kind-then-insertion tie order', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'db-mig17-'));
+    const db = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    const raw = db.getDb();
+    const q = new QueryBuilder(raw);
+    raw.exec('DROP INDEX idx_nodes_kind; CREATE INDEX idx_nodes_kind ON nodes(kind)');
+    raw.prepare('DELETE FROM schema_versions WHERE version >= 17').run();
+    // Same length, inserted out of name order: the (kind, name) walk would
+    // reorder them if the query left ties to the plan.
+    q.insertNodes([makeNode('n1', 'zFooBar'), makeNode('n2', 'aFooBar'), makeNode('n3', 'FooBar')]);
+    const names = () => q.findNodesByNameSubstring('Foo', { kinds: ['function'] }).map((r) => r.node.name);
+    expect(names()).toEqual(['FooBar', 'zFooBar', 'aFooBar']);
+
+    runMigrations(raw, 16);
+
+    expect(getCurrentVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
+    const cols = (raw.prepare('PRAGMA index_info(idx_nodes_kind)').all() as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toEqual(['kind', 'name']);
+    expect(names()).toEqual(['FooBar', 'zFooBar', 'aFooBar']);
+
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe('edge traversal order', () => {
   let dir: string;
   let db: DatabaseConnection;

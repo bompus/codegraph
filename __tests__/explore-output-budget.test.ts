@@ -207,8 +207,8 @@ describe('codegraph_explore output respects the adaptive budget', () => {
     // WORDING is what this test pins. Regression guard: quota phrasing
     // ("remaining calls" / "Synthesize once") must never come back — agents
     // read it as a hard cap, stop exploring early, and fall back to grep+Read.
-    const spy = vi.spyOn(cg, 'getStats').mockReturnValue({
-      ...cg.getStats(),
+    const spy = vi.spyOn(cg, 'getSizeStats').mockReturnValue({
+      ...cg.getSizeStats(),
       fileCount: 1500,
       filesByLanguage: { typescript: 1000, markdown: 500 },
     });
