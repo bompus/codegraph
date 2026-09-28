@@ -205,6 +205,15 @@ impl KernelResolver {
                     this_member::ThisMember::Miss => Ok(ResolveOutcome::unresolved()),
                 };
             }
+            // A Python/Go member value (`self.store.fetch`, `c.store.Fetch`)
+            // resolves through its receiver's scope alone (#1820).
+            if (r.language == "python" || r.language == "go") && r.reference_name.contains('.') {
+                let cand = self.match_member_function_ref(r)?;
+                return match self.gate_language(cand, r) {
+                    Some(c) => self.finish_pre_framework(r, c),
+                    None => Ok(ResolveOutcome::unresolved()),
+                };
+            }
             match self.resolve_via_import_member(r)? {
                 None => {}
                 Some(c) => {

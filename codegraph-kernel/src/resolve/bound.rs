@@ -350,6 +350,10 @@ impl KernelResolver {
             }
             return Ok(None);
         }
+        // A method value (#1820) never breaks a tie by call-site file.
+        if r.reference_kind == "function_ref" && matches.len() != 1 {
+            return Ok(None);
+        }
         if matches.len() > 1 {
             if let Some(fqn) = preferred_fqn {
                 let ext = if r.language == "kotlin" { ".kt" } else { ".java" };

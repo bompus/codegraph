@@ -457,6 +457,7 @@ mod rust_modules;
 mod awaited;
 mod iteration;
 mod this_member;
+mod member_fn_ref;
 mod store;
 mod live_conn;
 use self::tables::*;

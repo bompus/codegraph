@@ -27,6 +27,7 @@ import { CodeGraph } from '../src';
 import type { Edge } from '../src/types';
 import { ToolHandler } from '../src/mcp/tools';
 import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
+import { extractFromSource } from '../src/extraction';
 
 beforeAll(async () => {
   await initGrammars();
@@ -860,8 +861,7 @@ describe('Function-as-value capture (#756)', () => {
     }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip('#1820 PYTHON: obj.method passed as a callback is a caller; a unique method resolves', async () => {
+  it('#1820 PYTHON: obj.method passed as a callback is a caller; a unique method resolves', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-1820-py-'));
     fs.writeFileSync(
       path.join(tmpDir, 'store.py'),
@@ -1010,8 +1010,7 @@ describe('Function-as-value capture (#756)', () => {
     }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip('#1820 GO: method value Submit(c.store.Fetch) is a caller; go Fetch(ids) is a call', async () => {
+  it('#1820 GO: method value Submit(c.store.Fetch) is a caller; go Fetch(ids) is a call', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-1820-go-'));
     fs.writeFileSync(
       path.join(tmpDir, 'store.go'),
@@ -1054,8 +1053,7 @@ describe('Function-as-value capture (#756)', () => {
     }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip('#1820: receiver identity beats same-file and imported-name decoys', async () => {
+  it('#1820: receiver identity beats same-file and imported-name decoys', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-receivers-'));
     fs.writeFileSync(path.join(tmpDir, 'store.py'), `class Store:
     def fetch(self, ids):
@@ -1088,8 +1086,7 @@ def static(pool):
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip.each(['tasks', '.tasks'])('Python imported members do not fall back to their receiver (%s)', async (module) => {
+  it.each(['tasks', '.tasks'])('Python imported members do not fall back to their receiver (%s)', async (module) => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-import-members-'));
     fs.writeFileSync(path.join(tmpDir, 'tasks.py'), `from celery import shared_task
 @shared_task
@@ -1127,7 +1124,10 @@ def construct():
     try {
       await cg.indexAll();
       const task = cg.getNodesByName('send_welcome').find(n => n.kind === 'function')!;
-      expect(sourceNames(cg, cg.getIncomingEdges(task.id).filter(e => e.kind === 'calls'))).toEqual(['direct']);
+      // `welcome.delay(1)` never resolves to the task; the fork's celery-dispatch
+      // synthesizer bridges it separately, so only resolved calls count here.
+      const resolvedCalls = cg.getIncomingEdges(task.id).filter(e => e.kind === 'calls' && !e.metadata?.synthesizedBy);
+      expect(sourceNames(cg, resolvedCalls)).toEqual(['direct']);
       expect(sourceNames(cg, fnRefEdgesInto(cg, 'send_welcome'))).toEqual(['callback']);
       const missing = cg.getNodesByName('missing_members')[0]!;
       expect(cg.getOutgoingEdges(missing.id).filter(e => e.kind === 'calls' || e.kind === 'instantiates')).toEqual([]);
@@ -1139,8 +1139,7 @@ def construct():
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip('#1820: same-file ambiguity and noncallable receivers stay unlinked', async () => {
+  it('#1820: same-file ambiguity and noncallable receivers stay unlinked', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-ambiguity-'));
     fs.writeFileSync(path.join(tmpDir, 'main.py'), `class A:
     def fetch(self):
@@ -1180,8 +1179,7 @@ class Own:
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip('#1820: typed, constructed and inherited Python receivers exclude noncallable values', async () => {
+  it('#1820: typed, constructed and inherited Python receivers exclude noncallable values', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-known-'));
     fs.writeFileSync(path.join(tmpDir, 'main.py'), `class Store:
     def fetch(self):
@@ -1233,8 +1231,7 @@ def direct(obj: Store):
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1820); see the upstream merge follow-ups.
-  it.skip('#1820: Go receiver types disambiguate method values and reject external fields', async () => {
+  it('#1820: Go receiver types disambiguate method values and reject external fields', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-go-scope-'));
     fs.writeFileSync(path.join(tmpDir, 'main.go'), `package demo
 import "database/sql"
@@ -1258,6 +1255,45 @@ func Unknown(obj interface{}) { Submit(obj.Fetch) }
       expect(sourceNames(cg, edges)).toEqual(['Assigned', 'Callback', 'Collected', 'MethodExpression', 'Typed']);
       expect(edges.every(e => cg.getNode(e.target)?.qualifiedName === 'Store::Fetch')).toBe(true);
     } finally { cg.close(); }
+  });
+
+  it('#1820 extraction: Python member values keep their receiver path', () => {
+    const result = extractFromSource('members.py', `
+class Store:
+    def fetch(self, ids):
+        return ids
+class Consumer:
+    def wire(self, pool, obj):
+        pool.submit(self.store.fetch, obj.fetch)
+        cb = self.store.fetch
+        table = [obj.fetch, Store.fetch, self.fetch, cls.fetch]
+        keyword(callback=obj.fetch)
+        obj.fetch([])
+        pool.submit(factory().fetch, obj[0].fetch)
+`);
+    const refs = result.unresolvedReferences;
+    const names = [...new Set(refs.filter(r => r.referenceKind === 'function_ref').map(r => r.referenceName))].sort();
+    expect(names).toEqual(['Store.fetch', 'cls.fetch', 'obj.fetch', 'self.fetch', 'self.store.fetch']);
+    expect(refs.some(r => r.referenceKind === 'calls' && r.referenceName === 'obj.fetch')).toBe(true);
+  });
+
+  it('#1820 extraction: Go method values keep their receiver; invocations stay calls', () => {
+    const result = extractFromSource('members.go', `package demo
+type Store struct{}
+func (s *Store) Fetch() {}
+func wire(c *Store, pool Pool) {
+  Submit(c.Fetch)
+  cb := c.Fetch
+  table := []func(){c.Fetch, Store.Fetch}
+  Submit(c.store.Fetch)
+  go c.Fetch()
+  Submit(factory().Fetch, items[0].Fetch)
+}
+`);
+    const refs = result.unresolvedReferences;
+    const names = [...new Set(refs.filter(r => r.referenceKind === 'function_ref').map(r => r.referenceName))].sort();
+    expect(names).toEqual(['Store.Fetch', 'c.Fetch', 'c.store.Fetch']);
+    expect(refs.some(r => r.referenceKind === 'calls' && r.referenceName === 'c.Fetch')).toBe(true);
   });
 
   it('DRAIN: resolvable function_ref rows leave unresolved_refs; re-index is stable', async () => {

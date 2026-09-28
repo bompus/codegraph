@@ -78,6 +78,12 @@ impl<'t> Walker<'t> {
                 let name = self.text(v).to_string();
                 self.fn_ref_cands.extend(Cand::at(from, name, v));
             }
+            // A method value `c.store.Fetch` keeps its receiver (#1820).
+            "selector_expression" => {
+                if let Some(field) = v.child_by_field_name("field") {
+                    self.fn_ref_cands.extend(Cand::member(from, self.text(v), field));
+                }
+            }
             "literal_element" | "expression_list" => {
                 for c in named_kids(v) {
                     self.normalize_fn_ref_value(c, from, depth + 1);

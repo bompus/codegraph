@@ -775,6 +775,12 @@ impl KernelResolver {
                         }
                     }
                 }
+                // A named Python import proves the receiver exists, not the
+                // member: `task.delay()` enqueues work, it does not call the
+                // task function (#2040). Unknown members stay unresolved.
+                if r.language == "python" {
+                    return Ok(None);
+                }
                 // resolveImportedInstanceMember returns null for non-const/var
                 // targets before reading anything — for them the decline rule
                 // is the only remaining arm.

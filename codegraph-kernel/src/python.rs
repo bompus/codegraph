@@ -5,9 +5,9 @@
 //! including the quirks: decorates refs only fire for bare-identifier
 //! decorators (`@staticmethod` yes, `@app.route(...)` no — python's `call`
 //! kind isn't `call_expression`), module-level assignments always extract as
-//! `variable` (no isConst hook), and `self.method` fn-ref candidates carry the
-//! BARE attribute name. Python is not a TYPE_ANNOTATION language — no type
-//! refs anywhere. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
+//! `variable` (no isConst hook), and member fn-ref candidates (`self.method`,
+//! `self.store.fetch`) carry the full receiver path (#1820). Python is not a
+//! TYPE_ANNOTATION language — no type refs anywhere. Files with parse errors are walked like any other (tree-sitter's recovery is canonical; buffers::parse_collapse_warning reports a collapsed parse).
 
 use crate::buffers::{
     node_kind_index, Arena, BoolFlags, EmitOut, NodeRow,
@@ -885,24 +885,20 @@ impl<'t> Walker<'t> {
         }
 
         for v in values {
-            let (name, anchor) = match v.kind() {
-                "identifier" => (self.text(v).to_string(), v),
-                // `self.handle_click` — object EXACTLY `self`; BARE attr name.
+            match v.kind() {
+                "identifier" => {
+                    let name = self.text(v).to_string();
+                    self.fn_ref_cands.extend(Cand::at(from, name, v));
+                }
+                // `self.handle_click`, `self.store.fetch`, `Store.fetch`: the
+                // whole receiver path, resolved by receiver scope (#1820).
                 "attribute" => {
-                    let obj = v.child_by_field_name("object");
-                    let attr = v.child_by_field_name("attribute");
-                    match (obj, attr) {
-                        (Some(o), Some(a))
-                            if o.kind() == "identifier" && self.text(o) == "self" =>
-                        {
-                            (self.text(a).to_string(), a)
-                        }
-                        _ => continue,
+                    if let Some(attr) = v.child_by_field_name("attribute") {
+                        self.fn_ref_cands.extend(Cand::member(from, self.text(v), attr));
                     }
                 }
-                _ => continue,
-            };
-            self.fn_ref_cands.extend(Cand::at(from, name, anchor));
+                _ => {}
+            }
         }
     }
 
