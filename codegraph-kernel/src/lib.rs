@@ -49,6 +49,13 @@ macro_rules! markdown_refs_impl {
             let kind_code = $crate::buffers::edge_kind_index("references").unwrap();
             let line = self.line_of(node);
             let column = self.col_of(node);
+            let flags = $crate::buffers::REF_FLAG_FILE_PATH | $crate::buffers::REF_FLAG_LANGUAGE;
+            // A declaration's initializer can be reached twice under the same
+            // owner (its call walk and the subtree scan); addReference drops
+            // the repeat, so the kernel does too.
+            if self.tables.has_flagged_ref(owner_row, line, column + found[0].1 as u32, flags) {
+                return;
+            }
             for (name, offset) in found {
                 let name_ref = self.arena.put(&name);
                 // addReference denormalizes filePath and language onto the ref
@@ -64,7 +71,7 @@ macro_rules! markdown_refs_impl {
                         candidates: $crate::buffers::NONE_STR,
                         from_id_str: $crate::buffers::NONE_STR,
                     },
-                    $crate::buffers::REF_FLAG_FILE_PATH | $crate::buffers::REF_FLAG_LANGUAGE,
+                    flags,
                 );
             }
         }

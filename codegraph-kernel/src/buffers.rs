@@ -319,6 +319,19 @@ impl Tables {
         self.push_ref_flagged(r, 0);
     }
 
+    /// Whether a ref row with exactly these flags, owner, line and column was
+    /// already pushed. addReference dedups on the full key; the flagged
+    /// emitter reaches a string node at most once per owner, so owner, line and
+    /// column identify it.
+    pub fn has_flagged_ref(&self, from_idx: u32, line: u32, column: u32, flags: u8) -> bool {
+        self.refs.chunks_exact(REF_ROW_SIZE).any(|row| {
+            row[5] == flags
+                && row[0..4] == from_idx.to_le_bytes()
+                && row[8..12] == line.to_le_bytes()
+                && row[12..16] == column.to_le_bytes()
+        })
+    }
+
     pub fn push_ref_flagged(&mut self, r: &RefRow, flags: u8) {
         let buf = &mut self.refs;
         buf.extend_from_slice(&r.from_idx.to_le_bytes());
