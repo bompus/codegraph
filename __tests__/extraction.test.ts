@@ -3850,6 +3850,45 @@ static void release(int err)
       const report = result.unresolvedReferences.find((r) => r.referenceName === 'report')!;
       expect(report.fromNodeId).toBe(release.id);
     });
+
+    it('rebuilds a function the parser left in a file-level error', () => {
+      // The outer #ifdef never closes once the inner pair opens two braces for
+      // one, so the definition's pieces and body sit loose in an ERROR node.
+      // The \`}\` a macro continuation puts at column 0 does not end the body.
+      const code = `
+#ifdef HAVE_SIGINTERRUPT
+static int
+set_interrupt(int sig, int flag)
+{
+#ifdef HAVE_SIGACTION
+    if (sigaction(sig, flag) < 0) {
+#else
+    if (siginterrupt(sig, flag) < 0) {
+#endif
+        return report(-1);
+    }
+#define CHECK(x) do { \\
+    if (x) return -1; \\
+} while (0)
+    CHECK(flag);
+    return 0;
+}
+#endif
+
+static int
+set_timer(int which)
+{
+    return setitimer(which);
+}
+`;
+      const result = extractFromSource('signal.c', code);
+      const fns = result.nodes.filter((n) => n.kind === 'function');
+      expect(fns.map((n) => n.name).sort()).toEqual(['set_interrupt', 'set_timer']);
+      const setInterrupt = fns.find((n) => n.name === 'set_interrupt')!;
+      expect([setInterrupt.startLine, setInterrupt.endLine]).toEqual([3, 18]);
+      const report = result.unresolvedReferences.find((r) => r.referenceName === 'report')!;
+      expect(report.fromNodeId).toBe(setInterrupt.id);
+    });
   });
 
   describe('C definitions whose signature a macro supplies', () => {

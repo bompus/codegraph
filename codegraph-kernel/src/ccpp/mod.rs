@@ -272,6 +272,11 @@ struct Extra {
     is_abstract: Option<bool>,
     return_type: Option<String>,
     qualified_name: Option<String>,
+    /// End line and column when the node is not one syntax node (a function
+    /// rebuilt from the pieces of a file-level ERROR).
+    end: Option<(u32, u32)>,
+    /// `static` when the node cannot tell (see `end`).
+    is_static: Option<bool>,
 }
 
 
@@ -404,7 +409,7 @@ impl<'t> Walker<'t> {
         let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
         // (c/cpp define no resolveBody hook, so createNode's endLine extension
         // for sibling-body grammars never fires — endLine is the node's own.)
-        let end_line = node.end_position().row as u32 + 1;
+        let (end_line, end_column) = extra.end.unwrap_or((node.end_position().row as u32 + 1, self.end_col_of(node)));
 
         let qualified = extra.qualified_name.unwrap_or_else(|| {
             let mut parts: Vec<&str> = self.namespace_prefix.iter().map(|s| s.as_str()).collect();
@@ -441,7 +446,7 @@ impl<'t> Walker<'t> {
             start_line,
             end_line,
             start_column: self.col_of(node),
-            end_column: self.end_col_of(node),
+            end_column,
             name: name_ref,
             qualified_name: qn_ref,
             id: id_ref,
@@ -481,7 +486,7 @@ impl<'t> Walker<'t> {
         if matches!(kind, "function" | "method" | "constant" | "variable") {
             self.value_scopes.push(ValueScope { row, node, name: name.to_string() });
         }
-        self.emit_decl_binding(kind, name, row, node);
+        self.emit_decl_binding(kind, name, row, node, extra.is_static);
         if kind == "function" || kind == "method" {
             self.emit_param_bindings(node);
         }
@@ -613,6 +618,9 @@ impl<'t> Walker<'t> {
                 // still walk — a nested struct/union specifier lives there.
                 self.extract_callable_fields(node);
             }
+        } else if kind == "ERROR" && self.variant == Variant::C && self.enclosing_scope().is_none() {
+            self.visit_file_level_error(node);
+            skip_children = true;
         } else if kind == "preproc_include" {
             self.extract_import(node);
         } else if kind == "call_expression" {
@@ -915,6 +923,104 @@ impl<'t> Walker<'t> {
         self.stack.extend(enclosing);
     }
 
+    /// An `#ifdef` whose branches each open a brace for one `}` can leave a
+    /// file-level region unparsed. Tree-sitter returns an ERROR holding a
+    /// definition's specifiers, its function_declarator and the `{`, with the
+    /// body's statements as loose siblings; rebuild the function from them so
+    /// it and its calls are not lost.
+    fn visit_file_level_error(&mut self, node: Node<'t>) {
+        let kids: Vec<Node<'t>> = {
+            let mut c = node.walk();
+            node.children(&mut c).collect()
+        };
+        let mut i = 0;
+        while i < kids.len() {
+            if let Some(next) = self.extract_swallowed_function(&kids, i) {
+                i = next;
+                continue;
+            }
+            if kids[i].is_named() {
+                self.visit_node(kids[i]);
+            }
+            i += 1;
+        }
+    }
+
+    /// When `kids[d]` declares a function whose `{` follows, extract it and
+    /// return the index after its body. The body ends at the first `}` in
+    /// column 0 outside a multi-line macro, or earlier where a column-0
+    /// non-directive starts the next file-level item.
+    /// The source text decides the `}` because a statement the parser left
+    /// open can hold the rest of the file.
+    fn extract_swallowed_function(&mut self, kids: &[Node<'t>], d: usize) -> Option<usize> {
+        let decl = kids[d];
+        let mut fd = decl;
+        while fd.kind() == "pointer_declarator" {
+            fd = fd.child_by_field_name("declarator")?;
+        }
+        if fd.kind() != "function_declarator" || kids.get(d + 1)?.kind() != "{" {
+            return None;
+        }
+        let name_node = fd.child_by_field_name("declarator").filter(|n| n.kind() == "identifier")?;
+        let name = self.text(name_node).to_string();
+        let mut s = d;
+        while s > 0 && is_c_specifier(kids[s - 1].kind()) {
+            s -= 1;
+        }
+        // A macro loop inside a body (`list_for_each(p, head) {`) has the same
+        // shape, but is indented and has no return type.
+        if kids[s].start_position().column != 0 || is_statement_keyword(&name) {
+            return None;
+        }
+        let open = kids[d + 1].end_byte();
+        let close = self.src[open..]
+            .match_indices("\n}")
+            .map(|(o, _)| open + o)
+            .find(|&nl| !self.src[..nl].trim_end_matches('\r').ends_with('\\'))
+            .map(|nl| nl + 1);
+        let mut last = d + 1;
+        let mut j = d + 2;
+        while j < kids.len() {
+            let k = kids[j];
+            if close.is_some_and(|c| k.start_byte() > c)
+                || (k.is_named() && k.start_position().column == 0 && !k.kind().starts_with("preproc"))
+            {
+                break;
+            }
+            last = j;
+            j += 1;
+            if !k.is_named() && k.kind() == "}" && k.start_position().column == 0 {
+                break;
+            }
+        }
+        let start = kids[s];
+        let mut end = (kids[last].end_position().row as u32 + 1, self.end_col_of(kids[last]));
+        if let Some(c) = close.filter(|c| *c < kids[last].end_byte()) {
+            end = (self.src[..c].matches('\n').count() as u32 + 1, 1);
+        }
+        let specs = &kids[s..d];
+        let extra = Extra {
+            docstring: preceding_docstring(start, self.src),
+            return_type: specs
+                .iter()
+                .find(|k| matches!(k.kind(), "primitive_type" | "type_identifier" | "sized_type_specifier"))
+                .and_then(|k| normalize_cpp_return_type(self.text(*k))),
+            end: Some(end),
+            is_static: Some(specs.iter().any(|k| k.kind() == "storage_class_specifier" && self.text(*k) == "static")),
+            ..Extra::default()
+        };
+        let row = self.create_node("function", &name, start, extra)?;
+        self.emit_declarator_param_bindings(fd, (self.line_of(start), end.0));
+        self.stack.push(Scope { row, kind: "function", name });
+        for k in &kids[d + 2..=last.max(d + 1)] {
+            if k.is_named() {
+                self.visit_for_calls_and_structure(*k);
+            }
+        }
+        self.stack.pop();
+        Some(j)
+    }
+
     // --- inheritance ---------------------------------------------------------
 
     // --- fn-ref capture (#756, cFamilySpec) ----------------------------------
@@ -943,6 +1049,15 @@ fn function_declarator_of(node: Node) -> Option<Node> {
         }
     }
     None
+}
+
+/// A declaration specifier that can precede a function's declarator.
+fn is_c_specifier(kind: &str) -> bool {
+    matches!(
+        kind,
+        "storage_class_specifier" | "type_qualifier" | "primitive_type" | "type_identifier" | "sized_type_specifier"
+            | "struct_specifier" | "union_specifier" | "enum_specifier" | "attribute_specifier" | "ms_call_modifier"
+    )
 }
 
 /// A statement keyword the parser took for a definition's type (`catch`
