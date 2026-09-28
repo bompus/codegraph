@@ -371,9 +371,17 @@ impl KernelResolver {
                 return Ok(Some(c));
             }
         }
-        let all_named: Vec<Arc<KNode>> = self
-            .nodes_by_name(&r.reference_name)?
+        let named = self.nodes_by_name(&r.reference_name)?;
+        // Macro constants are not callees (#1838). Where the name is a
+        // function-like macro, the call can only reach the function another
+        // build configuration compiles, never a same-named type
+        // (`PREFIX(scanRef)(…)` onto an unrelated `struct PREFIX`).
+        let macro_named = r.reference_kind == "calls"
+            && (r.language == "c" || r.language == "cpp")
+            && named.iter().any(|n| cpp::is_define(n));
+        let all_named: Vec<Arc<KNode>> = named
             .iter()
+            .filter(|n| !macro_named || matches!(n.kind.as_str(), "function" | "method"))
             .cloned()
             .collect();
         let mut candidates = self.apply_language_gate(all_named, r);

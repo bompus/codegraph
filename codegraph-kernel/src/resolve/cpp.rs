@@ -1,0 +1,696 @@
+//! C/C++ call-less shapes (#1838, #1839): cpp-macro-visibility.ts and
+//! cpp-constructor.ts.
+//!
+//! `TRACE_POINT(1)` parses as a call, so extraction records a `calls` ref
+//! named `TRACE_POINT`. When the translation unit defines the function-like
+//! macro at that point (the file itself or an in-repo include), the "call" is
+//! a macro expansion and must not bind to a same-spelled function elsewhere.
+//!
+//! `T obj;` / `T obj(args);` / `T obj{args};` carry no call node, so
+//! extraction records a `calls` ref shaped `ns::T::T/<arity>`; it resolves
+//! only to the constructor of the lexically nearest `T` whose parameter count
+//! admits the arguments, and never falls through to the name strategies.
+
+use super::*;
+
+/// Three-valued: `None` = depends on an unknown build flag.
+type Truth = Option<bool>;
+
+fn and(a: Truth, b: Truth) -> Truth {
+    match (a, b) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+fn or(a: Truth, b: Truth) -> Truth {
+    match (a, b) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
+fn not(a: Truth) -> Truth {
+    a.map(|v| !v)
+}
+
+enum FileEvent {
+    Define { define: bool, name: String, line: i64, function_like: bool, value: String, wraps_itself: bool },
+    Include { quote: char, spec: String, line: i64 },
+    Branch { op: String, expression: String, guard: bool },
+    Once,
+}
+
+#[derive(Clone, Copy)]
+struct Event {
+    line: i64,
+    defined: Truth,
+}
+
+type Timeline = HashMap<String, Vec<Event>>;
+
+const ROOT_TIMELINE_CAP: usize = 32;
+
+/// Directive summaries are cached per file but evaluated in translation-unit
+/// order on every inclusion: an included file can change its flags.
+#[derive(Default)]
+pub(super) struct MacroCache {
+    summaries: HashMap<String, Rc<Vec<FileEvent>>>,
+    includes: HashMap<String, Option<String>>,
+    /// Indexed files by basename, for `#include "dir/name.h"` no include root explains.
+    by_basename: Option<HashMap<String, Vec<String>>>,
+    /// Per root file (oldest first): macro name → define/undef events in root-file line order.
+    roots: VecDeque<(String, Rc<Timeline>)>,
+}
+
+/// CPP_DEFINE_SIGNATURE (types.ts): the constant extraction mints from a
+/// function-like `preproc_function_def`. A macro is a value, never a callee.
+pub(super) fn is_define(n: &KNode) -> bool {
+    n.kind == "constant" && re!(r"^\s*#\s*define\b").is_match(n.signature.as_deref().unwrap_or(""))
+}
+
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+#[derive(Clone, Copy)]
+struct Definition {
+    defined: Truth,
+    value: Truth,
+    is_macro: Truth,
+}
+
+/// walkTranslationUnit's state for one root file.
+#[derive(Default)]
+struct TuWalk {
+    timeline: Timeline,
+    definitions: HashMap<String, Definition>,
+    scanning: HashSet<String>,
+    macro_names: HashSet<String>,
+    once: HashMap<String, Truth>,
+}
+
+impl TuWalk {
+    fn condition(&self, expression: &str) -> Truth {
+        let text = expression.trim();
+        if re!(r"(?i)^(?:0x[\da-f]+|\d+)[ul]*$").is_match(text) {
+            let digits = text.trim_end_matches(['u', 'U', 'l', 'L']);
+            let digits = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")).unwrap_or(digits);
+            return Some(digits.bytes().any(|b| b != b'0'));
+        }
+        if let Some(c) = re!(r"^(!)?\s*defined\s*(?:\(\s*(\w+)\s*\)|(\w+))$").captures(text) {
+            let name = c.get(2).or_else(|| c.get(3)).map_or("", |m| m.as_str());
+            let known = self.definitions.get(name).and_then(|d| d.defined);
+            return if c.get(1).is_some() { not(known) } else { known };
+        }
+        if re!(r"^\w+$").is_match(text) {
+            return self.definitions.get(text).and_then(|d| d.value);
+        }
+        None
+    }
+}
+
+impl KernelResolver {
+    /// isVisibleCppMacro: is this C/C++ `calls` ref a macro expansion rather
+    /// than a call? True when the index knows the name as a function-like
+    /// macro and either nothing but macros bears the name (a fuzzy `SWAP` →
+    /// `swap` must not invent a callee) or the macro is definitely visible at
+    /// the call site.
+    pub(super) fn is_visible_cpp_macro(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "c" && r.language != "cpp" {
+            return Ok(false);
+        }
+        if r.reference_kind != "calls" || !re!(r"^\w+$").is_match(&r.reference_name) {
+            return Ok(false);
+        }
+        let same_name = self.nodes_by_name(&r.reference_name)?;
+        if !same_name.iter().any(|n| is_define(n)) {
+            return Ok(false);
+        }
+        if same_name.iter().all(|n| is_define(n)) {
+            return Ok(true);
+        }
+        let root_key = format!("{}\0{}", r.language, r.file_path);
+        let hit = self.cpp_macros.roots.iter().find(|(k, _)| *k == root_key).map(|(_, t)| t.clone());
+        let timeline = match hit {
+            Some(t) => t,
+            None => {
+                let t = Rc::new(self.walk_translation_unit(&r.file_path, &r.language));
+                if self.cpp_macros.roots.len() >= ROOT_TIMELINE_CAP {
+                    self.cpp_macros.roots.pop_front();
+                }
+                self.cpp_macros.roots.push_back((root_key, t.clone()));
+                t
+            }
+        };
+        let last = timeline
+            .get(&r.reference_name)
+            .and_then(|events| events.iter().rfind(|e| e.line <= r.line).copied());
+        Ok(last.is_some_and(|e| e.defined == Some(true)))
+    }
+
+    /// Cache syntax, never conditional truth.
+    fn summarize(&mut self, file: &str) -> Rc<Vec<FileEvent>> {
+        if let Some(s) = self.cpp_macros.summaries.get(file) {
+            return s.clone();
+        }
+        let source = self.read_file(file).map(|f| f.join("\n")).unwrap_or_default();
+        let lines = directive_lines(&source);
+        let mut events = Vec::new();
+        for (i, text) in lines.iter().enumerate() {
+            let line = i as i64 + 1;
+            if let Some(b) = re!(r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)$").captures(text) {
+                let (op, expression) = (b[1].to_string(), b[2].to_string());
+                let guard = guards_itself(&lines, i, &op, &expression);
+                events.push(FileEvent::Branch { op, expression, guard });
+                continue;
+            }
+            if let Some(d) = re!(r"^\s*#\s*(define|undef)\s+(\w+)(\(?)").captures(text) {
+                let name = d[2].to_string();
+                let function_like = &d[3] == "(";
+                events.push(FileEvent::Define {
+                    define: &d[1] == "define",
+                    wraps_itself: function_like && calls_itself(&lines, i, &name),
+                    value: text[d.get(0).map_or(0, |m| m.end())..].to_string(),
+                    name,
+                    line,
+                    function_like,
+                });
+                continue;
+            }
+            if let Some(inc) = re!(r#"^\s*#\s*include\s*([<"])([^>"]+)[>"]"#).captures(text) {
+                let quote = if &inc[1] == "\"" { '"' } else { '<' };
+                events.push(FileEvent::Include { quote, spec: inc[2].to_string(), line });
+            }
+            if re!(r"^\s*#\s*pragma\s+once\b").is_match(text) {
+                events.push(FileEvent::Once);
+            }
+        }
+        let events = Rc::new(events);
+        self.cpp_macros.summaries.insert(file.to_string(), events.clone());
+        events
+    }
+
+    fn resolve_cpp_include(&mut self, file: &str, quote: char, spec: &str, language: &str) -> Res<Option<String>> {
+        let key = format!("{language}\0{file}\0{quote}{spec}");
+        if let Some(hit) = self.cpp_macros.includes.get(&key) {
+            return Ok(hit.clone());
+        }
+        let normalized = spec.replace('\\', "/");
+        let local = pos_join(pos_dirname(file), &normalized);
+        let mut target = if quote == '"' && !local.starts_with("../") && !local.starts_with('/') && self.file_exists(&local) {
+            Some(local)
+        } else {
+            self.resolve_import_path(spec, file, language)?
+        };
+        if target.is_none() {
+            if self.cpp_macros.by_basename.is_none() {
+                let files: Vec<String> = match self.sorted_files() {
+                    Some(files) => files.to_vec(),
+                    None => self.table()?.files.iter().cloned().collect(),
+                };
+                let mut index: HashMap<String, Vec<String>> = HashMap::new();
+                for f in files {
+                    index.entry(pos_basename(&f).to_string()).or_default().push(f);
+                }
+                self.cpp_macros.by_basename = Some(index);
+            }
+            let suffix = format!("/{normalized}");
+            let matches: Vec<&String> = self
+                .cpp_macros
+                .by_basename
+                .as_ref()
+                .and_then(|index| index.get(pos_basename(&normalized)))
+                .map(|list| list.iter().filter(|f| **f == normalized || f.ends_with(&suffix)).collect())
+                .unwrap_or_default();
+            if matches.len() == 1 {
+                target = Some(matches[0].clone());
+            }
+        }
+        self.cpp_macros.includes.insert(key, target.clone());
+        Ok(target)
+    }
+
+    fn walk_translation_unit(&mut self, root_file: &str, language: &str) -> Timeline {
+        let mut walk = TuWalk::default();
+        self.scan_tu_file(&mut walk, root_file, Some(true), None, language);
+        walk.timeline
+    }
+
+    fn scan_tu_file(&mut self, walk: &mut TuWalk, file: &str, inherited: Truth, include_line: Option<i64>, language: &str) {
+        if inherited == Some(false) || walk.scanning.contains(file) || walk.once.get(file) == Some(&Some(true)) {
+            return;
+        }
+        walk.scanning.insert(file.to_string());
+        let mut active = inherited;
+        // (parent, taken)
+        let mut frames: Vec<(Truth, Truth)> = Vec::new();
+        for ev in self.summarize(file).iter() {
+            match ev {
+                FileEvent::Branch { op, expression, guard } => {
+                    match op.as_str() {
+                        "if" | "ifdef" | "ifndef" => {
+                            let known = walk.definitions.get(expression.trim()).and_then(|d| d.defined);
+                            let mut selected = match op.as_str() {
+                                "if" => walk.condition(expression),
+                                "ifndef" => not(known),
+                                _ => known,
+                            };
+                            if selected.is_none() && *guard {
+                                selected = Some(true);
+                            }
+                            frames.push((active, selected));
+                            active = and(active, selected);
+                        }
+                        "endif" => active = frames.pop().map_or(inherited, |f| f.0),
+                        _ => {
+                            let test = if op == "else" { Some(true) } else { walk.condition(expression) };
+                            if let Some(frame) = frames.last_mut() {
+                                active = and(frame.0, and(not(frame.1), test));
+                                frame.1 = or(frame.1, test);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                _ if active == Some(false) => continue,
+                FileEvent::Once => {
+                    let prior = walk.once.get(file).copied().unwrap_or(Some(false));
+                    walk.once.insert(file.to_string(), or(prior, active));
+                }
+                FileEvent::Include { quote, spec, line } => {
+                    // A resolution error only loses this include's macros.
+                    if let Ok(Some(target)) = self.resolve_cpp_include(file, *quote, spec, language) {
+                        self.scan_tu_file(walk, &target, active, Some(include_line.unwrap_or(*line)), language);
+                    }
+                }
+                FileEvent::Define { define, name, line, function_like, value, wraps_itself } => {
+                    let prior = walk.definitions.get(name).copied();
+                    let is_macro = *define && *function_like && !*wraps_itself;
+                    let now = if active == Some(true) || prior.and_then(|p| p.is_macro) == Some(is_macro) {
+                        Some(is_macro)
+                    } else {
+                        None
+                    };
+                    // A name the walk has not seen is an unknown build flag,
+                    // as `#ifdef` reads it: an `#undef` under an unknown
+                    // condition leaves it unknown, not undefined (upstream
+                    // takes it as undefined, which let CPython's Windows
+                    // `#if Py_GIL_DISABLED == 0` / `#undef` pick the
+                    // non-free-threaded branch of every file for certain).
+                    let prior_defined = prior.and_then(|p| p.defined);
+                    let entry = Definition {
+                        defined: if *define {
+                            or(prior_defined, active)
+                        } else {
+                            and(prior_defined, not(active))
+                        },
+                        value: if *define && active == Some(true) { walk.condition(value) } else { None },
+                        is_macro: now,
+                    };
+                    walk.definitions.insert(name.clone(), entry);
+                    if *function_like {
+                        walk.macro_names.insert(name.clone());
+                    }
+                    if walk.macro_names.contains(name) {
+                        let line = include_line.unwrap_or(*line);
+                        walk.timeline.entry(name.clone()).or_default().push(Event { line, defined: now });
+                    }
+                }
+            }
+        }
+        walk.scanning.remove(file);
+    }
+
+    /// matchCppConstructor: `ns::T::T/<arity>` → the single admitting
+    /// constructor of the lexically nearest `T`; `None` for an aggregate, an
+    /// ambiguous overload set or an initializer_list overload.
+    pub(super) fn match_cpp_constructor(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(c) = re!(r"^(.*)::([^:]+)/(\d+)$").captures(&r.reference_name) else {
+            return Ok(None);
+        };
+        let raw_type = &c[1];
+        let name = &c[2];
+        let Ok(argc) = c[3].parse::<usize>() else { return Ok(None) };
+        let ty = raw_type.strip_prefix("::").unwrap_or(raw_type);
+        if ty.rsplit("::").next() != Some(name) {
+            return Ok(None);
+        }
+        // Innermost lexical namespace first, then outward, then global.
+        let scopes: Vec<String> = if raw_type.starts_with("::") {
+            Vec::new()
+        } else {
+            self.node_by_id(&r.from_node_id)?
+                .map(|n| n.qualified_name.split("::").map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+        let mut qualified_names: Vec<String> = (1..=scopes.len()).rev().map(|i| format!("{}::{ty}", scopes[..i].join("::"))).collect();
+        qualified_names.push(ty.to_string());
+
+        for qualified in qualified_names {
+            let has_owner = self
+                .nodes_by_qualified_name(&qualified)?
+                .iter()
+                .any(|n| n.language == "cpp" && matches!(n.kind.as_str(), "class" | "struct" | "union"));
+            if !has_owner {
+                continue;
+            }
+            let ctor_qname = format!("{qualified}::{name}");
+            let constructors: Vec<Arc<KNode>> = self
+                .nodes_by_name(name)?
+                .iter()
+                .filter(|n| n.language == "cpp" && n.kind == "method" && n.qualified_name == ctor_qname)
+                .cloned()
+                .collect();
+            // Brace-init prefers an initializer_list overload over arity —
+            // that choice needs the argument types, so decline.
+            if constructors.iter().any(|n| re!(r"\binitializer_list\b").is_match(n.signature.as_deref().unwrap_or(""))) {
+                return Ok(None);
+            }
+            // A prototype and its out-of-line definition describe one
+            // overload: merge their admissible ranges, then prefer the definition.
+            let mut overloads: Vec<(String, Vec<Arc<KNode>>, usize, usize)> = Vec::new();
+            for node in constructors {
+                let Some((key, min, max)) = constructor_shape(node.signature.as_deref()) else {
+                    return Ok(None);
+                };
+                match overloads.iter_mut().find(|o| o.0 == key) {
+                    Some(prior) => {
+                        prior.1.push(node);
+                        prior.2 = prior.2.min(min);
+                    }
+                    None => overloads.push((key, vec![node], min, max)),
+                }
+            }
+            let mut admitting = overloads.into_iter().filter(|o| o.2 <= argc && argc <= o.3);
+            let (Some(only), None) = (admitting.next(), admitting.next()) else {
+                return Ok(None);
+            };
+            let definitions: Vec<&Arc<KNode>> = only.1.iter().filter(|n| !n.signature.as_deref().unwrap_or("").ends_with(';')).collect();
+            let targets: Vec<&Arc<KNode>> = if definitions.is_empty() { only.1.iter().collect() } else { definitions };
+            return Ok(match targets.as_slice() {
+                [one] => Some(KCand { node: (*one).clone(), confidence: 0.9, resolved_by: "qualified-name" }),
+                _ => None,
+            });
+        }
+        Ok(None)
+    }
+}
+
+/// isCppConstructorRef.
+pub(super) fn is_cpp_constructor_ref(r: &ResolveRefIn) -> bool {
+    r.language == "cpp" && r.reference_kind == "calls" && re!(r"::[^:]+/\d+$").is_match(&r.reference_name)
+}
+
+/// constructorShape: `(key, min, max)` admissible argument counts of a
+/// `(params)` signature; `None` when it can't be read. `usize::MAX` = variadic.
+fn constructor_shape(signature: Option<&str>) -> Option<(String, usize, usize)> {
+    let signature = signature?;
+    let signature = signature.strip_suffix(';').unwrap_or(signature);
+    let text = signature.strip_prefix('(')?.strip_suffix(')')?.trim();
+    if text.is_empty() || text == "void" {
+        return Some((String::new(), 0, 0));
+    }
+    // Split on top-level commas only: `std::map<K, V>`, `int (*cb)(int, int)`
+    // and `T x = f(a, b)` all nest their commas.
+    let bytes = text.as_bytes();
+    let mut parts: Vec<&str> = Vec::new();
+    let (mut start, mut depth, mut quote) = (0usize, 0i32, 0u8);
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if quote != 0 {
+            if c == b'\\' {
+                i += 1;
+            } else if c == quote {
+                quote = 0;
+            }
+        } else if c == b'"' || c == b'\'' {
+            quote = c;
+        } else {
+            if b"(<[{".contains(&c) {
+                depth += 1;
+            }
+            if b")>]}".contains(&c) {
+                depth -= 1;
+            }
+            if c == b',' && depth == 0 {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+        }
+        i += 1;
+    }
+    if depth != 0 || quote != 0 {
+        return None;
+    }
+    parts.push(&text[start..]);
+    // A comparison in a default argument would be mistaken for a `=` default
+    // or a template bracket — leave those to a compiler.
+    if parts.iter().any(|p| re!(r"[<>]=|==|!=").is_match(p)) {
+        return None;
+    }
+    let variadic = parts.iter().any(|p| p.contains("..."));
+    let types: Vec<String> = parts
+        .iter()
+        .map(|p| {
+            let ty = p.split('=').next().unwrap_or("").trim();
+            // Strip an optional parameter name, keeping unnamed built-in
+            // types (`unsigned int`) and qualifiers; uncertainty must not
+            // merge overloads.
+            let ty = match re!(r"^(.*[\s*&>])([A-Za-z_]\w*)$").captures(ty) {
+                Some(c)
+                    if !re!(r"^(?:void|bool|char|short|int|long|float|double|signed|unsigned|const|volatile)$").is_match(&c[2])
+                        && !re!(r"^(?:const|volatile|struct|class|enum)\s*$").is_match(&c[1]) =>
+                {
+                    c[1].to_string()
+                }
+                _ => ty.to_string(),
+            };
+            ty.split_whitespace().collect()
+        })
+        .collect();
+    let min = parts.iter().filter(|p| !p.contains('=') && !p.contains("...")).count();
+    let max = if variadic { usize::MAX } else { parts.len() };
+    Some((types.join(","), min, max))
+}
+
+/// Does the body of the `#define NAME(` at `index` (continuation lines
+/// included) call `NAME`? A wrapper macro that calls its own name is how that
+/// function gets called and hides nothing.
+fn calls_itself(lines: &[String], index: usize, name: &str) -> bool {
+    let mut text = lines[index].clone();
+    let mut j = index;
+    while j + 1 < lines.len() && re!(r"\\\s*$").is_match(&lines[j]) {
+        text.push(' ');
+        text.push_str(&lines[j + 1]);
+        j += 1;
+    }
+    let body = &text[text.find('(').map_or(text.len(), |i| i + 1)..];
+    let b = body.as_bytes();
+    let skip_ws = |mut k: usize| {
+        while k < b.len() && b[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        k
+    };
+    let skip_ws_back = |mut k: usize| {
+        while k > 0 && b[k - 1].is_ascii_whitespace() {
+            k -= 1;
+        }
+        k
+    };
+    for (at, _) in body.match_indices(name) {
+        let end = at + name.len();
+        // `NAME(` as a whole word.
+        if (at == 0 || !is_word(b[at - 1])) && b.get(skip_ws(end)) == Some(&b'(') {
+            return true;
+        }
+        // `(NAME)(`.
+        let before = skip_ws_back(at);
+        if before > 0 && b[before - 1] == b'(' {
+            let close = skip_ws(end);
+            if b.get(close) == Some(&b')') && b.get(skip_ws(close + 1)) == Some(&b'(') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The include-guard idiom: `#ifndef X_H` (or `#if !defined(X_H)`) whose next
+/// directive is `#define X_H` — or the same shape around a fallback
+/// function-like macro. A default VALUE (`#define ENABLE_X 0`) is the flag a
+/// build overrides, so it stays unknown.
+fn guards_itself(lines: &[String], index: usize, op: &str, expression: &str) -> bool {
+    let name = if op == "ifndef" {
+        Some(expression.trim())
+    } else {
+        re!(r"^\s*!\s*defined\s*(?:\(\s*(\w+)\s*\)|(\w+))\s*$")
+            .captures(expression)
+            .and_then(|c| c.get(1).or_else(|| c.get(2)))
+            .map(|m| m.as_str())
+    };
+    let Some(name) = name.filter(|n| re!(r"^\w+$").is_match(n)) else { return false };
+    for text in &lines[index + 1..] {
+        if !re!(r"^\s*#").is_match(text) {
+            continue;
+        }
+        return re!(r"^\s*#\s*define\s+(\w+)(.*)$")
+            .captures(text)
+            .is_some_and(|c| &c[1] == name && (c[2].trim().is_empty() || c[2].starts_with('(')));
+    }
+    false
+}
+
+/// The file's lines with comments removed only as far as the preprocessor
+/// needs: a line inside a block comment is blank, a directive line loses its
+/// trailing `//` / `/* … */`, and every other line is kept verbatim.
+fn directive_lines(source: &str) -> Vec<String> {
+    let masked = mask_cpp_raw_strings(source);
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for raw in masked.split('\n') {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let mut text = raw.to_string();
+        if in_block {
+            match text.find("*/") {
+                None => {
+                    out.push(String::new());
+                    continue;
+                }
+                Some(end) => {
+                    text = text[end + 2..].to_string();
+                    in_block = false;
+                }
+            }
+        }
+        let directive = re!(r"^\s*#").is_match(&text);
+        let mut kept: Option<String> = None;
+        let mut quote = 0u8;
+        let mut i = 0;
+        while i < text.len() {
+            let c = text.as_bytes()[i];
+            if quote != 0 {
+                if c == b'\\' {
+                    i += 1;
+                } else if c == quote {
+                    quote = 0;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'"' || c == b'\'' {
+                quote = c;
+                i += 1;
+                continue;
+            }
+            let next = text.as_bytes().get(i + 1).copied();
+            if c == b'/' && next == Some(b'/') {
+                kept = Some(text[..i].to_string());
+                break;
+            }
+            if c == b'/' && next == Some(b'*') {
+                match text[i + 2..].find("*/") {
+                    None => {
+                        in_block = true;
+                        kept = Some(text[..i].to_string());
+                        break;
+                    }
+                    Some(rel) => {
+                        text = format!("{} {}", &text[..i], &text[i + 2 + rel + 2..]);
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+        out.push(if directive {
+            kept.filter(|k| !k.is_empty()).unwrap_or(text)
+        } else {
+            raw.to_string()
+        });
+    }
+    out
+}
+
+/// maskCppRawStrings (c-cpp.ts): blank every raw string literal
+/// (`R"delim(…)delim"`) except its newlines, skipping comments and ordinary
+/// literals, so a `#define` inside one is never read as a directive.
+fn mask_cpp_raw_strings(source: &str) -> std::borrow::Cow<'_, str> {
+    if !source.contains("R\"") {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    let b = source.as_bytes();
+    let find = |from: usize, needle: &[u8]| b[from.min(b.len())..].windows(needle.len()).position(|w| w == needle).map(|k| from + k);
+    let skip_quoted = |mut k: usize, q: u8| {
+        k += 1;
+        while k < b.len() {
+            if b[k] == b'\\' {
+                k += 2;
+                continue;
+            }
+            if b[k] == q {
+                return k + 1;
+            }
+            k += 1;
+        }
+        b.len()
+    };
+    let mut out = b.to_vec();
+    let mut changed = false;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(b"//") {
+            i = find(i, b"\n").unwrap_or(b.len());
+            continue;
+        }
+        if b[i..].starts_with(b"/*") {
+            i = find(i + 2, b"*/").map_or(b.len(), |k| k + 2);
+            continue;
+        }
+        if i == 0 || !is_word(b[i - 1]) {
+            let prefix = if b[i..].starts_with(b"u8") { 2 } else if matches!(b[i], b'L' | b'u' | b'U') { 1 } else { 0 };
+            let at = i + prefix;
+            if b[at..].starts_with(b"R\"") {
+                let open = at + 2;
+                let delim = b[open..]
+                    .iter()
+                    .take(17)
+                    .position(|&c| matches!(c, b' ' | b'\t' | 0x0b | 0x0c | b'\r' | b'\n' | b'(' | b')' | b'\\'))
+                    .filter(|&n| n <= 16 && b[open + n] == b'(');
+                if let Some(n) = delim {
+                    let mut closer = vec![b')'];
+                    closer.extend_from_slice(&b[open..open + n]);
+                    closer.push(b'"');
+                    let end = find(open + n + 1, &closer).map_or(b.len(), |k| k + closer.len());
+                    for byte in &mut out[i..end] {
+                        if *byte != b'\n' && *byte != b'\r' {
+                            *byte = 0;
+                        }
+                    }
+                    changed = true;
+                    i = end;
+                    continue;
+                }
+            }
+            if b.get(at) == Some(&b'\'') {
+                i = skip_quoted(at, b'\'');
+                continue;
+            }
+        }
+        if b[i] == b'"' {
+            i = skip_quoted(i, b'"');
+            continue;
+        }
+        i += 1;
+    }
+    if !changed {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    // Only whole literals are masked (they start and end on ASCII), so the
+    // bytes stay valid UTF-8; the fallback is unreachable in practice.
+    std::borrow::Cow::Owned(String::from_utf8(out).unwrap_or_else(|_| source.to_string()))
+}

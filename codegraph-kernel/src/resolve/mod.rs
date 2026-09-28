@@ -459,6 +459,7 @@ mod iteration;
 mod this_member;
 mod member_fn_ref;
 mod object_literal;
+mod cpp;
 mod store;
 mod live_conn;
 use self::tables::*;
@@ -520,6 +521,8 @@ pub struct KernelResolver {
     rust_crate_root_memo: HashMap<String, Option<String>>,
     /// factory_initializer memo: (file, binding line, root, binding node).
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
+    /// C/C++ directive summaries and per-root macro timelines (#1838).
+    cpp_macros: cpp::MacroCache,
     file_cache: FileCache,
 }
 
@@ -631,6 +634,7 @@ impl KernelResolver {
             razor_usings_memo: HashMap::new(),
             rust_crate_root_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
+            cpp_macros: cpp::MacroCache::default(),
             file_cache: FileCache::new(1024),
         })
     }
