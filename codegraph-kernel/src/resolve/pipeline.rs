@@ -409,6 +409,10 @@ impl KernelResolver {
     /// gateTargetKind (index.ts): the imports/inheritance target-kind gates
     /// plus the out-of-repo import check.
     pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        // A `#define` is a value, never a callee (#1838).
+        if r.reference_kind == "calls" && cpp::is_define(&cand.node) {
+            return Ok(None);
+        }
         if r.reference_kind == "imports" {
             return Ok(if is_importable_kind(&cand.node.kind) {
                 Some(cand)
@@ -549,6 +553,22 @@ impl KernelResolver {
         // needs no bindings rows — run it ahead of the eligibility gate.
         // A miss falls through to the ordinary route (the qualified-name and
         // exact arms mirror matchReference's continuation).
+        // A local C++ object construction (`T obj(args)`, ref `ns::T::T/1`)
+        // resolves only to a constructor of the lexically nearest `T` (#1839).
+        if cpp::is_cpp_constructor_ref(r) {
+            return match self.match_cpp_constructor(r)? {
+                Some(c) => match self.gate_target_kind(c, r)? {
+                    Some(w) => self.finish_pre_framework(r, w),
+                    None => Ok(ResolveOutcome::unresolved()),
+                },
+                None => Ok(ResolveOutcome::unresolved()),
+            };
+        }
+        // A C/C++ "call" whose name is a function-like macro visible in this
+        // translation unit is a macro expansion, not a call (#1838).
+        if self.is_visible_cpp_macro(r)? {
+            return Ok(ResolveOutcome::unresolved());
+        }
         if is_rust_path_ref(r) {
             if let Some(o) = self.resolve_rust_path_ref(r)? {
                 return Ok(o);

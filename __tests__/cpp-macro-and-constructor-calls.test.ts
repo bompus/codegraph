@@ -55,8 +55,7 @@ function calls(cg: CodeGraph, caller: string): string[] {
 }
 
 describe('#1838 — a macro invocation is not a call to a same-named function', () => {
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('reproduction: the macro from an included header does not bind to the decoy function', async () => {
+  it('reproduction: the macro from an included header does not bind to the decoy function', async () => {
     const cg = await indexed({
       'marker.hpp': '#define TRACE_POINT(value) ((void)(value))\n',
       'exercise.cpp': '#include "marker.hpp"\n\nvoid exercise() {\n    TRACE_POINT(1);\n}\n',
@@ -71,8 +70,7 @@ describe('#1838 — a macro invocation is not a call to a same-named function', 
     }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip.each(['c', 'cpp'] as const)(
+  it.each(['c', 'cpp'] as const)(
     'suppresses macros visible through nested includes, a sibling header, a local #define; honors #undef (%s)',
     async (language) => {
       const cg = await indexed({
@@ -113,8 +111,7 @@ describe('#1838 — a macro invocation is not a call to a same-named function', 
     }
   );
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip.each(['c', 'cpp'] as const)('replays unguarded includes and respects guards, pragma once and changed flags (%s)', async (language) => {
+  it.each(['c', 'cpp'] as const)('replays unguarded includes and respects guards, pragma once and changed flags (%s)', async (language) => {
     const cg = await indexed({
       'unguarded.h': '#define TRACE(v) ((void)(v))\n',
       'guarded.h': '#ifndef GUARDED_H\n#define GUARDED_H\n#define GUARDED(v) ((void)(v))\n#endif\n',
@@ -144,8 +141,7 @@ describe('#1838 — a macro invocation is not a call to a same-named function', 
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('a diamond-shaped, cyclic include graph still finds the macro on an unconditional path', async () => {
+  it('a diamond-shaped, cyclic include graph still finds the macro on an unconditional path', async () => {
     // top.h includes left.h and right.h; both include shared.h (no include
     // guard), which includes top.h again. The active include stack breaks the
     // cycle while shared.h is replayed on the unconditional path.
@@ -159,6 +155,37 @@ describe('#1838 — a macro invocation is not a call to a same-named function', 
     });
     try {
       expect(calls(cg, 'unit')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('an #undef under an undecidable #if leaves the flag unknown; a macro name never calls a type', async () => {
+    // Fork: CPython's Windows pyconfig.h `#if Py_GIL_DISABLED == 0` /
+    // `#undef` made every file's `#ifdef Py_GIL_DISABLED` certain, hiding the
+    // free-threaded build's real function; expat's `PREFIX(scanRef)(…)`
+    // bound to an unrelated `struct PREFIX` once macro constants left the pool.
+    const cg = await indexed({
+      'config.h': '#if FREE_THREADED == 0\n#undef FREE_THREADED\n#endif\n',
+      'unit.c': [
+        '#include "config.h"',
+        '#ifdef FREE_THREADED',
+        'static int world_stopped(void) { return 0; }',
+        '#else',
+        '#define world_stopped() 1',
+        '#endif',
+        'int check(void) { return world_stopped(); }',
+        '#ifdef TOK_IMPL',
+        '#define PREFIX(ident) ident',
+        '#endif',
+        'int tok(int x) { return PREFIX(scan)(x); }',
+        '',
+      ].join('\n'),
+      'parser.c': 'struct PREFIX { int x; };\n',
+    });
+    try {
+      expect(calls(cg, 'check')).toEqual(['function world_stopped (unit.c)']);
+      expect(cg.getCallees(fn(cg, 'tok').id).filter((r) => r.node.kind === 'struct')).toEqual([]);
     } finally {
       cg.close();
     }
@@ -294,8 +321,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     '',
   ].join('\n');
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('reproduction: every initialization form reaches the indexed constructor; the aggregate reaches none', async () => {
+  it('reproduction: every initialization form reaches the indexed constructor; the aggregate reaches none', async () => {
     const cg = await indexed({ 'case.cpp': REPRODUCTION });
     try {
       expect(calls(cg, 'aggregate_initialization')).toEqual([]);
@@ -326,8 +352,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('picks the constructor in the lexical namespace of the site, then an enclosing/global type', async () => {
+  it('picks the constructor in the lexical namespace of the site, then an enclosing/global type', async () => {
     const cg = await indexed({
       'ns.cpp': [
         'struct Global { Global() {} };',
@@ -353,8 +378,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('chooses among overloads by arity only when exactly one admits the argument count', async () => {
+  it('chooses among overloads by arity only when exactly one admits the argument count', async () => {
     const cg = await indexed({
       'overloads.cpp': [
         // (One constructor per line: same-line overloads share a node ID.)
@@ -390,8 +414,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('controls: pointers, references, prototypes and extern declarations construct no object; arrays construct elements', async () => {
+  it('controls: pointers, references, prototypes and extern declarations construct no object; arrays construct elements', async () => {
     const cg = await indexed({
       'controls.cpp': [
         'struct Widget {',
@@ -417,8 +440,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('merges separately declared defaults with definitions without confusing same-arity overloads', async () => {
+  it('merges separately declared defaults with definitions without confusing same-arity overloads', async () => {
     const cg = await indexed({
       'widget.hpp': [
         'namespace app {', 'struct Widget {',
@@ -438,8 +460,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('constructs default and explicitly braced array elements, retaining nested argument calls', async () => {
+  it('constructs default and explicitly braced array elements, retaining nested argument calls', async () => {
     const cg = await indexed({ 'arrays.cpp': [
       'struct Widget {', ' Widget() {}', ' Widget(int value) {}', '};',
       'int argument() { return 1; }',
@@ -460,8 +481,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('MCP preserves constructor retrieval and labels the retained type dependency', async () => {
+  it('MCP preserves constructor retrieval and labels the retained type dependency', async () => {
     const cg = await indexed({ 'case.cpp': REPRODUCTION });
     try {
       const handler = new ToolHandler(cg);
@@ -477,8 +497,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
     } finally { cg.close(); }
   });
 
-  // Fork: kernel port pending (#1838/#1839/#2035); see the upstream merge follow-ups.
-  it.skip('CLI labels type dependencies separately from executable constructor calls', async () => {
+  it('CLI labels type dependencies separately from executable constructor calls', async () => {
     const cg = await indexed({ 'case.cpp': REPRODUCTION });
     const root = cg.getProjectRoot();
     cg.close();
