@@ -63,11 +63,11 @@ impl KernelResolver {
                     && at >= 1
                     && src.get(at - 1).is_some_and(|l| l.trim_end() == format!("//export {}", c.name))
                     && src.get(at).is_some_and(|l| {
-                        regex::Regex::new(&format!(r"^func {name}\s*\(")).is_ok_and(|re| re.is_match(l))
+                        Self::cached_regex(&format!(r"^func {name}\s*\(")).is_ok_and(|re| re.is_match(l))
                     });
             }
             if c.language == "rust" {
-                return regex::Regex::new(&format!(r#"(?-u:\b)pub\s+extern\s+"C"\s+fn\s+{name}(?-u:\b)"#))
+                return Self::cached_regex(&format!(r#"(?-u:\b)pub\s+extern\s+"C"\s+fn\s+{name}(?-u:\b)"#))
                     .is_ok_and(|re| re.is_match(&decl(&src, c.start_line)));
             }
         }
@@ -77,7 +77,7 @@ impl KernelResolver {
                 return imports_cgo(&src) && r.reference_name == format!("C.{}", c.name);
             }
             if r.language == "rust" {
-                return regex::Regex::new(&format!(r#"extern\s+"C"\s*\{{[^}}]*(?-u:\b)fn\s+{name}\s*\("#))
+                return Self::cached_regex(&format!(r#"extern\s+"C"\s*\{{[^}}]*(?-u:\b)fn\s+{name}\s*\("#))
                     .is_ok_and(|re| re.is_match(&stripped_text(&src)));
             }
         }
