@@ -52,7 +52,9 @@ const assistant = (blocks: unknown[]) => ({ type: 'assistant', timestamp: at, me
 
 const dirs: string[] = [];
 const fixtureDir = (): string => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-sessions-'));
+  // Resolved, as project roots are in production: the temp dir can sit behind
+  // a symlink (macOS /var, the test run's short socket alias).
+  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-sessions-')));
   dirs.push(d);
   return d;
 };
