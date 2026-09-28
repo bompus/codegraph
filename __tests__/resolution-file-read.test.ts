@@ -83,8 +83,10 @@ describe('resolution file reads', () => {
     expect(stat).toHaveBeenCalledTimes(2);
   });
 
-  // Fork: kernel port pending (HAR excluded imports); see the upstream merge follow-ups.
-  it.skip('skips excluded HAR imports during indexing while preserving source workspace imports', async () => {
+  // Import resolution runs in the kernel, which never reads a file over the
+  // source size limit (codegraph-kernel/src/resolve/query.rs `read_source`);
+  // here the JS side must not read the archive either.
+  it('skips excluded HAR imports during indexing while preserving source workspace imports', async () => {
     const relative = sparseArchive();
     fs.mkdirSync(path.join(root, 'data'));
     fs.writeFileSync(path.join(root, 'data/oh-package.json5'), JSON.stringify({ name: 'data', main: 'Index.ets' }));
@@ -96,10 +98,8 @@ describe('resolution file reads', () => {
       "import { RNAbility } from 'archive';\nimport { Repository } from 'data';\n" +
       'export class MainAbility extends RNAbility {}\nexport class Local extends Repository {}\n');
     const read = vi.spyOn(fs, 'readFileSync');
-    const stat = vi.spyOn(fs, 'statSync');
     await cg.indexAll();
     const archive = path.join(root, relative);
-    expect(stat.mock.calls.some(([file]) => String(file) === archive)).toBe(true);
     expect(read.mock.calls.some(([file]) => String(file) === archive)).toBe(false);
     const repository = cg.getNodesByKind('class').find(n => n.name === 'Repository');
     const local = cg.getNodesByKind('class').find(n => n.name === 'Local');
