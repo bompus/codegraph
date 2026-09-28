@@ -47,6 +47,8 @@ describe('searchNodes applies path: and name: before the limit', () => {
     // SQLite's lower() folds ASCII only; these match only with Unicode folding.
     q.insertNode(makeNode('eclair', 'renderÉclair', 'src/Pâtisserie/Éclair.ts'));
     q.insertNode(makeNode('kelvin', 'renderTemp', 'src/\u212Aelvin/temp.ts'));
+    // A word-final Σ lowercases to ς, not σ.
+    q.insertNode(makeNode('sigma', 'renderΟΔΟΣ', 'src/greek/odos.ts'));
   });
 
   afterAll(() => {
@@ -74,6 +76,16 @@ describe('searchNodes applies path: and name: before the limit', () => {
     expect(q.searchNodes('render name:éclair', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
     expect(q.searchNodes('render path:pâtisserie/éclair', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
     expect(q.searchNodes('render path:PÂTISSERIE', { limit: 5 }).map((r) => r.node.id)).toEqual(['eclair']);
+  });
+
+  it('a non-ASCII filter narrows the candidates too, not only the final gate', () => {
+    // Filter-only fetches go in name order, and all 150 `render` rows sort
+    // ahead of `renderÉclair`; the `render` query ranks them above it as well.
+    expect(q.searchNodes('path:PÂTISSERIE', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
+    expect(q.searchNodes('name:ÉCLAIR', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
+    expect(q.searchNodes('render path:pâtisserie', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
+    expect(q.searchNodes('render name:éclair path:src', { limit: 1 }).map((r) => r.node.id)).toEqual(['eclair']);
+    expect(q.searchNodes('name:οδος', { limit: 1 }).map((r) => r.node.id)).toEqual(['sigma']);
   });
 
   it('an ASCII filter still matches a code point that lowercases into ASCII', () => {

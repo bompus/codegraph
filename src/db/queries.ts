@@ -191,18 +191,58 @@ interface HardFilters {
  * SQLite's `lower()` folds ASCII only. For an ASCII filter value that matches
  * JS `toLowerCase()` except on the two code points that lowercase into ASCII
  * (U+0130 to `i̇`, U+212A to `k`), so rows holding either pass through to the JS
- * gate. A list with a non-ASCII value is left to the JS gate alone.
+ * gate. A non-ASCII value becomes a case-sensitive GLOB whose character classes
+ * hold every code point that lowercases to the value's own (see foldingGlob).
  */
 function appendHardFilters(hard: HardFilters | undefined, params: (string | number)[]): string {
   if (!hard) return '';
   let sql = '';
   for (const [column, values] of [['nodes.file_path', hard.paths], ['nodes.name', hard.names]] as const) {
-    if (values.length === 0 || values.some((v) => /[^\x00-\x7f]/.test(v))) continue;
-    const matches = values.map(() => `instr(lower(${column}), lower(?)) > 0`);
+    if (values.length === 0) continue;
+    const matches = values.map((v) => {
+      if (/^[\x00-\x7f]*$/.test(v)) {
+        params.push(v);
+        return `instr(lower(${column}), lower(?)) > 0`;
+      }
+      params.push(foldingGlob(v));
+      return `${column} GLOB ?`;
+    });
     sql += ` AND (${matches.join(' OR ')} OR ${column} GLOB '*[\u0130\u212a]*')`;
-    params.push(...values);
   }
   return sql;
+}
+
+let upperByLower: Map<string, string[]> | undefined;
+
+/**
+ * A GLOB matching what `s.toLowerCase().includes(value.toLowerCase())` accepts:
+ * each code point of the lowered value becomes a class of every code point that
+ * lowercases to it. U+0130 is the only code point whose lowercase is longer
+ * than one, and appendHardFilters passes rows holding it through. Σ is the one
+ * whose lowercase depends on its neighbours.
+ */
+function foldingGlob(value: string): string {
+  if (!upperByLower) {
+    upperByLower = new Map();
+    for (let cp = 0; cp < 0x110000; cp++) {
+      if (cp >= 0xd800 && cp < 0xe000) continue;
+      const c = String.fromCodePoint(cp);
+      const lower = c.toLowerCase();
+      if (lower === c || [...lower].length !== 1) continue;
+      const uppers = upperByLower.get(lower);
+      if (uppers) uppers.push(c);
+      else upperByLower.set(lower, [c]);
+    }
+    // Σ lowercases to final ς at the end of a word, to σ elsewhere.
+    upperByLower.set('\u03c2', ['\u03a3']);
+  }
+  let glob = '*';
+  for (const ch of value.toLowerCase()) {
+    const uppers = upperByLower.get(ch);
+    if (uppers) glob += `[${ch}${uppers.join('')}]`;
+    else glob += ch === '*' || ch === '?' || ch === '[' ? `[${ch}]` : ch;
+  }
+  return glob + '*';
 }
 
 function rowToNode(row: NodeRow): Node {
