@@ -386,7 +386,7 @@ impl KernelResolver {
             }
         }
         let mut candidates = kept;
-        candidates.retain(|n| !is_inheritance_ref(&r.reference_kind) || is_supertype_target_kind(&n.kind));
+        candidates.retain(|n| !is_inheritance_ref(&r.reference_kind) || is_supertype_target(n));
         candidates.retain(|n| r.reference_kind != "imports" || is_importable_kind(&n.kind));
         {
             let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());

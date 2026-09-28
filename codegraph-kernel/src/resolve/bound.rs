@@ -279,7 +279,11 @@ impl KernelResolver {
         let type_nodes: Vec<Arc<KNode>> = self
             .nodes_by_name(type_name)?
             .iter()
-            .filter(|n| is_supertype_bearing_kind(&n.kind) && n.language == language)
+            // Scala singletons can inherit members even though they cannot be parents.
+            .filter(|n| {
+                n.language == language
+                    && (is_supertype_bearing_kind(&n.kind) || (n.language == "scala" && n.kind == "module"))
+            })
             .cloned()
             .collect();
         let mut names: Vec<String> = Vec::new();

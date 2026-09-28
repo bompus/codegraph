@@ -725,7 +725,7 @@ impl KernelResolver {
     }
 
     /// matchMethodCall's class scan (Strategies 1 and 2): a same-language
-    /// class, struct, union or interface named `class_name`, call site's file
+    /// class, struct, union, interface or Scala object named `class_name`, call site's file
     /// first, whose file holds a method `method` qualified under it.
     pub(super) fn class_method_scan(
         &mut self,
@@ -737,7 +737,9 @@ impl KernelResolver {
     ) -> Res<Option<KCand>> {
         let candidates = prefer_call_site_file(self.nodes_by_name(class_name)?.iter().cloned().collect(), &r.file_path);
         for c in &candidates {
-            if !matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface") || c.language != r.language {
+            let class_like = matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface")
+                || (c.language == "scala" && c.kind == "module");
+            if !class_like || c.language != r.language {
                 continue;
             }
             let in_file = self.nodes_in_file(&c.file_path)?;

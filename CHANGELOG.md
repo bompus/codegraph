@@ -569,7 +569,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A receiver-less Go call (a function parameter or local func value) no longer links to a same-named method. Thanks @PCeltide for the report and @maxmilian. (#1857)
 - A function passed to a curried wrapper (`Effect.fn("x")(function* () {…})`, `connect(m)(fn)`) is now indexed under its declarator or property name. Thanks @Dshuishui for the report and @maxmilian. (#1747)
 - The bundled Scala grammar is now the official tree-sitter-scala v0.26.2, so classes with several parameter lists keep all their inheritance edges. Thanks @htarnacki for the report and @danusha2345. (#1823)
-- A Scala `object` is now indexed as a module, so `extends`/`with` resolves to the trait or class rather than its companion object. Thanks @htarnacki. (#1824)
+- A Scala `object` is now indexed as a module, so `extends`/`with` resolves to the trait or class rather than its companion object. An object is never taken as a parent, but it still inherits members from what it extends, and `Obj.method()` calls resolve to the object's own method. Thanks @htarnacki. (#1824)
 - C/C++ functions defined through a single-argument macro are now indexed under their real name when the macro's own `#define` proves it. Thanks @Dshuishui. (#1373)
 - MSVC COM `interface` declarations in C++ headers are now indexed as types with their methods. Thanks @timxx. (#1519)
 - A function-like C/C++ macro invocation no longer binds to a same-named function in another file, and a local C++ object initialization now records a call to its constructor. Thanks @netbrah for the reports and @danusha2345. (#1838, #1839)

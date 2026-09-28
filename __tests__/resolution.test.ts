@@ -4410,8 +4410,7 @@ object Main {
   describe('Scala companion object vs extends resolution', () => {
     for (const parentKind of ['trait', 'class'] as const) {
       for (const objectFirst of [true, false]) {
-        // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
-        it.skip.each([false, true])(
+        it.each([false, true])(
           `resolves ${parentKind} companions (objectFirst=${objectFirst}, imported=%s) through every impact depth`,
           async (imported) => {
             const typeDef = `${parentKind} ExtAgreement {
@@ -4454,8 +4453,7 @@ object Main {
       }
     }
 
-    // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
-    it.skip.each([false, true])('rejects a sole singleton parent (imported=%s)', async (imported) => {
+    it.each([false, true])('rejects a sole singleton parent (imported=%s)', async (imported) => {
       fs.writeFileSync(path.join(tempDir, 'OnlyObject.scala'),
         'package contracts\nobject OnlyObject { def value(): Int = 1 }\n');
       fs.writeFileSync(path.join(tempDir, 'Invalid.scala'),
@@ -4480,8 +4478,7 @@ object Main {
       expect(cg.getIncomingEdges(inherited.id).some((e) => e.kind === 'calls' && e.source === run.id)).toBe(true);
     });
 
-    // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
-    it.skip('resolves inherited methods through a singleton receiver', async () => {
+    it('resolves inherited methods through a singleton receiver', async () => {
       fs.writeFileSync(path.join(tempDir, 'Service.scala'),
         'trait Service { def inherited(): Int = 1 }\n' +
         'object LiveService extends Service {}\n' +
@@ -4493,8 +4490,7 @@ object Main {
       expect(cg.getIncomingEdges(inherited.id).some((e) => e.kind === 'calls' && e.source === use.id)).toBe(true);
     });
 
-    // Fork: kernel port pending (Scala companions); see the upstream merge follow-ups.
-    it.skip('keeps object method calls anchored to their receiver', async () => {
+    it('keeps object method calls anchored to their receiver', async () => {
       fs.writeFileSync(path.join(tempDir, 'Api.scala'),
         'class API { def send(): Int = 2 }\n' +
         'object Api { def send(): Int = 1 }\n' +
