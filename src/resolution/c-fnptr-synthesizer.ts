@@ -802,9 +802,10 @@ export async function cFnPointerDispatchEdges(
   };
 
   let tPass = Date.now();
-  // C/C++ struct and union nodes in kind-scan order, kept from the extent scan
-  // below so stage B doesn't load every struct node a second time.
-  let cStructNodes: { id: string; name: string }[] | null = null;
+  // C/C++ struct and union nodes, kept from the extent scan below so stage B
+  // doesn't load every struct node a second time.
+  type StructRef = { id: string; name: string; filePath: string; startLine: number };
+  let cStructNodes: StructRef[] | null = null;
   if (nativePaths) {
     // Bulk-prefetch every struct/union extent in one kind-scan — the per-file
     // `getNodesInFile` calls this replaces were ~84k individual queries on the
@@ -815,7 +816,7 @@ export async function cFnPointerDispatchEdges(
     for (const kind of ['struct', 'union'] as const) {
       for (const st of (ctx.iterateNodesByKind?.(kind) ?? ctx.getNodesByKind(kind))) {
         if (!C_CPP_EXT.test(st.filePath)) continue;
-        cStructNodes.push({ id: st.id, name: st.name });
+        cStructNodes.push({ id: st.id, name: st.name, filePath: st.filePath, startLine: st.startLine ?? 0 });
         let arr = extentsByFile.get(st.filePath);
         if (!arr) { arr = []; extentsByFile.set(st.filePath, arr); }
         // sliceLinesPre semantics ride along: falsy startLine never parses,
@@ -1019,21 +1020,27 @@ export async function cFnPointerDispatchEdges(
     if (!rawFields) return; // file unreadable or body unparsable at sweep time — the old pass skipped it too
     registerStructLayout(st.name, classifyFields(rawFields));
   };
-  if (cStructNodes) {
-    for (const st of cStructNodes) {
-      if ((++scannedFiles & 255) === 0) await onYield();
-      registerStructNode(st);
-    }
-    cStructNodes = null;
-  } else {
+  if (!cStructNodes) {
+    cStructNodes = [];
     for (const kind of ['struct', 'union'] as const) {
       for (const st of (ctx.iterateNodesByKind?.(kind) ?? ctx.getNodesByKind(kind))) {
         if ((++scannedFiles & 255) === 0) await onYield();
         if (!C_CPP_EXT.test(st.filePath)) continue;
-        registerStructNode(st);
+        cStructNodes.push({ id: st.id, name: st.name, filePath: st.filePath, startLine: st.startLine ?? 0 });
       }
     }
   }
+  // Two files can give one tag different layouts, and the last one registered
+  // wins. Register in path order: the kind scan follows insertion order, which
+  // a sync changes by re-inserting the files it touched.
+  cStructNodes.sort((a, b) =>
+    (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0) ||
+    a.startLine - b.startLine || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const st of cStructNodes) {
+    if ((++scannedFiles & 255) === 0) await onYield();
+    registerStructNode(st);
+  }
+  cStructNodes = null;
   rawFieldsByNode.clear();
   if (prof) { prof.B = Date.now() - tPass; tPass = Date.now(); }
   // NB: no early return on an empty structLayout here — an inline `struct TAG

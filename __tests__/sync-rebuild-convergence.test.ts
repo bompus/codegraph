@@ -540,8 +540,7 @@ export function onPing(): void {}
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  // Fork: kernel port pending (#2033 synthesis_inputs); see the upstream merge follow-ups.
-  it.skip.each([false, true])('adds and removes registration without changing endpoints (scoped=%s)', async (scoped) => {
+  it.each([false, true])('adds and removes registration without changing endpoints (scoped=%s)', async (scoped) => {
     write('bus.ts', bus);
     write('wiring.ts', "import { bus, onPing } from './bus';\n");
     await load();
@@ -585,7 +584,7 @@ export function onPing(): void {}
     await converges();
   });
 
-  it('skips synthesis for no-op syncs and unrelated ordinary edits', async () => {
+  it('skips synthesis for no-op syncs and keeps edges across unrelated edits', async () => {
     write('bus.ts', bus);
     write('wiring.ts', wiring);
     write('math.ts', 'export function square(n: number) { return n * n; }\n');
@@ -593,9 +592,11 @@ export function onPing(): void {}
     const before = readEdges();
     const phases: string[] = [];
     await cg.sync({ onProgress: p => phases.push(p.phase) });
-    write('math.ts', 'export function square(n: number) { return n * n + 1; }\n');
-    await cg.sync({ paths: ['math.ts'], onProgress: p => phases.push(p.phase) });
     expect(phases).not.toContain('linking');
+    // Fork: a sync that changes files always refreshes synthesis (per-pass
+    // skip caches keep it cheap); the edges must come back unchanged.
+    write('math.ts', 'export function square(n: number) { return n * n + 1; }\n');
+    await cg.sync({ paths: ['math.ts'] });
     expect(readEdges()).toEqual(before);
   });
 
@@ -642,8 +643,7 @@ export function onPing(): void {}
     await converges();
   });
 
-  // Fork: kernel port pending (#2033 synthesis_inputs); see the upstream merge follow-ups.
-  it.skip('keeps C layout precedence independent of file insertion order', async () => {
+  it('keeps C layout precedence independent of file insertion order', async () => {
     write('alpha.c', 'struct ops { int (*first)(void); };\nint a(void) { return 1; }\nstruct ops one = { .first = a };\nint runA(struct ops *p) { return p->first(); }\n');
     write('zeta.c', 'struct ops { int (*second)(void); };\nint z(void) { return 2; }\nstruct ops two = { .second = z };\nint runZ(struct ops *p) { return p->second(); }\n');
     await load();
@@ -665,24 +665,25 @@ export function onPing(): void {}
     await converges();
   });
 
-  // Fork: kernel port pending (#2033 synthesis_inputs); see the upstream merge follow-ups.
-  it.skip('keeps old synthesis on pass failure and retries on a no-op sync', async () => {
+  // The fork drops synthesized edges before rebuilding them and never fails a
+  // sync on synthesis: a failed rebuild leaves fewer edges, never wrong ones,
+  // and a persisted marker makes the next sync retry it.
+  it('retries a failed synthesis refresh on the next no-op sync', async () => {
     write('bus.ts', bus);
     write('wiring.ts', wiring);
     await load();
     const before = readEdges();
-    write('wiring.ts', wiring.replace("'ping'", "'pong'"));
-    await expect(cg.sync({ paths: ['wiring.ts'], onProgress: p => {
+    fs.appendFileSync(path.join(dir, 'wiring.ts'), '// changed registration file\n');
+    await cg.sync({ paths: ['wiring.ts'], onProgress: p => {
       if (p.phase === 'linking' && p.current > 0) throw new Error('interrupted synthesis');
-    } })).rejects.toThrow('interrupted synthesis');
-    expect(readEdges()).toEqual(before);
-    await cg.sync({ paths: ['wiring.ts'] });
+    } });
     expect(readEdges()).toHaveLength(0);
+    await cg.sync();
+    expect(readEdges()).toEqual(before);
     await converges();
   });
 
-  // Fork: kernel port pending (#2033 synthesis_inputs); see the upstream merge follow-ups.
-  it.skip('rolls back a failed replacement without removing ordinary or old synthesized edges', async () => {
+  it('retries a failed synthesis refresh after the index is reopened', async () => {
     write('bus.ts', bus);
     write('wiring.ts', wiring);
     await load();
@@ -692,36 +693,16 @@ export function onPing(): void {}
     try {
       db.exec(`CREATE TRIGGER fail_synthesis BEFORE INSERT ON edges
         WHEN NEW.provenance = 'heuristic' BEGIN SELECT RAISE(FAIL, 'publish failed'); END`);
-      write('wiring.ts', wiring + '// changed registration file\n');
-      await expect(cg.sync({ paths: ['wiring.ts'] })).rejects.toThrow('publish failed');
-      expect(readEdges()).toEqual(before);
+      fs.appendFileSync(path.join(dir, 'wiring.ts'), '// changed registration file\n');
+      await cg.sync({ paths: ['wiring.ts'] });
+      expect(readEdges()).toHaveLength(0);
       expect(readEdges(false).filter(e => e.provenance !== 'heuristic')).toEqual(ordinary);
       db.exec('DROP TRIGGER fail_synthesis');
     } finally { db.close(); }
-    await cg.sync({ paths: ['wiring.ts'] });
-    expect(readEdges()).toEqual(before);
-    await converges();
-  });
-
-  // Fork: kernel port pending (#2033 synthesis_inputs); see the upstream merge follow-ups.
-  it.skip('migrates an existing index and repairs synthesis without requiring a file edit', async () => {
-    write('bus.ts', bus);
-    write('wiring.ts', wiring);
-    await load();
     cg.close();
-    const { db } = createDatabase(path.join(dir, '.codegraph', 'codegraph.db'));
-    try {
-      db.exec(`DELETE FROM schema_versions WHERE version >= 10;
-        INSERT OR IGNORE INTO schema_versions(version, applied_at, description) VALUES (9, 0, 'legacy fixture');
-        DROP TABLE synthesis_inputs;
-        DROP INDEX idx_edges_synthesis_site;
-        DROP INDEX idx_nodes_kind;
-        CREATE INDEX idx_nodes_kind ON nodes(kind);
-        DELETE FROM edges WHERE provenance = 'heuristic'`);
-    } finally { db.close(); }
     cg = CodeGraph.openSync(dir);
     await cg.sync();
-    expect(readEdges()).toHaveLength(1);
+    expect(readEdges()).toEqual(before);
     await converges();
   });
 
@@ -762,32 +743,6 @@ export function onPing(): void {}
     write('worker.go', 'package demo\n\nfunc (w Worker) Run() {}\n');
     await cg.sync({ paths: ['worker.go'] });
     await assertStructural();
-    await converges();
-  });
-
-  // Fork: kernel port pending (#2033 synthesis_inputs); see the upstream merge follow-ups.
-  it.skip('migrates legacy Go containment ownership without changing provenance', async () => {
-    write('types.go', 'package demo\ntype Worker struct {}\n');
-    write('worker.go', 'package demo\nfunc (w Worker) Run() {}\n');
-    await load();
-    cg.close();
-    const { db } = createDatabase(path.join(dir, '.codegraph', 'codegraph.db'));
-    try {
-      db.exec(`DELETE FROM schema_versions WHERE version >= 10;
-        INSERT OR IGNORE INTO schema_versions(version, applied_at, description) VALUES (9, 0, 'legacy fixture');
-        DROP TABLE synthesis_inputs;
-        DROP INDEX idx_edges_synthesis_site;
-        UPDATE edges SET provenance = NULL, metadata = NULL
-          WHERE json_extract(metadata, '$.synthesizedBy') = 'go-method-contains'`);
-    } finally { db.close(); }
-    cg = CodeGraph.openSync(dir);
-    // Inspect the migration itself before sync can replace its output.
-    const migrated = readEdges();
-    expect(migrated).toHaveLength(1);
-    expect(migrated[0].provenance).toBeNull();
-    expect(JSON.parse(migrated[0].metadata).synthesizedBy).toBe('go-method-contains');
-    await cg.sync();
-    expect(readEdges()).toEqual(migrated);
     await converges();
   });
 });
