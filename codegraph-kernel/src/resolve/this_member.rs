@@ -16,14 +16,13 @@ pub(super) enum ThisMember {
 }
 
 impl KernelResolver {
-    /// `SELECT * FROM edges WHERE source = ? AND kind IN (…)` — getOutgoingEdges'
-    /// statement verbatim, so rows come back in the order TS sees them (a
-    /// narrower select list could be answered from the identity index, whose
-    /// order differs).
+    /// The targets of `source`'s `kinds` edges, by kind, then in insertion
+    /// order: the order the (source, kind) index returns them, pinned so a
+    /// different query plan cannot change which supertype comes first.
     pub(super) fn outgoing_edge_targets(&self, source: &str, kinds: &[&str]) -> Res<Vec<String>> {
         let conn = self.conn()?;
         let placeholders = (0..kinds.len()).map(|i| format!("?{}", i + 2)).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT * FROM edges WHERE source = ?1 AND kind IN ({placeholders})");
+        let sql = format!("SELECT target FROM edges WHERE source = ?1 AND kind IN ({placeholders}) ORDER BY kind, id");
         let mut stmt = conn.prepare(&sql).map_err(|e| Error::from_reason(e.to_string()))?;
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&source];
         for k in kinds {

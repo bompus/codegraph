@@ -38,7 +38,7 @@ impl KernelResolver {
             };
             let start = (s.start_line - 1).max(0) as usize;
             let end = (s.end_line as usize).min(source.len());
-            for raw in &source[start..end] {
+            for raw in source.get(start..end).unwrap_or_default() {
                 let line = strip_line_comments(raw);
                 let Some(raw_type) = FIELD_TYPE.capture(&line, field).map(str::to_string) else {
                     continue;
@@ -131,7 +131,7 @@ impl KernelResolver {
         let source = self.read_file(&owner.file_path)?;
         let start = (owner.start_line - 1).max(0) as usize;
         let end = (owner.end_line as usize).min(source.len());
-        for raw in &source[start..end] {
+        for raw in source.get(start..end).unwrap_or_default() {
             let line = strip_line_comments(raw);
             for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
                 let Some(m) = affix.find_from(&line, field, 0) else { continue };
@@ -508,7 +508,7 @@ impl KernelResolver {
             };
             let start = (s.start_line - 1).max(0) as usize;
             let end = (s.end_line as usize).min(source.len());
-            for raw in &source[start..end] {
+            for raw in source.get(start..end).unwrap_or_default() {
                 let line = strip_line_comments(raw);
                 let Some(declared) = RUST_FIELD_TYPE.capture(&line, field) else {
                     continue;
