@@ -487,10 +487,14 @@ impl KernelResolver {
         // Macro constants are not callees (#1838). Where the name is a
         // function-like macro, the call can only reach the function another
         // build configuration compiles, never a same-named type
-        // (`PREFIX(scanRef)(…)` onto an unrelated `struct PREFIX`).
+        // (`PREFIX(scanRef)(…)` onto an unrelated `struct PREFIX`). A type
+        // declared in the calling file, which defines no such macro, is still
+        // the one `Widget()` builds.
         let macro_named = r.reference_kind == "calls"
             && (r.language == "c" || r.language == "cpp")
-            && named.iter().any(|n| cpp::is_define(n));
+            && named.iter().any(|n| cpp::is_define(n))
+            && !(named.iter().any(|n| n.file_path == r.file_path && !matches!(n.kind.as_str(), "function" | "method" | "constant"))
+                && !named.iter().any(|n| n.file_path == r.file_path && cpp::is_define(n)));
         let all_named: Vec<Arc<KNode>> = named
             .iter()
             .filter(|n| !macro_named || matches!(n.kind.as_str(), "function" | "method"))

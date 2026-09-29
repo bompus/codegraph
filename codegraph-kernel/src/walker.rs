@@ -12,6 +12,7 @@ pub(crate) struct Scope {
 
 /// A function or method body scanned for value references once the walk
 /// ends (flush_value_refs): the owner row, the body node, the owner's name.
+/// An owner may have several scopes; its edges are deduplicated across them.
 pub(crate) struct ValueScope<'t> {
     pub row: u32,
     pub node: Node<'t>,
@@ -138,8 +139,9 @@ pub(crate) fn emit_value_refs(
     let refs_kind = crate::buffers::EDGE_REFERENCES;
     // One arena string for every value-ref edge of the file (unchanged when none).
     let mut value_ref_meta = None;
+    // Keyed by owner: a C function rebuilt from sibling nodes has one scope per node.
+    let mut seen: std::collections::HashSet<(u32, &str)> = std::collections::HashSet::new();
     for scope in scopes {
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut stack: Vec<Node> = vec![scope.node];
         let mut visited = 0usize;
         while let Some(n) = stack.pop() {
@@ -151,7 +153,7 @@ pub(crate) fn emit_value_refs(
                 let ref_name = &src[n.byte_range()];
                 if let Some(&target_row) = targets.get(ref_name) {
                     let target_id = node_ids[target_row as usize].as_str();
-                    if target_id != node_ids[scope.row as usize] && ref_name != scope.name && seen.insert(target_id) {
+                    if target_id != node_ids[scope.row as usize] && ref_name != scope.name && seen.insert((scope.row, target_id)) {
                         let meta = *value_ref_meta.get_or_insert_with(|| arena.put(r#"{"valueRef":true}"#));
                         tables.push_edge(&EdgeRow {
                             source_idx: scope.row,

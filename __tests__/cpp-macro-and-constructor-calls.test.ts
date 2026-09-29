@@ -223,6 +223,36 @@ describe('#1838 — a macro invocation is not a call to a same-named function', 
     }
   });
 
+  it('a macro whose name appears only inside its own string literal is not a wrapper', async () => {
+    const cg = await indexed({
+      'main.c': [
+        '#include <stdio.h>',
+        '#define TRACE_POINT(x) printf("TRACE_POINT(%d)", (x))',
+        'void f(void) { TRACE_POINT(1); }',
+        'void TRACE_POINT(int x) { (void)x; }',
+        '',
+      ].join('\n'),
+    });
+    try {
+      expect(calls(cg, 'f')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('a type declared in the calling file is built even when an unrelated file has a same-named macro', async () => {
+    const cg = await indexed({
+      'a.cpp': 'struct Widget {\n  int v;\n};\nWidget make() {\n  return Widget();\n}\n',
+      'b.cpp': '#define Widget(x) (x)\nint other() { return Widget(2); }\n',
+    });
+    try {
+      const built = cg.getCallees(fn(cg, 'make').id).filter((r) => r.edge.kind === 'instantiates');
+      expect(built.map((r) => `${r.node.kind} ${r.node.name} (${r.node.filePath})`)).toEqual(['struct Widget (a.cpp)']);
+    } finally {
+      cg.close();
+    }
+  });
+
   it('control: a macro defined only in an unrelated file neither suppresses nor receives a real call', async () => {
     const cg = await indexed({
       'unrelated.hpp': '#define helper(x) ((x) + 1)\n',
