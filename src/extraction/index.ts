@@ -26,7 +26,7 @@ import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './
 import { StoreWriter, StoreBundle, finalizeStoreBundle } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
-import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes } from './grammars';
+import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes, isMpegTransportStream, hasMpegTsExtension, MPEG_TS_SNIFF_BYTES } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
@@ -35,6 +35,8 @@ import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
+import { MAX_SOURCE_FILE_SIZE_BYTES, oversizeStamp, readBoundedSource, readBoundedSourceSync } from '../file-limits';
+export { oversizeStamp };
 
 /**
  * Number of files to read in parallel during indexing.
@@ -119,6 +121,12 @@ export interface IndexResult {
  * Result of a sync operation
  */
 export interface SyncResult {
+  /** References attempted by the pending-reference recovery sweep, if run. */
+  pendingRefsProcessed?: number;
+  /** Pending references successfully resolved by the recovery sweep. */
+  pendingRefsResolved?: number;
+  /** Pending references the recovery sweep could not resolve. */
+  pendingRefsUnresolved?: number;
   filesChecked: number;
   filesAdded: number;
   filesModified: number;
@@ -151,12 +159,27 @@ export function hashContent(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+
 /**
- * Skip files larger than this (bytes). Generated bundles, minified JS, and
- * vendored blobs blow the WASM heap and the worker-recycle budget for no useful
- * symbols. 1 MB covers essentially all hand-written source.
+ * What change detection hashes for a file: its text when it is under the size
+ * limit, the size stamp when it is over — an oversize file is never decoded.
+ * `null` when the bytes show a `.ts` file is an MPEG transport stream, not
+ * TypeScript (#1910): decided from the bytes already read, so it costs no I/O
+ * and runs only for a file that is new or changed — never once per `.ts` file
+ * at discovery, which on a slow disk is a random read per file per scan.
  */
-const MAX_FILE_SIZE = 1024 * 1024;
+function readSourceOrStamp(fullPath: string): string | null {
+  const { stats, bytes } = readBoundedSourceSync(fullPath);
+  if (bytes === null) return oversizeStamp(stats.size);
+  return isMpegTsBytes(fullPath, bytes) ? null : bytes.toString('utf8');
+}
+
+/** Whether these bytes, read from `filePath`, are a `.ts` MPEG transport stream (#1910). */
+function isMpegTsBytes(filePath: string, bytes: Buffer): boolean {
+  if (!hasMpegTsExtension(filePath) || !isMpegTransportStream(bytes.subarray(0, MPEG_TS_SNIFF_BYTES))) return false;
+  logDebug('Skipping MPEG transport stream named .ts — not TypeScript', { filePath });
+  return true;
+}
 
 /**
  * Directory names that are dependency, build, cache, or tooling output across the
@@ -239,6 +262,13 @@ const DEFAULT_IGNORE_PATTERNS: string[] = [
   'bazel-*/',        // Bazel output symlink trees
   // Android resource dirs at any depth, with their qualifier variants (#1047).
   ...ANDROID_RES_TYPES.map((t) => `**/res/${t}*/`),
+  // `build` is also a legal JVM package segment. Keep it under conventional
+  // source roots (any source set: main, test, androidTest, ...) while continuing
+  // to exclude module/build output (#1642). Unignore only the directory, not its
+  // subtree: other defaults still apply.
+  '!**/src/*/java/**/build/',
+  '!**/src/*/kotlin/**/build/',
+  '!**/src/*/scala/**/build/',
 ];
 
 /** True if `buf` decodes as strict UTF-8 (no invalid byte sequences). */
@@ -1513,6 +1543,7 @@ export function scanDirectory(
  * Async variant of scanDirectory that yields to the event loop periodically,
  * allowing worker threads to receive and render progress messages.
  */
+
 /**
  * What a scan saw but could not index, tallied by extension.
  *
@@ -1839,7 +1870,9 @@ export class ExtractionOrchestrator {
         const full = validatePathWithinRoot(rootDir, relativePath);
         if (!full) return null;
         try {
-          return fs.readFileSync(full, 'utf-8');
+          // Framework detectors scan source by name; a file over the size
+          // limit was never indexed and must not be decoded here either (#1910).
+          return readBoundedSourceSync(full).bytes?.toString('utf8') ?? null;
         } catch {
           return null;
         }
@@ -2228,8 +2261,11 @@ export class ExtractionOrchestrator {
       // window has room. When nothing is in flight but the window is still full,
       // the async commit chain is what's behind — await it so the cursor
       // advances (buffered items hold whole file contents, so this bound is
-      // load-bearing for memory).
-      while (nextSeq - nextToStore >= windowSize) {
+      // load-bearing for memory). Once a store has failed the cursor never
+      // moves again — flushOrdered returns at once — so stop waiting and let
+      // the drain below rethrow; waiting would spin on microtasks forever,
+      // pinning a core and starving every timer in the process.
+      while (nextSeq - nextToStore >= windowSize && !flushError && !aborted) {
         if (inFlight.size > 0) await Promise.race(inFlight);
         else await flushOrdered();
       }
@@ -2253,8 +2289,20 @@ export class ExtractionOrchestrator {
               logWarn('Path traversal blocked in batch reader', { filePath: fp });
               return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
             }
-            const content = await fsp.readFile(fullPath, 'utf-8');
-            const stats = await fsp.stat(fullPath);
+            // Stat first: a file over the size limit is stored as skipped
+            // without ever being read or decoded (#1910), so ten oversize
+            // fixtures in one I/O batch no longer cost their size in RSS.
+            const { stats, bytes } = await readBoundedSource(fullPath);
+            if (bytes === null) {
+              return { filePath: fp, content: oversizeStamp(stats.size), stats, error: null as Error | null };
+            }
+            // Read bytes, not text: a `.ts` that is really an MPEG transport
+            // stream (#1910) is recognised from its head here, at no extra I/O,
+            // and never decoded or parsed.
+            if (isMpegTsBytes(fp, bytes)) {
+              return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: null as Error | null, skipped: true };
+            }
+            const content = bytes.toString('utf-8');
             return { filePath: fp, content, stats, error: null as Error | null };
           } catch (err) {
             return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
@@ -2264,8 +2312,15 @@ export class ExtractionOrchestrator {
 
       // Dispatch each readable file into the bounded parse window; the window
       // stores results on the main thread as they arrive.
-      for (const { filePath, content, stats, error } of fileContents) {
+      for (const { filePath, content, stats, error, skipped } of fileContents) {
         if (signal?.aborted) { aborted = true; break; }
+
+        if (skipped) {
+          // Not a source file after all — counted as done, stored as nothing.
+          processed++;
+          onProgress?.({ phase: 'parsing', current: processed, total });
+          continue;
+        }
 
         if (error || content === null || stats === null) {
           processed++;
@@ -2280,18 +2335,18 @@ export class ExtractionOrchestrator {
           continue;
         }
 
-        // Honour MAX_FILE_SIZE. Without this check, vendored generated
+        // Honour MAX_SOURCE_FILE_SIZE_BYTES. Without this check, vendored generated
         // headers, minified bundles, and other multi-MB files get indexed,
         // wasting WASM heap and the worker recycle budget on inputs with no
         // useful symbols. The single-file extractFile path already enforces
         // this; the bulk path used to silently skip the check.
-        if (stats.size > MAX_FILE_SIZE) {
+        if (stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
           await storeResult(filePath, content, stats, {
             nodes: [],
             edges: [],
             unresolvedReferences: [],
             errors: [{
-              message: `File exceeds max size (${stats.size} > ${MAX_FILE_SIZE})`,
+              message: `File exceeds max size (${stats.size} > ${MAX_SOURCE_FILE_SIZE_BYTES})`,
               filePath,
               severity: 'warning',
               code: 'size_exceeded',
@@ -2316,6 +2371,8 @@ export class ExtractionOrchestrator {
       await flushOrdered();
       if (flushError) {
         if (storeWriter) await storeWriter.close();
+        // Its worker threads would otherwise outlive the failed index.
+        if (pool) await pool.destroy();
         throw flushError;
       }
       // All bundles are posted; wait for the writer to apply them, then close
@@ -2392,7 +2449,10 @@ export class ExtractionOrchestrator {
         try {
           const fullPath = validatePathWithinRoot(this.rootDir, filePath);
           if (!fullPath) continue;
-          content = await fsp.readFile(fullPath, 'utf-8');
+          // Bounded like the first read: the file may have grown since (#1910).
+          const bytes = (await readBoundedSource(fullPath)).bytes;
+          if (bytes === null) continue;
+          content = bytes.toString('utf8');
         } catch {
           continue;
         }
@@ -2444,7 +2504,9 @@ export class ExtractionOrchestrator {
           try {
             const fullPath = validatePathWithinRoot(this.rootDir, filePath);
             if (!fullPath) continue;
-            fullContent = await fsp.readFile(fullPath, 'utf-8');
+            const bytes = (await readBoundedSource(fullPath)).bytes;
+            if (bytes === null) continue;
+            fullContent = bytes.toString('utf8');
           } catch {
             continue;
           }
@@ -2574,8 +2636,14 @@ export class ExtractionOrchestrator {
     let content: string;
     let stats: fs.Stats;
     try {
-      stats = await fsp.stat(fullPath);
-      content = await fsp.readFile(fullPath, 'utf-8');
+      // An oversize file is stored as skipped; its bytes are never needed (#1910).
+      const read = await readBoundedSource(fullPath);
+      stats = read.stats;
+      // An MPEG transport stream named `.ts` is not TypeScript (#1910).
+      if (read.bytes !== null && isMpegTsBytes(relativePath, read.bytes)) {
+        return { nodes: [], edges: [], unresolvedReferences: [], errors: [], durationMs: 0 };
+      }
+      content = read.bytes === null ? oversizeStamp(stats.size) : read.bytes.toString('utf8');
     } catch (error) {
       return {
         nodes: [],
@@ -2621,14 +2689,14 @@ export class ExtractionOrchestrator {
     const language = detectLanguage(relativePath, content, loadExtensionOverrides(this.rootDir));
 
     // Check file size
-    if (stats.size > MAX_FILE_SIZE) {
+    if (stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
       const result: ExtractionResult = {
         nodes: [],
         edges: [],
         unresolvedReferences: [],
         errors: [
           {
-            message: `File exceeds max size (${stats.size} > ${MAX_FILE_SIZE})`,
+            message: `File exceeds max size (${stats.size} > ${MAX_SOURCE_FILE_SIZE_BYTES})`,
             filePath: relativePath,
             severity: 'warning',
             code: 'size_exceeded',
@@ -3030,7 +3098,9 @@ export class ExtractionOrchestrator {
      * is stored, when no extraction transaction is open, so a checkpoint can
      * safely catch up before the next file grows the WAL further.
      */
-    backpressure?: () => Promise<void> | null
+    backpressure?: () => Promise<void> | null,
+    /** Inspect changed inputs before deletion/re-extraction cascades their edges. */
+    onFileChange?: (filePath: string, content?: string) => void
   ): Promise<SyncResult> {
     await initGrammars(); // Initialize WASM runtime (grammars loaded lazily below)
     const startTime = Date.now();
@@ -3125,29 +3195,33 @@ export class ExtractionOrchestrator {
     // `reconcileChecks` drives the cooperative yield shared with the adds/mods loop
     // below (see SYNC_RECONCILE_YIELD_INTERVAL / issue #905).
     let reconcileChecks = 0;
+    const removeTracked = (tracked: FileRecord): void => {
+      // Before the cascade deletes them, resurrect incoming cross-file
+      // resolution edges as their original refs (#1240 removal case): the
+      // callers live in files this sync will NOT revisit, so this is their
+      // only chance to rebind to an alternative definition — or to park as
+      // failed until the symbol reappears somewhere. (A deleted file whose
+      // CALLERS are also being deleted is fine: their nodes cascade later
+      // in this loop and take the resurrected rows with them.)
+      // Every name this file defined is about to stop existing here, which
+      // narrows the candidate set for that name repo-wide (CG-33).
+      for (const pair of this.queries.getNodeNamePairsByFiles([tracked.path])) pairsBefore.add(pair);
+      const incoming = this.queries.getCrossFileIncomingEdgesWithTarget(tracked.path);
+      if (incoming.length > 0) {
+        const resurrected = incoming
+          .map((e) => resurrectRefFromDroppedEdge(e))
+          .filter((r): r is UnresolvedReference => r !== null);
+        if (resurrected.length > 0) {
+          this.queries.insertUnresolvedRefsBatch(resurrected);
+        }
+      }
+      onFileChange?.(tracked.path);
+      this.queries.deleteFile(tracked.path);
+      filesRemoved++;
+    };
     for (const tracked of trackedFiles) {
       if (!currentSet.has(tracked.path) || !fs.existsSync(path.join(this.rootDir, tracked.path))) {
-        // Before the cascade deletes them, resurrect incoming cross-file
-        // resolution edges as their original refs (#1240 removal case): the
-        // callers live in files this sync will NOT revisit, so this is their
-        // only chance to rebind to an alternative definition — or to park as
-        // failed until the symbol reappears somewhere. (A deleted file whose
-        // CALLERS are also being deleted is fine: their nodes cascade later
-        // in this loop and take the resurrected rows with them.)
-        // Every name this file defined is about to stop existing here, which
-        // narrows the candidate set for that name repo-wide (CG-33).
-        for (const pair of this.queries.getNodeNamePairsByFiles([tracked.path])) pairsBefore.add(pair);
-        const incoming = this.queries.getCrossFileIncomingEdgesWithTarget(tracked.path);
-        if (incoming.length > 0) {
-          const resurrected = incoming
-            .map((e) => resurrectRefFromDroppedEdge(e))
-            .filter((r): r is UnresolvedReference => r !== null);
-          if (resurrected.length > 0) {
-            this.queries.insertUnresolvedRefsBatch(resurrected);
-          }
-        }
-        this.queries.deleteFile(tracked.path);
-        filesRemoved++;
+        removeTracked(tracked);
       }
       if (++reconcileChecks % SYNC_RECONCILE_YIELD_INTERVAL === 0) {
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -3184,21 +3258,30 @@ export class ExtractionOrchestrator {
       }
 
       // New, or size/mtime changed — read + hash to confirm a real content change.
-      let content: string;
+      // (An oversize file hashes as its size stamp, unread — #1910.)
+      let content: string | null;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readSourceOrStamp(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
         failedFilePaths.push(filePath);
         continue;
       }
+      // Not source after all — an MPEG transport stream named `.ts` (#1910):
+      // a new one is ignored, a tracked file that became one is removed.
+      if (content === null) {
+        if (tracked) removeTracked(tracked);
+        continue;
+      }
       const contentHash = hashContent(content);
 
       if (!tracked) {
+        onFileChange?.(filePath, content);
         filesToIndex.push(filePath);
         changedFilePaths.push(filePath);
         filesAdded++;
       } else if (tracked.contentHash !== contentHash) {
+        onFileChange?.(filePath, content);
         filesToIndex.push(filePath);
         changedFilePaths.push(filePath);
         filesModified++;
@@ -3346,10 +3429,16 @@ export class ExtractionOrchestrator {
           if (tracked) removed.push(filePath);
           continue;
         }
-        let content: string;
-        try { content = fs.readFileSync(fullPath, 'utf-8'); }
+        let content: string | null;
+        try { content = readSourceOrStamp(fullPath); }
         catch (error) {
           logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
+          continue;
+        }
+        // A `.ts` that is an MPEG transport stream is not source (#1910), so an
+        // untracked clip is never pending and a tracked file that became one is gone.
+        if (content === null) {
+          if (tracked) removed.push(filePath);
           continue;
         }
         if (!tracked) added.push(filePath);
@@ -3383,16 +3472,21 @@ export class ExtractionOrchestrator {
     // Find added and modified files
     for (const filePath of currentFiles) {
       const fullPath = path.join(this.rootDir, filePath);
-      let content: string;
+      let content: string | null;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readSourceOrStamp(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
         continue;
       }
 
-      const contentHash = hashContent(content);
       const tracked = trackedMap.get(filePath);
+      // An MPEG transport stream named `.ts` (#1910) is not source.
+      if (content === null) {
+        if (tracked) removed.push(filePath);
+        continue;
+      }
+      const contentHash = hashContent(content);
 
       if (!tracked) {
         added.push(filePath);

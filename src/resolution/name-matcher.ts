@@ -6,10 +6,9 @@
 
 import * as path from 'path';
 import { Language, Node } from '../types';
-import { UnresolvedRef, ResolvedRef, ResolutionContext, SUPERTYPE_TARGET_KINDS, isInheritanceRef, isImportableKind } from './types';
+import { UnresolvedRef, ResolvedRef, ResolutionContext, isSupertypeTarget, CPP_DEFINE_SIGNATURE, isInheritanceRef, isImportableKind } from './types';
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
-import { JS_BUILT_INS, TS_PRIMITIVE_TYPES } from './js-builtins';
-
+import { JS_BUILT_INS, JS_BUILTIN_METHODS, TS_PRIMITIVE_TYPES } from './js-builtins';
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will
  * score. A name defined more times than this is "ubiquitous" — a method/symbol
@@ -142,61 +141,297 @@ function pickClosestFileNode(candidates: Node[], ref: UnresolvedRef): Node {
  */
 const LANGUAGE_FAMILY: Record<string, string> = {
   java: 'jvm', kotlin: 'jvm', scala: 'jvm',
-  swift: 'apple', objc: 'apple',
+  swift: 'native', objc: 'native',
   // ArkTS is a TS superset — every HarmonyOS project mixes `.ets` UI with
   // `.ts` logic modules, so refs must cross freely between them.
   typescript: 'web', tsx: 'web', javascript: 'web', jsx: 'web', arkts: 'web',
-  c: 'c', cpp: 'c',
+  c: 'native', cpp: 'native',
   // Razor/Blazor markup names C# types — same family so `@model Foo` /
   // `<MyComponent/>` resolve to their `.cs` class through the cross-family gate.
-  csharp: 'dotnet', razor: 'dotnet',
+  csharp: 'dotnet', razor: 'dotnet', vbnet: 'dotnet',
+  svelte: 'web', vue: 'web', astro: 'web',
+  cfml: 'cfml', cfscript: 'cfml',
 };
 export function sameLanguageFamily(a: string, b: string): boolean {
   if (a === b) return true;
   const fa = LANGUAGE_FAMILY[a];
   return fa !== undefined && fa === LANGUAGE_FAMILY[b];
 }
-/**
- * True when `lang` belongs to a known multi-language family (jvm/apple/web/c).
- * Languages not listed (php, python, go, ruby, rust, dart, …) and config
- * formats (yaml/xml/blade) form their own singleton families and return
- * `false` — used to leave config↔code framework bridges (whose config side is
- * never a known programming-language family) out of the cross-family gate.
- */
-export function isKnownLanguageFamily(lang: string): boolean {
-  return LANGUAGE_FAMILY[lang] !== undefined;
+/** Config/markup transitions stay open; every other code language has a family. */
+const CODE_FAMILY: Record<string, string> = {
+  ...LANGUAGE_FAMILY,
+  python: 'python', go: 'go', rust: 'rust', php: 'php', ruby: 'ruby', dart: 'dart',
+  lua: 'lua', luau: 'lua', r: 'r', erlang: 'erlang', pascal: 'pascal', solidity: 'solidity',
+  nix: 'nix', cobol: 'cobol',
+};
+
+export function crossesCodeBoundary(a: string, b: string): boolean {
+  return CODE_FAMILY[a] !== undefined && CODE_FAMILY[b] !== undefined &&
+    CODE_FAMILY[a] !== CODE_FAMILY[b];
 }
+
 /**
- * True when `a` and `b` are two DIFFERENT *known* language families — the
- * signature of a coincidental cross-language name collision (a TS `import
- * React` matching a Swift `import React`, a C++ `#include "X.h"` matching a
- * same-named ObjC header on another platform). The both-*known* test is
- * deliberately weaker than {@link sameLanguageFamily}'s negation: a
- * single-file-component language that carries its own tag (`vue`/`svelte`)
- * importing a `.ts` module, or any singleton-family language (php/go/ruby/…),
- * returns `false` here and is left alone.
+ * Cross-family name matches need a framework export or an actual ABI boundary,
+ * not merely a native caller. ABI evidence is scoped to the named free function.
  */
-export function crossesKnownFamily(a: string, b: string): boolean {
-  return isKnownLanguageFamily(a) && isKnownLanguageFamily(b) && !sameLanguageFamily(a, b);
+function hasBridgeEvidence(candidate: Node, ref: UnresolvedRef, context: ResolutionContext): boolean {
+  if (ref.referenceKind !== 'calls') return false;
+  // Expo's extractor creates explicit JS exports, resolved by the ordinary
+  // name matcher rather than a framework resolve() branch.
+  if (CODE_FAMILY[ref.language] === 'web' && candidate.id.startsWith('expo-module:') &&
+      candidate.isExported && (candidate.language === 'swift' || candidate.language === 'kotlin')) return true;
+  if (candidate.kind !== 'function') return false;
+  const name = candidate.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (CODE_FAMILY[ref.language] === 'native') {
+    const source = context.readFile(candidate.filePath);
+    if (!source) return false;
+    if (candidate.language === 'go') {
+      const declaration = source.split('\n').slice(Math.max(0, candidate.startLine - 2), candidate.endLine).join('\n');
+      return /\bimport\s+(?:\(\s*)?"C"/.test(stripCommentsForRegex(source, 'go')) &&
+        new RegExp('^//export ' + name + '\\r?\\nfunc ' + name + '\\s*\\(', 'm').test(declaration);
+    }
+    if (candidate.language === 'rust') {
+      const declaration = source.split('\n').slice(candidate.startLine - 1, candidate.endLine).join('\n');
+      return new RegExp('\\bpub\\s+extern\\s+"C"\\s+fn\\s+' + name + '\\b')
+        .test(stripCommentsForRegex(declaration, 'rust'));
+    }
+  }
+  if (candidate.language === 'c' || candidate.language === 'cpp') {
+    const source = context.readFile(ref.filePath);
+    if (!source) return false;
+    if (ref.language === 'go') {
+      return /\bimport\s+(?:\(\s*)?"C"/.test(stripCommentsForRegex(source, 'go')) &&
+        ref.referenceName === 'C.' + candidate.name;
+    }
+    if (ref.language === 'rust') {
+      return new RegExp('extern\\s+"C"\\s*\\{[^}]*\\bfn\\s+' + name + '\\s*\\(')
+        .test(stripCommentsForRegex(source, 'rust'));
+    }
+  }
+  return false;
 }
+
 /**
- * Drop cross-language candidates from a name lookup. Two regimes:
- *  - `references` (type-usage): a type named in language X resolves to a
- *    SAME-family type, never a coincidentally same-named symbol in another
- *    language (the Android `BatteryManager` system class vs a JS one). Strict
- *    same-family filter — cross-language communication is `calls`, not refs.
- *  - `imports` (import binding): an `import`/`#include` never crosses two
- *    KNOWN families (TS `import React` ↮ Swift `import React`). Weaker
- *    both-known filter so `.vue`/`.svelte` (own tag) importing `.ts` survives.
+ * Per-context memo: node id → its language, for gateLanguageMatch. Matches
+ * land on ~5 refs per target on vscode, and each check otherwise fetched the
+ * whole node (a point read + row decode past the query layer's small cache)
+ * only to read one field. Nodes are fixed within a resolution pass; the memo
+ * drops with clearNameMatcherMemos.
  */
-function applyLanguageGate(candidates: Node[], ref: UnresolvedRef): Node[] {
-  if (ref.referenceKind === 'references' || ref.referenceKind === 'function_ref') {
-    return candidates.filter((c) => sameLanguageFamily(c.language, ref.language));
+const TARGET_LANGUAGE = new WeakMap<ResolutionContext, Map<string, string>>();
+
+/** Reject the chosen result without shrinking a pool or trying a replacement. */
+export function gateLanguageMatch(
+  result: ResolvedRef | null,
+  ref: UnresolvedRef,
+  context: ResolutionContext
+): ResolvedRef | null {
+  if (!result) return result;
+  // No code family on the reference's side: no target can cross a boundary.
+  if (CODE_FAMILY[ref.language] === undefined) return result;
+  if (context.getNodeById) {
+    let languages = TARGET_LANGUAGE.get(context);
+    if (!languages) {
+      languages = new Map();
+      TARGET_LANGUAGE.set(context, languages);
+    }
+    let language = languages.get(result.targetNodeId);
+    if (language === undefined) {
+      const node = context.getNodeById(result.targetNodeId);
+      if (node) {
+        language = node.language as string;
+        if (languages.size >= 400_000) languages.clear();
+        languages.set(result.targetNodeId, language);
+      }
+    }
+    if (language !== undefined) {
+      if (!crossesCodeBoundary(ref.language, language)) return result;
+      const target = context.getNodeById(result.targetNodeId);
+      return target && !hasBridgeEvidence(target, ref, context) ? null : result;
+    }
   }
-  if (ref.referenceKind === 'imports') {
-    return candidates.filter((c) => !crossesKnownFamily(c.language, ref.language));
+  const target = context.getNodeById?.(result.targetNodeId) ??
+    context.getNodesByName(ref.referenceName).find((n) => n.id === result.targetNodeId);
+  if (target && crossesCodeBoundary(ref.language, target.language) &&
+      !hasBridgeEvidence(target, ref, context)) return null;
+  return result;
+}
+
+/** Member values retain their receiver; never break ties by file order (#1820). */
+function matchMemberFunctionRef(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  const dot = ref.referenceName.lastIndexOf('.');
+  const receiver = ref.referenceName.slice(0, dot);
+  const member = ref.referenceName.slice(dot + 1);
+  const result = (nodes: Node[], confidence = 0.9): ResolvedRef | null => {
+    const pool = nodes.filter(n => sameLanguageFamily(n.language, ref.language));
+    const target = pool.length === 1 ? pool[0] : undefined;
+    return target && (target.kind === 'function' || target.kind === 'method') &&
+      target.id !== ref.fromNodeId && !isPythonProperty(target, context)
+      ? { original: ref, targetNodeId: target.id, confidence, resolvedBy: 'function-ref' }
+      : null;
+  };
+  const imports = context.getImportMappings(ref.filePath, ref.language);
+  // An import is authoritative even when it points outside the project.
+  if (imports.some(i => i.localName === receiver.split('.')[0])) {
+    if (ref.language === 'python') {
+      const cls = pythonRefClass(receiver, ref, context);
+      if (cls) return result(pythonMembers(cls, member, ref, context));
+    }
+    const imported = context.resolveImport?.(ref);
+    const node = imported && context.getNodeById?.(imported.targetNodeId);
+    return node ? result(context.getNodesByQualifiedName(node.qualifiedName).filter(n => n.filePath === node.filePath)) : null;
   }
-  return candidates;
+  if (ref.language === 'go') {
+    if (receiver.includes('.')) return matchGoFieldChainCall(receiver, member, ref, context);
+    const type = inferLocalReceiverType(receiver, ref, context);
+    if (type) return resolveMethodOnType(type, member, ref, context, 0.9, 'function-ref');
+    const types = context.getNodesByName(receiver).filter(n => n.language === 'go' && (n.kind === 'struct' || n.kind === 'interface'));
+    if (types.length) return types.length === 1 ? resolveMethodOnType(receiver, member, ref, context, 0.9, 'function-ref') : null;
+  } else {
+    const owner = context.getNodesInFile(ref.filePath).filter(n =>
+      n.kind === 'class' && n.startLine <= ref.line && n.endLine >= ref.line)
+      .sort((a, b) => b.startLine - a.startLine)[0];
+    let type: string | null = null;
+    if (receiver === 'self' || receiver === 'cls') {
+      return owner ? result(pythonMembers(owner, member, ref, context)) : null;
+    }
+    if (/^(self|cls)\.\w+$/.test(receiver)) {
+      if (!owner) return null;
+      type = pythonFieldType(receiver, owner, ref, context);
+    } else {
+      type = pythonLocalType(receiver, ref, context);
+    }
+    // A type name used directly (`Store.fetch`) is scoped just like an annotation.
+    if (!type && /^[A-Z]\w*$/.test(receiver)) type = receiver;
+    if (type && type !== 'object' && type !== 'Any') {
+      const cls = pythonRefClass(type, ref, context);
+      if (!cls) return null;
+      const members = pythonMembers(cls, member, ref, context);
+      if (members.length) return result(members);
+      // A base-typed field can hold a subclass-only method (the reported case).
+      // Keep only descendants of THAT base; unrelated same-name methods cannot win.
+      const candidates = context.getNodesByName(member).filter(n => n.kind === 'method' && n.language === 'python');
+      const descendants = candidates.filter(n => {
+        const parent = context.getNodesInFile(n.filePath).find(c =>
+          c.kind === 'class' && n.qualifiedName === `${c.qualifiedName}::${member}`);
+        return parent && pythonDerivesFrom(parent, cls, ref, context);
+      });
+      return result(descendants, 0.8);
+    }
+  }
+  // Unknown receivers retain the old unique-or-drop discipline, across ALL
+  // files. Tests and abstract-looking bodies are candidates too.
+  return result(context.getNodesByName(member), 0.8);
+}
+
+function pythonRefClass(name: string, ref: UnresolvedRef, context: ResolutionContext): Node | null {
+  const imports = context.getImportMappings(ref.filePath, 'python');
+  if (imports.some(i => i.localName === name.split('.')[0])) {
+    const hit = context.resolveImport?.({ ...ref, referenceName: name, referenceKind: 'references' });
+    const node = hit && context.getNodeById?.(hit.targetNodeId);
+    return node?.kind === 'class' && context.getNodesByQualifiedName(node.qualifiedName)
+      .filter(n => n.kind === 'class' && n.filePath === node.filePath).length === 1 ? node : null;
+  }
+  const classes = context.getNodesByName(name).filter(n => n.kind === 'class' && n.filePath === ref.filePath);
+  return classes.length === 1 ? classes[0]! : null;
+}
+
+function pythonBases(cls: Node, ref: UnresolvedRef, context: ResolutionContext): Node[] {
+  const line = context.getFileLines?.(cls.filePath)?.[cls.startLine - 1]
+    ?? context.readFile(cls.filePath)?.split('\n')[cls.startLine - 1] ?? '';
+  const bases = line.match(/^\s*class\s+\w+\s*\(([^)]*)\)/)?.[1];
+  return (bases?.split(',') ?? []).flatMap(name => {
+    const base = pythonRefClass(name.trim(), { ...ref, filePath: cls.filePath }, context);
+    return base ? [base] : [];
+  });
+}
+
+function pythonDerivesFrom(cls: Node, base: Node, ref: UnresolvedRef, context: ResolutionContext, seen = new Set<string>()): boolean {
+  if (seen.has(cls.id) || seen.size >= 16) return false;
+  seen.add(cls.id);
+  return pythonBases(cls, ref, context).some(p => p.id === base.id || pythonDerivesFrom(p, base, ref, context, seen));
+}
+
+function pythonMembers(cls: Node, member: string, ref: UnresolvedRef, context: ResolutionContext, seen = new Set<string>()): Node[] {
+  if (seen.has(cls.id) || seen.size >= 16) return [];
+  seen.add(cls.id);
+  // Instance assignments also shadow methods, even though they are not nodes.
+  const body = pythonMemberLines(cls.filePath, context).slice(cls.startLine - 1, cls.endLine).join('\n');
+  if (new RegExp(`^\\s*(?:(?:self|cls)\\.)?${member}\\s*(?:=|:)`, 'm').test(body)) return [cls];
+  const own = context.getNodesByQualifiedName(`${cls.qualifiedName}::${member}`).filter(n => n.filePath === cls.filePath);
+  if (own.length) return own;
+  return [...new Map(pythonBases(cls, ref, context).flatMap(p => pythonMembers(p, member, ref, context, seen)).map(n => [n.id, n])).values()];
+}
+
+function isPythonProperty(node: Node, context: ResolutionContext): boolean {
+  if (node.language !== 'python' || node.kind !== 'method') return false;
+  const lines = context.getFileLines?.(node.filePath) ?? context.readFile(node.filePath)?.split('\n') ?? [];
+  for (let i = node.startLine - 2; i >= 0 && lines[i]!.trim().startsWith('@'); i--) {
+    if (/^\s*@(?:property|(?:functools\.)?cached_property)\s*$/.test(lines[i]!)) return true;
+  }
+  return false;
+}
+
+const PYTHON_MEMBER_LINES = new WeakMap<ResolutionContext, Map<string, string[]>>();
+function pythonMemberLines(filePath: string, context: ResolutionContext): string[] {
+  let files = PYTHON_MEMBER_LINES.get(context);
+  if (!files) { files = new Map(); PYTHON_MEMBER_LINES.set(context, files); }
+  let lines = files.get(filePath);
+  if (!lines) {
+    lines = stripCommentsForRegex(context.readFile(filePath) ?? '', 'python').split('\n');
+    files.set(filePath, lines);
+  }
+  return lines;
+}
+
+function pythonLocalType(receiver: string, ref: UnresolvedRef, context: ResolutionContext): string | null {
+  if (!/^\w+$/.test(receiver)) return null;
+  const caller = context.getNodeById?.(ref.fromNodeId);
+  const lines = pythonMemberLines(ref.filePath, context);
+  const declaration = new RegExp(`^\\s*${receiver}\\s*(?::\\s*["']?([\\w.]+)["']?)?\\s*=\\s*(.*)$`);
+  const annotation = new RegExp(`^\\s*${receiver}\\s*:\\s*["']?([\\w.]+)`);
+  for (let i = ref.line - 1; i >= (caller?.startLine ?? 1) - 1; i--) {
+    const line = lines[i] ?? '';
+    const assigned = line.match(declaration);
+    if (assigned) return assigned[1] ?? assigned[2]!.match(/^([A-Z][\w.]*)\s*\(/)?.[1] ?? '<unknown>';
+    const declared = line.match(annotation)?.[1];
+    if (declared) return declared;
+  }
+  return caller?.signature?.match(new RegExp(`\\b${receiver}\\s*:\\s*["']?([\\w.]+)`))?.[1] ?? null;
+}
+
+/** Read a field's own annotation/initializer, or a constructor parameter assigned to it. */
+function pythonFieldType(receiver: string, owner: Node, ref: UnresolvedRef, context: ResolutionContext): string | null {
+  const lines = pythonMemberLines(ref.filePath, context);
+  const field = receiver.split('.')[1]!;
+  const assignment = new RegExp(`^\\s*(?:self|cls)\\.${field}\\s*(?::\\s*["']?([\\w.]+)["']?)?\\s*=\\s*(.*)$`);
+  const annotation = new RegExp(`^\\s*(?:(?:self|cls)\\.)?${field}\\s*:\\s*["']?([\\w.]+)`);
+  const methods = context.getNodesInFile(ref.filePath).filter(n => n.kind === 'method' &&
+    n.qualifiedName.startsWith(`${owner.qualifiedName}::`));
+  const types = new Set<string>();
+  for (let i = owner.startLine; i < owner.endLine; i++) {
+    const method = methods.find(n => n.startLine <= i + 1 && n.endLine >= i + 1);
+    if (method && method.name !== '__init__' && method.id !== ref.fromNodeId) continue;
+    if (method?.id === ref.fromNodeId && i + 1 > ref.line) continue;
+    const line = lines[i] ?? '';
+    const declared = !method || /^\s*(?:self|cls)\./.test(line) ? line.match(annotation)?.[1] : undefined;
+    if (declared) types.add(declared);
+    const assigned = line.match(assignment);
+    if (!assigned) continue;
+    if (assigned[1]) { types.add(assigned[1]); continue; }
+    const constructor = assigned[2]!.match(/^([A-Z][\w.]*)\s*\(/)?.[1];
+    if (constructor) { types.add(constructor); continue; }
+    const param = assigned[2]!.trim();
+    if (method && /^\w+$/.test(param)) {
+      const signature = method.signature ?? '';
+      const type = signature.match(new RegExp(`\\b${param}\\s*:\\s*["']?([\\w.]+)`))?.[1];
+      if (type) types.add(type);
+    } else {
+      types.add('<unknown>');
+    }
+  }
+  // Conflicting assignments are known-but-ambiguous, never a name-only fallback.
+  return types.size === 1 ? [...types][0]! : types.size > 1 ? '<ambiguous>' : null;
 }
 
 /**
@@ -204,9 +439,9 @@ function applyLanguageGate(candidates: Node[], ref: UnresolvedRef): Node[] {
  * callback/function-pointer value (`register(handler)`, `o->cb = handler`,
  * `{ .cb = handler }`, `signal(SIGINT, handler)`). The ONLY strategy allowed
  * for `function_ref` refs: exact name, function/method targets only, same
- * language family, same-file first, and cross-file only when the match is
- * UNIQUE. No fuzzy fallback, no qualified-name walking — a wrong callback
- * edge is worse than none.
+ * language family, same-file first for bare names, and unique-only cross-file.
+ * Member values use receiver/type/import scope before a unique-name fallback.
+ * A wrong callback edge is worse than none.
  */
 export function matchFunctionRef(
   ref: UnresolvedRef,
@@ -215,6 +450,10 @@ export function matchFunctionRef(
   // `this.<member>` refs are resolved ONLY by the class-scoped resolver in
   // resolveOne (resolveThisMemberFnRef) — never by name matching here.
   if (ref.referenceName.startsWith('this.')) return null;
+
+  if ((ref.language === 'python' || ref.language === 'go') && ref.referenceName.includes('.')) {
+    return matchMemberFunctionRef(ref, context);
+  }
 
   // In JS/TS/Python a bare identifier can never be a method value (methods
   // are only reachable through a receiver — `this.m` / `self.m` /
@@ -470,14 +709,23 @@ function isSealedModule(filePath: string, context: ResolutionContext): boolean {
   }
   const hit = memo.get(filePath);
   if (hit !== undefined) return hit;
-  const source = context.readFile(filePath);
-  const code = source === null ? '' : blankStringContents(stripCommentsForRegex(source, 'typescript'));
   // CommonJS assignments can execute inside template interpolations, which the
   // masker blanks. Keep the conservative raw-source exemption for those forms.
+  // Cheapest disqualifiers first: nearly every module exports a node (asked
+  // without reading or decoding the file), and masking the source is only
+  // needed to rule out the ones that don't. (The masker only blanks text, so
+  // no `import` in the source means none in code.)
+  const exportsNode = context.fileHasExportedNode
+    ? context.fileHasExportedNode(filePath)
+    : context.getNodesInFile(filePath).some((n) => n.isExported);
+  const source = exportsNode ? null : context.readFile(filePath);
   const sealed =
-    source !== null && HAS_IMPORT_STATEMENT.test(code) &&
-    !context.getNodesInFile(filePath).some((n) => n.isExported) &&
-    !HAS_ESM_EXPORT.test(code) && !HAS_CJS_EXPORT.test(source);
+    !exportsNode && source !== null && source.includes('import') &&
+    !HAS_CJS_EXPORT.test(source) &&
+    (() => {
+      const code = blankStringContents(stripCommentsForRegex(source, 'typescript'));
+      return HAS_IMPORT_STATEMENT.test(code) && !HAS_ESM_EXPORT.test(code);
+    })();
   memo.set(filePath, sealed);
   return sealed;
 }
@@ -669,20 +917,127 @@ const JS_FAMILY = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx']);
  * used to pick over the module-scope function the call actually means.
  */
 function isBareJsCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
-  if (ref.referenceKind !== 'calls' || !JS_FAMILY.has(ref.language)) return false;
+  return JS_FAMILY.has(ref.language) && isReceiverLessCall(ref, context);
+}
+
+/**
+ * Whether a Go `calls` ref is receiver-less — `relogin(ctx)`, not
+ * `l.relogin(ctx)`. A Go method is only reachable through a value or a method
+ * expression, so a bare call (a func parameter, a local func value, a
+ * package-level function) is never a method, in its own package or in one the
+ * file does not import (#1857). Read from the source line like the JS/TS
+ * check, because `pkg.Factory().Method()` reaches the resolver as a bare
+ * `Method` ref too.
+ */
+function isBareGoCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  return ref.language === 'go' && isReceiverLessCall(ref, context);
+}
+
+function isReceiverLessCall(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  if (ref.referenceKind !== 'calls') return false;
   if (ref.referenceName.includes('.')) return false;
   const line = context.getFileLines?.(ref.filePath)?.[ref.line - 1]
     ?? context.readFile(ref.filePath)?.split('\n')[ref.line - 1];
   if (line === undefined) return false;
-  const at = line.slice(ref.column);
-  const nameEsc = ref.referenceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!new RegExp('^' + nameEsc + '\\s*[(<]').test(at)) return false;
-  // Nothing but whitespace, an operator or an opener may precede a bare call.
-  return !/[.\w$\]\)]\s*$/.test(line.slice(0, ref.column)) || /\b(?:return|await|yield|typeof|void|new|else|case|throw|in|of|instanceof)\s*$/.test(line.slice(0, ref.column));
+  // `^<name>\s*[(<]` at the call's column, without compiling a pattern per call.
+  if (!line.startsWith(ref.referenceName, ref.column)) return false;
+  CALL_OPENER.lastIndex = ref.column + ref.referenceName.length;
+  if (!CALL_OPENER.test(line)) return false;
+  // Nothing but whitespace, an operator or an opener may precede a bare call:
+  // read the text before the column backwards, past trailing whitespace,
+  // instead of end-anchoring a pattern that scans the prefix from its start.
+  let end = Math.min(ref.column, line.length);
+  while (end > 0 && WHITESPACE.test(line[end - 1]!)) end--;
+  if (end === 0 || !RECEIVER_TAIL_CHAR.test(line[end - 1]!)) return true;
+  let start = end;
+  while (start > 0 && WORD_CHAR.test(line[start - 1]!)) start--;
+  return BARE_CALL_KEYWORDS.has(line.slice(start, end));
 }
+
+/** `\s*[(<]` from a given index (sticky). */
+const CALL_OPENER = /\s*[(<]/y;
+const WHITESPACE = /\s/;
+const WORD_CHAR = /\w/;
+/** A character that ends a receiver: `.`, a word character, `$`, `]` or `)`. */
+const RECEIVER_TAIL_CHAR = /[.\w$\])]/;
+/** Keywords after which a name starts an expression, so the call has no receiver. */
+const BARE_CALL_KEYWORDS: ReadonlySet<string> = new Set([
+  'return', 'await', 'yield', 'typeof', 'void', 'new', 'else', 'case', 'throw', 'in', 'of', 'instanceof', 'go', 'defer',
+]);
 
 /** Per-context memo: `file\0name` → "the file binds this name locally". */
 const LOCAL_BINDING_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>();
+
+/**
+ * Where a file's local bindings can start, for isLocallyBoundJsName: every
+ * `const`/`let`/`var` and `function`/`class` keyword and every `=>`. Each
+ * binding pattern can only match from one of these (or, for a parameter,
+ * from the `(` before an occurrence of the name), so a lookup tries its
+ * patterns at those offsets instead of searching the file once per pattern
+ * per name. Kept for the last few files — calls arrive file by file.
+ */
+interface LocalBindingSites {
+  varDecls: number[];
+  fnDecls: number[];
+  arrows: number[];
+}
+const LOCAL_BINDING_SITES = new WeakMap<ResolutionContext, Map<string, LocalBindingSites>>();
+const LOCAL_BINDING_SITES_KEEP = 16;
+const VAR_DECL_SITE = /\b(?:const|let|var)\s/g;
+const FN_DECL_SITE = /\b(?:function|class)\s/g;
+
+function localBindingSites(filePath: string, source: string, context: ResolutionContext): LocalBindingSites {
+  let cache = LOCAL_BINDING_SITES.get(context);
+  if (!cache) {
+    cache = new Map();
+    LOCAL_BINDING_SITES.set(context, cache);
+  }
+  let sites = cache.get(filePath);
+  if (!sites) {
+    const offsets = (re: RegExp): number[] => Array.from(source.matchAll(re), (m) => m.index!);
+    const arrows: number[] = [];
+    for (let a = source.indexOf('=>'); a !== -1; a = source.indexOf('=>', a + 2)) arrows.push(a);
+    sites = { varDecls: offsets(VAR_DECL_SITE), fnDecls: offsets(FN_DECL_SITE), arrows };
+    if (cache.size >= LOCAL_BINDING_SITES_KEEP) cache.delete(cache.keys().next().value!);
+    cache.set(filePath, sites);
+  }
+  return sites;
+}
+
+type LocalBindingPatterns = { decl: RegExp; fn: RegExp; param: RegExp };
+/** Sticky binding patterns by name — the same names recur file after file. */
+const LOCAL_BINDING_PATTERNS = new Map<string, LocalBindingPatterns>();
+const LOCAL_BINDING_PATTERNS_CAP = 4096;
+const JS_BINDING_NAME = /^[\w$]+$/;
+const ARROW_HEAD_CHAR = /[\w$.]/;
+const IMPORT_BINDING_VALUE = /^\s*(?:await\s+)?(?:require|import)\s*\(/;
+
+function localBindingPatterns(name: string, flags: string): LocalBindingPatterns {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    // `const { name } = require('./m')` / `= await import('./m')` binds an IMPORT,
+    // not a shadow: the symbol lives in the other file and the call means it.
+    decl: new RegExp(
+      '\\b(?:const|let|var)\\s+(?:' + n + '\\b|[{\\[][^;=]*?\\b' + n + '\\b[^;=]*?[}\\]])\\s*(?:=\\s*([^;\\n]*))?',
+      flags
+    ),
+    fn: new RegExp('\\b(?:function|class)\\s+' + n + '\\b', flags),
+    // a parameter: every token before the name in the list is itself a
+    // parameter (identifier, optional type, optional default) — so a string
+    // argument containing the word cannot match.
+    // Each earlier parameter has exactly one parse: its first non-space
+    // character after the identifier picks the type (`?`/`:`), default (`=`)
+    // or bare alternative. Written as `(type)?(default)?\s*`, the same
+    // strings split several ways per parameter, and a failing search
+    // backtracked through every combination — 30-40s per name on a vscode
+    // test file whose helper takes nine `name: T = value` parameters.
+    param: new RegExp(
+      '\\(\\s*(?:(?:\\.\\.\\.)?[\\w$]+(?:\\s*(?:\\?\\s*)?:[^,()]+|\\s*=[^,()]+|\\s*),\\s*)*' +
+        n + '\\b(?:\\s*\\??\\s*:[^,()]*)?(?:\\s*=[^,()]*)?(?:\\s*,\\s*[^()]*)?\\)\\s*(?::[^=;{]*)?(?:=>|\\{)',
+      flags
+    ),
+  };
+}
 
 /**
  * Whether a JS/TS file binds `name` itself — as a `const`/`let`/`var`/
@@ -707,31 +1062,71 @@ function isLocallyBoundJsName(name: string, filePath: string, context: Resolutio
   const hit = memo.get(key);
   if (hit !== undefined) return hit;
   const source = context.readFile(filePath) ?? '';
-  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // `const { name } = require('./m')` / `= await import('./m')` binds an IMPORT,
-  // not a shadow: the symbol lives in the other file and the call means it.
-  const declRe = new RegExp(
-    '\\b(?:const|let|var)\\s+(?:' + n + '\\b|[{\\[][^;=]*?\\b' + n + '\\b[^;=]*?[}\\]])\\s*(?:=\\s*([^;\\n]*))?',
-    'g'
-  );
-  let bound = false;
-  for (const m of source.matchAll(declRe)) {
-    if (!/^\s*(?:await\s+)?(?:require|import)\s*\(/.test(m[1] ?? '')) { bound = true; break; }
-  }
-  if (!bound) {
-    bound =
-      new RegExp('\\b(?:function|class)\\s+' + n + '\\b').test(source) ||
-      // a parameter: every token before the name in the list is itself a
-      // parameter (identifier, optional type, optional default) — so a string
-      // argument containing the word cannot match.
-      new RegExp(
-        '\\(\\s*(?:(?:\\.\\.\\.)?[\\w$]+(?:\\s*\\??\\s*:\\s*[^,()]+)?(?:\\s*=\\s*[^,()]+)?\\s*,\\s*)*' +
-          n + '\\b(?:\\s*\\??\\s*:[^,()]*)?(?:\\s*=[^,()]*)?(?:\\s*,\\s*[^()]*)?\\)\\s*(?::[^=;{]*)?(?:=>|\\{)'
-      ).test(source) ||
-      new RegExp('(?:^|[^\\w$.])' + n + '\\s*=>').test(source);
-  }
+  const bound = JS_BINDING_NAME.test(name)
+    ? bindsAtSites(source, name, localBindingSites(filePath, source, context))
+    : bindsAnywhere(source, name);
   memo.set(key, bound);
   return bound;
+}
+
+/** isLocallyBoundJsName's patterns, searched through the whole source. */
+function bindsAnywhere(source: string, name: string): boolean {
+  const { decl, fn, param } = localBindingPatterns(name, 'g');
+  for (const m of source.matchAll(decl)) {
+    if (!IMPORT_BINDING_VALUE.test(m[1] ?? '')) return true;
+  }
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return fn.test(source) || param.test(source) || new RegExp('(?:^|[^\\w$.])' + n + '\\s*=>').test(source);
+}
+
+/**
+ * bindsAnywhere for a plain identifier, tried only where a match can start:
+ * a declaration at its keyword (in order, resuming past each match exactly as
+ * the global search does), a parameter at the `(` its list opens with — the
+ * last `(` before an occurrence of the name, with no `)` between, since no
+ * earlier parameter can hold a parenthesis — and `name =>` at each arrow.
+ */
+function bindsAtSites(source: string, name: string, sites: LocalBindingSites): boolean {
+  let patterns = LOCAL_BINDING_PATTERNS.get(name);
+  if (!patterns) {
+    patterns = localBindingPatterns(name, 'y');
+    if (LOCAL_BINDING_PATTERNS.size >= LOCAL_BINDING_PATTERNS_CAP) {
+      LOCAL_BINDING_PATTERNS.delete(LOCAL_BINDING_PATTERNS.keys().next().value!);
+    }
+    LOCAL_BINDING_PATTERNS.set(name, patterns);
+  }
+  const { decl, fn, param } = patterns;
+  let from = 0;
+  for (const at of sites.varDecls) {
+    if (at < from) continue;
+    decl.lastIndex = at;
+    const m = decl.exec(source);
+    if (!m) continue;
+    from = at + m[0].length;
+    if (!IMPORT_BINDING_VALUE.test(m[1] ?? '')) return true;
+  }
+  for (const at of sites.fnDecls) {
+    fn.lastIndex = at;
+    if (fn.test(source)) return true;
+  }
+  let tried = -1;
+  for (let at = source.indexOf(name); at !== -1; at = source.indexOf(name, at + 1)) {
+    const open = at > 0 ? source.lastIndexOf('(', at - 1) : -1;
+    if (open < 0 || open === tried || source.lastIndexOf(')', at - 1) > open) continue;
+    tried = open;
+    param.lastIndex = open;
+    if (param.test(source)) return true;
+  }
+  // `name =>`: the name ends where the whitespace before the arrow starts.
+  for (const arrow of sites.arrows) {
+    let end = arrow;
+    while (end > 0 && WHITESPACE.test(source[end - 1]!)) end--;
+    const start = end - name.length;
+    if (start >= 0 && source.startsWith(name, start) && (start === 0 || !ARROW_HEAD_CHAR.test(source[start - 1]!))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -751,22 +1146,34 @@ export function matchByExactName(
   // findBestMatch — O(K²) per package, the dominant cost of "Resolving refs" on
   // large import-heavy (front-end + back-end) repos (#915).
   const bareJs = isBareJsCall(ref, context);
+  const bareGo = isBareGoCall(ref, context);
   if (bareJs) {
     const storeAction = matchJsStoreBindingCall(ref, context);
     if (storeAction) return storeAction;
   }
-  const candidates = applyLanguageGate(context.getNodesByName(ref.referenceName), ref)
-    .filter((n) => n.kind !== 'import')
-    // Nested locals are only reachable from inside their container (#1230).
-    .filter((n) => isLexicallyReachable(n, ref, context))
-    // Preserve import ranking; calls reject the winner without promoting another.
-    .filter((n) => ref.referenceKind !== 'imports' || n.filePath === ref.filePath ||
-      !ESM_FAMILY.has(n.language) || !isSealedModule(n.filePath, context))
-    // A receiver-less JS/TS call cannot reach a method (#1714).
-    .filter((n) => !(bareJs && n.kind === 'method'))
-    // A name the file binds itself (a parameter, a const) shadows every other
-    // file's symbol of that name, so a bare call has no cross-file candidate.
-    .filter((n) => !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context)))
+  // Every rule below judges one candidate on its own, so they run as ONE pass,
+  // the kind/language checks before the ones that read source: a common name
+  // has thousands of same-named nodes, and a chain of filters copied that
+  // list once per rule for every reference.
+  const valueRef = ref.referenceKind === 'references' || ref.referenceKind === 'function_ref';
+  const importRef = ref.referenceKind === 'imports';
+  const inheritanceRef = isInheritanceRef(ref);
+  const sameName = context.getNodesByName(ref.referenceName);
+  // `NAME(...)` where NAME is a function-like macro somewhere in the project is
+  // an expansion or a call to a same-named function — never the macro itself
+  // (#1839), and never a type that happens to share the name (#2070: expat's
+  // `PREFIX(scanRef)(…)` bound to an unrelated `struct PREFIX`). Keep
+  // upstream's language gate on the chosen result.
+  const cMacroCall = ref.referenceKind === 'calls' && (ref.language === 'c' || ref.language === 'cpp') &&
+    sameName.some((n) => n.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(n.signature ?? ''));
+  const candidates = sameName.filter((n) =>
+    !(cMacroCall && n.kind !== 'function' && n.kind !== 'method') &&
+    // Type/value references retain same-family eligibility: a native namesake
+    // must not hide the actual web type. Calls still gate only the winner.
+    (!valueRef || sameLanguageFamily(n.language, ref.language)) &&
+    n.kind !== 'import' &&
+    // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
+    !((bareJs || bareGo) && n.kind === 'method') &&
     // An `extends`/`implements` ref names a supertype, so anything that can't
     // BE one is not a candidate at all. This is eligibility, not
     // ranking: kind is only a scoring bonus below (and none is awarded for
@@ -774,11 +1181,20 @@ export function matchByExactName(
     // the real `trait`, and as the sole candidate was adopted outright by the
     // single-match shortcut. Restricting the pool BEFORE ranking lets the
     // legitimate supertype win instead of merely dropping the false edge.
-    .filter((n) => !isInheritanceRef(ref) || SUPERTYPE_TARGET_KINDS.has(n.kind))
+    (!inheritanceRef || isSupertypeTarget(n)) &&
     // Likewise for `imports`: a member that only exists inside a type is not
     // importable, so it is not a candidate. Without this a `path`/`id`/`url`
     // import resolved to some interface's same-named property.
-    .filter((n) => ref.referenceKind !== 'imports' || isImportableKind(n.kind));
+    (!importRef || isImportableKind(n.kind)) &&
+    // Nested locals are only reachable from inside their container (#1230).
+    isLexicallyReachable(n, ref, context) &&
+    // Preserve import ranking; calls reject the winner without promoting another.
+    (!importRef || n.filePath === ref.filePath ||
+      !ESM_FAMILY.has(n.language) || !isSealedModule(n.filePath, context)) &&
+    // A name the file binds itself (a parameter, a const) shadows every other
+    // file's symbol of that name, so a bare call has no cross-file candidate.
+    !(bareJs && n.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context))
+  );
 
   if (candidates.length === 0) {
     return null;
@@ -925,6 +1341,12 @@ export function matchByQualifiedName(
   return null;
 }
 
+/** A node a `Receiver.method()` call can name as the method's owning type. */
+function isMethodOwnerKind(n: Node): boolean {
+  return n.kind === 'class' || n.kind === 'struct' || n.kind === 'union' || n.kind === 'interface' ||
+    (n.language === 'scala' && n.kind === 'module');
+}
+
 /**
  * When a symbol name is ambiguous across files, prefer the candidate(s) declared
  * in the call site's own file, keeping the rest in their original order (#1079).
@@ -1002,7 +1424,9 @@ export function resolveObjectLiteralMember(
   const accepts = ref.referenceKind === 'calls' ? callable : valueMember;
 
   const inside = inFile.filter((n) => n.id !== container.id && rangeWithin(n, container));
-  let candidates = inside.filter((n) => n.name === member && accepts(n));
+  const property = objectLiteralProperty(container, member, context);
+  if (property === null || property?.binding) return null;
+  let candidates = inside.filter((n) => n.name === member && accepts(n) && (!property || property.contains(n)));
   if (candidates.length === 0) return null;
 
   // Drop a candidate nested inside ANOTHER callable's body within the literal
@@ -1029,6 +1453,147 @@ export function resolveObjectLiteralMember(
     confidence,
     resolvedBy,
   };
+}
+
+/**
+ * The binding an object-literal member names when it is a shorthand property
+ * (`{ getUser }`) or a pair whose value is a bare identifier (`{ getUser:
+ * fetchUser }`) — the usual way an API module assembles its namespace from
+ * standalone functions (#1932). Only the literal's own members count: a member
+ * of a nested object, a word inside a member's body, a comment or a string
+ * never donates one. Null when the member is absent, or when its value is not
+ * a bare identifier (`{ fn: 1 }` names nothing).
+ */
+export function objectLiteralMemberBinding(
+  container: Node,
+  member: string,
+  context: ResolutionContext,
+): string | null {
+  return objectLiteralProperty(container, member, context)?.binding ?? null;
+}
+
+/** The last own property wins; an unknown spread/computed key invalidates earlier evidence. */
+function objectLiteralProperty(
+  container: Node,
+  member: string,
+  context: ResolutionContext,
+): { binding: string | null; contains: (node: Node) => boolean } | null | undefined {
+  const lines = context.getFileLines?.(container.filePath) ?? context.readFile(container.filePath)?.split('\n');
+  if (!lines) return undefined;
+  const extentLines = lines.slice(container.startLine - 1, container.endLine);
+  if (!extentLines.length) return undefined;
+  extentLines[extentLines.length - 1] = extentLines[extentLines.length - 1]!.slice(0, container.endColumn);
+  extentLines[0] = extentLines[0]!.slice(container.startColumn);
+  const extent = stripCommentsForRegex(extentLines.join('\n'), 'typescript');
+  const code = blankStringContents(extent);
+  // Start at THIS declarator, including its columns, never a sibling on the same line.
+  const open = /^[^=]*=\s*(?:(?:Object\.(?:freeze|seal)\s*)?\(\s*)*\{/.exec(code);
+  if (!open) return undefined;
+
+  const members: Array<{ start: number; end: number }> = [];
+  let depth = 0;
+  let start = open[0].length;
+  for (let i = start; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '{' || ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+    else if (ch === '}') {
+      if (depth === 0) {
+        members.push({ start, end: i });
+        break;
+      }
+      depth--;
+    } else if (ch === ',' && depth === 0) {
+      members.push({ start, end: i });
+      start = i + 1;
+    }
+  }
+
+  let selected: { start: number; end: number; binding: string | null } | null = null;
+  for (const part of members) {
+    const text = extent.slice(part.start, part.end).trim();
+    if (/^(?:\.\.\.|\[)/.test(text)) { selected = null; continue; }
+    const key = /^(?:(?:async|get|set)\s+)?\*?\s*(?:([A-Za-z_$][\w$]*)|['"]([^'"\\]*)['"])(?=\s*(?:[:(<,=]|$))/.exec(text);
+    if ((key?.[1] ?? key?.[2]) !== member) continue;
+    const value = text.slice(key![0].length).trim();
+    const binding = value === '' ? member : /^:\s*([A-Za-z_$][\w$]*)$/.exec(value)?.[1] ?? null;
+    selected = { ...part, binding };
+  }
+  if (!selected) return null;
+  const offset = (node: Node): number => {
+    let result = node.startColumn - container.startColumn;
+    for (let line = container.startLine; line < node.startLine; line++) result += lines[line - 1]!.length + 1;
+    return result;
+  };
+  const property = selected;
+  return { binding: property.binding, contains: (node) => offset(node) >= property.start && offset(node) < property.end };
+}
+
+/**
+ * Shared lexical lookup for namespace-object aliases (#1932): `api.getUser()` where
+ * `api` is `const api = { getUser }` (or `{ getUser: fetchUser }`) in the
+ * object's own file. The member's function is declared OUTSIDE the literal, so
+ * containment (`resolveObjectLiteralMember`) finds nothing. Follow the binding
+ * the member names — a symbol of this file, else one of its imports — unless a
+ * parameter or nearer declaration shadows that name where the literal is
+ * written (the edge would then name the wrong function).
+ */
+export function resolveObjectLiteralBinding(
+  container: Node,
+  member: string,
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  const binding = objectLiteralMemberBinding(container, member, context);
+  if (!binding) return null;
+  const at: UnresolvedRef = { ...ref, filePath: container.filePath, language: container.language,
+    fromNodeId: container.id, line: container.startLine, column: container.startColumn };
+  const inFile = context.getNodesInFile(container.filePath);
+  if (inFile.some((n) => (n.kind === 'function' || n.kind === 'method') &&
+      rangeWithin(container, n) && n.signature &&
+      hasParameterBinding(`${n.signature} {`, binding.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))) return null;
+
+  const lines = context.getFileLines?.(container.filePath) ?? context.readFile(container.filePath)?.split('\n');
+  if (!lines) return null;
+  const code = blankStringContents(stripCommentsForRegex(lines.join('\n'), 'typescript'));
+  const offsets = [0];
+  for (let i = 0; i < code.length; i++) if (code[i] === '\n') offsets.push(i + 1);
+  const scopeAt = (node: Node): number[] => {
+    const end = (offsets[node.startLine - 1] ?? code.length) + node.startColumn;
+    const scope: number[] = [];
+    for (let i = 0; i < end; i++) {
+      if (code[i] === '{') scope.push(i);
+      else if (code[i] === '}') scope.pop();
+    }
+    return scope;
+  };
+  const scope = scopeAt(container);
+
+  const callable = (n: Node) => n.kind === 'function' || n.kind === 'method' || n.kind === 'class';
+  const accepts =
+    ref.referenceKind === 'calls'
+      ? callable
+      : (n: Node) => callable(n) || n.kind === 'constant' || n.kind === 'variable' || n.kind === 'component';
+
+  const locals = inFile
+    .filter((n) => n.name === binding && n.id !== container.id &&
+      ['function', 'class', 'constant', 'variable', 'component'].includes(n.kind))
+    .map((node) => ({ node, scope: scopeAt(node) }))
+    .filter((entry) => entry.scope.every((position, i) => scope[i] === position))
+    .sort((a, b) => b.scope.length - a.scope.length);
+  // Select the lexical binding BEFORE checking callability: a nearer value
+  // shadows an outer function even if that value cannot be called.
+  const local = locals[0]?.node;
+  if (local) return accepts(local)
+    ? { original: ref, targetNodeId: local.id, confidence: 0.85, resolvedBy: 'instance-method' }
+    : null;
+
+  const imported = context.resolveImport?.({ ...at, referenceName: binding });
+  const target = imported ? context.getNodeById?.(imported.targetNodeId) : null;
+  if (target && accepts(target)) {
+    return { original: ref, targetNodeId: target.id, confidence: 0.85, resolvedBy: 'instance-method' };
+  }
+  return null;
 }
 
 // Exported for the precedence unit tests (#1079): they assert the
@@ -1127,6 +1692,7 @@ export function resolveMethodOnType(
   // block, so Java/Kotlin import disambiguation — whose target is intentionally
   // in ANOTHER file (#314) — is unaffected: that block returns early whenever
   // an import FQN pins the class.
+  if (ref.referenceKind === 'function_ref' && matches.length !== 1) return null;
   const ordered = preferCallSiteFile(matches, ref.filePath);
   return {
     original: ref,
@@ -1684,14 +2250,19 @@ function getInferScanStates(context: ResolutionContext): Map<string, InferScanSt
 /** Drop the per-context scan states (see ReferenceResolver.clearCaches). */
 export function clearNameMatcherMemos(context: ResolutionContext): void {
   INFER_SCAN_STATES.delete(context);
+  PYTHON_MEMBER_LINES.delete(context);
   AWAITED_TYPE_MEMO.delete(context);
   AWAITED_FILES.delete(context);
   C_STATIC_MEMO.delete(context);
   RUST_TRAIT_IMPL_MEMO.delete(context);
   SEALED_MODULES.delete(context);
   LOCAL_BINDING_MEMO.delete(context);
+  LOCAL_BINDING_SITES.delete(context);
   SELECTOR_NAMES.delete(context);
   GET_STATE_FILES.delete(context);
+  TS_FIELD_DECL_MEMO.delete(context);
+  TS_CLASS_LINES.delete(context);
+  TARGET_LANGUAGE.delete(context);
 }
 
 function memoPatterns(key: string, build: () => RegExp[]): RegExp[] {
@@ -2345,6 +2916,15 @@ export function matchMethodCall(
     );
   }
 
+  // A TS/JS call through an ES private field of the enclosing class —
+  // `this.#items.add()`, emitted as `this.#items.add` (#1987) — resolves
+  // exactly like `this.<field>` below (#1496). `#` is outside dotMatch's
+  // receiver class, so the shape is matched here.
+  if (ref.language === 'typescript' || ref.language === 'javascript' || ref.language === 'tsx' || ref.language === 'jsx') {
+    const privateField = ref.referenceName.match(/^this\.(#[\w$]+)\.(\w+)$/);
+    if (privateField) return matchTsThisFieldCall(privateField[1]!, privateField[2]!, ref, context);
+  }
+
   const match = dotMatch || colonMatch || luaColonMatch || rDollarMatch;
   if (!match) {
     return null;
@@ -2504,11 +3084,14 @@ export function matchMethodCall(
   // cross-file use reaches the same helper through the import path.
   if (dotMatch && !objectOrClass!.includes('.') && OBJECT_LITERAL_LANGUAGES.has(ref.language)) {
     const literalMatch = nmTimedT('mc-literal', ref, (): ResolvedRef | null => {
-      const holders = preferCallSiteFile(context.getNodesByName(objectOrClass!), ref.filePath).filter(
+      // Same-file holders only, so the call-site-first ordering is moot.
+      const holders = context.getNodesByName(objectOrClass!).filter(
         (n) => (n.kind === 'constant' || n.kind === 'variable') && n.filePath === ref.filePath
       );
       for (const holder of holders) {
-        const hit = resolveObjectLiteralMember(holder, methodName!, ref, context, 0.85, 'instance-method');
+        const hit =
+          resolveObjectLiteralMember(holder, methodName!, ref, context, 0.85, 'instance-method') ??
+          resolveObjectLiteralBinding(holder, methodName!, ref, context);
         if (hit) return hit;
       }
       return null;
@@ -2523,12 +3106,53 @@ export function matchMethodCall(
   // resolves to `a/`'s method (#1079).
   const strat1 = nmTimedT('mc-class', ref, (): ResolvedRef | null => {
     const classCandidates = preferCallSiteFile(
-      context.getNodesByName(objectOrClass!),
+      context.getNodesByName(objectOrClass!).filter(isMethodOwnerKind),
       ref.filePath,
     );
 
     for (const classNode of classCandidates) {
-      if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
+      // Skip cross-language class matches
+      if (classNode.language !== ref.language) continue;
+
+      const nodesInFile = context.getNodesInFile(classNode.filePath);
+      const methodNode = nodesInFile.find(
+        (n) =>
+          n.kind === 'method' &&
+          n.name === methodName &&
+          n.qualifiedName.includes(classNode.name)
+      );
+
+      if (methodNode) {
+        return {
+          original: ref,
+          targetNodeId: methodNode.id,
+          confidence: 0.85,
+          resolvedBy: 'qualified-name',
+        };
+      }
+    }
+    return null;
+  });
+  if (strat1) return strat1;
+
+  // Built-in method names need a validated receiver (#1987). Typed, imported,
+  // object-literal and direct class receivers have had their chance above;
+  // capitalization, word overlap or a unique method name are not evidence
+  // that `list.map()` / `cache.get()` calls a project class.
+  if (ref.referenceKind === 'calls' && JS_FAMILY.has(ref.language) &&
+      objectOrClass !== 'this' && objectOrClass !== 'super' &&
+      JS_BUILTIN_METHODS.has(methodName!)) return null;
+
+  // Strategy 2: Instance variable receiver - try capitalized form to find class
+  // e.g., "permissionEngine" → look for classes containing "PermissionEngine"
+  const capitalizedReceiver = objectOrClass!.charAt(0).toUpperCase() + objectOrClass!.slice(1);
+  if (capitalizedReceiver !== objectOrClass) {
+    const strat2 = nmTimedT('mc-capital', ref, (): ResolvedRef | null => {
+      const fuzzyClassCandidates = preferCallSiteFile(
+        context.getNodesByName(capitalizedReceiver).filter(isMethodOwnerKind),
+        ref.filePath,
+      );
+      for (const classNode of fuzzyClassCandidates) {
         // Skip cross-language class matches
         if (classNode.language !== ref.language) continue;
 
@@ -2544,46 +3168,9 @@ export function matchMethodCall(
           return {
             original: ref,
             targetNodeId: methodNode.id,
-            confidence: 0.85,
-            resolvedBy: 'qualified-name',
+            confidence: 0.8,
+            resolvedBy: 'instance-method',
           };
-        }
-      }
-    }
-    return null;
-  });
-  if (strat1) return strat1;
-
-  // Strategy 2: Instance variable receiver - try capitalized form to find class
-  // e.g., "permissionEngine" → look for classes containing "PermissionEngine"
-  const capitalizedReceiver = objectOrClass!.charAt(0).toUpperCase() + objectOrClass!.slice(1);
-  if (capitalizedReceiver !== objectOrClass) {
-    const strat2 = nmTimedT('mc-capital', ref, (): ResolvedRef | null => {
-      const fuzzyClassCandidates = preferCallSiteFile(
-        context.getNodesByName(capitalizedReceiver),
-        ref.filePath,
-      );
-      for (const classNode of fuzzyClassCandidates) {
-        if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'union' || classNode.kind === 'interface') {
-          // Skip cross-language class matches
-          if (classNode.language !== ref.language) continue;
-
-          const nodesInFile = context.getNodesInFile(classNode.filePath);
-          const methodNode = nodesInFile.find(
-            (n) =>
-              n.kind === 'method' &&
-              n.name === methodName &&
-              n.qualifiedName.includes(classNode.name)
-          );
-
-          if (methodNode) {
-            return {
-              original: ref,
-              targetNodeId: methodNode.id,
-              confidence: 0.8,
-              resolvedBy: 'instance-method',
-            };
-          }
         }
       }
       return null;
@@ -2904,6 +3491,184 @@ function matchRustSelfFieldCall(
 }
 
 /**
+ * Per-context memo for matchTsThisFieldCall's declaration scan: `classId\0field`
+ * → the first line of the class that declares the field (as `: typeof X`,
+ * `: X`, or `= new X`, tried in that order per line) with its captured type,
+ * or null. The scan depends only on the class and the field, but ran for every
+ * `this.<field>.<method>()` call — re-splitting the file and compiling three
+ * patterns each time, a third of all method-call matching on vscode. Derived
+ * from file source: drops with clearNameMatcherMemos.
+ */
+const TS_FIELD_DECL_MEMO = new WeakMap<ResolutionContext, Map<string, { valueType: boolean; type: string } | null>>();
+/** A class's comment-stripped lines, and which of them hold each `[\w$#]` token. */
+interface TsClassDecl {
+  lines: string[];
+  /** Field lookups so far; the token index is built on the second. */
+  lookups: number;
+  linesByToken: Map<string, number[]> | null;
+}
+/** The last few classes' declarations — calls arrive file by file. */
+const TS_CLASS_LINES = new WeakMap<ResolutionContext, Map<string, TsClassDecl | null>>();
+const TS_CLASS_LINES_KEEP = 32;
+
+function tsClassDecl(cls: Node, context: ResolutionContext): TsClassDecl | null {
+  let cache = TS_CLASS_LINES.get(context);
+  if (!cache) {
+    cache = new Map();
+    TS_CLASS_LINES.set(context, cache);
+  }
+  const hit = cache.get(cls.id);
+  if (hit !== undefined) return hit;
+  const source = context.readFile(cls.filePath);
+  const decl = source
+    ? {
+        lines: source
+          .split('\n')
+          .slice(Math.max(0, cls.startLine - 1), cls.endLine)
+          .map((rawLine) => rawLine.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '')),
+        lookups: 0,
+        linesByToken: null,
+      }
+    : null;
+  if (cache.size >= TS_CLASS_LINES_KEEP) cache.delete(cache.keys().next().value!);
+  cache.set(cls.id, decl);
+  return decl;
+}
+
+const TS_FIELD_TOKEN = /^[\w$#]+$/;
+const TS_LINE_TOKEN = /[\w$#]+/g;
+const TS_TOKEN_CHAR = /[\w$#]/;
+
+/**
+ * tsFieldPatterns with the field spelled `[\w$#]+`, tried sticky at a whole-
+ * token occurrence of the field. There the run consumes exactly the field (a
+ * shorter prefix cannot continue: every pattern needs `\s`, `?`, `!`, `:` or
+ * `=` next), so each matches exactly where the field's own pattern would —
+ * without compiling three patterns for every field of every class.
+ */
+const TS_FIELD_PATTERNS_AT: readonly TsFieldPattern[] = [
+  { re: /(?<![\w$#])[\w$#]+\b\s*[?!]?\s*:\s*(?:readonly\s+)?typeof\s+([A-Za-z_$][\w.$]*)/y, valueType: true },
+  { re: /(?<![\w$#])[\w$#]+\b\s*[?!]?\s*:\s*(?:readonly\s+)?([A-Za-z_$][\w.$]*)/y, valueType: false },
+  { re: /(?<![\w$#])[\w$#]+\b\s*=\s*new\s+([A-Za-z_$][\w.$]*)/y, valueType: false },
+];
+
+/** The first declaration of `field` on one line, as `line.match` of its patterns in order would find it. */
+function tsFieldOnLine(line: string, field: string): { valueType: boolean; type: string } | null {
+  let at: number[] | null = null;
+  for (let i = line.indexOf(field); i !== -1; i = line.indexOf(field, i + 1)) {
+    const end = i + field.length;
+    if ((i > 0 && TS_TOKEN_CHAR.test(line[i - 1]!)) || (end < line.length && TS_TOKEN_CHAR.test(line[end]!))) continue;
+    (at ??= []).push(i);
+  }
+  if (!at) return null;
+  for (const { re, valueType } of TS_FIELD_PATTERNS_AT) {
+    for (const i of at) {
+      re.lastIndex = i;
+      const m = re.exec(line);
+      if (m && m[1]) return { valueType, type: m[1] };
+    }
+  }
+  return null;
+}
+
+/** Indices of the class lines holding `token` as a whole `[\w$#]` run, ascending. */
+function tsClassLinesWithToken(decl: TsClassDecl, token: string): readonly number[] {
+  if (!decl.linesByToken) {
+    const index = new Map<string, number[]>();
+    for (let i = 0; i < decl.lines.length; i++) {
+      for (const m of decl.lines[i]!.matchAll(TS_LINE_TOKEN)) {
+        const rows = index.get(m[0]);
+        if (!rows) index.set(m[0], [i]);
+        else if (rows[rows.length - 1] !== i) rows.push(i);
+      }
+    }
+    decl.linesByToken = index;
+  }
+  return decl.linesByToken.get(token) ?? [];
+}
+
+type TsFieldPattern = { re: RegExp; valueType: boolean };
+/** Compiled declaration patterns by field name — fields recur across classes. */
+const TS_FIELD_PATTERNS = new Map<string, TsFieldPattern[]>();
+const TS_FIELD_PATTERNS_CAP = 4096;
+
+function tsFieldPatterns(field: string): TsFieldPattern[] {
+  const hit = TS_FIELD_PATTERNS.get(field);
+  if (hit) return hit;
+  const fieldEsc = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // A word boundary cannot open a private name; it also lets a public
+  // `items` match `#items`. Keep the two field namespaces distinct (#1987).
+  const fieldStart = '(?<![\\w$#])';
+  const patterns: TsFieldPattern[] = [
+    // `storage: typeof DraftHubStorage` — the type OF a value: an object
+    // literal used as a namespace. Its members are bare-named functions inside
+    // the constant's extent (#1573), so they are found by containment, not by
+    // `Type::method`. Tried first: the declared-type pattern below would
+    // otherwise capture the word `typeof`.
+    {
+      re: new RegExp(`${fieldStart}${fieldEsc}\\b\\s*[?!]?\\s*:\\s*(?:readonly\\s+)?typeof\\s+([A-Za-z_$][\\w.$]*)`),
+      valueType: true,
+    },
+    // `private readonly mailer?: Mailer` — a class field or a constructor
+    // parameter property; the capture stops at `<`, `[` or `|`, so a generic
+    // or union type yields its head and resolveMethodOnType decides.
+    {
+      re: new RegExp(`${fieldStart}${fieldEsc}\\b\\s*[?!]?\\s*:\\s*(?:readonly\\s+)?([A-Za-z_$][\\w.$]*)`),
+      valueType: false,
+    },
+    // `mailer = new Mailer()` / `this.mailer = new Mailer()`
+    { re: new RegExp(`${fieldStart}${fieldEsc}\\b\\s*=\\s*new\\s+([A-Za-z_$][\\w.$]*)`), valueType: false },
+  ];
+  if (TS_FIELD_PATTERNS.size >= TS_FIELD_PATTERNS_CAP) TS_FIELD_PATTERNS.delete(TS_FIELD_PATTERNS.keys().next().value!);
+  TS_FIELD_PATTERNS.set(field, patterns);
+  return patterns;
+}
+
+function tsFieldDeclaration(
+  cls: Node,
+  field: string,
+  context: ResolutionContext
+): { valueType: boolean; type: string } | null {
+  let memo = TS_FIELD_DECL_MEMO.get(context);
+  if (!memo) {
+    memo = new Map();
+    TS_FIELD_DECL_MEMO.set(context, memo);
+  }
+  const key = cls.id + '\0' + field;
+  const hit = memo.get(key);
+  if (hit !== undefined) return hit;
+  let found: { valueType: boolean; type: string } | null = null;
+  const decl = tsClassDecl(cls, context);
+  if (decl && TS_FIELD_TOKEN.test(field)) {
+    // Every pattern needs the field as a whole `[\w$#]` run — the lookbehind
+    // bars one before it, and nothing after it but `\s`, `?`, `!`, `:` or `=`
+    // can continue a match — so only lines holding that token can match. A
+    // class asked about several fields is indexed by token once.
+    const rows = ++decl.lookups > 1 ? tsClassLinesWithToken(decl, field) : null;
+    const count = rows ? rows.length : decl.lines.length;
+    for (let k = 0; k < count && !found; k++) {
+      const line = decl.lines[rows ? rows[k]! : k]!;
+      // Every pattern spells the field literally, so only a line that contains
+      // it can match — and most of a class's lines never mention a given field.
+      if (line.includes(field)) found = tsFieldOnLine(line, field);
+    }
+  } else if (decl) {
+    const patterns = tsFieldPatterns(field);
+    scan: for (const line of decl.lines) {
+      if (!line.includes(field)) continue;
+      for (const { re, valueType } of patterns) {
+        const m = line.match(re);
+        if (!m || !m[1]) continue;
+        found = { valueType, type: m[1] };
+        break scan;
+      }
+    }
+  }
+  memo.set(key, found);
+  return found;
+}
+
+/**
  * Resolve a TS/JS `this.<field>.<method>()` call (#1496) through the field's
  * declared type, read off the ENCLOSING class's own declaration lines:
  * a field or constructor-parameter property (`private mailer: Mailer`,
@@ -2930,80 +3695,51 @@ function matchTsThisFieldCall(
   const owners = preferCallSiteFile(context.getNodesByName(owner), ref.filePath).filter(
     (n) => (n.kind === 'class' || n.kind === 'component') && sameLanguageFamily(n.language, ref.language)
   );
-  const fieldEsc = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const patterns: Array<{ re: RegExp; valueType: boolean }> = [
-    // `storage: typeof DraftHubStorage` — the type OF a value: an object
-    // literal used as a namespace. Its members are bare-named functions inside
-    // the constant's extent (#1573), so they are found by containment, not by
-    // `Type::method`. Tried first: the declared-type pattern below would
-    // otherwise capture the word `typeof`.
-    {
-      re: new RegExp(`\\b${fieldEsc}\\b\\s*[?!]?\\s*:\\s*(?:readonly\\s+)?typeof\\s+([A-Za-z_$][\\w.$]*)`),
-      valueType: true,
-    },
-    // `private readonly mailer?: Mailer` — a class field or a constructor
-    // parameter property; the capture stops at `<`, `[` or `|`, so a generic
-    // or union type yields its head and resolveMethodOnType decides.
-    {
-      re: new RegExp(`\\b${fieldEsc}\\b\\s*[?!]?\\s*:\\s*(?:readonly\\s+)?([A-Za-z_$][\\w.$]*)`),
-      valueType: false,
-    },
-    // `mailer = new Mailer()` / `this.mailer = new Mailer()`
-    { re: new RegExp(`\\b${fieldEsc}\\b\\s*=\\s*new\\s+([A-Za-z_$][\\w.$]*)`), valueType: false },
-  ];
   for (const cls of owners) {
-    const source = context.readFile(cls.filePath);
-    if (!source) continue;
-    const declLines = source.split('\n').slice(Math.max(0, cls.startLine - 1), cls.endLine);
-    for (const rawLine of declLines) {
-      const line = rawLine.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '');
-      for (const { re, valueType } of patterns) {
-        const m = line.match(re);
-        if (!m || !m[1]) continue;
-        if (valueType) {
-          // The value's declaration may live in another file (it is imported);
-          // the call site's file is preferred when several share the name.
-          const holderName = m[1].split('.').pop()!;
-          const holders = preferCallSiteFile(context.getNodesByName(holderName), ref.filePath).filter(
-            (n) => (n.kind === 'constant' || n.kind === 'variable') && sameLanguageFamily(n.language, ref.language)
-          );
-          for (const holder of holders) {
-            const hit = resolveObjectLiteralMember(holder, methodName, ref, context, 0.85, 'instance-method');
-            if (hit) return hit;
-          }
-          return null;
-        }
-        // `ns.Mailer` → `Mailer`; a primitive or builtin names no project type.
-        const typeName = m[1].split('.').pop()!;
-        if (!/^[A-Z]/.test(typeName)) return null;
-        // Two apps in one repo may each declare a `UserService`. The bare-name
-        // path this replaces broke that tie by directory proximity, so keep the
-        // same signal: among the type's declarations of the method, prefer the
-        // one closest to the call site's directory (its own app), never index
-        // order. resolveMethodOnType still answers the single-declaration and
-        // supertype cases.
-        const declared = context
-          .getNodesByName(methodName)
-          .filter(
-            (n) =>
-              n.kind === 'method' &&
-              sameLanguageFamily(n.language, ref.language) &&
-              (n.qualifiedName === `${typeName}::${methodName}` || n.qualifiedName.endsWith(`::${typeName}::${methodName}`))
-          );
-        if (declared.length > 1) {
-          const callDirs = ref.filePath.split('/').slice(0, -1);
-          const shared = (fp: string) => {
-            const dirs = fp.split('/').slice(0, -1);
-            let i = 0;
-            while (i < dirs.length && i < callDirs.length && dirs[i] === callDirs[i]) i++;
-            return i;
-          };
-          const nearest = [...declared].sort((a, b) => shared(b.filePath) - shared(a.filePath) || a.filePath.localeCompare(b.filePath))[0]!;
-          return { original: ref, targetNodeId: nearest.id, confidence: 0.85, resolvedBy: 'instance-method' };
-        }
-        return resolveMethodOnType(typeName, methodName, ref, context, 0.85, 'instance-method');
+    const decl = tsFieldDeclaration(cls, field, context);
+    if (!decl) continue;
+    if (decl.valueType) {
+      // The value's declaration may live in another file (it is imported);
+      // the call site's file is preferred when several share the name.
+      const holderName = decl.type.split('.').pop()!;
+      const holders = preferCallSiteFile(context.getNodesByName(holderName), ref.filePath).filter(
+        (n) => (n.kind === 'constant' || n.kind === 'variable') && sameLanguageFamily(n.language, ref.language)
+      );
+      for (const holder of holders) {
+        const hit = resolveObjectLiteralMember(holder, methodName, ref, context, 0.85, 'instance-method');
+        if (hit) return hit;
       }
+      return null;
     }
+    // `ns.Mailer` → `Mailer`; a primitive or builtin names no project type.
+    const typeName = decl.type.split('.').pop()!;
+    if (!/^[A-Z]/.test(typeName)) return null;
+    // Two apps in one repo may each declare a `UserService`. The bare-name
+    // path this replaces broke that tie by directory proximity, so keep the
+    // same signal: among the type's declarations of the method, prefer the
+    // one closest to the call site's directory (its own app), never index
+    // order. resolveMethodOnType still answers the single-declaration and
+    // supertype cases.
+    const declared = context
+      .getNodesByName(methodName)
+      .filter(
+        (n) =>
+          n.kind === 'method' &&
+          sameLanguageFamily(n.language, ref.language) &&
+          (n.qualifiedName === `${typeName}::${methodName}` || n.qualifiedName.endsWith(`::${typeName}::${methodName}`))
+      );
+    if (declared.length > 1) {
+      const callDirs = ref.filePath.split('/').slice(0, -1);
+      const shared = (fp: string) => {
+        const dirs = fp.split('/').slice(0, -1);
+        let i = 0;
+        while (i < dirs.length && i < callDirs.length && dirs[i] === callDirs[i]) i++;
+        return i;
+      };
+      const nearest = [...declared].sort((a, b) => shared(b.filePath) - shared(a.filePath) || a.filePath.localeCompare(b.filePath))[0]!;
+      return { original: ref, targetNodeId: nearest.id, confidence: 0.85, resolvedBy: 'instance-method' };
+    }
+    return resolveMethodOnType(typeName, methodName, ref, context, 0.85, 'instance-method');
   }
   return null;
 }
@@ -3395,10 +4131,9 @@ export function matchFuzzy(
 
   // Filter to callable kinds only (function, method, class)
   const callableKinds = new Set(['function', 'method', 'class']);
-  const callableCandidates = applyLanguageGate(
-    candidates.filter((n) => callableKinds.has(n.kind)),
-    ref
-  );
+  const callableCandidates = candidates.filter((n) => callableKinds.has(n.kind))
+    .filter((n) => (ref.referenceKind !== 'references' && ref.referenceKind !== 'function_ref') ||
+      sameLanguageFamily(n.language, ref.language));
 
   // Prefer same-language matches
   const sameLanguageCandidates = callableCandidates.filter(n => n.language === ref.language);
@@ -3426,6 +4161,7 @@ export function matchFuzzy(
     !(isBareJsCall(ref, context) &&
       (finalCandidates[0]!.kind === 'method' ||
         (finalCandidates[0]!.filePath !== ref.filePath && isLocallyBoundJsName(ref.referenceName, ref.filePath, context)))) &&
+    !(finalCandidates[0]!.kind === 'method' && isBareGoCall(ref, context)) &&
     isLexicallyReachable(finalCandidates[0]!, ref, context)
   ) {
     const isCrossLanguage = finalCandidates[0]!.language !== ref.language;
@@ -3490,6 +4226,13 @@ export function dumpNameMatcherProfile(label: string): void {
 }
 
 export function matchReference(
+  ref: UnresolvedRef,
+  context: ResolutionContext
+): ResolvedRef | null {
+  return gateLanguageMatch(matchReferenceInner(ref, context), ref, context);
+}
+
+function matchReferenceInner(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
