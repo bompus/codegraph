@@ -169,7 +169,13 @@ impl KernelResolver {
             let (Some(base), Some(field)) = (base.filter(|b| b.kind() == "identifier"), field) else {
                 return Ok(None);
             };
-            let Some(owner_type) = self.infer_local_receiver_type(node_text(base, text), r, true)? else {
+            // The owner is typed where the range reads it, not at the call:
+            // the loop body may shadow it (`o := OuterB{}`).
+            let (row, col) = point16(text, base.start_byte(), base.start_position());
+            let mut at_range = r.clone();
+            at_range.line = row as i64 + 1;
+            at_range.column = col as i64;
+            let Some(owner_type) = self.infer_local_receiver_type(node_text(base, text), &at_range, true)? else {
                 return Ok(None);
             };
             // A field's slice element type is resolved in its owner's file.

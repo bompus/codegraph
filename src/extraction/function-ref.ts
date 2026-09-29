@@ -720,7 +720,7 @@ function normalizeSpecial(
       if (field) {
         const name = getNodeText(field, source);
         const receiver = getChildByField(node, 'operand');
-        const value = receiver ? `${getNodeText(receiver, source)}.${name}` : '';
+        const value = receiver ? `${getNodeText(receiver, source)}.${name}`.replace(/\s*\.\s*/g, '.') : '';
         return /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(value)
           ? [{ name: value, node: field, skipGate: true }] : [];
       }
@@ -764,7 +764,7 @@ function normalizeSpecial(
     // statically named receivers and must not collapse to a bare method.
     case 'attribute': {
       const attr = getChildByField(node, 'attribute');
-      const name = getNodeText(node, source);
+      const name = getNodeText(node, source).replace(/\s*\.\s*/g, '.');
       return attr && /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(name)
         ? [{ name, node: attr, skipGate: true }] : [];
     }

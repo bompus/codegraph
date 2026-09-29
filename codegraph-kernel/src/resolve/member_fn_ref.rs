@@ -22,8 +22,9 @@ impl KernelResolver {
         };
         let (receiver, member) = (&r.reference_name[..dot], &r.reference_name[dot + 1..]);
         let root = receiver.split('.').next().unwrap_or(receiver);
-        // An import is authoritative even when it points outside the project.
-        if self.import_mappings(&r.file_path)?.iter().any(|i| i.local_name == root) {
+        // An import is authoritative even when it points outside the project,
+        // unless a parameter or local shadows it at the ref.
+        if self.import_mappings(&r.file_path)?.iter().any(|i| i.local_name == root) && !self.is_shadowed_import(root, r)? {
             if r.language == "python" {
                 if let Some(cls) = self.python_ref_class(receiver, r)? {
                     let members = self.python_members(&cls, member, r, &mut HashSet::new())?;
@@ -74,6 +75,13 @@ impl KernelResolver {
         // of the member's name is no evidence.
         let named: Vec<Arc<KNode>> = self.nodes_by_name(member)?.iter().cloned().collect();
         Ok(self.unique_member(named, r, 0.8)?.filter(|c| c.node.kind == "method"))
+    }
+
+    /// Is `name` bound at `r` by something other than its import (a
+    /// parameter, a local)? Files without binding rows keep the import.
+    fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        let rows = self.bindings(&r.file_path)?;
+        Ok(innermost_binding(&rows, name, Some(r.line)).is_some_and(|b| b.kind != "import"))
     }
 
     /// The Python receiver arms: `self`/`cls`, `self.field`, a local or
@@ -362,6 +370,7 @@ impl KernelResolver {
             .cloned()
             .collect();
         let mut types: Vec<String> = Vec::new();
+        let mut untyped = false;
         let mut add = |t: String| {
             if !types.contains(&t) {
                 types.push(t);
@@ -400,17 +409,19 @@ impl KernelResolver {
                 continue;
             }
             match method {
-                Some(m) if is_word(value) => {
-                    if let Some(t) = param_annotation(m.signature.as_deref().unwrap_or(""), value) {
-                        add(t);
-                    }
-                }
+                Some(_) if value == "None" => {}
+                Some(m) if is_word(value) => match param_annotation(m.signature.as_deref().unwrap_or(""), value) {
+                    Some(t) => add(t),
+                    None => untyped = true,
+                },
                 _ => add(UNKNOWN_TYPE.to_string()),
             }
         }
         Ok(match types.len() {
             0 => None,
-            1 => types.pop(),
+            // An untyped reassignment (`self.store = replacement`) outvotes
+            // the one typed assignment; alone it stays no evidence.
+            1 if !untyped => types.pop(),
             _ => Some(UNKNOWN_TYPE.to_string()),
         })
     }
