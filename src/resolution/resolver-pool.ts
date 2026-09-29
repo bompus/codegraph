@@ -254,6 +254,11 @@ export class ResolverPool {
     this.recycleWaiters.clear();
   }
 
+  /** Number of workers — how many passes the synthesis fan-out keeps in flight. */
+  get size(): number {
+    return this.workers.length;
+  }
+
   async ready(): Promise<void> {
     await Promise.all(this.workers.map((w) => w.ready));
   }

@@ -787,7 +787,6 @@ async function arkuiStateBuildEdges(queries: QueryBuilder, ctx: ResolutionContex
   const seen = new Set<string>();
   for (const struct of queries.iterateNodesByKind('struct', { languages: ['arkts'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (struct.language !== 'arkts') continue;
     const children = queries.getOutgoingEdges(struct.id, ['contains'])
       .map((e) => queries.getNodeById(e.target))
       .filter((n): n is Node => !!n);
@@ -1127,7 +1126,7 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield): Pr
   const goStructs: Node[] = [];
   for (const s of queries.iterateNodesByKind('struct', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (s.language === 'go') goStructs.push(s);
+    goStructs.push(s);
   }
   const structMethods = new Map<string, Set<string>>();
   for (const s of goStructs) structMethods.set(s.id, methodNameSet(s.id));
@@ -1136,7 +1135,6 @@ async function goImplementsEdges(queries: QueryBuilder, onYield: MaybeYield): Pr
     if ((++scanned255 & 63) === 0) await onYield();
 
     if ((++scanned255 & 63) === 0) await onYield();
-    if (iface.language !== 'go') continue;
     const want = methodNameSet(iface.id);
     if (want.size === 0) continue; // empty interface (`any`) — would match everything
     let added = 0;
@@ -1200,9 +1198,6 @@ async function goCrossFileMethodContainsEdges(queries: QueryBuilder, onYield: Ma
 
   for (const method of queries.iterateNodesByKind('method', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-
-    if ((++scanned255 & 63) === 0) await onYield();
-    if (method.language !== 'go') continue;
     // The receiver type is encoded in the method's qualifiedName as `Recv::name`
     // (extraction sets `${receiverType}::${name}` for receiver methods).
     const qn = method.qualifiedName;
@@ -1441,7 +1436,6 @@ async function goGrpcStubImplEdges(queries: QueryBuilder, onYield: MaybeYield): 
   const goStructs: Node[] = [];
   for (const s of queries.iterateNodesByKind('struct', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (s.language !== 'go') continue;
     goStructs.push(s);
     const ms = queries
       .getOutgoingEdges(s.id, ['contains'])
@@ -2269,7 +2263,6 @@ async function rnCrossPlatformEdges(queries: QueryBuilder, onYield: MaybeYield):
   const byName = new Map<string, Node[]>();
   for (const m of queries.iterateNodesByKind('method', { languages: [...NATIVE] as Language[] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (!NATIVE.has(m.language)) continue;
     const key = norm(m.name);
     const arr = byName.get(key);
     if (arr) arr.push(m);
@@ -2393,7 +2386,7 @@ async function mybatisJavaXmlEdges(queries: QueryBuilder, onYield: MaybeYield): 
   const xmlMethods: Node[] = [];
   for (const m of queries.iterateNodesByKind('method', { languages: ['xml'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (m.language === 'xml') xmlMethods.push(m);
+    xmlMethods.push(m);
   }
   if (xmlMethods.length === 0) return edges;
 
@@ -2401,7 +2394,6 @@ async function mybatisJavaXmlEdges(queries: QueryBuilder, onYield: MaybeYield): 
   const javaIndex = new Map<string, Node[]>();
   for (const m of queries.iterateNodesByKind('method', { languages: ['java', 'kotlin'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (m.language !== 'java' && m.language !== 'kotlin') continue;
     const parts = m.qualifiedName.split('::');
     const last = parts[parts.length - 1];
     const cls = parts[parts.length - 2];
@@ -2512,7 +2504,6 @@ async function ginMiddlewareChainEdges(queries: QueryBuilder, ctx: ResolutionCon
   const dispatchers: Node[] = [];
   for (const n of queries.iterateNodesByKind('method', { languages: ['go'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (n.language !== 'go') continue;
     const content = ctx.readFile(n.filePath);
     const src = content && sliceLines(content, n.startLine, n.endLine);
     if (src && GIN_DISPATCH_RE.test(src)) dispatchers.push(n);
@@ -2738,8 +2729,22 @@ async function reduxThunkEdges(queries: QueryBuilder, ctx: ResolutionContext, on
 // the SAME file (the cross-file barrel-namespace variant, e.g. trezor's getMethod, is
 // deferred). Gated on a real object literal with ≥2 entries that RESOLVE to callables (a
 // `{ width: 5 }` literal resolves to nothing → no edges); fan-out capped.
-const REGISTRY_ASSIGN_RE = /(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)|((?:this\.)?[A-Za-z_$][\w$]*))\s*=\s*\{/g;
-const REGISTRY_DISPATCH_RE = /(?:\bnew\s+)?((?:this\.)?[A-Za-z_$][\w$]*)\s*\[\s*([A-Za-z_$][\w$.]*)\s*\]\s*(?:\(|\.[A-Za-z_$])/g;
+// Both scans only START a name at an identifier's first character (or at a `this.`): the
+// engine otherwise retries the greedy name at every later character of every identifier in
+// the file. A match found from inside an identifier always has one from the identifier's
+// start (same name tail, same continuation), so the result is unchanged — except where the
+// scan itself resumes mid-identifier after a dispatch ending in `.method`, which
+// `nextRegistryDispatch` covers with the unguarded pattern.
+const REGISTRY_NAME_START = String.raw`(?:(?<![A-Za-z_$])(?<![A-Za-z_$][\w$]+)|(?=this\.))`;
+const REGISTRY_ASSIGN_RE = new RegExp(
+  String.raw`(?:(?:const|let|var)\s+([A-Za-z_$][\w$]*)|${REGISTRY_NAME_START}((?:this\.)?[A-Za-z_$][\w$]*))\s*=\s*\{`,
+  'g',
+);
+const REGISTRY_DISPATCH_SRC = String.raw`(?:\bnew\s+)?((?:this\.)?[A-Za-z_$][\w$]*)\s*\[\s*([A-Za-z_$][\w$.]*)\s*\]\s*(?:\(|\.[A-Za-z_$])`;
+const REGISTRY_DISPATCH_AT = new RegExp(REGISTRY_DISPATCH_SRC, 'y');
+// `\bnew` can follow a `$` inside an identifier run, hence the extra `(?<!\w)` start.
+const REGISTRY_DISPATCH_RE = new RegExp(String.raw`(?:(?<!\w)|${REGISTRY_NAME_START})${REGISTRY_DISPATCH_SRC}`, 'g');
+const IDENT_RUN_CHAR = /[\w$]/;
 // `const r = registry` — an alias the dispatch ref may be written through.
 // RHS must be a BARE ref (a `reg[k]` element grab is a different shape).
 const REGISTRY_ALIAS_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*((?:this\.)?[A-Za-z_$][\w$]*)\s*(?:;|\n|$)/g;
@@ -2766,6 +2771,21 @@ const REGISTRY_MIN_ENTRIES = 2;
 const REGISTRY_FANOUT_CAP = 40;
 const REGISTRY_CLASS_ENTRY = new Set(['execute', 'run', 'handle', 'perform', 'process', 'call', 'apply', 'dispatch']);
 const REGISTRY_JS_EXT = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+
+/** The first registry dispatch at or after `from`, exactly as a `g` scan of the unguarded
+ *  pattern resuming at `from` would find it. */
+function nextRegistryDispatch(src: string, from: number): RegExpExecArray | null {
+  let at = from;
+  if (at > 0 && at < src.length && IDENT_RUN_CHAR.test(src[at - 1]!) && IDENT_RUN_CHAR.test(src[at]!)) {
+    for (; at < src.length && IDENT_RUN_CHAR.test(src[at]!); at++) {
+      REGISTRY_DISPATCH_AT.lastIndex = at;
+      const m = REGISTRY_DISPATCH_AT.exec(src);
+      if (m) return m;
+    }
+  }
+  REGISTRY_DISPATCH_RE.lastIndex = at;
+  return REGISTRY_DISPATCH_RE.exec(src);
+}
 
 /** From the index of an opening `{`, return the brace-balanced body up to its matching `}`. */
 function braceBody(src: string, openIdx: number): string | null {
@@ -2861,10 +2881,8 @@ async function objectRegistryEdges(ctx: ResolutionContext, onYield: MaybeYield):
 
     // 1. Dispatch sites: `(new )?<ref>[<ident-key>]` followed by a call or a chained method.
     //    A quoted-string key (`['save']`) does NOT match — that's a static access, not dispatch.
-    REGISTRY_DISPATCH_RE.lastIndex = 0;
     const dispatches: Array<{ ref: string; line: number; chained: string | null }> = [];
-    let dm: RegExpExecArray | null;
-    while ((dm = REGISTRY_DISPATCH_RE.exec(safe))) {
+    for (let dm = nextRegistryDispatch(safe, 0); dm; dm = nextRegistryDispatch(safe, dm.index + dm[0].length)) {
       const win = safe.slice(dm.index, dm.index + 160);
       const cm = /\]\s*\([^)]*\)\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win) || /\]\s*\.\s*([A-Za-z_$][\w$]*)/.exec(win);
       dispatches.push({ ref: dm[1]!, line: lineOf(safe, dm.index), chained: cm ? cm[1]! : null });
@@ -4931,7 +4949,6 @@ async function nixOptionPathEdges(queries: QueryBuilder, onYield: MaybeYield): P
     for (const node of queries.iterateNodesByKind(kind, { languages: ['nix'] })) {
       if ((++scanned255 & 63) === 0) await onYield();
       if ((++scanned & 0x3fff) === 0 && onYield) await onYield();
-      if (node.language !== 'nix') continue;
       const segs = nixLeadingPlainSegments(node.name);
       if (segs.length === 0) continue;
       const rec: Rec = {
@@ -5043,7 +5060,7 @@ async function erlangBehaviourDispatchEdges(queries: QueryBuilder, ctx: Resoluti
   const erlangModules: Node[] = [];
   for (const n of queries.iterateNodesByKind('namespace', { languages: ['erlang'] })) {
     if ((++scanned255 & 63) === 0) await onYield();
-    if (n.language === 'erlang') erlangModules.push(n);
+    erlangModules.push(n);
   }
   if (erlangModules.length === 0) return [];
 
@@ -5759,6 +5776,21 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'nixOptionEdges', gate: (has) => has('nix'), run: (q, _c, y) => nixOptionPathEdges(q, y) },
 ];
 
+/**
+ * Rough relative cost of the passes that run longest on large repos. Only
+ * the pooled dispatch ORDER reads it — heaviest first, so the longest passes
+ * start before the short ones fill the workers; unlisted passes keep registry
+ * order after these. A wrong hint costs wall time, never edges.
+ */
+const SYNTH_PASS_COST_HINT: Readonly<Record<string, number>> = {
+  cFnPtrEdges: 100, registryEdges: 60, tierEdges: 55, jsxEdges: 25, rnEventEdgesList: 24,
+  ifaceEdges: 18, flutterEdges: 16, cppEdges: 15, emitterEdges: 12, fieldEdges: 11,
+  mybatisEdges: 10, vuexEdges: 8, closureCollEdges: 6, piniaEdges: 5, renderEdges: 4,
+};
+function synthPassCostHint(name: string): number {
+  return SYNTH_PASS_COST_HINT[name] ?? 0;
+}
+
 /** Fixed non-registry steps: goMethodContains, goImplements, dedupe-merge, insertMergedEdges. */
 const FIXED_SYNTH_STEPS = 4;
 export const SYNTH_PROGRESS_STEPS = SYNTH_PASSES.length + FIXED_SYNTH_STEPS;
@@ -5806,7 +5838,7 @@ export async function synthesizeCallbackEdges(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }> } | null,
+  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -5828,7 +5860,7 @@ async function synthesizeWith(
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
   // Null/omitted → the sequential path, byte-identical to the pool path.
-  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }> } | null,
+  pool?: { runSynthPass(name: string): Promise<{ edges: Edge[]; ms: number; skips?: Array<[string, string, string]> }>; readonly size?: number } | null,
   // WAL-valve writer backstop (WalCheckpointValve.backpressure), called at
   // pool-idle points in the edge-insert loops below — the passes themselves
   // only read; every write in this function happens with the pool idle.
@@ -5968,30 +6000,41 @@ async function synthesizeWith(
   const graphNodes = queries.getNodeAndEdgeCount().nodes;
 
   if (pool && gatedIn.length > 1) {
-    await Promise.all(
-      gatedIn.map(async (i) => {
-        const pass = SYNTH_PASSES[i]!;
-        try {
-          const out = await pool.runSynthPass(pass.name);
-          passEdges[i] = out.edges;
-          if (out.skips) workerSkips.push(...out.skips);
-          markPass(pass.name, out.ms);
-        } catch (err) {
-          if (graphNodes > MAIN_RETRY_MAX_NODES) {
-            // Worker died at a scale where the main-thread retry is a process
-            // OOM risk: skip the pass, keep the index alive, and say so.
-            console.error(
-              `[synthesis] pass '${pass.name}' failed on a worker at ${graphNodes} nodes — skipped (edges from this pass are absent): ${err instanceof Error ? err.message : String(err)}`
-            );
-            markPass(`${pass.name} (skipped at scale)`, 0);
-            return;
-          }
-          // Worker-side failure (crash, OOM, unknown pass after a version
-          // mismatch): retry this one pass on the main thread.
-          await runPassOnMain(i);
+    const runPooled = async (i: number): Promise<void> => {
+      const pass = SYNTH_PASSES[i]!;
+      try {
+        const out = await pool.runSynthPass(pass.name);
+        passEdges[i] = out.edges;
+        if (out.skips) workerSkips.push(...out.skips);
+        markPass(pass.name, out.ms);
+      } catch (err) {
+        if (graphNodes > MAIN_RETRY_MAX_NODES) {
+          // Worker died at a scale where the main-thread retry is a process
+          // OOM risk: skip the pass, keep the index alive, and say so.
+          console.error(
+            `[synthesis] pass '${pass.name}' failed on a worker at ${graphNodes} nodes — skipped (edges from this pass are absent): ${err instanceof Error ? err.message : String(err)}`
+          );
+          markPass(`${pass.name} (skipped at scale)`, 0);
+          return;
         }
-      })
+        // Worker-side failure (crash, OOM, unknown pass after a version
+        // mismatch): retry this one pass on the main thread.
+        await runPassOnMain(i);
+      }
+    };
+    // One pass per worker at a time, heaviest first. Handing every pass out
+    // at once split them by count, and a worker interleaves what it holds, so
+    // a heavy pass finished only with its worker's whole share: on vscode the
+    // 6s registry pass ended ~16s in. Pulling keeps workers busy until the
+    // queue drains. Edges merge by registry index below, so order is free.
+    const lanes = Math.min(pool.size ?? gatedIn.length, gatedIn.length);
+    const queue = [...gatedIn].sort(
+      (a, b) => synthPassCostHint(SYNTH_PASSES[b]!.name) - synthPassCostHint(SYNTH_PASSES[a]!.name) || a - b
     );
+    const lane = async (): Promise<void> => {
+      for (let i = queue.shift(); i !== undefined; i = queue.shift()) await runPooled(i);
+    };
+    await Promise.all(Array.from({ length: lanes }, lane));
   } else {
     for (const i of gatedIn) {
       await runPassOnMain(i);
