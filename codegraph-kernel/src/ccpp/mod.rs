@@ -948,7 +948,8 @@ impl<'t> Walker<'t> {
 
     /// When `kids[d]` declares a function whose `{` follows, extract it and
     /// return the index after its body. The body ends at the first `}` in
-    /// column 0 outside a multi-line macro, or earlier where a column-0
+    /// column 0 outside a multi-line macro, at an indented `}` the next
+    /// column-0 item follows (netlib style), or earlier where a column-0
     /// non-directive starts the next file-level item.
     /// The source text decides the `}` because a statement the parser left
     /// open can hold the rest of the file.
@@ -978,6 +979,10 @@ impl<'t> Walker<'t> {
             .map(|(o, _)| open + o)
             .find(|&nl| !self.src[..nl].trim_end_matches('\r').ends_with('\\'))
             .map(|nl| nl + 1);
+        let close = match (close, indented_close_before_next_item(self.src, open)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let mut last = d + 1;
         let mut j = d + 2;
         while j < kids.len() {
@@ -1030,6 +1035,48 @@ impl<'t> Walker<'t> {
 }
 
 // --- free helpers ------------------------------------------------------------
+
+/// Netlib-style C closes a body with an indented `}`, so there is no column-0
+/// `}` to find. Returns the byte of the last `}`-only line before the next
+/// column-0 item, when only directives, comments, blank lines and bare
+/// specifier words (` static int`) sit between the two. A column-0 label or a
+/// macro continuation line does not start an item.
+fn indented_close_before_next_item(src: &str, open: usize) -> Option<usize> {
+    let mut brace: Option<usize> = None;
+    let mut in_comment = false;
+    let mut continued = false;
+    let mut at = open + src[open..].find('\n')? + 1;
+    while at < src.len() {
+        let end = src[at..].find('\n').map_or(src.len(), |o| at + o);
+        let line = src[at..end].trim_end_matches('\r');
+        let was_continued = continued;
+        continued = line.ends_with('\\');
+        let trimmed = line.trim();
+        if in_comment {
+            in_comment = !trimmed.contains("*/");
+        } else if was_continued || trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+        } else if trimmed.starts_with("/*") {
+            in_comment = !trimmed.contains("*/");
+        } else if trimmed == "}" {
+            brace = Some(at + line.find('}')?);
+        } else if brace.is_some()
+            && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '*' || c.is_whitespace())
+            && !line.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        {
+        } else if brace.is_some() && line.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            let word_end = line.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(line.len());
+            let rest = line[word_end..].trim_start();
+            if !(rest.starts_with(':') && !rest.starts_with("::")) {
+                return brace;
+            }
+            brace = None;
+        } else {
+            brace = None;
+        }
+        at = end + 1;
+    }
+    None
+}
 
 /// A definition whose declarator, under pointer / reference / attribute
 /// wrappers, is a function_declarator.
