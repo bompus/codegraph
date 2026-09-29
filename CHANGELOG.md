@@ -205,6 +205,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Claude Code connects to CodeGraph without waiting on the shared daemon. It sends a `server/discover` probe before `initialize` and holds the handshake until it gets an answer. The probe went to the daemon, so every session start waited on the daemon connection, and when the daemon was unavailable the probe waited about 6 s and failed with an internal error. It is now answered at once with method-not-found, the reply that tells a client to use `initialize`. Measured: 6.2 s to 0.1 s with the daemon unavailable, 207 ms to 84 ms when a new daemon starts.
 - A project queried by `projectPath` is now released after 10 minutes without a query. The MCP server that opened it holds that project's writer lock while it stays open, so a long-running daemon for one checkout could keep another checkout's own daemon from starting until the daemon exited. The next query reopens the project and catches up. `CODEGRAPH_PROJECT_IDLE_RELEASE_MS` changes the delay; `0` keeps projects open as before.
 - A search written as separate words now finds the identifier they spell. `add url rule` ranks `add_url_rule` first instead of sixth behind the one-word `add` functions, and `svelte map` finds the `SvelteMap` class, which it missed entirely. A one-word query also finds its base form: `mounting` finds `mount`.
 
