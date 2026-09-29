@@ -82,6 +82,7 @@ The public API surface is `src/index.ts`, which re-exports types and the `CodeGr
 - `src/context/` and `src/search/` format and retrieve context; `src/sync/` owns watching and git-hook helpers.
 - `src/mcp/` defines the MCP server and its agent-facing instructions; `src/installer/` defines host integrations.
 - `src/bin/codegraph.ts` is the CLI. `src/ui/` is the terminal UI; `src/ui-server/` and `ui/` implement the browser viewer and component package.
+- The browser viewer is not released yet: `codegraph ui` / `web` are refused and hidden from `--help` unless `CODEGRAPH_UI=1` is set (`src/bin/viewer-gate.ts`). Viewer changelog entries wait in `docs/viewer-launch-changelog.md`, not under `[Unreleased]`.
 
 ### NodeKind / EdgeKind
 
