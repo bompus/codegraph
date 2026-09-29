@@ -323,10 +323,7 @@ fn member_call_at(at: &str, name: &str) -> Option<bool> {
     let b = at.as_bytes();
     let ident = |i: Option<usize>| i.and_then(|i| b.get(i)).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
     let blank = |i: usize| matches!(b.get(i), Some(b' ' | b'\t'));
-    let mut from = 0;
-    while let Some(off) = at[from..].find(name) {
-        let i = from + off;
-        from = i + 1;
+    for i in occurrences(at, name, 0) {
         if ident(i.checked_sub(1)) || ident(Some(i + name.len())) {
             continue;
         }
@@ -399,5 +396,17 @@ pub(super) fn package_name_of(source: &str) -> &str {
         (true, Some(scope), Some(pkg)) => &source[..scope.len() + 1 + pkg.len()],
         (_, Some(first), _) => first,
         _ => source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_call_at_steps_over_multibyte_names() {
+        assert_eq!(member_call_at("数据.数据()", "数据"), Some(false));
+        assert_eq!(member_call_at("this.数据()", "数据"), Some(true));
+        assert_eq!(member_call_at("x数据数据()", "数据"), None);
     }
 }

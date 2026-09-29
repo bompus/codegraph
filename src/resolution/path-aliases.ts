@@ -407,6 +407,9 @@ export function applyAliases(
   for (const pat of aliases.patterns) {
     if (!importPath.startsWith(pat.prefix)) continue;
     if (pat.suffix && !importPath.endsWith(pat.suffix)) continue;
+    // `foo*oo` does not match `foo`: the literals may not overlap
+    // (TypeScript's isPatternMatch).
+    if (pat.hasWildcard && importPath.length < pat.prefix.length + pat.suffix.length) continue;
 
     let captured = '';
     if (pat.hasWildcard) {

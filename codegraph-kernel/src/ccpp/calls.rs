@@ -247,6 +247,7 @@ impl<'t> Walker<'t> {
     }
 
     pub(super) fn cpp_array_arities(list: Node<'t>, dimensions: &[Option<usize>], arities: &mut Vec<usize>) {
+        stack_guard!();
         let entries: Vec<_> = (0..list.named_child_count()).filter_map(|j| list.named_child(j))
             .filter(|n| n.kind() != "comment").collect();
         let mut elided = false;

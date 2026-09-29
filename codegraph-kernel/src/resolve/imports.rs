@@ -125,6 +125,11 @@ impl KernelResolver {
             if !pat.suffix.is_empty() && !import_path.ends_with(&pat.suffix) {
                 continue;
             }
+            // `foo*oo` does not match `foo`: the literals may not overlap
+            // (TypeScript's isPatternMatch), and slicing them would panic.
+            if pat.has_wildcard && import_path.len() < pat.prefix.len() + pat.suffix.len() {
+                continue;
+            }
             let captured = if pat.has_wildcard {
                 &import_path[pat.prefix.len()..import_path.len() - pat.suffix.len()]
             } else if import_path != pat.prefix {

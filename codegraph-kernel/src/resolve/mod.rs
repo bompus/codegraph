@@ -776,7 +776,7 @@ impl KernelResolver {
         let mut out = Vec::with_capacity(refs.len());
         for r in refs {
             let t0 = PROF_ON.then(std::time::Instant::now);
-            let o = match self.resolve_ref(&r) {
+            let o = match per_ref(&r, ResolveOutcome::unresolved(), || self.resolve_ref(&r)) {
                 Ok(o) => o,
                 Err(Halt::Napi(e)) => return Err(e),
             };
@@ -796,7 +796,7 @@ impl KernelResolver {
     /// `context.resolveImport` (expo-modules' imported-receiver lookup).
     #[napi]
     pub fn resolve_via_import_ref(&mut self, r: ResolveRefIn) -> Result<ResolveOutcome> {
-        match self.resolve_via_import_member(&r) {
+        match per_ref(&r, None, || self.resolve_via_import_member(&r)) {
             Ok(Some(c)) => Ok(ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None)),
             Ok(None) => Ok(ResolveOutcome::unresolved()),
             Err(Halt::Napi(e)) => Err(e),
@@ -813,7 +813,7 @@ impl KernelResolver {
                 out.push(ResolveOutcome::unresolved());
                 continue;
             }
-            out.push(match self.match_deferred_this_member(&r) {
+            out.push(match per_ref(&r, None, || self.match_deferred_this_member(&r)) {
                 Ok(Some(c)) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
                 Ok(None) => ResolveOutcome::unresolved(),
                 Err(Halt::Napi(e)) => return Err(e),
@@ -834,15 +834,18 @@ impl KernelResolver {
                 out.push(ResolveOutcome::unresolved());
                 continue;
             }
-            let hit = if r.language == "php" && php_prop_shape_re().is_match(&r.reference_name) {
-                self.match_method_call_free(&r)
-            } else if r.language == "rust" {
-                self.match_scoped_call_chain(&r)
-            } else {
-                self.match_dotted_call_chain(&r)
-            };
+            let hit = per_ref(&r, None, || {
+                let c = if r.language == "php" && php_prop_shape_re().is_match(&r.reference_name) {
+                    self.match_method_call_free(&r)?
+                } else if r.language == "rust" {
+                    self.match_scoped_call_chain(&r)?
+                } else {
+                    self.match_dotted_call_chain(&r)?
+                };
+                Ok(self.gate_language(c, &r))
+            });
             out.push(match hit {
-                Ok(c) => match self.gate_language(c, &r) {
+                Ok(c) => match c {
                     Some(c) => ResolveOutcome::resolved(&c.node, c.confidence, c.resolved_by, true, None),
                     None => ResolveOutcome::unresolved(),
                 },
@@ -853,6 +856,25 @@ impl KernelResolver {
     }
 }
 
+
+/// One ref's resolution with its panics caught. A panic here is a resolver
+/// bug, not a ref it declines, but unwinding across the N-API boundary aborts
+/// the whole indexer; caught, the ref settles `fallback` (unresolved) and the
+/// rest of the batch continues, as `walk_file` (lib.rs) does for extraction.
+fn per_ref<T>(r: &ResolveRefIn, fallback: T, f: impl FnOnce() -> Res<T>) -> Res<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let msg = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        eprintln!(
+            "[CodeGraph] kernel resolver panicked on {} ({}:{}); left unresolved: {msg}",
+            r.reference_name, r.file_path, r.line
+        );
+        Ok(fallback)
+    })
+}
 
 impl KernelResolver {
     /// A name-parameterized regex with no Affix split form (a pattern that
