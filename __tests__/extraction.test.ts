@@ -3889,6 +3889,41 @@ set_timer(int which)
       const report = result.unresolvedReferences.find((r) => r.referenceName === 'report')!;
       expect(report.fromNodeId).toBe(setInterrupt.id);
     });
+
+    it('ends a rebuilt netlib-style function at its indented closing brace', () => {
+      // netlib code indents the closing \`}\` and the next item's specifiers,
+      // so no column-0 \`}\` ends the body before the next function's own.
+      const code = `
+#ifndef NO_HEX_FP
+static void
+gethex(int *sp)
+{
+#ifdef IEEE_Arith
+	if (*sp > 0) {
+#else
+	if (*sp < 0) {
+#endif
+		bump(sp);
+		}
+	release(sp);
+	}
+#endif /*!NO_HEX_FP}*/
+
+ static int
+dshift(int p2)
+{
+	int rv = shift(p2);
+	return rv;
+	}
+`;
+      const result = extractFromSource('dtoa.c', code);
+      const fns = result.nodes.filter((n) => n.kind === 'function');
+      expect(fns.map((n) => n.name).sort()).toEqual(['dshift', 'gethex']);
+      const gethex = fns.find((n) => n.name === 'gethex')!;
+      expect([gethex.startLine, gethex.endLine]).toEqual([3, 14]);
+      const shift = result.unresolvedReferences.find((r) => r.referenceName === 'shift')!;
+      expect(shift.fromNodeId).toBe(fns.find((n) => n.name === 'dshift')!.id);
+    });
   });
 
   describe('C definitions whose signature a macro supplies', () => {
