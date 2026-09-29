@@ -658,8 +658,8 @@ impl KernelResolver {
     ) -> Res<Option<String>> {
         let (method, cls) = if callee.contains("::") {
             let parts: Vec<&str> = callee.split("::").filter(|s| !s.is_empty()).collect();
-            let m = parts.last().copied().unwrap_or(callee);
-            let joined = parts[..parts.len() - 1].join("::");
+            let (m, owner) = parts.split_last().map_or((callee, &[][..]), |(m, owner)| (*m, owner));
+            let joined = owner.join("::");
             // `if (cls)` — '' is falsy, so `::x` falls to the function path.
             (m.to_string(), if joined.is_empty() { None } else { Some(joined) })
         } else {

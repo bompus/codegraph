@@ -506,6 +506,13 @@ It dispatches \`scripts/csv_search.py::run_p4\`.
 });
 
 describe('Code to Markdown Reference Extraction', () => {
+  it('keeps the whole .mdx extension of a path in a string', () => {
+    const code = `export const PAGE = 'docs/intro.mdx';\nexport const PLAIN = 'docs/intro.md';\n`;
+    const result = extractFromSource('src/pages.ts', code);
+    const names = result.unresolvedReferences.filter((r) => r.referenceKind === 'references').map((r) => r.referenceName);
+    expect(names).toEqual(expect.arrayContaining(['docs/intro.mdx', 'docs/intro.md']));
+  });
+
   it('should extract Markdown path references from code string literals', () => {
     const code = `
 export const GUIDE = '../docs/guide.md';

@@ -28,7 +28,7 @@ fn candidate_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)((?:\.{1,2}[\\/]+|[A-Za-z0-9_.@-]+[\\/]+|[\\/]+)?(?:[A-Za-z0-9_.@-]+[\\/]+)*[A-Za-z0-9_.@-]+\.(?:md|mdx|markdown)(?:\?[^'"`\s)>,;]*)?(?:#[^'"`\s)>,;]*)?)"#,
+            r#"(?i)((?:\.{1,2}[\\/]+|[A-Za-z0-9_.@-]+[\\/]+|[\\/]+)?(?:[A-Za-z0-9_.@-]+[\\/]+)*[A-Za-z0-9_.@-]+\.(?:mdx|markdown|md)(?:\?[^'"`\s)>,;]*)?(?:#[^'"`\s)>,;]*)?)"#,
         )
         .expect("markdown path candidate regex")
     })

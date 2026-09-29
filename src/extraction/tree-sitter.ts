@@ -7679,7 +7679,7 @@ function isMarkdownPathStringNode(nodeType: string): boolean {
 
 function extractMarkdownPathCandidates(text: string): Array<{ referenceName: string; column: number }> {
   const candidates: Array<{ referenceName: string; column: number }> = [];
-  const pattern = /((?:\.{1,2}[\\/]+|[A-Za-z0-9_.@-]+[\\/]+|[\\/]+)?(?:[A-Za-z0-9_.@-]+[\\/]+)*[A-Za-z0-9_.@-]+\.(?:md|mdx|markdown)(?:\?[^'"`\s)>,;]*)?(?:#[^'"`\s)>,;]*)?)/gi;
+  const pattern = /((?:\.{1,2}[\\/]+|[A-Za-z0-9_.@-]+[\\/]+|[\\/]+)?(?:[A-Za-z0-9_.@-]+[\\/]+)*[A-Za-z0-9_.@-]+\.(?:mdx|markdown|md)(?:\?[^'"`\s)>,;]*)?(?:#[^'"`\s)>,;]*)?)/gi;
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(text)) !== null) {
