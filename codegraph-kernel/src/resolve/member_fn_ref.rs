@@ -45,8 +45,17 @@ impl KernelResolver {
         if r.language == "go" {
             let typed = if receiver.contains('.') {
                 Some(self.match_go_field_chain_call(receiver, member, r)?)
-            } else if let Some(ty) = self.infer_local_receiver_type(receiver, r, false)? {
-                Some(self.resolve_method_on_type(&ty, member, r, 0.9, "function-ref", None)?)
+            } else if let Some(raw) = self.infer_local_receiver_type(receiver, r, true)? {
+                let raw = raw.trim_start_matches(['*', '&']);
+                if raw.contains('.') {
+                    // `pkg.Type` names that package's type, which only its
+                    // import can place; an external package has none here.
+                    Some(self.match_bound_type_member(raw, member, r)?)
+                } else if let Some(ty) = self.normalize_inferred_type_name(raw)? {
+                    Some(self.resolve_method_on_type(&ty, member, r, 0.9, "function-ref", None)?)
+                } else {
+                    Some(None)
+                }
             } else {
                 let types = self
                     .nodes_by_name(receiver)?
@@ -246,6 +255,27 @@ impl KernelResolver {
             .collect();
         if !own.is_empty() {
             return Ok(own);
+        }
+        // Python takes the first class along the C3 order that defines the
+        // name, so a later base's same-named method never competes.
+        if self.supertypes_complete {
+            if let Some(mro) = self.python_mro(cls, 0)?.filter(|m| m.len() > 1) {
+                for class in mro.iter().skip(1) {
+                    if self.python_class_assigns(class, member)? {
+                        return Ok(vec![class.clone()]);
+                    }
+                    let own: Vec<Arc<KNode>> = self
+                        .nodes_by_qualified_name(&format!("{}::{}", class.qualified_name, member))?
+                        .iter()
+                        .filter(|n| n.file_path == class.file_path)
+                        .cloned()
+                        .collect();
+                    if !own.is_empty() {
+                        return Ok(own);
+                    }
+                }
+                return Ok(Vec::new());
+            }
         }
         let mut out: Vec<Arc<KNode>> = Vec::new();
         for base in self.python_bases(cls, r)? {

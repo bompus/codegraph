@@ -263,6 +263,26 @@ impl KernelResolver {
             return Ok(None);
         }
         let holder = holders[0].clone();
+        if inner == "get" || inner == "getState" {
+            // The accessor at the call must still be the factory's parameter,
+            // the widest binding of its name inside the store: an action's
+            // own parameter or local of that name shadows it.
+            let bindings = self.bindings(&r.file_path)?;
+            let spans: Vec<i64> = bindings
+                .iter()
+                .filter(|b| {
+                    b.name == inner
+                        && b.scope_start <= r.line
+                        && r.line <= b.scope_end
+                        && b.scope_start >= holder.start_line
+                        && b.scope_end <= holder.end_line
+                })
+                .map(|b| b.scope_end - b.scope_start)
+                .collect();
+            if spans.iter().min() < spans.iter().max() {
+                return Ok(None);
+            }
+        }
         if selector {
             // Only a Zustand hook promises to return the selector's result:
             // `const useStore = create(...)` with `create` imported from zustand.

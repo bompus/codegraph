@@ -1205,11 +1205,10 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(goDot.status).toBe('resolved');
     expect(goDot.resolvedBy).toBe('instance-method');
     expect(goDot.confidence).toBe(0.85);
-    // dottedChain go bare-fallback: `nosuch` has no return type, so the
-    // method resolves by its bare name (exactName) — `Service::Run`.
+    // dottedChain go: `nosuch` has no known result type, so `Run` is not
+    // matched by its bare name.
     const goBare = at('nosuch().Run', 'main.go', 'calls');
-    expect(goBare.status).toBe('resolved');
-    expect(goBare.targetNodeId).toBe(nodeId('Run', 'main.go', 'method'));
+    expect(goBare.status).toBe('unresolved');
     // dottedChain (java): `J2.getK` returns `K` → `K::mymethod`.
     const javaDot = at('J2.getK().mymethod', 'src/K.java', 'calls');
     expect(javaDot.status).toBe('resolved');

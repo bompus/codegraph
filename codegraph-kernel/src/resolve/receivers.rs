@@ -398,8 +398,18 @@ impl KernelResolver {
             if line.is_empty() || utf16_len_exceeds(line, 10_000) {
                 return Ok(None);
             }
-            for re in &regexes {
-                if let Some(m1) = re.captures(line).and_then(|c| c.get(1)).map(|g| g.as_str()).filter(|s| !s.is_empty()) {
+            for (k, re) in regexes.iter().enumerate() {
+                let Some(caps) = re.captures(line) else { continue };
+                // A component-scoped receiver is never the function-local
+                // `var x = …` / `local.x = …` (or an argument) of its name.
+                if component_scoped
+                    && k < 3
+                    && re!(r"(?i)(?:(?-u:\b)var\s+|(?-u:\b)(?:local|arguments)\.)$")
+                        .is_match(&line[..caps.get(0).unwrap().start()])
+                {
+                    continue;
+                }
+                if let Some(m1) = caps.get(1).map(|g| g.as_str()).filter(|s| !s.is_empty()) {
                     if let Some(t) = this.normalize_inferred_type_name(m1)? {
                         return Ok(Some(if preserve { m1.to_string() } else { t }));
                     }
@@ -694,10 +704,35 @@ impl KernelResolver {
             });
             return Ok(hit.and_then(|n| n.return_type.clone()));
         }
+        // A bare Go call names a function of the caller's own package.
+        let dir = pos_dirname(&r.file_path);
         Ok(candidates
             .iter()
-            .find(|n| n.kind == "function")
+            .find(|n| n.kind == "function" && (r.language != "go" || pos_dirname(&n.file_path) == dir))
             .and_then(|n| n.return_type.clone()))
+    }
+
+    /// A Go package-level function value in the caller's package whose
+    /// literal spells its result type, `var f = func(…) *T { … }` (also
+    /// wrapped in `sync.OnceValue(…)`): `T` as written, and the variable,
+    /// whose file's imports place a `pkg.T`.
+    fn go_func_value_result_type(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<(String, Arc<KNode>)>> {
+        let dir = pos_dirname(&r.file_path);
+        let values: Vec<Arc<KNode>> = self
+            .nodes_by_name(name)?
+            .iter()
+            .filter(|n| n.language == "go" && n.kind == "variable" && pos_dirname(&n.file_path) == dir)
+            .cloned()
+            .collect();
+        let [value] = values.as_slice() else { return Ok(None) };
+        let literal = re!(
+            r"^=\s*(?:sync\.OnceValue\s*\(\s*)?func\s*\((?:[^()]|\([^()]*\))*\)\s*\*?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\{"
+        );
+        Ok(value
+            .signature
+            .as_deref()
+            .and_then(|sig| literal.captures(sig))
+            .map(|c| (c[1].to_string(), value.clone())))
     }
 
     /// cppClassExists — an aggregate type with this last `::` segment exists.
@@ -766,9 +801,9 @@ impl KernelResolver {
     }
 
     /// matchDottedCallChain — `Foo.getInstance().bar` factory/fluent chains,
-    /// Go's bare `New().Method`, and the objc/pascal convention arms
-    /// (#645/#608). Go's `f().m` with an unknown `f` falls back to `m`'s bare
-    /// name (exactName, then fuzzy).
+    /// Go's bare `New().Method` (or a same-package `var f = func() *T {…}`),
+    /// and the objc/pascal convention arms (#645/#608). Go's `f().m` with an
+    /// untyped `f` is a miss, never `m` by its bare name.
     pub(super) fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(m) = call_chain_re().captures(&r.reference_name) else {
             return Ok(None);
@@ -779,25 +814,23 @@ impl KernelResolver {
         let last_dot = inner.rfind('.');
         if last_dot.is_none() || last_dot == Some(0) {
             if r.language == "go" {
-                if let Some(ret) = self.lookup_callee_return_type(inner, r)? {
-                    let fqn = self.imported_fqn_of(&ret, r)?;
-                    return self.resolve_method_on_type(
-                        &ret,
-                        method,
-                        r,
-                        0.85,
-                        "instance-method",
-                        fqn.as_deref(),
-                    );
-                }
-                // A package-level variable holding a function value: its type
-                // is unrecoverable, so the method resolves by its bare name.
-                let mut bare = r.clone();
-                bare.reference_name = method.to_string();
-                if let Some(c) = self.match_by_exact_name(&bare)? {
-                    return Ok(Some(c));
-                }
-                return self.match_fuzzy(&bare);
+                let Some(ret) = self.lookup_callee_return_type(inner, r)? else {
+                    // A function value whose literal gives no result type
+                    // says nothing about what `m` is called on.
+                    return match self.go_func_value_result_type(inner, r)? {
+                        Some((ty, value)) => self.match_bound_type_member(&ty, method, &r.clone().at(&value)),
+                        None => Ok(None),
+                    };
+                };
+                let fqn = self.imported_fqn_of(&ret, r)?;
+                return self.resolve_method_on_type(
+                    &ret,
+                    method,
+                    r,
+                    0.85,
+                    "instance-method",
+                    fqn.as_deref(),
+                );
             }
             if !CONSTRUCTS_VIA_BARE_CALL.contains(r.language.as_str())
                 || !inner.as_bytes()[0].is_ascii_uppercase()
