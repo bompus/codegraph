@@ -1455,6 +1455,9 @@ export class TreeSitterExtractor {
       // has to Read the file to find the actual implementation.
       const anonBody = this.findAnonymousClassBody(node);
       if (anonBody) {
+        // `new Base(build()) { … }`: the arguments run in the enclosing scope.
+        const args = getChildByField(node, 'arguments');
+        if (args) this.visitNode(args);
         this.extractAnonymousClass(node, anonBody);
         skipChildren = true;
       }
@@ -6121,6 +6124,8 @@ export class TreeSitterExtractor {
         // methods to the overrides — same rationale as in visitNode.
         const anonBody = this.findAnonymousClassBody(node);
         if (anonBody) {
+          const args = getChildByField(node, 'arguments');
+          if (args) visitForCallsAndStructure(args);
           this.extractAnonymousClass(node, anonBody);
           return;
         }

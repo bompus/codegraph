@@ -370,6 +370,10 @@ impl<'t> Walker<'t> {
         } else if kind == "object_creation_expression" {
             self.extract_instantiation(node);
             if let Some(anon_body) = find_anonymous_class_body(node) {
+                // `new Base(build()) { … }`: the arguments run in the enclosing scope.
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    self.visit_node(args);
+                }
                 self.extract_anonymous_class(node, anon_body);
                 skip_children = true;
             }
@@ -400,6 +404,9 @@ impl<'t> Walker<'t> {
         } else if kind == "object_creation_expression" {
             self.extract_instantiation(node);
             if let Some(anon_body) = find_anonymous_class_body(node) {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    self.visit_for_calls_and_structure(args);
+                }
                 self.extract_anonymous_class(node, anon_body);
                 return;
             }
