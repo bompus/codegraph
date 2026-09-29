@@ -37,7 +37,7 @@ import { tanstackLinkEdges } from './tanstack-router-synthesizer';
 import { vueRouterLinkEdges } from './vue-router-synthesizer';
 import { svelteKitLinkEdges, svelteKitPageComponentEdges } from './sveltekit-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
-import { crossTierEdges, endpointNodesFor } from './tier-synthesizer';
+import { crossTierEdges, endpointNodesFor, testRequestEdges } from './tier-synthesizer';
 import { enclosingFn, enclosingValue, makeLineAt, matchBalanced } from './synth-utils';
 import { rnModuleMethods } from './frameworks/react-native';
 import { resolveImportPath } from './import-resolver';
@@ -5698,6 +5698,10 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   // Before the in-process emitter pass: the same (source, target) pair
   // keeps the more specific edge — the one that says which tier it crosses.
   { name: 'tierEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => crossTierEdges(c, y) },
+  // A Spring / Laravel test's request (`mockMvc.perform(post("/x"))`,
+  // `$this->postJson('api/x')`) onto the route it reaches, so the handler
+  // counts as tested.
+  { name: 'testRequestEdges', gate: (has) => has('java', 'kotlin', 'php'), run: (_q, c, y) => testRequestEdges(c, y) },
   { name: 'emitterEdges', gate: ALWAYS, run: (_q, c, y) => eventEmitterEdges(c, y) },
   { name: 'windowMessageEdges', gate: (has) => has(...JS_FAMILY), run: (_q, c, y) => windowMessageEdges(c, y) },
   { name: 'renderEdges', gate: ALWAYS, run: (q, c, y) => reactRenderEdges(q, c, y) },

@@ -137,6 +137,8 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 
 ## Fixes — Steps — what a call does, and when
 
+- **A server-rendered endpoint's Steps picture shows how it answers.** A Spring MVC handler answers by what it returns: a view name, a constant holding one, `"redirect:/owners/" + id`, a `ModelAndView` or a `RedirectView`. Each is now a reply, a render (`200`) or a redirect (`302`), under the condition it's returned in. petclinic's `POST /owners/new` draws the form re-rendered `WHEN result.hasErrors()` and the redirect otherwise. A Laravel controller's `view(…)`, `redirect(…)`, `redirect()->back()`, `back()`, `to_route(…)` and `response()->json(…)` are replies too, so BookStack's book page draws the page it renders beside its `404` and its old-slug redirect. PHP's own programming-error exceptions (`InvalidArgumentException`, `LogicException`, …) thrown deep in a helper are no longer drawn as one of the endpoint's answers.
+
 - **A handler called from under a binding says what it passes.** A press that runs `tryCatchSync(onClosePress)` drew a box for the wrapper and stopped — leaving the one thing a reader asks ("what is being wrapped?") unsaid, even though every other call-shaped site already prints its arguments. The panel and tooltip now say `tryCatchSync(onClosePress)` — the argument is the answer.
 
 - **A step the walk stopped at keeps its whole name.** A boundary — another screen, or a cap the walk hit — ends its name with an ellipsis by design, but the box was not sized for it, so a longer name lost its last letters instead (`/scan-to-verif…` for `/scan-to-verify …`). The anchor's start mark clipped a long path the same way (`/sheets/forgot-passw…`). The box now makes room for both.
@@ -160,6 +162,8 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 - **Every call now says when it happens.** In `codegraph ui`, a symbol's callee and caller rails and the Flow strip's connectors carry the branch conditions the call site sits under — `when !isUploading && isCollected` — and `codegraph_explore`'s Flow section prints the same on each hop (`↓ calls (when isCollected)`). The conditions come from the `if` / `else` / ternary / `switch` / `&&` branches around the call, the early returns before it (`if (busy) return` reads as `!busy`), and Swift's `guard`; an inline callback inherits the conditions of the place it is defined. Read from the source as it is now, never stored: nothing about your index changes. TypeScript, JavaScript and Swift today.
 
 ## Fixes — Symbols, tests and the viewer
+
+- **The Map opens a Maven or Gradle project on its packages.** A Java project keeps every file under `src/main/java/org/<company>/<app>/`, and those folders hold nothing but the next one, so the Map drew the whole program as one `src/main/java/org` box and no grouping option reached further. A folder with one subfolder and no files of its own no longer counts as a level: petclinic opens on `owner`, `vet`, `model` and `system`, each labelled `src/main/java/…/petclinic/owner`, with the full path on hover.
 
 - In `codegraph ui`, routes whose handlers live in more than 60 different files are all linked to their handler, instead of the later ones showing "not in the index". (#1975)
 

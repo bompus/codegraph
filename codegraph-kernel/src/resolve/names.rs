@@ -290,6 +290,34 @@ impl KernelResolver {
         self.is_receiver_less_call(r)
     }
 
+    /// isBarePhpCall (name-matcher.ts): a PHP `calls` ref written without a
+    /// receiver — `redirect($url)`, `view('books.show')` — rather than
+    /// `$this->redirect()` / `Foo::view()`. PHP has no implicit `$this`, so
+    /// such a call is only ever a function. PHP refs record the column of
+    /// the call expression, so a bare call is one whose text at that column
+    /// is the name itself (after an optional `\` for a qualified function).
+    pub(super) fn is_bare_php_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "php" || r.reference_kind != "calls" {
+            return Ok(false);
+        }
+        if r.reference_name.is_empty() || !r.reference_name.bytes().all(is_word_byte) {
+            return Ok(false);
+        }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(line) = lines.get((r.line - 1) as usize) else { return Ok(false) };
+        let col = r.column as usize;
+        let at = if js_slice(line, col).starts_with('\\') { col + 1 } else { col };
+        let is_call = js_slice(line, at)
+            .strip_prefix(r.reference_name.as_str())
+            .is_some_and(|rest| bare_call_opener_re().is_match(rest));
+        if !is_call {
+            return Ok(false);
+        }
+        // `$obj->name(` / `Foo::name(` / `$obj?->name(`, should a column ever land on the name.
+        let before = js_prefix(line, at).trim_end();
+        Ok(!(before.ends_with('>') || before.ends_with(':')))
+    }
+
     fn is_receiver_less_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.reference_kind != "calls" {
             return Ok(false);
@@ -478,6 +506,7 @@ impl KernelResolver {
         }
         let bare_js = self.is_bare_js_call(r)?;
         let bare_go = self.is_bare_go_call(r)?;
+        let bare_php = self.is_bare_php_call(r)?;
         if bare_js {
             if self.is_param_shadowed(r)? {
                 return Ok(None);
@@ -530,6 +559,8 @@ impl KernelResolver {
         }
         // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
         candidates.retain(|n| !((bare_js || bare_go) && n.kind == "method"));
+        // A bare PHP call is a function call: nothing else is callable without a receiver.
+        candidates.retain(|n| !(bare_php && n.kind != "function"));
         // A C/C++ `field` is reachable only through a receiver — `s.f`,
         // `p->f`, `T::f` — which the extractor encodes as a dotted or
         // `::`-qualified ref, so a bare name can never mean one. C++ keeps
@@ -661,6 +692,8 @@ impl KernelResolver {
                             Some(r.line),
                         )?));
             let bare_decline = bare_decline || (only.kind == "method" && self.is_bare_go_call(r)?);
+            // Fuzzy is case-insensitive, so it may find the class `View` for `view(…)`.
+            let bare_decline = bare_decline || (only.kind != "function" && self.is_bare_php_call(r)?);
             let shadowed = if only.file_path != r.file_path {
                 self.is_shadowed_import_name(r)?
             } else {
