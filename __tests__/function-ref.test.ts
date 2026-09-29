@@ -1267,6 +1267,56 @@ def direct(obj: Store):
     } finally { cg.close(); }
   });
 
+  it('PYTHON: docstrings, call continuations and wrapped or generic bases do not hide a receiver type', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-lines-'));
+    fs.writeFileSync(path.join(tmpDir, 'main.py'), `class Store:
+    def fetch(self):
+        return 1
+class Wrapped(
+    Store,
+):
+    def wrapped(self, pool):
+        pool.submit(self.fetch)
+class Generic(Store[int]):
+    def generic(self, pool):
+        pool.submit(self.fetch)
+class Consumer:
+    """Consumes a store.
+
+    Attributes:
+        store: The backing store.
+    """
+    def __init__(self, store: Store):
+        self.store = store
+    def attribute_doc(self, pool):
+        pool.submit(self.store.fetch)
+def log(**kw):
+    pass
+def param_doc(obj: Store, xs):
+    """Args:
+        obj: The store to read.
+    """
+    return map(obj.fetch, xs)
+def keyword_line(obj: Store):
+    log(
+        obj=obj,
+    )
+    return partial(obj.fetch, 1)
+def bracketed_reassignment(obj: Store, pool):
+    obj = (
+        42
+    )
+    pool.submit(obj.fetch)
+`);
+    const cg = CodeGraph.initSync(tmpDir);
+    try {
+      await cg.indexAll();
+      expect(sourceNames(cg, fnRefEdgesInto(cg, 'fetch'))).toEqual([
+        'attribute_doc', 'generic', 'keyword_line', 'param_doc', 'wrapped',
+      ]);
+    } finally { cg.close(); }
+  });
+
   it('#1820: Go receiver types disambiguate method values and reject external fields', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-go-scope-'));
     fs.writeFileSync(path.join(tmpDir, 'main.go'), `package demo
