@@ -85,15 +85,15 @@ describe('cross-language name resolution (#1986)', () => {
   it('requires ABI evidence for free functions outside the native family', async () => {
     await index({
       'export.go': 'package main\nimport "C"\n//export StopGo\nfunc StopGo() {}\n',
-      'export.rs': '#[no_mangle]\npub extern "C" fn stop_rust() {}\n',
-      'Native.swift': 'func stopNative() {\n StopGo()\n stop_rust()\n}',
+      'export.rs': '#[no_mangle]\npub extern "C" fn stop_rust() {}\n#[no_mangle]\npub unsafe extern "C" fn stop_unsafe() {}\n',
+      'Native.swift': 'func stopNative() {\n StopGo()\n stop_rust()\n stop_unsafe()\n}',
       'ordinary.py': 'def stop_python():\n    return 1\n',
       'Wrong.swift': 'func wrongNative() { stop_python() }',
       'cfunc.c': 'int cfunc(void) { return 1; }',
       'call.go': 'package main\n/* int cfunc(void); */\nimport "C"\nfunc useC() { C.cfunc() }',
       'wrong.py': 'def wrongC():\n    return cfunc()\n',
     });
-    expect(targets('stopNative')).toEqual(expect.arrayContaining(['StopGo', 'stop_rust']));
+    expect(targets('stopNative')).toEqual(expect.arrayContaining(['StopGo', 'stop_rust', 'stop_unsafe']));
     expect(targets('wrongNative')).toEqual([]);
     expect(targets('wrongC')).toEqual([]);
   });

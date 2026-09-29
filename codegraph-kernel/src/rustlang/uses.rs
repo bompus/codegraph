@@ -24,7 +24,9 @@ impl<'t> Walker<'t> {
     /// `use x::*;` (use_wildcard) → hook returns null → nothing at all.
     pub(super) fn extract_import(&mut self, node: Node<'t>) {
         let use_arg = named_kids(node)
-            .find(|c| matches!(c.kind(), "scoped_use_list" | "scoped_identifier" | "use_list" | "identifier"));
+            .find(|c| {
+                matches!(c.kind(), "scoped_use_list" | "scoped_identifier" | "use_list" | "identifier" | "use_as_clause")
+            });
         let Some(use_arg) = use_arg else { return };
 
         let module_name = self.root_module(use_arg);
@@ -37,7 +39,8 @@ impl<'t> Walker<'t> {
         );
         let parent = self.top_row();
         let imports_kind = crate::buffers::EDGE_IMPORTS;
-        if !module_name.is_empty() {
+        // `crate`, `self` and `super` name this crate, not a dependency.
+        if !module_name.is_empty() && !matches!(module_name.as_str(), "crate" | "self" | "super") {
             self.push_ref_at(parent, &module_name, imports_kind, node);
         }
         self.emit_use_binding_refs(node, parent);
@@ -203,6 +206,11 @@ impl<'t> Walker<'t> {
                 continue;
             }
             let exported = is_pub && local != "*";
+            // A name brought in by `use` can be passed as a callback
+            // (`register(handler)`), so the fn-ref flush must admit it.
+            if local != "*" {
+                self.imported_names.insert(local.clone());
+            }
             let (name_ref, spec_ref, target_ref) = (
                 self.arena.put(&local),
                 self.arena.put(&spec),

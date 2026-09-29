@@ -548,10 +548,12 @@ impl<'t> Walker<'t> {
     fn extract_variable(&mut self, node: Node<'t>) {
         let docstring = preceding_docstring(node, self.src);
         let name_field = node.child_by_field_name("name");
+        let value = node.child_by_field_name("value");
         let mut declared: Option<(u32, String)> = None;
         for i in 0..node.named_child_count() {
             let Some(child) = node.named_child(i) else { continue };
-            if child.kind() != "identifier" {
+            // `const MAX: u32 = OTHER` reads OTHER; it declares nothing.
+            if child.kind() != "identifier" || value.is_some_and(|v| v.id() == child.id()) {
                 continue;
             }
             let name = self.text(child).to_string();
@@ -578,7 +580,7 @@ impl<'t> Walker<'t> {
         // `static REGISTRY: Lazy<T> = Lazy::new(|| build())` dropped every call
         // inside the initializer, so a handler table or a lazily-built
         // singleton linked to nothing.
-        if let Some(value) = node.child_by_field_name("value") {
+        if let Some(value) = value {
             match declared {
                 Some((row, name)) => {
                     self.stack.push(Scope { row, kind: "variable", name });

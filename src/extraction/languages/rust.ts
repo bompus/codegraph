@@ -163,11 +163,15 @@ export const rustExtractor: LanguageExtractor = {
       c.type === 'scoped_use_list' ||
       c.type === 'scoped_identifier' ||
       c.type === 'use_list' ||
-      c.type === 'identifier'
+      c.type === 'identifier' ||
+      c.type === 'use_as_clause'
     );
 
     if (useArg) {
-      return { moduleName: getRootModule(useArg), signature: importText };
+      const moduleName = getRootModule(useArg);
+      // `crate`, `self` and `super` name this crate, not a dependency.
+      const handledRefs = moduleName === 'crate' || moduleName === 'self' || moduleName === 'super';
+      return { moduleName, signature: importText, handledRefs };
     }
     return null;
   },
