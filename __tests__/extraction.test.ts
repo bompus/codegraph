@@ -2012,6 +2012,29 @@ public class Bar {
     expect(cls?.qualifiedName).toBe('Bar');
   });
 
+  it('keeps the calls in an anonymous class constructor\'s arguments on the enclosing method', () => {
+    const code = `
+class Base { Base(int x) {} void run() {} }
+class Helper {}
+class App {
+  static int build() { return 1; }
+  Base make() {
+    return new Base(build()) { void run() {} };
+  }
+  Object make3() {
+    return new Base(new Helper().hashCode()) { void run() {} };
+  }
+}
+`;
+    const result = extractFromSource('App.java', code);
+    const method = (name: string) => result.nodes.find((n) => n.kind === 'method' && n.name === name)!;
+    const refs = (from: string, kind: string) => result.unresolvedReferences
+      .filter((r) => r.fromNodeId === method(from).id && r.referenceKind === kind)
+      .map((r) => r.referenceName);
+    expect(refs('make', 'calls')).toContain('build');
+    expect(refs('make3', 'instantiates')).toEqual(expect.arrayContaining(['Base', 'Helper']));
+  });
+
   it('extracts anonymous-class overrides from `new T() { ... }`', () => {
     // The pattern that breaks the trace through `strategy.foo()` in
     // libraries like guava's Splitter: the lambda-returned anonymous
