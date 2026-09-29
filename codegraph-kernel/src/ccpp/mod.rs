@@ -1016,9 +1016,11 @@ impl<'t> Walker<'t> {
         };
         let row = self.create_node("function", &name, start, extra)?;
         self.emit_declarator_param_bindings(fd, (self.line_of(start), end.0));
-        self.stack.push(Scope { row, kind: "function", name });
+        self.stack.push(Scope { row, kind: "function", name: name.clone() });
         for k in &kids[d + 2..=last.max(d + 1)] {
             if k.is_named() {
+                // create_node scoped only the first specifier; the body is these siblings.
+                self.value_scopes.push(ValueScope { row, node: *k, name: name.clone() });
                 self.visit_for_calls_and_structure(*k);
             }
         }

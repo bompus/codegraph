@@ -3890,6 +3890,31 @@ set_timer(int which)
       expect(report.fromNodeId).toBe(setInterrupt.id);
     });
 
+    it('a rebuilt function reads the file-level constants its body uses', () => {
+      const code = `
+static const int LIMIT = 10;
+#ifdef HAVE_SIGINTERRUPT
+static int
+set_interrupt(int sig, int flag)
+{
+#ifdef HAVE_SIGACTION
+    if (sigaction(sig, flag) < LIMIT) {
+#else
+    if (siginterrupt(sig, flag) < LIMIT) {
+#endif
+        return report(-1);
+    }
+    return LIMIT;
+}
+#endif
+`;
+      const result = extractFromSource('signal.c', code);
+      const setInterrupt = result.nodes.find((n) => n.kind === 'function' && n.name === 'set_interrupt')!;
+      const limit = result.nodes.find((n) => n.name === 'LIMIT')!;
+      const reads = result.edges.filter((e) => e.source === setInterrupt.id && e.metadata?.valueRef === true);
+      expect(reads.map((e) => e.target)).toEqual([limit.id]);
+    });
+
     it('ends a rebuilt netlib-style function at its indented closing brace', () => {
       // netlib code indents the closing \`}\` and the next item's specifiers,
       // so no column-0 \`}\` ends the body before the next function's own.

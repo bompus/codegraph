@@ -477,6 +477,32 @@ fn constructor_shape(signature: Option<&str>) -> Option<(String, usize, usize)> 
     Some((types.join(","), min, max))
 }
 
+/// `text` with the contents of its string and char literals turned to spaces,
+/// so a name inside `"TRACE(%d)"` is not read as a call. Offsets are kept.
+fn blank_literals(text: &str) -> String {
+    let mut out = text.as_bytes().to_vec();
+    let mut quote = None;
+    let mut k = 0;
+    while k < out.len() {
+        let c = out[k];
+        match quote {
+            None if c == b'"' || c == b'\'' => quote = Some(c),
+            None => {}
+            Some(q) if c == q => quote = None,
+            Some(_) => {
+                out[k] = b' ';
+                if c == b'\\' && k + 1 < out.len() {
+                    k += 1;
+                    out[k] = b' ';
+                }
+            }
+        }
+        k += 1;
+    }
+    // Every byte of a literal's contents was replaced, so the rest is intact UTF-8.
+    String::from_utf8(out).unwrap_or_default()
+}
+
 /// Does the body of the `#define NAME(` at `index` (continuation lines
 /// included) call `NAME`? A wrapper macro that calls its own name is how that
 /// function gets called and hides nothing.
@@ -488,7 +514,8 @@ fn calls_itself(lines: &[String], index: usize, name: &str) -> bool {
         text.push_str(&lines[j + 1]);
         j += 1;
     }
-    let body = &text[text.find('(').map_or(text.len(), |i| i + 1)..];
+    let body = blank_literals(&text[text.find('(').map_or(text.len(), |i| i + 1)..]);
+    let body = body.as_str();
     let b = body.as_bytes();
     let skip_ws = |mut k: usize| {
         while k < b.len() && b[k].is_ascii_whitespace() {
