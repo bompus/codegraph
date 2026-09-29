@@ -231,10 +231,24 @@ pub(super) fn rust_field_type_name(raw: &str) -> Option<String> {
 /// local-name → path map. `a::{b::{C, D}, E}` flattens one `{...}` level at
 /// a time; `x as y` aliases; globs (`*`) are skipped.
 pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::HashMap<String, String> {
+    /// Depth-first, on an explicit stack: brace nesting is unbounded input,
+    /// and a native stack overflow cannot be caught.
     pub(super) fn expand(spec: &str) -> Vec<String> {
-        let Some(open) = spec.find('{') else {
-            return vec![spec.trim().to_string()];
-        };
+        let mut out = Vec::new();
+        let mut pending = vec![spec.to_string()];
+        while let Some(spec) = pending.pop() {
+            match expand_first_group(&spec) {
+                Some(parts) => pending.extend(parts.into_iter().rev()),
+                None => out.push(spec.trim().to_string()),
+            }
+        }
+        out
+    }
+
+    /// Flattens the first `{...}` group into one spec per member, or `None`
+    /// when there is no group. An unclosed group yields no specs.
+    fn expand_first_group(spec: &str) -> Option<Vec<String>> {
+        let open = spec.find('{')?;
         let prefix = &spec[..open];
         let mut depth = 0i32;
         let mut close = -1i64;
@@ -250,7 +264,7 @@ pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::Hash
             }
         }
         if close < 0 {
-            return vec![];
+            return Some(vec![]);
         }
         let close = close as usize;
         let suffix = &spec[close + 1..];
@@ -272,10 +286,7 @@ pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::Hash
                 start = i + 1;
             }
         }
-        parts
-            .into_iter()
-            .flat_map(|p| expand(&format!("{}{}{}", prefix, p, suffix)))
-            .collect()
+        Some(parts.into_iter().map(|p| format!("{}{}{}", prefix, p, suffix)).collect())
     }
 
     let mut out = std::collections::HashMap::new();
@@ -1029,4 +1040,30 @@ pub(super) struct ExportWant {
     pub(super) is_namespace: bool,
     pub(super) exported_name: String,
     pub(super) member_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_rust_use_bindings;
+
+    #[test]
+    fn rust_use_groups_flatten_in_order() {
+        let uses = collect_rust_use_bindings("use a::{b::{C, D as Dee}, E};\n");
+        assert_eq!(uses.get("C").map(String::as_str), Some("a::b::C"));
+        assert_eq!(uses.get("Dee").map(String::as_str), Some("a::b::D"));
+        assert_eq!(uses.get("E").map(String::as_str), Some("a::E"));
+    }
+
+    #[test]
+    fn deeply_nested_rust_use_does_not_overflow_the_stack() {
+        let depth = 3000;
+        let src = format!("use {}leaf{};\n", "m::{".repeat(depth), "}".repeat(depth));
+        let path = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || collect_rust_use_bindings(&src).remove("leaf"))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(path, Some(format!("{}leaf", "m::".repeat(depth))));
+    }
 }

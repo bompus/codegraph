@@ -2,14 +2,14 @@
  * Native-kernel loader — finds, loads, and contract-verifies the
  * codegraph-kernel .node addon.
  *
- * The kernel is OPTIONAL everywhere. Every failure mode here (no binary for
- * this platform, dlopen error, ABI/kind-table mismatch) resolves to `null`
- * and the extraction path silently keeps using the wasm pipeline — a missing
- * or stale kernel must never break indexing, only skip the speedup. Set
- * CODEGRAPH_KERNEL_DEBUG=1 to see why a kernel didn't load.
+ * The kernel is the only parser. {@link getKernel} resolves every failure
+ * mode (no binary for this platform, dlopen error, ABI/kind-table mismatch)
+ * to `null` for fail-soft probes; parse-time callers use {@link requireKernel},
+ * whose error names each binary it found and why it was rejected. Set
+ * CODEGRAPH_KERNEL_DEBUG=1 to trace every candidate.
  *
- * Kill switch: CODEGRAPH_KERNEL=0 disables the kernel entirely (checked per
- * call so tests and embedders can flip it at runtime).
+ * CODEGRAPH_KERNEL=0 stops routing to the bespoke walkers and skips the cFnPtr
+ * sweep (checked per call); it does not stop the addon from loading.
  *
  * Search order:
  *   1. CODEGRAPH_KERNEL_PATH — explicit .node path (dev/testing override)
@@ -321,6 +321,8 @@ function debug(msg: string): void {
 let kernelLanguages: ReadonlySet<string> = new Set();
 /** undefined = not attempted yet; null = attempted and unavailable. */
 let cached: KernelModule | null | undefined;
+/** Binaries found but not usable on the last load attempt, with the reason. */
+let rejected: string[] = [];
 
 function candidatePaths(): string[] {
   const candidates: string[] = [];
@@ -343,32 +345,27 @@ function candidatePaths(): string[] {
  * Verify the binary speaks our wire contract: same ABI version and byte-equal
  * NodeKind/EdgeKind tables (kinds cross the boundary as indexes into these).
  */
-function verifyContract(mod: KernelModule, from: string): boolean {
-  const info = mod.contractInfo();
+/** Why the binary cannot be used, or null when it speaks our wire contract. */
+function contractMismatch(info: KernelContractInfo): string | null {
   if (info.abiVersion !== KERNEL_ABI_VERSION) {
-    debug(`${from}: ABI ${info.abiVersion} != expected ${KERNEL_ABI_VERSION} — ignoring kernel`);
-    return false;
+    return `ABI ${info.abiVersion} != expected ${KERNEL_ABI_VERSION}`;
   }
   const sameTable = (a: readonly string[], b: readonly string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
   if (!sameTable(info.nodeKinds, NODE_KINDS) || !sameTable(info.edgeKinds, EDGE_KINDS)) {
-    debug(`${from}: NodeKind/EdgeKind tables differ from src/types.ts — ignoring kernel`);
-    return false;
+    return 'NodeKind/EdgeKind tables differ from src/types.ts';
   }
-  return true;
+  return null;
 }
 
-/**
- * Load (once per process) and return the kernel module, or null when
- * unavailable. Fail-soft callers (feature probes, tests that skip without a
- * binary) use this; parse-time callers use {@link requireKernel}.
- */
 /** Thrown by {@link requireKernel} when no usable kernel binary was found. */
 export class KernelUnavailableError extends Error {
-  constructor(readonly searched: string[]) {
+  constructor(readonly searched: string[], readonly rejected: string[] = []) {
+    const what = `CodeGraph's native engine (codegraph-kernel.node for ${process.platform}-${process.arch})`;
     super(
-      `CodeGraph's native engine (codegraph-kernel.node for ${process.platform}-${process.arch}) was not found. ` +
-        `Looked in: ${searched.join(', ')}. ` +
+      (rejected.length
+        ? `${what} could not be used: ${rejected.join('; ')}. `
+        : `${what} was not found. Looked in: ${searched.join(', ')}. `) +
         `Install a release bundle for this platform, or build from source with \`npm run build:kernel\` (needs a Rust toolchain).`
     );
     this.name = 'KernelUnavailableError';
@@ -382,13 +379,23 @@ export class KernelUnavailableError extends Error {
  */
 export function requireKernel(): KernelModule {
   const k = getKernel();
-  if (!k) throw new KernelUnavailableError(candidatePaths());
+  if (!k) throw new KernelUnavailableError(candidatePaths(), rejected);
   return k;
 }
 
+/**
+ * Load (once per process) and return the kernel module, or null when
+ * unavailable. Fail-soft callers (feature probes, tests that skip without a
+ * binary) use this; parse-time callers use {@link requireKernel}.
+ */
 export function getKernel(): KernelModule | null {
   if (cached !== undefined) return cached;
   cached = null;
+  rejected = [];
+  const reject = (candidate: string, reason: string) => {
+    debug(`${candidate}: ${reason} — ignoring`);
+    rejected.push(`${candidate} (${reason})`);
+  };
   for (const candidate of candidatePaths()) {
     try {
       if (!fs.existsSync(candidate)) continue;
@@ -396,16 +403,21 @@ export function getKernel(): KernelModule | null {
       const req = createRequire(__filename);
       const mod = req(candidate) as KernelModule;
       if (typeof mod.extractFile !== 'function' || typeof mod.contractInfo !== 'function') {
-        debug(`${candidate}: missing expected exports — ignoring`);
+        reject(candidate, 'missing expected exports');
         continue;
       }
-      if (!verifyContract(mod, candidate)) continue;
-      kernelLanguages = new Set(mod.contractInfo().languages);
+      const info = mod.contractInfo();
+      const mismatch = contractMismatch(info);
+      if (mismatch) {
+        reject(candidate, mismatch);
+        continue;
+      }
+      kernelLanguages = new Set(info.languages);
       debug(`loaded ${candidate} (languages: ${[...kernelLanguages].join(', ')})`);
       cached = mod;
       break;
     } catch (err) {
-      debug(`${candidate}: failed to load — ${err instanceof Error ? err.message : String(err)}`);
+      reject(candidate, `failed to load: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return cached;
