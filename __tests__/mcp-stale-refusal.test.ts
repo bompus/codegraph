@@ -122,7 +122,9 @@ describe('a degraded index names changed files and still answers (#1959)', () =>
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain('after their last sync');
     expect(result.content[0].text).toContain('unicodeSymbol');
-    expect(result.structuredContent).toEqual({ freshness: { stale: [relative], unchecked: [] } });
+    expect(result.content[0].text).toContain(`- ${relative}`);
+    // Claude Code would show structuredContent in place of the answer text.
+    expect(result).not.toHaveProperty('structuredContent');
     expect(result).not.toHaveProperty('_cgAnswerFiles');
   });
 
@@ -148,7 +150,6 @@ describe('a degraded index names changed files and still answers (#1959)', () =>
     const result = await handler.execute('codegraph_impact', { symbol: 'alphaOnly' });
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain('validation budget');
-    expect((result.structuredContent!.freshness as { unchecked: string[] }).unchecked.length).toBeGreaterThan(0);
     expect(result.content[0].text).toContain('alphaOnly');
   });
 

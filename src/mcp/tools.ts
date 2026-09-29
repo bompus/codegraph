@@ -1766,7 +1766,6 @@ export interface ToolResult {
   _cgExploreEmission?: ExploreEmission;
   /** Internal structured provenance, preserved by query workers and stripped by execute. */
   _cgAnswerFiles?: AnswerFile[];
-  structuredContent?: Record<string, unknown>;
 }
 
 /**
@@ -3073,8 +3072,9 @@ export class ToolHandler {
             if (validation.unchecked.length > 20) lines.push(`- … ${validation.unchecked.length - 20} more`);
           }
           const [first, ...rest] = raw.content;
+          // Text only: Claude Code shows the model a result's structuredContent
+          // in place of its text, which would drop the answer itself.
           if (first?.type === 'text') raw.content = [{ ...first, text: `${lines.join('\n')}\n\n${first.text}` }, ...rest];
-          raw.structuredContent = { ...raw.structuredContent, freshness: validation };
         }
       }
       // Record + STRIP before anything else touches the result: the emission is
@@ -9003,9 +9003,7 @@ export class ToolHandler {
       }
     }
 
-    return { ...this.textResult(lines.join('\n')), structuredContent: {
-      freshness: { lastIndexedAt, changes, complete: changes !== null },
-    } };
+    return this.textResult(lines.join('\n'));
   }
 
   /**
