@@ -807,10 +807,11 @@ export class TreeSitterExtractor {
     // segment — the simple name Java/Kotlin code uses in `OtherClass::method`
     // references.
     const SIMPLE_NAME = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-    // JVM imports are dotted (`com.example.OtherClass`); PHP `use` imports
-    // are backslashed (`App\Services\Mailer`). Both contribute their last
-    // segment — the simple name code uses to reference them.
-    const QUALIFIED_IMPORT = /^[A-Za-z_$][A-Za-z0-9_$.\\]*[.\\]([A-Za-z_$][A-Za-z0-9_$]*)$/;
+    // JVM imports are dotted (`com.example.OtherClass`), PHP `use` imports
+    // backslashed (`App\Services\Mailer`), Rust `use` paths `::`-joined
+    // (`crate::handlers::handler`). Each contributes its last segment — the
+    // simple name code uses to reference it.
+    const QUALIFIED_IMPORT = /^[A-Za-z_$][A-Za-z0-9_$.\\:]*(?:[.\\]|::)([A-Za-z_$][A-Za-z0-9_$]*)$/;
     const importedNames = new Set<string>();
     for (const r of this.unresolvedReferences) {
       if (r.referenceKind !== 'imports') continue;
@@ -3351,9 +3352,12 @@ export class TreeSitterExtractor {
       // Generic fallback for other languages
       // Try to find identifier children
       const nameField = getChildByField(node, 'name');
+      const valueField = getChildByField(node, 'value');
       let declared: Node | null = null;
       for (let i = 0; i < node.namedChildCount; i++) {
         const child = node.namedChild(i);
+        // `const MAX: u32 = OTHER` reads OTHER; it declares nothing.
+        if (child && valueField && child.startIndex === valueField.startIndex) continue;
         if (child?.type === 'identifier' || child?.type === 'variable_declarator') {
           const name = child.type === 'identifier'
             ? getNodeText(child, this.source)

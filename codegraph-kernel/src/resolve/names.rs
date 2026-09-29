@@ -67,7 +67,7 @@ impl KernelResolver {
                     });
             }
             if c.language == "rust" {
-                return Self::cached_regex(&format!(r#"(?-u:\b)pub\s+extern\s+"C"\s+fn\s+{name}(?-u:\b)"#))
+                return Self::cached_regex(&format!(r#"(?-u:\b)pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+{name}(?-u:\b)"#))
                     .is_ok_and(|re| re.is_match(&decl(&src, c.start_line)));
             }
         }
