@@ -141,6 +141,14 @@ impl KernelResolver {
         if same_name.iter().all(|n| is_define(n)) {
             return Ok(true);
         }
+        // `(TRACE_POINT)(1)`: a function-like macro expands only when its
+        // name is directly followed by `(`, so a parenthesized callee is a call.
+        let parenthesized = self
+            .read_file(&r.file_path)
+            .and_then(|lines| lines.get((r.line - 1).max(0) as usize).map(|l| js_slice(l, r.column.max(0) as usize).starts_with('(')));
+        if parenthesized == Some(true) {
+            return Ok(false);
+        }
         let root_key = format!("{}\0{}", r.language, r.file_path);
         let hit = self.cpp_macros.roots.iter().find(|(k, _)| *k == root_key).map(|(_, t)| t.clone());
         let timeline = match hit {
@@ -384,13 +392,18 @@ impl KernelResolver {
         qualified_names.push(ty.to_string());
 
         for qualified in qualified_names {
-            let owner_files: HashSet<String> = self
-                .nodes_by_qualified_name(&qualified)?
+            let named = self.nodes_by_qualified_name(&qualified)?;
+            let owner_files: HashSet<String> = named
                 .iter()
                 .filter(|n| n.language == "cpp" && matches!(n.kind.as_str(), "class" | "struct" | "union"))
                 .map(|n| n.file_path.clone())
                 .collect();
             if owner_files.is_empty() {
+                // `using T = int;` / `enum T` in a nearer scope hides an outer
+                // class `T`: the declaration constructs no class there.
+                if named.iter().any(|n| n.language == "cpp" && matches!(n.kind.as_str(), "type_alias" | "enum")) {
+                    return Ok(None);
+                }
                 continue;
             }
             // Same-named types in different files are different types (a
@@ -417,8 +430,9 @@ impl KernelResolver {
                 constructors.push(n.clone());
             }
             // Brace-init prefers an initializer_list overload over arity —
-            // that choice needs the argument types, so decline.
-            if constructors.iter().any(|n| re!(r"\binitializer_list\b").is_match(n.signature.as_deref().unwrap_or(""))) {
+            // that choice needs the argument types, so decline. With no
+            // arguments (`T obj;`, `T obj{}`) the default constructor wins.
+            if argc > 0 && constructors.iter().any(|n| re!(r"\binitializer_list\b").is_match(n.signature.as_deref().unwrap_or(""))) {
                 return Ok(None);
             }
             // A prototype and its out-of-line definition describe one
@@ -624,13 +638,43 @@ fn guards_itself(lines: &[String], index: usize, op: &str, expression: &str) -> 
             .map(|m| m.as_str())
     };
     let Some(name) = name.filter(|n| re!(r"^\w+$").is_match(n)) else { return false };
-    for text in &lines[index + 1..] {
-        if !re!(r"^\s*#").is_match(text) {
+    let Some(define) = lines[index + 1..].iter().position(|t| re!(r"^\s*#").is_match(t)).map(|k| index + 1 + k) else {
+        return false;
+    };
+    let Some(c) = re!(r"^\s*#\s*define\s+(\w+)(.*)$").captures(&lines[define]) else { return false };
+    if &c[1] != name {
+        return false;
+    }
+    c[2].trim().is_empty() || c[2].starts_with('(') || wraps_file(lines, index, define)
+}
+
+/// `#define X_H 1` is a guard, not a flag default, when its `#ifndef` is the
+/// file's first conditional and the matching `#endif` its last directive,
+/// with more directives inside: the shape compilers treat as an include guard.
+fn wraps_file(lines: &[String], index: usize, define: usize) -> bool {
+    let directive = |t: &String| re!(r"^\s*#").is_match(t);
+    if lines[..index].iter().any(|t| directive(t) && !re!(r"^\s*#\s*pragma\b").is_match(t)) {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut inner = false;
+    for (k, t) in lines.iter().enumerate().skip(index) {
+        if !directive(t) {
             continue;
         }
-        return re!(r"^\s*#\s*define\s+(\w+)(.*)$")
-            .captures(text)
-            .is_some_and(|c| &c[1] == name && (c[2].trim().is_empty() || c[2].starts_with('(')));
+        if re!(r"^\s*#\s*if(?:n?def)?\b").is_match(t) {
+            depth += 1;
+        } else if re!(r"^\s*#\s*endif\b").is_match(t) {
+            depth -= 1;
+            if depth == 0 {
+                return inner && !lines[k + 1..].iter().any(directive);
+            }
+        } else if depth == 1 && re!(r"^\s*#\s*(?:elif|else)\b").is_match(t) {
+            return false;
+        }
+        if k > define {
+            inner = true;
+        }
     }
     false
 }
@@ -645,6 +689,7 @@ fn directive_lines(source: &str) -> Vec<String> {
     for raw in masked.split('\n') {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
         let mut text = raw.to_string();
+        let opened_in_comment = in_block;
         if in_block {
             match text.find("*/") {
                 None => {
@@ -699,6 +744,9 @@ fn directive_lines(source: &str) -> Vec<String> {
         }
         out.push(if directive {
             kept.filter(|k| !k.is_empty()).unwrap_or(text)
+        } else if opened_in_comment {
+            // `#define x … */`: the part before `*/` is comment.
+            kept.unwrap_or(text)
         } else {
             raw.to_string()
         });

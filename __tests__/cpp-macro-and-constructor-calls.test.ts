@@ -751,3 +751,116 @@ describe('constructor and macro identity across files and arms', () => {
     }
   });
 });
+
+describe('preprocessor and constructor edge cases', () => {
+  it('a valued include guard still guards the header, so its macros are visible', async () => {
+    const guarded = (guard: string) =>
+      indexed({
+        'marker.hpp': `#ifndef MARKER_HPP\n${guard}\n#define TRACE_POINT(value) ((void)(value))\n#endif\n`,
+        'exercise.cpp': '#include "marker.hpp"\n\nvoid exercise() {\n    TRACE_POINT(1);\n}\n',
+        'macro_decoy.cpp': 'void TRACE_POINT(int value) {}\n',
+      });
+    for (const guard of ['#define MARKER_HPP 1', '#define MARKER_HPP']) {
+      const cg = await guarded(guard);
+      try {
+        expect(calls(cg, 'exercise')).toEqual([]);
+      } finally {
+        cg.close();
+      }
+    }
+  });
+
+  it('control: a header that only defaults a flag leaves the flag to the build', async () => {
+    const cg = await indexed({
+      'config.h': '#ifndef USE_FAST\n#define USE_FAST 1\n#endif\n',
+      'unit.c': [
+        '#include "config.h"',
+        '#if USE_FAST',
+        '#define compute() 1',
+        '#endif',
+        'int compute(void) { return 0; }',
+        'int run(void) { return compute(); }',
+        '',
+      ].join('\n'),
+    });
+    try {
+      expect(calls(cg, 'run')).toEqual(['function compute (unit.c)']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('a #define on the line that closes a block comment is still comment', async () => {
+    for (const doc of ['/*\n * Example:\n#define helper(x) ((x) + 1) */\n', '/*\n * Example:\n#define helper(x) ((x) + 1)\n */\n']) {
+      const cg = await indexed({
+        'doc.hpp': doc,
+        'lib.cpp': '#include "doc.hpp"\nint helper(int x) { return x + 1; }\nint run() { return helper(1); }\n',
+        'other.cpp': '#define helper(x) ((x) + 2)\n',
+      });
+      try {
+        expect(calls(cg, 'run')).toEqual(['function helper (lib.cpp)']);
+      } finally {
+        cg.close();
+      }
+    }
+  });
+
+  it('a parenthesized callee is a call even while a same-named function-like macro is visible', async () => {
+    const cg = await indexed({
+      'marker.hpp': '#define TRACE_POINT(value) ((void)(value))\n',
+      'exercise.cpp': 'void TRACE_POINT(int);\n#include "marker.hpp"\nvoid exercise() { (TRACE_POINT)(1); }\nvoid expand() { TRACE_POINT(1); }\n',
+      'macro_decoy.cpp': 'void TRACE_POINT(int value) {}\n',
+    });
+    try {
+      expect(calls(cg, 'exercise')).toEqual(['function TRACE_POINT (macro_decoy.cpp)']);
+      expect(calls(cg, 'expand')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('an initializer_list overload does not stop `T obj;` reaching the default constructor', async () => {
+    const cg = await indexed({
+      'overloads.cpp': [
+        'struct Widget {',
+        '  Widget() {}',
+        '  Widget(int value) {}',
+        '  Widget(int a, int b = 2) {}',
+        '  Widget(std::initializer_list<int> v) {}',
+        '};',
+        'void default_use() { Widget w; }',
+        'void two_use() { Widget w(1, 2); }',
+        '',
+      ].join('\n'),
+    });
+    try {
+      expect(calls(cg, 'default_use')).toEqual(['method Widget::Widget (overloads.cpp)']);
+      // With arguments the initializer_list overload may win brace-init: decline.
+      expect(calls(cg, 'two_use')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('a `using` alias in the site namespace shadows an outer class of the same name', async () => {
+    const cg = await indexed({
+      'ns.cpp': [
+        'struct Global { Global() {} };',
+        'namespace second {',
+        '  using Global = int;',
+        '  void global_use() { Global g; }',
+        '}',
+        'namespace third {',
+        '  void outer_use() { Global g; }',
+        '}',
+        '',
+      ].join('\n'),
+    });
+    try {
+      expect(calls(cg, 'global_use')).toEqual([]);
+      expect(calls(cg, 'outer_use')).toEqual(['method Global::Global (ns.cpp)']);
+    } finally {
+      cg.close();
+    }
+  });
+});
