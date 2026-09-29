@@ -345,6 +345,21 @@ impl KernelResolver {
             if let Some(t) = probe!(r, "mc:guarded", self.infer_guarded_receiver(&object_or_class, r)?) {
                 return self.match_bound_type_member(&t, &method_name, r);
             }
+            // A lambda parameter hides the same-named field or outer local
+            // the binding rows name (lambda parameters have no row). Only a
+            // Kotlin `x.let { v -> … }` still types it.
+            if let Some(b) = binding.as_ref().filter(|b| b.kind != "import") {
+                if (r.language == "java" || r.language == "kotlin")
+                    && self.lambda_param_shadows(&object_or_class, r, b.line)?
+                {
+                    if r.language == "kotlin" {
+                        if let Some(hit) = self.iteration_receiver_in_tree(&object_or_class, r)? {
+                            return self.match_bound_type_member(&hit.ty, &method_name, &hit.site);
+                        }
+                    }
+                    return Ok(None);
+                }
+            }
             let mut site = r.clone();
             if let Some(b) = &binding {
                 if b.kind != "import" {
@@ -774,7 +789,11 @@ impl KernelResolver {
             let in_file = self.nodes_in_file(&c.file_path)?;
             if let Some(mn) = in_file
                 .iter()
-                .find(|n| n.kind == "method" && n.name == method && n.qualified_name.contains(c.name.as_str()))
+                // An owner segment equal to the class name: `Loud` is not
+                // `Loudspeaker`.
+                .find(|n| {
+                    n.kind == "method" && n.name == method && n.qualified_name.split([':', '.']).any(|s| s == c.name)
+                })
             {
                 return Ok(Some(KCand { node: mn.clone(), confidence, resolved_by }));
             }
@@ -917,6 +936,11 @@ impl KernelResolver {
             return Ok(Some(c));
         }
         if binding.kind == "param" {
+            return Ok(None);
+        }
+        // An awaited binding reassigned before the call no longer holds its
+        // initializer's value: the factory must not revive that type.
+        if is_esm_family(&r.language) && self.infer_esm_awaited_call_type(root, r)?.is_some_and(|a| a.rebound) {
             return Ok(None);
         }
         probe!(r, "brc:factory-tail", self.esm_factory_tail(&binding, root, method, r))

@@ -229,9 +229,18 @@ impl KernelResolver {
             return Ok(None);
         }
         if is_class_like(&owner.kind) {
+            // Ruby and PHP look in a class's mixins (Ruby included modules,
+            // PHP traits) before its parent class.
+            let mixins_first = matches!(owner.language.as_str(), "ruby" | "php");
+            let mut mixins_seen: HashSet<String> = HashSet::new();
             let mut class = owner.clone();
             let mut chain: HashSet<String> = HashSet::from([owner.id.clone()]);
             loop {
+                if mixins_first {
+                    if let Some(m) = self.mixin_member(&class, method, site, &mut mixins_seen, 0)? {
+                        return Ok(Some(bound_member_cand(m)));
+                    }
+                }
                 let mut parent = None;
                 for t in self.outgoing_edge_targets(&class.id, &["extends"])? {
                     if let Some(n) = self.node_by_id(&t)?.filter(|n| is_class_like(&n.kind)) {
@@ -261,6 +270,64 @@ impl KernelResolver {
             pending.extend(self.supertype_nodes(&type_node.id)?);
         }
         Ok(None)
+    }
+
+    /// `method` on one of `class`'s mixins or theirs, depth first.
+    fn mixin_member(
+        &mut self,
+        class: &Arc<KNode>,
+        method: &str,
+        site: &ResolveRefIn,
+        seen: &mut HashSet<String>,
+        depth: u32,
+    ) -> Res<Option<Arc<KNode>>> {
+        if depth > 8 {
+            return Ok(None);
+        }
+        for mixin in self.mixin_nodes(class)? {
+            if !seen.insert(mixin.id.clone()) {
+                continue;
+            }
+            if let Some(m) = self.own_bound_member(&mixin, method, site)? {
+                return Ok(Some(m));
+            }
+            if let Some(m) = self.mixin_member(&mixin, method, site, seen, depth + 1)? {
+                return Ok(Some(m));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A Ruby or PHP type's mixins in method lookup order: Ruby modules
+    /// last-included first (`include A, B` keeps `A` first), PHP traits.
+    /// Interfaces are not mixins; other languages have none.
+    fn mixin_nodes(&mut self, class: &KNode) -> Res<Vec<Arc<KNode>>> {
+        let mixin_kind = match class.language.as_str() {
+            "ruby" => "module",
+            "php" => "trait",
+            _ => return Ok(Vec::new()),
+        };
+        let mut rows: Vec<(String, i64)> = {
+            let conn = self.conn()?;
+            let mut stmt = conn
+                .prepare("SELECT target, line FROM edges WHERE source = ?1 AND kind = 'implements' ORDER BY id")
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            let rows = stmt
+                .query_map([&class.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))))
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+                .map_err(|e| Error::from_reason(e.to_string()))?
+        };
+        if mixin_kind == "module" {
+            rows.sort_by_key(|row| std::cmp::Reverse(row.1));
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        for (target, _) in rows {
+            if let Some(n) = self.node_by_id(&target)?.filter(|n| n.kind == mixin_kind) {
+                out.push(n);
+            }
+        }
+        Ok(out)
     }
 
     /// The C3 method resolution order of a Python class over its indexed
@@ -370,7 +437,14 @@ impl KernelResolver {
             if from_site && r.language == "java" && !self.java_type_visible(&tn, r)? {
                 continue;
             }
-            for target in self.supertype_nodes(&tn.id)? {
+            // Ruby and PHP look in mixins before the parent class.
+            let mut targets = self.mixin_nodes(&tn)?;
+            for n in self.supertype_nodes(&tn.id)? {
+                if !targets.iter().any(|t| t.id == n.id) {
+                    targets.push(n);
+                }
+            }
+            for target in targets {
                 if !target.name.is_empty() && target.name != type_name && !names.contains(&target.name) {
                     names.push(target.name.clone());
                 }
@@ -680,9 +754,11 @@ impl KernelResolver {
             .read_file(&site.file_path)
             .and_then(|ls| ls.get((binding.line - 1) as usize).cloned())
             .unwrap_or_default();
-        // `\bRECV\s+\*?TYPE(?:\s*[,)]|\s*$)` / `\bRECV\s+\*?TYPE\s*(?:=|$)`
-        static PARAM_TYPE: LazyLock<Affix> =
-            LazyLock::new(|| Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)", true, false, false));
+        // `\bRECV(?:\s*,\s*\w+)*\s+\*?TYPE(?:\s*[,)]|\s*$)` (a grouped
+        // `value, other Store` types both names) / `\bRECV\s+\*?TYPE\s*(?:=|$)`
+        static PARAM_TYPE: LazyLock<Affix> = LazyLock::new(|| {
+            Affix::new("", r"(?:\s*,\s*[A-Za-z0-9_]+)*\s+\*?([A-Za-z0-9_.]+)(?:\s*[,)]|\s*$)", true, false, false)
+        });
         static VAR_TYPE: LazyLock<Affix> =
             LazyLock::new(|| Affix::new("", r"\s+\*?([A-Za-z0-9_.]+)\s*(?:=|$)", true, false, false));
         let value = self.node_by_opt_id(binding.node_id.as_deref())?;

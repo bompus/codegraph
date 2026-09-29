@@ -40,6 +40,9 @@ pub(super) struct AwaitedType {
     /// from the awaiting call site.
     pub(super) file_path: String,
     pub(super) line: i64,
+    /// The receiver was reassigned after its awaited initializer, so that
+    /// initializer no longer says what it holds.
+    pub(super) rebound: bool,
 }
 
 fn is_word(b: u8) -> bool {
@@ -337,6 +340,26 @@ fn has_assignment(code: &str, name: &str) -> bool {
     })
 }
 
+/// A bare `NAME = …` statement: not a property (`o.NAME =`), a declaration
+/// (`const NAME =`), a comparison or an arrow.
+fn is_reassigned(code: &str, name: &str) -> bool {
+    code.match_indices(name).any(|(at, _)| {
+        if !word_boundary_at(code, at) || !word_boundary_at(code, at + name.len()) {
+            return false;
+        }
+        let before = code[..at].trim_end();
+        if before.ends_with(['.', '$']) {
+            return false;
+        }
+        let prev_word = before.rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$')).next().unwrap_or("");
+        if matches!(prev_word, "const" | "let" | "var") {
+            return false;
+        }
+        let eq = skip_ws(code, at + name.len());
+        code[eq..].starts_with('=') && !code[eq + 1..].starts_with(['=', '>'])
+    })
+}
+
 /// hasParameterBinding: NAME bound by an arrow's bare parameter, or inside a
 /// balanced parameter list followed by `=>` or a body `{` (an optional return
 /// annotation between). Control-flow parentheses are not parameter lists.
@@ -495,7 +518,8 @@ impl KernelResolver {
         file: &AwaitedIndex,
         r: &ResolveRefIn,
     ) -> Res<Option<AwaitedType>> {
-        let unknown = || Ok(Some(AwaitedType { name: None, file_path: r.file_path.clone(), line: r.line }));
+        let verdict = |rebound| Ok(Some(AwaitedType { name: None, file_path: r.file_path.clone(), line: r.line, rebound }));
+        let unknown = || verdict(false);
         let base = usize::try_from(r.line - 1)
             .ok()
             .and_then(|l| file.offsets.get(l).copied())
@@ -550,7 +574,9 @@ impl KernelResolver {
             || has_assignment(tail, receiver)
             || has_parameter_binding(tail, receiver)
         {
-            return unknown();
+            // A nested declaration or parameter of the name hides it only
+            // inside its own scope; a bare `name = …` rebinds the receiver.
+            return verdict(is_reassigned(tail, receiver));
         }
 
         let (binding_line, binding_col) = file.line_col(index);
@@ -623,7 +649,7 @@ impl KernelResolver {
             return unknown();
         }
         if TS_PRIMITIVE_TYPES.contains(returned.as_str()) {
-            return Ok(Some(AwaitedType { name: Some(returned), file_path: declaring.file_path.clone(), line: declaring.start_line }));
+            return Ok(Some(AwaitedType { name: Some(returned), file_path: declaring.file_path.clone(), line: declaring.start_line, rebound: false }));
         }
 
         let type_import = self
@@ -652,7 +678,7 @@ impl KernelResolver {
         };
         match type_node {
             Some(t) if t.kind == "class" || t.kind == "interface" => {
-                Ok(Some(AwaitedType { name: Some(t.name.clone()), file_path: t.file_path.clone(), line: t.start_line }))
+                Ok(Some(AwaitedType { name: Some(t.name.clone()), file_path: t.file_path.clone(), line: t.start_line, rebound: false }))
             }
             _ => unknown(),
         }
