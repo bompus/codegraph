@@ -3068,8 +3068,7 @@ export class ToolHandler {
           }
           if (validation.unchecked.length) {
             lines.push(`⚠️ Freshness could not be checked within the validation budget for ${validation.unchecked.length} files; results from them may also be out of date:`,
-              ...validation.unchecked.slice(0, 20).map(file => `- ${file}`));
-            if (validation.unchecked.length > 20) lines.push(`- … ${validation.unchecked.length - 20} more`);
+              ...validation.unchecked.map(file => `- ${file}`));
           }
           const [first, ...rest] = raw.content;
           // Text only: Claude Code shows the model a result's structuredContent
