@@ -60,6 +60,109 @@ fn descendants_of_type<'t>(node: TsNode<'t>, kind: &str, out: &mut Vec<TsNode<'t
     }
 }
 
+/// The names a Kotlin lambda binds: its declared parameters, else implicit
+/// `it` — except a lambda given to `run`, `apply` or `with`, which takes
+/// its value as `this` and binds nothing.
+fn kotlin_lambda_names<'a>(lambda: TsNode, text: &'a str) -> Vec<&'a str> {
+    if let Some(params) = named_children(lambda).into_iter().find(|n| n.kind() == "lambda_parameters") {
+        let mut ids = Vec::new();
+        descendants_of_type(params, "simple_identifier", &mut ids);
+        return ids.into_iter().map(|n| node_text(n, text)).collect();
+    }
+    let callee = kotlin_lambda_call(lambda).and_then(|c| named_children(c).into_iter().next());
+    let name = callee.map(|c| match c.kind() {
+        "navigation_expression" => named_children(c)
+            .get(1)
+            .map_or("", |m| node_text(*m, text).trim_start_matches(['?', '.'])),
+        _ => node_text(c, text),
+    });
+    if matches!(name, Some("run" | "apply" | "with")) {
+        return Vec::new();
+    }
+    vec!["it"]
+}
+
+/// The call a Kotlin lambda is an argument of: climb through the argument
+/// wrappers, never out of an enclosing body.
+fn kotlin_lambda_call(lambda: TsNode) -> Option<TsNode> {
+    let mut call = lambda.parent();
+    while let Some(c) = call {
+        match c.kind() {
+            "call_expression" => return Some(c),
+            "annotated_lambda" | "call_suffix" | "value_argument" | "value_arguments" => call = c.parent(),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// A Java lambda's parameter names: `x ->`, `(x, y) ->`, `(T x) ->`.
+fn java_lambda_names<'a>(lambda: TsNode, text: &'a str) -> Vec<&'a str> {
+    let Some(params) = lambda.child_by_field_name("parameters") else { return Vec::new() };
+    if params.kind() == "identifier" {
+        return vec![node_text(params, text)];
+    }
+    named_children(params)
+        .into_iter()
+        .filter_map(|p| match p.kind() {
+            "identifier" => Some(p),
+            _ => p.child_by_field_name("name"),
+        })
+        .map(|n| node_text(n, text))
+        .collect()
+}
+
+/// The result types of a Go signature `(params) T` / `(params) (A, B)`,
+/// split at top-level commas; `None` when the shape is anything else.
+fn go_result_types(signature: &str) -> Option<Vec<&str>> {
+    let close = top_level_close(signature)?;
+    let rest = signature[close + 1..].trim();
+    if rest.is_empty() {
+        return Some(Vec::new());
+    }
+    let Some(inner) = rest.strip_prefix('(') else { return Some(vec![rest]) };
+    if top_level_close(rest)? != rest.len() - 1 {
+        return None;
+    }
+    let inner = &inner[..inner.len() - 1];
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, b) in inner.bytes().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim());
+    Some(out)
+}
+
+/// Byte index of the `)` closing the `(` that `s` starts with.
+fn top_level_close(s: &str) -> Option<usize> {
+    if !s.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn node_text<'a>(node: TsNode, text: &'a str) -> &'a str {
     &text[node.start_byte()..node.end_byte()]
 }
@@ -77,6 +180,16 @@ impl KernelResolver {
         if !self.mc_iteration_gate(receiver, r)? {
             return Ok(None);
         }
+        self.iteration_receiver_in_tree(receiver, r)
+    }
+
+    /// inferIterationReceiver past its gate: the nearest construct at the
+    /// call site that binds `receiver`.
+    pub(super) fn iteration_receiver_in_tree(
+        &mut self,
+        receiver: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<IterationHit>> {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
@@ -92,29 +205,15 @@ impl KernelResolver {
         while let Some(node) = cur {
             cur = node.parent();
             if r.language == "kotlin" && node.kind() == "lambda_literal" {
-                let names: Vec<&str> = match named_children(node).into_iter().find(|n| n.kind() == "lambda_parameters") {
-                    Some(params) => {
-                        let mut ids = Vec::new();
-                        descendants_of_type(params, "simple_identifier", &mut ids);
-                        ids.into_iter().map(|n| node_text(n, &text)).collect()
-                    }
-                    None => vec!["it"],
-                };
-                // The nearest lambda owns implicit `it`, even when its type is unknown.
-                if !names.contains(&receiver) {
+                // The nearest lambda that binds `it` owns it, even when its type is unknown.
+                if !kotlin_lambda_names(node, &text).contains(&receiver) {
                     continue;
                 }
-                // Only the lambda passed to the call takes the receiver: climb
-                // through the argument wrappers, never out of an enclosing body.
-                let mut call = node.parent();
-                while let Some(c) = call {
-                    match c.kind() {
-                        "call_expression" => break,
-                        "annotated_lambda" | "call_suffix" | "value_argument" | "value_arguments" => call = c.parent(),
-                        _ => return Ok(None),
-                    }
-                }
-                let Some(navigation) = call.and_then(|c| named_children(c).into_iter().next()) else {
+                // Only the lambda passed to the call takes the receiver.
+                let Some(call) = kotlin_lambda_call(node) else {
+                    return Ok(None);
+                };
+                let Some(navigation) = named_children(call).into_iter().next() else {
                     return Ok(None);
                 };
                 if navigation.kind() != "navigation_expression" {
@@ -155,6 +254,40 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+
+    /// Whether a Java/Kotlin lambda enclosing the call declares `receiver`
+    /// as its parameter after the receiver's binding row at `binding_line`,
+    /// hiding that binding (a field, an outer local or parameter).
+    pub(super) fn lambda_param_shadows(&mut self, receiver: &str, r: &ResolveRefIn, binding_line: i64) -> Res<bool> {
+        let Some(lines) = self.read_file(&r.file_path) else {
+            return Ok(false);
+        };
+        // A lambda with a named parameter has its `->` on a line between the
+        // binding and the call, next to the name.
+        let from = (binding_line.max(1) - 1) as usize;
+        let to = (r.line.max(0) as usize).min(lines.len());
+        if from >= to || !lines[from..to].iter().any(|l| l.contains("->") && has_word(l, receiver)) {
+            return Ok(false);
+        }
+        let text = lines.text().to_string();
+        let Ok(tree) = crate::tree::parse_with_cached_parser(&text, &r.language) else {
+            return Ok(false);
+        };
+        let at = ((r.line - 1).max(0) as usize, r.column.max(0) as usize);
+        let mut cur = Some(descendant_for_position(tree.root_node(), &text, at));
+        while let Some(node) = cur {
+            cur = node.parent();
+            let names = match (r.language.as_str(), node.kind()) {
+                ("kotlin", "lambda_literal") => kotlin_lambda_names(node, &text),
+                ("java", "lambda_expression") => java_lambda_names(node, &text),
+                _ => continue,
+            };
+            if names.contains(&receiver) {
+                return Ok(binding_line <= node.start_position().row as i64 + 1);
+            }
+        }
+        Ok(false)
     }
 
     /// The element type of a Go range collection: a field of a typed owner
@@ -235,6 +368,13 @@ impl KernelResolver {
         let Some(factory) = FACTORY.capture(&declaration, name).map(str::to_string) else {
             return Ok(None);
         };
+        // The result the collection takes: its position in the `:=` list.
+        let Some(slot) = re!(r"(?-u:\b)([A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*)\s*:=")
+            .captures_iter(&declaration)
+            .find_map(|c| c[1].split(',').position(|n| n.trim() == name))
+        else {
+            return Ok(None);
+        };
         // resolveCall: matchBoundReceiverCall on the factory name at the
         // collection's declaration — undefined for a non-receiver shape.
         let mut call_site = r.clone();
@@ -249,7 +389,9 @@ impl KernelResolver {
         let element = callee
             .signature
             .as_deref()
-            .and_then(|s| re!(r"\)\s*\(?\s*\[\]\s*\*?([A-Za-z0-9_.]+)").captures(s).map(|c| c[1].to_string()));
+            .and_then(go_result_types)
+            .and_then(|results| results.get(slot).copied())
+            .and_then(|t| re!(r"^\[\]\s*\*?([A-Za-z0-9_.]+)$").captures(t).map(|c| c[1].to_string()));
         Ok(element.map(|ty| {
             let mut site = r.clone();
             site.file_path = callee.file_path.clone();
