@@ -104,12 +104,15 @@ impl KernelResolver {
                 if !names.contains(&receiver) {
                     continue;
                 }
+                // Only the lambda passed to the call takes the receiver: climb
+                // through the argument wrappers, never out of an enclosing body.
                 let mut call = node.parent();
                 while let Some(c) = call {
-                    if c.kind() == "call_expression" {
-                        break;
+                    match c.kind() {
+                        "call_expression" => break,
+                        "annotated_lambda" | "call_suffix" | "value_argument" | "value_arguments" => call = c.parent(),
+                        _ => return Ok(None),
                     }
-                    call = c.parent();
                 }
                 let Some(navigation) = call.and_then(|c| named_children(c).into_iter().next()) else {
                     return Ok(None);
@@ -318,6 +321,19 @@ impl KernelResolver {
                 a.start_byte() < call.start_byte()
                     && a.child_by_field_name("left").is_some_and(|l| node_text(l, &text) == var)
             });
+            // `foreach ($x->kids as $x)` / `as $k => $x` rebinds it too.
+            let mut loops = Vec::new();
+            descendants_of_type(body, "foreach_statement", &mut loops);
+            let iterated = loops.iter().any(|l| {
+                let body = l.child_by_field_name("body").map(|b| b.id());
+                l.start_byte() < call.start_byte()
+                    && named_children(*l).into_iter().skip(1).filter(|c| Some(c.id()) != body).any(|c| {
+                        let mut vars = Vec::new();
+                        descendants_of_type(c, "variable_name", &mut vars);
+                        vars.iter().any(|v| node_text(*v, &text) == var)
+                    })
+            });
+            let assigned = assigned || iterated;
             return Ok((!shadow && !assigned).then(|| m[2].to_string()));
         }
         Ok(None)

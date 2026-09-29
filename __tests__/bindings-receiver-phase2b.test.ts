@@ -65,10 +65,12 @@ it('allows project values that shadow host globals', async () => {
 });
 it('does not let an unknown inner lambda or a range index inherit the outer value type', async () => {
   await project({
-    'app.kt': 'class Widget { fun render() {} }\nfun unknown(w: Widget, other: Any) { w.let { other.let { it.render() } } }\n',
+    'app.kt': 'class Widget { fun render() {} }\nclass Door { fun open() {} }\nclass Box { fun open() {} }\nfun unknown(w: Widget, other: Any) { w.let { other.let { it.render() } } }\nfun inner(b: Box) { b.let { val f: (Door) -> Unit = { it.open() } } }\n',
     'app.go': 'package app\ntype Item struct{}\nfunc (i Item) Run() {}\nfunc indexOnly(items []Item) { for item := range items { item.Run() } }\n',
   });
   expect(calls('unknown')).not.toContain('render');
+  // A lambda inside the `let` body is not the `let` argument.
+  expect(calls('inner')).not.toContain('open');
   expect(calls('indexOnly')).not.toContain('Run');
 });
 it('keeps C++ namespace identity on explicitly typed receivers', async () => {
@@ -212,12 +214,16 @@ function outside($value) { if ($value instanceof Store) {} else { $value->run();
 function reassigned($value, $other) { if ($value instanceof Store) { $value = $other; $value->run(); } }
 function rebound($value, $other) { if ($value instanceof Store) { $value =& $other; $value->run(); } }
 function shadowed($value) { if ($value instanceof Store) { $f = function($value) { $value->run(); }; } }
+function iterated($value) { if ($value instanceof Store) { foreach ($value->kids as $value) { $value->run(); } } }
+function keyed($value) { if ($value instanceof Store) { foreach ($value->kids as $k => $value) { $value->run(); } } }
 ` });
   expect(calls('known')).toContain('run');
   expect(calls('outside')).not.toContain('run');
   expect(calls('reassigned')).not.toContain('run');
   expect(calls('rebound')).not.toContain('run');
   expect(calls('shadowed')).not.toContain('run');
+  expect(calls('iterated')).not.toContain('run');
+  expect(calls('keyed')).not.toContain('run');
   const run = graph!.getNodesByKind('method').find(n => n.name === 'run')!;
   expect(graph!.getIncomingEdges(run.id).filter(e => e.kind === 'calls')).toHaveLength(1);
 });
