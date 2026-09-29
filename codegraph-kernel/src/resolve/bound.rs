@@ -580,7 +580,7 @@ impl KernelResolver {
                             .iter()
                             .filter(|n| {
                                 n.language == "go"
-                                    && n.kind == "function"
+                                    && matches!(n.kind.as_str(), "function" | "struct" | "interface" | "type_alias")
                                     && pos_dirname(&n.file_path)
                                         == pos_dirname(&site.file_path)
                             })
@@ -591,6 +591,10 @@ impl KernelResolver {
                         }
                     }
                 }
+            }
+            // `w := T(x)` converts to the type `T` itself.
+            if let Some(ty) = callee.as_ref().filter(|c| matches!(c.kind.as_str(), "struct" | "interface" | "type_alias")) {
+                return self.match_bound_type_member(&ty.name.clone(), method, &r.clone().at(ty));
             }
             let ret_shape = re!(r"^\*?[A-Za-z0-9_.]+$");
             let valid = callee.as_ref().is_some_and(|c| {

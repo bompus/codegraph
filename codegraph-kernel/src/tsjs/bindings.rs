@@ -73,6 +73,7 @@ impl<'t> Walker<'t> {
     fn scan_declarator(&mut self, node: Node<'t>, scope: Option<(u32, u32)>) {
         let Some(name_node) = node.child_by_field_name("name") else { return };
         let value = node.child_by_field_name("value");
+        let scope = scope.map(|s| self.lexical_block(node).unwrap_or(s));
         let range = scope.unwrap_or((1, self.line_count));
         // `require('./m')` / `await import('./m')`: an import, whatever the scope.
         if let Some(spec) = value.and_then(|v| self.require_spec(v)) {
@@ -312,6 +313,28 @@ impl<'t> Walker<'t> {
             }
         }
         false
+    }
+
+    /// The block a `let`/`const` declarator lives in, below its function:
+    /// sibling blocks' same-named locals then get disjoint ranges instead of
+    /// sharing the function's. None for `var`, which is function-scoped.
+    fn lexical_block(&self, declarator: Node<'t>) -> Option<(u32, u32)> {
+        let decl = declarator.parent()?;
+        if decl.kind() != "lexical_declaration" {
+            return None;
+        }
+        let mut cur = decl.parent();
+        while let Some(p) = cur {
+            let k = p.kind();
+            if is_function_type(k) || k == "method_definition" {
+                return None;
+            }
+            if matches!(k, "statement_block" | "switch_body" | "for_statement" | "for_in_statement") {
+                return Some(self.line_range(p));
+            }
+            cur = p.parent();
+        }
+        None
     }
 
     fn line_range(&self, node: Node<'t>) -> (u32, u32) {

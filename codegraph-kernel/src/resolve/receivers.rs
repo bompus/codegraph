@@ -180,7 +180,8 @@ impl KernelResolver {
             )?);
             call_idx.min((scope - 1).max(0) as usize)
         };
-        let shadow_scan = is_js_family(&site.language) || site.language == "vue";
+        let js = is_js_family(&site.language) || site.language == "vue";
+        let shadow_scan = js || site.language == "go";
         // Every pattern needs the receiver literal in the line, so only the
         // lines containing it are scanned (highest first, as before).
         let scanned = probe!(site, "il:scan", {
@@ -196,14 +197,16 @@ impl KernelResolver {
                     hit = Some(t);
                     break;
                 }
-                // `const x = f(…)` shadows every declaration above it while its
-                // block is open; when the callee's return annotation is known,
-                // it types `x` instead of an outer same-named declaration.
-                if shadow_scan && block_reaches(&lines, i as usize, call_idx) {
-                    if let Some(t) = self.untyped_local_call_type(&lines, i as usize, &scan_receiver, site, preserve)? {
-                        hit = Some(t);
-                        break;
+                // `const x = …` (Go: `x := …`, `var x`) shadows every
+                // declaration above it while its block is open. In JS it types
+                // `x` when its initializer is a call with a known return
+                // annotation; otherwise `x` stays untyped here rather than
+                // taking an outer same-named declaration's type.
+                if shadow_scan && declares(line, &scan_receiver, js) && block_reaches(&lines, i as usize, call_idx) {
+                    if js {
+                        hit = self.untyped_local_call_type(&lines, i as usize, &scan_receiver, site, preserve)?;
                     }
+                    break;
                 }
             }
             hit
@@ -880,6 +883,24 @@ impl KernelResolver {
 
 /// No non-blank line between `decl` and `call` is indented less than `decl`,
 /// so the block holding the declaration is still open at the call.
+/// `line` declares `name`: JS `const|let|var name =`, Go `name := …` (among
+/// other names) or `var name`.
+fn declares(line: &str, name: &str, js: bool) -> bool {
+    if js {
+        return re!(r"(?-u:\b)(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=")
+            .captures_iter(line)
+            .any(|m| &m[1] == name);
+    }
+    if let Some(m) = re!(r"^\s*(?:if\s+|for\s+|switch\s+)?([\w\s,]+?)\s*:=").captures(line) {
+        if m[1].split(',').any(|n| n.trim() == name) {
+            return true;
+        }
+    }
+    re!(r"^\s*var\s+([\w\s,]+?)(?:\s+[\[\]*\w.]+)?\s*(?:=|$)")
+        .captures(line)
+        .is_some_and(|m| m[1].split(',').any(|n| n.trim() == name))
+}
+
 fn block_reaches(lines: &[String], decl: usize, call: usize) -> bool {
     let indent = |l: &str| l.len() - l.trim_start().len();
     let base = indent(&lines[decl]);

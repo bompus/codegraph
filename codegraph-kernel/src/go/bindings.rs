@@ -15,7 +15,8 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// One `param` row per parameter and receiver name, scoped to the function.
+    /// One `param` row per parameter and receiver name, scoped to the function
+    /// or function literal.
     pub(super) fn emit_param_bindings(&mut self, node: Node<'t>) {
         let scope = (self.line_of(node), node.end_position().row as u32 + 1);
         for field in ["receiver", "parameters"] {
@@ -40,8 +41,11 @@ impl<'t> Walker<'t> {
     /// Nodeless `local` rows for names a function body binds: `x := …`,
     /// `var x T` and `for i, v := range …`.
     pub(super) fn emit_local_rows(&mut self, node: Node<'t>) {
-        let Some(scope) = self.enclosing_scope() else { return };
-        self.emit_local_rows_scoped(node, scope);
+        if self.enclosing_scope().is_none() {
+            return;
+        }
+        let scope = local_block(node);
+        self.emit_local_rows_scoped(node, (scope.start_position().row as u32 + 1, scope.end_position().row as u32 + 1));
     }
 
     pub(super) fn emit_local_rows_scoped(&mut self, node: Node<'t>, scope: (u32, u32)) {
@@ -81,4 +85,33 @@ impl<'t> Walker<'t> {
         let storage = if exported { None } else { Some("package") };
         self.push_binding_row(BINDING_DECL, name, node_idx, (1, self.line_count), line, None, exported, storage);
     }
+}
+
+/// The block a local declared at `node` lives in: the nearest block, case
+/// clause, or `if`/`for`/`switch` header scope (`if v := f(); …`, `for _, v :=
+/// range …`), else the function. Sibling blocks' same-named locals then get
+/// disjoint ranges instead of sharing the function's.
+fn local_block(node: Node) -> Node {
+    let mut cur = node;
+    while let Some(p) = cur.parent() {
+        if matches!(
+            p.kind(),
+            "block"
+                | "expression_case"
+                | "type_case"
+                | "default_case"
+                | "communication_case"
+                | "if_statement"
+                | "for_statement"
+                | "expression_switch_statement"
+                | "type_switch_statement"
+                | "function_declaration"
+                | "method_declaration"
+                | "func_literal"
+        ) {
+            return p;
+        }
+        cur = p;
+    }
+    cur
 }

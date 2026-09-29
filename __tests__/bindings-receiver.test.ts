@@ -196,3 +196,151 @@ func known() { Right{}.Run() }
     expect(targets('known')).not.toContain('Wrong::Run');
   });
 });
+
+describe('block-scoped locals', () => {
+  function callsByLine(caller: string) {
+    const from = graph!.getNodesByKind('function').find(n => n.name === caller)!;
+    expect(from).toBeDefined();
+    return graph!.getOutgoingEdges(from.id).filter(e => e.kind === 'calls')
+      .map(e => `${e.line}:${graph!.getNode(e.target)!.qualifiedName}`).sort();
+  }
+
+  it('types same-named Go locals in sibling blocks, case clauses and an if header separately', async () => {
+    await project({ 'main.go': `package main
+
+type Service struct{}
+
+func NewService() *Service { return &Service{} }
+func (s *Service) Run() {}
+
+type Other struct{}
+
+func NewOther() *Other { return &Other{} }
+func (o *Other) Run() {}
+
+func run(flag bool) {
+	if flag {
+		svc := NewService()
+		svc.Run()
+	} else {
+		svc := NewOther()
+		svc.Run()
+	}
+}
+
+func cases(k int, svc *Service) {
+	switch k {
+	case 1:
+		v := NewService()
+		v.Run()
+	case 2:
+		v := NewOther()
+		v.Run()
+	}
+	if svc := NewOther(); svc != nil {
+		svc.Run()
+	}
+	svc.Run()
+}
+` });
+    expect(callsByLine('run')).toEqual(['15:NewService', '16:Service::Run', '18:NewOther', '19:Other::Run']);
+    expect(callsByLine('cases')).toEqual([
+      '26:NewService', '27:Service::Run', '29:NewOther', '30:Other::Run',
+      '32:NewOther', '33:Other::Run', '35:Service::Run',
+    ]);
+  });
+
+  it('binds a Go function literal parameter and types a conversion to a package type', async () => {
+    await project({
+      'w.go': `package main
+
+type Writer interface{ Written() bool }
+
+type impl struct{}
+
+func (i *impl) Written() bool { return true }
+`,
+      'main.go': `package main
+
+type Context struct{}
+
+func (c *Context) String(s string) {}
+
+type Engine struct{}
+
+func (e *Engine) GET(p string, h func(c *Context)) {}
+
+type Conn struct{}
+
+func Dial() (*Conn, error) { return &Conn{}, nil }
+
+func serve(router *Engine) {
+	go func() {
+		router.GET("/", func(c *Context) { c.String("ok") })
+	}()
+	c, err := Dial()
+	_, _ = c, err
+}
+
+func convert() {
+	w := Writer(&impl{})
+	w.Written()
+}
+`,
+    });
+    expect(callsByLine('serve')).toEqual(['17:Context::String', '17:Engine::GET', '19:Dial']);
+    expect(callsByLine('convert')).toContain('25:Writer::Written');
+  });
+
+  it('types a TS block-local const apart from a sibling block, the parameter it shadows and a hoisted var', async () => {
+    await project({ 'a.ts': `class A { run() {} }
+class B { run() {} }
+function make(): B { return new B(); }
+declare const c: boolean;
+export function go(k: string) {
+  switch (k) {
+    case 'a': { const h = new A(); h.run(); break; }
+    case 'b': { const h = new B(); h.run(); break; }
+  }
+}
+export function shadow(x: A) {
+  if (c) {
+    const x = make();
+    x.run();
+  }
+  x.run();
+}
+export function hoisted() {
+  if (c) {
+    var y = new B();
+  }
+  y.run();
+}
+` });
+    expect(callsByLine('go')).toEqual(['7:A::run', '8:B::run']);
+    expect(callsByLine('shadow')).toEqual(['13:make', '14:B::run', '16:A::run']);
+    expect(callsByLine('hoisted')).toEqual(['22:B::run']);
+  });
+
+  it('does not type a local from an outer declaration its own untypeable declaration shadows', async () => {
+    await project({ 'shadow.ts': `export interface Tree { label(): string }
+export function keep(w: Tree | undefined) { return w?.label(); }
+declare function suite(fn: () => void): void;
+export class Leaf<T> { label() { return 'leaf'; } }
+function load() { return new Leaf<string>(); }
+function loadTyped(): Leaf<string> { return new Leaf<string>(); }
+suite(() => {
+  const w = load();
+  w.label();
+});
+suite(() => {
+  const w = loadTyped();
+  w.label();
+});
+` });
+    const file = graph!.getNodesByKind('file')[0]!;
+    const calls = graph!.getOutgoingEdges(file.id).filter(e => e.kind === 'calls')
+      .map(e => `${e.line}:${graph!.getNode(e.target)!.qualifiedName}`).sort();
+    expect(calls).toEqual(['12:loadTyped', '13:Leaf::label', '8:load']);
+  });
+});
