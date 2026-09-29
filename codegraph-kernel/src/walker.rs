@@ -48,8 +48,10 @@ impl Cand {
     /// A member value that keeps its receiver path (`self.store.fetch`,
     /// `c.store.Fetch`, #1820), anchored at the member name. Only statically
     /// named chains qualify; it skips the defined/imported gate because
-    /// resolution scopes it by receiver instead.
+    /// resolution scopes it by receiver instead. Whitespace around a dot
+    /// (`self . fetch`) is dropped.
     pub fn member(from: u32, path: &str, member: Node) -> Option<Cand> {
+        let path = path.split('.').map(str::trim).collect::<Vec<_>>().join(".");
         let named = path.contains('.')
             && path.split('.').all(|part| {
                 !part.is_empty()
@@ -59,7 +61,7 @@ impl Cand {
             return None;
         }
         let p = member.start_position();
-        Some(Cand { from, name: path.to_string(), line: p.row as u32 + 1, column_byte: member.start_byte(), row: p.row, ungated: true })
+        Some(Cand { from, name: path, line: p.row as u32 + 1, column_byte: member.start_byte(), row: p.row, ungated: true })
     }
 }
 
