@@ -82,6 +82,15 @@ struct Definition {
     is_macro: Truth,
 }
 
+/// The arms of one `#if` block seen so far, and for each name the arms that
+/// `#define`/`#undef` it: (last arm, arms counted, agreed macro-ness).
+#[derive(Default)]
+struct Arms {
+    arm: usize,
+    in_else: bool,
+    defs: HashMap<String, (usize, usize, Truth)>,
+}
+
 /// walkTranslationUnit's state for one root file.
 #[derive(Default)]
 struct TuWalk {
@@ -247,6 +256,7 @@ impl KernelResolver {
         let mut active = inherited;
         // (parent, taken)
         let mut frames: Vec<(Truth, Truth)> = Vec::new();
+        let mut arms: Vec<Arms> = Vec::new();
         for ev in self.summarize(file).iter() {
             match ev {
                 FileEvent::Branch { op, expression, guard } => {
@@ -262,10 +272,18 @@ impl KernelResolver {
                                 selected = Some(true);
                             }
                             frames.push((active, selected));
+                            arms.push(Arms::default());
                             active = and(active, selected);
                         }
-                        "endif" => active = frames.pop().map_or(inherited, |f| f.0),
+                        "endif" => {
+                            active = frames.pop().map_or(inherited, |f| f.0);
+                            arms.pop();
+                        }
                         _ => {
+                            if let Some(a) = arms.last_mut() {
+                                a.arm += 1;
+                                a.in_else = op == "else";
+                            }
                             let test = if op == "else" { Some(true) } else { walk.condition(expression) };
                             if let Some(frame) = frames.last_mut() {
                                 active = and(frame.0, and(not(frame.1), test));
@@ -289,7 +307,23 @@ impl KernelResolver {
                 FileEvent::Define { define, name, line, function_like, value, wraps_itself } => {
                     let prior = walk.definitions.get(name).copied();
                     let is_macro = *define && *function_like && !*wraps_itself;
-                    let now = if active == Some(true) || prior.and_then(|p| p.is_macro) == Some(is_macro) {
+                    // An `#else` that ends a run of arms which all agree settles
+                    // the name whichever arm the build takes.
+                    let exhaustive = match (frames.last(), arms.last_mut()) {
+                        (Some(frame), Some(a)) => {
+                            let e = a.defs.entry(name.clone()).or_insert((usize::MAX, 0, Some(is_macro)));
+                            if e.0 != a.arm {
+                                e.0 = a.arm;
+                                e.1 += 1;
+                            }
+                            if e.2 != Some(is_macro) {
+                                e.2 = None;
+                            }
+                            a.in_else && frame.0 == Some(true) && e.1 == a.arm + 1 && e.2 == Some(is_macro)
+                        }
+                        _ => false,
+                    };
+                    let now = if active == Some(true) || exhaustive || prior.and_then(|p| p.is_macro) == Some(is_macro) {
                         Some(is_macro)
                     } else {
                         None
@@ -350,20 +384,38 @@ impl KernelResolver {
         qualified_names.push(ty.to_string());
 
         for qualified in qualified_names {
-            let has_owner = self
+            let owner_files: HashSet<String> = self
                 .nodes_by_qualified_name(&qualified)?
                 .iter()
-                .any(|n| n.language == "cpp" && matches!(n.kind.as_str(), "class" | "struct" | "union"));
-            if !has_owner {
+                .filter(|n| n.language == "cpp" && matches!(n.kind.as_str(), "class" | "struct" | "union"))
+                .map(|n| n.file_path.clone())
+                .collect();
+            if owner_files.is_empty() {
                 continue;
             }
+            // Same-named types in different files are different types (a
+            // class local to a .cpp, an anonymous namespace). A type the
+            // calling file defines owns the call and only its own file's
+            // constructors; otherwise more than one defining file is ambiguous.
+            let local = owner_files.contains(&r.file_path);
+            if !local && owner_files.len() > 1 {
+                return Ok(None);
+            }
             let ctor_qname = format!("{qualified}::{name}");
-            let constructors: Vec<Arc<KNode>> = self
-                .nodes_by_name(name)?
-                .iter()
-                .filter(|n| n.language == "cpp" && n.kind == "method" && n.qualified_name == ctor_qname)
-                .cloned()
-                .collect();
+            let mut constructors: Vec<Arc<KNode>> = Vec::new();
+            for n in self.nodes_by_name(name)?.iter() {
+                if n.language != "cpp" || n.kind != "method" || n.qualified_name != ctor_qname {
+                    continue;
+                }
+                if local && n.file_path != r.file_path {
+                    continue;
+                }
+                // A deleted overload is never the one a valid program calls.
+                if self.is_deleted_function(n) {
+                    continue;
+                }
+                constructors.push(n.clone());
+            }
             // Brace-init prefers an initializer_list overload over arity —
             // that choice needs the argument types, so decline.
             if constructors.iter().any(|n| re!(r"\binitializer_list\b").is_match(n.signature.as_deref().unwrap_or(""))) {
@@ -396,6 +448,17 @@ impl KernelResolver {
             });
         }
         Ok(None)
+    }
+}
+
+impl KernelResolver {
+    /// `T(const T &) = delete;` — the declaration ends in `= delete`.
+    fn is_deleted_function(&mut self, node: &KNode) -> bool {
+        let Some(lines) = self.read_file(&node.file_path) else { return false };
+        let lo = (node.start_line - 1).max(0) as usize;
+        let hi = (node.end_line.max(node.start_line) as usize).min(lines.len());
+        let text = lines.get(lo..hi).unwrap_or(&[]).join("\n");
+        re!(r"\)[^;{]*=\s*delete\s*;").is_match(&text)
     }
 }
 

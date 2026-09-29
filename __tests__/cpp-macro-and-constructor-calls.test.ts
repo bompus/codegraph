@@ -678,3 +678,76 @@ describe('#2070 — a call through a function-like macro never binds to a same-n
     }
   });
 });
+
+describe('constructor and macro identity across files and arms', () => {
+  it('a type defined in the calling file owns its constructors; same-named types elsewhere do not', async () => {
+    const cg = await indexed({
+      'torture.cpp': 'class Widget {\npublic:\n  int GetHealth() const { return 1; }\n};\nint drive() {\n  Widget local;\n  return local.GetHealth();\n}\n',
+      'widget.cpp': 'class Widget {\npublic:\n  Widget();\n  explicit Widget(int value);\n};\nWidget::Widget() {}\nWidget::Widget(int value) {}\n',
+      'a.cpp': 'namespace { struct Fixture { Fixture() {} }; }\nvoid fa() { Fixture f; }\n',
+      'b.cpp': 'namespace { struct Fixture { Fixture() {} }; }\nvoid fb() { Fixture f; }\n',
+    });
+    try {
+      expect(calls(cg, 'drive')).toEqual(['method Widget::GetHealth (torture.cpp)']);
+      expect(calls(cg, 'fa')).toEqual(['method Fixture::Fixture (a.cpp)']);
+      expect(calls(cg, 'fb')).toEqual(['method Fixture::Fixture (b.cpp)']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('a deleted constructor is not an overload a call can reach', async () => {
+    const cg = await indexed({
+      'case.cpp': [
+        'class WithConstructor {',
+        'public:',
+        '    WithConstructor();',
+        '    explicit WithConstructor(int value);',
+        '    WithConstructor(const WithConstructor &) = delete;',
+        '};',
+        'WithConstructor::WithConstructor() {}',
+        'WithConstructor::WithConstructor(int value) {}',
+        'void constructor_value() { WithConstructor item(1); }',
+        '',
+      ].join('\n'),
+    });
+    try {
+      const signatures = cg
+        .getCallees(fn(cg, 'constructor_value').id)
+        .filter((r) => r.edge.kind === 'calls')
+        .map((r) => r.node.signature);
+      expect(signatures).toEqual(['(int value)']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('a function-like macro defined in every arm of an unknown #ifdef is a macro in every build', async () => {
+    const cg = await indexed({
+      'config.h': '#if FREE_THREADED == 0\n#undef FREE_THREADED\n#endif\n',
+      'unit.c': [
+        '#include "config.h"',
+        'int world_stopped(void) { return 0; }',
+        '#ifdef FREE_THREADED',
+        '#define world_stopped() stop_world_ft()',
+        '#else',
+        '#define world_stopped() 1',
+        '#endif',
+        'int check(void) { return world_stopped(); }',
+        '#ifdef FREE_THREADED',
+        '#define half_stopped() 1',
+        '#endif',
+        'int half_stopped(void) { return 0; }',
+        'int partial(void) { return half_stopped(); }',
+        '',
+      ].join('\n'),
+    });
+    try {
+      expect(calls(cg, 'check')).toEqual([]);
+      // Defined in one arm only: the function stays reachable.
+      expect(calls(cg, 'partial')).toEqual(['function half_stopped (unit.c)']);
+    } finally {
+      cg.close();
+    }
+  });
+});
