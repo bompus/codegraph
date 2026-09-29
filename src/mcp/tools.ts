@@ -273,7 +273,7 @@ export interface ExploreOutputBudget {
   includeRelationships: boolean;
   /** Include the "Additional relevant files (not shown)" trailing list. */
   includeAdditionalFiles: boolean;
-  /** Include the "Source for N files is included above…" reminder. */
+  /** Include the "… source for N files is included above" reminder. */
   includeCompletenessSignal: boolean;
   /**
    * Include the advisory exploration-guidance note at the end. Purely
