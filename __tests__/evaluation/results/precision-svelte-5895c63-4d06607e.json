@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-09-29T14:09:09.367Z",
+  "corpus": "svelte",
+  "repo": "https://github.com/sveltejs/svelte.git",
+  "commit": "5895c63",
+  "codegraphSha": "4d06607e",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 0,
+    "presentHeld": 0,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 37891,
+    "exact-match": 15803,
+    "import": 13110,
+    "qualified-name": 3009,
+    "instance-method": 379,
+    "function-ref": 303,
+    "framework": 213,
+    "fuzzy": 117,
+    "file-path": 70
+  },
+  "edges": 70895,
+  "results": [
+    {
+      "caseId": "svelte-bare-import-bundle",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ]
+}
