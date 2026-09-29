@@ -864,6 +864,9 @@ impl KernelResolver {
         let from = ((value.start_line - 1).max(0) as usize).min(lines.len());
         let to = (value.end_line.max(0) as usize).clamp(from, lines.len());
         let decl = lines[from..to].join("\n");
+        // The type is named in the value's file, so ties break there.
+        let mut site = r.clone();
+        site.file_path = value.file_path.clone();
         for pat in pats {
             let Some(type_name) =
                 self.infer_match_text(&decl, &value.name, std::slice::from_ref(pat), false)?
@@ -871,7 +874,7 @@ impl KernelResolver {
                 continue;
             };
             if let Some(c) =
-                self.resolve_method_on_type(&type_name, member, r, 0.85, "instance-method", None)?
+                self.resolve_method_on_type(&type_name, member, &site, 0.85, "instance-method", None)?
             {
                 return Ok(Some(c));
             }

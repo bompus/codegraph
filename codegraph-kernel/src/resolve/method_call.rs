@@ -92,9 +92,11 @@ impl KernelResolver {
         }
         let return_kw = re!(r"(?-u:\b)return(?-u:\b)");
         let return_ident = re!(r"^\s*return\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*(?://.*)?$");
+        let own_lines = own_return_lines(&lines[lo..hi].join("\n"));
         let mut returned: Option<(String, i64)> = None;
         for (i, line) in lines[lo..hi].iter().enumerate() {
-            if !return_kw.is_match(line) {
+            // A `return` inside a nested callback returns from the callback.
+            if !return_kw.is_match(line) || !own_lines.contains(&i) {
                 continue;
             }
             let Some(m) = return_ident.captures(line) else {
@@ -362,10 +364,15 @@ impl KernelResolver {
                     if let Some(a) =
                         probe!(r, "mc:await", self.infer_esm_awaited_call_type(&object_or_class, r)?)
                     {
-                        match a.name {
-                            Some(t) if !TS_PRIMITIVE_TYPES.contains(t.as_str()) => inferred = Some(t),
-                            _ => return Ok(None),
-                        }
+                        return match a.name {
+                            Some(t) if !TS_PRIMITIVE_TYPES.contains(t.as_str()) => {
+                                let mut tsite = r.clone();
+                                tsite.file_path = a.file_path;
+                                tsite.line = a.line;
+                                self.match_bound_type_member(&t, &method_name, &tsite)
+                            }
+                            _ => Ok(None),
+                        };
                     }
                 }
                 // `recv->fp(...)` / `x.fp(...)` with an unrecoverable
@@ -634,11 +641,7 @@ impl KernelResolver {
 
         // Strategy 2 — capitalized receiver (`permissionEngine` →
         // `PermissionEngine`) against the same class scan.
-        let mut cap_bytes = object_or_class.clone().into_bytes();
-        if let Some(b) = cap_bytes.first_mut() {
-            *b = b.to_ascii_uppercase();
-        }
-        let capitalized = String::from_utf8(cap_bytes).unwrap_or_default();
+        let capitalized = capitalize_first(&object_or_class);
         if capitalized != object_or_class {
             if let Some(hit) = self.class_method_scan(&capitalized, &method_name, r, 0.8, "instance-method")? {
                 return Ok(Some(hit));
@@ -951,4 +954,88 @@ pub(super) struct FactoryInit {
     awaited: bool,
     callee: Option<String>,
     owner: Option<String>,
+}
+
+/// The 0-based lines of `body` (a function's source) holding a `return` of
+/// that function itself: no function body opens between the outermost
+/// brace and the `return` (`=> {`, `function … {`, `name(…) {` that is not
+/// `if`/`for`/`while`/`switch`/`catch`/`with`). Control-flow blocks count.
+fn own_return_lines(body: &str) -> HashSet<usize> {
+    let code = super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(body));
+    let return_kw = re!(r"(?-u:\b)return(?-u:\b)");
+    let returns: Vec<usize> = return_kw.find_iter(&code).map(|m| m.start()).collect();
+    let mut own = HashSet::new();
+    let mut stack: Vec<bool> = Vec::new();
+    let mut next = 0;
+    let mut line = 0;
+    for (i, b) in code.bytes().enumerate() {
+        if next < returns.len() && returns[next] == i {
+            if !stack.iter().skip(1).any(|&is_fn| is_fn) {
+                own.insert(line);
+            }
+            next += 1;
+        }
+        match b {
+            b'\n' => line += 1,
+            b'{' => stack.push(opens_function_body(&code[..i])),
+            b'}' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    own
+}
+
+/// Does a `{` after `prefix` open a function body rather than a block or
+/// an object literal?
+fn opens_function_body(prefix: &str) -> bool {
+    let p = prefix.trim_end();
+    // `function name(…): T {` — the keyword after the last statement or brace.
+    let tail = &p[p.rfind(['{', '}', ';']).map_or(0, |k| k + 1)..];
+    if p.ends_with("=>") || re!(r"(?:^|[^A-Za-z0-9_$])function(?-u:\b)").is_match(tail) {
+        return true;
+    }
+    let Some(head) = p.strip_suffix(')') else {
+        return false;
+    };
+    let mut depth = 1;
+    let mut open = None;
+    for (k, c) in head.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open = Some(k);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(open) = open else { return false };
+    let word = head[..open].trim_end();
+    let word = &word[word.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$')).map_or(0, |k| k + 1)..];
+    !word.is_empty() && !matches!(word, "if" | "for" | "while" | "switch" | "catch" | "with")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn own(body: &str) -> Vec<usize> {
+        let mut v: Vec<usize> = own_return_lines(body).into_iter().collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn own_returns_skip_nested_function_bodies() {
+        assert_eq!(own("function f() {\n  onMount(() => {\n    return i;\n  });\n}"), Vec::<usize>::new());
+        assert_eq!(own("function f() {\n  if (x) {\n    return i;\n  }\n}"), vec![2]);
+        assert_eq!(own("function f() {\n  const o = { m() {\n    return 1;\n  } };\n  return i;\n}"), vec![4]);
+        assert_eq!(own("function f({ a }: { a: T }): R {\n  const g = function () {\n    return 1;\n  };\n  return i;\n}"), vec![4]);
+        assert_eq!(own("function f() {\n  const re = /\\}/;\n  return i;\n}"), vec![2]);
+    }
 }

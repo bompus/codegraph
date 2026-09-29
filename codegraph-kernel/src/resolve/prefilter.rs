@@ -289,6 +289,13 @@ impl KernelResolver {
 }
 
 impl KernelResolver {
+    /// A parameter binds the bare name at the ref line. It has no node, so
+    /// the name has no target, not even a same-file declaration.
+    pub(super) fn is_param_shadowed(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let rows = self.bindings(&r.file_path)?;
+        Ok(innermost_binding(&rows, &r.reference_name, Some(r.line)).is_some_and(|b| b.kind == "param"))
+    }
+
     /// isMemberCallSite (import-resolver.ts): a bare-named JS/TS call that is
     /// really a member call — the extractor keeps only `save` for
     /// `this.save()` and `(a.b).save()`. The ref column is the start of the
