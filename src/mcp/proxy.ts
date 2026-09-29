@@ -332,6 +332,12 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
         writeClient({ jsonrpc: '2.0', id: msg.id, result: { resourceTemplates: [] } });
       } else if (msg.method === 'prompts/list') {
         writeClient({ jsonrpc: '2.0', id: msg.id, result: { prompts: [] } });
+      } else if (msg.method === 'server/discover' && msg.id !== undefined) {
+        // A dual-era client (Claude Code) probes this before `initialize` and
+        // holds the handshake until it hears back. Method-not-found is the
+        // legacy-server answer that sends it to `initialize`; forwarded, the
+        // probe waited on the daemon connection, about 6 s when it was down.
+        writeClient({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found: server/discover' } });
       } else {
         routeToDaemon(line);
       }

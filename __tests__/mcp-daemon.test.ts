@@ -533,6 +533,30 @@ describe('Shared MCP daemon (issue #411)', () => {
     }
   }, 30000);
 
+  it('answers a server/discover probe as a legacy server without waiting on the daemon', async () => {
+    const net = await import('net');
+    const sockPath = getDaemonSocketPath(realRoot);
+    // A daemon that never becomes usable: the probe used to wait out the
+    // connection attempts and then fail with "daemon unavailable".
+    const miniServer = net.createServer((sock) => {
+      sock.end(JSON.stringify({
+        codegraph: '0.0.0-mismatch', pid: process.pid, socketPath: sockPath, protocol: 1,
+      }) + '\n');
+    });
+    await new Promise<void>((resolve) => miniServer.listen(sockPath, resolve));
+    try {
+      const server = spawnServer(tempDir, {}, ['--no-watch']);
+      servers.push(server);
+      sendMessage(server.child, { jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} });
+      const reply = await waitFor(() => findResponse(server.stdout, 1), 10000);
+      expect(reply.error.code).toBe(-32601);
+      sendInitialize(server.child, `file://${tempDir}`, 2);
+      expect((await waitFor(() => findResponse(server.stdout, 2), 10000)).result.protocolVersion).toBeDefined();
+    } finally {
+      await new Promise<void>((resolve) => miniServer.close(() => resolve()));
+    }
+  }, 30000);
+
   it('clears a stale (dead-pid) lockfile and a fresh daemon takes over', async () => {
     // Plant a lockfile pointing at a definitely-dead pid + the real socket path.
     fs.writeFileSync(
