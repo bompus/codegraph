@@ -3,7 +3,7 @@
   "corpus": "petclinic",
   "repo": "https://github.com/spring-projects/spring-petclinic.git",
   "commit": "818c413",
-  "codegraphSha": "f5bce40d",
+  "codegraphSha": "629d8bf5",
   "summary": {
     "absentCases": 0,
     "absentHeld": 0,

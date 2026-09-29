@@ -3,7 +3,7 @@
   "corpus": "slim",
   "repo": "https://github.com/slimphp/Slim.git",
   "commit": "3675bf6",
-  "codegraphSha": "f5bce40d",
+  "codegraphSha": "629d8bf5",
   "summary": {
     "absentCases": 0,
     "absentHeld": 0,
