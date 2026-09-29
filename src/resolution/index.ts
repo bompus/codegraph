@@ -862,6 +862,7 @@ export class ReferenceResolver {
     // A final miss (the chain branch) keeps only a ≥0.9 framework hit.
     if (outcome.isFinal) return verdict ?? this.applyResolveTail(null, ref);
     if (!outcome.candidates && verdict) return verdict;
+    const frameworkCount = candidates.length;
     for (const kc of outcome.candidates ?? []) {
       candidates.push({
         original: ref,
@@ -876,6 +877,9 @@ export class ReferenceResolver {
       return this.applyResolveTail(null, ref);
     }
     const winner = candidates.reduce((best, curr) => (curr.confidence > best.confidence ? curr : best));
+    // The kernel's own winner already took (or declined) the alias forward
+    // under the object-literal rules; the tail's regex hop would overrule it.
+    if (verdict && candidates.indexOf(winner) >= frameworkCount) return verdict;
     return this.applyResolveTail(this.gateTargetKind(winner, ref), ref);
   }
 

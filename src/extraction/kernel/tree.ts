@@ -256,7 +256,9 @@ export class NativeNode {
       const n = node.childCount;
       for (let i = 0; i < n; i++) {
         const c = node.child(i)!;
-        if (before(c.startPosition, start) && before(end, c.endPosition)) {
+        // Tree-sitter's rule: the child must also end strictly after `start`,
+        // so a point where one token ends and the next begins picks the next.
+        if (before(c.startPosition, start) && before(end, c.endPosition) && !before(c.endPosition, start)) {
           next = c;
           break;
         }
@@ -273,7 +275,7 @@ export class NativeNode {
       const n = node.childCount;
       for (let i = 0; i < n; i++) {
         const c = node.child(i)!;
-        if (c.startIndex <= start && end <= c.endIndex) {
+        if (c.startIndex <= start && end <= c.endIndex && c.endIndex > start) {
           next = c;
           break;
         }

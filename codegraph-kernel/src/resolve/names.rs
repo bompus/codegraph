@@ -479,6 +479,9 @@ impl KernelResolver {
         let bare_js = self.is_bare_js_call(r)?;
         let bare_go = self.is_bare_go_call(r)?;
         if bare_js {
+            if self.is_param_shadowed(r)? {
+                return Ok(None);
+            }
             if let Some(c) = self.match_js_store_binding_call(r)? {
                 return Ok(Some(c));
             }
@@ -658,7 +661,11 @@ impl KernelResolver {
                             Some(r.line),
                         )?));
             let bare_decline = bare_decline || (only.kind == "method" && self.is_bare_go_call(r)?);
-            let shadowed = only.file_path != r.file_path && self.is_shadowed_import_name(r)?;
+            let shadowed = if only.file_path != r.file_path {
+                self.is_shadowed_import_name(r)?
+            } else {
+                self.is_bare_js_call(r)? && self.is_param_shadowed(r)?
+            };
             let reachable = reachable && !bare_decline && !shadowed && self.is_lexically_reachable(&only, r)?;
             if reachable {
                 let cross = only.language != r.language;

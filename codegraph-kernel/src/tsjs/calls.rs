@@ -4,7 +4,8 @@ use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
-    /// Identifier-rooted nested receivers retain their full call-site text.
+    /// Identifier-rooted member chains have no inferred property type (#1566),
+    /// including host API chains (#1707) and `window.` namespaces.
     pub(super) fn is_identifier_chain(&self, receiver: Node<'t>) -> bool {
         let mut cur = receiver;
         if !matches!(cur.kind(), "member_expression" | "subscript_expression") {
@@ -17,23 +18,6 @@ impl<'t> Walker<'t> {
             }
         }
         cur.kind() == "identifier"
-    }
-
-    /// Identifier-rooted member chains have no inferred property type (#1566),
-    /// including host API chains (#1707). Keep the existing window namespace
-    /// escape; call-result and `this` receivers are outside this guard.
-    pub(super) fn is_unresolved_member_chain(&self, receiver: Node<'t>) -> bool {
-        let mut cur = receiver;
-        if !matches!(cur.kind(), "member_expression" | "subscript_expression") {
-            return false;
-        }
-        while matches!(cur.kind(), "member_expression" | "subscript_expression") {
-            match cur.child_by_field_name("object") {
-                Some(next) => cur = next,
-                None => return false,
-            }
-        }
-        cur.kind() == "identifier" && self.text(cur) != "window"
     }
 
     pub(super) fn extract_call(&mut self, node: Node<'t>) {
@@ -96,9 +80,10 @@ impl<'t> Walker<'t> {
                         } else {
                             callee_name = method_name.to_string();
                         }
-                    } else if receiver.is_some_and(|r| self.is_unresolved_member_chain(r)) {
-                        // Retain the call site for effects without guessing a
-                        // project method. Mirrors the TS extraction path.
+                    } else if receiver.is_some_and(|r| self.is_identifier_chain(r)) {
+                        // Retain the call site for effects and frameworks
+                        // (#1794) without guessing a project method. Mirrors
+                        // the TS extraction path.
                         let chain = self.text(func).replace("?.", ".");
                         let Some(chain) = Self::plain_member_name(&chain) else { return };
                         callee_name = chain;
@@ -114,10 +99,6 @@ impl<'t> Walker<'t> {
                         // TreeSitterExtractor.extractCall.
                         let Some(inner) = self.plain_inner_callee(r) else { return };
                         callee_name = format!("{inner}().{method_name}");
-                    } else if let Some(r) = receiver.filter(|r| self.is_identifier_chain(*r)) {
-                        // Frameworks and Steps need the call site even when
-                        // generic resolution cannot prove a target (#1794).
-                        callee_name = format!("{}.{method_name}", self.text(r));
                     } else if receiver.is_some_and(|r| !keeps_bare_receiver(r, self.src)) {
                         // An expression receiver with no static type
                         // (`(a ?? b).map()`, `f().list.map()`): emit nothing

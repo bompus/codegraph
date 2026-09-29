@@ -36,7 +36,10 @@ struct Scope {
 /// receiver of unknown type, which must not fall back to an unrelated method.
 pub(super) struct AwaitedType {
     pub(super) name: Option<String>,
+    /// Where the type is declared: its member lookup runs from here, not
+    /// from the awaiting call site.
     pub(super) file_path: String,
+    pub(super) line: i64,
 }
 
 fn is_word(b: u8) -> bool {
@@ -120,8 +123,9 @@ pub(super) fn strip_ts_comments(src: &str) -> String {
     out
 }
 
-/// blankStringContents: string (and template) contents blanked, quotes and
-/// newlines kept; a regex literal's body is skipped so its quotes stay data.
+/// blankStringContents: string (and template) contents and regex literal
+/// bodies blanked, quotes, slashes and newlines kept, so a `}` or quote in
+/// `/\}/` is never read as code.
 pub(super) fn blank_string_contents(text: &str) -> String {
     let s: Vec<char> = text.chars().collect();
     let n = s.len();
@@ -170,6 +174,9 @@ pub(super) fn blank_string_contents(text: &str) -> String {
                     end += 1;
                 }
                 if end < n && s[end] == '/' {
+                    for slot in &mut out[i + 1..end] {
+                        *slot = None;
+                    }
                     i = end + 1;
                     continue;
                 }
@@ -461,7 +468,7 @@ impl KernelResolver {
         file: &AwaitedIndex,
         r: &ResolveRefIn,
     ) -> Res<Option<AwaitedType>> {
-        let unknown = || Ok(Some(AwaitedType { name: None, file_path: r.file_path.clone() }));
+        let unknown = || Ok(Some(AwaitedType { name: None, file_path: r.file_path.clone(), line: r.line }));
         let base = usize::try_from(r.line - 1)
             .ok()
             .and_then(|l| file.offsets.get(l).copied())
@@ -589,7 +596,7 @@ impl KernelResolver {
             return unknown();
         }
         if TS_PRIMITIVE_TYPES.contains(returned.as_str()) {
-            return Ok(Some(AwaitedType { name: Some(returned), file_path: declaring.file_path.clone() }));
+            return Ok(Some(AwaitedType { name: Some(returned), file_path: declaring.file_path.clone(), line: declaring.start_line }));
         }
 
         let type_import = self
@@ -618,7 +625,7 @@ impl KernelResolver {
         };
         match type_node {
             Some(t) if t.kind == "class" || t.kind == "interface" => {
-                Ok(Some(AwaitedType { name: Some(t.name.clone()), file_path: t.file_path.clone() }))
+                Ok(Some(AwaitedType { name: Some(t.name.clone()), file_path: t.file_path.clone(), line: t.start_line }))
             }
             _ => unknown(),
         }

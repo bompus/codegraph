@@ -245,6 +245,13 @@ impl KernelResolver {
         if !call_ends_initializer(&lines[at..lines.len().min(at + 80)], m.get(0).unwrap().end()) {
             return Ok(None);
         }
+        // A parameter or local named like the factory hides the declaration.
+        let bindings = self.bindings(&site.file_path)?;
+        if innermost_binding(&bindings, &m[2], Some((at + 1) as i64))
+            .is_some_and(|b| b.kind == "param" || b.kind == "local")
+        {
+            return Ok(None);
+        }
         let candidates: Vec<Arc<KNode>> = match m.get(3) {
             Some(method) => {
                 let want = format!("{}::{}", &m[2], method.as_str());

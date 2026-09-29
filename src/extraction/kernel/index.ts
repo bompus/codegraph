@@ -228,16 +228,20 @@ export function tryKernelBindings(filePath: string, source: string, language: La
  * shadowing, sealed-module and export questions.
  */
 export function attachBindingNodeIds(bindings: Binding[], nodes: Node[]): Binding[] {
-  const byNameLine = new Map<string, string>();
+  // Same-line namesakes (`function y() {}; function y(n) {}`) pair up in
+  // source order; a surplus row takes the first node.
+  const byNameLine = new Map<string, { ids: string[]; next: number }>();
   for (const n of nodes) {
     if (n.kind === 'file' || n.kind === 'import') continue;
     const key = `${n.name}\0${n.startLine}`;
-    if (!byNameLine.has(key)) byNameLine.set(key, n.id);
+    const slot = byNameLine.get(key);
+    if (slot) slot.ids.push(n.id);
+    else byNameLine.set(key, { ids: [n.id], next: 0 });
   }
   for (const b of bindings) {
     if (b.nodeId !== undefined || (b.kind !== 'decl' && b.kind !== 'import' && b.kind !== 'local')) continue;
-    const id = byNameLine.get(`${b.name}\0${b.line}`);
-    if (id) b.nodeId = id;
+    const slot = byNameLine.get(`${b.name}\0${b.line}`);
+    if (slot) b.nodeId = slot.ids[slot.next++] ?? slot.ids[0];
   }
   return bindings;
 }
