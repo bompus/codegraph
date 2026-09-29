@@ -332,6 +332,10 @@ impl<'t> Walker<'t> {
         }
         if matches!(kind, "short_var_declaration" | "var_declaration" | "range_clause") {
             self.emit_local_rows(node);
+        } else if kind == "func_literal" {
+            // A literal's parameters shadow the enclosing function's names
+            // for its body, as a named function's do.
+            self.emit_param_bindings(node);
         }
 
         if kind == "function_declaration" {
