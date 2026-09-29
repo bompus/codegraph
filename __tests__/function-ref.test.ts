@@ -707,6 +707,42 @@ describe('Function-as-value capture (#756)', () => {
     }
   });
 
+  it('PHP: only the callable argument of a HOF, and only a literal string, names a function', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-php-args-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'main.php'),
+      [
+        '<?php',
+        'function send($x) {}',
+        'function archive() {}',
+        'function handle($x) {}',
+        'function cmp($a, $b) {}',
+        'class K {',
+        '    function m() {}',
+        '    function run($suffix, $items) {',
+        "        call_user_func('send', 'archive');", // 'archive' is data
+        "        array_map(\"handle{$suffix}\", $items);", // no fixed callable
+        "        array_map([$this, \"m{$suffix}\"], $items);",
+        "        array_udiff($items, $items, 'cmp');", // callable last
+        '    }',
+        '}',
+      ].join('\n')
+    );
+
+    const cg = CodeGraph.initSync(tmpDir);
+    try {
+      await cg.indexAll();
+      expect(sourceNames(cg, fnRefEdgesInto(cg, 'send'))).toEqual(['run']);
+      expect(sourceNames(cg, fnRefEdgesInto(cg, 'cmp'))).toEqual(['run']);
+      expect(fnRefEdgesInto(cg, 'archive')).toEqual([]);
+      expect(fnRefEdgesInto(cg, 'handle')).toEqual([]);
+      expect(fnRefEdgesInto(cg, 'm')).toEqual([]);
+    } finally {
+      cg.destroy();
+      tmpDir = undefined;
+    }
+  });
+
   it('RUBY HOOKS: before_action/rescue_from symbols resolve class-scoped incl. inherited; validates is excluded', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-rubyhooks-'));
     fs.writeFileSync(

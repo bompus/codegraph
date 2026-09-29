@@ -366,24 +366,35 @@ const PASCAL_SPEC: FnRefSpec = {
  * Deliberately core-PHP only; framework registries (WordPress `add_action`)
  * belong in a frameworks/ resolver if ever added.
  */
-const PHP_CALLABLE_HOFS = new Set([
-  'array_map', 'array_filter', 'array_walk', 'array_walk_recursive', 'array_reduce',
-  'usort', 'uasort', 'uksort',
-  'array_udiff', 'array_udiff_assoc', 'array_uintersect', 'array_uintersect_assoc',
-  'call_user_func', 'call_user_func_array',
-  'forward_static_call', 'forward_static_call_array',
-  'preg_replace_callback', 'preg_replace_callback_array',
-  'register_shutdown_function', 'register_tick_function',
-  'set_error_handler', 'set_exception_handler', 'spl_autoload_register',
-  'ob_start', 'iterator_apply', 'header_register_callback',
-  'is_callable',
+/**
+ * Where each callable-taking core function takes its callable: `array_map($cb,
+ * $a)` first, `usort($a, $cb)` second, the `array_udiff` family last
+ * (`'last'`). Its other arguments are data, so a string there names nothing.
+ */
+const PHP_CALLABLE_ARG = new Map<string, number | 'last'>([
+  ...['array_map', 'call_user_func', 'call_user_func_array', 'forward_static_call', 'forward_static_call_array',
+    'register_shutdown_function', 'register_tick_function', 'set_error_handler', 'set_exception_handler',
+    'spl_autoload_register', 'ob_start', 'header_register_callback', 'is_callable'].map(n => [n, 0] as const),
+  ...['array_filter', 'array_walk', 'array_walk_recursive', 'array_reduce', 'usort', 'uasort', 'uksort',
+    'preg_replace_callback', 'iterator_apply'].map(n => [n, 1] as const),
+  ...['array_udiff', 'array_udiff_assoc', 'array_uintersect', 'array_uintersect_assoc'].map(n => [n, 'last'] as const),
 ]);
+
+/** Whether `arg`, an `argument` of a call to `name`, is that call's callable. */
+function phpIsCallableArg(name: string, arg: SyntaxNode): boolean {
+  const pos = PHP_CALLABLE_ARG.get(name);
+  if (pos === undefined) return false;
+  if (getChildByField(arg, 'name')) return true; // `callback: 'f'` counts wherever it sits
+  const args = (arg.parent?.namedChildren ?? []).filter(n => n?.type === 'argument');
+  const i = args.findIndex(a => a?.id === arg.id);
+  return i >= 0 && (pos === 'last' ? i === args.length - 1 : i === pos);
+}
 
 const PHP_SPEC: FnRefSpec = {
   // PHP has no bare-identifier function values (the first-class callable
   // `fn(...)` already extracts as a `calls` edge). What qualifies:
   //  - a string argument to a known callable-taking core function
-  //    (`usort($a, 'cmp_items')`) — see PHP_CALLABLE_HOFS
+  //    (`usort($a, 'cmp_items')`) — see PHP_CALLABLE_ARG
   //  - array callables: `[$this, 'method']` (class-scoped) and
   //    `[Foo::class, 'method']` (qualified), in any call's arguments
   idTypes: new Set<string>(),
@@ -781,7 +792,10 @@ function normalizeSpecial(
     case 'encapsed_string':
     case 'string': {
       const callee = phpEnclosingCallName(node);
-      if (!callee || !PHP_CALLABLE_HOFS.has(callee)) return [];
+      if (!callee) return [];
+      let arg: SyntaxNode | null = node.parent;
+      for (let hops = 0; arg && arg.type !== 'argument' && hops < 3; hops++) arg = arg.parent;
+      if (!arg || arg.type !== 'argument' || !phpIsCallableArg(callee, arg)) return [];
       const content = phpStringContent(node, source);
       if (!content) return [];
       if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(content)) {
@@ -839,11 +853,9 @@ function normalizeSpecial(
 
 /** Content of a PHP string literal node (single- or double-quoted). */
 function phpStringContent(node: SyntaxNode, source: string): string | null {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === 'string_content') return getNodeText(child, source).trim();
-  }
-  return null;
+  // An interpolated string (`"handle{$suffix}"`) names no fixed callable.
+  const child = node.namedChildCount === 1 ? node.namedChild(0) : null;
+  return child?.type === 'string_content' ? getNodeText(child, source).trim() : null;
 }
 
 /** The function name of the PHP call whose arguments contain `node`, if any. */
