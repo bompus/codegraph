@@ -266,7 +266,7 @@ impl KernelResolver {
     /// The C3 method resolution order of a Python class over its indexed
     /// `extends` edges (in base-list order); None when the bases admit no
     /// consistent order, which Python itself rejects.
-    fn python_mro(&mut self, class: &Arc<KNode>, depth: u32) -> Res<Option<Vec<Arc<KNode>>>> {
+    pub(super) fn python_mro(&mut self, class: &Arc<KNode>, depth: u32) -> Res<Option<Vec<Arc<KNode>>>> {
         if depth > 16 {
             return Ok(None);
         }
