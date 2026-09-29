@@ -3,7 +3,7 @@
 use super::*;
 
 /// Node kinds a bound receiver type can resolve to.
-const TYPE_OWNER_KINDS: [&str; 6] = ["class", "struct", "interface", "component", "type_alias", "union"];
+const TYPE_OWNER_KINDS: [&str; 7] = ["class", "struct", "interface", "enum", "component", "type_alias", "union"];
 
 impl KernelResolver {
     /// resolveBoundType — the declared type's owner node: Java type-parameter
@@ -217,6 +217,17 @@ impl KernelResolver {
         // An inherited class method is the one that runs, so the superclass
         // chain goes first; an interface on the owner would otherwise answer
         // with its bodiless declaration.
+        if owner.language == "python" && is_class_like(&owner.kind) {
+            // Python looks a method up along the C3 linearization, which
+            // reaches a shared base only after every class deriving it.
+            let Some(mro) = self.python_mro(&owner, 0)? else { return Ok(None) };
+            for class in mro.iter().skip(1) {
+                if let Some(m) = self.own_bound_member(class, method, site)? {
+                    return Ok(Some(bound_member_cand(m)));
+                }
+            }
+            return Ok(None);
+        }
         if is_class_like(&owner.kind) {
             let mut class = owner.clone();
             let mut chain: HashSet<String> = HashSet::from([owner.id.clone()]);
@@ -250,6 +261,50 @@ impl KernelResolver {
             pending.extend(self.supertype_nodes(&type_node.id)?);
         }
         Ok(None)
+    }
+
+    /// The C3 method resolution order of a Python class over its indexed
+    /// `extends` edges (in base-list order); None when the bases admit no
+    /// consistent order, which Python itself rejects.
+    fn python_mro(&mut self, class: &Arc<KNode>, depth: u32) -> Res<Option<Vec<Arc<KNode>>>> {
+        if depth > 16 {
+            return Ok(None);
+        }
+        let mut bases: Vec<Arc<KNode>> = Vec::new();
+        for t in self.outgoing_edge_targets(&class.id, &["extends"])? {
+            if let Some(n) = self.node_by_id(&t)?.filter(|n| is_class_like(&n.kind)) {
+                if !bases.iter().any(|b| b.id == n.id) {
+                    bases.push(n);
+                }
+            }
+        }
+        let mut seqs: Vec<Vec<Arc<KNode>>> = Vec::with_capacity(bases.len() + 1);
+        for b in &bases {
+            let Some(m) = self.python_mro(b, depth + 1)? else { return Ok(None) };
+            seqs.push(m);
+        }
+        seqs.push(bases);
+        let mut out = vec![class.clone()];
+        loop {
+            seqs.retain(|q| !q.is_empty());
+            if seqs.is_empty() {
+                return Ok(Some(out));
+            }
+            // The first head that appears in no other sequence's tail.
+            let Some(head) = seqs
+                .iter()
+                .map(|q| q[0].clone())
+                .find(|h| !seqs.iter().any(|q| q[1..].iter().any(|n| n.id == h.id)))
+            else {
+                return Ok(None);
+            };
+            for q in seqs.iter_mut() {
+                if q[0].id == head.id {
+                    q.remove(0);
+                }
+            }
+            out.push(head);
+        }
     }
 
     /// matchBoundTypeMember's per-type member rule: `Owner::method`, a
@@ -295,20 +350,26 @@ impl KernelResolver {
 
     /// context.getSupertypes: the distinct names (first-seen order) of what
     /// every same-language, supertype-bearing node named `type_name` extends
-    /// or implements, excluding the name itself.
-    fn supertype_names(&mut self, type_name: &str, language: &str) -> Res<Vec<String>> {
+    /// or implements, excluding the name itself. `from_site`: the name was
+    /// written at `r`, so a Java type must also be one `r` can see (its
+    /// file, its package, or an import) — an unrelated same-named class
+    /// elsewhere contributes nothing.
+    fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool) -> Res<Vec<String>> {
         let type_nodes: Vec<Arc<KNode>> = self
             .nodes_by_name(type_name)?
             .iter()
             // Scala singletons can inherit members even though they cannot be parents.
             .filter(|n| {
-                n.language == language
+                n.language == r.language
                     && (is_supertype_bearing_kind(&n.kind) || (n.language == "scala" && n.kind == "module"))
             })
             .cloned()
             .collect();
         let mut names: Vec<String> = Vec::new();
         for tn in type_nodes {
+            if from_site && r.language == "java" && !self.java_type_visible(&tn, r)? {
+                continue;
+            }
             for target in self.supertype_nodes(&tn.id)? {
                 if !target.name.is_empty() && target.name != type_name && !names.contains(&target.name) {
                     names.push(target.name.clone());
@@ -316,6 +377,20 @@ impl KernelResolver {
             }
         }
         Ok(names)
+    }
+
+    /// A Java type `r` can name by its simple name: declared in `r`'s file
+    /// or package directory, or imported by name or by package wildcard.
+    fn java_type_visible(&mut self, ty: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if pos_dirname(&ty.file_path) == pos_dirname(&r.file_path) {
+            return Ok(true);
+        }
+        let fqn = ty.qualified_name.replace("::", ".");
+        let package = fqn.rsplit_once('.').map_or("", |(p, _)| p);
+        Ok(self
+            .import_mappings(&r.file_path)?
+            .iter()
+            .any(|i| i.source == fqn || (!package.is_empty() && i.source == format!("{package}.*"))))
     }
 
     /// resolveMethodOnType — `typeName::methodName` qualified-name suffix
@@ -365,7 +440,7 @@ impl KernelResolver {
             // The conformance fallback: the method may live on a supertype
             // (transitively, depth-capped), still validated by name.
             if depth < 4 {
-                for supertype in self.supertype_names(type_name, &r.language)? {
+                for supertype in self.supertype_names(type_name, r, depth == 0)? {
                     if let Some(via) = self.resolve_method_on_type_at(
                         &supertype, method, r, confidence, resolved_by, preferred_fqn, depth + 1,
                     )? {

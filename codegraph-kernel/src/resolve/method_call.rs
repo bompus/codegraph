@@ -730,6 +730,22 @@ impl KernelResolver {
     /// Java/Kotlin field receiver inference — non-exclusive: `Some` settles
     /// the ref, `None` lets the name strategies run, exactly like TS.
     pub(super) fn jvm_field_receiver(&mut self, receiver: &str, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        // A local or parameter of the same name hides the field, unless the
+        // call names it as `this.field`.
+        let bindings = self.bindings(&r.file_path)?;
+        if innermost_binding(&bindings, receiver, Some(r.line)).is_some_and(|b| b.kind == "local" || b.kind == "param") {
+            let call = format!("{receiver}.{method}(");
+            let explicit_this = self
+                .read_file(&r.file_path)
+                .and_then(|ls| ls.get((r.line - 1) as usize).cloned())
+                .is_some_and(|l| {
+                    let mut hits = l.match_indices(&call).map(|(i, _)| &l[..i]).peekable();
+                    hits.peek().is_some() && hits.all(|before| before.ends_with("this."))
+                });
+            if !explicit_this {
+                return Ok(None);
+            }
+        }
         let Some(inferred) = self.infer_java_field_receiver_type(receiver, r)? else {
             return Ok(None);
         };
