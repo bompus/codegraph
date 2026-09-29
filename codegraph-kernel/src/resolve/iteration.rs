@@ -304,7 +304,9 @@ impl KernelResolver {
                 b.name == receiver && b.scope_start > if_line && b.scope_start <= r.line && b.scope_end >= r.line
             });
             let mut assignments = Vec::new();
+            // `$x =& $other` rebinds `$x` as surely as `$x = $other`.
             descendants_of_type(body, "assignment_expression", &mut assignments);
+            descendants_of_type(body, "reference_assignment_expression", &mut assignments);
             let var = format!("${receiver}");
             let assigned = assignments.iter().any(|a| {
                 a.start_byte() < call.start_byte()

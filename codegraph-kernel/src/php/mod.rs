@@ -68,20 +68,42 @@ fn is_php_type_node(kind: &str) -> bool {
 }
 
 /// PHP_CALLABLE_HOFS (function-ref.ts:347).
-fn is_php_callable_hof(name: &str) -> bool {
-    matches!(
-        name,
-        "array_map" | "array_filter" | "array_walk" | "array_walk_recursive" | "array_reduce"
-            | "usort" | "uasort" | "uksort"
-            | "array_udiff" | "array_udiff_assoc" | "array_uintersect" | "array_uintersect_assoc"
-            | "call_user_func" | "call_user_func_array"
-            | "forward_static_call" | "forward_static_call_array"
-            | "preg_replace_callback" | "preg_replace_callback_array"
-            | "register_shutdown_function" | "register_tick_function"
-            | "set_error_handler" | "set_exception_handler" | "spl_autoload_register"
-            | "ob_start" | "iterator_apply" | "header_register_callback"
-            | "is_callable"
-    )
+/// Where a callable-taking core function takes its callable: `array_map($cb,
+/// $a)` first, `usort($a, $cb)` second, the `array_udiff` family last. Its
+/// other arguments are data, so a string there names nothing.
+#[derive(Clone, Copy)]
+enum CallableArg {
+    At(usize),
+    Last,
+}
+
+fn php_callable_arg(name: &str) -> Option<CallableArg> {
+    Some(match name {
+        "array_map" | "call_user_func" | "call_user_func_array" | "forward_static_call"
+        | "forward_static_call_array" | "register_shutdown_function" | "register_tick_function"
+        | "set_error_handler" | "set_exception_handler" | "spl_autoload_register" | "ob_start"
+        | "header_register_callback" | "is_callable" => CallableArg::At(0),
+        "array_filter" | "array_walk" | "array_walk_recursive" | "array_reduce" | "usort" | "uasort"
+        | "uksort" | "preg_replace_callback" | "iterator_apply" => CallableArg::At(1),
+        "array_udiff" | "array_udiff_assoc" | "array_uintersect" | "array_uintersect_assoc" => CallableArg::Last,
+        _ => return None,
+    })
+}
+
+/// Whether `arg`, an `argument` of a call to `name`, is that call's callable.
+/// A named argument (`callback: 'f'`) counts wherever it sits.
+fn php_is_callable_arg(name: &str, arg: Node) -> bool {
+    let Some(pos) = php_callable_arg(name) else { return false };
+    if arg.child_by_field_name("name").is_some() {
+        return true;
+    }
+    let Some(list) = arg.parent() else { return false };
+    let args: Vec<_> = named_kids(list).filter(|n| n.kind() == "argument").collect();
+    let Some(i) = args.iter().position(|a| a.id() == arg.id()) else { return false };
+    match pos {
+        CallableArg::At(p) => i == p,
+        CallableArg::Last => i + 1 == args.len(),
+    }
 }
 
 /// String-callable qualified shape (`/^\w+::\w+$/`, JS ASCII `\w`).

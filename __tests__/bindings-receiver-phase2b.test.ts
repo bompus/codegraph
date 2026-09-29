@@ -210,11 +210,13 @@ class Store { function run() {} }
 function known($value) { if ($value instanceof Store) { $value->run(); } }
 function outside($value) { if ($value instanceof Store) {} else { $value->run(); } }
 function reassigned($value, $other) { if ($value instanceof Store) { $value = $other; $value->run(); } }
+function rebound($value, $other) { if ($value instanceof Store) { $value =& $other; $value->run(); } }
 function shadowed($value) { if ($value instanceof Store) { $f = function($value) { $value->run(); }; } }
 ` });
   expect(calls('known')).toContain('run');
   expect(calls('outside')).not.toContain('run');
   expect(calls('reassigned')).not.toContain('run');
+  expect(calls('rebound')).not.toContain('run');
   expect(calls('shadowed')).not.toContain('run');
   const run = graph!.getNodesByKind('method').find(n => n.name === 'run')!;
   expect(graph!.getIncomingEdges(run.id).filter(e => e.kind === 'calls')).toHaveLength(1);

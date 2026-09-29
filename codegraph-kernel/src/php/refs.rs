@@ -32,7 +32,8 @@ impl<'t> Walker<'t> {
                 let Some(callee) = php_enclosing_call_name(v).map(|f| self.text(f)) else {
                     return;
                 };
-                if !is_php_callable_hof(callee) {
+                let arg = std::iter::successors(v.parent(), |n| n.parent()).take(4).find(|n| n.kind() == "argument");
+                if !arg.is_some_and(|a| php_is_callable_arg(callee, a)) {
                     return;
                 }
                 let Some(content) = self.php_string_content(v) else { return };
@@ -120,14 +121,13 @@ impl<'t> Walker<'t> {
         crate::walker::emit_value_refs(self.src, &self.node_ids, &mut self.arena, &mut self.tables, &scopes, &targets);
     }
 
-    /// phpStringContent: the string's first string_content child, trimmed.
+    /// phpStringContent: the string's literal text, trimmed. An interpolated
+    /// string (`"handle{$suffix}"`) names no fixed callable, so it has none.
     pub(super) fn php_string_content(&self, node: Node) -> Option<String> {
-        for i in 0..node.named_child_count() {
-            let Some(c) = node.named_child(i) else { continue };
-            if c.kind() == "string_content" {
-                return Some(self.text(c).trim().to_string());
-            }
+        let mut parts = named_kids(node);
+        match (parts.next(), parts.next()) {
+            (Some(c), None) if c.kind() == "string_content" => Some(self.text(c).trim().to_string()),
+            _ => None,
         }
-        None
     }
 }
