@@ -188,7 +188,7 @@ Both builds rebuild the links inferred from events, callbacks and function point
 | `codegraph status` | 179 ms | 121 ms | 98 ms |
 | `codegraph explore "<query>"` | 226 ms | 131 ms | 109 ms |
 
-**Node or Bun.** The fork builds the same graph on both, and the full test suite passes on Node.js 24.21.0, Node.js 26.10.0 and Bun 1.4.2 (`npm run test:bun`; one test is skipped under Bun for [oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)). On Bun, peak index memory is 6–40% lower than on Node, the idle MCP server holds 37–49% less memory, and commands start faster. Index and sync times are within about 10% of Node's either way. Bun has two costs. Eight concurrent explores take 12–18% longer, because reads from several worker threads contend inside Bun's SQLite ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084), [#44157](https://github.com/oven-sh/bun/issues/44157)). Idle CPU is about twice Node's, though still under 1% of one core.
+**Node or Bun.** The fork builds the same graph on both, and the full test suite passes on Node.js 24.21.0, Node.js 26.10.0 and Bun 1.4.2 (`npm run test:bun`; one test is skipped under Bun for [oven-sh/bun#42891](https://github.com/oven-sh/bun/issues/42891)). On Bun, peak index memory is 6–40% lower than on Node, the idle MCP server holds 37–49% less memory, and commands start faster. Index and sync times are within about 10% of Node's either way. Bun has two costs. Eight concurrent explores take 12–18% longer, because reads from several worker threads contend inside Bun's SQLite ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084), [#44187](https://github.com/oven-sh/bun/issues/44187)). Idle CPU is about twice Node's, though still under 1% of one core.
 
 Measured separately:
 
