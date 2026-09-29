@@ -43,23 +43,28 @@ impl KernelResolver {
                 let Some(raw_type) = FIELD_TYPE.capture(&line, field).map(str::to_string) else {
                     continue;
                 };
-                if raw_type.contains('.') {
+                // The package directory that declares the field's type: the
+                // imported package for `pkg.Type`, else the struct's own.
+                let pkg_dir = if raw_type.contains('.') {
                     let pkg = raw_type.split('.').next().unwrap_or("");
-                    let in_module = match self.go_module_path.clone() {
-                        Some(mod_path) => self
-                            .import_mappings(&s.file_path)?
-                            .iter()
-                            .find(|i| i.local_name == pkg)
-                            .is_some_and(|imp| {
-                                imp.source == mod_path
-                                    || imp.source.starts_with(&format!("{}/", mod_path))
-                            }),
-                        None => false,
-                    };
-                    if !in_module {
+                    let Some(mod_path) = self.go_module_path.clone() else {
                         continue;
+                    };
+                    let source = self
+                        .import_mappings(&s.file_path)?
+                        .iter()
+                        .find(|i| i.local_name == pkg)
+                        .map(|imp| imp.source.clone());
+                    match source {
+                        Some(src) if src == mod_path => String::new(),
+                        Some(src) if src.starts_with(&format!("{}/", mod_path)) => {
+                            src[mod_path.len() + 1..].to_string()
+                        }
+                        _ => continue,
                     }
-                }
+                } else {
+                    pos_dirname(&s.file_path).to_string()
+                };
                 let Some(field_type) = raw_type.split('.').next_back() else {
                     continue;
                 };
@@ -71,12 +76,48 @@ impl KernelResolver {
                 {
                     continue;
                 }
-                if let Some(c) = self.resolve_method_on_type(field_type, method, r, 0.85, "instance-method", None)? {
+                if let Some(c) = self.go_method_in_package(field_type, method, &pkg_dir, r)? {
                     return Ok(Some(c));
                 }
             }
         }
         Ok(None)
+    }
+
+    /// `Type::method` among Go methods declared in `pkg_dir`: a Go method
+    /// lives in its receiver type's package, so a same-named type in another
+    /// package is never the answer. With no `Type::method` anywhere the
+    /// method may be promoted from an embedded type, so the supertype walk
+    /// of resolve_method_on_type runs.
+    fn go_method_in_package(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        pkg_dir: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        let want = format!("{}::{}", type_name, method);
+        let suffix = format!("::{}", want);
+        let named: Vec<Arc<KNode>> = self
+            .nodes_by_name(method)?
+            .iter()
+            .filter(|m| {
+                m.kind == "method"
+                    && m.language == "go"
+                    && (m.qualified_name == want || m.qualified_name.ends_with(&suffix))
+            })
+            .cloned()
+            .collect();
+        if named.is_empty() {
+            return self.resolve_method_on_type(type_name, method, r, 0.85, "instance-method", None);
+        }
+        let in_pkg: Vec<Arc<KNode>> =
+            named.into_iter().filter(|m| pos_dirname(&m.file_path) == pkg_dir).collect();
+        if in_pkg.is_empty() || (r.reference_kind == "function_ref" && in_pkg.len() != 1) {
+            return Ok(None);
+        }
+        let ordered = prefer_call_site_file(in_pkg, &r.file_path);
+        Ok(Some(KCand { node: ordered[0].clone(), confidence: 0.85, resolved_by: "instance-method" }))
     }
 
     /// matchTsFieldCall restricted to the boundOwner path (br:fieldchain) —
@@ -89,7 +130,7 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
-        let Some(decl) = self.ts_field_decl(owner, field) else {
+        let Some(decl) = self.ts_field_decl(owner, field)? else {
             return Ok(None);
         };
         // An array/union/intersection-typed field names no single owner.
@@ -126,27 +167,62 @@ impl KernelResolver {
     }
 
     /// The first field declaration of `field` in `owner`'s body lines
-    /// (comment-stripped), in TS_FIELD_TYPE_PATTERNS order per line.
-    pub(super) fn ts_field_decl(&mut self, owner: &KNode, field: &str) -> Option<TsFieldDecl> {
-        let source = self.read_file(&owner.file_path)?;
+    /// (comment-stripped), in TS_FIELD_TYPE_PATTERNS order per line. A match
+    /// inside one of the class's methods is a parameter or an object key, not
+    /// the field, and is skipped; in the constructor only a parameter
+    /// property (`private readonly field: T`) declares the field.
+    pub(super) fn ts_field_decl(&mut self, owner: &KNode, field: &str) -> Res<Option<TsFieldDecl>> {
+        let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
         let start = (owner.start_line - 1).max(0) as usize;
         let end = (owner.end_line as usize).min(source.len());
-        for raw in source.get(start..end).unwrap_or_default() {
+        let mut methods: Option<Vec<Arc<KNode>>> = None;
+        for (i, raw) in source.get(start..end).unwrap_or_default().iter().enumerate() {
+            let line_no = (start + i + 1) as i64;
             let line = strip_line_comments(raw);
             for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
-                let Some(m) = affix.find_from(&line, field, 0) else { continue };
-                let Some((gs, ge)) = m.group else { continue };
-                if gs == ge {
-                    continue;
+                let (_, tail) = affix.local();
+                for at in occurrences(&line, field, 0) {
+                    let Some(m) = affix.finish_at(&line, field, at, None, tail.as_deref()) else {
+                        continue;
+                    };
+                    let Some((gs, ge)) = m.group else { continue };
+                    if gs == ge {
+                        continue;
+                    }
+                    let methods = match &methods {
+                        Some(v) => v,
+                        None => methods.insert(self.class_methods(owner)?),
+                    };
+                    if !ts_declares_field(methods, affix, field, &line, line_no, at, &line[gs..ge]) {
+                        continue;
+                    }
+                    let rest = &line[m.end..];
+                    return Ok(Some(TsFieldDecl {
+                        ty: line[gs..ge].to_string(),
+                        value_type: *value_type,
+                        typed_collection: guard1_tail_re().is_match(rest),
+                        nullable: nullable_union_tail_re().is_match(rest),
+                    }));
                 }
-                return Some(TsFieldDecl {
-                    ty: line[gs..ge].to_string(),
-                    value_type: *value_type,
-                    typed_collection: guard1_tail_re().is_match(&line[m.end..]),
-                });
             }
         }
-        None
+        Ok(None)
+    }
+
+    /// The method nodes declared in `owner`'s body.
+    fn class_methods(&mut self, owner: &KNode) -> Res<Vec<Arc<KNode>>> {
+        let prefix = format!("{}::", owner.qualified_name);
+        Ok(self
+            .nodes_in_file(&owner.file_path)?
+            .iter()
+            .filter(|n| {
+                n.kind == "method"
+                    && n.qualified_name.starts_with(&prefix)
+                    && n.start_line >= owner.start_line
+                    && n.end_line <= owner.end_line
+            })
+            .cloned()
+            .collect())
     }
 
     /// matchRustSelfCall (name-matcher.ts): `self.method()` — the method on
@@ -368,11 +444,14 @@ impl KernelResolver {
         };
         // Backward brace scan: the first `{` whose net depth goes negative
         // opens the block enclosing the caller — for a method, the impl.
+        // Literal contents are masked first so a `{` in `#[doc = "{"]` or
+        // `'{'` is not code (per line: a string spanning lines is not).
         let at = |i: i64| -> String {
             if i < 0 {
                 String::new()
             } else {
-                strip_line_comments(lines.get(i as usize).map(|s| s.as_str()).unwrap_or(""))
+                let raw = lines.get(i as usize).map(|s| s.as_str()).unwrap_or("");
+                strip_line_comments(&mask_rust_literals(raw))
             }
         };
         let mut depth = 0i32;
@@ -518,17 +597,84 @@ impl KernelResolver {
                 let Some(field_type) = rust_field_type_name(declared) else {
                     return Ok(None);
                 };
-                return self.resolve_method_on_type(
-                    &field_type,
-                    method,
-                    r,
-                    0.85,
-                    "instance-method",
-                    None,
-                );
+                let declared = declared.to_string();
+                return self.rust_field_method(&declared, &field_type, method, &s, r);
             }
         }
         Ok(None)
+    }
+
+    /// `Type::method` for a Rust field type. Qualified names carry no module
+    /// path, so when several types share the name the one the field means
+    /// is pinned by where it is declared: an inline path (`inner::Inner`),
+    /// the struct's own file, or the struct file's `use` of it. Without
+    /// that evidence it declines instead of taking the first file.
+    fn rust_field_method(
+        &mut self,
+        declared: &str,
+        type_name: &str,
+        method: &str,
+        owner: &KNode,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        let want = format!("{}::{}", type_name, method);
+        let suffix = format!("::{}", want);
+        let named: Vec<Arc<KNode>> = self
+            .nodes_by_name(method)?
+            .iter()
+            .filter(|m| {
+                m.kind == "method"
+                    && m.language == "rust"
+                    && (m.qualified_name == want || m.qualified_name.ends_with(&suffix))
+            })
+            .cloned()
+            .collect();
+        if named.len() <= 1 {
+            return self.resolve_method_on_type(type_name, method, r, 0.85, "instance-method", None);
+        }
+        let Some(type_file) = self.rust_field_type_file(declared, type_name, owner)? else {
+            return Ok(None);
+        };
+        let pinned: Vec<Arc<KNode>> =
+            named.into_iter().filter(|m| m.file_path == type_file).collect();
+        if pinned.len() != 1 {
+            return Ok(None);
+        }
+        Ok(Some(KCand { node: pinned[0].clone(), confidence: 0.85, resolved_by: "instance-method" }))
+    }
+
+    /// The file declaring the type a Rust field names (see rust_field_method).
+    fn rust_field_type_file(
+        &mut self,
+        declared: &str,
+        type_name: &str,
+        owner: &KNode,
+    ) -> Res<Option<String>> {
+        // `a::b::Type` written in the field: the path's module file.
+        if let Some(at) = declared.find(&format!("::{}", type_name)) {
+            let head = &declared[..at];
+            let start = head
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                .map_or(0, |i| i + 1);
+            let segs: Vec<&str> = head[start..].split("::").filter(|s| !s.is_empty()).collect();
+            if !segs.is_empty() {
+                return self.resolve_rust_module_file(&segs, &owner.file_path);
+            }
+        }
+        let declares = self.nodes_in_file(&owner.file_path)?.iter().any(|n| {
+            n.name == type_name
+                && matches!(n.kind.as_str(), "struct" | "enum" | "union" | "trait" | "type_alias")
+        });
+        if declares {
+            return Ok(Some(owner.file_path.clone()));
+        }
+        let Some(content) = self.read_file(&owner.file_path) else { return Ok(None) };
+        let Some(path) = content.rust_uses().get(type_name).cloned() else { return Ok(None) };
+        let segs: Vec<&str> = path.split("::").filter(|s| !s.is_empty()).collect();
+        if segs.len() < 2 {
+            return Ok(None);
+        }
+        self.resolve_rust_module_file(&segs[..segs.len() - 1], &owner.file_path)
     }
 
     /// matchTsThisFieldCall — the `this.field.method` entry point of
@@ -588,8 +734,12 @@ impl KernelResolver {
             &r.file_path,
         );
         for cls in &owners {
-            // No typed-collection check here — that guard is `boundOwner &&` in TS.
-            let Some(decl) = self.ts_field_decl(cls, field) else { continue };
+            let Some(decl) = self.ts_field_decl(cls, field)? else { continue };
+            // `items: Mailer[]` names no single owner (`push` is the
+            // array's); `conn: Conn | null` still dereferences to `Conn`.
+            if decl.typed_collection && !decl.nullable {
+                return Ok(None);
+            }
             let m1 = decl.ty.as_str();
             if decl.value_type {
                 // `field: typeof Ns` — the namespace value's members
@@ -688,4 +838,102 @@ pub(super) struct TsFieldDecl {
     pub(super) value_type: bool,
     /// The type continues into `[]`, `|` or `&` (GUARD1_TAIL_RE).
     pub(super) typed_collection: bool,
+    /// The only union members after the type are `undefined`/`null`.
+    pub(super) nullable: bool,
+}
+
+/// Whether a match at byte `at` of line `line_no` declares the class field
+/// `field` with type `ty`: outside every method of the class, a
+/// `this.field = new T` assignment, or a constructor parameter (read back
+/// from the constructor's signature, so an object key in its body is not
+/// one). Anything else inside a method is a parameter, local or object key.
+/// The member's own name (a property arrow function extracted as a method)
+/// sits at the method's start and counts as outside.
+fn ts_declares_field(
+    methods: &[Arc<KNode>],
+    affix: &'static Affix,
+    field: &str,
+    line: &str,
+    line_no: i64,
+    at: usize,
+    ty: &str,
+) -> bool {
+    let pos = (line_no, at as i64);
+    let inside = methods.iter().find(|m| {
+        pos > (m.start_line, m.start_column) && pos <= (m.end_line, m.end_column)
+    });
+    match inside {
+        None => true,
+        Some(_) if line[..at].ends_with("this.") => true,
+        Some(m) if m.name == "constructor" => m
+            .signature
+            .as_deref()
+            .and_then(|sig| affix.find_from(sig, field, 0).and_then(|hit| hit.group.map(|(s, e)| &sig[s..e] == ty)))
+            .unwrap_or(false),
+        Some(_) => false,
+    }
+}
+
+/// One line of Rust with the contents of string, raw-string and char
+/// literals blanked (delimiters kept), so braces inside them are not code.
+/// A lifetime (`'a`) is not a char literal and stays; an unterminated
+/// string blanks to the end of the line.
+fn mask_rust_literals(line: &str) -> String {
+    let s: Vec<char> = line.chars().collect();
+    let n = s.len();
+    let mut out: Vec<char> = s.clone();
+    let blank = |out: &mut Vec<char>, from: usize, to: usize| {
+        for c in &mut out[from..to.min(n)] {
+            *c = ' ';
+        }
+    };
+    let mut i = 0;
+    while i < n {
+        match s[i] {
+            '"' => {
+                // `r"…"` / `r#"…"#` / `br"…"`: no escapes, closed by `"` plus
+                // as many `#` as opened it.
+                let mut hashes = 0;
+                while i > hashes && s[i - 1 - hashes] == '#' {
+                    hashes += 1;
+                }
+                let ident = |k: usize| s[k].is_alphanumeric() || s[k] == '_';
+                let raw = i.checked_sub(hashes + 1).is_some_and(|k| {
+                    let k0 = if k > 0 && s[k - 1] == 'b' { k - 1 } else { k };
+                    s[k] == 'r' && (k0 == 0 || !ident(k0 - 1))
+                });
+                let mut j = i + 1;
+                if raw {
+                    while j < n && !(s[j] == '"' && (1..=hashes).all(|h| s.get(j + h) == Some(&'#'))) {
+                        j += 1;
+                    }
+                } else {
+                    while j < n && s[j] != '"' {
+                        j += if s[j] == '\\' { 2 } else { 1 };
+                    }
+                }
+                blank(&mut out, i + 1, j);
+                i = j + 1 + if raw { hashes } else { 0 };
+            }
+            '\'' => {
+                // `'x'` or `'\n'`/`'\u{..}'`; anything else is a lifetime.
+                let close = if s.get(i + 1) == Some(&'\\') {
+                    (i + 3..(i + 12).min(n)).find(|&k| s[k] == '\'')
+                } else if s.get(i + 2) == Some(&'\'') {
+                    Some(i + 2)
+                } else {
+                    None
+                };
+                match close {
+                    Some(k) => {
+                        blank(&mut out, i + 1, k);
+                        i = k + 1;
+                    }
+                    None => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out.into_iter().collect()
 }
