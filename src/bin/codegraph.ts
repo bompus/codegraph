@@ -126,12 +126,16 @@ if (runtimeBanner !== null) {
 
 // The native engine is the only parser; say so up front rather than failing
 // deep inside the first index. Library users get the same message as a
-// KernelUnavailableError from parse-tree.ts.
-try {
-  requireKernel();
-} catch (err) {
-  process.stderr.write(`[CodeGraph] ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
+// KernelUnavailableError from parse-tree.ts. Commands that never parse skip
+// the check (see KERNEL_FREE_COMMANDS), so `upgrade` can repair a broken
+// install and `version` can report it.
+function exitWithoutKernel(): void {
+  try {
+    requireKernel();
+  } catch (err) {
+    process.stderr.write(`[CodeGraph] ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
 }
 
 // Last-resort fatal handlers: log a bounded line and exit non-zero. A fault
@@ -143,6 +147,7 @@ installFatalHandlers();
 
 // Check if running with no arguments - run installer
 if (process.argv.length === 2) {
+  exitWithoutKernel();
   import('../installer').then(({ runInstaller }) =>
     runInstaller()
   ).catch((err) => {
@@ -254,6 +259,11 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   } catch {
     /* telemetry must never break the CLI */
   }
+});
+
+const KERNEL_FREE_COMMANDS = new Set(['version', 'upgrade', 'uninstall', 'telemetry']);
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  if (!KERNEL_FREE_COMMANDS.has(actionCommand.name())) exitWithoutKernel();
 });
 
 // =============================================================================

@@ -548,14 +548,15 @@ pub fn parse_collapse_warning(
     if symbols > 0 {
         return NONE_STR;
     }
-    let path_json: String = file_path
-        .chars()
-        .flat_map(|c| match c {
-            '"' => vec!['\\', '"'],
-            '\\' => vec!['\\', '\\'],
-            c => vec![c],
-        })
-        .collect();
+    let mut path_json = String::with_capacity(file_path.len());
+    for c in file_path.chars() {
+        match c {
+            '"' => path_json.push_str("\\\""),
+            '\\' => path_json.push_str("\\\\"),
+            c if c < ' ' => path_json.push_str(&format!("\\u{:04x}", c as u32)),
+            c => path_json.push(c),
+        }
+    }
     let json = format!(
         "[{{\"message\":\"{path_json}: parse produced no symbols (tree has errors) — the file is indexed but contributes nothing to the graph\",\"severity\":\"warning\",\"code\":\"parse_error\"}}]"
     );
