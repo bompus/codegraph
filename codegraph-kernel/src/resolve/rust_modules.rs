@@ -89,6 +89,29 @@ impl KernelResolver {
         }))
     }
 
+    /// `use a::b::f as g;` then a bare `g()` or `register(g)`: no node is
+    /// named `g`, so only the use path finds `f`. A plain `use a::b::f` is
+    /// left to the name arms, and a nearer binding of `g` shadows the use.
+    pub(super) fn match_rust_use_alias(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if r.language != "rust" || r.reference_name.contains("::") || r.reference_name.contains('.') {
+            return Ok(None);
+        }
+        let Some(content) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(path) = content.rust_uses().get(&r.reference_name).cloned() else { return Ok(None) };
+        if path.rsplit("::").next() == Some(r.reference_name.as_str()) {
+            return Ok(None);
+        }
+        let rows = self.bindings(&r.file_path)?;
+        if innermost_binding(&rows, &r.reference_name, Some(r.line)).is_some_and(|b| b.kind != "import") {
+            return Ok(None);
+        }
+        let mut at = r.clone();
+        at.reference_name = path;
+        Ok(self.match_rust_path_reference(&at)?.filter(|c| {
+            r.reference_kind != "function_ref" || matches!(c.node.kind.as_str(), "function" | "method")
+        }))
+    }
+
     /// resolveRustModuleFile (import-resolver.ts): map module segments to
     /// `<seg>.rs` or `<seg>/mod.rs` files. Anchors on `crate`/`self`/`super`;
     /// a bare path tries self-relative (2018 expression position) then

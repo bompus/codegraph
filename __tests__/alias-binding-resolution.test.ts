@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
+import { aliasTargetName } from '../src/resolution/alias-binding';
 
 describe('calls through an alias binding reach the aliased symbol', () => {
   let cg: CodeGraph;
@@ -185,5 +186,15 @@ export function crossCaller() { return facade.run(); }
     for (const node of sharedNodes) {
       expect(cg.getCallers(node.id).map((c) => c.node.name)).not.toContain('consumerFn');
     }
+  });
+});
+
+describe('aliasTargetName reads an object literal the way it runs', () => {
+  it('takes the last property and declines when a spread may replace it', () => {
+    expect(aliasTargetName('= { run: wrong, pattern: /x/, run: right }', 'run')).toBe('right');
+    expect(aliasTargetName('= { run: wrong, run }', 'run')).toBe('run');
+    expect(aliasTargetName('= { getState: wrong, ...override }', 'getState')).toBeNull();
+    expect(aliasTargetName('= { ...base, getState: right }', 'getState')).toBe('right');
+    expect(aliasTargetName('= { run: make() }', 'run')).toBeNull();
   });
 });

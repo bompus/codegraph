@@ -5,6 +5,7 @@
  *   (`register(handler)`) gets its function-ref edge, like a local one.
  * - `use a::b as c;` records its import like any other `use`.
  * - `use crate::…` adds no import of a module named `crate`.
+ * - A `use a::f as g;` alias called or passed as `g` links to `f`.
  * - `const MAX: u32 = OTHER;` declares MAX only; OTHER is a read.
  */
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
@@ -65,6 +66,25 @@ describe('Rust use bindings and const initializers', () => {
     expect(imported).toContain('other');
     const extracted = extractFromSource('lib.rs', fs.readFileSync(path.join(dir, 'lib.rs'), 'utf8'));
     expect(extracted.unresolvedReferences.filter((r) => r.referenceName === 'crate')).toEqual([]);
+  });
+
+  it('a `use … as` alias calls and passes the aliased function', async () => {
+    const g = await index({
+      'handlers.rs': 'pub fn other() {}\n',
+      'lib.rs': [
+        'mod handlers;',
+        'use crate::handlers::other as aliased;',
+        'fn register(f: fn()) {}',
+        'fn wire() {',
+        '    aliased();',
+        '    register(aliased);',
+        '}',
+      ].join('\n'),
+    });
+    const wire = g.getNodesByKind('function').find((n) => n.name === 'wire')!;
+    const out = g.getOutgoingEdges(wire.id).map((e) => `${e.kind}:${g.getNode(e.target)!.name}@${g.getNode(e.target)!.filePath}`);
+    expect(out).toContain('calls:other@handlers.rs');
+    expect(out).toContain('references:other@handlers.rs');
   });
 
   it('declares only the const name; the initializer is a read', async () => {
