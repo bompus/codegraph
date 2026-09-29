@@ -37,8 +37,10 @@ impl KernelResolver {
         extent_lines[0] = js_slice(extent_lines[0], container.start_column.max(0) as usize);
         let extent = strip_ts_comments(&extent_lines.join("\n"));
         let code = blank_string_contents(&extent);
-        // Start at this declarator, never a sibling on the same line.
-        let Some(open) = re!(r"^[^=]*=\s*(?:(?:Object\.(?:freeze|seal)\s*)?\(\s*)*\{").find(&code) else {
+        // Start at this declarator, never a sibling on the same line. A `=>`
+        // in its type annotation (`api: Record<string, () => unknown> = {`)
+        // is not the initializer's `=`.
+        let Some(open) = re!(r"^(?:[^=]|=>)*=\s*(?:(?:Object\.(?:freeze|seal)\s*)?\(\s*)*\{").find(&code) else {
             return LiteralProperty::Unreadable;
         };
         let code16: Vec<u16> = code.encode_utf16().collect();

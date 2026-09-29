@@ -91,7 +91,11 @@ impl KernelResolver {
             return Ok(None);
         }
         let return_kw = re!(r"(?-u:\b)return(?-u:\b)");
-        let return_ident = re!(r"^\s*return\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*(?://.*)?$");
+        // `return x;` as a line of its own or after the `{` of a one-line body.
+        let return_ident = re!(r"(?:^|[{;])\s*return\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(;|\})?\s*\}?\s*(?://.*)?$");
+        // Without a `;` the statement runs on when the next line continues
+        // the expression (`return plain\n  .clone()`), as JavaScript's ASI does.
+        let continues = re!(r"^\s*(?:[.?(\[+\-*/%&|^<>=,:`]|(?:as|satisfies|instanceof|in)(?-u:\b))");
         let own_lines = own_return_lines(&lines[lo..hi].join("\n"));
         let mut returned: Option<(String, i64)> = None;
         for (i, line) in lines[lo..hi].iter().enumerate() {
@@ -102,6 +106,12 @@ impl KernelResolver {
             let Some(m) = return_ident.captures(line) else {
                 return Ok(None);
             };
+            if m.get(2).is_none() {
+                let next = lines[lo + i + 1..hi].iter().find(|l| !l.trim().is_empty());
+                if next.is_some_and(|l| continues.is_match(l)) {
+                    return Ok(None);
+                }
+            }
             if returned.is_some() {
                 return Ok(None);
             }

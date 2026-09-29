@@ -68,6 +68,17 @@ describe('calls through an alias binding reach the aliased symbol', () => {
     expect(callersOf('realImpl')).toContain('consumerFn');
   });
 
+  it('reads an object literal whose type annotation contains an arrow', async () => {
+    await index({
+      'impl.ts': `export function realImpl(): number { return 1; }
+export const api: { [k: string]: () => unknown } = { run: realImpl };
+export function sameCaller() { return api.run(); }
+`,
+      'consumer.ts': "import { api } from './impl';\nexport function crossCaller() { return api.run(); }\n",
+    });
+    expect(callersOf('realImpl')).toEqual(expect.arrayContaining(['sameCaller', 'crossCaller']));
+  });
+
   describe.each(['ts', 'js'])('object member boundaries (%s)', (ext) => {
     it.each([
       ['sibling literals', 'const first = { wrong }; export const api = { run: right };', 'run', true],

@@ -91,4 +91,16 @@ describe('factory returning a module binding', () => {
     const targets = await callTargets({ 'src/i18n.ts': i18n('  return make(plain);'), 'src/use.ts': consumer }, 'label');
     expect(targets.filter(t => t.endsWith('::baseText'))).toEqual([]);
   });
+
+  it('types the result of a one-line factory', async () => {
+    const source = i18n('').replace('export function useI18n() {\n\n}', 'export function useI18n() { return i18n; }');
+    expect(source).toContain('export function useI18n() { return i18n; }');
+    const targets = await callTargets({ 'src/i18n.ts': source, 'src/use.ts': consumer }, 'label');
+    expect(targets).toContain('I18nClass::baseText');
+  });
+
+  it('declines a return that continues on the next line', async () => {
+    const targets = await callTargets({ 'src/i18n.ts': i18n('  return plain\n    .clone();'), 'src/use.ts': consumer }, 'label');
+    expect(targets.filter(t => t.endsWith('::baseText'))).toEqual([]);
+  });
 });
