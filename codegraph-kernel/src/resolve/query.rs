@@ -8,13 +8,17 @@ const MAX_SOURCE_FILE_SIZE_BYTES: u64 = 1024 * 1024;
 
 /// A source file's text, or None for a missing file, a non-file, or one over
 /// the size limit. The size check comes before the read, so a package archive
-/// that import metadata points at (`file:*.har`) is never loaded.
+/// that import metadata points at (`file:*.har`) is never loaded. Invalid
+/// UTF-8 decodes the way extraction's `bytes.toString('utf8')` does, one
+/// U+FFFD per bad sequence, so a Latin-1 comment keeps every line and the
+/// UTF-16 columns extraction recorded.
 fn read_source(path: impl AsRef<std::path::Path>) -> Option<String> {
     let meta = std::fs::metadata(&path).ok()?;
     if !meta.is_file() || meta.len() > MAX_SOURCE_FILE_SIZE_BYTES {
         return None;
     }
-    std::fs::read_to_string(path).ok()
+    let bytes = std::fs::read(path).ok()?;
+    Some(String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
 impl KernelResolver {
@@ -223,7 +227,7 @@ impl KernelResolver {
         Ok(v)
     }
 
-    /// reExportsFromBindings.
+    /// reExportsFromBindings, plus imports a local export clause re-exports.
     pub(super) fn reexports(&mut self, file_path: &str) -> Res<Rc<Vec<KReExport>>> {
         if let Some(v) = self.reexport_cache.get(file_path) {
             return Ok(v.clone());
@@ -231,6 +235,24 @@ impl KernelResolver {
         let rows = self.bindings(file_path)?;
         let mut out = Vec::new();
         for r in rows.iter() {
+            // `import { signIn } from './auth'; export { signIn as login };`
+            // forwards the import like `export { signIn as login } from
+            // './auth'`. A namespace import (`import * as ns`) exports a
+            // module object, not a member of it.
+            if r.kind == "import" {
+                if let (Some(exported), Some(source)) = (&r.exported_as, &r.target_spec) {
+                    let original = r.target_name.clone().unwrap_or_else(|| r.name.clone());
+                    if original != "*" {
+                        out.push(KReExport {
+                            kind: "named",
+                            exported_name: Some(exported.clone()),
+                            original_name: Some(original),
+                            source: source.clone(),
+                        });
+                    }
+                }
+                continue;
+            }
             if r.kind != "reexport" || r.target_spec.is_none() {
                 continue;
             }
@@ -527,6 +549,9 @@ mod tests {
         assert_eq!(read_source(&over), None);
         assert_eq!(read_source(&dir), None);
         assert_eq!(read_source(&dir.join("missing.ts")), None);
+        let latin1 = dir.join("latin1.ts");
+        std::fs::write(&latin1, b"// caf\xe9\nfoo();\n").unwrap();
+        assert_eq!(read_source(&latin1).as_deref(), Some("// caf\u{FFFD}\nfoo();\n"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
