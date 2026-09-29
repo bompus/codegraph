@@ -200,14 +200,10 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&cls.file_path) else {
             return Ok(Vec::new());
         };
-        let header = lines.get((cls.start_line - 1).max(0) as usize).map(String::as_str).unwrap_or("");
-        let Some(bases) = re!(r"^\s*class\s+\w+\s*\(([^)]*)\)").captures(header).map(|c| c[1].to_string()) else {
-            return Ok(Vec::new());
-        };
         let site = r.clone().at(cls);
         let mut out = Vec::new();
-        for name in bases.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-            if let Some(base) = self.python_ref_class(name, &site)? {
+        for name in python_base_names(&lines, (cls.start_line - 1).max(0) as usize) {
+            if let Some(base) = self.python_ref_class(&name, &site)? {
                 out.push(base);
             }
         }
@@ -280,7 +276,11 @@ impl KernelResolver {
         let assigns = re!(r"^\s*((?:self|cls)\.)?([A-Za-z_]\w*)\s*[=:]");
         let lo = (cls.start_line - 1).max(0) as usize;
         let hi = (cls.end_line.max(cls.start_line) as usize).min(lines.len());
+        let starts = python_statement_starts(&lines, lo, hi);
         for (i, line) in lines.get(lo..hi).unwrap_or(&[]).iter().enumerate() {
+            if !starts[i] {
+                continue;
+            }
             let Some(c) = assigns.captures(line) else { continue };
             if &c[2] != member || line.trim_start().starts_with('#') {
                 continue;
@@ -337,9 +337,14 @@ impl KernelResolver {
         };
         let floor = caller.as_ref().map_or(1, |c| c.start_line).max(1);
         let mut line_no = r.line.min(lines.len() as i64);
+        let starts = python_statement_starts(&lines, (floor - 1) as usize, line_no.max(floor) as usize);
         while line_no >= floor {
             let line = &lines[(line_no - 1) as usize];
+            let starts_statement = starts[(line_no - floor) as usize];
             line_no -= 1;
+            if !starts_statement {
+                continue;
+            }
             if let Some(c) = python_assignment_re().captures(line) {
                 if c.get(1).is_none() && &c[2] == receiver {
                     return Ok(Some(assigned_type(c.get(3).map(|m| m.as_str()), &c[4])));
@@ -377,7 +382,12 @@ impl KernelResolver {
             }
         };
         let end = (owner.end_line.max(0) as usize).min(lines.len());
-        for i in (owner.start_line.max(0) as usize)..end {
+        let begin = (owner.start_line.max(0) as usize).min(end);
+        let starts = python_statement_starts(&lines, begin, end);
+        for i in begin..end {
+            if !starts[i - begin] {
+                continue;
+            }
             let line_no = i as i64 + 1;
             let method = methods.iter().find(|m| m.start_line <= line_no && m.end_line >= line_no);
             if let Some(m) = method {
@@ -440,6 +450,93 @@ fn python_assignment_re() -> Rc<Regex> {
 /// `[self.|cls.]name: Type` — groups: receiver prefix, name, type.
 fn python_annotation_re() -> Rc<Regex> {
     re!(r#"^\s*(?:(self|cls)\.)?([A-Za-z_]\w*)\s*:\s*["']?([\w.]+)"#)
+}
+
+/// For each line in `lines[lo..hi]`, whether it begins a statement: not
+/// inside a string (a docstring's `name: Description` line is not an
+/// annotation), an open bracket (a call's `key=value,` line is not an
+/// assignment) or a backslash continuation. `lo` must itself begin a
+/// statement, as a `def` or `class` line does.
+fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> {
+    let hi = hi.min(lines.len());
+    let mut out = Vec::with_capacity(hi.saturating_sub(lo));
+    let mut depth = 0usize;
+    // The open string's quote byte and whether it is triple-quoted.
+    let mut string: Option<(u8, bool)> = None;
+    let mut continued = false;
+    for line in lines.get(lo..hi).unwrap_or(&[]) {
+        out.push(depth == 0 && string.is_none() && !continued);
+        let b = line.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            match string {
+                Some((q, triple)) => {
+                    if b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == q && (!triple || b[i..].starts_with(&[q, q, q])) {
+                        string = None;
+                        i += if triple { 3 } else { 1 };
+                        continue;
+                    }
+                }
+                None => match b[i] {
+                    b'#' => break,
+                    q @ (b'"' | b'\'') => {
+                        let triple = b[i..].starts_with(&[q, q, q]);
+                        string = Some((q, triple));
+                        i += if triple { 3 } else { 1 };
+                        continue;
+                    }
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                },
+            }
+            i += 1;
+        }
+        // A single-quoted string never spans lines without a backslash.
+        if matches!(string, Some((_, false))) {
+            string = None;
+        }
+        continued = string.is_none() && line.trim_end().ends_with('\\');
+    }
+    out
+}
+
+/// The base-class names of the `class` statement at `lines[at]`, read across
+/// lines to the closing parenthesis: `Store[int]` names `Store`, keyword
+/// arguments (`metaclass=ABCMeta`) name no base.
+fn python_base_names(lines: &[String], at: usize) -> Vec<String> {
+    let Some(first) = lines.get(at) else { return Vec::new() };
+    let Some(m) = re!(r"^\s*class\s+\w+\s*\(").find(first) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let text = std::iter::once(&first[m.end()..]).chain(lines[at + 1..].iter().take(64).map(String::as_str));
+    'lines: for line in text {
+        for ch in line.chars() {
+            match ch {
+                '#' => break,
+                '(' | '[' | '{' => depth += 1,
+                ')' if depth == 0 => break 'lines,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => names.push(std::mem::take(&mut current)),
+                _ if depth == 0 => current.push(ch),
+                _ => {}
+            }
+        }
+        current.push(' ');
+    }
+    names.push(current);
+    names
+        .into_iter()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty() && !n.contains('=') && !n.starts_with('*'))
+        .collect()
 }
 
 /// `Type(...)` — the constructed class of an assigned value.
