@@ -9,7 +9,7 @@ CodeGraph runs as a [Model Context Protocol](https://modelcontextprotocol.io/) s
 codegraph serve --mcp
 ```
 
-The tools below are listed in every workspace. Where the project has no `.codegraph/` index, a call returns guidance (for example, to pass `projectPath` for a sub-project that is indexed) instead of an error, and indexing stays your decision.
+The tools below are listed in every workspace. Where the project has no `.codegraph/` index, a call returns guidance (for example, to pass `projectPath` for a sub-project that is indexed) instead of an error, and indexing stays your decision. A project opened by `projectPath` is watched and kept in sync while the session uses it, and released after 10 minutes without a query; set `CODEGRAPH_PROJECT_IDLE_RELEASE_MS` to change that (`0` keeps it open until the server exits).
 
 ## Two tools by default: `codegraph_explore` and `codegraph_sessions`
 

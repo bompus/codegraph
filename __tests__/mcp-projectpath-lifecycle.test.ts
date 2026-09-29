@@ -312,6 +312,27 @@ describe('MCP explicit projectPath lifecycle (#1835)', { timeout: 30_000 }, () =
     expect(opened[0]!.sync).toHaveBeenCalledTimes(1);
   });
 
+  it('releases an idle explicit project and its writer lock, then reopens it on the next query', async () => {
+    const prior = process.env.CODEGRAPH_PROJECT_IDLE_RELEASE_MS;
+    process.env.CODEGRAPH_PROJECT_IDLE_RELEASE_MS = '300';
+    try {
+      const lock = path.join(serviceB, '.codegraph', 'writer.pid');
+      expect(await search(serviceB, 'betaOriginal')).toContain('betaOriginal');
+      expect(fs.existsSync(lock)).toBe(true);
+      // No further calls: the idle sweep alone must hand the project back.
+      expect(await waitFor(async () => !fs.existsSync(lock), 10000)).toBe(true);
+      expect(opened[0].isWatching()).toBe(false);
+
+      fs.writeFileSync(path.join(serviceB, 'src', 'sample.ts'), 'export function betaAfterIdle() { return 1; }\n');
+      expect(await search(serviceB, 'betaAfterIdle')).toContain('betaAfterIdle');
+      expect(opened).toHaveLength(2);
+      expect(fs.existsSync(lock)).toBe(true);
+    } finally {
+      if (prior === undefined) delete process.env.CODEGRAPH_PROJECT_IDLE_RELEASE_MS;
+      else process.env.CODEGRAPH_PROJECT_IDLE_RELEASE_MS = prior;
+    }
+  });
+
   it('keeps watching after one of two engines releases its lease', async () => {
     const second = new MCPEngine();
     engines.push(second);
