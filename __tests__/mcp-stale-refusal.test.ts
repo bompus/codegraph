@@ -140,7 +140,7 @@ describe('a degraded index names changed files and still answers (#1959)', () =>
   );
 
   it('says so rather than silently validating only the first 200 contributing files', async () => {
-    for (let i = 0; i < 201; i++) {
+    for (let i = 0; i < 230; i++) {
       fs.writeFileSync(path.join(root, `caller${i}.ts`),
         `import { alphaOnly } from './alpha'; export function caller${i}() { return alphaOnly(); }\n`);
     }
@@ -149,8 +149,13 @@ describe('a degraded index names changed files and still answers (#1959)', () =>
     expect(raw._cgAnswerFiles!.length).toBeGreaterThan(200);
     const result = await handler.execute('codegraph_impact', { symbol: 'alphaOnly' });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain('validation budget');
-    expect(result.content[0].text).toContain('alphaOnly');
+    const text = result.content[0].text;
+    expect(text).toContain('validation budget');
+    expect(text).toContain('alphaOnly');
+    // The banner is the only place the files are named, so it names each one.
+    const total = Number(text.match(/validation budget for (\d+) files/)![1]);
+    const banner = text.split('\n\n').find((block: string) => block.includes('validation budget'))!;
+    expect(banner.split('\n').filter((line: string) => line.startsWith('- '))).toHaveLength(total);
   });
 
 });
