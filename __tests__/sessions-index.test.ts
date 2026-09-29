@@ -144,6 +144,40 @@ describe('Claude Code reader', () => {
   });
 });
 
+describe('Codex and Cursor reader edges', () => {
+  it('reads a Codex session_meta line longer than one 64 KB read', () => {
+    const project = fixtureDir();
+    const codexHome = fixtureDir();
+    process.env.CODEX_HOME = codexHome;
+    // Codex puts the whole base instructions in session_meta, so the cwd can
+    // follow a payload that spans several reads.
+    const file = path.join(codexHome, 'sessions', 'rollout-long-meta.jsonl');
+    writeJsonl(
+      file,
+      [
+        {
+          timestamp: at,
+          type: 'session_meta',
+          payload: { base_instructions: { text: 'x'.repeat(200 * 1024) }, session_id: 'codex-long', cwd: project },
+        },
+        { timestamp: at, type: 'response_item', payload: { type: 'message', role: 'user', content: [] } },
+      ],
+      1_700_000_000,
+    );
+    expect(codexFilesForProject([project])).toEqual([file]);
+  });
+
+  it('converts Cursor prompt stamps with half-hour offsets, 12 AM/PM and a date change', () => {
+    const iso = (stamp: string) => cursorStamp(`<timestamp>${stamp}</timestamp>\nhi`)?.iso;
+    expect(iso('Monday, Sep 28, 2026, 9:15 AM (UTC+5:30)')).toBe('2026-09-28T03:45:00.000Z');
+    expect(iso('Monday, Sep 28, 2026, 9:15 AM (UTC-3:30)')).toBe('2026-09-28T12:45:00.000Z');
+    expect(iso('Monday, Sep 28, 2026, 12:05 AM (UTC+0)')).toBe('2026-09-28T00:05:00.000Z');
+    expect(iso('Monday, Sep 28, 2026, 12:05 PM (UTC+0)')).toBe('2026-09-28T12:05:00.000Z');
+    expect(iso('Wednesday, Dec 31, 2026, 11:30 PM (UTC-6)')).toBe('2027-01-01T05:30:00.000Z');
+    expect(iso('Monday, September 28, 2026, 1:00 PM (UTC+10)')).toBe('2026-09-28T03:00:00.000Z');
+  });
+});
+
 describe('ftsQuery', () => {
   it('quotes every word so flags, paths and punctuation cannot break the MATCH syntax', () => {
     expect(ftsQuery('turn-readiness dedupe --limit "5" scripts/cg-probe.ts')).toBe(
