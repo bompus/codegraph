@@ -42,7 +42,7 @@ function escapeRegExp(s: string): string {
  * `memberName` targets a property of an object-literal initializer
  * (`= { run: impl }` for `api.run()`), including ES shorthand (`= { impl }`).
  */
-function aliasTargetName(
+export function aliasTargetName(
   signature: string | undefined | null,
   memberName: string | null
 ): string | null {
@@ -50,13 +50,15 @@ function aliasTargetName(
   const initializer = signature.trim();
 
   if (memberName) {
+    // Later properties win, as they do at runtime: the last `key: value` or
+    // `{ key }` is the binding, and a spread after it may replace it, so no
+    // hop is taken then. This matches the kernel's object-literal rule.
     const key = escapeRegExp(memberName);
-    const explicit = new RegExp(`[{,]\\s*${key}\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*[,}]`).exec(initializer);
-    if (explicit) return explicit[1]!;
-    // `{ impl }` — shorthand binds the property to the same-named symbol.
-    const shorthand = new RegExp(`[{,]\\s*(${key})\\s*[,}]`).exec(initializer);
-    if (shorthand) return shorthand[1]!;
-    return null;
+    const property = new RegExp(`[{,]\\s*${key}\\s*(?::\\s*([A-Za-z_$][\\w$]*)\\s*)?(?=[,}])`, 'g');
+    let last: RegExpExecArray | null = null;
+    for (let m = property.exec(initializer); m; m = property.exec(initializer)) last = m;
+    if (!last || initializer.includes('...', last.index)) return null;
+    return last[1] ?? memberName;
   }
 
   const bare = BARE_ALIAS_RE.exec(initializer);

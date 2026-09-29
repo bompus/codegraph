@@ -597,6 +597,12 @@ impl KernelResolver {
                 return Ok(o);
             }
         }
+        if let Some(c) = self.match_rust_use_alias(r)? {
+            return match self.gate_language(Some(c), r) {
+                Some(c) => self.finish(r, c, None, true),
+                None => Ok(ResolveOutcome::unresolved()),
+            };
+        }
         match route(r) {
             Route::Unresolved => Ok(ResolveOutcome::unresolved()),
             Route::CInclude => self.resolve_c_include_import_ref(r),
