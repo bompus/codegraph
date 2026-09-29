@@ -18,6 +18,7 @@ import { rmTempDir } from "./rm-temp";
 
 const launcher = resolve(__dirname, "../dist/mcp/refresh-launcher.js");
 const fixture = resolve(__dirname, "fixtures/refresh-server.cjs");
+const VERSION = (JSON.parse(readFileSync(resolve(__dirname, "../package.json"), "utf8")) as { version: string }).version;
 const A = "a".repeat(40);
 const B = "b".repeat(40);
 type Message = {
@@ -102,7 +103,7 @@ async function start({
     cg.close();
   } else copyFileSync(fixture, join(directory, "dist", "bin", "codegraph.js"));
   const deploy = (revision: string, options: Record<string, unknown> = {}): void => {
-    writeFileSync(join(directory, "dist", "fixture.json"), JSON.stringify(options));
+    writeFileSync(join(directory, "dist", "fixture.json"), JSON.stringify({ ...options, version: VERSION }));
     writeFileSync(join(directory, "dist", "build-revision.json"), JSON.stringify({ revision }));
   };
   deploy(A, options);
@@ -179,7 +180,7 @@ async function start({
         clientInfo: { name: "refresh-proof", version: "1" },
       },
     });
-    expect((await response("init")).result.serverInfo.version).toBe(`1.6.0+${A}`);
+    expect((await response("init")).result.serverInfo.version).toBe(`${VERSION}+${A}`);
     send({ method: "notifications/initialized" });
     send({ id: "tools", method: "tools/list" });
     await response("tools");
@@ -198,7 +199,7 @@ describe("isolated MCP refresh launcher", () => {
       const server = await start({ realCodeGraph: true, daemon });
       const before = await server.call("before", "codegraph_status");
       expect(before.result.isError).not.toBe(true);
-      expect(before.result.content[0].text).toContain(`1.6.0+${A}`);
+      expect(before.result.content[0].text).toContain(`${VERSION}+${A}`);
       server.deploy(B);
       // Upstream semantics (1e461237): the in-process fallback must not
       // displace a live daemon's writer lock, so in daemon mode the first
@@ -213,7 +214,7 @@ describe("isolated MCP refresh launcher", () => {
       }
       expect(after.result, server.stderr()).toBeDefined();
       expect(after.result.isError).not.toBe(true);
-      expect(after.result.content[0].text, server.stderr()).toContain(`1.6.0+${B}`);
+      expect(after.result.content[0].text, server.stderr()).toContain(`${VERSION}+${B}`);
       server.send({
         id: "explore",
         method: "tools/call",

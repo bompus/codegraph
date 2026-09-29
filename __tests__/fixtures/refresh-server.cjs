@@ -23,7 +23,7 @@ lines.on("line", (line) => {
     result(message.id, {
       protocolVersion: options.protocol || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "codegraph", version: `1.6.0+${options.wrongRevision || revision}` },
+      serverInfo: { name: "codegraph", version: `${options.version}+${options.wrongRevision || revision}` },
       instructions: "fixture instructions",
     });
   } else if (message.method === "notifications/initialized") {
