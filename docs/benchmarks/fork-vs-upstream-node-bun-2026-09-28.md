@@ -151,7 +151,7 @@ one core.
 Bun's concurrent explores trail the fork on Node (2.51 s against 2.13 s on
 n8n): reads from several worker threads contend inside Bun's SQLite
 ([oven-sh/bun#44084](https://github.com/oven-sh/bun/issues/44084),
-[#44157](https://github.com/oven-sh/bun/issues/44157)). Bun's idle CPU is
+[#44187](https://github.com/oven-sh/bun/issues/44187)). Bun's idle CPU is
 about twice Node's on both corpora, still under 1% of one core.
 
 ## CLI startup
