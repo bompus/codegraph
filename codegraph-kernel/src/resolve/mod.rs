@@ -509,6 +509,10 @@ pub struct KernelResolver {
     sealed_memo: HashMap<String, bool>,
     c_static_memo: HashMap<String, bool>,
     rust_trait_memo: HashMap<String, bool>,
+    /// isSwiftExtension (swift-type-visibility.ts) memo, by node id.
+    swift_extension_memo: HashMap<String, bool>,
+    /// swiftExtendedConformances memo, by node id.
+    swift_conformance_memo: HashMap<String, Rc<Vec<String>>>,
     root_import_memo: HashMap<String, bool>,
     /// matchSelectedStoreCall's per-file selector names (`const a = f((s) =>`).
     selector_names_memo: HashMap<String, Rc<HashSet<String>>>,
@@ -627,6 +631,8 @@ impl KernelResolver {
             sealed_memo: HashMap::new(),
             c_static_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
+            swift_extension_memo: HashMap::new(),
+            swift_conformance_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
             selector_names_memo: HashMap::new(),
             awaited_files: HashMap::new(),

@@ -23,6 +23,7 @@ import {
 } from './types';
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
 import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
+import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips } from './frameworks';
@@ -294,6 +295,7 @@ export class ReferenceResolver {
     // same stable window as the caches above — drop them together.
     if (this.context) {
       clearImportResolverMemos(this.context);
+      clearSwiftTypeVisibility(this.context);
     }
   }
 
@@ -1326,7 +1328,10 @@ export class ReferenceResolver {
       if (outcome.candidates.length === 0) stats.frameworkMerge++;
       else stats.frameworkMergeWithCands++;
     }
-    return { ref, result: this.settleKernelOutcome(ref, outcome) };
+    // A Swift type reference never lands on an `extension X {}` node, nor on a
+    // nested type it cannot name bare (see ./swift-type-visibility). Applied to
+    // the settled winner, so kernel verdicts and framework hits obey it alike.
+    return { ref, result: gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context) };
   }
 
   /**

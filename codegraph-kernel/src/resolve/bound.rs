@@ -375,8 +375,105 @@ impl KernelResolver {
                     names.push(target.name.clone());
                 }
             }
+            // A Swift conformance to a type the project only extends (SwiftUI's
+            // `View`) resolves to nothing — the extension is not the type — yet
+            // the members its extensions add are still the conformer's.
+            if tn.language == "swift" {
+                for name in self.swift_extended_conformances(&tn)?.iter() {
+                    if name != type_name && !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
         }
         Ok(names)
+    }
+
+    /// swiftExtendedConformances (swift-type-visibility.ts): the types a
+    /// Swift type's own declaration conforms to that the project only
+    /// extends — `View` for `struct HomeView: View` when `extension View {}`
+    /// is all the index holds of it. Read from the declaration head once per
+    /// node: the resolved edges it would otherwise come from do not exist.
+    fn swift_extended_conformances(&mut self, node: &KNode) -> Res<Rc<Vec<String>>> {
+        if let Some(hit) = self.swift_conformance_memo.get(&node.id) {
+            return Ok(hit.clone());
+        }
+        let mut out = Vec::new();
+        for name in self.swift_declared_supertypes(node) {
+            let typed: Vec<Arc<KNode>> = self
+                .nodes_by_name(&name)?
+                .iter()
+                .filter(|n| n.language == "swift" && is_swift_type_kind(&n.kind))
+                .cloned()
+                .collect();
+            if typed.is_empty() {
+                continue;
+            }
+            let mut only_extended = true;
+            for n in &typed {
+                if !self.is_swift_extension(n) {
+                    only_extended = false;
+                    break;
+                }
+            }
+            if only_extended {
+                out.push(name);
+            }
+        }
+        let out = Rc::new(out);
+        self.swift_conformance_memo.insert(node.id.clone(), out.clone());
+        Ok(out)
+    }
+
+    /// The supertypes a Swift type node's own declaration names: `View`,
+    /// `Sendable` for `struct HomeView: View, Sendable {`.
+    fn swift_declared_supertypes(&mut self, node: &KNode) -> Vec<String> {
+        let head = self.swift_declaration_head(node, 6);
+        let Some(clause) = swift_inheritance_clause_re().captures(&head).and_then(|c| c.get(1)) else {
+            return Vec::new();
+        };
+        clause
+            .as_str()
+            .split(',')
+            .filter_map(|part| {
+                let bare = swift_generic_args_re().replace_all(part, "");
+                let name = bare.trim().rsplit('.').next().unwrap_or("").trim().to_string();
+                swift_type_name_re().is_match(&name).then_some(name)
+            })
+            .collect()
+    }
+
+    /// isSwiftExtension (swift-type-visibility.ts): extraction classifies an
+    /// `extension X {}` as a class, so the declaration keyword decides.
+    fn is_swift_extension(&mut self, node: &KNode) -> bool {
+        if node.language != "swift" || node.kind != "class" {
+            return false;
+        }
+        if let Some(&hit) = self.swift_extension_memo.get(&node.id) {
+            return hit;
+        }
+        let head = self.swift_declaration_head(node, 4);
+        let extension = swift_declaration_keyword_re()
+            .captures(&head)
+            .and_then(|c| c.get(1))
+            .is_some_and(|m| m.as_str() == "extension");
+        self.swift_extension_memo.insert(node.id.clone(), extension);
+        extension
+    }
+
+    /// A declaration's first lines from its start column, joined, with string
+    /// literals emptied (an attribute's `message: "use class Foo"` is not a
+    /// keyword).
+    fn swift_declaration_head(&mut self, node: &KNode, extra_lines: i64) -> String {
+        let Some(lines) = self.read_file(&node.file_path) else { return String::new() };
+        let first = lines.get((node.start_line - 1).max(0) as usize).map(|s| s.as_str()).unwrap_or("");
+        let mut head = first.get(node.start_column.max(0) as usize..).unwrap_or(first).to_string();
+        let end = node.end_line.min(node.start_line + extra_lines).max(node.start_line);
+        for i in node.start_line..end {
+            head.push(' ');
+            head.push_str(lines.get(i as usize).map(|s| s.as_str()).unwrap_or(""));
+        }
+        swift_string_literal_re().replace_all(&head, "\"\"").into_owned()
     }
 
     /// A Java type `r` can name by its simple name: declared in `r`'s file

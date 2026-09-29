@@ -82,6 +82,34 @@ pub(super) fn expo_nav_re() -> Rc<Regex> {
 pub(super) fn laravel_claim_re() -> Rc<Regex> {
     re!(r"^[A-Za-z_][A-Za-z0-9_]*Controller@[A-Za-z0-9_]+$")
 }
+/// swift-type-visibility.ts TYPE_KINDS.
+pub(super) fn is_swift_type_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "struct" | "enum" | "interface" | "protocol" | "type_alias")
+}
+/// The first declaration keyword of a Swift class_declaration.
+pub(super) fn swift_declaration_keyword_re() -> Rc<Regex> {
+    re!(r"\b(extension|class|struct|enum|actor|protocol)\b")
+}
+/// A Swift declaration's inheritance clause: `struct HomeView: View, Sendable {` → `View, Sendable`.
+pub(super) fn swift_inheritance_clause_re() -> Rc<Regex> {
+    re!(r"\b(?:class|struct|enum|actor|protocol|extension)\s+[A-Za-z_][A-Za-z0-9_.]*\s*(?:<[^{}]*?>)?\s*:\s*([^{]*?)\s*(?:\bwhere\b[^{]*)?\{")
+}
+/// `<Success>` / `<Key, [Value]>` — one level of nesting.
+pub(super) fn swift_generic_args_re() -> Rc<Regex> {
+    re!(r"<[^<>]*(?:<[^<>]*>[^<>]*)*>")
+}
+pub(super) fn swift_type_name_re() -> Rc<Regex> {
+    re!(r"^[A-Za-z_][A-Za-z0-9_]*$")
+}
+/// A double-quoted string literal on one line.
+pub(super) fn swift_string_literal_re() -> Rc<Regex> {
+    re!(r#""(?:[^"\\\n]|\\.)*""#)
+}
+/// A Vapor route's handler ref (frameworks/swift.ts VAPOR_HANDLER):
+/// `Type@method` (the type may be dotted) or `@method`.
+pub(super) fn vapor_handler_re() -> Rc<Regex> {
+    re!(r"^(?:(?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*)?@[A-Za-z_][A-Za-z0-9_]*$")
+}
 pub(super) fn next_nav_re() -> Rc<Regex> {
     re!(r"(?:^|\.)(?:push|replace|prefetch)$|^(?:redirect|permanentRedirect)$|^(?:NextResponse|Response)\.redirect$")
 }
@@ -357,7 +385,8 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "aspnet" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "react-router-files" | "redwood"
         | "rust" | "svelte"
-        | "swiftui" | "uikit" | "vapor" => false,
+        | "swiftui" | "uikit" => false,
+        "vapor" => vapor_handler_re().is_match(name),
         _ => true,
     }
 }

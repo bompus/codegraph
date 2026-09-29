@@ -1748,7 +1748,7 @@ describe('vaporResolver.extract', () => {
     const src = `app.get("users", use: listUsers)\n`;
     const { nodes, references } = vaporResolver.extract!('routes.swift', src);
     expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('listUsers');
+    expect(references[0].referenceName).toBe('@listUsers');
   });
 
   it('extracts grouped RouteCollection routes with the group prefix and no path arg', () => {
@@ -1769,9 +1769,9 @@ func boot(routes: RoutesBuilder) throws {
       'POST /todos',
     ]);
     expect(references.map((r) => r.referenceName).sort()).toEqual([
-      'create',
-      'delete',
-      'index',
+      '@create',
+      '@delete',
+      '@index',
     ]);
   });
 
@@ -1779,7 +1779,7 @@ func boot(routes: RoutesBuilder) throws {
     const src = `router.get("users", User.parameter, "edit", use: self.editUserHandler)\n`;
     const { nodes, references } = vaporResolver.extract!('UserController.swift', src);
     expect(nodes[0].name).toBe('GET /users/edit');
-    expect(references[0].referenceName).toBe('editUserHandler');
+    expect(references[0].referenceName).toBe('@editUserHandler');
   });
 
   it('ignores non-route .get calls that lack use: (e.g. Environment.get)', () => {
@@ -1821,11 +1821,11 @@ app.get(
       'GET /multi/line',
     ]);
     expect(references.map((r) => r.referenceName)).toEqual([
-      'list',
-      'listUsers',
-      'edit',
-      'update',
-      'multiLine',
+      '@list',
+      '@listUsers',
+      'UserController@edit',
+      '@update',
+      '@multiLine',
     ]);
   });
 
@@ -1834,7 +1834,7 @@ app.get(
     const { nodes, references } = vaporResolver.extract!('routes.swift', src);
     expect(nodes).toHaveLength(1);
     expect(nodes[0]!.name).toBe('GET /'); // label fixed by postExtract
-    expect(references[0]!.referenceName).toBe('searchHandler');
+    expect(references[0]!.referenceName).toBe('@searchHandler');
   });
 });
 
@@ -2277,7 +2277,7 @@ app.get("real", use: listUsers)
 `;
     const { nodes, references } = vaporResolver.extract!('routes.swift', src);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['listUsers']);
+    expect(references.map((r) => r.referenceName)).toEqual(['@listUsers']);
   });
 
   it('nestjs: skips // and /* */ commented decorators', () => {

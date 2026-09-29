@@ -1324,6 +1324,25 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
     methodsMemo.set(classId, methods);
     return methods;
   };
+  // A Swift protocol's methods live in its extensions: requirements are not
+  // extracted as methods, and `extension EventMonitor { func request(…) }` is
+  // where the default implementations a conformer overrides are. A class-kind
+  // node sharing a protocol's name is one of its extensions.
+  const protocolMemo = new Map<string, Node[]>();
+  const baseMethodsOf = (base: Node): Node[] => {
+    if (base.language !== 'swift' || base.kind !== 'interface') return methodsOf(base.id);
+    const hit = protocolMemo.get(base.id);
+    if (hit) return hit;
+    const methods = [
+      ...methodsOf(base.id),
+      ...queries
+        .getNodesByName(base.name)
+        .filter((n) => n.language === 'swift' && n.kind === 'class')
+        .flatMap((n) => methodsOf(n.id)),
+    ];
+    protocolMemo.set(base.id, methods);
+    return methods;
+  };
   // Concrete-side kinds vary by language: `class` covers Java / Kotlin /
   // C# / TS / Swift-classes / Scala-classes; `struct` covers Swift value
   // types that conform to protocols. Iterate both.
@@ -1369,7 +1388,7 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
     }
     for (const base of supertypes) {
       let added = 0;
-      for (const bm of methodsOf(base.id)) {
+      for (const bm of baseMethodsOf(base)) {
         if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
         for (const m of implByName.get(bm.name) ?? []) {
           if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
