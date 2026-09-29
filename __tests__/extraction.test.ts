@@ -3918,6 +3918,30 @@ SYSCALL_DEFINE0(sync)
         ['ENCODER(hz)', 'SYSCALL_DEFINE0(sync)', 'exit_thread', 'preloading']
       );
     });
+
+    it('keeps a column-0 macro that supplies the return type of the definition after it', () => {
+      const code = `
+LOCAL(int)
+SRE(at)(SRE_STATE *state, SRE_CODE at)
+{
+    return helper(state);
+}
+EXPORT(long long) tf_q(long long c) { return helper(c); }
+EXPORT_FUNC(first)
+EXPORT_FUNC(second)
+void run(void)
+{
+    CHECK(x)
+    helper(x);
+}
+`;
+      const result = extractFromSource('mod.c', code);
+      const fns = result.nodes.filter((n) => n.kind === 'function');
+      expect(fns.map((n) => n.name).sort()).toEqual(['SRE(at)', 'run', 'tf_q']);
+      const byId = new Map(fns.map((n) => [n.id, n.name]));
+      const helperCalls = result.unresolvedReferences.filter((r) => r.referenceName === 'helper');
+      expect(helperCalls.map((r) => byId.get(r.fromNodeId)).sort()).toEqual(['SRE(at)', 'run', 'tf_q']);
+    });
   });
 
   describe('C prototypes whose attribute macro ends a declaration early', () => {
