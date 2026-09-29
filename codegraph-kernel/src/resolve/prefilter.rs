@@ -315,8 +315,30 @@ impl KernelResolver {
             return None;
         }
         let lines = self.read_file(&r.file_path)?;
-        let line = lines.get((r.line - 1) as usize)?;
-        member_call_at(js_slice(line, r.column as usize), &r.reference_name)
+        let first = (r.line - 1) as usize;
+        let at = js_slice(lines.get(first)?, r.column as usize);
+        // A chain wrapped onto the next lines (`this.a.b\n  .filter(x)`):
+        // the ref sits where the call expression starts, the name on a line
+        // that continues it with `.`/`?.` or after a line ending in `.`.
+        let mut end = first + 1;
+        let mut tail = at.trim_end();
+        while end < lines.len() && end - first <= MAX_WRAPPED_CHAIN_LINES {
+            let next = lines[end].trim_start();
+            if !(next.starts_with('.') || tail.ends_with('.')) {
+                break;
+            }
+            tail = next.trim_end();
+            end += 1;
+        }
+        if end == first + 1 {
+            return member_call_at(at, &r.reference_name);
+        }
+        let mut text = at.to_string();
+        for line in &lines[first + 1..end] {
+            text.push('\n');
+            text.push_str(line);
+        }
+        member_call_at(&text, &r.reference_name)
     }
 
     /// isUnknownReceiverBuiltInCall (import-resolver.ts): a JS built-in method
@@ -326,31 +348,52 @@ impl KernelResolver {
     }
 }
 
+/// Continuation lines `member_call_receiver` reads past the ref's own line.
+const MAX_WRAPPED_CHAIN_LINES: usize = 16;
+
+/// `i` moved past whitespace and `/* … */` comments.
+fn skip_gap(b: &[u8], mut i: usize) -> usize {
+    loop {
+        match b.get(i) {
+            Some(b' ' | b'\t' | b'\n' | b'\r') => i += 1,
+            Some(b'/') if b.get(i + 1) == Some(&b'*') => match memchr::memmem::find(&b[i + 2..], b"*/") {
+                Some(e) => i += 2 + e + 2,
+                None => return i,
+            },
+            _ => return i,
+        }
+    }
+}
+
+/// `k` (an end offset) moved back over whitespace and `/* … */` comments.
+fn skip_gap_back(b: &[u8], mut k: usize) -> usize {
+    loop {
+        match k.checked_sub(1).map(|p| b[p]) {
+            Some(b' ' | b'\t' | b'\n' | b'\r') => k -= 1,
+            Some(b'/') if k >= 2 && b[k - 2] == b'*' => match memchr::memmem::rfind(&b[..k - 2], b"/*") {
+                Some(s) => k = s,
+                None => return k,
+            },
+            _ => return k,
+        }
+    }
+}
+
 fn member_call_at(at: &str, name: &str) -> Option<bool> {
     let b = at.as_bytes();
     let ident = |i: Option<usize>| i.and_then(|i| b.get(i)).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$');
-    let blank = |i: usize| matches!(b.get(i), Some(b' ' | b'\t'));
     for i in occurrences(at, name, 0) {
         if ident(i.checked_sub(1)) || ident(Some(i + name.len())) {
             continue;
         }
-        let mut j = i + name.len();
-        while blank(j) {
-            j += 1;
-        }
+        let mut j = skip_gap(b, i + name.len());
         if b.get(j) == Some(&b'?') && b.get(j + 1) == Some(&b'.') {
-            j += 2;
-        }
-        while blank(j) {
-            j += 1;
+            j = skip_gap(b, j + 2);
         }
         if !matches!(b.get(j), Some(b'(' | b'<' | b'`')) {
             continue;
         }
-        let mut k = i;
-        while k > 0 && blank(k - 1) {
-            k -= 1;
-        }
+        let mut k = skip_gap_back(b, i);
         if k == 0 || b[k - 1] != b'.' {
             return None;
         }
@@ -358,9 +401,7 @@ fn member_call_at(at: &str, name: &str) -> Option<bool> {
         if k > 0 && b[k - 1] == b'?' {
             k -= 1;
         }
-        while k > 0 && blank(k - 1) {
-            k -= 1;
-        }
+        k = skip_gap_back(b, k);
         let receiver = &at[..k];
         let is_self = ["this", "super"].iter().any(|s| {
             receiver.ends_with(s)
@@ -415,5 +456,14 @@ mod tests {
         assert_eq!(member_call_at("数据.数据()", "数据"), Some(false));
         assert_eq!(member_call_at("this.数据()", "数据"), Some(true));
         assert_eq!(member_call_at("x数据数据()", "数据"), None);
+    }
+
+    #[test]
+    fn member_call_at_crosses_comments_and_wrapped_lines() {
+        assert_eq!(member_call_at("this.findAll /*x*/().length", "findAll"), Some(true));
+        assert_eq!(member_call_at("this /* a */ . /* b */ findAll()", "findAll"), Some(true));
+        assert_eq!(member_call_at("this\n      .findAll().length", "findAll"), Some(true));
+        assert_eq!(member_call_at("this.#items.list\n      .add(n)", "add"), Some(false));
+        assert_eq!(member_call_at("findAll /*x*/ ()", "findAll"), None);
     }
 }

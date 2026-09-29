@@ -85,26 +85,31 @@ impl KernelResolver {
         if member.is_empty() {
             return Ok(None);
         }
-        let class_name = if is_supertype_bearing_kind(&from.kind) || from.kind == "module" {
-            from.name.clone()
+        let (class_prefix, class_name) = if is_supertype_bearing_kind(&from.kind) || from.kind == "module" {
+            (from.qualified_name.clone(), from.name.clone())
         } else {
             match from.qualified_name.rfind("::") {
                 Some(sep) if sep > 0 => {
                     let prefix = &from.qualified_name[..sep];
-                    match prefix.rfind("::") {
-                        Some(i) => prefix[i + 2..].to_string(),
-                        None => prefix.to_string(),
-                    }
+                    let name = match prefix.rfind("::") {
+                        Some(i) => &prefix[i + 2..],
+                        None => prefix,
+                    };
+                    (prefix.to_string(), name.to_string())
                 }
                 _ => return Ok(None),
             }
         };
         let named = self.nodes_by_name(&class_name)?;
-        let mut frontier: Vec<Arc<KNode>> = named
-            .iter()
-            .filter(|n| is_supertype_bearing_kind(&n.kind) && n.file_path == r.file_path)
-            .cloned()
-            .collect();
+        // The enclosing class by its qualified name, so a same-named class
+        // nested in a function elsewhere in the file (`decoy::LoginForm`)
+        // never seeds the walk; by bare name only when none matches.
+        let same_file = |n: &&Arc<KNode>| is_supertype_bearing_kind(&n.kind) && n.file_path == r.file_path;
+        let mut frontier: Vec<Arc<KNode>> =
+            named.iter().filter(same_file).filter(|n| n.qualified_name == class_prefix).cloned().collect();
+        if frontier.is_empty() {
+            frontier = named.iter().filter(same_file).cloned().collect();
+        }
         if frontier.is_empty() {
             // Declared in another file (partial/reopened classes).
             frontier = named

@@ -65,7 +65,7 @@ fn push_blank(out: &mut String, c: char) {
 }
 
 /// stripCommentsForRegex(text, 'typescript'): block and line comments
-/// blanked (newlines kept); string literals skipped intact.
+/// blanked (newlines kept); string and regex literals skipped intact.
 pub(super) fn strip_ts_comments(src: &str) -> String {
     let s: Vec<char> = src.chars().collect();
     let n = s.len();
@@ -98,6 +98,15 @@ pub(super) fn strip_ts_comments(src: &str) -> String {
             }
             continue;
         }
+        // A regex literal is code, never a comment: the `\//` in
+        // `/^\/api\//` does not start one.
+        if c == '/' {
+            if let Some(end) = regex_literal_end(&s, i, true) {
+                out.extend(&s[i..=end]);
+                i = end + 1;
+                continue;
+            }
+        }
         if c == '"' || c == '\'' || c == '`' {
             let start = i;
             i += 1;
@@ -123,6 +132,64 @@ pub(super) fn strip_ts_comments(src: &str) -> String {
     out
 }
 
+/// The closing `/` of a regex literal opening at `s[i]` (a `/`), when the
+/// 32 UTF-16 units before it end where an expression starts and the body
+/// closes on the same line. `strict` also refuses a `/` after `)` or `]`,
+/// where it is almost always division: the comment pass keeps a regex
+/// intact, so reading `(a) / 2 // note` as a regex would leave the comment
+/// in the code.
+fn regex_literal_end(s: &[char], i: usize, strict: bool) -> Option<usize> {
+    let regex_start = if strict {
+        re!(
+            r"(?:^|[=(:,!&|?;{}\[+*%~^<>-]|(?-u:\b)(?:return|throw|case|yield|await|else|do|typeof|void|delete|new|in|of|instanceof))\s*$"
+        )
+    } else {
+        re!(
+            r"(?:^|[=(:,)!&|?;{}\[\]+*%~^<>-]|(?-u:\b)(?:return|throw|case|yield|await|else|do|typeof|void|delete|new|in|of|instanceof))\s*$"
+        )
+    };
+    // `text.slice(max(0, i - 32), i)` in UTF-16 units; a surrogate pair cut
+    // in half leaves a lone (non-word, non-space) unit.
+    let mut window: Vec<char> = Vec::new();
+    let mut units = 0;
+    let mut k = i;
+    while k > 0 && units < 32 {
+        let ch = s[k - 1];
+        let w = ch.len_utf16();
+        if units + w > 32 {
+            window.push('\u{FFFD}');
+            break;
+        }
+        window.push(ch);
+        units += w;
+        k -= 1;
+    }
+    let window: String = window.into_iter().rev().collect();
+    if !regex_start.is_match(&window) {
+        return None;
+    }
+    let n = s.len();
+    let mut end = i + 1;
+    let mut in_class = false;
+    while end < n && s[end] != '\n' {
+        if s[end] == '\\' {
+            end += 2;
+            continue;
+        }
+        if s[end] == '[' {
+            in_class = true;
+        }
+        if s[end] == ']' {
+            in_class = false;
+        }
+        if s[end] == '/' && !in_class {
+            break;
+        }
+        end += 1;
+    }
+    (end < n && s[end] == '/').then_some(end)
+}
+
 /// blankStringContents: string (and template) contents and regex literal
 /// bodies blanked, quotes, slashes and newlines kept, so a `}` or quote in
 /// `/\}/` is never read as code.
@@ -130,56 +197,16 @@ pub(super) fn blank_string_contents(text: &str) -> String {
     let s: Vec<char> = text.chars().collect();
     let n = s.len();
     let mut out: Vec<Option<char>> = s.iter().map(|&c| Some(c)).collect();
-    let regex_start = re!(
-        r"(?:^|[=(:,)!&|?;{}\[\]+*%~^<>-]|(?-u:\b)(?:return|throw|case|yield|await|else|do|typeof|void|delete|new|in|of|instanceof))\s*$"
-    );
     let mut i = 0;
     while i < n {
         let c = s[i];
         if c == '/' {
-            // `text.slice(max(0, i - 32), i)` in UTF-16 units; a surrogate
-            // pair cut in half leaves a lone (non-word, non-space) unit.
-            let mut window: Vec<char> = Vec::new();
-            let mut units = 0;
-            let mut k = i;
-            while k > 0 && units < 32 {
-                let ch = s[k - 1];
-                let w = ch.len_utf16();
-                if units + w > 32 {
-                    window.push('\u{FFFD}');
-                    break;
+            if let Some(end) = regex_literal_end(&s, i, false) {
+                for slot in &mut out[i + 1..end] {
+                    *slot = None;
                 }
-                window.push(ch);
-                units += w;
-                k -= 1;
-            }
-            let window: String = window.into_iter().rev().collect();
-            if regex_start.is_match(&window) {
-                let mut end = i + 1;
-                let mut in_class = false;
-                while end < n && s[end] != '\n' {
-                    if s[end] == '\\' {
-                        end += 2;
-                        continue;
-                    }
-                    if s[end] == '[' {
-                        in_class = true;
-                    }
-                    if s[end] == ']' {
-                        in_class = false;
-                    }
-                    if s[end] == '/' && !in_class {
-                        break;
-                    }
-                    end += 1;
-                }
-                if end < n && s[end] == '/' {
-                    for slot in &mut out[i + 1..end] {
-                        *slot = None;
-                    }
-                    i = end + 1;
-                    continue;
-                }
+                i = end + 1;
+                continue;
             }
         }
         if c == '"' || c == '\'' || c == '`' {
