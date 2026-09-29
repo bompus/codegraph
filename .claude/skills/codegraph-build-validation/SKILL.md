@@ -52,7 +52,7 @@ their dependencies. The root config (`vitest.config.mts`, `.mts` because the plu
 ESM-only and the repo is CJS) is the shared base; note that a workspace project **concatenates**
 the base's `include` with its own, which is why the `ui` project does not `extends` it.
 
-Node engines: `>=20.0.0`. There is a hard exit below Node 20 (see `src/bin/node-version-check.ts`). The full suite also passes on Node 26 and Bun; the tested versions are listed in the README's "Runtimes" section.
+Engines: Node `>=22.13.0` or Bun `>=1.4.0` for source development (`package.json`); published bundles carry their own supported runtime. The CLI exits at startup on an older Node or Bun (`src/bin/node-version-check.ts`). The full suite also passes on Node 26 and Bun; the tested versions are listed in the README's "Runtimes" section.
 
 Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond the obvious:
 
