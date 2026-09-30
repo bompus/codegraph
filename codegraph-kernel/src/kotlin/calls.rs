@@ -6,8 +6,10 @@ use super::*;
 impl<'t> Walker<'t> {
     /// The middle identifier of an infix expression is its callee.
     pub(super) fn extract_infix_call(&mut self, node: Node<'t>) {
-        if self.stack.is_empty() || node.named_child_count() != 3 { return; }
-        let (Some(lhs), Some(func)) = (node.named_child(0), node.named_child(1)) else { return };
+        if self.stack.is_empty() { return; }
+        let children: Vec<_> = named_kids(node).filter(|n| !n.is_extra()).collect();
+        if children.len() != 3 { return; }
+        let (lhs, func) = (children[0], children[1]);
         if func.kind() != "simple_identifier" || is_literal_receiver(lhs.kind()) { return; }
         let caller = self.top_row();
         let name = self.text(func);
@@ -15,7 +17,7 @@ impl<'t> Walker<'t> {
         let callee = if !receiver.is_empty() && receiver != "this" && receiver != "super" {
             format!("{receiver}.{name}")
         } else { name.to_string() };
-        self.push_ref_at(caller, &callee, crate::buffers::EDGE_CALLS, node);
+        self.push_ref_at(caller, &callee, crate::buffers::EDGE_CALLS, if callee.contains('.') { node } else { func });
     }
 
     /// extractCall — the kotlin paths: navigation member branch (+ the #750

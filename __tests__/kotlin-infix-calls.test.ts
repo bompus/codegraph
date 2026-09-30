@@ -32,6 +32,12 @@ fun single(block: () -> Any): Definition = Definition()
 class Ops(private val id: Column) {
     fun same(id1: Int): Boolean = id eq id1
 
+    fun commented(id1: Int): Boolean = id /* comment */ eq id1
+
+    fun parenthesized() {
+        single { Ops(Column()) } bind (Ops::class)
+    }
+
     fun wire() {
         single { Ops(Column()) } bind Ops::class
     }
@@ -49,8 +55,12 @@ class Bits {
 fun numeric(value: Int, mask: Int) = value and mask
 fun custom(value: Bits, mask: Bits) = value and mask
 `,
+    'src/main/kotlin/app/ProjectInt.kt': `package project
+class Int { infix fun and(other: Int): Int = this }
+fun projectNumeric(value: Int, mask: Int) = value and mask
+`,
     'build.gradle.kts': `plugins {
-    alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.kotlin.jvm) apply (false)
 }
 `,
   };
@@ -94,4 +104,57 @@ describe('Kotlin infix calls', () => {
   it('leave a standard infix name on an expression to the library', () => {
     expect(callsFrom('build.gradle.kts')).not.toContain('app::Spec::apply');
   });
+});
+
+it('keeps infix calls with comments', () => {
+  const nodes = cg.getNodesInFile('src/main/kotlin/app/Ops.kt');
+  const targets = (name: string) => cg.getOutgoingEdges(nodes.find((n) => n.name === name)!.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets('commented')).toContain('app::Column::eq');
+});
+it('keeps infix calls with parenthesized operands', () => {
+  const caller = cg.getNodesInFile('src/main/kotlin/app/Ops.kt').find((n) => n.name === 'parenthesized')!;
+  const targets = cg.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).toContain('app::Definition::bind');
+});
+it('keeps a project class whose name matches a numeric type', () => {
+  const caller = cg.getNodesInFile('src/main/kotlin/app/ProjectInt.kt').find((n) => n.name === 'projectNumeric')!;
+  const targets = cg.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).toContain('project::Int::and');
+});
+
+it.each([
+  ['numeric extension', `package app
+infix fun Int.and(other: Int): Int = this
+fun numeric(value: Int, mask: Int) = (value) and mask
+`, 'numeric', []],
+  ['project numeric extension', `package project
+class Int
+infix fun Int.and(other: Int): Int = this
+fun custom(value: Int, mask: Int) = (value) and mask
+`, 'custom', ['Int::and']],
+  ['nested-comment this receiver', `package app
+class Spec {
+  infix fun apply(other: Spec): Spec = this
+  fun run(s: Spec) = this /* outer /* inner */ tail */ apply s
+}
+`, 'run', ['app::Spec::apply']],
+  ['commented this receiver', `package app
+class Spec {
+  infix fun apply(other: Spec): Spec = this
+  fun run(s: Spec) = this /* comment */ apply s
+}
+`, 'run', ['app::Spec::apply']],
+])('handles %s without unrelated candidates', async (_label, source, name, expected) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-kotlin-infix-owner-'));
+  let graph: CodeGraph | undefined;
+  try {
+    fs.writeFileSync(path.join(dir, 'Ops.kt'), source);
+    graph = await CodeGraph.init(dir, { index: true });
+    const caller = graph.getNodesInFile('Ops.kt').find((n) => n.name === name)!;
+    const targets = graph.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => graph!.getNode(e.target)!.qualifiedName);
+    expect(targets).toEqual(expected);
+  } finally {
+    graph?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

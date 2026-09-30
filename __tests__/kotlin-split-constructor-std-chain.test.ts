@@ -50,6 +50,9 @@ import app.Other
 import app.queryParamAsClass
 fun positive(ctx: Context) = ctx.queryParamAsClass<String>("x").getOrNull()
 fun negative(ctx: Other) = ctx.queryParamAsClass("x").getOrDefault("default")
+fun untyped(others: List<Other>) { others.forEach { it.queryParamAsClass("x").getOrNull(0) } }
+fun constructed() = Other().queryParamAsClass("x").getOrNull(0)
+fun repeated(ctx: Context, other: Other) = listOf(other.queryParamAsClass("x").getOrNull(0), ctx.queryParamAsClass<String>("x").getOrNull())
 `,
     'src/commonMain/kotlin/okio/ByteString.kt': BYTE_STRING,
     'src/main/kotlin/app/ConnectionSpec.kt': `package app
@@ -107,4 +110,53 @@ it('keeps imported extension return-type chains and rejects a different receiver
   const targets = (name: string) => cg.getOutgoingEdges(nodes.find((n) => n.name === name)!.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
   expect(targets('positive')).toContain('app::Validator::getOrNull');
   expect(targets('negative')).not.toContain('app::Validator::getOrDefault');
+});
+
+it('does not infer an imported extension through a constructor receiver', () => {
+  const source = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'constructed')!;
+  const targets = cg.getOutgoingEdges(source.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).not.toContain('app::Validator::getOrNull');
+});
+
+it('checks the return chain at its own column when method names repeat', () => {
+  const source = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'repeated')!;
+  const targets = cg.getOutgoingEdges(source.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).toContain('app::Validator::getOrNull');
+});
+
+it('does not borrow an extension return type for an untyped lambda receiver', () => {
+  const source = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'untyped')!;
+  const targets = cg.getOutgoingEdges(source.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).not.toContain('app::Validator::getOrNull');
+});
+
+it('keeps a sole imported return-chain candidate below the trust line without a receiver type', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-kotlin-chain-confidence-'));
+  let graph: CodeGraph | undefined;
+  try {
+    fs.writeFileSync(path.join(dir, 'Api.kt'), `package app
+class Context
+class Validator {
+  fun getOrNull(): String? = null
+}
+class Unannotated {
+  fun queryParamAsClass(key: String) = key
+}
+fun <T> Context.queryParamAsClass(key: String): Validator = Validator()
+`);
+    fs.writeFileSync(path.join(dir, 'Use.kt'), `package consumer
+import app.Context
+import app.queryParamAsClass
+fun use(handler: (Context) -> Unit) {}
+fun run() { use { it.queryParamAsClass<String>("x").getOrNull() } }
+`);
+    graph = await CodeGraph.init(dir, { index: true });
+    const caller = graph.getNodesInFile('Use.kt').find((n) => n.name === 'run')!;
+    const edge = graph.getOutgoingEdges(caller.id).find((e) => e.kind === 'calls' && graph!.getNode(e.target)?.qualifiedName === 'app::Validator::getOrNull');
+    expect(edge).toBeDefined();
+    expect(edge!.metadata?.confidence).toBeLessThanOrEqual(0.7);
+  } finally {
+    graph?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

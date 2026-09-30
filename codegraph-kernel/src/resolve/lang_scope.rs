@@ -174,6 +174,7 @@ impl KernelResolver {
     /// name, but the qualifier, not the file's imports, says what it names.
     /// `this.` and `super.` calls are still judged.
     fn is_kotlin_qualified_call(&mut self, r: &ResolveRefIn) -> bool {
+        if self.kotlin_infix_site(r).is_some() { return true; }
         let Some(lines) = self.read_file(&r.file_path) else { return false };
         let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return false };
         let name = r.reference_name.as_str();

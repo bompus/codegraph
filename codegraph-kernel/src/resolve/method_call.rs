@@ -1273,7 +1273,8 @@ pub(super) fn own_return_offsets(body: &str) -> HashSet<usize> {
 }
 
 fn own_return_lines(body: &str) -> HashSet<usize> {
-    own_return_offsets(body).into_iter().map(|at| body[..at].bytes().filter(|b| *b == b'\n').count()).collect()
+    let code = super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(body));
+    own_return_offsets(&code).into_iter().map(|at| code[..at].bytes().filter(|b| *b == b'\n').count()).collect()
 }
 
 /// Does a `{` after `prefix` open a function body rather than a block or

@@ -398,7 +398,7 @@ impl KernelResolver {
     /// gateLanguage (index.ts): drop import/name results crossing a family.
     pub(super) fn gate_language(&mut self, cand: Option<KCand>, r: &ResolveRefIn) -> Option<KCand> {
         let cand = cand?;
-        if super::call_shape::kotlin_number_bitwise(&cand.node, r) { return None; }
+        if self.kotlin_number_bitwise(&cand.node, r) { return None; }
         let tgt = cand.node.language.as_str();
         // getLanguageFromNodeId is the node's language — already in hand.
         if tgt == "markdown" || r.language == "markdown" {
@@ -432,10 +432,13 @@ impl KernelResolver {
                 None
             });
         }
+        let mut cand = cand;
+        if self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic) {
+            cand.confidence = cand.confidence.min(0.7);
+        }
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
         }
-        let mut cand = cand;
         if !is_supertype_target(&cand.node) {
             // `export const IFoo = createDecorator<IFoo>(…)` beside `export
             // interface IFoo` (VS Code's service pattern): the strategy found

@@ -241,6 +241,19 @@ impl KernelResolver {
         tree
     }
 
+    /// Identify the infix callee from the parsed expression, including parenthesized operands.
+    pub(super) fn kotlin_infix_site(&mut self, r: &ResolveRefIn) -> Option<(usize, String)> {
+        if r.language != "kotlin" || r.reference_kind != "calls" { return None; }
+        let file = self.read_file(&r.file_path)?;
+        let tree = self.parsed_tree(&file, r)?;
+        let node = descendant_for_position(tree.root_node(), file.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+        let expression = node.parent()?;
+        if node.kind() != "simple_identifier" || expression.kind() != "infix_expression" { return None; }
+        let children: Vec<_> = named_children(expression).into_iter().filter(|n| !n.is_extra()).collect();
+        if children.len() != 3 || children[1].id() != node.id() { return None; }
+        Some((node.start_position().column, node_text(children[0], file.text()).to_string()))
+    }
+
     /// The names a Kotlin lambda binds: its declared parameters, else
     /// implicit `it`, except a lambda given to the stdlib `run`, `apply` or
     /// `with`, which takes its value as `this` and binds nothing. A

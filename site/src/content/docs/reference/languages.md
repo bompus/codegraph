@@ -38,3 +38,5 @@ Markdown files use a dedicated documentation extractor. `.mdx` files receive the
 JavaScript files with a Flow pragma use the TSX grammar after Flow-only syntax is blanked, preserving source locations.
 
 Kotlin infix expressions, such as `Users.id eq id1`, contribute calls to the indexed infix function. The native scanner preserves surrounding declarations for same-line infix names beginning with `e`. Numeric bitwise calls remain unresolved when a project extension cannot be distinguished from Kotlin built-ins.
+
+Kotlin infix call extraction accepts parenthesized operands and comments, including nested block comments. Numeric bitwise guesses are filtered while methods and extensions on project types remain eligible.

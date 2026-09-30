@@ -4284,9 +4284,10 @@ export class TreeSitterExtractor {
    * callers. Mirrored in the kernel's kotlin/calls.rs extract_infix_call.
    */
   private extractKotlinInfixCall(node: SyntaxNode): void {
-    if (this.nodeStack.length === 0 || node.namedChildCount !== 3) return;
-    const lhs = node.namedChild(0);
-    const fn = node.namedChild(1);
+    if (this.nodeStack.length === 0) return;
+    const children = node.namedChildren.filter((child) => !child.type.endsWith('comment'));
+    if (children.length !== 3) return;
+    const [lhs, fn] = children;
     if (!lhs || !fn || fn.type !== 'simple_identifier' || LITERAL_RECEIVER_TYPES.has(lhs.type)) return;
     const callerId = this.nodeStack[this.nodeStack.length - 1];
     if (!callerId) return;
@@ -4296,8 +4297,8 @@ export class TreeSitterExtractor {
       fromNodeId: callerId,
       referenceName: receiver && receiver !== 'this' && receiver !== 'super' ? `${receiver}.${name}` : name,
       referenceKind: 'calls',
-      line: node.startPosition.row + 1,
-      column: node.startPosition.column,
+      line: (receiver && receiver !== 'this' && receiver !== 'super' ? node : fn).startPosition.row + 1,
+      column: (receiver && receiver !== 'this' && receiver !== 'super' ? node : fn).startPosition.column,
     });
   }
 
