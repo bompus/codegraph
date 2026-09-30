@@ -47,20 +47,9 @@ impl KernelResolver {
                 // imported package for `pkg.Type`, else the struct's own.
                 let pkg_dir = if raw_type.contains('.') {
                     let pkg = raw_type.split('.').next().unwrap_or("");
-                    let Some(mod_path) = self.go_module_path.clone() else {
-                        continue;
-                    };
-                    let source = self
-                        .import_mappings(&s.file_path)?
-                        .iter()
-                        .find(|i| i.local_name == pkg)
-                        .map(|imp| imp.source.clone());
-                    match source {
-                        Some(src) if src == mod_path => String::new(),
-                        Some(src) if src.starts_with(&format!("{}/", mod_path)) => {
-                            src[mod_path.len() + 1..].to_string()
-                        }
-                        _ => continue,
+                    match self.go_imported_package_dir(&s.file_path, pkg)? {
+                        Some(dir) => dir,
+                        None => continue,
                     }
                 } else {
                     pos_dirname(&s.file_path).to_string()
@@ -84,12 +73,31 @@ impl KernelResolver {
         Ok(None)
     }
 
+    /// The module directory of the package `file_path` imports as `pkg`:
+    /// `None` when `pkg` is no import there or names a package outside the
+    /// module.
+    pub(super) fn go_imported_package_dir(&mut self, file_path: &str, pkg: &str) -> Res<Option<String>> {
+        let Some(mod_path) = self.go_module_path.clone() else {
+            return Ok(None);
+        };
+        let source = self
+            .import_mappings(file_path)?
+            .iter()
+            .find(|i| i.local_name == pkg)
+            .map(|imp| imp.source.clone());
+        Ok(match source {
+            Some(src) if src == mod_path => Some(String::new()),
+            Some(src) if src.starts_with(&format!("{}/", mod_path)) => Some(src[mod_path.len() + 1..].to_string()),
+            _ => None,
+        })
+    }
+
     /// `Type::method` among Go methods declared in `pkg_dir`: a Go method
     /// lives in its receiver type's package, so a same-named type in another
     /// package is never the answer. With no `Type::method` anywhere the
     /// method may be promoted from an embedded type, so the supertype walk
     /// of resolve_method_on_type runs.
-    fn go_method_in_package(
+    pub(super) fn go_method_in_package(
         &mut self,
         type_name: &str,
         method: &str,

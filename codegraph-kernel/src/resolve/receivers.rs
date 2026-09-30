@@ -802,7 +802,8 @@ impl KernelResolver {
 
     /// matchDottedCallChain — `Foo.getInstance().bar` factory/fluent chains,
     /// Go's bare `New().Method` (or a same-package `var f = func() *T {…}`),
-    /// and the objc/pascal convention arms (#645/#608). Go's `f().m` with an
+    /// Go's imported `pkg.New().Method`, and the objc/pascal convention arms
+    /// (#645/#608). Go's `f().m` with an
     /// untyped `f` is a miss, never `m` by its bare name.
     pub(super) fn match_dotted_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(m) = call_chain_re().captures(&r.reference_name) else {
@@ -848,6 +849,9 @@ impl KernelResolver {
             );
         }
         let last_dot = last_dot.unwrap();
+        if r.language == "go" {
+            return self.match_go_package_call_chain(&inner[..last_dot], &inner[last_dot + 1..], method, r);
+        }
         let factory_class = inner[..last_dot].split('.').next_back().unwrap();
         let factory_method = &inner[last_dot + 1..];
         if factory_class.is_empty() || factory_method.is_empty() {
@@ -876,6 +880,33 @@ impl KernelResolver {
         };
         let fqn = self.imported_fqn_of(&ret, r)?;
         self.resolve_method_on_type(&ret, method, r, 0.85, "instance-method", fqn.as_deref())
+    }
+
+    /// Go `pkg.New().Method`: `New`'s result type among the functions of
+    /// the package the file imports as `pkg`, and `Method` on that type in
+    /// the same package, never on a same-named type in another package. An
+    /// import outside the module gives no edge.
+    fn match_go_package_call_chain(
+        &mut self,
+        pkg: &str,
+        func: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        if pkg.contains('.') {
+            return Ok(None);
+        }
+        let Some(pkg_dir) = self.go_imported_package_dir(&r.file_path, pkg)? else {
+            return Ok(None);
+        };
+        let ret = self.nodes_by_name(func)?.iter().find_map(|n| {
+            (n.kind == "function" && n.language == "go" && pos_dirname(&n.file_path) == pkg_dir)
+                .then(|| n.return_type.clone())
+                .flatten()
+                .filter(|t| !t.is_empty())
+        });
+        let Some(ret) = ret else { return Ok(None) };
+        self.go_method_in_package(&ret, method, &pkg_dir, r)
     }
 
     /// resolveJvmImport (import-resolver.ts) — `imports`-kind java/kotlin FQN

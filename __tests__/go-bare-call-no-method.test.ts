@@ -4,9 +4,8 @@
  * expression (`(*Loop).relogin`), never by its bare name. So a bare call to a
  * function parameter or a local func value must not be bound to a same-named
  * method, whether it sits in the same package or — capitalised — in a package
- * the file does not import (#1857). Real method calls, including the
- * `pkg.Factory().Method()` chain the extractor emits under the bare method
- * name, keep their edges.
+ * the file does not import (#1857). Real method calls, including a
+ * `pkg.Factory().Method()` chain through an import, keep their edges.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
