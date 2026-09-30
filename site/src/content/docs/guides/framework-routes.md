@@ -20,7 +20,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Bun** | `Bun.serve()` or imported `serve()` with a literal `routes` table; direct handlers, method tables and static responses |
 | **Effect v4** | `HttpRouter.add(method, path, handler)` / `.route()` from `effect/unstable/http` or its `HttpRouter` submodule |
 | **Vixeny** | Option-free `wrap()()` builders with `.get/.post/.put/.delete` or `.route({ method, path, f })` |
-| **NestJS** | `@Controller` + `@Get/@Post/...`, GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
+| **NestJS** | `@Controller` + `@Get/@Post/...` (with `RouterModule` prefixes, `setGlobalPrefix` and URI versioning), GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
 | **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax; `Route::prefix()` and group prefixes, and the `/api` mount of `routes/api.php` |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
 | **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax |
