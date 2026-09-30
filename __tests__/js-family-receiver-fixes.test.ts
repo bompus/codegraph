@@ -1,6 +1,7 @@
 /**
  * JS-family resolution fixes: an import from an unmapped workspace package,
- * Svelte/Astro member calls, a re-export cycle's default, `T | null` fields
+ * Svelte/Astro member calls (including receivers used in markup and a
+ * `{...spread()}` call), a re-export cycle's default, and `T | null` fields
  * reached through a typed receiver.
  */
 import { afterEach, describe, expect, it } from 'vitest';
