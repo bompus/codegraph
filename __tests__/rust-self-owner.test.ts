@@ -101,6 +101,23 @@ it('resolves Self::AssocType::member through the impl assoc-type decl', async ()
   expect(calls).toEqual(['Back::init']);
 });
 
+it('finds the impl of Self::AssocType past a multi-line or raw string holding braces', async () => {
+  const head = 'pub struct Back;\nimpl Back { pub fn init(&self) {} }\npub struct Other;\nimpl Other { pub fn init(&self) {} }\npub struct Target;\npub trait Tr { type A; fn step(&self); }\n';
+  const body = (help: string) => `impl Tr for Target {\n    const HELP: &'static str = ${help};\n    type A = Back;\n    fn step(&self) { Self::A::init(); }\n}\n`;
+  await index({
+    'lib.rs': 'mod plain;\nmod raw;\n',
+    'plain.rs': head + body('"usage {\n    x }"'),
+    'raw.rs': head + body('r#"usage {\n    "x" } // {"#'),
+  });
+  for (const file of ['src/plain.rs', 'src/raw.rs']) {
+    const caller = cg!.getNodesByKind('method').find(n => n.filePath === file && n.qualifiedName === 'Target::step');
+    const calls = cg!.getOutgoingEdges(caller!.id).filter(e => e.kind === 'calls')
+      .map(e => cg!.getNode(e.target)!)
+      .map(n => `${n.filePath}:${n.qualifiedName}`);
+    expect(calls).toEqual([`${file}:Back::init`]);
+  }
+});
+
 it('declines Self::AssocType paths with no impl decl, and absent members', async () => {
   await index({
     'lib.rs': 'pub struct Target;\nimpl Target { pub fn run(&self) { Self::Assoc::new(); Self::nonexistent_zz(); } }',

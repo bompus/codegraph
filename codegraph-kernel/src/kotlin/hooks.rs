@@ -142,8 +142,11 @@ impl<'t> Walker<'t> {
             let body_error = node.kind() == "ERROR"
                 && node.child(0).map(|c| c.kind() == "{").unwrap_or(false);
             if !body_error && self.is_fun_interface_node(node) {
+                // The name sits in an ERROR child for a function_declaration,
+                // and for an ERROR too when type parameters follow it
+                // (`fun interface Task<R> {`).
                 let mut name: Option<String> = None;
-                if node.kind() == "function_declaration" {
+                {
                     'outer: for i in 0..node.child_count() {
                         let Some(child) = node.child(i) else { continue };
                         if child.kind() != "ERROR" {
@@ -181,6 +184,9 @@ impl<'t> Walker<'t> {
                 if node.kind() == "ERROR" {
                     if let Some(next) = node.next_sibling() {
                         if next.kind() == "lambda_literal" {
+                            // The body is the sibling: the interface spans it.
+                            let end_line = next.end_position().row as u32 + 1;
+                            self.tables.set_node_end(row, end_line, self.end_col_of(next));
                             for i in 0..next.named_child_count() {
                                 let Some(child) = next.named_child(i) else { continue };
                                 if child.kind() != "statements" {

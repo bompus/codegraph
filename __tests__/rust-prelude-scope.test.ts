@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
+import { rustUseGlobs } from '../src/resolution/rust-scope';
 
 const roots: string[] = [];
 afterAll(() => {
@@ -45,6 +46,9 @@ pub type Result<T> = std::result::Result<T, Error>;
   'src/modes.rs': `use crate::lowargs::EncodingMode::*;
 pub fn pick() -> crate::lowargs::EncodingMode { Some(1) }
 `,
+  'src/grouped.rs': `use crate::{decompress::*, error::*};
+pub fn open() -> Result<u8> { unimplemented!() }
+`,
 };
 
 describe('Rust: a bare name reaches what is in scope', () => {
@@ -68,6 +72,8 @@ describe('Rust: a bare name reaches what is in scope', () => {
       expect(targets('find').filter((t) => /Some|Ok|Result/.test(t))).toEqual([]);
       // `use EncodingMode::*` brings the variant in.
       expect(targets('pick')).toContain('enum_member:EncodingMode::Some');
+      // A glob inside a `use` group (`crate::{…, error::*}`) brings the alias in.
+      expect(targets('open')).toContain('type_alias:Result');
       // A path (`crate::error::Result`) is not a prelude lookup, so it still links.
       expect(targets('load').some((t) => t.endsWith(':Result'))).toBe(true);
       // A same-file struct still shadows the prelude.
@@ -75,5 +81,16 @@ describe('Rust: a bare name reaches what is in scope', () => {
     } finally {
       cg.close();
     }
+  });
+});
+
+describe('Rust: the modules a `use` tree globs', () => {
+  it('reads `X::*` and a group\'s own `*`, past nested groups', () => {
+    const globs = (tree: string): string[] => [...rustUseGlobs(tree)].sort();
+    expect(globs('crate::walk::*')).toEqual(['walk']);
+    expect(globs('crate::{error::*, util::*}')).toEqual(['error', 'util']);
+    expect(globs('crate::lowargs::{self, *}')).toEqual(['lowargs']);
+    expect(globs('a::{b::{c}, *}')).toEqual(['a']);
+    expect(globs('a :: { b, c }')).toEqual([]);
   });
 });

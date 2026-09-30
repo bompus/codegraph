@@ -448,19 +448,19 @@ impl KernelResolver {
         caller: &Arc<KNode>,
         assoc_name: &str,
     ) -> Res<Option<String>> {
-        let Some(lines) = self.read_file(&caller.file_path) else {
+        let Some(file) = self.read_file(&caller.file_path) else {
             return Ok(None);
         };
         // Backward brace scan: the first `{` whose net depth goes negative
         // opens the block enclosing the caller — for a method, the impl.
-        // Literal contents are masked first so a `{` in `#[doc = "{"]` or
-        // `'{'` is not code (per line: a string spanning lines is not).
+        // Comments and literal contents are masked first, across lines, so a
+        // `{` in `#[doc = "{"]`, `'{'` or a multi-line (raw) string is not code.
+        let lines = file.rust_code_lines();
         let at = |i: i64| -> String {
             if i < 0 {
                 String::new()
             } else {
-                let raw = lines.get(i as usize).map(|s| s.as_str()).unwrap_or("");
-                strip_line_comments(&mask_rust_literals(raw))
+                lines.get(i as usize).cloned().unwrap_or_default()
             }
         };
         let mut depth = 0i32;
@@ -941,32 +941,62 @@ fn ts_declares_field(
     }
 }
 
-/// One line of Rust with the contents of string, raw-string and char
-/// literals blanked (delimiters kept), so braces inside them are not code.
-/// A lifetime (`'a`) is not a char literal and stays; an unterminated
-/// string blanks to the end of the line.
-fn mask_rust_literals(line: &str) -> String {
-    let s: Vec<char> = line.chars().collect();
+/// A Rust file with comments and the contents of string, raw-string and
+/// char literals blanked (delimiters and newlines kept), so braces inside
+/// them are not code. One pass over the whole text: a string or block
+/// comment spanning lines stays masked on every line, a `"` in a `//`
+/// comment opens nothing, and `//` inside `r#"…"#` is not a comment. A
+/// lifetime (`'a`) is not a char literal and stays.
+pub(super) fn mask_rust_code(text: &str) -> String {
+    let s: Vec<char> = text.chars().collect();
     let n = s.len();
     let mut out: Vec<char> = s.clone();
     let blank = |out: &mut Vec<char>, from: usize, to: usize| {
-        for c in &mut out[from..to.min(n)] {
-            *c = ' ';
+        for c in &mut out[from.min(n)..to.min(n)] {
+            if *c != '\n' {
+                *c = ' ';
+            }
         }
     };
     let mut i = 0;
     while i < n {
         match s[i] {
+            '/' if s.get(i + 1) == Some(&'/') => {
+                let mut j = i;
+                while j < n && s[j] != '\n' {
+                    j += 1;
+                }
+                blank(&mut out, i, j);
+                i = j;
+            }
+            '/' if s.get(i + 1) == Some(&'*') => {
+                let mut j = i + 2;
+                let mut depth = 1;
+                while j < n && depth > 0 {
+                    if s[j] == '/' && s.get(j + 1) == Some(&'*') {
+                        depth += 1;
+                        j += 2;
+                    } else if s[j] == '*' && s.get(j + 1) == Some(&'/') {
+                        depth -= 1;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                blank(&mut out, i, j);
+                i = j;
+            }
             '"' => {
-                // `r"…"` / `r#"…"#` / `br"…"`: no escapes, closed by `"` plus
-                // as many `#` as opened it.
+                // `r"…"` / `r#"…"#` / `br"…"` / `cr#"…"#`: no escapes, closed
+                // by `"` plus as many `#` as opened it. `b"…"` and `c"…"` are
+                // plain strings.
                 let mut hashes = 0;
                 while i > hashes && s[i - 1 - hashes] == '#' {
                     hashes += 1;
                 }
                 let ident = |k: usize| s[k].is_alphanumeric() || s[k] == '_';
                 let raw = i.checked_sub(hashes + 1).is_some_and(|k| {
-                    let k0 = if k > 0 && s[k - 1] == 'b' { k - 1 } else { k };
+                    let k0 = if k > 0 && matches!(s[k - 1], 'b' | 'c') { k - 1 } else { k };
                     s[k] == 'r' && (k0 == 0 || !ident(k0 - 1))
                 });
                 let mut j = i + 1;
@@ -1003,4 +1033,18 @@ fn mask_rust_literals(line: &str) -> String {
         }
     }
     out.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mask_rust_code;
+
+    #[test]
+    fn mask_rust_code_blanks_literals_across_lines() {
+        let src = "let a = \"x {\n }\";\nlet b = r#\"{ \" // }\"#;\nlet c = c\"{\";\nlet d = cr#\"}\" {\"#; // \"\nlet e = '{'; fn f<'a>() {}\n";
+        let masked = mask_rust_code(src);
+        assert_eq!(masked.lines().count(), src.lines().count());
+        let code: String = masked.chars().filter(|c| matches!(c, '{' | '}')).collect();
+        assert_eq!(code, "{}");
+    }
 }

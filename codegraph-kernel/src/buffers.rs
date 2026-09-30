@@ -468,6 +468,13 @@ impl Tables {
         (rd(4), rd(8))
     }
 
+    /// Move an already-pushed node row's end to (`end_line`, `end_column`).
+    pub fn set_node_end(&mut self, row: u32, end_line: u32, end_column: u32) {
+        let off = row as usize * NODE_ROW_SIZE;
+        self.nodes[off + 8..off + 12].copy_from_slice(&end_line.to_le_bytes());
+        self.nodes[off + 16..off + 20].copy_from_slice(&end_column.to_le_bytes());
+    }
+
     pub fn push_ref_flagged(&mut self, r: &RefRow, flags: u8) {
         let buf = &mut self.refs;
         buf.extend_from_slice(&r.from_idx.to_le_bytes());

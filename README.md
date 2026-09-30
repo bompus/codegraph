@@ -127,7 +127,7 @@ Dispatch and framework coverage the fork adds, by kind:
 | Addition | What it links |
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
-| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias still register routes, and named-`outlet` or `...spread` entries name no screen |
+| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file behind an NgModule's routing module or an `export *` barrel sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |

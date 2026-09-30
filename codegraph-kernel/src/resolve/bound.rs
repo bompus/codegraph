@@ -615,9 +615,32 @@ impl KernelResolver {
             owners.insert(self.swift_owner_path(n)?);
         }
         if owners.len() > 1 {
-            return Ok(None);
+            // A shortened path is looked up from the call's namespace
+            // outward: `PackageController.GetRoute` inside `extension API`
+            // is `API.PackageController.GetRoute`, not `Other.…`'s.
+            fit = self.swift_nearest_namespace_fit(fit, &path, r)?;
+            if fit.is_empty() {
+                return Ok(None);
+            }
         }
-        // Of one type's overloads, the first declared.
+        // Twin declarations of one path in several files (a type per
+        // module): the call's own file, else the nearest by directory, as
+        // the type gate picks a type (swift-type-visibility.ts declarationFor).
+        // A tie is left unresolved.
+        if fit.iter().any(|n| n.file_path != fit[0].file_path) {
+            if fit.iter().any(|n| n.file_path == r.file_path) {
+                fit.retain(|n| n.file_path == r.file_path);
+            } else {
+                let dirs: Vec<&str> = r.file_path.split('/').collect();
+                let dirs = &dirs[..dirs.len() - 1];
+                let near = fit.iter().map(|n| shared_dir_prefix(dirs, &n.file_path)).max().unwrap_or(0);
+                fit.retain(|n| shared_dir_prefix(dirs, &n.file_path) == near);
+            }
+            if fit.iter().any(|n| n.file_path != fit[0].file_path) {
+                return Ok(None);
+            }
+        }
+        // Of one type's overloads in one file, the first declared.
         let target = fit
             .into_iter()
             .reduce(|a, b| {
@@ -629,6 +652,39 @@ impl KernelResolver {
             })
             .expect("non-empty");
         Ok(Some(KCand { node: target, confidence: 0.9, resolved_by: "qualified-name" }))
+    }
+
+    /// Of `fit`'s members on several owners, those whose owner is `path`
+    /// under the innermost enclosing namespace of the call that has one;
+    /// empty when no enclosing namespace settles it on a single owner.
+    fn swift_nearest_namespace_fit(
+        &mut self,
+        fit: Vec<Arc<KNode>>,
+        path: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Vec<Arc<KNode>>> {
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(Vec::new()) };
+        let scope = if is_swift_type_kind(&caller.kind) {
+            let parent = self.swift_owner_path(&caller)?;
+            Some(parent.map_or_else(|| caller.name.clone(), |p| format!("{p}::{}", caller.name)))
+        } else {
+            self.swift_owner_path(&caller)?
+        };
+        let Some(scope) = scope else { return Ok(Vec::new()) };
+        let segments: Vec<&str> = scope.split("::").collect();
+        for len in (1..=segments.len()).rev() {
+            let want = format!("{}::{path}", segments[..len].join("::"));
+            let mut hits: Vec<Arc<KNode>> = Vec::new();
+            for n in &fit {
+                if self.swift_owner_path(n)?.as_deref() == Some(want.as_str()) {
+                    hits.push(n.clone());
+                }
+            }
+            if !hits.is_empty() {
+                return Ok(hits);
+            }
+        }
+        Ok(Vec::new())
     }
 
     /// The Swift `member`s declared on `path` (types when `types`, else a
