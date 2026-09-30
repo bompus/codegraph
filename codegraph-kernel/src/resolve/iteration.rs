@@ -168,6 +168,19 @@ fn node_text<'a>(node: TsNode, text: &'a str) -> &'a str {
 }
 
 impl KernelResolver {
+    /// `file`'s tree, parsed once per resolver instead of once per ref.
+    fn parsed_tree(&mut self, file: &Rc<SourceFile>, r: &ResolveRefIn) -> Option<Rc<tree_sitter::Tree>> {
+        let key = format!("{}\0{}", r.language, r.file_path);
+        if let Some((source, tree)) = self.tree_cache.get(&key) {
+            if Rc::ptr_eq(source, file) {
+                return tree.clone();
+            }
+        }
+        let tree = crate::tree::parse_with_cached_parser(file.text(), &r.language).ok().map(Rc::new);
+        self.tree_cache.put(key, (file.clone(), tree.clone()));
+        tree
+    }
+
     /// inferIterationReceiver — `None` when no scoped construct introduces
     /// the receiver (or its type can't be proven).
     pub(super) fn infer_iteration_receiver(
@@ -193,20 +206,20 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let text = lines.text().to_string();
+        let text = lines.text();
         if text.is_empty() {
             return Ok(None);
         }
-        let Ok(tree) = crate::tree::parse_with_cached_parser(&text, &r.language) else {
+        let Some(tree) = self.parsed_tree(&lines, r) else {
             return Ok(None);
         };
         let at = ((r.line - 1).max(0) as usize, r.column.max(0) as usize);
-        let mut cur = Some(descendant_for_position(tree.root_node(), &text, at));
+        let mut cur = Some(descendant_for_position(tree.root_node(), text, at));
         while let Some(node) = cur {
             cur = node.parent();
             if r.language == "kotlin" && node.kind() == "lambda_literal" {
                 // The nearest lambda that binds `it` owns it, even when its type is unknown.
-                if !kotlin_lambda_names(node, &text).contains(&receiver) {
+                if !kotlin_lambda_names(node, text).contains(&receiver) {
                     continue;
                 }
                 // Only the lambda passed to the call takes the receiver.
@@ -221,18 +234,18 @@ impl KernelResolver {
                 }
                 let nav = named_children(navigation);
                 let root = nav.first().copied();
-                let method = nav.get(1).map(|m| node_text(*m, &text).trim_start_matches(['?', '.']));
+                let method = nav.get(1).map(|m| node_text(*m, text).trim_start_matches(['?', '.']));
                 let Some(root) = root.filter(|n| n.kind() == "simple_identifier") else {
                     return Ok(None);
                 };
                 if !matches!(method, Some("let" | "also")) {
                     return Ok(None);
                 }
-                let (row, col) = point16(&text, navigation.start_byte(), navigation.start_position());
+                let (row, col) = point16(text, navigation.start_byte(), navigation.start_position());
                 let mut site = r.clone();
                 site.line = row as i64 + 1;
                 site.column = col as i64;
-                let root_name = node_text(root, &text).to_string();
+                let root_name = node_text(root, text).to_string();
                 return Ok(self
                     .infer_local_receiver_type(&root_name, &site, true)?
                     .map(|ty| IterationHit { ty, site }));
@@ -244,13 +257,13 @@ impl KernelResolver {
                 let (Some(names), Some(collection)) = (names, collection) else {
                     continue;
                 };
-                let Some(index) = names.iter().position(|n| node_text(*n, &text) == receiver) else {
+                let Some(index) = names.iter().position(|n| node_text(*n, text) == receiver) else {
                     continue;
                 };
                 if index != 1 {
                     return Ok(None);
                 }
-                return self.go_range_element(collection, &text, r);
+                return self.go_range_element(collection, text, r);
             }
         }
         Ok(None)
@@ -270,17 +283,17 @@ impl KernelResolver {
         if from >= to || !lines[from..to].iter().any(|l| l.contains("->") && has_word(l, receiver)) {
             return Ok(false);
         }
-        let text = lines.text().to_string();
-        let Ok(tree) = crate::tree::parse_with_cached_parser(&text, &r.language) else {
+        let text = lines.text();
+        let Some(tree) = self.parsed_tree(&lines, r) else {
             return Ok(false);
         };
         let at = ((r.line - 1).max(0) as usize, r.column.max(0) as usize);
-        let mut cur = Some(descendant_for_position(tree.root_node(), &text, at));
+        let mut cur = Some(descendant_for_position(tree.root_node(), text, at));
         while let Some(node) = cur {
             cur = node.parent();
             let names = match (r.language.as_str(), node.kind()) {
-                ("kotlin", "lambda_literal") => kotlin_lambda_names(node, &text),
-                ("java", "lambda_expression") => java_lambda_names(node, &text),
+                ("kotlin", "lambda_literal") => kotlin_lambda_names(node, text),
+                ("java", "lambda_expression") => java_lambda_names(node, text),
                 _ => continue,
             };
             if names.contains(&receiver) {
@@ -412,15 +425,15 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let text = lines.text().to_string();
-        if !text.contains("instanceof") {
+        if lines.lines_containing("instanceof").is_empty() {
             return Ok(None);
         }
-        let Ok(tree) = crate::tree::parse_with_cached_parser(&text, &r.language) else {
+        let text = lines.text();
+        let Some(tree) = self.parsed_tree(&lines, r) else {
             return Ok(None);
         };
         let at = ((r.line - 1).max(0) as usize, r.column.max(0) as usize);
-        let call = descendant_for_position(tree.root_node(), &text, at);
+        let call = descendant_for_position(tree.root_node(), text, at);
         let mut cur = Some(call);
         while let Some(node) = cur {
             cur = node.parent();
@@ -443,7 +456,7 @@ impl KernelResolver {
             }
             let Some(condition) = node.child_by_field_name("condition") else { continue };
             let Some(m) = re!(r"^\(\s*\$([A-Za-z0-9_]+)\s+instanceof\s+([A-Za-z0-9_\\]+)\s*\)$")
-                .captures(node_text(condition, &text))
+                .captures(node_text(condition, text))
             else {
                 continue;
             };
@@ -461,7 +474,7 @@ impl KernelResolver {
             let var = format!("${receiver}");
             let assigned = assignments.iter().any(|a| {
                 a.start_byte() < call.start_byte()
-                    && a.child_by_field_name("left").is_some_and(|l| node_text(l, &text) == var)
+                    && a.child_by_field_name("left").is_some_and(|l| node_text(l, text) == var)
             });
             // `foreach ($x->kids as $x)` / `as $k => $x` rebinds it too.
             let mut loops = Vec::new();
@@ -472,7 +485,7 @@ impl KernelResolver {
                     && named_children(*l).into_iter().skip(1).filter(|c| Some(c.id()) != body).any(|c| {
                         let mut vars = Vec::new();
                         descendants_of_type(c, "variable_name", &mut vars);
-                        vars.iter().any(|v| node_text(*v, &text) == var)
+                        vars.iter().any(|v| node_text(*v, text) == var)
                     })
             });
             let assigned = assigned || iterated;
