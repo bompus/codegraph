@@ -729,9 +729,10 @@ impl KernelResolver {
             // Nothing types a Ruby or CFML receiver: there the one method must
             // also belong to something the receiver is named after
             // (`web_push_request.legacy_encrypt` → WebPushRequest), or
-            // rubocop's `node.loc` lands on the project's one `loc`.
+            // rubocop's `node.loc` lands on the project's one `loc`. CFML's
+            // `variables.m()` is a call on the component itself.
             let untyped_unnamed = matches!(r.language.as_str(), "ruby" | "cfml" | "cfscript")
-                && !re!(r"(?i)^(?:self|self\.class|this|super)$").is_match(&object_or_class)
+                && !re!(r"(?i)^(?:self|self\.class|this|super|variables)$").is_match(&object_or_class)
                 && target.first().is_none_or(|m| !shares_receiver_word(&object_or_class, m));
             if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed {
                 return Ok(Some(KCand {

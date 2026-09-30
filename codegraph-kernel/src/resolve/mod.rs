@@ -548,6 +548,8 @@ pub struct KernelResolver {
     dart_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// dartHierarchyAt, by call site (file, line).
     dart_hierarchy_memo: HashMap<(String, i64), Rc<HashMap<String, u32>>>,
+    /// Kotlin supertypes named in a type's head, by type name.
+    kotlin_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// kotlinFileScope, by file.
     kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
     /// rubyAncestry, by class qualified name.
@@ -689,6 +691,7 @@ impl KernelResolver {
             dart_supers_memo: HashMap::new(),
             dart_hierarchy_memo: HashMap::new(),
             kotlin_scope_memo: HashMap::new(),
+            kotlin_supers_memo: HashMap::new(),
             ruby_ancestry_memo: HashMap::new(),
             cfml_chain_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),

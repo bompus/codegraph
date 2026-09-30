@@ -30,6 +30,10 @@ fn is_kotlin_enclosing_kind(kind: &str) -> bool {
     )
 }
 
+fn is_kotlin_type_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "interface" | "enum" | "struct" | "trait")
+}
+
 /// A Kotlin file's `package` and the names and packages its `import`s bring in.
 #[derive(Default)]
 pub(crate) struct KotlinFileScope {
@@ -39,6 +43,7 @@ pub(crate) struct KotlinFileScope {
 }
 
 fn collect_kotlin_file_scope(text: &str) -> KotlinFileScope {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = re!(r"/\*(?s:.)*?\*/").replace_all(text, " ").replace('`', "");
     let pkg = re!(r"(?m)^\s*package\s+([A-Za-z0-9_.]+)")
         .captures(&text)
@@ -98,13 +103,26 @@ impl KernelResolver {
     /// The candidates the language's scope rules allow for a name reached by
     /// name alone (matchByExactName / matchFuzzy filters, name-matcher.ts).
     pub(super) fn retain_lang_scope(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        Ok(self.retain_lang_scope_tracked(candidates, r)?.0)
+    }
+
+    /// retain_lang_scope, also telling whether the Kotlin visibility rule
+    /// removed a candidate. Elimination is no evidence for what is left: the
+    /// caller then keeps a lone survivor below the trusted range unless
+    /// `is_kotlin_survivor_in_scope` binds it.
+    pub(super) fn retain_lang_scope_tracked(
+        &mut self,
+        candidates: Vec<Arc<KNode>>,
+        r: &ResolveRefIn,
+    ) -> Res<(Vec<Arc<KNode>>, bool)> {
         let ruby_bare = is_bare_ruby_call(r);
         let cfml_bare = is_bare_cfml_call(r);
-        let kotlin_call = is_bare_call_of(r, "kotlin");
+        let kotlin_call = is_bare_call_of(r, "kotlin") && !self.is_kotlin_qualified_call(r);
         let dart_bare = is_bare_call_of(r, "dart") && self.is_receiver_less_dart_call(r);
         if !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare {
-            return Ok(candidates);
+            return Ok((candidates, false));
         }
+        let mut kotlin_shrank = false;
         let mut kept = Vec::with_capacity(candidates.len());
         for n in candidates {
             if ruby_bare && n.kind == "method" && !self.is_ruby_method_in_scope(&n, r)? {
@@ -114,6 +132,7 @@ impl KernelResolver {
                 continue;
             }
             if kotlin_call && !self.is_kotlin_top_level_visible(&n, r)? {
+                kotlin_shrank = true;
                 continue;
             }
             if dart_bare && is_dart_member(&n) && self.dart_member_depth(&n, r)? == DART_UNREACHED {
@@ -121,7 +140,133 @@ impl KernelResolver {
             }
             kept.push(n);
         }
-        Ok(kept)
+        Ok((kept, kotlin_shrank))
+    }
+
+    /// A Kotlin call written after a qualifier (`io.javalin.config.Key<String>(…)`,
+    /// `pkg.helper()`, a chain's later link such as `.where { … }`) reaches the resolver as its bare
+    /// name, but the qualifier, not the file's imports, says what it names.
+    /// `this.` and `super.` calls are still judged.
+    fn is_kotlin_qualified_call(&mut self, r: &ResolveRefIn) -> bool {
+        let Some(lines) = self.read_file(&r.file_path) else { return false };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return false };
+        let name = r.reference_name.as_str();
+        let Some(at) = name_start_at_column(line, name, r.column.max(0) as usize).or_else(|| {
+            let call = Self::cached_regex(&format!(r"{}\s*[(<{{]", regex::escape(name))).ok()?;
+            let found = call
+                .find_iter(line)
+                .map(|m| m.start())
+                .find(|&at| !line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
+            found
+        }) else {
+            // Not on its line at all: a link of a chain written across lines.
+            return true;
+        };
+        let before = &line[..at];
+        if !ends_with_member_dot(before) {
+            return false;
+        }
+        let prefix = before.trim_end().trim_end_matches('.').trim_end();
+        !re!(r"(?-u:\b)(?:this|super)(?:@[A-Za-z_][A-Za-z0-9_]*)?$").is_match(prefix)
+    }
+
+    /// Whether the one candidate left after the Kotlin rule is bound to the
+    /// call site rather than merely left over: a declaration in the calling
+    /// file, a top-level declaration the rule itself admitted through the
+    /// file's package or imports, or a member of the class hierarchy the call
+    /// is written in (as `is_java_method_in_scope` does for Java).
+    pub(super) fn is_kotlin_survivor_in_scope(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if n.file_path == r.file_path {
+            return Ok(true);
+        }
+        if n.language != "kotlin" {
+            return Ok(false);
+        }
+        if !self.is_kotlin_member(n)? {
+            return Ok(true);
+        }
+        let Some(cut) = n.qualified_name.rfind("::") else { return Ok(false) };
+        let owner = n.qualified_name[..cut].rsplit("::").next().unwrap_or("").to_string();
+        let mut queue: VecDeque<String> = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|t| is_kotlin_type_kind(&t.kind) && t.start_line <= r.line && t.end_line >= r.line)
+            .map(|t| t.name.clone())
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        while seen.len() < 40 {
+            let Some(name) = queue.pop_front() else { break };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if name == owner {
+                return Ok(true);
+            }
+            queue.extend(self.kotlin_supertypes_of(&name)?.iter().cloned());
+        }
+        Ok(false)
+    }
+
+    /// Whether a Kotlin declaration sits inside another declaration (the
+    /// geometry isKotlinTopLevelVisible reads).
+    fn is_kotlin_member(&mut self, n: &KNode) -> Res<bool> {
+        Ok(self.nodes_in_file(&n.file_path)?.iter().any(|o| {
+            o.id != n.id
+                && is_kotlin_enclosing_kind(&o.kind)
+                && o.start_line <= n.start_line
+                && o.end_line >= n.end_line
+                && (o.start_line < n.start_line || o.end_line > n.end_line)
+        }))
+    }
+
+    /// The simple names a Kotlin type's declarations list after `:` in their
+    /// head (`class A(x: Int) : B(x), C by d`), constructor arguments and type
+    /// arguments dropped.
+    fn kotlin_supertypes_of(&mut self, type_name: &str) -> Res<Rc<Vec<String>>> {
+        if let Some(hit) = self.kotlin_supers_memo.get(type_name) {
+            return Ok(hit.clone());
+        }
+        let decls: Vec<Arc<KNode>> = self
+            .nodes_by_name(type_name)?
+            .iter()
+            .filter(|d| d.language == "kotlin" && is_kotlin_type_kind(&d.kind))
+            .cloned()
+            .collect();
+        let mut names = Vec::new();
+        for decl in decls {
+            let Some(lines) = self.read_file(&decl.file_path) else { continue };
+            let from = (decl.start_line - 1).max(0) as usize;
+            let to = (decl.end_line.min(decl.start_line + 10).max(0) as usize).min(lines.len());
+            let text = if from < to { lines[from..to].join("\n") } else { String::new() };
+            let text = re!(r"/\*(?s:.)*?\*/").replace_all(&text, " ");
+            let text = re!(r"//[^\n]*").replace_all(&text, " ");
+            // Blank nested `(…)` and `<…>` so only the head's own `:` and `,` remain.
+            let mut depth = 0usize;
+            let mut flat = String::new();
+            for ch in text.chars() {
+                match ch {
+                    '(' | '<' => depth += 1,
+                    ')' | '>' => depth = depth.saturating_sub(1),
+                    '{' if depth == 0 => break,
+                    _ if depth == 0 => flat.push(ch),
+                    _ => {}
+                }
+            }
+            let Some(kw) = re!(r"(?-u:\b)(?:class|interface|object)(?-u:\b)").find(&flat) else { continue };
+            let head = &flat[kw.end()..];
+            let Some(colon) = head.find(':') else { continue };
+            for part in head[colon + 1..].split(',') {
+                if let Some(m) = re!(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*").find(part) {
+                    let simple = m.as_str().rsplit('.').next().unwrap_or("").trim();
+                    if !simple.is_empty() {
+                        names.push(simple.to_string());
+                    }
+                }
+            }
+        }
+        let names = Rc::new(names);
+        self.kotlin_supers_memo.insert(type_name.to_string(), names.clone());
+        Ok(names)
     }
 
     /// nearestDartMembers: of the in-scope members a bare Dart call could

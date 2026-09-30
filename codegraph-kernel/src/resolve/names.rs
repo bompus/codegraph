@@ -599,7 +599,8 @@ impl KernelResolver {
             candidates.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         candidates = self.retain_python_java_scope(candidates, r)?;
-        candidates = self.retain_lang_scope(candidates, r)?;
+        let (kept, kotlin_shrank) = self.retain_lang_scope_tracked(candidates, r)?;
+        candidates = kept;
         candidates = self.retain_php_self_scope(candidates, r)?;
         // A Vue component's own method is `this.m()` inside that component —
         // not `this.$refs['input'].click()` on an element another component renders.
@@ -703,9 +704,12 @@ impl KernelResolver {
                 return Ok(None);
             }
             let cross = candidates[0].language != r.language;
+            // The Kotlin rule narrowed the set: the one left is what remains,
+            // not what the call binds, unless its scope says so.
+            let leftover = kotlin_shrank && !self.is_kotlin_survivor_in_scope(&candidates[0], r)?;
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
-                confidence: if cross { 0.5 } else { 0.9 },
+                confidence: if cross { 0.5 } else if leftover { 0.7 } else { 0.9 },
                 resolved_by: "exact-match",
             }));
         }
