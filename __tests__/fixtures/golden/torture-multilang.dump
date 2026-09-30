@@ -1470,7 +1470,7 @@
 {"id":"variable:fb450996c12f335b36201ead67a34f64","kind":"variable","name":"INIT_MAP","qualified_name":"INIT_MAP","file_path":"torture.py","language":"python","start_line":54,"end_line":54,"start_column":0,"end_column":26,"docstring":null,"signature":"= {\"a\": helper()}","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:feb330d554c5d0caaa8978323a006e52","kind":"variable","name":"MD_BARE","qualified_name":"MD_BARE","file_path":"torture.rb","language":"ruby","start_line":238,"end_line":238,"start_column":0,"end_column":21,"docstring":null,"signature":"= 'README.md'","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fedacda34e94b85718ac655a74368326","kind":"variable","name":"okG","qualified_name":"okG","file_path":"torture.lua","language":"lua","start_line":12,"end_line":12,"start_column":6,"end_column":9,"docstring":null,"signature":"= pcall(require, \"app.guarded\")","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (1928)
+== edges (1927)
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"class:25244cbdbe3e9bc720df9fc4d54fac0a","kind":"extends","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"app::Config\"}","line":98,"col":35,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:0795ac46f5bef3826c20039a05014ebc","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:35a476809e2727e80d7f2c8c404180b2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -2787,7 +2787,6 @@
 {"source":"function:00765ec56fe71745c9d59a36a20c8d9e","target":"function:2c1f148bae5ae49626fb0d60fd19fdd1","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"function:00765ec56fe71745c9d59a36a20c8d9e","target":"function:e0229015014bb51edc677ffdc9d8aa0a","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"describe\"}","line":251,"col":77,"provenance":null}
 {"source":"function:00765ec56fe71745c9d59a36a20c8d9e","target":"function:e0229015014bb51edc677ffdc9d8aa0a","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"function:014e5ac4509fb26b0b2a1c00f6183b50","target":"class:8012df717530395d785370b6c3ce0964","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"A\"}","line":18,"col":43,"provenance":null}
 {"source":"function:04a85402edcdb9f51e099ea510476ccf","target":"function:5b434632abf9fbeb07e0a630ec66d9d3","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"caller\"}","line":57,"col":8,"provenance":null}
 {"source":"function:071bd15751854933bac820b5850a2641","target":"class:89a6327dc2e1da4b990c740c891aaa96","kind":"references","metadata":"{\"confidence\":0.4,\"resolvedBy\":\"exact-match\",\"refName\":\"Session\"}","line":131,"col":41,"provenance":null}
 {"source":"function:08bb60eead5364c3bf26d67ebca2639d","target":"method:a7bb2d169f4639f007c84fb337802e83","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"a\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":24,"col":11,"provenance":null}
@@ -3399,7 +3398,7 @@
 {"source":"variable:788d75a828c79f9847e0be0e2b73a196","target":"variable:8fef25ea8abe486ee94190ed47c3644b","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
 {"source":"variable:9b11e2d2271460cf5d5c12d00f607ca1","target":"method:3ac9d03b2b42036d5064669684b96d97","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"helper\"}","line":52,"col":13,"provenance":null}
 {"source":"variable:fb450996c12f335b36201ead67a34f64","target":"method:3ac9d03b2b42036d5064669684b96d97","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"helper\"}","line":54,"col":17,"provenance":null}
-== refs (1264)
+== refs (1265)
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Mix2","reference_kind":"implements","line":34,"col":37,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Mix2"}
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Paint","reference_kind":"implements","line":34,"col":59,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Paint"}
 {"from_node_id":"class:066eb79e83cf3105cebd14593747068f","reference_name":"BaseService","reference_kind":"extends","line":13,"col":14,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"BaseService"}
@@ -3760,6 +3759,7 @@
 {"from_node_id":"function:00765ec56fe71745c9d59a36a20c8d9e","reference_name":"a","reference_kind":"calls","line":251,"col":108,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"a"}
 {"from_node_id":"function:00765ec56fe71745c9d59a36a20c8d9e","reference_name":"b","reference_kind":"calls","line":251,"col":113,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"b"}
 {"from_node_id":"function:00765ec56fe71745c9d59a36a20c8d9e","reference_name":"items.map","reference_kind":"calls","line":251,"col":9,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"map","failure_reason":"unknown-receiver"}
+{"from_node_id":"function:014e5ac4509fb26b0b2a1c00f6183b50","reference_name":"A","reference_kind":"references","line":18,"col":43,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"A"}
 {"from_node_id":"function:014e5ac4509fb26b0b2a1c00f6183b50","reference_name":"B","reference_kind":"references","line":18,"col":47,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"B"}
 {"from_node_id":"function:014e5ac4509fb26b0b2a1c00f6183b50","reference_name":"BoundT","reference_kind":"references","line":18,"col":32,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"BoundT"}
 {"from_node_id":"function:014e5ac4509fb26b0b2a1c00f6183b50","reference_name":"Numeric","reference_kind":"references","line":18,"col":18,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"Numeric"}

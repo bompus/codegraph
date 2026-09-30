@@ -687,6 +687,11 @@ pub(super) fn is_bare_call_target_kind(kind: &str) -> bool {
     matches!(kind, "function" | "class" | "component" | "constant" | "variable")
 }
 
+/// LOCAL_TYPE_KINDS (name-matcher.ts): types a function body can declare for itself.
+pub(super) fn is_local_type_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "struct" | "enum" | "interface" | "trait" | "type_alias")
+}
+
 /// CPP_ADL_RANGE_NAMES (name-matcher.ts).
 pub(super) fn is_cpp_adl_name(name: &str) -> bool {
     matches!(name, "begin" | "end" | "rbegin" | "rend" | "cbegin" | "cend")

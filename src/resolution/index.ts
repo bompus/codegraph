@@ -24,6 +24,8 @@ import {
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
 import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
+import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
+import { gateRustScope, clearRustScopeMemos } from './rust-scope';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips } from './frameworks';
@@ -93,6 +95,11 @@ export * from './types';
  *
  * Orchestrates reference resolution using multiple strategies.
  */
+/** Kinds whose `extends`/`implements` edges name a supertype (read by getSupertypes). */
+const SUPERTYPE_DECLARING_KINDS = new Set<Node['kind']>([
+  'class', 'struct', 'interface', 'trait', 'protocol', 'enum',
+]);
+
 export class ReferenceResolver {
   private projectRoot: string;
   private queries: QueryBuilder;
@@ -296,6 +303,8 @@ export class ReferenceResolver {
     if (this.context) {
       clearImportResolverMemos(this.context);
       clearSwiftTypeVisibility(this.context);
+      clearTypeParameterMemos(this.context);
+      clearRustScopeMemos(this.context);
     }
   }
 
@@ -474,6 +483,20 @@ export class ReferenceResolver {
 
       getNodeById: (id: string) => {
         return this.nodeById(id);
+      },
+
+      getSupertypes: (typeName: string, language) => {
+        const supers = new Set<string>();
+        for (const tn of this.context.getNodesByName(typeName)) {
+          if (tn.language !== language) continue;
+          // Scala singletons inherit members though they cannot be parents.
+          if (!SUPERTYPE_DECLARING_KINDS.has(tn.kind) && !(language === 'scala' && tn.kind === 'module')) continue;
+          for (const edge of this.queries.getOutgoingEdges(tn.id, ['extends', 'implements'])) {
+            const target = this.nodeById(edge.target);
+            if (target?.name && target.name !== typeName) supers.add(target.name);
+          }
+        }
+        return [...supers];
       },
 
       getBindings: (filePath: string) => {
@@ -1328,10 +1351,14 @@ export class ReferenceResolver {
       if (outcome.candidates.length === 0) stats.frameworkMerge++;
       else stats.frameworkMergeWithCands++;
     }
-    // A Swift type reference never lands on an `extension X {}` node, nor on a
-    // nested type it cannot name bare (see ./swift-type-visibility). Applied to
-    // the settled winner, so kernel verdicts and framework hits obey it alike.
-    return { ref, result: gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context) };
+    // Applied to the settled winner, so kernel verdicts and framework hits
+    // obey them alike: a Swift type reference never lands on an
+    // `extension X {}` node, nor on a nested type it cannot name bare
+    // (./swift-type-visibility); a name a declaration around the reference
+    // declares as a type parameter is that parameter (./type-parameters); a
+    // bare Rust name reaches only what is in scope (./rust-scope).
+    const settled = gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context);
+    return { ref, result: gateRustScope(gateTypeParameter(settled, ref, this.context), ref, this.context) };
   }
 
   /**

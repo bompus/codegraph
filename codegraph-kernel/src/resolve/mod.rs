@@ -326,6 +326,7 @@ pub(super) struct SourceFile {
     lines: Vec<String>,
     text: OnceCell<String>,
     rust_uses: OnceCell<HashMap<String, String>>,
+    rust_scope_uses: OnceCell<name_scope::RustScopeUses>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -336,6 +337,7 @@ impl SourceFile {
             lines,
             text: OnceCell::new(),
             rust_uses: OnceCell::new(),
+            rust_scope_uses: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -363,6 +365,11 @@ impl SourceFile {
     /// The file's Rust `use` bindings (collectRustUseBindings).
     pub(super) fn rust_uses(&self) -> &HashMap<String, String> {
         self.rust_uses.get_or_init(|| collect_rust_use_bindings(self.text()))
+    }
+
+    /// The names and globs of the file's project `use` trees (rustUsesOf).
+    pub(super) fn rust_scope_uses(&self) -> &name_scope::RustScopeUses {
+        self.rust_scope_uses.get_or_init(|| name_scope::collect_rust_scope_uses(self.text()))
     }
 }
 
@@ -454,6 +461,7 @@ mod query;
 mod prefilter;
 mod imports;
 mod names;
+mod name_scope;
 mod receivers;
 mod bound;
 mod fields;

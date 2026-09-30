@@ -1,6 +1,7 @@
 //! Name machinery (name-matcher.ts): visibility, exact and fuzzy matching, best-match scoring.
 
 use super::*;
+use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 
 impl KernelResolver {
     // -----------------------------------------------------------------------
@@ -87,7 +88,9 @@ impl KernelResolver {
     /// isLexicallyReachable (name-matcher.ts): a function nested in a
     /// same-file function/method is reachable only from inside the parent.
     pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
-        if candidate.kind != "function" {
+        // A function — or a type (`case class B()` in a test method) —
+        // declared inside a function is only in scope in there.
+        if candidate.kind != "function" && !is_local_type_kind(&candidate.kind) {
             return Ok(true);
         }
         if no_nested_functions(&candidate.language) {
@@ -534,6 +537,23 @@ impl KernelResolver {
             .collect();
         let mut candidates = self.apply_language_gate(all_named, r);
         candidates.retain(|n| n.kind != "import");
+        // A .NET type position names a type, never a same-named member.
+        if self.is_dotnet_type_ref(r) {
+            candidates.retain(|n| can_name_in_type_position(n));
+        }
+        // A Scala type position (`Arbitrary[B]`) never names a method: an
+        // `implicit def A: Order[A]` shares its name with half of cats' type
+        // parameters. Scala's value references only read a file's own vals.
+        if r.language == "scala"
+            && r.reference_kind == "references"
+            && r.reference_name.starts_with(|c: char| c.is_ascii_uppercase())
+        {
+            candidates.retain(|n| !matches!(n.kind.as_str(), "method" | "function"));
+        }
+        // A bare Rust name reaches only what is in scope.
+        if is_bare_rust_name(r) {
+            candidates.retain(|n| self.is_rust_name_in_scope(n, r));
+        }
         // Nested locals reachable only from inside their container (#1230).
         let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
@@ -662,11 +682,19 @@ impl KernelResolver {
             }
         }
         let candidates = self.nodes_by_lower_name(&r.reference_name)?;
-        let callable: Vec<Arc<KNode>> = candidates
+        let type_ref = self.is_dotnet_type_ref(r);
+        let rust_bare = is_bare_rust_name(r);
+        let mut callable: Vec<Arc<KNode>> = candidates
             .iter()
             .filter(|n| matches!(n.kind.as_str(), "function" | "method" | "class"))
+            .filter(|n| !type_ref || can_name_in_type_position(n))
+            // Rust names are case-sensitive: `Bytes` is not the method `bytes`.
+            .filter(|n| !rust_bare || n.name == r.reference_name)
             .cloned()
             .collect();
+        if rust_bare {
+            callable.retain(|n| self.is_rust_name_in_scope(n, r));
+        }
         let gated = self.apply_language_gate(callable, r);
         let same_language: Vec<Arc<KNode>> = gated
             .iter()
