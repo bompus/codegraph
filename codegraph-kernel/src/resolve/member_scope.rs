@@ -72,6 +72,8 @@ const OBJC_SYSTEM_SUPERS: &[(&str, &str)] = &[
 pub(super) struct MemberSite {
     /// VB.NET: what the member access is written on (`None` for a bare name).
     vb_receiver: Option<String>,
+    /// VB.NET: the receiver is a service locator's `(Of T)` type argument.
+    vb_type_arg: bool,
     csharp_bare: bool,
     objc_shape: Option<ObjcShape>,
 }
@@ -85,9 +87,14 @@ impl MemberSite {
 impl KernelResolver {
     pub(super) fn member_site(&mut self, r: &ResolveRefIn) -> MemberSite {
         let word = re!(r"^[A-Za-z0-9_]+$").is_match(&r.reference_name);
-        let vb_receiver = (r.language == "vbnet" && matches!(r.reference_kind.as_str(), "calls" | "instantiates") && word)
-            .then(|| self.vb_receiver_of(r))
-            .flatten();
+        let (vb_receiver, vb_type_arg) =
+            match (r.language == "vbnet" && matches!(r.reference_kind.as_str(), "calls" | "instantiates") && word)
+                .then(|| self.vb_receiver_of(r))
+                .flatten()
+            {
+                Some((receiver, type_arg)) => (Some(receiver), type_arg),
+                None => (None, false),
+            };
         let csharp_bare = r.language == "csharp"
             && matches!(r.reference_kind.as_str(), "calls" | "references")
             && re!(r"^[A-Za-z_][A-Za-z0-9_]*$").is_match(&r.reference_name);
@@ -96,7 +103,7 @@ impl KernelResolver {
             && re!(r"^[A-Za-z_][A-Za-z0-9_]*:*(?:[A-Za-z0-9_]+:)*$").is_match(&r.reference_name))
         .then(|| self.objc_call_shape(r))
         .flatten();
-        MemberSite { vb_receiver, csharp_bare, objc_shape }
+        MemberSite { vb_receiver, vb_type_arg, csharp_bare, objc_shape }
     }
 
     /// Whether the member rules let `n` stand for the name at `site`.
@@ -120,6 +127,8 @@ impl KernelResolver {
     /// rather than merely left over: a declaration in the calling file, a
     /// member of the type the VB receiver names (`Logger.Log`, `(Of T)`) or of
     /// the class a `Me.` / `self` / bare C# name is written in or inherits.
+    /// A VB receiver the file also declares as a variable (`Dim logger As
+    /// New FileLogger()`) names a value, not the type its spelling matches.
     /// Anything else stays below the trusted range.
     pub(super) fn is_member_survivor_bound(&mut self, n: &KNode, site: &MemberSite, r: &ResolveRefIn) -> Res<bool> {
         if n.file_path == r.file_path {
@@ -131,7 +140,7 @@ impl KernelResolver {
             }
             let Some(owner) = owner_simple_name(n).map(str::to_ascii_lowercase) else { return Ok(false) };
             let last = receiver.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            if last == owner {
+            if last == owner && (site.vb_type_arg || !self.vb_declares_variable(&r.file_path, &last)?) {
                 return Ok(true);
             }
             // `Me.X` in one part of a partial class reaches the other parts.
@@ -162,7 +171,7 @@ impl KernelResolver {
     /// genuinely bare name, `""` for a `With` block's `.Name`, else the text
     /// before the dot (`Me.CMB.Buttons`, `System.Drawing`) or a service
     /// locator's type argument (`GetService(Of Notifier).Notify()`).
-    fn vb_receiver_of(&mut self, r: &ResolveRefIn) -> Option<String> {
+    fn vb_receiver_of(&mut self, r: &ResolveRefIn) -> Option<(String, bool)> {
         let lines = self.read_file(&r.file_path)?;
         let line = lines.get((r.line - 1).max(0) as usize)?;
         let lower = line.to_ascii_lowercase();
@@ -176,9 +185,21 @@ impl KernelResolver {
         let before = &line[..start];
         let dot = re!(r"([A-Za-z0-9_.()]*?)\s*\.\s*$").captures(before)?;
         if let Some(t) = re!(r"(?i)\(\s*Of\s+([A-Za-z0-9_.]+)\s*\)\s*\.\s*$").captures(before) {
-            return Some(t[1].to_string());
+            return Some((t[1].to_string(), true));
         }
-        Some(re!(r"\([^()]*\)").replace_all(&dot[1], "").into_owned())
+        Some((re!(r"\([^()]*\)").replace_all(&dot[1], "").into_owned(), false))
+    }
+
+    /// Whether a VB.NET file declares `name` (lowercase) as a variable,
+    /// parameter, field or property: `Dim logger`, `ByVal logger`,
+    /// `Property logger` or `logger As …`.
+    pub(super) fn vb_declares_variable(&mut self, file: &str, name: &str) -> Res<bool> {
+        let Some(src) = self.read_file(file) else { return Ok(false) };
+        let e = regex::escape(name);
+        let decl = Self::cached_regex(&format!(
+            r"(?i)(?:(?-u:\b)(?:Dim|ByVal|ByRef|Property)\s+{e}(?-u:\b)|(?-u:\b){e}\s+As(?-u:\b))"
+        ))?;
+        Ok(decl.is_match(src.text()))
     }
 
     // -- C# -------------------------------------------------------------------
@@ -203,19 +224,14 @@ impl KernelResolver {
         if !self.has_no_receiver_on_line(r) {
             return Ok(None);
         }
-        if self.csharp_static_usings(&r.file_path).contains(&owner) {
-            return Ok(Some(true));
-        }
         let mut queue: VecDeque<String> = self
             .nodes_in_file(&r.file_path)?
             .iter()
             .filter(|t| is_csharp_type_kind(&t.kind) && t.start_line <= r.line && t.end_line >= r.line)
             .map(|t| t.name.clone())
             .collect();
-        // No type around the name: its declaration wasn't recovered.
-        if queue.is_empty() {
-            return Ok(None);
-        }
+        // No type around the name means its declaration wasn't recovered.
+        let enclosed = !queue.is_empty();
         let mut seen: HashSet<String> = HashSet::new();
         while seen.len() < 40 {
             let Some(name) = queue.pop_front() else { break };
@@ -227,7 +243,10 @@ impl KernelResolver {
             }
             queue.extend(self.csharp_supertypes_of(&name)?.iter().cloned());
         }
-        Ok(Some(false))
+        if self.csharp_static_usings(&r.file_path)?.contains(&owner) {
+            return Ok(Some(true));
+        }
+        Ok(enclosed.then_some(false))
     }
 
     /// csharpSupertypesOf: the simple names a C# type's declarations (every
@@ -242,7 +261,7 @@ impl KernelResolver {
             .filter(|d| d.language == "csharp" && is_csharp_type_kind(&d.kind))
             .cloned()
             .collect();
-        let bases = Self::cached_regex(&format!(r"(?-u:\b){}\s*:\s*(.*?)(?:(?-u:\b)where(?-u:\b)|$)", regex::escape(type_name)))?;
+        let bases = Self::cached_regex(&format!(r"(?-u:\b){}\s*:\s*(.*?)(?:(?-u:\b)where(?-u:\b)|;|$)", regex::escape(type_name)))?;
         let mut names = Vec::new();
         for decl in decls {
             let Some(lines) = self.read_file(&decl.file_path) else { continue };
@@ -272,15 +291,21 @@ impl KernelResolver {
         Ok(names)
     }
 
-    /// csharpStaticUsings: the types a C# file sees through static usings —
-    /// its own `using static A.B.Type;`, any file's `global using static`,
-    /// and `<Using Include="A.B.Type" Static="true"/>` in the `.csproj` /
+    /// csharpStaticUsings: the types a C# file sees through static usings:
+    /// its own `using static A.B.Type;`, a `global using static` in any file of
+    /// the same project (the nearest `.csproj` directory above each file), and
+    /// `<Using Include="A.B.Type" Static="true"/>` in the `.csproj` /
     /// `Directory.Build.props` files above it.
-    fn csharp_static_usings(&mut self, file: &str) -> Rc<HashSet<String>> {
+    fn csharp_static_usings(&mut self, file: &str) -> Res<Rc<HashSet<String>>> {
         if let Some(hit) = self.csharp_static_usings_memo.get(file) {
-            return hit.clone();
+            return Ok(hit.clone());
         }
-        let mut owners: HashSet<String> = self.csharp_project_static_usings(pos_dirname(file)).as_ref().clone();
+        let dir = pos_dirname(file);
+        let mut owners: HashSet<String> = self.csharp_project_static_usings(dir).as_ref().clone();
+        let project = self.csharp_project_of(dir);
+        if let Some(globals) = self.csharp_global_static_usings()?.get(&project) {
+            owners.extend(globals.iter().cloned());
+        }
         if let Some(src) = self.read_file(file) {
             for m in re!(r"(?m)^\s*(?:global\s+)?using\s+static\s+([A-Za-z0-9_.]+)\s*;").captures_iter(src.text()) {
                 owners.insert(m[1].rsplit('.').next().unwrap_or("").to_string());
@@ -288,38 +313,81 @@ impl KernelResolver {
         }
         let owners = Rc::new(owners);
         self.csharp_static_usings_memo.insert(file.to_string(), owners.clone());
-        owners
+        Ok(owners)
     }
 
-    /// The static usings every file under `dir` sees: project files on the
-    /// way up, and every `global using static` in the repository.
+    /// Every `global using static` in the index, grouped by the project of
+    /// the file declaring it. Read once from the import nodes' directive text
+    /// rather than from the source files.
+    fn csharp_global_static_usings(&mut self) -> Res<Rc<HashMap<Option<String>, HashSet<String>>>> {
+        if let Some(hit) = &self.csharp_global_statics {
+            return Ok(hit.clone());
+        }
+        let rows: Vec<(String, String)> = {
+            let mut stmt = self
+                .conn()?
+                .prepare(
+                    "SELECT file_path, signature FROM nodes \
+                     WHERE kind = 'import' AND language = 'csharp' AND signature LIKE 'global%' \
+                     ORDER BY file_path, start_line",
+                )
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default())))
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            mapped.filter_map(|row| row.ok()).collect()
+        };
+        let mut by_project: HashMap<Option<String>, HashSet<String>> = HashMap::new();
+        for (file, signature) in rows {
+            let Some(m) = re!(r"^\s*global\s+using\s+static\s+([A-Za-z0-9_.]+)\s*;").captures(&signature) else { continue };
+            let owner = m[1].rsplit('.').next().unwrap_or("").to_string();
+            let project = self.csharp_project_of(pos_dirname(&file));
+            by_project.entry(project).or_default().insert(owner);
+        }
+        let by_project = Rc::new(by_project);
+        self.csharp_global_statics = Some(by_project.clone());
+        Ok(by_project)
+    }
+
+    /// The nearest directory at or above `dir` holding a `.csproj`; `None`
+    /// when there is none, so project-less files share one scope.
+    fn csharp_project_of(&mut self, dir: &str) -> Option<String> {
+        if let Some(hit) = self.csharp_project_memo.get(dir) {
+            return hit.clone();
+        }
+        let found = if self.csharp_dir_entries(dir).iter().any(|e| e.to_ascii_lowercase().ends_with(".csproj")) {
+            Some(dir.to_string())
+        } else if dir.is_empty() {
+            None
+        } else {
+            self.csharp_project_of(pos_dirname(dir))
+        };
+        self.csharp_project_memo.insert(dir.to_string(), found.clone());
+        found
+    }
+
+    /// The sorted entry names of a repository directory.
+    fn csharp_dir_entries(&self, dir: &str) -> Vec<String> {
+        let abs = if dir.is_empty() { self.root_abs.clone() } else { pos_resolve(&self.root_abs, dir) };
+        let mut entries: Vec<String> = std::fs::read_dir(&abs)
+            .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        entries.sort();
+        entries
+    }
+
+    /// The static usings the project files at or above `dir` declare.
     fn csharp_project_static_usings(&mut self, dir: &str) -> Rc<HashSet<String>> {
         let key = format!("dir:{dir}");
         if let Some(hit) = self.csharp_static_usings_memo.get(&key) {
             return hit.clone();
         }
         let mut owners: HashSet<String> = HashSet::new();
-        if dir.is_empty() {
-            let files = self.sorted_files().unwrap_or_default();
-            for f in files.iter().filter(|f| f.ends_with(".cs")) {
-                let Some(src) = self.read_file(f) else { continue };
-                let text = src.text();
-                if !text.contains("global using static") {
-                    continue;
-                }
-                for m in re!(r"(?m)^\s*global\s+using\s+static\s+([A-Za-z0-9_.]+)\s*;").captures_iter(text) {
-                    owners.insert(m[1].rsplit('.').next().unwrap_or("").to_string());
-                }
-            }
-        } else {
+        if !dir.is_empty() {
             owners.extend(self.csharp_project_static_usings(pos_dirname(dir)).iter().cloned());
         }
         let abs = if dir.is_empty() { self.root_abs.clone() } else { pos_resolve(&self.root_abs, dir) };
-        let mut entries: Vec<String> = std::fs::read_dir(&abs)
-            .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
-            .unwrap_or_default();
-        entries.sort();
-        for entry in entries {
+        for entry in self.csharp_dir_entries(dir) {
             let lower = entry.to_ascii_lowercase();
             if !(lower.ends_with(".csproj") || lower.ends_with(".props")) {
                 continue;

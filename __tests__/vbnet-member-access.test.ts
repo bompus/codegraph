@@ -44,6 +44,26 @@ End Class
     End Sub
 End Module
 `,
+    'FileLogger.vb': `Public Class FileLogger
+    Public Sub Log(msg As String)
+    End Sub
+End Class
+`,
+    'Reports.vb': `Public Class Reports
+    Private Sub Build()
+        Dim logger As New FileLogger()
+        logger.Log("ready")
+    End Sub
+End Class
+`,
+    'Exporter.vb': `Public Class Exporter
+    Private logger As New FileLogger()
+
+    Private Sub Save()
+        Me.logger.Log("saved")
+    End Sub
+End Class
+`,
     'MainForm.vb': `Public Class MainForm
     Private Sub InitializeComponent()
         Me.Panel.Controls.Add(Me.Button1)
@@ -83,5 +103,16 @@ describe('VB.NET member access', () => {
     expect(targets).toContain('Logger::Log');
     expect(targets).toContain('Notifier::Notify');
     expect(targets).toContain('MainForm::Refresh');
+  });
+
+  it.each(['Reports.vb', 'Exporter.vb'])('never trusts a type whose name a variable only spells (%s)', (file) => {
+    // `logger` is a FileLogger in both files; the Logger module shares its
+    // spelling (VB.NET names are case-insensitive) and nothing else.
+    const ids = cg.getNodesInFile(file).map((n) => n.id);
+    const trusted = cg
+      .getOutgoingEdgesFrom(ids)
+      .filter((e) => e.kind === 'calls' && Number(e.metadata?.confidence) >= 0.8)
+      .map((e) => cg.getNode(e.target)!.qualifiedName);
+    expect(trusted).not.toContain('Logger::Log');
   });
 });

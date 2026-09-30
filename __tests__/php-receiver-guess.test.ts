@@ -11,6 +11,10 @@
  * gate, docs/design/resolution-binding-model-plan.md). None of the three calls
  * below resolves by name, so the wrong `getMessage` edge stays absent and the
  * two receiver-named guesses upstream keeps are not made either.
+ *
+ * The test records that decision rather than guarding the port: it passes on
+ * the kernel before upstream #2152 was ported too, because the evidence gate
+ * already refuses these calls and the ported PHP arm of strategy 3 is dormant.
  */
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import * as fs from 'fs';

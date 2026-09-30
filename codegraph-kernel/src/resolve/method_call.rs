@@ -708,15 +708,23 @@ impl KernelResolver {
             }
         }
 
+        // A VB.NET receiver the file declares as a variable (`Dim logger As
+        // New FileLogger()`) is a value; that its spelling matches a type
+        // (`Logger`, names being case-insensitive) says nothing of its type.
+        let vb_value_receiver =
+            r.language == "vbnet" && self.vb_declares_variable(&r.file_path, &object_or_class.to_ascii_lowercase())?;
+
         // Strategy 1 — direct class-name match, call site's file first.
-        if let Some(hit) = self.class_method_scan(&object_or_class, &method_name, r, 0.85, "qualified-name")? {
-            return Ok(Some(hit));
+        if !vb_value_receiver {
+            if let Some(hit) = self.class_method_scan(&object_or_class, &method_name, r, 0.85, "qualified-name")? {
+                return Ok(Some(hit));
+            }
         }
 
         // Strategy 2 — capitalized receiver (`permissionEngine` →
         // `PermissionEngine`) against the same class scan.
         let capitalized = capitalize_first(&object_or_class);
-        if capitalized != object_or_class {
+        if capitalized != object_or_class && !vb_value_receiver {
             if let Some(hit) = self.class_method_scan(&capitalized, &method_name, r, 0.8, "instance-method")? {
                 return Ok(Some(hit));
             }
@@ -773,15 +781,21 @@ impl KernelResolver {
                 narrowed |= target.len() != before;
             }
             let target = &target;
-            // Nothing types a Ruby, CFML, Objective-C or PHP receiver here:
-            // the one method must also belong to something the receiver is
-            // named after (`web_push_request.legacy_encrypt` → WebPushRequest),
-            // or rubocop's `node.loc` lands on the project's one `loc`, ObjC's
-            // `image.respondsToSelector:` on a proxy's override and PHP's
-            // `Str::random()` on a helper's. An ObjC receiver may instead name
-            // or declare a class that inherits the method, a PHP one a class
-            // whose ancestry has it (`Page::save` → Entity). CFML's
-            // `variables.m()` is a call on the component itself.
+            // Nothing types a Ruby, CFML or Objective-C receiver here: the one
+            // method must also belong to something the receiver is named after
+            // (`web_push_request.legacy_encrypt` → WebPushRequest), or
+            // rubocop's `node.loc` lands on the project's one `loc` and ObjC's
+            // `image.respondsToSelector:` on a proxy's override. An ObjC
+            // receiver may instead name or declare a class that inherits the
+            // method. CFML's `variables.m()` is a call on the component itself.
+            //
+            // The PHP arm (upstream #2152) is dormant: the Phase 2b
+            // bound-receiver claim (is_binding_receiver_call) takes every PHP
+            // receiver call first and its refusal is terminal, so an untyped
+            // `$page->save()` or `Page::save()` never reaches strategy 3 (see
+            // docs/design/resolution-binding-model-plan.md). It is kept so
+            // the rule is in place, receiver named for the class or its
+            // ancestry, if that gate ever lets PHP calls through.
             let untyped_unnamed = match target.first() {
                 Some(m) if target.len() == 1 && matches!(r.language.as_str(), "ruby" | "cfml" | "cfscript" | "objc" | "php") => {
                     !re!(r"(?i)^(?:self|self\.class|this|super|variables|weak_?self|strong_?self)$").is_match(&object_or_class)
