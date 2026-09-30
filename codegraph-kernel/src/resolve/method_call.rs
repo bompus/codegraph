@@ -773,15 +773,30 @@ impl KernelResolver {
                 narrowed |= target.len() != before;
             }
             let target = &target;
-            // Nothing types a Ruby or CFML receiver: there the one method must
-            // also belong to something the receiver is named after
-            // (`web_push_request.legacy_encrypt` → WebPushRequest), or
-            // rubocop's `node.loc` lands on the project's one `loc`. CFML's
+            // Nothing types a Ruby, CFML, Objective-C or PHP receiver here:
+            // the one method must also belong to something the receiver is
+            // named after (`web_push_request.legacy_encrypt` → WebPushRequest),
+            // or rubocop's `node.loc` lands on the project's one `loc`, ObjC's
+            // `image.respondsToSelector:` on a proxy's override and PHP's
+            // `Str::random()` on a helper's. An ObjC receiver may instead name
+            // or declare a class that inherits the method, a PHP one a class
+            // whose ancestry has it (`Page::save` → Entity). CFML's
             // `variables.m()` is a call on the component itself.
-            let untyped_unnamed = matches!(r.language.as_str(), "ruby" | "cfml" | "cfscript")
-                && !re!(r"(?i)^(?:self|self\.class|this|super|variables)$").is_match(&object_or_class)
-                && target.first().is_none_or(|m| !shares_receiver_word(&object_or_class, m));
-            if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed {
+            let untyped_unnamed = match target.first() {
+                Some(m) if target.len() == 1 && matches!(r.language.as_str(), "ruby" | "cfml" | "cfscript" | "objc" | "php") => {
+                    !re!(r"(?i)^(?:self|self\.class|this|super|variables|weak_?self|strong_?self)$").is_match(&object_or_class)
+                        && !shares_receiver_word(&object_or_class, m)
+                        && !(r.language == "objc" && self.objc_receiver_reaches(&object_or_class, m)?)
+                        && !(r.language == "php" && self.php_receiver_reaches(&object_or_class, m)?)
+                }
+                _ => false,
+            };
+            // A Lua call through a standard or host library table, or a
+            // string method on a value, is the library's.
+            let lua_library = target.len() == 1
+                && matches!(r.language.as_str(), "lua" | "luau")
+                && is_lua_library_call(&object_or_class, &method_name, r, &target[0]);
+            if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed && !lua_library {
                 return Ok(Some(KCand {
                     node: target[0].clone(),
                     confidence: 0.7,
@@ -1250,8 +1265,10 @@ mod tests {
 
 /// sharesReceiverWord (name-matcher.ts): whether a receiver is named after
 /// the owner of `method`, case aside — the receiver's last segment is the
-/// owner's name (`cbsecurity` → CBSecurity), or they share a word
-/// (`web_push_request` → WebPushRequest, `executor1` → Executor).
+/// owner's name (`cbsecurity` → CBSecurity), or they share a word of three
+/// letters or more (`web_push_request` → WebPushRequest, `executor1` →
+/// Executor, `decodedImage` → UIImage). Two-letter words are class
+/// prefixes (`SD`, `NS`, `UI`), not names.
 fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
     let Some(cut) = method.qualified_name.rfind("::") else { return false };
     let owner_qn = &method.qualified_name[..cut];
@@ -1264,6 +1281,32 @@ fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
     if flat(receiver_last) == flat(owner_last) {
         return true;
     }
-    let owner: HashSet<String> = split_camel_case(owner_qn).iter().map(|w| flat(w)).collect();
+    let owner: HashSet<String> = split_camel_case(owner_qn).iter().map(|w| flat(w)).filter(|w| w.len() > 2).collect();
     split_camel_case(receiver).iter().any(|w| owner.contains(&flat(w)))
+}
+
+/// Lua's standard and host libraries: a call through one of these tables is
+/// the library's, never the one project method that shares its name (busted's
+/// `assert.truthy` went to a condition helper 987 times, `string.find` to a
+/// picker's `find`, Neovim's `vim.split` to a build module's).
+const LUA_LIBRARY_TABLES: &[&str] = &[
+    "string", "table", "math", "io", "os", "coroutine", "debug", "utf8", "package", "bit", "bit32", "jit", "ffi",
+    "vim", "ngx", "assert", "spy", "stub", "mock", "love",
+];
+
+/// Lua string methods, reached with `s:find(…)` on any string.
+const LUA_STRING_METHODS: &[&str] =
+    &["find", "match", "gmatch", "gsub", "sub", "format", "upper", "lower", "len", "rep", "byte", "reverse"];
+
+/// isLuaLibraryCall (name-matcher.ts): whether a Lua call is a library's
+/// rather than `candidate` — through a library table the project doesn't
+/// patch itself (kong's globalpatches do define `ngx.sleep`), or a string
+/// method on a value.
+fn is_lua_library_call(receiver: &str, method: &str, r: &ResolveRefIn, candidate: &KNode) -> bool {
+    let root = receiver.split(['.', ':']).next().unwrap_or("");
+    if LUA_LIBRARY_TABLES.contains(&root) {
+        let cand_root = candidate.qualified_name.split("::").next().unwrap_or("").split('.').next().unwrap_or("");
+        return cand_root != root;
+    }
+    LUA_STRING_METHODS.contains(&method) && r.reference_name.ends_with(&format!(":{method}"))
 }

@@ -210,6 +210,17 @@ Remaining: custom roots/base/config redirects, Markdown/MDX pages, cross-file re
 FastAPI, Express, NestJS, Laravel, Drupal, Rails, Spring, Play, Gin/chi/gorilla,
 Axum/actix/Rocket, ASP.NET, Vapor.
 
+Route reading for three of them was widened on 2026-09-30 (upstream #2154 to
+#2156): Flask reads `add_url_rule(…)` and a project helper that hands a list of
+paths and a `view_func=` over (`__tests__/flask-url-rules.test.ts`; flaskbb 0
+→ 103 routes); Rails reads `routes.rb` as nested blocks, so `namespace`,
+`scope`, nested `resources` and `member` / `collection` add their paths and
+controller modules, and a namespaced `controller#action` reaches its own
+module's controller (`__tests__/rails-scoped-routes.test.ts`; solidus 0 →
+319 route links); Play detects a `conf/routes` in any subdirectory
+(`__tests__/play-nested-projects.test.ts`; play-samples 0 → 139 routes). The
+numbers are upstream's measurements. None of these adds navigation.
+
 Be precise about what is missing. `redirect_to`, `HttpResponseRedirect`,
 `res.redirect`, PHP's `redirect()` are **already recognised as `response`
 effects** (`ui-server/api/effects.ts`), so they draw as a box in the Steps

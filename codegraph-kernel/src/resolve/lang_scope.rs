@@ -106,10 +106,11 @@ impl KernelResolver {
         Ok(self.retain_lang_scope_tracked(candidates, r)?.0)
     }
 
-    /// retain_lang_scope, also telling whether the Kotlin visibility rule
-    /// removed a candidate. Elimination is no evidence for what is left: the
-    /// caller then keeps a lone survivor below the trusted range unless
-    /// `is_kotlin_survivor_in_scope` binds it.
+    /// retain_lang_scope, also telling whether the Kotlin visibility rule or
+    /// a VB.NET, C# or Objective-C member rule removed a candidate.
+    /// Elimination is no evidence for what is left: the caller then keeps a
+    /// lone survivor below the trusted range unless `is_lang_survivor_bound`
+    /// binds it.
     pub(super) fn retain_lang_scope_tracked(
         &mut self,
         candidates: Vec<Arc<KNode>>,
@@ -119,12 +120,21 @@ impl KernelResolver {
         let cfml_bare = is_bare_cfml_call(r);
         let kotlin_call = is_bare_call_of(r, "kotlin") && !self.is_kotlin_qualified_call(r);
         let dart_bare = is_bare_call_of(r, "dart") && self.is_receiver_less_dart_call(r);
-        if !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare {
+        let member_site = matches!(r.language.as_str(), "vbnet" | "csharp" | "objc")
+            .then(|| self.member_site(r))
+            .filter(|s| s.is_judged());
+        if !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare && member_site.is_none() {
             return Ok((candidates, false));
         }
-        let mut kotlin_shrank = false;
+        let mut shrank = false;
         let mut kept = Vec::with_capacity(candidates.len());
         for n in candidates {
+            if let Some(site) = &member_site {
+                if !self.is_member_in_reach(&n, site, r)? {
+                    shrank = true;
+                    continue;
+                }
+            }
             if ruby_bare && n.kind == "method" && !self.is_ruby_method_in_scope(&n, r)? {
                 continue;
             }
@@ -132,7 +142,7 @@ impl KernelResolver {
                 continue;
             }
             if kotlin_call && !self.is_kotlin_top_level_visible(&n, r)? {
-                kotlin_shrank = true;
+                shrank = true;
                 continue;
             }
             if dart_bare && is_dart_member(&n) && self.dart_member_depth(&n, r)? == DART_UNREACHED {
@@ -140,7 +150,18 @@ impl KernelResolver {
             }
             kept.push(n);
         }
-        Ok((kept, kotlin_shrank))
+        Ok((kept, shrank))
+    }
+
+    /// Whether the one candidate `retain_lang_scope_tracked` left after
+    /// removing others is bound to the call site (see
+    /// `is_kotlin_survivor_in_scope` and `is_member_survivor_bound`).
+    pub(super) fn is_lang_survivor_bound(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if r.language == "kotlin" {
+            return self.is_kotlin_survivor_in_scope(n, r);
+        }
+        let site = self.member_site(r);
+        self.is_member_survivor_bound(n, &site, r)
     }
 
     /// A Kotlin call written after a qualifier (`io.javalin.config.Key<String>(…)`,
@@ -684,7 +705,7 @@ impl KernelResolver {
     /// hasNoReceiverOnLine: the name, case aside, is not preceded by a `.` on
     /// its line (true when the line can't tell; false when the name is not on
     /// its line at all — a link of a chain written across lines).
-    fn has_no_receiver_on_line(&mut self, r: &ResolveRefIn) -> bool {
+    pub(super) fn has_no_receiver_on_line(&mut self, r: &ResolveRefIn) -> bool {
         let Some(lines) = self.read_file(&r.file_path) else { return true };
         let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return true };
         let lower = line.to_ascii_lowercase();

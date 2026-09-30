@@ -161,6 +161,42 @@ impl KernelResolver {
         Ok(PhpScope::Out)
     }
 
+    /// phpReceiverReaches (name-matcher.ts): whether a PHP receiver is named
+    /// after a class that has `method` in its ancestry — the whole name or
+    /// its last camel word (`$page->save()` → Page, which extends Entity;
+    /// `$newRole->users()` → Role). BookStack's `$role->save()` is not
+    /// Entity's: Role is a Model.
+    pub(super) fn php_receiver_reaches(&mut self, receiver: &str, method: &KNode) -> Res<bool> {
+        let Some(cut) = method.qualified_name.rfind("::") else { return Ok(false) };
+        let owner = &method.qualified_name[..cut];
+        let last = receiver.rsplit('.').next().unwrap_or("");
+        let last = last.strip_prefix('$').unwrap_or(last);
+        if last.is_empty() {
+            return Ok(false);
+        }
+        let words = split_camel_case(last);
+        let mut names: Vec<String> = vec![capitalize_first(last)];
+        if let Some(tail) = words.last().map(|w| capitalize_first(w)) {
+            if !names.contains(&tail) {
+                names.push(tail);
+            }
+        }
+        for name in names {
+            let decls: Vec<String> = self
+                .nodes_by_name(&name)?
+                .iter()
+                .filter(|d| d.language == "php" && is_php_type_kind(&d.kind))
+                .map(|d| d.qualified_name.clone())
+                .collect();
+            for qn in decls {
+                if self.php_ancestry(vec![qn])?.0.contains(owner) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// phpAncestry: every type `start` reaches through `extends` and trait
     /// `use`, and whether it left the repository on the way.
     fn php_ancestry(&mut self, start: Vec<String>) -> Res<(HashSet<String>, bool)> {

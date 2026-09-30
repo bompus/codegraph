@@ -8,7 +8,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | Framework | Shapes recognized |
 |---|---|
 | **Django** | `path()`, `re_path()`, `url()`, `include()` in `urls.py` (CBV `.as_view()`, dotted paths) |
-| **Flask** | `@app.route('/path', methods=[...])`, blueprint routes |
+| **Flask** | `@app.route('/path', methods=[...])`, blueprint routes, `add_url_rule(…)` and a project helper that passes paths with a `view_func=` |
 | **FastAPI** | `@app.get(...)`, `@router.post(...)`, all standard methods |
 | **Express** | `app.get(...)`, `router.post(...)` with middleware chains |
 | **Hono** | Imported `Hono` instances, method/path arrays, `basePath()` and same-file `.route()` mounts |
@@ -23,9 +23,9 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **NestJS** | `@Controller` + `@Get/@Post/...` (with `RouterModule` prefixes, `setGlobalPrefix` and URI versioning), GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
 | **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax; `Route::prefix()` and group prefixes, and the `/api` mount of `routes/api.php` |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
-| **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax |
+| **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax, `resources` / `resource`, and the paths and controller modules of `namespace`, `scope`, nested resources and `member` / `collection` blocks; a Rails engine's `config/routes.rb` too |
 | **Spring** | `@GetMapping`, `@PostMapping`, `@RequestMapping` on methods |
-| **Play** | `GET`/`POST`/… verb routes in `conf/routes` → `Controller.method` actions (Scala + Java) |
+| **Play** | `GET`/`POST`/… verb routes in `conf/routes` → `Controller.method` actions (Scala + Java), including projects kept in subdirectories |
 | **Gin / chi / gorilla / mux** | `r.GET(...)`, `router.HandleFunc(...)` |
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods |

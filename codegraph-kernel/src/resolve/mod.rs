@@ -487,6 +487,7 @@ mod names;
 mod name_scope;
 mod php_scope;
 mod lang_scope;
+mod member_scope;
 mod receivers;
 mod bound;
 mod fields;
@@ -571,6 +572,14 @@ pub struct KernelResolver {
     ruby_ancestry_memo: HashMap<String, Rc<HashSet<String>>>,
     /// cfmlChain, by component file.
     cfml_chain_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// csharpSupertypesOf, by type name.
+    csharp_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// csharpStaticUsings, by file (and `dir:<dir>` for a directory's).
+    csharp_static_usings_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// objcSupertypesOf, by class name.
+    objc_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// objcHierarchyAt, by the sender's class name.
+    objc_hierarchy_memo: HashMap<String, Rc<HashSet<String>>>,
     /// manifest_own_packages, by directory.
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
@@ -711,6 +720,10 @@ impl KernelResolver {
             py_field_facts_memo: HashMap::new(),
             ruby_ancestry_memo: HashMap::new(),
             cfml_chain_memo: HashMap::new(),
+            csharp_supers_memo: HashMap::new(),
+            csharp_static_usings_memo: HashMap::new(),
+            objc_supers_memo: HashMap::new(),
+            objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             swift_extension_memo: HashMap::new(),

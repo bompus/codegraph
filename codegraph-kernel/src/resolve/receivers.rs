@@ -104,6 +104,11 @@ impl KernelResolver {
                     if guard1_tail_re().is_match(rest) && !nullable_union_tail_re().is_match(rest) {
                         continue;
                     }
+                } else if pat.guard == 3 {
+                    // `(?!\s*\()` — a declarator followed by `(` is a function.
+                    if cpp_call_opener_re().is_match(&line[m.end..]) {
+                        continue;
+                    }
                 } else if pat.guard == 2 {
                     // `(?![\w.]|\s*[({"'\[])` — the greedy capture already
                     // consumed every `[\w.]`, and a shrunk capture would be

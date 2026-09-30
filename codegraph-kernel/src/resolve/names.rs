@@ -623,7 +623,7 @@ impl KernelResolver {
             candidates.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         candidates = self.retain_python_java_scope(candidates, r)?;
-        let (kept, kotlin_shrank) = self.retain_lang_scope_tracked(candidates, r)?;
+        let (kept, scope_shrank) = self.retain_lang_scope_tracked(candidates, r)?;
         candidates = kept;
         candidates = self.retain_php_self_scope(candidates, r)?;
         candidates = self.retain_php_declared_type(candidates, r)?;
@@ -748,9 +748,9 @@ impl KernelResolver {
                 return Ok(None);
             }
             let cross = candidates[0].language != r.language;
-            // The Kotlin rule narrowed the set: the one left is what remains,
+            // A scope rule narrowed the set: the one left is what remains,
             // not what the call binds, unless its scope says so.
-            let leftover = kotlin_shrank && !self.is_kotlin_survivor_in_scope(&candidates[0], r)?;
+            let leftover = scope_shrank && !self.is_lang_survivor_bound(&candidates[0], r)?;
             // An import from a package only manifest text places here names
             // no directory: the one same-named symbol is a guess, not the
             // import's target.

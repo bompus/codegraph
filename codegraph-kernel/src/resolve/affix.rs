@@ -6,10 +6,10 @@ use super::*;
 /// Each entry is (pattern, guard): guard 1 reproduces the TS annotation
 /// pattern's `(?![\w.$]|\s*(?:<[^>]*>)?\s*[\[|&])` lookahead in
 /// infer_match_line, guard 2 the lua annotation pattern's
-/// `(?![\w.]|\s*[({"'\[])`; the go param-type lookahead `(?=\s*[,)]|\s*$)` is
-/// folded into its pattern as a consuming suffix (equivalent — the capture
-/// cannot absorb `[,)]`/EOL, and shrinking it can never satisfy the suffix
-/// either). Languages outside the switch (cpp, pascal, cfml — the latter two
+/// `(?![\w.]|\s*[({"'\[])`, guard 3 the objc declarator's `(?!\s*\()`;
+/// the go param-type lookahead `(?=\s*[,)]|\s*$)` is folded into its
+/// pattern as a consuming suffix (equivalent — the capture cannot absorb
+/// `[,)]`/EOL, and shrinking it can never satisfy the suffix either). Languages outside the switch (cpp, pascal, cfml — the latter two
 /// unrouted) get no patterns, same as the TS `default: return []`.
 /// JS `\w` / the crate's `(?-u:\b)` word class.
 pub(super) fn is_word_byte(b: u8) -> bool {
@@ -332,6 +332,30 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         ],
     );
     m.insert("ruby", vec![both(r"\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)", b"=", 0)]);
+    m.insert(
+        "objc",
+        vec![
+            // `FMResultSet *rs = …` / `NSString * _Nullable name;` / a block's
+            // `^(FMResultSet *rs)`; guard 3 rejects a function pointer's `(`.
+            rp(
+                r"(?-u:\b)([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>;]*>\s*)?\*\s*(?:(?:_Nullable|_Nonnull|__strong|__weak|__unsafe_unretained|const)\s+)*",
+                "",
+                false,
+                true,
+                true,
+                3,
+            ),
+            // A method parameter: `- (void)read:(nullable FMResultSet *)rs`.
+            rp(
+                r"\(\s*(?:(?:nullable|nonnull|__kindof)\s+)*([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>)]*>\s*)?\*[^)]*\)\s*",
+                "",
+                false,
+                true,
+                true,
+                0,
+            ),
+        ],
+    );
     m.insert(
         "scala",
         vec![
