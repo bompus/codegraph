@@ -1,7 +1,7 @@
 /**
- * A Python call whose receiver the extractor could not keep — `User.objects.get(…)`,
- * `self.client.login(…)` reach the resolver as `get`, `login` — is not a project
- * method picked by name. netbox bound 3,610 `.all()` calls to one `UserConfig.all`,
+ * A Python call through a receiver the resolver cannot type — `User.objects.get(…)`,
+ * `self.client.login(…)`, which reach the resolver as those attribute chains — is not
+ * a project method picked by its last name. netbox bound 3,610 `.all()` calls to one `UserConfig.all`,
  * healthchecks 880 `objects.get` to a test case's `get`. A bare `get(1)` cannot be a
  * method either (no implicit self); `self.helper()` still resolves to the class's own.
  */

@@ -413,11 +413,12 @@ impl KernelResolver {
             return Some(PythonCallShape::Bare);
         }
         let escaped = regex::escape(name);
-        if Regex::new(&format!(r"^(?:self|cls)\s*\.\s*{escaped}\s*\(")).ok()?.is_match(text) {
+        if Self::cached_regex(&format!(r"^(?:self|cls)\s*\.\s*{escaped}\s*\(")).ok()?.is_match(text) {
             return None;
         }
         // The call starts at its receiver: everything up to `.name(` is the chain.
-        let chain = Regex::new(&format!(r"^(.*?)\.\s*{escaped}\s*\(")).ok()?.captures(text)?;
+        let chain_re = Self::cached_regex(&format!(r"^(.*?)\.\s*{escaped}\s*\(")).ok()?;
+        let chain = chain_re.captures(text)?;
         let owner = re!(r"([A-Za-z0-9_]+)\s*(?:\([^()]*\)|\[[^\[\]]*\])?\s*$").captures(&chain[1])?;
         Some(PythonCallShape::Chained(owner[1].to_string()))
     }
