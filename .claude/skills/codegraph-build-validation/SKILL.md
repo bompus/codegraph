@@ -70,6 +70,21 @@ Working copies of the real corpora (e.g. `~/codegraph-corpora/linux`, multi-GB S
 
 Before pushing a branch meant for upstream, run `node <fork checkout>/scripts/pr-guard.mjs` from the branch: it fails when the branch adds a `bun.lock`, `yarn.lock` or `pnpm-lock.yaml` (upstream tracks only `package-lock.json`). To check what a change does to the graph, index a corpus with each build and compare them with `node scripts/index-metrics.mjs <before.db> <after.db>`: counts plus the call edges lost or gained, keyed by qualified name so shifted lines do not count. `CHANGELOG.md` merges with git's `union` driver (`.gitattributes`), so an upstream merge keeps both sides' bullets; check for a doubled bullet after the merge.
 
+### Measured step times
+
+Base effort quotes on these rather than on how heavy a step sounds. Measured on the WSL development host (16 vCPU, heavy steps serialized under one lock) in September 2026; when a run lands more than 2x off a row, replace the row with the new measurement.
+
+| Step | Measured wall-clock |
+|---|---|
+| `npm run build:kernel` (release build after a crate change) | 52–56 s; ~0 s when nothing changed |
+| Full suite (~400 files, `--maxWorkers=8`) | 65–76 s |
+| 1–3 test files | 2–12 s; ~100 s when test setup rebuilds a stale engine first |
+| Worker fix PR: repro, fix, fails-on-base test, goldens, precision on 2–3 corpora, full suite | 15–42 min |
+| Worker upstream reconcile with conflict resolution and full verification | 28 min |
+| Stacked landing: stack suite, squash-merge each PR, tree check | ~5 min |
+
+`eval:precision` per corpus is not recorded yet; add it the next time one is timed.
+
 ### Windows-gated tests
 
 Behavior that differs by platform (path resolution, drive letters, `SENSITIVE_PATHS`, `%APPDATA%` config dirs, CRLF) must be gated, not assumed. Use `it.runIf(process.platform === 'win32')(...)` for Windows-only assertions and `it.runIf(process.platform !== 'win32')(...)` for POSIX-only ones — e.g. `/etc` is sensitive on POSIX but resolves to `C:\etc` (non-existent) on Windows, so an ungated `/etc` assertion fails on Windows. Validate the Windows side for real (see below); don't merge a Windows-gated test you haven't seen run.
