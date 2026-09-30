@@ -477,8 +477,10 @@ pub(super) type Range = (usize, usize);
 /// Collects the LHS field (second capture) of each `x->f = fn;` — the
 /// bare-function-assignment registration filter. `a->f = b->g` can't match
 /// (the RHS word must be followed by `;`), a bare `fp = fn` has no field
-/// access, and `(?!=)` keeps `==` out. Every byte position is a candidate
-/// start (JS advances one unit on failure); matches resume at their end.
+/// access, and `(?!=)` keeps `==` out. Every word byte is a candidate start
+/// (JS advances one unit on failure); matches resume at their end. The match
+/// depends only on where the candidate's word run ends, so a failed candidate
+/// skips the rest of its run.
 pub(super) fn scan_fn_assign(s: &[u8], out: &mut Vec<String>) {
     let mut pos = 0usize;
     while pos < s.len() {
@@ -491,7 +493,7 @@ pub(super) fn scan_fn_assign(s: &[u8], out: &mut Vec<String>) {
                 push_str(out, &s[f.0..f.1]);
                 pos = end;
             }
-            None => pos += 1,
+            None => pos = word_end(s, pos),
         }
     }
 }

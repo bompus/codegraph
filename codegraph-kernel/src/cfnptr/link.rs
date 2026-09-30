@@ -355,28 +355,35 @@ pub(super) fn body_slice<'s>(s: &'s [u8], lines: &[usize], start_line: i64, end_
 }
 
 /// `exec`-style scan for FIELD_ASSIGN_RE: candidate at every word byte, a
-/// failed candidate advances by one, a match resumes at its end.
+/// match resumes at its end. The matcher starts with `word_end`, so a
+/// candidate's outcome depends only on where its word run ends: a failed
+/// candidate fails for the rest of the run too, and the scan skips past it.
 pub(super) fn next_field_assign(s: &[u8], mut pos: usize) -> Option<FaMatch> {
     while pos < s.len() {
-        if is_word(s[pos]) {
-            if let Some(m) = field_assign_match(s, pos) {
-                return Some(m);
-            }
+        if !is_word(s[pos]) {
+            pos += 1;
+            continue;
         }
-        pos += 1;
+        if let Some(m) = field_assign_match(s, pos) {
+            return Some(m);
+        }
+        pos = word_end(s, pos);
     }
     None
 }
 
-/// `exec`-style scan for DISPATCH_RE.
+/// `exec`-style scan for DISPATCH_RE; a failed candidate skips its word run
+/// as in `next_field_assign`.
 pub(super) fn next_dispatch(s: &[u8], mut pos: usize) -> Option<DsMatch> {
     while pos < s.len() {
-        if is_word(s[pos]) {
-            if let Some(m) = dispatch_match(s, pos) {
-                return Some(m);
-            }
+        if !is_word(s[pos]) {
+            pos += 1;
+            continue;
         }
-        pos += 1;
+        if let Some(m) = dispatch_match(s, pos) {
+            return Some(m);
+        }
+        pos = word_end(s, pos);
     }
     None
 }
