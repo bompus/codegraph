@@ -432,9 +432,7 @@ impl KernelResolver {
             });
         }
         let mut cand = cand;
-        if self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic) {
-            cand.confidence = cand.confidence.min(0.7);
-        }
+        self.cap_kotlin_chain_confidence(&mut cand, r)?;
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
         }
@@ -767,6 +765,13 @@ impl KernelResolver {
         ))
     }
 
+    fn cap_kotlin_chain_confidence(&mut self, cand: &mut KCand, r: &ResolveRefIn) -> Res<()> {
+        if cand.confidence > 0.7 && self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic) {
+            cand.confidence = 0.7;
+        }
+        Ok(())
+    }
+
     /// First-max on strict `>` over `cands` (non-empty), the TS
     /// candidates.reduce, then the target-kind gate and `finish`. Under active
     /// frameworks the reported list keeps the ORIGINAL candidate order so the
@@ -774,6 +779,9 @@ impl KernelResolver {
     /// gated-out winner still reports it, since a framework candidate may win
     /// the merged first-max on the TS side.
     pub(super) fn settle(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>) -> Res<ResolveOutcome> {
+        for cand in &mut cands {
+            self.cap_kotlin_chain_confidence(cand, r)?;
+        }
         let reported = self
             .frameworks_active
             .then(|| cands.iter().map(KernelCandidateOut::from).collect::<Vec<_>>());

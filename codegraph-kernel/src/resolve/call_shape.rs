@@ -210,6 +210,9 @@ impl KernelResolver {
         let column = js_unit_to_byte(&code, r.column.max(0) as usize);
         let Some(at) = pat.captures_iter(&code).filter_map(|m| m.get(1)).find(|m| m.start() >= column).map(|m| m.start()) else { return Ok(None) };
         let before = code[..at].trim_end().trim_end_matches('.').trim_end();
+        let receiver = self.kotlin_chain_receiver_call(r)
+            .map(|call| super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(&call)));
+        let before = receiver.as_deref().map(str::trim_end).unwrap_or(before);
         if !before.ends_with(')') { return Ok(None); }
         let mut depth = 0usize;
         let mut open = None;

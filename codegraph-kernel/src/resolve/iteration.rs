@@ -241,6 +241,23 @@ impl KernelResolver {
         tree
     }
 
+    /// The call expression that supplies a Kotlin navigation receiver across lines.
+    pub(super) fn kotlin_chain_receiver_call(&mut self, r: &ResolveRefIn) -> Option<String> {
+        let file = self.read_file(&r.file_path)?;
+        let tree = self.parsed_tree(&file, r)?;
+        let mut node = descendant_for_position(tree.root_node(), file.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        if node.kind() != "simple_identifier" { return None; }
+        while let Some(parent) = node.parent() {
+            if parent.kind() == "navigation_expression" {
+                let receiver = parent.named_child(0)?;
+                return (receiver.kind() == "call_expression").then(|| node_text(receiver, file.text()).to_string());
+            }
+            if parent.kind() != "navigation_suffix" { return None; }
+            node = parent;
+        }
+        None
+    }
+
     /// The names a Kotlin lambda binds: its declared parameters, else
     /// implicit `it`, except a lambda given to the stdlib `run`, `apply` or
     /// `with`, which takes its value as `this` and binds nothing. A

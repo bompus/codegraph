@@ -462,13 +462,12 @@ impl KernelResolver {
             let base = fqn.replace('.', "/");
             [".java", ".kt"].iter().any(|ext| file_path.ends_with(&format!("{base}{ext}")))
         };
-        // A chained call reduced to its bare method name starts its column at
-        // the chain, not the name: only a source that begins with the name is
-        // the import's (import-resolver.ts isBareCallSite).
+        // A bare import call names the callee directly, without a member dot before it.
         let bare_call_site = if r.reference_kind == "calls" {
             match self.read_file(&r.file_path) {
                 Some(lines) => lines.get((r.line - 1) as usize).is_none_or(|line| {
-                    js_slice(line, r.column as usize)
+                    !line[..js_unit_to_byte(line, r.column.max(0) as usize)].trim_end().ends_with('.')
+                        && js_slice(line, r.column.max(0) as usize)
                         .strip_prefix(r.reference_name.as_str())
                         .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$'))
                 }),

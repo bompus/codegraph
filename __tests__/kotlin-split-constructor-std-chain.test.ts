@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
+import { getAllFrameworkResolvers, registerFrameworkResolver } from '../src/resolution/frameworks';
 import { joinKotlinSplitConstructors } from '../src/extraction/languages/kotlin';
 
 let root = '';
@@ -48,10 +49,16 @@ class Other {
 import app.Context
 import app.Other
 import app.queryParamAsClass
+fun multilineArgs(ctx: Context) = ctx.queryParamAsClass<String>(
+  "x"
+).getOrNull()
+fun multiline(ctx: Context) = ctx.queryParamAsClass<String>("x")
+  .getOrNull()
 fun positive(ctx: Context) = ctx.queryParamAsClass<String>("x").getOrNull()
 fun negative(ctx: Other) = ctx.queryParamAsClass("x").getOrDefault("default")
 fun untyped(others: List<Other>) { others.forEach { it.queryParamAsClass("x").getOrNull(0) } }
 fun constructed() = Other().queryParamAsClass("x").getOrNull(0)
+fun nested(ctx: Context, other: Other) = ctx.queryParamAsClass<String>(other.queryParamAsClass("x").getOrNull(0).toString()).getOrNull()
 fun repeated(ctx: Context, other: Other) = listOf(other.queryParamAsClass("x").getOrNull(0), ctx.queryParamAsClass<String>("x").getOrNull())
 `,
     'src/commonMain/kotlin/okio/ByteString.kt': BYTE_STRING,
@@ -159,4 +166,62 @@ fun run() { use { it.queryParamAsClass<String>("x").getOrNull() } }
     graph?.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+it('positions an outer return-chain call after nested calls with the same name', () => {
+  const source = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'nested')!;
+  const targets = cg.getOutgoingEdges(source.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).toContain('app::Validator::getOrNull');
+});
+
+it('ranks a framework candidate above a capped native return-chain candidate', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-kotlin-framework-confidence-'));
+  let graph: CodeGraph | undefined;
+  const name = 'return-chain-confidence-control';
+  registerFrameworkResolver({
+    name, languages: ['kotlin'],
+    detect: (context) => context.getProjectRoot() === dir,
+    resolve: (ref, context) => {
+      if (ref.referenceName !== 'getOrNull') return null;
+      const target = context.getNodesByQualifiedName('app::Validator::getOrNull')[0];
+      return target ? { original: ref, targetNodeId: target.id, confidence: 0.8, resolvedBy: 'framework' } : null;
+    },
+  });
+  try {
+    fs.writeFileSync(path.join(dir, 'Api.kt'), `package app
+class Context
+class Validator { fun getOrNull(): String? = null }
+fun <T> Context.queryParamAsClass(key: String): Validator = Validator()
+`);
+    fs.writeFileSync(path.join(dir, 'Use.kt'), `package consumer
+import app.Context
+import app.queryParamAsClass
+fun use(handler: (Context) -> Unit) {}
+fun run() { use { it.queryParamAsClass<String>("x").getOrNull() } }
+`);
+    graph = await CodeGraph.init(dir, { index: true });
+    const caller = graph.getNodesInFile('Use.kt').find((n) => n.name === 'run')!;
+    const edge = graph.getOutgoingEdges(caller.id).find((e) => e.kind === 'calls' && graph!.getNode(e.target)?.qualifiedName === 'app::Validator::getOrNull');
+    expect(edge).toBeDefined();
+    expect(edge!.metadata?.confidence).toBe(0.8);
+    expect(edge!.metadata?.framework).toBe(name);
+  } finally {
+    graph?.close();
+    const registry = getAllFrameworkResolvers();
+    const index = registry.findIndex((resolver) => resolver.name === name);
+    if (index >= 0) registry.splice(index, 1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('keeps a declared return chain split across lines', () => {
+  const caller = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'multiline')!;
+  const targets = cg.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).toContain('app::Validator::getOrNull');
+});
+
+it('keeps a return chain whose arguments span lines', () => {
+  const caller = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'multilineArgs')!;
+  const targets = cg.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).toContain('app::Validator::getOrNull');
 });

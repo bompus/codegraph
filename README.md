@@ -114,7 +114,7 @@ Dispatch and framework coverage the fork adds, by kind:
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
 | `window.postMessage` | Posted messages to their listeners |
 
-Flow-annotated JavaScript is parsed through the TSX grammar. Java and C# calls through declared fields or properties use their declared types; unresolved external types remain unresolved. Rust, Go, Scala, Swift and Kotlin calls also use the receiver and lexical scope at the call site.
+Flow-annotated JavaScript is parsed through the TSX grammar. Java and C# calls through declared fields or properties use their declared types; unresolved external types remain unresolved. Rust, Go, Scala, Swift and Kotlin calls also use the receiver and lexical scope at the call site. Kotlin chains use the callee position and declared return type, including nested and multiline calls; imported return-type hypotheses for standard method names keep confidence at most 0.7 when the receiver type is unknown.
 
 **Server endpoints**
 

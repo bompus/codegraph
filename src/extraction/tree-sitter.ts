@@ -4744,6 +4744,7 @@ export class TreeSitterExtractor {
 
     // Get the function/method being called
     let calleeName = '';
+    let callAt = node;
 
     // Java/Kotlin method_invocation has 'object' + 'name' fields instead of 'function'
     // PHP member_call_expression has 'object' + 'name', scoped_call_expression has 'scope' + 'name'
@@ -5015,6 +5016,7 @@ export class TreeSitterExtractor {
             }
           }
           if (property) {
+            if (this.language === 'kotlin') callAt = property;
             const methodName = getNodeText(property, this.source);
             // Include receiver name for qualified resolution (e.g., console.print → "console.print")
             // This helps the resolver distinguish method calls from bare function calls
@@ -5347,8 +5349,8 @@ export class TreeSitterExtractor {
         fromNodeId: callerId,
         referenceName: calleeName,
         referenceKind: 'calls',
-        line: node.startPosition.row + 1,
-        column: node.startPosition.column,
+        line: (this.language === 'kotlin' && !calleeName.includes('.') ? callAt : node).startPosition.row + 1,
+        column: (this.language === 'kotlin' && !calleeName.includes('.') ? callAt : node).startPosition.column,
       });
     }
   }
