@@ -456,4 +456,55 @@ export class IssueComponent {
       cg.close();
     }
   });
+
+  it('mounts a routes file behind an NgModule and its routing module, and a routing module behind a barrel; reads $-prefixed names', async () => {
+    const cg = await project({
+      'package.json': JSON.stringify({ dependencies: { '@angular/core': '*', '@angular/router': '*' } }),
+      'src/app/app.routes.ts': `import { Routes } from '@angular/router';
+export const routes: Routes = [
+  { path: 'shop', loadChildren: () => import('./shop/shop.module').then((m) => m.ShopModule) },
+  { path: 'orders', loadChildren: () => import('./orders/orders.module').then((m) => m.OrdersModule) },
+];
+`,
+      // loadChildren → NgModule → routing module → the routes file it hands to forChild.
+      'src/app/shop/shop.module.ts': `import { NgModule } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { ShopRoutingModule } from './shop-routing.module';
+@NgModule({ imports: [CommonModule, ShopRoutingModule] })
+export class ShopModule {}
+`,
+      'src/app/shop/shop-routing.module.ts': `import { NgModule } from '@angular/core';
+import { RouterModule } from '@angular/router';
+import { shopRoutes } from './shop.routes';
+@NgModule({ imports: [RouterModule.forChild(shopRoutes)], exports: [RouterModule] })
+export class ShopRoutingModule {}
+`,
+      'src/app/shop/shop.routes.ts': `import { Routes } from '@angular/router';
+import { CartComponent } from './cart.component';
+import { $shopPaths } from './shop.paths';
+export const shopRoutes: Routes = [{ path: $shopPaths.cart, component: CartComponent }];
+`,
+      'src/app/shop/shop.paths.ts': `export const $shopPaths = { cart: 'cart' };\n`,
+      'src/app/shop/cart.component.ts': component('CartComponent', 'app-cart', '<p>Cart</p>'),
+      // loadChildren → NgModule → a barrel → the routing module, under a \$-prefixed alias.
+      'src/app/orders/orders.module.ts': `import { NgModule } from '@angular/core';
+import { OrdersRoutingModule } from './routing';
+@NgModule({ imports: [OrdersRoutingModule] })
+export class OrdersModule {}
+`,
+      'src/app/orders/routing/index.ts': `export * from './orders-routing.module';\n`,
+      'src/app/orders/routing/orders-routing.module.ts': `import { NgModule } from '@angular/core';
+import { RouterModule as $router } from '@angular/router';
+import { OrderListComponent } from '../order-list.component';
+@NgModule({ imports: [$router.forChild([{ path: 'list', component: OrderListComponent }])] })
+export class OrdersRoutingModule {}
+`,
+      'src/app/orders/order-list.component.ts': component('OrderListComponent', 'app-order-list', '<p>Orders</p>'),
+    });
+    try {
+      expect(routeNames(cg)).toEqual(['/orders/list', '/shop/cart']);
+    } finally {
+      cg.close();
+    }
+  });
 });

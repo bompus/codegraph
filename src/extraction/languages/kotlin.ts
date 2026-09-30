@@ -177,8 +177,91 @@ export function blankKotlinQualifiedReceivers(source: string): string {
   return source.replace(QUALIFIED_RECEIVER, (m) => ' '.repeat(m.length));
 }
 
+const isKotlinIdentChar = (c: string | undefined): boolean => c !== undefined && /[\w`]/.test(c);
+
+/** Index of the bracket opening the one that closes at `close`, or -1. */
+function matchingOpen(source: string, close: number): number {
+  const shut = source[close];
+  const open = shut === ')' ? '(' : '[';
+  let depth = 0;
+  for (let i = close; i >= 0; i--) {
+    const c = source[i];
+    if (c === shut) depth++;
+    else if (c === open && --depth === 0) return i;
+    else if (c === '\n' && depth === 0) return -1;
+  }
+  return -1;
+}
+
+/**
+ * Whether the assignment target ending just before `end` is a member of a
+ * call result: `res().status`, `a.b(x).c?.d`, `rows()[0]`. Walks the
+ * `.name` / `?.name` / `[…]` suffixes back to a `)` whose `(` follows a name.
+ */
+function isCallMemberTarget(source: string, end: number): boolean {
+  let i = end;
+  while (i >= 0 && (source[i] === ' ' || source[i] === '\t')) i--;
+  let suffixes = 0;
+  for (;;) {
+    const c = source[i];
+    if (c === ']') {
+      i = matchingOpen(source, i) - 1;
+      if (i < 0) return false;
+      suffixes++;
+      continue;
+    }
+    if (c === ')') {
+      if (suffixes === 0) return false;
+      const open = matchingOpen(source, i);
+      if (open <= 0) return false;
+      const before = source[open - 1];
+      return isKotlinIdentChar(before) || before === '>';
+    }
+    if (!isKotlinIdentChar(c)) return false;
+    while (i >= 0 && isKotlinIdentChar(source[i])) i--;
+    if (source[i] !== '.') return false;
+    i--;
+    if (source[i] === '?') i--;
+    suffixes++;
+  }
+}
+
+/**
+ * Rewrite an assignment to a member of a call result so the grammar can read
+ * it. tree-sitter-kotlin's assignable expression takes no call suffix, so
+ * `res().status = code` is an error, and inside a lambda the recovery takes
+ * the lambda's `}` for the enclosing class body's: javalin's
+ * `interface Context` ended at the first such line and every later member
+ * came out as a top-level function. `x().y = z` becomes the comparison
+ * `x().y== z` (the space before `=` turns into `=`) and `x().y += z` becomes
+ * `x().y +  z`: the same calls and names at the same offsets, only the
+ * assignment is lost. A target written without a space before `=` is left
+ * as it is.
+ */
+export function rewriteKotlinCallMemberAssignments(source: string): string {
+  if (!/\)\s*(?:\??\.|\[)/.test(source)) return source;
+  let out: string[] | null = null;
+  for (let at = source.indexOf('='); at !== -1; at = source.indexOf('=', at + 1)) {
+    if (source[at + 1] === '=' || source[at + 1] === '>') continue;
+    const prev = source[at - 1];
+    if (prev === '=' || prev === '!' || prev === '<' || prev === '>') continue;
+    const compound = prev === '+' || prev === '-' || prev === '*' || prev === '/' || prev === '%';
+    if (!compound && prev !== ' ' && prev !== '\t') continue;
+    if (!isCallMemberTarget(source, compound ? at - 2 : at - 1)) continue;
+    out ??= source.split('');
+    if (compound) out[at] = ' ';
+    else out[at - 1] = '=';
+  }
+  return out ? out.join('') : source;
+}
+
+/** Every offset-preserving rewrite the Kotlin grammar needs before parsing. */
+export function preParseKotlin(source: string): string {
+  return rewriteKotlinCallMemberAssignments(blankKotlinQualifiedReceivers(source));
+}
+
 export const kotlinExtractor: LanguageExtractor = {
-  preParse: blankKotlinQualifiedReceivers,
+  preParse: preParseKotlin,
   functionTypes: ['function_declaration'],
   classTypes: ['class_declaration'],
   methodTypes: ['function_declaration'], // Methods are functions inside classes
@@ -289,8 +372,10 @@ export const kotlinExtractor: LanguageExtractor = {
     // Extract the interface name.
     // For function_declaration misparses (patterns 2a/2b), the real name is inside
     // an ERROR child — direct simple_identifier children are the misparsed method name.
+    // A Pattern 1 ERROR nests it the same way when type parameters follow
+    // (`fun interface Task<R> {`).
     let nameText: string | null = null;
-    if (node.type === 'function_declaration') {
+    {
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
         if (child && child.type === 'ERROR') {
@@ -327,6 +412,9 @@ export const kotlinExtractor: LanguageExtractor = {
       // Pattern 1: body is in the next sibling lambda_literal
       const nextSibling = node.nextSibling;
       if (nextSibling && nextSibling.type === 'lambda_literal') {
+        // The body is the sibling: the interface spans it.
+        ifaceNode.endLine = nextSibling.endPosition.row + 1;
+        ifaceNode.endColumn = nextSibling.endPosition.column;
         for (let i = 0; i < nextSibling.namedChildCount; i++) {
           const child = nextSibling.namedChild(i);
           if (child && child.type === 'statements') {
