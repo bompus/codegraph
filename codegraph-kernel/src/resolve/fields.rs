@@ -141,8 +141,9 @@ impl KernelResolver {
         let Some(decl) = self.ts_field_decl(owner, field)? else {
             return Ok(None);
         };
-        // An array/union/intersection-typed field names no single owner.
-        if decl.typed_collection {
+        // An array/union/intersection-typed field names no single owner;
+        // `conn: Conn | null` still dereferences to `Conn`.
+        if decl.typed_collection && !decl.nullable {
             return Ok(None);
         }
         let m1 = decl.ty.as_str();

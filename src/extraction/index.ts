@@ -1931,9 +1931,13 @@ export class ExtractionOrchestrator {
 
   /**
    * Which detected frameworks extract only inside their own apps: those with
-   * `appDependencies` that some manifest names. Every manifest the project
-   * has is read, not only this run's files, so a scoped sync that re-detects
-   * from one changed file gates exactly as the full index did.
+   * `appDependencies` that some manifest names. The manifests are the root's
+   * plus a sample of those one or two directories down (`declaredDependencies`
+   * caps it), so in a large monorepo a framework declared only in an
+   * unsampled package is not gated and its extractor runs in every package.
+   * The sample comes from every indexed file, not only this run's, so a
+   * scoped sync that re-detects from one changed file gates exactly as the
+   * full index did.
    */
   private gateFrameworksByApp(): void {
     const declared = declaredDependencies(this.frameworkSourceContext!);
