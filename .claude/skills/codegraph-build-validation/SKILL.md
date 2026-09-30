@@ -70,6 +70,8 @@ Working copies of the real corpora (e.g. `~/codegraph-corpora/linux`, multi-GB S
 
 Before pushing a branch meant for upstream, run `node <fork checkout>/scripts/pr-guard.mjs` from the branch: it fails when the branch adds a `bun.lock`, `yarn.lock` or `pnpm-lock.yaml` (upstream tracks only `package-lock.json`). To check what a change does to the graph, index a corpus with each build and compare them with `node scripts/index-metrics.mjs <before.db> <after.db>`: counts plus the call edges lost or gained, keyed by qualified name so shifted lines do not count. `CHANGELOG.md` merges with git's `union` driver (`.gitattributes`), so an upstream merge keeps both sides' bullets; check for a doubled bullet after the merge.
 
+A worker dispatched to fix reproduced resolution or extraction bugs gets [`worker-fix-brief.md`](worker-fix-brief.md) plus its task specifics.
+
 ### Measured step times
 
 Base effort quotes on these rather than on how heavy a step sounds. Measured on the WSL development host (16 vCPU, heavy steps serialized under one lock) in September 2026; when a run lands more than 2x off a row, replace the row with the new measurement.
