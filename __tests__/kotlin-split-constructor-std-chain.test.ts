@@ -37,9 +37,20 @@ beforeAll(async () => {
     'src/main/kotlin/app/Validator.kt': `package app
 class Context
 class Validator {
+  fun check(value: Boolean) = apply { }
+  fun copy(): Validator = Validator()
+  fun mixed(value: Int): Validator = this
+  fun mixed(value: String): Other = Other()
+  fun other(): Other = Other()
   fun getOrNull(): String? = null
   fun getOrDefault(value: String): String = value
 }
+class ShadowValidator {
+  fun apply(block: () -> Unit): Other = Other()
+  fun check() = apply { }
+  fun getOrNull(): String? = null
+}
+class ShadowContext { fun query(): ShadowValidator = ShadowValidator() }
 fun <T> Context.queryParamAsClass(key: String): Validator = Validator()
 class Other {
   fun queryParamAsClass(key: String): String = key
@@ -48,7 +59,15 @@ class Other {
     'src/main/kotlin/consumer/Validation.kt': `package consumer
 import app.Context
 import app.Other
+import app.ShadowContext
 import app.queryParamAsClass
+fun checked(ctx: Context) = ctx.queryParamAsClass<String>("x")
+  .check(true)
+  .copy()
+  .getOrNull()
+fun shadowed(ctx: ShadowContext) = ctx.query().check().getOrNull()
+fun ambiguous(ctx: Context) = ctx.queryParamAsClass<String>("x").mixed("x").getOrNull()
+fun changed(ctx: Context) = ctx.queryParamAsClass<String>("x").other().getOrNull()
 fun multilineArgs(ctx: Context) = ctx.queryParamAsClass<String>(
   "x"
 ).getOrNull()
@@ -224,4 +243,21 @@ it('keeps a return chain whose arguments span lines', () => {
   const caller = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt').find((n) => n.name === 'multilineArgs')!;
   const targets = cg.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
   expect(targets).toContain('app::Validator::getOrNull');
+});
+
+it('follows receiver-preserving and declared-return intermediate chain members', () => {
+  const nodes = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt');
+  const targets = (name: string) => cg.getOutgoingEdges(nodes.find((n) => n.name === name)!.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets('checked')).toContain('app::Validator::getOrNull');
+  expect(targets('changed')).not.toContain('app::Validator::getOrNull');
+});
+
+it.each([
+  ['shadowed', 'app::ShadowValidator::getOrNull'],
+  ['ambiguous', 'app::Validator::getOrNull'],
+])('declines an unproven return chain for %s', (name, unexpected) => {
+  const nodes = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt');
+  const caller = nodes.find((n) => n.name === name)!;
+  const targets = cg.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets).not.toContain(unexpected);
 });

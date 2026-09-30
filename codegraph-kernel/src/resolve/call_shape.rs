@@ -147,10 +147,10 @@ pub(super) fn is_std_method(language: &str, name: &str) -> bool {
     }.contains(&name)
 }
 
-fn owner(n: &KNode) -> Option<&str> {
+pub(super) fn owner(n: &KNode) -> Option<&str> {
     n.qualified_name.rsplit_once("::").map(|(path, _)| path.rsplit([':', '.']).next().unwrap_or(""))
 }
-fn type_kind(kind: &str) -> bool {
+pub(super) fn type_kind(kind: &str) -> bool {
     matches!(kind, "class" | "struct" | "enum" | "interface" | "trait" | "protocol" | "module" | "namespace")
 }
 fn swift_member(n: &KNode) -> bool {
@@ -311,6 +311,9 @@ impl KernelResolver {
             "swift" => self.swift_call_target(n, r, &site),
             "scala" => self.scala_call_target(n, r, &site),
             "kotlin" if site.shape == Shape::Chain && is_std_method("kotlin", &r.reference_name) => {
+                if let Some(receiver) = self.kotlin_call_receiver_type(r)? {
+                    return self.kotlin_receiver_accepts(n, &receiver, r);
+                }
                 Ok(!matches!(n.kind.as_str(), "method" | "function") || site.receiver == "this"
                     || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))
                     || self.kotlin_chain_evidence(n, r)?.is_some())

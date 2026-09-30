@@ -766,7 +766,9 @@ impl KernelResolver {
     }
 
     fn cap_kotlin_chain_confidence(&mut self, cand: &mut KCand, r: &ResolveRefIn) -> Res<()> {
-        if cand.confidence > 0.7 && self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic) {
+        if cand.confidence > 0.7 && (self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic)
+            || (r.language == "kotlin" && r.reference_kind == "calls" && super::call_shape::is_std_method("kotlin", &r.reference_name)
+                && self.kotlin_call_receiver_type(r)?.is_some_and(|hit| hit.heuristic))) {
             cand.confidence = 0.7;
         }
         Ok(())

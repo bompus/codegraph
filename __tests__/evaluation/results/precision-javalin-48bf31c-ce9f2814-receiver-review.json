@@ -1,0 +1,73 @@
+{
+  "timestamp": "2026-09-30T21:40:29.396Z",
+  "corpus": "javalin",
+  "repo": "https://github.com/javalin/javalin.git",
+  "commit": "48bf31c",
+  "codegraphSha": "ce9f2814",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 3,
+    "presentHeld": 3,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 8159,
+    "exact-match": 4517,
+    "import": 2970,
+    "instance-method": 1807,
+    "function-ref": 19,
+    "file-path": 8,
+    "fuzzy": 1
+  },
+  "edges": 17481,
+  "results": [
+    {
+      "caseId": "javalin-fluent-validator-nullable",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:bf4ae208fbd820c105bee964c7b27a6a",
+          "to": "method:fe7a51f0d2260237d9a5d95284e0b366",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "javalin-fluent-validator-optional",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:7bdb347a57c4e38e31e33bfb6f6c6c54",
+          "to": "method:fe7a51f0d2260237d9a5d95284e0b366",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "javalin-kotlin-imports-java-member",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:ef8b70a9b486ddf107a0a782595685f5",
+          "to": "method:8eb17ccb9967512be8c4aed8f145f350",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "javalin-bare-get-not-test-client",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ],
+  "sourceState": "ce9f2814 plus bounded Kotlin receiver inference, lexical scope guards, exact imported factory identity and hypothesis confidence propagation"
+}
