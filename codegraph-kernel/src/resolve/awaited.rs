@@ -364,12 +364,25 @@ fn is_reassigned(code: &str, name: &str) -> bool {
 /// balanced parameter list followed by `=>` or a body `{` (an optional return
 /// annotation between). Control-flow parentheses are not parameter lists.
 pub(super) fn has_parameter_binding(code: &str, name: &str) -> bool {
-    let arrow = code.match_indices(name).any(|(at, _)| {
-        word_boundary_at(code, at) && code[skip_ws(code, at + name.len())..].starts_with("=>")
-    });
-    if arrow {
-        return true;
-    }
+    !parameter_bindings(code, name).is_empty()
+}
+
+/// Every parameter binding `has_parameter_binding` accepts, as
+/// `(start, body)`: the byte offset of the bare parameter or the list's `(`,
+/// and of the body's `{` when the function has a block body (else `None`).
+pub(super) fn parameter_bindings(code: &str, name: &str) -> Vec<(usize, Option<usize>)> {
+    // The `{` opening a block body at `at` (after `=>` or the list), if any.
+    let block_at = |at: usize| {
+        let at = skip_ws(code, at);
+        code[at..].starts_with('{').then_some(at)
+    };
+    let mut out: Vec<(usize, Option<usize>)> = code
+        .match_indices(name)
+        .filter_map(|(at, _)| {
+            let arrow = skip_ws(code, at + name.len());
+            (word_boundary_at(code, at) && code[arrow..].starts_with("=>")).then(|| (at, block_at(arrow + 2)))
+        })
+        .collect();
     let after_list = re!(r"^\s*(?::[^=;{]*)?(?:=>|\{)");
     let bytes = code.as_bytes();
     for i in 0..bytes.len() {
@@ -393,14 +406,63 @@ pub(super) fn has_parameter_binding(code: &str, name: &str) -> bool {
             }
             j += 1;
         }
-        if depth == 0
-            && word_occurrences(&code[i + 1..j - 1], name).next().is_some()
-            && after_list.is_match(&code[j..])
-        {
-            return true;
+        if depth != 0 || word_occurrences(&code[i + 1..j - 1], name).next().is_none() {
+            continue;
         }
+        let Some(m) = after_list.find(&code[j..]) else { continue };
+        let end = j + m.end();
+        let colon = skip_ws(code, j);
+        let body = if code[colon..].starts_with(':') {
+            annotated_body(code, colon + 1).and_then(|at| if code[at..].starts_with("=>") { block_at(at + 2) } else { Some(at) })
+        } else if code[..end].ends_with('{') {
+            Some(end - 1)
+        } else {
+            block_at(end)
+        };
+        out.push((i, body));
     }
-    false
+    out
+}
+
+/// Past a return annotation starting at `from`, the offset of the body `{`
+/// or of the arrow's `=>`. Braces, brackets, parentheses and angle brackets
+/// inside the type are skipped; a `{` opens the body only after a complete
+/// type (a word, `)`, `]`, `}` or `>`), so `: { ok: boolean } {` and
+/// `: Promise<{ id: string }> {` find the second brace. `None` when the
+/// annotation ends without either, or `=>` is ambiguous (a function type).
+fn annotated_body(code: &str, from: usize) -> Option<usize> {
+    let bytes = code.as_bytes();
+    let mut depth = 0usize;
+    let mut prev = b':';
+    let mut k = from;
+    while k < bytes.len() {
+        let c = bytes[k];
+        if c.is_ascii_whitespace() {
+            k += 1;
+            continue;
+        }
+        if c == b'=' && bytes.get(k + 1) == Some(&b'>') {
+            if depth == 0 {
+                // `(): T => {` is an arrow; `(): () => T {` is a function
+                // type followed by a body. Only a complete type before `=>`
+                // that is not a parenthesized list reads as the arrow.
+                return (prev != b')' && prev != b':').then_some(k);
+            }
+            prev = b'>';
+            k += 2;
+            continue;
+        }
+        match c {
+            b'{' if depth == 0 && (is_word(prev) || matches!(prev, b')' | b']' | b'}' | b'>')) => return Some(k),
+            b'{' | b'(' | b'[' | b'<' => depth += 1,
+            b'}' | b')' | b']' | b'>' => depth = depth.checked_sub(1)?,
+            b';' | b'=' if depth == 0 => return None,
+            _ => {}
+        }
+        prev = c;
+        k += 1;
+    }
+    None
 }
 
 impl AwaitedIndex {

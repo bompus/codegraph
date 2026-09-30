@@ -27,6 +27,8 @@ pub(super) struct KNode {
     pub(super) type_parameters: Option<Vec<String>>,
     /// JSON `string[]` like type_parameters — Kotlin `expect`/`actual` etc.
     pub(super) decorators: Option<Vec<String>>,
+    /// `async` function or method: its call yields a Promise.
+    pub(super) is_async: bool,
 }
 
 impl KNode {
@@ -52,6 +54,7 @@ impl KNode {
             return_type: row.get(13)?,
             type_parameters: raw_tps.as_deref().and_then(parse_json_string_array),
             decorators: raw_decs.as_deref().and_then(parse_json_string_array),
+            is_async: row.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0,
         })
     }
 }
@@ -553,4 +556,4 @@ pub(super) struct WorkspaceK {
 pub(super) const NODE_COLS: &str = "id, kind, name, qualified_name, file_path, language, \
                          start_line, end_line, start_column, end_column, \
                          signature, visibility, is_exported, return_type, \
-                         type_parameters, decorators";
+                         type_parameters, decorators, is_async";

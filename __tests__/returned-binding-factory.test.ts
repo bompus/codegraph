@@ -81,6 +81,13 @@ describe('factory returning a module binding', () => {
     expect(targets).toContain('I18nClass::baseText');
   });
 
+  it('declines an async factory whose result is not awaited', async () => {
+    const source = i18n('  return i18n;').replace('export function useI18n()', 'export async function useI18n()');
+    expect(source).toContain('export async function useI18n()');
+    const targets = await callTargets({ 'src/i18n.ts': source, 'src/use.ts': consumer }, 'label');
+    expect(targets.filter(t => t.endsWith('::baseText'))).toEqual([]);
+  });
+
   it('declines a body with more than one return', async () => {
     const body = '  if (Math.random()) return plain;\n  return i18n;';
     const targets = await callTargets({ 'src/i18n.ts': i18n(body), 'src/use.ts': consumer }, 'label');

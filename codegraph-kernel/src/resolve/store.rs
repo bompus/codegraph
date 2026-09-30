@@ -5,7 +5,7 @@
 //! chained off an accessor (`get().reset()`) — resolves to the action inside
 //! that store's object literal, never a same-named function elsewhere.
 
-use super::awaited::{blank_string_contents, declaration_matches, has_parameter_binding, strip_ts_comments};
+use super::awaited::{blank_string_contents, declaration_matches, parameter_bindings, strip_ts_comments};
 use super::*;
 
 /// rangeWithin (name-matcher.ts): `inner`'s span lies inside `outer`'s.
@@ -152,8 +152,13 @@ impl KernelResolver {
                 continue;
             }
             let rest = &code[end..];
+            // A parameter shadows the selector only in a function still open
+            // at the call; a closed sibling's parameter list does not.
+            let param_shadows = parameter_bindings(rest, name).into_iter().any(|(at, body)| {
+                in_scope(&code, end + at, &call_scope) && body.is_none_or(|b| call_scope.contains(&(end + b)))
+            });
             if !declaration_matches(rest, name, &["const", "let", "var", "function", "class"], true).is_empty()
-                || has_parameter_binding(rest, name)
+                || param_shadows
             {
                 return Ok(None);
             }

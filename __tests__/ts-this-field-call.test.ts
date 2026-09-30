@@ -169,3 +169,47 @@ export class Vault {
     expect(callees('publicPut')).toEqual(['Cart::add']);
   });
 });
+
+describe('this.<field>.<method>() with a same-named class elsewhere', () => {
+  let temp: string;
+  let graph: CodeGraph | undefined;
+  afterEach(() => {
+    graph?.destroy();
+    graph = undefined;
+    if (temp) fs.rmSync(temp, { recursive: true, force: true });
+  });
+
+  const mailer = 'export class Mailer {\n  send(msg: string): string { return msg; }\n}\n';
+  const notifier = (from: string) =>
+    `import { Mailer } from '${from}';\n` +
+    'export class Notifier {\n' +
+    '  constructor(private readonly mailer: Mailer) {}\n' +
+    '  send(msg: string): string { return this.mailer.send(msg); }\n' +
+    '}\n';
+  async function sendTargets(files: Record<string, string>): Promise<string[]> {
+    temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-field-homonym-'));
+    fs.mkdirSync(path.join(temp, 'src'));
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(temp, 'src', name), body);
+    graph = await CodeGraph.init(temp, { index: true });
+    const caller = graph.getNodesByKind('method').find((n) => n.qualifiedName === 'Notifier::send')!;
+    return graph.getCallees(caller.id).map(({ node }) => node.filePath);
+  }
+
+  // The decoy sorts before and after the imported file: the import decides, not path order.
+  it.each(['aaa.ts', 'zzz.ts'])('follows the field type\'s import past a decoy in %s', async (decoy) => {
+    const targets = await sendTargets({ 'mailer.ts': mailer, [decoy]: mailer, 'notifier.ts': notifier('./mailer') });
+    expect(targets).toEqual(['src/mailer.ts']);
+  });
+
+  it('keeps an overloaded method in the imported file', async () => {
+    const overloaded =
+      'export class Mailer {\n  send(msg: string): string;\n  send(msg: number): string;\n  send(msg: any): string { return String(msg); }\n}\n';
+    const targets = await sendTargets({ 'mailer.ts': overloaded, 'aaa.ts': mailer, 'notifier.ts': notifier('./mailer') });
+    expect(targets).toEqual(['src/mailer.ts']);
+  });
+
+  it('binds no project method when the field type comes from a package', async () => {
+    const targets = await sendTargets({ 'mailer.ts': mailer, 'aaa.ts': mailer, 'notifier.ts': notifier('nodemailer') });
+    expect(targets).toEqual([]);
+  });
+});

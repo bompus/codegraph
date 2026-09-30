@@ -61,7 +61,9 @@ impl KernelResolver {
         });
         // `!returnType` — an empty annotation/returnType fails the same way.
         let Some(return_type) = return_type.filter(|t| !t.is_empty()) else {
-            if awaited || callee.kind != "function" {
+            // An `async` factory hands back a Promise, not the binding it
+            // returns; only `await` would unwrap it.
+            if awaited || callee.is_async || callee.kind != "function" {
                 return Ok(None);
             }
             return self.returned_binding_member(&callee, method, r);
