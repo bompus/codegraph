@@ -683,9 +683,15 @@ impl KernelResolver {
             if method_candidates.len() as i64 > self.ambiguous_ceiling {
                 return Ok(None);
             }
+            // A Python receiver chain can only mean a member of what it
+            // names last (`self.client.login()` is not a test case's `login`).
+            let python_owner = (r.language == "python")
+                .then(|| object_or_class.rsplit('.').next().unwrap_or(""))
+                .filter(|last| !matches!(*last, "self" | "cls"));
             let methods: Vec<Arc<KNode>> = method_candidates
                 .iter()
                 .filter(|n| n.kind == "method" && n.name == method_name)
+                .filter(|n| python_owner.is_none_or(|last| name_scope::python_owner_fits(n, last)))
                 .cloned()
                 .collect();
             let same_lang: Vec<Arc<KNode>> = methods

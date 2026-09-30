@@ -242,6 +242,242 @@ impl KernelResolver {
     }
 }
 
+/// A Java file's `import static a.b.Owner.member;` / `import static a.b.Owner.*;`
+/// (javaStaticImportsOf): owners imported with `*`, and `Owner.member` pairs.
+#[derive(Default)]
+pub(crate) struct JavaStaticImports {
+    pub(crate) owners: HashSet<String>,
+    pub(crate) members: HashSet<String>,
+}
+
+pub(super) fn collect_java_static_imports(text: &str) -> JavaStaticImports {
+    let mut found = JavaStaticImports::default();
+    for m in re!(r"(?m)^\s*import\s+static\s+([A-Za-z0-9_.$]+)\s*\.\s*(\*|[A-Za-z0-9_$]+)\s*;").captures_iter(text) {
+        let owner = m[1].rsplit('.').next().unwrap_or("").to_string();
+        if &m[2] == "*" {
+            found.owners.insert(owner);
+        } else {
+            found.members.insert(format!("{owner}.{}", &m[2]));
+        }
+    }
+    found
+}
+
+/// JAVA_TYPE_KINDS (name-matcher.ts): the declarations a bare call's scope walks.
+fn is_java_type_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "interface" | "enum" | "struct" | "record" | "trait")
+}
+
+/// A bare Java `calls` ref: `verify(mock)`, `helper()`.
+pub(super) fn is_bare_java_call(r: &ResolveRefIn) -> bool {
+    r.language == "java" && r.reference_kind == "calls" && re!(r"^[A-Za-z_$][A-Za-z0-9_$]*$").is_match(&r.reference_name)
+}
+
+/// The shape of a Python `calls` ref at its site (pythonCallShape).
+pub(super) enum PythonCallShape {
+    /// `get(1)`: no receiver, so never a method (Python has no implicit self).
+    Bare,
+    /// `a.b.get(…)` whose receiver the ref name lost: a member of what the
+    /// chain names last.
+    Chained(String),
+}
+
+/// Underscores dropped, lowercased: `user_service` fits `UserService`.
+fn plain_name(s: &str) -> String {
+    s.chars().filter(|&c| c != '_').flat_map(char::to_lowercase).collect()
+}
+
+/// Does the class that owns `method` fit a Python receiver's last segment
+/// (`self.store.fetch()` on a `Store`, `self.user_service.find()` on a
+/// `UserService`)?
+pub(super) fn python_owner_fits(method: &KNode, receiver_last: &str) -> bool {
+    let owner = method
+        .qualified_name
+        .rfind("::")
+        .map(|cut| method.qualified_name[..cut].rsplit("::").next().unwrap_or(""))
+        .unwrap_or("");
+    !owner.is_empty() && plain_name(owner) == plain_name(receiver_last)
+}
+
+impl KernelResolver {
+    /// isJavaMethodInScope (name-matcher.ts): a bare Java call reaches a
+    /// method of a type around it, of one of that type's supertypes, or one
+    /// the file imports statically — never another class's method of that
+    /// name (Mockito's `verify(…)` onto a service's `verify`). Supertypes are
+    /// read from the declarations, so one whose `extends` did not resolve
+    /// still counts: this only narrows the candidates.
+    pub(super) fn is_java_method_in_scope(&mut self, method: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let Some(cut) = method.qualified_name.rfind("::") else { return Ok(true) };
+        let owner = method.qualified_name[..cut].rsplit("::").next().unwrap_or("").to_string();
+        if let Some(file) = self.read_file(&r.file_path) {
+            let imports = file.java_static_imports();
+            if imports.owners.contains(&owner) || imports.members.contains(&format!("{owner}.{}", r.reference_name)) {
+                return Ok(true);
+            }
+        }
+        let mut queue: VecDeque<String> = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| is_java_type_kind(&n.kind) && n.start_line <= r.line && n.end_line >= r.line)
+            .map(|n| n.name.clone())
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        while seen.len() < 40 {
+            let Some(name) = queue.pop_front() else { break };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if name == owner {
+                return Ok(true);
+            }
+            queue.extend(self.java_supertypes_of(&name)?.iter().cloned());
+        }
+        Ok(false)
+    }
+
+    /// javaSupertypesOf (name-matcher.ts): the simple names a Java type's
+    /// declarations extend or implement, read from each declaration's head.
+    fn java_supertypes_of(&mut self, type_name: &str) -> Res<Rc<Vec<String>>> {
+        if let Some(hit) = self.java_supers_memo.get(type_name) {
+            return Ok(hit.clone());
+        }
+        let mut names: Vec<String> = Vec::new();
+        // An anonymous class (`new PetType() { … }`, indexed as
+        // `<PetType$anon@84>`) extends or implements the type it instantiates.
+        if let Some(m) = re!(r"^<([A-Za-z_$][A-Za-z0-9_$.]*)\$anon@[0-9]+>$").captures(type_name) {
+            names.push(m[1].rsplit('.').next().unwrap_or("").to_string());
+        }
+        let decls: Vec<Arc<KNode>> = self
+            .nodes_by_name(type_name)?
+            .iter()
+            .filter(|d| d.language == "java" && is_java_type_kind(&d.kind))
+            .cloned()
+            .collect();
+        for decl in decls {
+            let Some(lines) = self.read_file(&decl.file_path) else { continue };
+            let from = (decl.start_line - 1).max(0) as usize;
+            let to = ((decl.start_line + 5).max(0) as usize).min(lines.len());
+            let head = if from < to { lines[from..to].join(" ") } else { String::new() };
+            let Some(clause) = re!(r"(?-u:\b)(?:extends|implements)(?-u:\b)([^{]*)\{").captures(&head) else { continue };
+            let flat = re!(r"<[^<>]*(?:<[^<>]*>[^<>]*)*>").replace_all(&clause[1], "");
+            for m in re!(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*").find_iter(&flat) {
+                let simple = m.as_str().rsplit('.').next().unwrap_or("");
+                if simple != "extends" && simple != "implements" {
+                    names.push(simple.to_string());
+                }
+            }
+        }
+        let names = Rc::new(names);
+        self.java_supers_memo.insert(type_name.to_string(), names.clone());
+        Ok(names)
+    }
+
+    /// The candidates a Python call's shape and a bare Java call's scope
+    /// allow (matchByExactName / matchFuzzy filters, name-matcher.ts).
+    pub(super) fn retain_python_java_scope(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let java_bare = is_bare_java_call(r);
+        let python_shape = self.python_call_shape(r);
+        if !java_bare && python_shape.is_none() {
+            return Ok(candidates);
+        }
+        let mut kept = Vec::with_capacity(candidates.len());
+        for n in candidates {
+            if java_bare && n.kind == "method" && !self.is_java_method_in_scope(&n, r)? {
+                continue;
+            }
+            if let Some(shape) = &python_shape {
+                if !self.fits_python_call_shape(&n, shape, r)? {
+                    continue;
+                }
+            }
+            kept.push(n);
+        }
+        Ok(kept)
+    }
+
+    /// pythonCallShape (name-matcher.ts): read from the source at the ref's
+    /// column, which is the call's start. `self.x()` / `cls.x()`, a chain
+    /// split across lines, or an unreadable site is None: no narrowing.
+    pub(super) fn python_call_shape(&mut self, r: &ResolveRefIn) -> Option<PythonCallShape> {
+        if r.language != "python" || r.reference_kind != "calls" {
+            return None;
+        }
+        let name = r.reference_name.as_str();
+        if !re!(r"^[A-Za-z_][A-Za-z0-9_]*$").is_match(name) {
+            return None;
+        }
+        let lines = self.read_file(&r.file_path)?;
+        let line = lines.get((r.line - 1).max(0) as usize)?;
+        let text = js_slice(line, r.column.max(0) as usize);
+        if text.strip_prefix(name).is_some_and(|rest| re!(r"^\s*\(").is_match(rest)) {
+            return Some(PythonCallShape::Bare);
+        }
+        let escaped = regex::escape(name);
+        if Regex::new(&format!(r"^(?:self|cls)\s*\.\s*{escaped}\s*\(")).ok()?.is_match(text) {
+            return None;
+        }
+        // The call starts at its receiver: everything up to `.name(` is the chain.
+        let chain = Regex::new(&format!(r"^(.*?)\.\s*{escaped}\s*\(")).ok()?.captures(text)?;
+        let owner = re!(r"([A-Za-z0-9_]+)\s*(?:\([^()]*\)|\[[^\[\]]*\])?\s*$").captures(&chain[1])?;
+        Some(PythonCallShape::Chained(owner[1].to_string()))
+    }
+
+    /// fitsPythonCallShape (name-matcher.ts): can a call of this shape mean
+    /// the candidate? A bare call never means a method, nor another file's
+    /// definition when the file imports the name from a module outside the
+    /// project (`from django.shortcuts import render`). A chained call means a
+    /// method of a class the chain's last name fits, or a definition in a
+    /// module of that name (`helpers.slugify()`).
+    pub(super) fn fits_python_call_shape(&mut self, n: &KNode, shape: &PythonCallShape, r: &ResolveRefIn) -> Res<bool> {
+        match shape {
+            PythonCallShape::Bare => {
+                if n.kind == "method" {
+                    return Ok(false);
+                }
+                Ok(n.file_path == r.file_path || !self.is_python_name_imported_from_outside(r)?)
+            }
+            PythonCallShape::Chained(owner) => {
+                if n.kind == "method" {
+                    return Ok(python_owner_fits(n, owner));
+                }
+                let parts: Vec<&str> = n.file_path.split('/').collect();
+                let last = parts[parts.len() - 1];
+                let stem = last.strip_suffix(".pyi").or_else(|| last.strip_suffix(".py")).unwrap_or(last);
+                Ok(stem == owner || (stem == "__init__" && parts.len() >= 2 && parts[parts.len() - 2] == owner))
+            }
+        }
+    }
+
+    /// Does the file bind the ref's name by `from <module> import name` from a
+    /// module no project file is? Read from the file's import mappings, the
+    /// module placed by findPythonModuleFile.
+    fn is_python_name_imported_from_outside(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let source = self
+            .import_mappings(&r.file_path)?
+            .iter()
+            .find(|i| i.local_name == r.reference_name && !i.is_namespace)
+            .map(|i| i.source.clone());
+        let Some(module) = source else { return Ok(false) };
+        if module.is_empty() || module.starts_with('.') {
+            return Ok(false);
+        }
+        Ok(!self.python_module_in_project(&module)?)
+    }
+
+    /// Whether any project file is `a/b/c.py` or `a/b/c/__init__.py` for
+    /// module `a.b.c` (suffix-matched, like PY_MODULE_LOCAL upstream).
+    fn python_module_in_project(&mut self, module: &str) -> Res<bool> {
+        let rel = module.replace('.', "/");
+        let last_seg = module.rsplit('.').next().unwrap_or(module);
+        let file = format!("{rel}.py");
+        if self.nodes_by_name(&format!("{last_seg}.py"))?.iter().any(|n| n.kind == "file" && is_path_or_tail(&n.file_path, &file)) {
+            return Ok(true);
+        }
+        let init = format!("{rel}/__init__.py");
+        Ok(self.nodes_by_name("__init__.py")?.iter().any(|n| n.kind == "file" && is_path_or_tail(&n.file_path, &init)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

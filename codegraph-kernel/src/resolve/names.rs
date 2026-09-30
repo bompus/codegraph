@@ -85,38 +85,56 @@ impl KernelResolver {
         false
     }
 
-    /// isLexicallyReachable (name-matcher.ts): a function nested in a
-    /// same-file function/method is reachable only from inside the parent.
+    /// isLexicallyReachable (name-matcher.ts): a function — or a type
+    /// (`case class B()` in a test method), or a method of such a type —
+    /// declared inside a function is reachable only from inside it.
     pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
-        // A function — or a type (`case class B()` in a test method) —
-        // declared inside a function is only in scope in there.
-        if candidate.kind != "function" && !is_local_type_kind(&candidate.kind) {
+        if candidate.kind != "function" && candidate.kind != "method" && !is_local_type_kind(&candidate.kind) {
             return Ok(true);
         }
         if no_nested_functions(&candidate.language) {
             return Ok(true);
         }
-        let qn = &candidate.qualified_name;
-        let Some(sep) = qn.rfind("::") else { return Ok(true) };
-        let parent_qn = &qn[..sep];
-        let containers: Vec<Arc<KNode>> = self
-            .nodes_by_qualified_name(parent_qn)?
-            .iter()
-            .filter(|p| {
-                p.file_path == candidate.file_path
-                    && (p.kind == "function" || p.kind == "method")
-                    && p.start_line <= candidate.start_line
-                    && p.end_line >= candidate.end_line
-            })
-            .cloned()
-            .collect();
-        if containers.is_empty() {
-            return Ok(true);
+        Ok(match self.lexical_scope_of(candidate)? {
+            None => true,
+            Some((start, end)) => r.file_path == candidate.file_path && r.line >= start && r.line <= end,
+        })
+    }
+
+    /// lexicalScopeOf (name-matcher.ts): the innermost function or method
+    /// BODY that scopes a declaration, walking out through its qualified name
+    /// (`test_x::Request::User::has_perm` → `test_x`). A method directly on a
+    /// class is reachable through its instances, and an object-literal method
+    /// a function returns through the object — neither is scoped by the
+    /// function it sits in.
+    fn lexical_scope_of(&mut self, candidate: &KNode) -> Res<Option<(i64, i64)>> {
+        if let Some(hit) = self.lexical_scope_memo.get(&candidate.id) {
+            return Ok(*hit);
         }
-        Ok(r.file_path == candidate.file_path
-            && containers
+        let own = candidate.qualified_name.as_str();
+        let parent_qn = own.rfind("::").map_or("", |cut| &own[..cut]);
+        let mut qn = own;
+        let mut scope = None;
+        while let Some(cut) = qn.rfind("::") {
+            qn = &qn[..cut];
+            let container = self
+                .nodes_by_qualified_name(qn)?
                 .iter()
-                .any(|p| r.line >= p.start_line && r.line <= p.end_line))
+                .find(|p| {
+                    p.file_path == candidate.file_path
+                        && (p.kind == "function" || p.kind == "method")
+                        && p.start_line <= candidate.start_line
+                        && p.end_line >= candidate.end_line
+                })
+                .map(|p| (p.start_line, p.end_line));
+            let Some(container) = container else { continue };
+            if candidate.kind != "method" || qn != parent_qn {
+                scope = Some(container);
+            }
+            break;
+        }
+        self.lexical_scope_memo.insert(candidate.id.clone(), scope);
+        Ok(scope)
     }
 
     /// isSealedModule (name-matcher.ts): an ESM file with import statements
@@ -554,6 +572,7 @@ impl KernelResolver {
         if is_bare_rust_name(r) {
             candidates.retain(|n| self.is_rust_name_in_scope(n, r));
         }
+        candidates = self.retain_python_java_scope(candidates, r)?;
         // Nested locals reachable only from inside their container (#1230).
         let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
@@ -695,6 +714,11 @@ impl KernelResolver {
         if rust_bare {
             callable.retain(|n| self.is_rust_name_in_scope(n, r));
         }
+        // Python names are case-sensitive too: the builtin `dir(…)` is not a class `Dir`.
+        if r.language == "python" {
+            callable.retain(|n| n.name == r.reference_name);
+        }
+        let callable = self.retain_python_java_scope(callable, r)?;
         let gated = self.apply_language_gate(callable, r);
         let same_language: Vec<Arc<KNode>> = gated
             .iter()

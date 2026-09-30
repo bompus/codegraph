@@ -9,10 +9,25 @@ impl KernelResolver {
 
     /// isBuiltInOrExternal restricted to migrated languages and bare names —
     /// every arm the bare slice can reach, in the same order.
-    pub(super) fn is_built_in_or_external(&self, r: &ResolveRefIn) -> bool {
+    pub(super) fn is_built_in_or_external(&mut self, r: &ResolveRefIn) -> bool {
         let name = r.reference_name.as_str();
-        let is_js_ts = is_esm_family(&r.language);
-        if is_js_ts && JS_BUILT_INS.contains(name) {
+        let is_js_ts = is_esm_family(&r.language) || is_sfc_language(&r.language);
+        // A built-in's name the file imports its own binding of
+        // (`import Map from './Map.svelte'`) is that import, and one a
+        // declaration in scope at the site binds (a component's
+        // `function process(…)`) is that declaration.
+        if is_js_ts
+            && JS_BUILT_INS.contains(name)
+            && !self.import_mappings(&r.file_path).is_ok_and(|m| m.iter().any(|i| i.local_name == name))
+            && !self.bindings(&r.file_path).is_ok_and(|rows| {
+                match innermost_binding(&rows, name, Some(r.line)) {
+                    Some(b) => matches!(b.kind.as_str(), "decl" | "local" | "param"),
+                    // A component's template sits outside its script's
+                    // scope, yet sees the script's top-level declarations.
+                    None => is_sfc_language(&r.language) && is_script_top_level_decl(&rows, name),
+                }
+            })
+        {
             return true;
         }
         if r.language == "arkts" && (name == "$r" || name == "$rawfile") {
@@ -190,7 +205,7 @@ impl KernelResolver {
     /// call-site name resolves to a bare external specifier, so no project
     /// node may claim it.
     pub(super) fn is_bound_to_bare_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
-        if !is_esm_family(&r.language) {
+        if !is_esm_family(&r.language) && !is_sfc_language(&r.language) {
             return Ok(false);
         }
         let rows = self.bindings(&r.file_path)?;
@@ -209,6 +224,18 @@ impl KernelResolver {
         if source.starts_with('.') || source.starts_with('/') {
             return Ok(false);
         }
+        // SvelteKit's `$app/…` and Astro's `astro:…` are the framework's
+        // virtual modules — unless this repository is that framework.
+        let provider = if source.starts_with("astro:") {
+            Some("astro")
+        } else if re!(r"^\$(?:app|env|service-worker)(?:/|$)").is_match(&source) {
+            Some("@sveltejs/kit")
+        } else {
+            None
+        };
+        if let Some(provider) = provider {
+            return Ok(!self.is_repository_package(provider, &r.file_path));
+        }
         if source.starts_with('~') || source.starts_with('#') || source.starts_with('$') {
             return Ok(false);
         }
@@ -218,13 +245,11 @@ impl KernelResolver {
         if self.is_alias_prefix(&source, &r.file_path) {
             return Ok(false);
         }
-        if let Some(ws) = &self.workspaces {
-            if self.resolve_workspace_import(&source).is_some() {
-                return Ok(false);
-            }
-            if ws.local_link_names.contains(package_name_of(&source)) {
-                return Ok(false);
-            }
+        if self.is_repository_package(package_name_of(&source), &r.file_path) {
+            return Ok(false);
+        }
+        if self.workspaces.is_some() && self.resolve_workspace_import(&source).is_some() {
+            return Ok(false);
         }
         if !source.starts_with("node:") && !self.node_builtins.contains(&source) {
             let head = package_name_of(&source).to_string();
@@ -241,6 +266,63 @@ impl KernelResolver {
             }
         }
         Ok(true)
+    }
+
+    /// Is `package` in this repository? A workspace member, a `link:`/`file:`
+    /// dependency the workspace loader found, or — read from the importing
+    /// file's package.json and every enclosing one — the manifest's own name
+    /// (a package importing itself) or a dependency declared `workspace:`
+    /// (isDeclaredOutsidePackage's `own` set, index.ts). A nested manifest's
+    /// `link:`/`file:` dependency stays outside: it names a directory, and
+    /// only resolving it there would be binding evidence; matching the
+    /// imported name across the project instead guessed wrong on vite's
+    /// playground fixtures.
+    pub(super) fn is_repository_package(&mut self, package: &str, from_file: &str) -> bool {
+        if let Some(ws) = &self.workspaces {
+            if ws.local_link_names.contains(package) || self.resolve_workspace_import(package).is_some() {
+                return true;
+            }
+        }
+        let mut dir = pos_dirname(from_file).to_string();
+        loop {
+            if dir == "." {
+                dir.clear();
+            }
+            if self.manifest_own_packages(&dir).contains(package) {
+                return true;
+            }
+            if dir.is_empty() {
+                return false;
+            }
+            dir = match dir.rfind('/') {
+                Some(cut) => dir[..cut].to_string(),
+                None => String::new(),
+            };
+        }
+    }
+
+    /// The package names `<dir>/package.json` owns: its `name`, and every
+    /// dependency declared `workspace:`. Read with patterns, not a JSON
+    /// parser: a key whose value starts `workspace:` names a package of this
+    /// repository wherever it appears.
+    fn manifest_own_packages(&mut self, dir: &str) -> Rc<HashSet<String>> {
+        if let Some(hit) = self.manifest_own_memo.get(dir) {
+            return hit.clone();
+        }
+        let path = if dir.is_empty() { "package.json".to_string() } else { format!("{dir}/package.json") };
+        let mut own = HashSet::new();
+        if let Some(file) = self.read_file(&path) {
+            let text = file.text();
+            if let Some(m) = re!(r#"^\s*\{\s*(?:"[^"]*"\s*:\s*(?:"[^"]*"|[^,{}\[\]]+)\s*,\s*)*"name"\s*:\s*"([^"]+)""#).captures(text) {
+                own.insert(m[1].to_string());
+            }
+            for m in re!(r#""([^"]+)"\s*:\s*"workspace:"#).captures_iter(text) {
+                own.insert(m[1].to_string());
+            }
+        }
+        let own = Rc::new(own);
+        self.manifest_own_memo.insert(dir.to_string(), own.clone());
+        own
     }
 
     /// isLocallyBoundJsName — a `decl`/`local`/`param` row whose scope holds
@@ -435,6 +517,13 @@ pub(super) fn innermost_binding<'a>(
         }
     }
     best
+}
+
+/// Does the file's outermost binding scope (a component's script) declare `name`?
+fn is_script_top_level_decl(rows: &[KBinding], name: &str) -> bool {
+    let Some(start) = rows.iter().map(|r| r.scope_start).min() else { return false };
+    let end = rows.iter().map(|r| r.scope_end).max().unwrap_or(start);
+    rows.iter().any(|r| r.name == name && r.kind == "decl" && r.scope_start == start && r.scope_end == end)
 }
 
 /// packageNameOf — `@scope/pkg/sub` → `@scope/pkg`, `pkg/sub` → `pkg`.

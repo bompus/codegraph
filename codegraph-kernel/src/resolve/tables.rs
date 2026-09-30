@@ -678,8 +678,15 @@ pub(super) fn no_nested_functions(lang: &str) -> bool {
 }
 
 /// JS_FAMILY (name-matcher.ts): the bare-call method guard applies to these.
+/// Vue, Svelte and Astro components' scripts and template expressions
+/// included: a bare `t('key')` in a `.vue` file resolves as in a `.ts` one.
 pub(super) fn is_js_family(lang: &str) -> bool {
-    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx")
+    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "vue" | "svelte" | "astro")
+}
+
+/// Single-file component languages whose scripts are JS/TS.
+pub(super) fn is_sfc_language(lang: &str) -> bool {
+    matches!(lang, "vue" | "svelte" | "astro")
 }
 
 /// BARE_CALL_TARGET_KINDS (name-matcher.ts).

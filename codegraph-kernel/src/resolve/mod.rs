@@ -327,6 +327,7 @@ pub(super) struct SourceFile {
     text: OnceCell<String>,
     rust_uses: OnceCell<HashMap<String, String>>,
     rust_scope_uses: OnceCell<name_scope::RustScopeUses>,
+    java_static_imports: OnceCell<name_scope::JavaStaticImports>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -338,6 +339,7 @@ impl SourceFile {
             text: OnceCell::new(),
             rust_uses: OnceCell::new(),
             rust_scope_uses: OnceCell::new(),
+            java_static_imports: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -370,6 +372,11 @@ impl SourceFile {
     /// The names and globs of the file's project `use` trees (rustUsesOf).
     pub(super) fn rust_scope_uses(&self) -> &name_scope::RustScopeUses {
         self.rust_scope_uses.get_or_init(|| name_scope::collect_rust_scope_uses(self.text()))
+    }
+
+    /// The file's Java static imports (javaStaticImportsOf).
+    pub(super) fn java_static_imports(&self) -> &name_scope::JavaStaticImports {
+        self.java_static_imports.get_or_init(|| name_scope::collect_java_static_imports(self.text()))
     }
 }
 
@@ -524,6 +531,12 @@ pub struct KernelResolver {
     sealed_memo: HashMap<String, bool>,
     c_static_memo: HashMap<String, bool>,
     rust_trait_memo: HashMap<String, bool>,
+    /// javaSupertypesOf, by type name.
+    java_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// manifest_own_packages, by directory.
+    manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// lexicalScopeOf, by candidate id: the scoping function body's lines.
+    lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
     /// isSwiftExtension (swift-type-visibility.ts) memo, by node id.
     swift_extension_memo: HashMap<String, bool>,
     /// swiftExtendedConformances memo, by node id.
@@ -650,6 +663,9 @@ impl KernelResolver {
             sealed_memo: HashMap::new(),
             c_static_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
+            java_supers_memo: HashMap::new(),
+            manifest_own_memo: HashMap::new(),
+            lexical_scope_memo: HashMap::new(),
             swift_extension_memo: HashMap::new(),
             swift_conformance_memo: HashMap::new(),
             swift_owner_memo: HashMap::new(),

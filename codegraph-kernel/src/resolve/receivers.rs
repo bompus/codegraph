@@ -180,7 +180,7 @@ impl KernelResolver {
             )?);
             call_idx.min((scope - 1).max(0) as usize)
         };
-        let js = is_js_family(&site.language) || site.language == "vue";
+        let js = is_js_family(&site.language);
         let shadow_scan = js || site.language == "go";
         // Every pattern needs the receiver literal in the line, so only the
         // lines containing it are scanned (highest first, as before).
