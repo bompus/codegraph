@@ -90,6 +90,7 @@ use crate::docstring::preceding_docstring;
 use crate::ids;
 use crate::textutil as util;
 use regex::Regex;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 use tree_sitter::Node;
@@ -339,6 +340,9 @@ pub struct Walker<'t> {
     /// Markdown path refs already emitted — see markdown_refs_impl! (lib.rs).
     md_ref_keys: HashSet<String>,
     line_count: u32,
+    /// Each class body's access specifiers as (start byte, visibility), by
+    /// body node id: members look up the nearest preceding one.
+    access_specifiers: RefCell<HashMap<usize, Vec<(usize, u8)>>>,
 }
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
@@ -390,6 +394,7 @@ impl<'t> Walker<'t> {
             value_scopes: Vec::new(),
             md_ref_keys: HashSet::new(),
             line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
+            access_specifiers: RefCell::new(HashMap::new()),
         }
     }
     markdown_refs_impl!();
@@ -501,27 +506,35 @@ impl<'t> Walker<'t> {
         recover_mangled_cpp_name(self.extract_name_raw(node))
     }
 
-    /// cppExtractor.getVisibility: the FIRST access_specifier among the
-    /// parent's children decides (document order, not nearest-preceding —
-    /// bug-for-bug with the TS loop).
+    /// cppExtractor.getVisibility: the nearest `public:`, `private:` or
+    /// `protected:` before the node among its parent's children. `None` when
+    /// no specifier precedes it; the class or struct default is not applied.
     fn visibility_of(&self, node: Node) -> Option<u8> {
         let parent = node.parent()?;
-        for i in 0..parent.child_count() {
-            let Some(child) = parent.child(i) else { continue };
-            if child.kind() == "access_specifier" {
+        let mut cache = self.access_specifiers.borrow_mut();
+        let specifiers = cache.entry(parent.id()).or_insert_with(|| {
+            let mut out = Vec::new();
+            let mut cursor = parent.walk();
+            for child in parent.children(&mut cursor) {
+                if child.kind() != "access_specifier" {
+                    continue;
+                }
                 let text = self.text(child);
-                if text.contains("public") {
-                    return Some(1);
-                }
-                if text.contains("private") {
-                    return Some(2);
-                }
-                if text.contains("protected") {
-                    return Some(3);
-                }
+                let visibility = if text.contains("public") {
+                    1
+                } else if text.contains("private") {
+                    2
+                } else if text.contains("protected") {
+                    3
+                } else {
+                    continue;
+                };
+                out.push((child.start_byte(), visibility));
             }
-        }
-        None
+            out
+        });
+        let before = specifiers.partition_point(|&(at, _)| at < node.start_byte());
+        before.checked_sub(1).map(|k| specifiers[k].1)
     }
 
 

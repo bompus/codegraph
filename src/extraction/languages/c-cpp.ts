@@ -1842,20 +1842,23 @@ export const cppExtractor: LanguageExtractor = {
     return parameters ? getNodeText(parameters, source) + (node.type === 'declaration' ? ';' : '') : undefined;
   },
   getVisibility: (node) => {
-    // Check for access specifier in parent
+    // The nearest access specifier before the node among its parent's
+    // children; none means undefined, not the class or struct default.
     const parent = node.parent;
+    let visibility: 'public' | 'private' | 'protected' | undefined;
     if (parent) {
       for (let i = 0; i < parent.childCount; i++) {
         const child = parent.child(i);
-        if (child?.type === 'access_specifier') {
+        if (!child || child.startIndex >= node.startIndex) break;
+        if (child.type === 'access_specifier') {
           const text = child.text;
-          if (text.includes('public')) return 'public';
-          if (text.includes('private')) return 'private';
-          if (text.includes('protected')) return 'protected';
+          if (text.includes('public')) visibility = 'public';
+          else if (text.includes('private')) visibility = 'private';
+          else if (text.includes('protected')) visibility = 'protected';
         }
       }
     }
-    return undefined;
+    return visibility;
   },
   resolveTypeAliasKind: (node, _source) => {
     // C++ typedef: `typedef enum { ... } name;`, `typedef struct { ... } name;`,

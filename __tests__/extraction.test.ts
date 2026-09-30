@@ -4085,6 +4085,33 @@ std::unique_ptr<Widget> makeWidget() { return nullptr; }
     });
   });
 
+  describe('C++ member visibility', () => {
+    it('takes the nearest preceding access specifier', () => {
+      const code = `
+class Box {
+  void first() {}
+public:
+  void a() {}
+private:
+  void b() {}
+protected:
+  void d() {}
+public:
+  void e() {}
+};
+`;
+      const result = extractFromSource('f.cpp', code);
+      const visibility = (name: string) => result.nodes.find((n) => n.name === name && n.kind === 'method')?.visibility;
+
+      expect(visibility('a')).toBe('public');
+      expect(visibility('b')).toBe('private');
+      expect(visibility('d')).toBe('protected');
+      expect(visibility('e')).toBe('public');
+      // No specifier before it: no visibility, not the class default.
+      expect(visibility('first')).toBeUndefined();
+    });
+  });
+
   describe('C++ macro-prefixed class/struct misparse (#946 → recovered in #1061)', () => {
     // An export/visibility macro before the class name (`class MACRO Name :
     // public Base { … }`) makes tree-sitter read `class MACRO` as an elaborated
