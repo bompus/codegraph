@@ -875,27 +875,103 @@ impl KernelResolver {
         let from = ((value.start_line - 1).max(0) as usize).min(lines.len());
         let to = (value.end_line.max(0) as usize).clamp(from, lines.len());
         let decl = lines[from..to].join("\n");
-        // The type is named in the value's file, so ties break there.
-        let mut site = r.clone();
-        site.file_path = value.file_path.clone();
         for pat in pats {
             let Some(type_name) =
                 self.infer_match_text(&decl, &value.name, std::slice::from_ref(pat), false)?
             else {
                 continue;
             };
-            if let Some(c) =
-                self.resolve_method_on_type(&type_name, member, &site, 0.85, "instance-method", None)?
-            {
+            if let Some(c) = self.method_on_module_class(
+                &value.file_path,
+                &value.language,
+                value.start_line,
+                &type_name,
+                member,
+                r,
+            )? {
                 return Ok(Some(c));
             }
         }
         Ok(None)
     }
 
+    /// The class, interface or type alias a module binds to `type_name`, the type of a
+    /// value it exports (`new Store()`, `: ViteDevServer`): one it declares
+    /// itself, or the one an import of it from a project file resolves to.
+    /// A type imported from a package, or a name the module does not bind,
+    /// is none.
+    fn module_bound_class(
+        &mut self,
+        module_path: &str,
+        language: &str,
+        line: i64,
+        type_name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Arc<KNode>>> {
+        if !type_name.contains('.') {
+            if let Some(own) = self
+                .nodes_in_file(module_path)?
+                .iter()
+                .find(|n| n.name == type_name && matches!(n.kind.as_str(), "class" | "interface" | "type_alias"))
+            {
+                return Ok(Some(own.clone()));
+            }
+        }
+        let head = type_name.split('.').next().unwrap_or("");
+        let Some(imp) = self
+            .import_mappings(module_path)?
+            .iter()
+            .find(|m| m.local_name == head)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if self.is_external_import(&imp.source, language, module_path) {
+            return Ok(None);
+        }
+        let mut type_ref = r.clone().naming(type_name, "references");
+        type_ref.from_node_id = format!("file:{module_path}");
+        type_ref.file_path = module_path.to_string();
+        type_ref.language = language.to_string();
+        type_ref.line = line;
+        type_ref.column = 0;
+        Ok(self
+            .resolve_via_import(&type_ref)?
+            .map(|c| c.node)
+            .filter(|n| matches!(n.kind.as_str(), "class" | "interface" | "type_alias")))
+    }
+
+    /// `member` on the class `module_path` binds to `type_name`: the class's
+    /// own method, else one it inherits. A same-named class in another file
+    /// never answers for it.
+    fn method_on_module_class(
+        &mut self,
+        module_path: &str,
+        language: &str,
+        line: i64,
+        type_name: &str,
+        member: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        let Some(class) = self.module_bound_class(module_path, language, line, type_name, r)? else {
+            return Ok(None);
+        };
+        let mut site = r.clone();
+        site.file_path = class.file_path.clone();
+        let Some(c) = self.resolve_method_on_type(&class.name, member, &site, 0.85, "instance-method", None)? else {
+            return Ok(None);
+        };
+        let own = format!("{}::{member}", class.name);
+        let same_named = c.node.qualified_name == own || c.node.qualified_name.ends_with(&format!("::{own}"));
+        if same_named && c.node.file_path != class.file_path {
+            return Ok(None);
+        }
+        Ok(Some(c))
+    }
+
     /// A member call on a module's anonymous default instance,
-    /// `export default new ApiClient()`: the method on that class, looked up
-    /// from the exporting file.
+    /// `export default new ApiClient()`: the method on the class the
+    /// exporting module binds to that name.
     fn resolve_default_instance_member(
         &mut self,
         module_path: &str,
@@ -903,16 +979,17 @@ impl KernelResolver {
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
         let Some(lines) = self.read_file(module_path) else { return Ok(None) };
-        let Some(type_name) = re!(r"(?m)^[ \t]*export[ \t]+default[ \t]+new[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*[(<]")
-            .captures(lines.text())
+        let text = lines.text();
+        let Some((type_name, at)) = re!(r"(?m)^[ \t]*export[ \t]+default[ \t]+new[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*[(<]")
+            .captures(text)
             .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
+            .map(|m| (m.as_str().to_string(), m.start()))
         else {
             return Ok(None);
         };
-        let mut site = r.clone();
-        site.file_path = module_path.to_string();
-        self.resolve_method_on_type(&type_name, member, &site, 0.85, "instance-method", None)
+        let line = text[..at].matches('\n').count() as i64 + 1;
+        let language = r.language.clone();
+        self.method_on_module_class(module_path, &language, line, &type_name, member, r)
     }
 
     /// getRazorUsings: the file's own `@using` namespaces, then each
