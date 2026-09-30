@@ -373,20 +373,27 @@ impl std::ops::Deref for SourceFile {
     }
 }
 
-struct FileCache {
-    map: HashMap<String, Option<Rc<SourceFile>>>,
+/// A bounded map that evicts its oldest insertion first.
+struct Lru<V> {
+    map: HashMap<String, V>,
     order: VecDeque<String>,
     cap: usize,
 }
 
-impl FileCache {
+type FileCache = Lru<Option<Rc<SourceFile>>>;
+
+/// A parsed tree and the source it was parsed from: a file re-read after
+/// eviction is a different `SourceFile`, and its tree is parsed again.
+type TreeCache = Lru<(Rc<SourceFile>, Option<Rc<tree_sitter::Tree>>)>;
+
+impl<V> Lru<V> {
     fn new(cap: usize) -> Self {
-        FileCache { map: HashMap::new(), order: VecDeque::new(), cap }
+        Lru { map: HashMap::new(), order: VecDeque::new(), cap }
     }
-    fn get(&self, k: &str) -> Option<&Option<Rc<SourceFile>>> {
+    fn get(&self, k: &str) -> Option<&V> {
         self.map.get(k)
     }
-    fn put(&mut self, k: String, v: Option<Rc<SourceFile>>) {
+    fn put(&mut self, k: String, v: V) {
         if self.map.contains_key(&k) {
             self.order.retain(|x| x != &k);
         } else if self.map.len() >= self.cap {
@@ -528,6 +535,8 @@ pub struct KernelResolver {
     /// C/C++ directive summaries and per-root macro timelines (#1838).
     cpp_macros: cpp::MacroCache,
     file_cache: FileCache,
+    /// Trees the iteration and guard inference walk, by language and file.
+    tree_cache: TreeCache,
 }
 
 /// Open `db_path` read-only without ever writing its `-shm` wal-index.
@@ -642,6 +651,7 @@ impl KernelResolver {
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),
             file_cache: FileCache::new(1024),
+            tree_cache: TreeCache::new(32),
         })
     }
 
