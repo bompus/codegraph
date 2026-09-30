@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-09-30T19:00:53.485Z",
+  "corpus": "exposed",
+  "repo": "https://github.com/JetBrains/Exposed.git",
+  "commit": "2155404",
+  "codegraphSha": "ef6262fd+scope-followups",
+  "summary": {
+    "absentCases": 1,
+    "absentHeld": 1,
+    "presentCases": 1,
+    "presentHeld": 1,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "exact-match": 34429,
+    "(none)": 26363,
+    "import": 7194,
+    "instance-method": 2773,
+    "function-ref": 2481,
+    "framework": 2277,
+    "file-path": 229,
+    "qualified-name": 175
+  },
+  "edges": 75921,
+  "results": [
+    {
+      "caseId": "exposed-wildcard-package-receiver",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:f40372af7132a6726971d7163deef334",
+          "to": "method:71e425ce8fd2d25d06c04cf318012e1a",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-wildcard-not-other-package",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ],
+  "sourceState": "Uncommitted Kotlin bulk DSL, receiver SAM and source-validated Companion fixes based on ef6262fd."
+}

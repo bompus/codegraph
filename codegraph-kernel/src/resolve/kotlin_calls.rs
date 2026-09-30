@@ -5,6 +5,7 @@ use super::call_shape::flat_head;
 pub(crate) struct KotlinFrame { start: i64, end: i64, names: Vec<String> }
 
 fn head_names(head: &str) -> Vec<String> {
+    if re!(r"\bcompanion\s+object(?:\s+\w+)?\s*$").is_match(head) { return vec!["Companion".to_string()]; }
     let flat = flat_head(head, false);
     if let Some(m) = re!(r"\b(?:class|interface|object)\b(?:\s+([A-Za-z_]\w*))?([^=]*)$").captures(&flat) {
         let mut names = m.get(1).map(|n| vec![n.as_str().to_string()]).unwrap_or_default();
@@ -63,10 +64,22 @@ impl KernelResolver {
         if let Some(hit) = &self.kotlin_receiver_types_memo { return Ok(hit.clone()); }
         let mut names = HashSet::new();
         let mut outside = HashSet::new();
-        if let Some(files) = self.sorted_files() {
+        let files = match self.sorted_files() {
+            Some(files) => files,
+            None => {
+                let mut files: Vec<_> = self.table()?.files.iter().cloned().collect();
+                files.sort(); Arc::new(files)
+            }
+        };
+        {
             for file in files.iter().filter(|f| f.ends_with(".kt") || f.ends_with(".kts")) {
                 let Some(source) = self.read_file(file) else { continue };
                 let text = super::awaited::strip_ts_comments(source.text());
+                for sam in re!(r"\bfun\s+interface\s+\w+[^{}]*\{([^{}]*)\}").captures_iter(&text) {
+                    for receiver in re!(r"\bfun\s+([A-Z]\w*)(?:<[^<>]*>)?\.\w+\s*\(").captures_iter(&sam[1]) {
+                        names.insert(receiver[1].to_string());
+                    }
+                }
                 for m in re!(r"\b([A-Z]\w*)(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\s*\.\s*\(").captures_iter(&text) { names.insert(m[1].to_string()); }
                 for m in re!(r"\bfun\s+(?:<[^>]*>\s*)?([A-Z]\w*(?:\.[A-Z]\w*)*)(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\??\.[A-Za-z_`][\w`]*\s*\(").captures_iter(&text) {
                     outside.extend(m[1].split('.').map(str::to_string));
@@ -129,7 +142,9 @@ impl KernelResolver {
         }
         let pkg = self.kotlin_file_scope(&n.file_path).pkg.clone();
         let object = format!("{}{}{}", if pkg.is_empty() { String::new() } else { format!("{pkg}.") }, owner, if companion { ".Companion" } else { "" });
+        let source_companion = self.kotlin_frames(&n.file_path).iter().any(|f| f.start <= n.start_line && f.end >= n.end_line && f.names.iter().any(|name| name == "Companion"));
         let here = self.kotlin_file_scope(&r.file_path);
-        Ok(here.imports.contains(&format!("{object}.{}", n.name)) || here.stars.contains(&object))
+        Ok(here.imports.contains(&format!("{object}.{}", n.name)) || here.stars.contains(&object)
+            || (!companion && source_companion && (here.imports.contains(&format!("{object}.Companion.{}", n.name)) || here.stars.contains(&format!("{object}.Companion")))))
     }
 }

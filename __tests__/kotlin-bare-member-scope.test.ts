@@ -20,6 +20,28 @@ let cg: CodeGraph;
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-kotlin-member-'));
   const files: Record<string, string> = {
+    'src/main/kotlin/app/Config.kt': `package app
+class Config {
+    fun configureValue() { }
+}
+fun interface Configurer {
+    fun Config.configure()
+}
+fun withConfig(configurer: Configurer) { }
+class Validation {
+    companion object {
+        fun installMapper() { }
+    }
+}
+`,
+    'src/main/kotlin/consumer/ConfigTest.kt': `package consumer
+import app.withConfig
+import app.Validation.Companion.installMapper
+fun configureApp() {
+    withConfig { configureValue() }
+    installMapper()
+}
+`,
     'src/main/kotlin/app/Transaction.kt': `package app
 class CoreTransaction
 typealias Transaction = CoreTransaction
@@ -144,4 +166,10 @@ describe('bare Kotlin calls', () => {
 
 it('keeps an imported top-level extension callable inside a receiver lambda', () => {
   expect(callsFrom('src/main/kotlin/consumer/TransactionTest.kt')).toContain('CoreTransaction::verify');
+});
+
+it('keeps receiver SAM calls and source-validated companion imports', () => {
+  const calls = callsFrom('src/main/kotlin/consumer/ConfigTest.kt');
+  expect(calls).toContain('app::Config::configureValue');
+  expect(calls.some((name) => name.endsWith('::installMapper'))).toBe(true);
 });
