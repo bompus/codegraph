@@ -1,0 +1,120 @@
+{
+  "timestamp": "2026-09-30T21:45:30.772Z",
+  "corpus": "exposed",
+  "repo": "https://github.com/JetBrains/Exposed.git",
+  "commit": "2155404",
+  "codegraphSha": "0ec56049",
+  "summary": {
+    "absentCases": 2,
+    "absentHeld": 2,
+    "presentCases": 6,
+    "presentHeld": 6,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "exact-match": 37360,
+    "(none)": 26713,
+    "import": 7337,
+    "instance-method": 2837,
+    "framework": 2492,
+    "function-ref": 2481,
+    "file-path": 229,
+    "qualified-name": 175
+  },
+  "edges": 79624,
+  "results": [
+    {
+      "caseId": "exposed-literal-trim-jdbc",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:b50c90376f77d8d0aca5d309ac09f69c",
+          "to": "method:9d77982d7d95880e2a54c4893b86a838",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-literal-trim-r2dbc",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:05217ebf2e2d2da1556291c5c369839a",
+          "to": "method:9d77982d7d95880e2a54c4893b86a838",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-column-count-extension",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:941657a44efa96b0b33ffbd2175bb09b",
+          "to": "method:495855c626bbbf0a54e3d191aa2fae92",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-column-substring-extension",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:33263165fe66809c5f378e014e92784d",
+          "to": "method:8d9c8fca9a37a0223dc1a4ea8cdaccaa",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-column-contains-extension",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:212c066478bc17c1ac27f6f14b109aee",
+          "to": "method:0d2884b38da4f463426a16b42399df20",
+          "resolvedBy": "exact-match"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-column-not-query-count",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-wildcard-package-receiver",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "method:f40372af7132a6726971d7163deef334",
+          "to": "method:71e425ce8fd2d25d06c04cf318012e1a",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "exposed-wildcard-not-other-package",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    }
+  ],
+  "sourceState": "0ec56049 plus ancestry merge of630321d8; combined Kotlin grammar and receiver review"
+}

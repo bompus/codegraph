@@ -28,7 +28,7 @@ fn before(a: (usize, usize), b: (usize, usize)) -> bool {
 
 /// descendantForPosition (tree.ts): descend into the first child, named or
 /// not, whose span contains the point, until none does.
-fn descendant_for_position<'t>(root: TsNode<'t>, text: &str, at: (usize, usize)) -> TsNode<'t> {
+pub(super) fn descendant_for_position<'t>(root: TsNode<'t>, text: &str, at: (usize, usize)) -> TsNode<'t> {
     let mut node = root;
     'down: loop {
         let mut cursor = node.walk();
@@ -44,7 +44,7 @@ fn descendant_for_position<'t>(root: TsNode<'t>, text: &str, at: (usize, usize))
     }
 }
 
-fn named_children<'t>(node: TsNode<'t>) -> Vec<TsNode<'t>> {
+pub(super) fn named_children<'t>(node: TsNode<'t>) -> Vec<TsNode<'t>> {
     let mut cursor = node.walk();
     node.named_children(&mut cursor).collect()
 }
@@ -85,7 +85,15 @@ fn kotlin_callee_name<'a>(callee: TsNode, text: &'a str) -> &'a str {
 fn kotlin_takes_trailing_lambda(signature: Option<&str>) -> bool {
     let Some(sig) = signature else { return false };
     let sig = sig.trim();
-    let inner = sig.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(sig);
+    let inner = if sig.starts_with('(') {
+        let mut depth = 0usize;
+        let close = sig.char_indices().find_map(|(i, ch)| {
+            if ch == '(' { depth += 1; }
+            else if ch == ')' { depth -= 1; if depth == 0 { return Some(i); } }
+            None
+        });
+        close.map(|end| &sig[1..end]).unwrap_or(sig)
+    } else { sig };
     // Depth-0 split points, reading `->` as an arrow rather than a closer.
     let top_level = |s: &str, target: u8| -> Vec<usize> {
         let (b, mut depth, mut out, mut i) = (s.as_bytes(), 0i32, Vec::new(), 0);
@@ -134,7 +142,7 @@ fn kotlin_takes_trailing_lambda(signature: Option<&str>) -> bool {
 }
 
 /// The (row, UTF-16 column) site of `node` in `r`'s file.
-fn site_at(node: TsNode, text: &str, r: &ResolveRefIn) -> ResolveRefIn {
+pub(super) fn site_at(node: TsNode, text: &str, r: &ResolveRefIn) -> ResolveRefIn {
     let (row, col) = point16(text, node.start_byte(), node.start_position());
     let mut site = r.clone();
     site.line = row as i64 + 1;
@@ -229,7 +237,7 @@ fn node_text<'a>(node: TsNode, text: &'a str) -> &'a str {
 
 impl KernelResolver {
     /// `file`'s tree, parsed once per resolver instead of once per ref.
-    fn parsed_tree(&mut self, file: &Rc<SourceFile>, r: &ResolveRefIn) -> Option<Rc<tree_sitter::Tree>> {
+    pub(super) fn parsed_tree(&mut self, file: &Rc<SourceFile>, r: &ResolveRefIn) -> Option<Rc<tree_sitter::Tree>> {
         let key = format!("{}\0{}", r.language, r.file_path);
         if let Some((source, tree)) = self.tree_cache.get(&key) {
             if Rc::ptr_eq(source, file) {
@@ -301,7 +309,7 @@ impl KernelResolver {
     /// that name visible here for a bare call, a member or visible extension
     /// on the receiver's type for `x.run { }`. Either must take a trailing
     /// lambda. An untyped receiver keeps the stdlib reading.
-    fn kotlin_user_scope_callee(&mut self, callee: TsNode, name: &str, text: &str, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn kotlin_user_scope_callee(&mut self, callee: TsNode, name: &str, text: &str, r: &ResolveRefIn) -> Res<bool> {
         let declared: Vec<Arc<KNode>> = self
             .nodes_by_name(name)?
             .iter()
@@ -333,7 +341,7 @@ impl KernelResolver {
     /// Whether Kotlin type `ty` has a member `method`, its own or
     /// inherited, or a visible extension `fun Ty.method`, that takes a
     /// trailing lambda.
-    fn kotlin_user_member(&mut self, ty: &str, method: &str, site: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn kotlin_user_member(&mut self, ty: &str, method: &str, site: &ResolveRefIn) -> Res<bool> {
         if let Some(m) = self.match_bound_type_member(ty, method, site)? {
             return Ok(kotlin_takes_trailing_lambda(m.node.signature.as_deref()));
         }
@@ -356,7 +364,7 @@ impl KernelResolver {
     /// Whether a top-level Kotlin declaration (a function, or an extension)
     /// is visible from `r`'s file: the same file or package, or imported by
     /// name or by its package's wildcard.
-    fn kotlin_top_level_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn kotlin_top_level_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if n.file_path == r.file_path {
             return Ok(true);
         }

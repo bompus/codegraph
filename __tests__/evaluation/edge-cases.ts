@@ -92,6 +92,62 @@ export const PRECISION_CORPORA: Record<string, PrecisionCorpus> = {
 };
 
 export const edgeCases: EdgeCase[] = [
+  {
+    id: 'exposed-literal-trim-jdbc', corpus: 'exposed', kind: 'calls',
+    from: { file: 'exposed-tests/src/test/kotlin/org/jetbrains/exposed/v1/tests/shared/dml/ReplaceTests.kt', name: 'testReplaceWithExpression' },
+    to: { file: 'exposed-core/src/main/kotlin/org/jetbrains/exposed/v1/core/FunctionBuilder.kt', name: 'trim' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The imported literal factory declares a receiver whose ancestry accepts the SQL trim extension.',
+  },
+
+  {
+    id: 'exposed-literal-trim-r2dbc', corpus: 'exposed', kind: 'calls',
+    from: { file: 'exposed-r2dbc-tests/src/test/kotlin/org/jetbrains/exposed/v1/r2dbc/sql/tests/shared/dml/ReplaceTests.kt', name: 'testReplaceWithExpression' },
+    to: { file: 'exposed-core/src/main/kotlin/org/jetbrains/exposed/v1/core/FunctionBuilder.kt', name: 'trim' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The imported literal factory declares a receiver whose ancestry accepts the SQL trim extension.',
+  },
+
+  {
+    id: 'javalin-fluent-validator-nullable', corpus: 'javalin', kind: 'calls',
+    from: { file: 'javalin/src/test/java/io/javalin/TestValidation.kt', name: '`custom converter works for null when nullable`' },
+    to: { file: 'javalin/src/main/java/io/javalin/validation/Validator.kt', name: 'getOrNull' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The imported queryParamAsClass return type survives the receiver-preserving check call.',
+  },
+
+  {
+    id: 'javalin-fluent-validator-optional', corpus: 'javalin', kind: 'calls',
+    from: { file: 'javalin/src/test/java/io/javalin/TestValidation.kt', name: '`optional query param value with check works`' },
+    to: { file: 'javalin/src/main/java/io/javalin/validation/Validator.kt', name: 'getOrNull' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The imported queryParamAsClass return type survives the receiver-preserving check call.',
+  },
+
+  {
+    id: 'exposed-column-count-extension', corpus: 'exposed', kind: 'calls',
+    from: { file: 'documentation-website/Writerside/snippets/exposed-dsl/src/main/kotlin/org/example/examples/JoinExamples.kt', name: 'joinAndCount' },
+    to: { file: 'exposed-core/src/main/kotlin/org/jetbrains/exposed/v1/core/FunctionBuilder.kt', name: 'count' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The column factory declares Column, whose ancestry accepts the imported SQL extension.',
+  },
+
+  {
+    id: 'exposed-column-substring-extension', corpus: 'exposed', kind: 'calls',
+    from: { file: 'documentation-website/Writerside/snippets/exposed-dsl/src/main/kotlin/org/example/examples/InsertSelectExamples.kt', name: 'insertSelect' },
+    to: { file: 'exposed-core/src/main/kotlin/org/jetbrains/exposed/v1/core/FunctionBuilder.kt', name: 'substring' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The column factory declares Column, whose ancestry accepts the imported SQL extension.',
+  },
+
+  {
+    id: 'exposed-column-contains-extension', corpus: 'exposed', kind: 'calls',
+    from: { file: 'documentation-website/Writerside/snippets/exposed-data-types/src/main/kotlin/org/example/examples/JSONandJSONBExamples.kt', name: 'useContains' },
+    to: { file: 'exposed-json/src/main/kotlin/org/jetbrains/exposed/v1/json/JsonConditions.kt', name: 'contains' }, expect: 'present',
+    source: 'upstream reconcile #345', why: 'The column factory declares Column, whose ancestry accepts the imported SQL extension.',
+  },
+
+  {
+    id: 'exposed-column-not-query-count', corpus: 'exposed', kind: 'calls',
+    from: { file: 'documentation-website/Writerside/snippets/exposed-dsl/src/main/kotlin/org/example/examples/JoinExamples.kt', name: 'joinAndCount' },
+    to: { file: 'exposed-core/src/main/kotlin/org/jetbrains/exposed/v1/core/AbstractQuery.kt', name: 'count' }, expect: 'absent',
+    source: 'upstream reconcile #345', why: 'Counting a declared Column calls its imported extension, not AbstractQuery.count.',
+  },
+
   // --- javalin: a Kotlin file importing a Java class's static member ---
   {
     id: 'javalin-kotlin-imports-java-member', corpus: 'javalin', kind: 'calls',

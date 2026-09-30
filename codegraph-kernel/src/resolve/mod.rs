@@ -497,6 +497,7 @@ mod file_refs;
 mod rust_modules;
 mod awaited;
 mod iteration;
+mod kotlin_receiver;
 mod this_member;
 mod member_fn_ref;
 mod object_literal;
