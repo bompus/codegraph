@@ -82,8 +82,10 @@ Base effort quotes on these rather than on how heavy a step sounds. Measured on 
 | Full suite (~400 files, `--maxWorkers=8`) | 65–76 s |
 | 1–3 test files | 2–12 s; ~100 s when test setup rebuilds a stale engine first |
 | Worker fix PR: repro, fix, fails-on-base test, goldens, precision on 2–3 corpora, full suite | 15–42 min |
-| Worker upstream reconcile with conflict resolution and full verification | 28 min |
+| Worker upstream reconcile with conflict resolution and full verification | 15–28 min |
+| Upstream reconcile to a reviewed PR: worker, review, review fixes | 38–52 min |
 | Stacked landing: stack suite, squash-merge each PR, tree check | ~5 min |
+| Deploy gate: `codegraph-fork-sync merge` (build, kernel, suite, source probes, promote) | 2.5 min |
 
 `eval:precision` per corpus is not recorded yet; add it the next time one is timed.
 
