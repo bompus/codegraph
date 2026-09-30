@@ -638,6 +638,15 @@ impl KernelResolver {
         }
         // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
         candidates.retain(|n| !((bare_js || bare_go) && n.kind == "method"));
+        // A bare Go call names its own package's function: another
+        // package's `New` needs its qualifier (a dot import cannot bring in a
+        // name the package itself declares).
+        if bare_go {
+            let dir = pos_dirname(&r.file_path);
+            if candidates.iter().any(|n| pos_dirname(&n.file_path) == dir) {
+                candidates.retain(|n| pos_dirname(&n.file_path) == dir);
+            }
+        }
         // A bare PHP call is a function call: nothing else is callable without a receiver.
         candidates.retain(|n| !(bare_php && n.kind != "function"));
         // A C/C++ `field` is reachable only through a receiver — `s.f`,

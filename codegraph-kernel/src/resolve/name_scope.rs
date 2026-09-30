@@ -15,7 +15,7 @@ const RUST_PRELUDE: &[&str] = &[
 ];
 
 /// A file's project `use` trees (rustUsesOf): every identifier in them, and
-/// `X` of each `use …::X::*` (`super` for `use super::*`). `std::`, `core::`
+/// `X` of each `use …::X::*` (`super` for `use super::*`), grouped or not. `std::`, `core::`
 /// and `alloc::` trees are skipped.
 #[derive(Default)]
 pub(crate) struct RustScopeUses {
@@ -35,7 +35,12 @@ pub(super) fn collect_rust_scope_uses(text: &str) -> RustScopeUses {
         for id in re!(r"[A-Za-z_][A-Za-z0-9_]*").find_iter(tree) {
             uses.names.insert(id.as_str().to_string());
         }
-        for g in re!(r"([A-Za-z0-9_]+)\s*::\s*(?:\{[^}]*)?\*").captures_iter(tree) {
+        // `X::*`, also inside a group (`crate::{error::*, util::*}`), and a
+        // group's own `*` item (`X::{self, *}`).
+        for g in re!(r"([A-Za-z0-9_]+)\s*::\s*\*").captures_iter(tree) {
+            uses.globs.insert(g[1].to_string());
+        }
+        for g in re!(r"([A-Za-z0-9_]+)\s*::\s*\{(?:[^{}]*,)?\s*\*").captures_iter(tree) {
             uses.globs.insert(g[1].to_string());
         }
     }

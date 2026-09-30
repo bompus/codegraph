@@ -126,6 +126,17 @@ describe('a receiver-less Go call never binds to a method (#1857)', () => {
     expect(out.filter((c) => c.startsWith('method:'))).toEqual([]);
   });
 
+  it('binds a bare call to its own package when another package defines the same name', async () => {
+    const files = {
+      'go.mod': GO_MOD,
+      'aaa/aaa.go': 'package aaa\n\ntype Widget struct{}\n\nfunc New() *Widget { return &Widget{} }\n',
+      'main.go': 'package main\n\ntype Foo struct{}\n\nfunc New() *Foo { return &Foo{} }\n\nfunc caller() { New() }\n',
+    };
+    expect(await callees(files, 'caller')).toEqual(['function:New@main.go']);
+    const edge = cg!.getOutgoingEdges(cg!.getNodesByKind('function').find((n) => n.name === 'caller')!.id).find((e) => e.kind === 'calls')!;
+    expect(edge.metadata?.confidence).toBe(0.9);
+  });
+
   it('keeps a real method call through a receiver', async () => {
     const out = await callees(
       {

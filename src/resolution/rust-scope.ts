@@ -29,7 +29,7 @@ const RUST_PRELUDE = new Set([
 interface RustUses {
   /** Every identifier in the file's project `use` trees — not `std::` / `core::` / `alloc::` ones. */
   names: Set<string>;
-  /** `X` of each `use …::X::*` (`super` for `use super::*`). */
+  /** `X` of each `use …::X::*` (`super` for `use super::*`), grouped or not. */
   globs: Set<string>;
 }
 const RUST_USES = new WeakMap<ResolutionContext, Map<string, RustUses>>();
@@ -54,7 +54,10 @@ function rustUsesOf(filePath: string, context: ResolutionContext): RustUses {
     const tree = m[1]!;
     if (/^\s*(?:::)?(?:std|core|alloc)\b/.test(tree)) continue;
     for (const id of tree.matchAll(/[A-Za-z_]\w*/g)) uses.names.add(id[0]);
-    for (const g of tree.matchAll(/(\w+)\s*::\s*(?:\{[^}]*)?\*/g)) uses.globs.add(g[1]!);
+    // `X::*`, also inside a group (`crate::{error::*, util::*}`), and a
+    // group's own `*` item (`X::{self, *}`).
+    for (const g of tree.matchAll(/(\w+)\s*::\s*\*/g)) uses.globs.add(g[1]!);
+    for (const g of tree.matchAll(/(\w+)\s*::\s*\{(?:[^{}]*,)?\s*\*/g)) uses.globs.add(g[1]!);
   }
   memo.set(filePath, uses);
   return uses;

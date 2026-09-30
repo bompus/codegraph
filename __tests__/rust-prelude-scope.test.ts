@@ -45,6 +45,9 @@ pub type Result<T> = std::result::Result<T, Error>;
   'src/modes.rs': `use crate::lowargs::EncodingMode::*;
 pub fn pick() -> crate::lowargs::EncodingMode { Some(1) }
 `,
+  'src/grouped.rs': `use crate::{decompress::*, error::*};
+pub fn open() -> Result<u8> { unimplemented!() }
+`,
 };
 
 describe('Rust: a bare name reaches what is in scope', () => {
@@ -68,6 +71,8 @@ describe('Rust: a bare name reaches what is in scope', () => {
       expect(targets('find').filter((t) => /Some|Ok|Result/.test(t))).toEqual([]);
       // `use EncodingMode::*` brings the variant in.
       expect(targets('pick')).toContain('enum_member:EncodingMode::Some');
+      // A glob inside a `use` group (`crate::{…, error::*}`) brings the alias in.
+      expect(targets('open')).toContain('type_alias:Result');
       // A path (`crate::error::Result`) is not a prelude lookup, so it still links.
       expect(targets('load').some((t) => t.endsWith(':Result'))).toBe(true);
       // A same-file struct still shadows the prelude.
