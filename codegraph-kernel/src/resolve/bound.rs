@@ -18,6 +18,24 @@ impl KernelResolver {
         if depth > 4 {
             return Ok(None);
         }
+        if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && ty.contains('.') {
+            let name = ty.rsplit('.').next().unwrap_or(ty);
+            let owners: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| {
+                same_language_family(&n.language, &r.language) && TYPE_OWNER_KINDS.contains(&n.kind.as_str())
+                    && n.qualified_name.replace("::", ".") == ty
+            }).cloned().collect();
+            if let [only] = owners.as_slice() { return Ok(Some(only.clone())); }
+            let (root, tail) = ty.split_once('.').unwrap();
+            if let Some(owner) = self.resolve_bound_type(root, r, depth + 1)? {
+                let qualified = format!("{}.{}", owner.qualified_name.replace("::", "."), tail);
+                let nested: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| {
+                    same_language_family(&n.language, &r.language) && TYPE_OWNER_KINDS.contains(&n.kind.as_str())
+                        && n.qualified_name.replace("::", ".") == qualified
+                }).cloned().collect();
+                return Ok(match nested.as_slice() { [only] => Some(only.clone()), _ => None });
+            }
+            return Ok(None);
+        }
         if r.language == "java" {
             if let Some((declaration, site)) = self.java_type_parameter(ty, r)? {
                 // An unbounded or self declaration shadows any outer bound.

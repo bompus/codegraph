@@ -53,6 +53,7 @@ public class List : EndpointWithoutRequest<ContributorListResponse>
 
   public override async Task HandleAsync(CancellationToken ct)
   {
+    Get("/not-a-route");
   }
 }
 `,

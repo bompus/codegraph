@@ -197,6 +197,79 @@ impl KernelResolver {
         })
     }
 
+    /// A preceding imported or receiver-bound callee can prove a chain's result type.
+    pub(super) fn kotlin_proven_chain_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "kotlin" || r.reference_kind != "calls" { return Ok(false); }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(false) };
+        let code = super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(line));
+        let pat = Self::cached_regex(&format!(r"(?:^|[^\w])({})\s*\(", regex::escape(&n.name)))?;
+        let Some(at) = pat.captures(&code).and_then(|m| m.get(1)).map(|m| m.start()) else { return Ok(false) };
+        let before = code[..at].trim_end().trim_end_matches('.').trim_end();
+        if !before.ends_with(')') { return Ok(false); }
+        let mut depth = 0usize;
+        let mut open = None;
+        for (i, ch) in before.char_indices().rev() {
+            if ch == ')' { depth += 1; }
+            else if ch == '(' { depth -= 1; if depth == 0 { open = Some(i); break; } }
+        }
+        let Some(open) = open else { return Ok(false) };
+        let Some(call) = re!(r"(?:([A-Za-z_]\w*)\s*\.)?([A-Za-z_]\w*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*$").captures(&before[..open]) else { return Ok(false) };
+        let name = &call[2];
+        let receiver_type = match call.get(1) {
+            Some(receiver) => self.infer_local_receiver_type(receiver.as_str(), r, true)?,
+            None => None,
+        };
+        let mut factory = match &receiver_type {
+            Some(ty) => self.match_bound_type_member(ty, name, r)?.map(|c| c.node),
+            None => None,
+        };
+        if factory.is_none() {
+            let callee_ref = r.clone().naming(name, "calls");
+            let imported = self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == name);
+            if imported {
+                factory = self.resolve_via_import(&callee_ref)?.map(|c| c.node);
+                if factory.is_none() {
+                    // Kotlin extensions are methods qualified by the receiver,
+                    // while their imports name the package and function.
+                    let mappings = self.import_mappings(&r.file_path)?;
+                    let mut extensions = Vec::new();
+                    for candidate in self.nodes_by_name(name)?.iter().filter(|c| c.language == "kotlin" && c.kind == "method") {
+                        let pkg = self.kotlin_file_scope(&candidate.file_path).pkg.clone();
+                        let imported_name = format!("{pkg}.{}", candidate.name);
+                        if !mappings.iter().any(|m| m.local_name == name && m.source == imported_name) { continue; }
+                        if self.nodes_in_file(&candidate.file_path)?.iter().any(|c| {
+                            type_kind(&c.kind) && c.kind != "namespace" && c.kind != "module"
+                                && c.start_line <= candidate.start_line && c.end_line >= candidate.end_line
+                        }) { continue; }
+                        extensions.push(candidate.clone());
+                    }
+                    if extensions.len() == 1 { factory = extensions.pop(); }
+                }
+            }
+            else if call.get(1).is_none() {
+                let bindings = self.bindings(&r.file_path)?;
+                factory = match innermost_binding(&bindings, name, Some(r.line)) {
+                    Some(binding) => self.node_by_opt_id(binding.node_id.as_deref())?,
+                    None => None,
+                };
+            }
+            if let (Some(ty), Some(f)) = (&receiver_type, &factory) {
+                let mut declaration = r.clone(); declaration.file_path = f.file_path.clone(); declaration.line = f.start_line;
+                let extension_owner = owner(f).unwrap_or("");
+                let expected = self.resolve_bound_type(extension_owner, &declaration, 0)?;
+                let actual = self.resolve_bound_type(ty, r, 0)?;
+                if !expected.zip(actual).is_some_and(|(a, b)| a.id == b.id) { return Ok(false); }
+            }
+        }
+        let Some(factory) = factory else { return Ok(false) };
+        let Some(raw) = &factory.return_type else { return Ok(false) };
+        let ty = raw.split('<').next().unwrap_or(raw).trim().trim_end_matches('?');
+        if factory.type_parameters.as_ref().is_some_and(|ps| ps.iter().any(|p| p.split_whitespace().next() == Some(ty))) { return Ok(false); }
+        let mut declaration = r.clone(); declaration.file_path = factory.file_path.clone(); declaration.line = factory.start_line; declaration.from_node_id = factory.id.clone();
+        Ok(self.match_bound_type_member(ty, &n.name, &declaration)?.is_some_and(|c| c.node.id == n.id))
+    }
+
     /// Scope predicates only eliminate candidates, never select one.
     pub(super) fn call_shape_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
         let Some(site) = self.call_site(r) else { return Ok(true) };
@@ -216,7 +289,8 @@ impl KernelResolver {
             "scala" => self.scala_call_target(n, r, &site),
             "kotlin" if site.shape == Shape::Chain && is_std_method("kotlin", &r.reference_name) => {
                 Ok(!matches!(n.kind.as_str(), "method" | "function") || site.receiver == "this"
-                    || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n)))
+                    || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))
+                    || self.kotlin_proven_chain_target(n, r)?)
             }
             _ => Ok(true),
         }

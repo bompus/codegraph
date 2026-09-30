@@ -33,6 +33,24 @@ internal constructor(data: ByteArray) : Comparable<ByteString> {
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-kotlin-split-'));
   const files: Record<string, string> = {
+    'src/main/kotlin/app/Validator.kt': `package app
+class Context
+class Validator {
+  fun getOrNull(): String? = null
+  fun getOrDefault(value: String): String = value
+}
+fun <T> Context.queryParamAsClass(key: String): Validator = Validator()
+class Other {
+  fun queryParamAsClass(key: String): String = key
+}
+`,
+    'src/main/kotlin/consumer/Validation.kt': `package consumer
+import app.Context
+import app.Other
+import app.queryParamAsClass
+fun positive(ctx: Context) = ctx.queryParamAsClass<String>("x").getOrNull()
+fun negative(ctx: Other) = ctx.queryParamAsClass("x").getOrDefault("default")
+`,
     'src/commonMain/kotlin/okio/ByteString.kt': BYTE_STRING,
     'src/main/kotlin/app/ConnectionSpec.kt': `package app
 
@@ -75,4 +93,18 @@ describe('Kotlin split primary constructors and standard chain calls', () => {
     const targets = cg.getOutgoingEdges(build.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
     expect(targets.some((t) => t.endsWith('ConnectionSpec::apply'))).toBe(false);
   });
+});
+
+it('preserves each newline when blanking annotated constructor modifiers', () => {
+  const source = 'expect open class ByteString\r\n@Inject\r\ninternal constructor(data: ByteArray) : Comparable<ByteString> {\r\n  fun hex(): String\r\n}\r\n';
+  const out = joinKotlinSplitConstructors(source);
+  expect(out.length).toBe(source.length);
+  expect([...out.matchAll(/\r|\n/g)].map((m) => m.index)).toEqual([...source.matchAll(/\r|\n/g)].map((m) => m.index));
+});
+
+it('keeps imported extension return-type chains and rejects a different receiver', () => {
+  const nodes = cg.getNodesInFile('src/main/kotlin/consumer/Validation.kt');
+  const targets = (name: string) => cg.getOutgoingEdges(nodes.find((n) => n.name === name)!.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.qualifiedName);
+  expect(targets('positive')).toContain('app::Validator::getOrNull');
+  expect(targets('negative')).not.toContain('app::Validator::getOrDefault');
 });

@@ -584,6 +584,9 @@ impl KernelResolver {
             }
             if let Some(t) = inferred {
                 let Some(t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
+                if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && t.contains('.') {
+                    return self.match_bound_type_member(&t, &method_name, r);
+                }
                 // Java/Kotlin: the file's import pins WHICH same-named class.
                 let fqn = if r.language == "java" || r.language == "kotlin" {
                     self.imported_fqn_of(&t, r)?
@@ -1244,23 +1247,21 @@ pub(super) struct FactoryInit {
 /// that function itself: no function body opens between the outermost
 /// brace and the `return` (`=> {`, `function … {`, `name(…) {` that is not
 /// `if`/`for`/`while`/`switch`/`catch`/`with`). Control-flow blocks count.
-fn own_return_lines(body: &str) -> HashSet<usize> {
+pub(super) fn own_return_offsets(body: &str) -> HashSet<usize> {
     let code = super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(body));
     let return_kw = re!(r"(?-u:\b)return(?-u:\b)");
     let returns: Vec<usize> = return_kw.find_iter(&code).map(|m| m.start()).collect();
     let mut own = HashSet::new();
     let mut stack: Vec<bool> = Vec::new();
     let mut next = 0;
-    let mut line = 0;
     for (i, b) in code.bytes().enumerate() {
         if next < returns.len() && returns[next] == i {
             if !stack.iter().skip(1).any(|&is_fn| is_fn) {
-                own.insert(line);
+                own.insert(i);
             }
             next += 1;
         }
         match b {
-            b'\n' => line += 1,
             b'{' => stack.push(opens_function_body(&code[..i])),
             b'}' => {
                 stack.pop();
@@ -1269,6 +1270,10 @@ fn own_return_lines(body: &str) -> HashSet<usize> {
         }
     }
     own
+}
+
+fn own_return_lines(body: &str) -> HashSet<usize> {
+    own_return_offsets(body).into_iter().map(|at| body[..at].bytes().filter(|b| *b == b'\n').count()).collect()
 }
 
 /// Does a `{` after `prefix` open a function body rather than a block or

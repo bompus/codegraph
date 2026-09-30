@@ -306,6 +306,7 @@ interface RouteDeclaration {
 /** A path-bearing route object or `<Route>` element, with the extent its children sit in. */
 interface RouteScope {
   part: RoutePart;
+  start: number;
   at: number;
   end: number;
   component?: string;
@@ -420,7 +421,7 @@ function scanRouteDeclarations(source: string, allowJsx: boolean): RouteDeclarat
         ?? componentName(fields.get('Component')?.value, false);
       const lazy = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/.exec(fields.get('lazy')?.value ?? '')?.[1];
       if (pathField && (path !== undefined || expr)) {
-        scopes.push({ part: path !== undefined ? { lit: path } : { expr }, at: pathField.at, end: i, component, lazy });
+        scopes.push({ part: path !== undefined ? { lit: path } : { expr }, start: at, at: pathField.at, end: i, component, lazy });
       }
     }
     return i < source.length ? i + 1 : i;
@@ -446,7 +447,7 @@ function scanRouteDeclarations(source: string, allowJsx: boolean): RouteDeclarat
       const component = componentName(expression('component'), false) ?? componentName(expression('element'), true);
       const lazy = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/.exec(expression('lazy') ?? '')?.[1];
       if (path) {
-        scope = { part: { lit: path }, at, end: source.length, component, lazy, jsx: true };
+        scope = { part: { lit: path }, start: at, at, end: source.length, component, lazy, jsx: true };
         scopes.push(scope);
       }
     }
@@ -476,8 +477,8 @@ function scanRouteDeclarations(source: string, allowJsx: boolean): RouteDeclarat
   for (const scope of scopes) {
     if (!scope.component && !scope.lazy && !scope.jsx) continue;
     const chain = scopes
-      .filter((outer) => outer !== scope && outer.at < scope.at && outer.end >= scope.end)
-      .sort((a, b) => a.at - b.at);
+      .filter((outer) => outer !== scope && outer.start < scope.start && outer.end >= scope.end)
+      .sort((a, b) => a.start - b.start);
     const parts = [...chain.map((c) => c.part), scope.part];
     const shown = parts.map((p) => p.lit ?? `{${p.expr}}`);
     routes.push({ path: composeRoutePath(shown), parts, component: scope.component, lazy: scope.lazy, at: scope.at });

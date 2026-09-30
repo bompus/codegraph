@@ -6,7 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
-import { stripCommentsForRegex } from '../strip-comments';
+import { blankStringContents, stripCommentsForRegex } from '../strip-comments';
 
 export const aspnetResolver: FrameworkResolver = {
   name: 'aspnet',
@@ -280,24 +280,30 @@ export const aspnetResolver: FrameworkResolver = {
     // — and handles the request in its own `HandleAsync` / `ExecuteAsync`. A
     // constant path (`X.Route`, usually in the request's own file) is read in
     // postExtract; until then the route is named by the expression.
+    const structural = blankStringContents(safe);
     const endpointClass = /\bclass\s+([A-Za-z_]\w*)[^{;]*?:\s*(?:FastEndpoints\.)?(?:Endpoint(?:WithoutRequest|WithoutResponse)?\b|Ep\.)/g;
     while ((match = endpointClass.exec(safe)) !== null) {
-      const body = safe.slice(match.index);
+      const open = safe.indexOf('{', match.index + match[0].length);
+      const end = closingBrace(structural, open);
+      if (open < 0 || end < 0) continue;
+      const body = safe.slice(open + 1, end);
       const configure = /\bvoid\s+Configure\s*\(\s*\)\s*\{/.exec(body);
       if (!configure) continue;
       const handler = /\b(HandleAsync|ExecuteAsync)\s*\(/.exec(body)?.[1];
       const verbRegex = /\b(Get|Post|Put|Patch|Delete)\s*\(\s*([^;]*?)\s*\)\s*;/g;
-      verbRegex.lastIndex = configure.index;
-      const configureEnd = configure.index + 3000;
+      const configureOpen = open + 1 + configure.index + configure[0].length - 1;
+      const configureEnd = closingBrace(structural, configureOpen);
+      if (configureEnd < 0) continue;
+      const configureBody = safe.slice(configureOpen + 1, configureEnd);
       let verb: RegExpExecArray | null;
-      while ((verb = verbRegex.exec(body)) !== null && verb.index < configureEnd) {
+      while ((verb = verbRegex.exec(configureBody)) !== null) {
         const method = verb[1]!.toUpperCase();
         const args = verb[2]!;
         // `$"/{nameof(Project)}s"` is `/Projects`.
         const literals = [...args.matchAll(/"([^"]+)"/g)].map((l) => joinCsPath('', l[1]!.replace(/\{\s*nameof\s*\(\s*(\w+)\s*\)\s*\}/g, '$1')));
         const constant = /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/.exec(args);
         const targets = literals.length > 0 ? literals.map((p) => ({ name: p, key: p })) : constant ? [{ name: `${constant[1]}.${constant[2]}`, key: `const:${constant[1]}.${constant[2]}` }] : [];
-        const line = safe.slice(0, match.index + verb.index).split('\n').length;
+        const line = safe.slice(0, configureOpen + 1 + verb.index).split('\n').length;
         for (const t of targets) {
           const id = `route:${filePath}:${line}:${method}:${t.name}`;
           nodes.push({
@@ -307,8 +313,6 @@ export const aspnetResolver: FrameworkResolver = {
           });
           if (handler) references.push({ fromNodeId: id, referenceName: handler, referenceKind: 'references', line, column: 0, filePath, language: 'csharp' });
         }
-        // A second verb call (`Get(...); Post(...)`) is a second route; stop at Configure's end.
-        if (/\n\s*\}\s*\n/.test(body.slice(configure.index, verb.index))) break;
       }
     }
 
@@ -434,4 +438,15 @@ function resolveByNameAndKind(
 
   // Fall back to any match
   return kindFiltered[0]!.id;
+}
+
+/** Match braces in comment-stripped text with string contents blanked. */
+function closingBrace(text: string, open: number): number {
+  if (open < 0 || text[open] !== '{') return -1;
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return i;
+  }
+  return -1;
 }

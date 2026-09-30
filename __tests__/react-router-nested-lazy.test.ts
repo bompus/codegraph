@@ -40,7 +40,6 @@ import AppRoot from './routes/app/root';
 export const router = createBrowserRouter([
   { path: paths.home.path, lazy: () => import('./routes/landing') },
   {
-    path: paths.app.root.path,
     element: (
       <ProtectedRoute>
         <AppRoot />
@@ -50,6 +49,7 @@ export const router = createBrowserRouter([
       { path: paths.app.discussions.path, lazy: () => import('./routes/app/discussions') },
       { path: 'settings', element: <Settings /> },
     ],
+    path: paths.app.root.path,
   },
 ]);
 `,
