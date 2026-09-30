@@ -398,6 +398,7 @@ impl KernelResolver {
     /// gateLanguage (index.ts): drop import/name results crossing a family.
     pub(super) fn gate_language(&mut self, cand: Option<KCand>, r: &ResolveRefIn) -> Option<KCand> {
         let cand = cand?;
+        if super::call_shape::kotlin_number_bitwise(&cand.node, r) { return None; }
         let tgt = cand.node.language.as_str();
         // getLanguageFromNodeId is the node's language — already in hand.
         if tgt == "markdown" || r.language == "markdown" {

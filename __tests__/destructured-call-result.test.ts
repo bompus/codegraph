@@ -18,6 +18,18 @@ let cg: CodeGraph;
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-destructured-'));
   const files: Record<string, string> = {
+    'src/hooks/useNested.ts': `export function useNested() {
+  function hiddenAction() { }
+  function nested() { return { hiddenAction }; }
+  return undefined;
+}
+`,
+    'src/pages/nested.ts': `import { useNested } from '../hooks/useNested';
+export function runNested() {
+  const { hiddenAction } = useNested();
+  hiddenAction();
+}
+`,
     'package.json': JSON.stringify({ name: 'app', dependencies: { vue: '^3' } }),
     'src/composables/use-default-activity.ts': `function getDefaultActivityRoute(key?: string): string {
   return key ?? '/';
@@ -67,4 +79,10 @@ describe('names destructured from a call', () => {
     expect(targets).toContain('src/composables/use-default-activity.ts:getDefaultActivityRoute');
     expect(targets).toContain('src/hooks/useAuth.ts:login');
   });
+});
+
+it('ignores actions returned only by a nested function', () => {
+  const run = cg.getNodesInFile('src/pages/nested.ts').find((n) => n.name === 'runNested')!;
+  const targets = cg.getOutgoingEdges(run.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!.name);
+  expect(targets).not.toContain('hiddenAction');
 });

@@ -26,6 +26,18 @@ let cg: CodeGraph;
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-member-receiver-'));
   const files: Record<string, string> = {
+    'src/KnownClinic.java': `package app;
+public class KnownClinic {
+    private app.Repository owners;
+    public void check() { this.owners.find(); }
+}
+`,
+    'src/ExternalClinic.java': `package app;
+public class ExternalClinic {
+    private outside.Repository owners;
+    public void check() { this.owners.find(); }
+}
+`,
     'src/Repository.java': `package app;
 public interface Repository {
     java.util.List<String> find();
@@ -194,4 +206,12 @@ describe('C# default visibility', () => {
 
 it('keeps an explicit Java field receiver when a local shares its name', () => {
   expect(callsFrom('src/Clinic.java')).toContain('app::Repository::find');
+});
+
+it('leaves a qualified external field type outside the project', () => {
+  expect(callsFrom('src/ExternalClinic.java')).not.toContain('app::Repository::find');
+});
+
+it('keeps the exact qualified project field type', () => {
+  expect(callsFrom('src/KnownClinic.java')).toContain('app::Repository::find');
 });

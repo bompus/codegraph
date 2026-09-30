@@ -49,7 +49,7 @@ impl KernelResolver {
                     let before = &line[..m.get(0).unwrap().start()];
                     let in_params = depth == 1 && before.matches('(').count() > before.matches(')').count();
                     if !in_params && !matches!(&m[1], "return" | "new" | "throw" | "var" | "val" | "get" | "set" | "init" | "class" | "interface" | "object" | "static" | "final") {
-                        found = self.normalize_inferred_type_name(&m[1])?; break;
+                        found = if m[1].contains('.') { Some(m[1].to_string()) } else { self.normalize_inferred_type_name(&m[1])? }; break;
                     }
                 }
             }
@@ -62,7 +62,7 @@ impl KernelResolver {
         let head = head.split('{').next().unwrap_or("");
         let name = regex::escape(name);
         let bound = Self::cached_regex(&format!(r"[<,]\s*(?:in\s+|out\s+|reified\s+)?{name}\s*(?:extends|:)\s*([A-Z][\w.]*)|\bwhere\s+{name}\s*:\s*([A-Z][\w.]*)"))?;
-        if let Some(m) = bound.captures(head) { return Ok(Some(m.get(1).or_else(|| m.get(2)).map(|v| v.as_str().rsplit('.').next().unwrap_or("").to_string()))); }
+        if let Some(m) = bound.captures(head) { return Ok(Some(m.get(1).or_else(|| m.get(2)).map(|v| v.as_str().to_string()))); }
         Ok(Self::cached_regex(&format!(r"[<,]\s*(?:in\s+|out\s+|reified\s+)?{name}\s*[,>]"))?.is_match(head).then_some(None))
     }
     pub(super) fn infer_declared_member_receiver_type(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
@@ -96,7 +96,7 @@ impl KernelResolver {
                 let Some(sup) = re!(r"([A-Z]\w*)\s*$").captures(part).map(|m| m[1].to_string()) else { continue };
                 let at = Self::cached_regex(&format!(r"(?:[:,]|\bextends|\bimplements)\s*(?:[\w.]+\.)?{}\s*<", regex::escape(&sup)))?.find(&head).map(|m| m.start());
                 let given: Vec<String> = at.map(|at| angle_arguments(&head[at..])).unwrap_or_default().iter().map(|a| {
-                    let simple = a.split('<').next().unwrap_or("").rsplit('.').next().unwrap_or("").trim(); args.get(simple).cloned().unwrap_or_else(|| simple.to_string())
+                    let simple = a.split('<').next().unwrap_or("").trim(); args.get(simple).cloned().unwrap_or_else(|| simple.to_string())
                 }).collect();
                 for parent in self.nodes_by_name(&sup)?.iter().filter(|n| n.language == r.language && class_kind(&n.kind)) {
                     let head = self.declaration_head(parent, 3);

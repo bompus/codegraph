@@ -8,7 +8,7 @@ Phase 4 notes record the kind-table drift.
 
 | dir | source | revision | notes |
 |---|---|---|---|
-| kotlin | fwcd/tree-sitter-kotlin | 0.3.8 tag | see kotlin checklist |
+| kotlin | fwcd/tree-sitter-kotlin | 0.3.8 tag + docs/grammars/tree-sitter-kotlin.patch | same-line infix scanner fix; hashes and rebuild in docs/grammars/tree-sitter-kotlin.md |
 | lua | tree-sitter-grammars/tree-sitter-lua | v0.4.1 | see lua-luau checklist |
 | scala | tree-sitter/tree-sitter-scala | v0.26.2 | #1823; sha256 in build.rs |
 | dart | UserNobody14/tree-sitter-dart | d4d8f3e | |

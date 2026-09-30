@@ -323,7 +323,7 @@ const SPLIT_PRIMARY_CONSTRUCTOR =
 
 export function joinKotlinSplitConstructors(source: string): string {
   if (!source.includes('constructor')) return source;
-  return source.replace(SPLIT_PRIMARY_CONSTRUCTOR, (_m, head: string, ctor: string) => head + ' '.repeat(ctor.length));
+  return source.replace(SPLIT_PRIMARY_CONSTRUCTOR, (_m, head: string, ctor: string) => head + ctor.replace(/[^\r\n]/g, ' '));
 }
 
 export function preParseKotlin(source: string): string {

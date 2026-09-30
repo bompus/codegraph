@@ -559,6 +559,8 @@ impl<'t> Walker<'t> {
             self.extract_import(node);
         } else if kind == "call_expression" {
             self.extract_call(node);
+        } else if kind == "infix_expression" {
+            self.extract_infix_call(node);
         }
         // companion_object, anonymous_initializer, secondary_constructor,
         // getter/setter siblings, file_annotation, object_literal, if/when at
@@ -586,6 +588,8 @@ impl<'t> Walker<'t> {
 
         if kind == "call_expression" {
             self.extract_call(node);
+        } else if kind == "infix_expression" {
+            self.extract_infix_call(node);
         }
         // (INSTANTIATION_KINDS has no kotlin members; extractBareCall absent.)
 

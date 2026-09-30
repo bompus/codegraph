@@ -97,7 +97,8 @@ impl KernelResolver {
             let lo = (callee.start_line - 1).max(0) as usize;
             let hi = (callee.end_line.max(0) as usize).min(source.len());
             let text = blank_string_contents(&strip_ts_comments(&source.get(lo..hi).unwrap_or_default().join("\n")));
-            let returns: Vec<_> = re!(r"(?-u:\b)return\s*\{([^{}]*)\}").captures_iter(&text).map(|m| m[1].to_string()).collect();
+            let own = super::method_call::own_return_offsets(&text);
+            let returns: Vec<_> = re!(r"(?-u:\b)return\s*\{([^{}]*)\}").captures_iter(&text).filter(|m| own.contains(&m.get(0).unwrap().start())).map(|m| m[1].to_string()).collect();
             if returns.len() != 1 { return Ok(None) }
             let target_name = returns[0].split(',').find_map(|part| {
                 let mut pair = part.split(':');

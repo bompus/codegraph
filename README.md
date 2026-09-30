@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`2e2b98c`](https://github.com/colbymchenry/codegraph/commit/2e2b98c9), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`c6491ff`](https://github.com/colbymchenry/codegraph/commit/c6491ff6), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -114,7 +114,7 @@ Dispatch and framework coverage the fork adds, by kind:
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
 | `window.postMessage` | Posted messages to their listeners |
 
-Flow-annotated JavaScript is parsed through the TSX grammar. Java and C# calls through declared fields or properties use their declared types; unresolved external types remain unresolved. Rust, Go, Scala, Swift and Kotlin calls also use the receiver and lexical scope at the call site.
+Kotlin infix expressions contribute call edges, and same-line infix names beginning with `e` keep their enclosing class intact. Flow-annotated JavaScript is parsed through the TSX grammar. Java and C# calls through declared fields or properties use their declared types; unresolved external types remain unresolved. Rust, Go, Scala, Swift and Kotlin calls also use the receiver and lexical scope at the call site.
 
 **Server endpoints**
 
