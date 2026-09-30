@@ -86,6 +86,93 @@ impl KernelResolver {
         Ok(self.unique_member(named, r, 0.8)?.filter(|c| c.node.kind == "method"))
     }
 
+    /// `self.<field>.method()` / `cls.<field>.method()` in Python: the field's
+    /// type from its class or a base (`self.cache = Store()` in `__init__`,
+    /// an annotation, an annotated parameter assigned to it), then the member
+    /// on that type or along its MRO, else a subclass's. `None`: the field's
+    /// type (or the subclass) is not known here, so the name strategies
+    /// decide; `Some(None)`: the type's member is data or a property.
+    pub(super) fn python_self_field_call(&mut self, receiver: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        let Some(field) = receiver.strip_prefix("self.").or_else(|| receiver.strip_prefix("cls.")).filter(|f| is_word(f)) else {
+            return Ok(None);
+        };
+        let owner = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| n.kind == "class" && n.start_line <= r.line && n.end_line >= r.line)
+            .max_by_key(|n| n.start_line)
+            .cloned();
+        let Some(owner) = owner else { return Ok(None) };
+        // The field's evidence in the class and every base along its MRO,
+        // each read in its own file, must name one class: a subclass's
+        // `self.cache = Other()` conflicts with the base's `Store()`, and
+        // the name strategies decide. A base's declared type
+        // (`cache: Base`) may be narrowed to a subclass of it.
+        let mut classes: Vec<Arc<KNode>> = vec![owner.clone()];
+        if self.supertypes_complete {
+            if let Some(mro) = self.python_mro(&owner, 0)? {
+                classes.extend(mro.iter().skip(1).cloned());
+            }
+        }
+        // (class, every fact naming it is declared)
+        let mut named: Vec<(Arc<KNode>, bool)> = Vec::new();
+        for class in &classes {
+            let site = r.clone().at(class);
+            let facts = self.python_field_facts(field, class)?;
+            for fact in visible_field_facts(&facts, r) {
+                let Some(t) = fact.ty.as_deref().filter(|t| *t != UNKNOWN_TYPE && *t != "object" && *t != "Any") else {
+                    return Ok(None);
+                };
+                let Some(found) = self.python_ref_class(t, &site)? else { return Ok(None) };
+                match named.iter_mut().find(|(c, _)| c.id == found.id) {
+                    Some((_, declared)) => *declared &= fact.declared,
+                    None => named.push((found, fact.declared)),
+                }
+            }
+        }
+        let (cls, exact) = match named.len() {
+            0 => return Ok(None),
+            1 => (named[0].0.clone(), !named[0].1),
+            _ => {
+                let mut narrowest = None;
+                for (c, own_declared) in &named {
+                    let mro = self.python_mro(c, 0)?.unwrap_or_default();
+                    let covers = named
+                        .iter()
+                        .all(|(d, declared)| d.id == c.id || (*declared && mro.iter().any(|m| m.id == d.id)));
+                    if covers {
+                        narrowest = Some((c.clone(), !*own_declared));
+                        break;
+                    }
+                }
+                let Some(pick) = narrowest else { return Ok(None) };
+                pick
+            }
+        };
+        let mut members = self.python_members(&cls, member, r, &mut HashSet::new())?;
+        let mut confidence = 0.9;
+        if members.is_empty() {
+            // A field only ever assigned `Store()` holds exactly a `Store`.
+            if exact {
+                return Ok(Some(None));
+            }
+            // A declared base type can hold a subclass: its one method of
+            // that name, else the name strategies decide as before.
+            members = self.python_descendant_members(&cls, member, r)?;
+            if members.len() != 1 {
+                return Ok(None);
+            }
+            confidence = 0.8;
+        }
+        let mut methods = members.into_iter().filter(|n| n.language == "python");
+        Ok(Some(match (methods.next(), methods.next()) {
+            (Some(m), None) if m.kind == "method" && !self.is_python_property(&m) => {
+                Some(KCand { node: m, confidence, resolved_by: "instance-method" })
+            }
+            _ => None,
+        }))
+    }
+
     /// Is `name` bound at `r` by something other than its import (a
     /// parameter, a local)? Files without binding rows keep the import.
     fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
@@ -130,8 +217,19 @@ impl KernelResolver {
         if !members.is_empty() {
             return Ok(Some(self.unique_member(members, r, 0.9)?));
         }
-        // A base-typed receiver can hold a subclass-only method: keep only
-        // descendants of THAT base, so unrelated same-name methods can't win.
+        // A base-typed receiver can hold a subclass-only method.
+        let descendants = self.python_descendant_members(&cls, member, r)?;
+        Ok(Some(self.unique_member(descendants, r, 0.8)?))
+    }
+
+    /// `member` methods of the classes deriving from `cls` (a base-typed
+    /// receiver can hold a subclass): only descendants of THAT base, so
+    /// unrelated same-name methods can't win.
+    fn python_descendant_members(&mut self, cls: &KNode, member: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let key = (cls.id.clone(), member.to_string());
+        if let Some(hit) = self.py_descendants_memo.get(&key) {
+            return Ok(hit.as_ref().clone());
+        }
         let candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(member)?
             .iter()
@@ -147,12 +245,13 @@ impl KernelResolver {
                 .find(|c| c.kind == "class" && c.qualified_name == n.qualified_name[..sep])
                 .cloned();
             if let Some(parent) = parent {
-                if self.python_derives_from(&parent, &cls, r, &mut HashSet::new())? {
+                if self.python_derives_from(&parent, cls, r, &mut HashSet::new())? {
                     descendants.push(n);
                 }
             }
         }
-        Ok(Some(self.unique_member(descendants, r, 0.8)?))
+        self.py_descendants_memo.insert(key, Rc::new(descendants.clone()));
+        Ok(descendants)
     }
 
     /// The single same-family candidate, when it is a callable other than
@@ -361,13 +460,62 @@ impl KernelResolver {
         if !is_word(receiver) {
             return Ok(None);
         }
-        let caller = self.node_by_id(&r.from_node_id)?;
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let floor = caller.as_ref().map_or(1, |c| c.start_line).max(1);
+        let mut scope = self.node_by_id(&r.from_node_id)?;
+        let mut upto = r.line;
+        // A nested def reads a name it does not bind from the function around
+        // it (`def outer(obj: Store): def inner(): submit(obj.fetch)`). Only a
+        // type found there counts; an untyped outer assignment (`app =
+        // ctx.app`) leaves the nested site as unknown as it was.
+        for depth in 0..CLASS_WALK_LIMIT {
+            if let Some(found) = self.python_scope_local_type(receiver, scope.as_deref(), upto, &lines, r)? {
+                return Ok((depth == 0 || found != UNKNOWN_TYPE).then_some(found));
+            }
+            let Some(inner) = scope else { return Ok(None) };
+            let signature = inner.signature.as_deref().unwrap_or("");
+            if let Some(t) = param_annotation(signature, receiver) {
+                return Ok(Some(t));
+            }
+            if has_param(signature, receiver) || inner.kind == "method" {
+                return Ok(None);
+            }
+            let outer = self
+                .nodes_in_file(&r.file_path)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "function" | "method" | "class")
+                        && n.id != inner.id
+                        && n.start_line <= inner.start_line
+                        && n.end_line >= inner.end_line
+                })
+                .max_by_key(|n| n.start_line)
+                .cloned();
+            match outer {
+                Some(o) if o.kind != "class" => {
+                    upto = inner.start_line - 1;
+                    scope = Some(o);
+                }
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The nearest assignment or annotation of `receiver` in `scope`'s own
+    /// body at or above line `upto`, nested def and class bodies skipped.
+    fn python_scope_local_type(
+        &mut self,
+        receiver: &str,
+        scope: Option<&KNode>,
+        upto: i64,
+        lines: &[String],
+        r: &ResolveRefIn,
+    ) -> Res<Option<String>> {
+        let floor = scope.map_or(1, |c| c.start_line).max(1);
         // A nested def or class body binds its own locals, never the caller's.
-        let ceiling = caller.as_ref().map_or(i64::MAX, |c| c.end_line);
+        let ceiling = scope.map_or(i64::MAX, |c| c.end_line);
         let nested: Vec<(i64, i64)> = self
             .nodes_in_file(&r.file_path)?
             .iter()
@@ -379,8 +527,8 @@ impl KernelResolver {
             })
             .map(|n| (n.start_line, n.end_line))
             .collect();
-        let mut line_no = r.line.min(lines.len() as i64);
-        let starts = python_statement_starts(&lines, (floor - 1) as usize, line_no.max(floor) as usize);
+        let mut line_no = upto.min(lines.len() as i64);
+        let starts = python_statement_starts(lines, (floor - 1) as usize, line_no.max(floor) as usize);
         while line_no >= floor {
             let line = &lines[(line_no - 1) as usize];
             let starts_statement = starts[(line_no - floor) as usize];
@@ -400,85 +548,135 @@ impl KernelResolver {
                 }
             }
         }
-        Ok(caller.and_then(|c| param_annotation(c.signature.as_deref().unwrap_or(""), receiver)))
+        Ok(None)
     }
 
     /// `self.<field>`'s type within `owner`: a class-body or `self.`
-    /// annotation, an annotated or constructor assignment, or an `__init__`
-    /// (or referencing method) parameter assigned to it. Conflicting
+    /// annotation, an annotated or constructor assignment in any of its
+    /// methods, or an annotated method parameter assigned to it (the
+    /// referencing method counts only above the reference). Conflicting
     /// evidence is known-but-ambiguous, never a name-only fallback.
     fn python_field_type(&mut self, field: &str, owner: &KNode, r: &ResolveRefIn) -> Res<Option<String>> {
-        let Some(lines) = self.read_file(&r.file_path) else {
-            return Ok(None);
-        };
-        let prefix = format!("{}::", owner.qualified_name);
-        let methods: Vec<Arc<KNode>> = self
-            .nodes_in_file(&r.file_path)?
-            .iter()
-            .filter(|n| n.kind == "method" && n.qualified_name.starts_with(&prefix))
-            .cloned()
-            .collect();
+        Ok(self.python_field_evidence(field, owner, r)?.map(|(t, _)| t))
+    }
+
+    /// python_field_type plus whether every piece of evidence is a
+    /// constructor call (`self.cache = Store()`): then the runtime type is
+    /// exactly that class, never a subclass.
+    fn python_field_evidence(&mut self, field: &str, owner: &KNode, r: &ResolveRefIn) -> Res<Option<(String, bool)>> {
+        let facts = self.python_field_facts(field, owner)?;
         let mut types: Vec<String> = Vec::new();
         let mut untyped = false;
-        let mut add = |t: String| {
-            if !types.contains(&t) {
-                types.push(t);
-            }
-        };
-        let end = (owner.end_line.max(0) as usize).min(lines.len());
-        let begin = (owner.start_line.max(0) as usize).min(end);
-        let starts = python_statement_starts(&lines, begin, end);
-        for i in begin..end {
-            if !starts[i - begin] {
-                continue;
-            }
-            let line_no = i as i64 + 1;
-            let method = methods.iter().find(|m| m.start_line <= line_no && m.end_line >= line_no);
-            if let Some(m) = method {
-                if m.id == r.from_node_id {
-                    if line_no > r.line {
-                        continue;
+        let mut declared = false;
+        for fact in visible_field_facts(&facts, r) {
+            match &fact.ty {
+                Some(t) => {
+                    declared |= fact.declared;
+                    if !types.contains(t) {
+                        types.push(t.clone());
                     }
-                } else if m.name != "__init__" {
-                    continue;
                 }
-            }
-            let line = &lines[i];
-            if let Some(c) = python_annotation_re().captures(line) {
-                if &c[2] == field && (method.is_none() || c.get(1).is_some()) {
-                    add(c[3].to_string());
-                }
-            }
-            let Some(c) = python_assignment_re().captures(line) else { continue };
-            if c.get(1).is_none() || &c[2] != field {
-                continue;
-            }
-            if let Some(t) = c.get(3) {
-                add(t.as_str().to_string());
-                continue;
-            }
-            let value = c[4].trim();
-            if let Some(ctor) = constructor_type(value) {
-                add(ctor);
-                continue;
-            }
-            match method {
-                Some(_) if value == "None" => {}
-                Some(m) if is_word(value) => match param_annotation(m.signature.as_deref().unwrap_or(""), value) {
-                    Some(t) => add(t),
-                    None => untyped = true,
-                },
-                _ => add(UNKNOWN_TYPE.to_string()),
+                None => untyped = true,
             }
         }
         Ok(match types.len() {
             0 => None,
             // An untyped reassignment (`self.store = replacement`) outvotes
             // the one typed assignment; alone it stays no evidence.
-            1 if !untyped => types.pop(),
-            _ => Some(UNKNOWN_TYPE.to_string()),
+            1 if !untyped => types.pop().map(|t| (t, !declared)),
+            _ => Some((UNKNOWN_TYPE.to_string(), false)),
         })
     }
+
+    /// Every annotation and assignment of `self.<field>` in `owner`'s body
+    /// and its own methods (a nested class's `__init__` types its own
+    /// fields), read once per class and field.
+    fn python_field_facts(&mut self, field: &str, owner: &KNode) -> Res<Rc<Vec<PyFieldFact>>> {
+        let key = (owner.id.clone(), field.to_string());
+        if let Some(hit) = self.py_field_facts_memo.get(&key) {
+            return Ok(hit.clone());
+        }
+        let mut facts: Vec<PyFieldFact> = Vec::new();
+        if let Some(lines) = self.read_file(&owner.file_path) {
+            let prefix = format!("{}::", owner.qualified_name);
+            let in_file = self.nodes_in_file(&owner.file_path)?;
+            let methods: Vec<Arc<KNode>> = in_file
+                .iter()
+                .filter(|n| {
+                    n.kind == "method" && n.qualified_name.strip_prefix(&prefix).is_some_and(|rest| !rest.contains("::"))
+                })
+                .cloned()
+                .collect();
+            let nested_classes: Vec<(i64, i64)> = in_file
+                .iter()
+                .filter(|n| n.kind == "class" && n.id != owner.id && n.start_line > owner.start_line && n.end_line <= owner.end_line)
+                .map(|n| (n.start_line, n.end_line))
+                .collect();
+            let end = (owner.end_line.max(0) as usize).min(lines.len());
+            let begin = (owner.start_line.max(0) as usize).min(end);
+            let starts = python_statement_starts(&lines, begin, end);
+            for i in begin..end {
+                if !starts[i - begin] {
+                    continue;
+                }
+                let line_no = i as i64 + 1;
+                if nested_classes.iter().any(|&(s, e)| s <= line_no && line_no <= e) {
+                    continue;
+                }
+                let method = methods.iter().find(|m| m.start_line <= line_no && m.end_line >= line_no);
+                let mut push = |ty: Option<String>, declared: bool| {
+                    facts.push(PyFieldFact { line: line_no, method: method.map(|m| m.id.clone()), ty, declared });
+                };
+                let line = &lines[i];
+                if let Some(c) = python_annotation_re().captures(line) {
+                    if &c[2] == field && (method.is_none() || c.get(1).is_some()) {
+                        push(Some(c[3].to_string()), true);
+                    }
+                }
+                let Some(c) = python_assignment_re().captures(line) else { continue };
+                if c.get(1).is_none() || &c[2] != field {
+                    continue;
+                }
+                if let Some(t) = c.get(3) {
+                    push(Some(t.as_str().to_string()), true);
+                    continue;
+                }
+                let value = c[4].trim();
+                if let Some(ctor) = constructor_type(value) {
+                    push(Some(ctor), false);
+                    continue;
+                }
+                match method {
+                    Some(_) if value == "None" => {}
+                    Some(m) if is_word(value) => match param_annotation(m.signature.as_deref().unwrap_or(""), value) {
+                        Some(t) => push(Some(t), true),
+                        None => push(None, false),
+                    },
+                    _ => push(Some(UNKNOWN_TYPE.to_string()), true),
+                }
+            }
+        }
+        let facts = Rc::new(facts);
+        self.py_field_facts_memo.insert(key, facts.clone());
+        Ok(facts)
+    }
+}
+
+/// One annotation or assignment of a Python `self.<field>`: its line, the
+/// method it sits in, and the type it names (`None`: an untyped value).
+pub(super) struct PyFieldFact {
+    line: i64,
+    method: Option<String>,
+    ty: Option<String>,
+    declared: bool,
+}
+
+/// The facts a reference sees: every method's, the referencing method's
+/// only up to the reference.
+fn visible_field_facts<'a>(facts: &'a [PyFieldFact], r: &'a ResolveRefIn) -> impl Iterator<Item = &'a PyFieldFact> {
+    facts
+        .iter()
+        .filter(move |f| !(f.method.as_deref() == Some(r.from_node_id.as_str()) && f.line > r.line))
 }
 
 fn is_word(s: &str) -> bool {
@@ -584,8 +782,28 @@ fn python_base_names(lines: &[String], at: usize) -> Vec<String> {
 }
 
 /// `Type(...)` — the constructed class of an assigned value.
+/// `Store(...)` as a value names `Store`; a conditional expression
+/// (`Store() if cond else Other()`) names no one class.
 fn constructor_type(value: &str) -> Option<String> {
-    re!(r"^([A-Z][\w.]*)\s*\(").captures(value).map(|c| c[1].to_string())
+    let c = re!(r"^([A-Z][\w.]*)\s*\(").captures(value)?;
+    let open = c.get(0)?.end() - 1;
+    let mut depth = 0usize;
+    for (i, b) in value.bytes().enumerate().skip(open) {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if re!(r"^\s*if\s").is_match(&value[i + 1..]) {
+                        return None;
+                    }
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(c[1].to_string())
 }
 
 fn assigned_type(annotation: Option<&str>, value: &str) -> String {
@@ -593,6 +811,11 @@ fn assigned_type(annotation: Option<&str>, value: &str) -> String {
         .map(str::to_string)
         .or_else(|| constructor_type(value.trim()))
         .unwrap_or_else(|| UNKNOWN_TYPE.to_string())
+}
+
+/// Does `signature` declare a parameter named `param`, annotated or not?
+fn has_param(signature: &str, param: &str) -> bool {
+    re!(r"[(,*]\s*([A-Za-z_]\w*)\s*(?:[:=,)]|$)").captures_iter(signature).any(|c| &c[1] == param)
 }
 
 /// `param: Type` in a signature.

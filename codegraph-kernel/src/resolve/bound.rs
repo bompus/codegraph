@@ -184,11 +184,18 @@ impl KernelResolver {
                 true
             })
             .collect();
-        let visible = if !local.is_empty() {
+        let mut visible = if !local.is_empty() {
             local
         } else {
             package_candidates
         };
+        // Ruby finds a constant lexically, from the class or module around
+        // the site outward.
+        if r.language == "ruby" && visible.len() > 1 {
+            if let Some(qn) = self.ruby_lexical_constant(ty, r)? {
+                visible.retain(|n| n.qualified_name == qn);
+            }
+        }
         Ok(if visible.len() == 1 { Some(visible[0].clone()) } else { None })
     }
 
@@ -420,10 +427,13 @@ impl KernelResolver {
     /// or implements, excluding the name itself. `from_site`: the name was
     /// written at `r`, so a Java type must also be one `r` can see (its
     /// file, its package, or an import) — an unrelated same-named class
-    /// elsewhere contributes nothing.
-    fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool) -> Res<Vec<String>> {
-        let mut type_nodes: Vec<Arc<KNode>> = self
-            .nodes_by_name(type_name)?
+    /// elsewhere contributes nothing. PHP names supertypes by their
+    /// qualified names, and `qualified` looks `type_name` up as one: a
+    /// class's parent is the one its declaration resolved to, never every
+    /// same-named class in other namespaces.
+    fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<String>> {
+        let named = if qualified { self.nodes_by_qualified_name(type_name)? } else { self.nodes_by_name(type_name)? };
+        let mut type_nodes: Vec<Arc<KNode>> = named
             .iter()
             // Scala singletons can inherit members even though they cannot be parents.
             .filter(|n| {
@@ -455,8 +465,15 @@ impl KernelResolver {
                 }
             }
             for target in targets {
-                if !target.name.is_empty() && target.name != type_name && !names.contains(&target.name) {
-                    names.push(target.name.clone());
+                // PHP, and Ruby from a qualified start, name supertypes
+                // by qualified name.
+                let name = if r.language == "php" || (qualified && r.language == "ruby") {
+                    &target.qualified_name
+                } else {
+                    &target.name
+                };
+                if !name.is_empty() && name != type_name && !names.contains(name) {
+                    names.push(name.clone());
                 }
             }
             // A Swift conformance to a type the project only extends (SwiftUI's
@@ -829,7 +846,21 @@ impl KernelResolver {
         resolved_by: &'static str,
         preferred_fqn: Option<&str>,
     ) -> Res<Option<KCand>> {
-        self.resolve_method_on_type_at(type_name, method, r, confidence, resolved_by, preferred_fqn, 0)
+        self.resolve_method_on_type_at(type_name, method, r, confidence, resolved_by, preferred_fqn, 0, false)
+    }
+
+    /// resolve_method_on_type for a PHP or Ruby type named by its fully
+    /// qualified name (`Lib::Store`, or `Sub` at the top level): only that
+    /// type's member, or its supertypes' along their qualified names.
+    pub(super) fn resolve_method_on_qualified_type(
+        &mut self,
+        qualified_name: &str,
+        method: &str,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+    ) -> Res<Option<KCand>> {
+        self.resolve_method_on_type_at(qualified_name, method, r, confidence, resolved_by, None, 0, true)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -842,8 +873,12 @@ impl KernelResolver {
         resolved_by: &'static str,
         preferred_fqn: Option<&str>,
         depth: u32,
+        qualified: bool,
     ) -> Res<Option<KCand>> {
         let want = format!("{}::{}", type_name, method);
+        // A qualified name means that one type: the global `Mid` never
+        // matches `Other\Mid`'s member.
+        let exact = qualified;
         let matches: Vec<Arc<KNode>> = self
             .nodes_by_name(method)?
             .iter()
@@ -851,7 +886,7 @@ impl KernelResolver {
                 m.kind == "method"
                     && same_language_family(&m.language, &r.language)
                     && (m.qualified_name == want
-                        || m.qualified_name.ends_with(&format!("::{}", want)))
+                        || (!exact && m.qualified_name.ends_with(&format!("::{}", want))))
             })
             .cloned()
             .collect();
@@ -864,9 +899,12 @@ impl KernelResolver {
             // The conformance fallback: the method may live on a supertype
             // (transitively, depth-capped), still validated by name.
             if depth < 4 {
-                for supertype in self.supertype_names(type_name, r, depth == 0)? {
+                // PHP supertypes, and Ruby ones from a qualified start, come
+                // back by qualified name.
+                let php = r.language == "php" || (qualified && r.language == "ruby");
+                for supertype in self.supertype_names(type_name, r, depth == 0 && !qualified, qualified)? {
                     if let Some(via) = self.resolve_method_on_type_at(
-                        &supertype, method, r, confidence, resolved_by, preferred_fqn, depth + 1,
+                        &supertype, method, r, confidence, resolved_by, preferred_fqn, depth + 1, php,
                     )? {
                         return Ok(Some(via));
                     }

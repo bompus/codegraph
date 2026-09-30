@@ -521,6 +521,77 @@ impl KernelResolver {
         Ok(seen)
     }
 
+    /// The Ruby class or module a constant written at `r` names, by lexical
+    /// lookup from the class or module around it outward (`Sub` inside
+    /// top-level `class App` is `::Sub`, never `Other::Sub`); None when no
+    /// indexed class or module has that qualified name.
+    pub(super) fn ruby_lexical_constant(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        if let Some(root) = name.strip_prefix("::") {
+            return self.ruby_known_constant(root);
+        }
+        // Module.nesting: the classes and modules whose bodies enclose the
+        // site, innermost first. `class Other::App` opens `Other::App` alone,
+        // so `Other` is not searched.
+        let mut nesting: Vec<Arc<KNode>> = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| matches!(n.kind.as_str(), "class" | "module") && n.start_line <= r.line && n.end_line >= r.line)
+            .cloned()
+            .collect();
+        nesting.sort_by_key(|n| n.end_line - n.start_line);
+        for scope in &nesting {
+            if let Some(qn) = self.ruby_known_constant(&format!("{}::{name}", scope.qualified_name))? {
+                return Ok(Some(qn));
+            }
+        }
+        // Then the ancestors of the class around the site (`Base::Sub` for
+        // `Sub` inside `class Child < Base`); more than one is ambiguous.
+        if let Some(class) = nesting.first().filter(|n| n.kind == "class") {
+            let ancestry = self.ruby_ancestry(&class.qualified_name)?;
+            let mut inherited: Vec<String> = Vec::new();
+            for a in ancestry.iter().filter(|a| **a != class.qualified_name) {
+                if let Some(qn) = self.ruby_known_constant(&format!("{a}::{name}"))? {
+                    if !inherited.contains(&qn) {
+                        inherited.push(qn);
+                    }
+                }
+            }
+            match inherited.len() {
+                0 => {}
+                1 => return Ok(inherited.pop()),
+                _ => return Ok(None),
+            }
+        }
+        self.ruby_known_constant(name)
+    }
+
+    /// `qn` when an indexed Ruby class or module has that qualified name.
+    fn ruby_known_constant(&mut self, qn: &str) -> Res<Option<String>> {
+        let known = self
+            .nodes_by_qualified_name(qn)?
+            .iter()
+            .any(|n| n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module"));
+        Ok(known.then(|| qn.to_string()))
+    }
+
+    /// Among several same-named Ruby classes or modules, a constant written
+    /// at `r` means the one lexical lookup finds; the rest are dropped.
+    pub(super) fn retain_ruby_lexical_constant(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let is_const = |n: &KNode| n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module");
+        if r.language != "ruby" || r.reference_kind == "calls" || candidates.iter().filter(|n| is_const(n)).count() < 2 {
+            return Ok(candidates);
+        }
+        // `Other::Sub.new` reaches here as `Sub`; the spelling decides.
+        let spelled = self
+            .read_file(&r.file_path)
+            .and_then(|lines| qualified_spelling(&lines, r))
+            .unwrap_or_else(|| r.reference_name.clone());
+        let Some(qn) = self.ruby_lexical_constant(&spelled, r)? else {
+            return Ok(candidates);
+        };
+        Ok(candidates.into_iter().filter(|n| !is_const(n) || n.qualified_name == qn).collect())
+    }
+
     /// rubyConstantQn: the class or module a constant written inside `scope`
     /// names — the nearest enclosing namespace that has it, else the name.
     fn ruby_constant_qn(&mut self, name: &str, scope: &str) -> Res<String> {
