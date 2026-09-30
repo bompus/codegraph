@@ -78,7 +78,7 @@ beforeAll(async () => {
     function otherCaptured() { otherSelected(); }
     function parameterShadow(selected: () => void) { selected(); }
     const arrowShadow = (selected: () => void) => { selected(); };
-    function localShadow() { const selected = () => 1; selected(); }
+    function localShadow(other: () => void) { const selected = other; selected(); }
     return { captured, otherCaptured, parameterShadow, arrowShadow, localShadow };
   }
   export function LaterCapture() {
@@ -87,6 +87,15 @@ beforeAll(async () => {
     const arrowShadow = (selected: () => void) => { selected(); };
     function captured() { selected(); }
     return { captured, parameterShadow, arrowShadow };
+  }
+  export function ClosedDeclaration(flag: boolean) {
+    const selected = current((s) => s.reset);
+    { const selected = 1; }
+    function helper() { let selected = 2; return selected; }
+    function captured() { selected(); }
+    function blockShadow(other: () => void) { { const selected = other; selected(); } }
+    function varShadow(other: () => void) { if (flag) { var selected = other; } selected(); }
+    return { captured, helper, blockShadow, varShadow };
   }
   export function sibling() { const selected = current(s => s.reset); }
   export function outside() { selected(); }
@@ -99,9 +108,9 @@ beforeAll(async () => {
     selected();
   }
   `);
-  // Return annotations with their own braces. The selector is named `picked`
-  // because the project has a function named `selected` (Screen::localShadow),
-  // which routes a `selected()` call past the selector check.
+  // Return annotations with their own braces. No function in the project is
+  // named for a selector: a same-named function would route the call past
+  // the selector check and mask these shadowing cases.
   write('annotated-selectors.ts', `import { useStore as current } from './store';
   export function AnnotatedCapture() {
     const picked = current((s) => s.reset);
@@ -174,6 +183,9 @@ describe('release-to-main correctness regressions', () => {
   it('follows a captured selector past closed siblings that bind the same name as a parameter', () => {
     expect(targets(node('LaterCapture::captured').id)).toEqual([node('reset', 'store.ts', 5).id]);
   });
+  it('follows a captured selector past a closed block or function that declares the same name', () => {
+    expect(targets(node('ClosedDeclaration::captured').id)).toEqual([node('reset', 'store.ts', 5).id]);
+  });
   it.each(['objectShadow', 'arrowObjectShadow', 'promiseShadow', 'recordShadow', 'arrayShadow'])('keeps a parameter shadow when the return annotation has braces (%s)', (name) => {
     expect(targets(node(`AnnotatedCapture::${name}`, 'annotated-selectors.ts').id)).toEqual([]);
   });
@@ -186,7 +198,11 @@ describe('release-to-main correctness regressions', () => {
     // Pin the whole target set so the other store's same-named reset cannot leak in.
     expect(targets(node(name, 'barrel-consumer.ts').id).sort()).toEqual([node('reset', 'store.ts', 5).id, store.id].sort());
   });
-  it.each(['Screen::parameterShadow', 'Screen::arrowShadow', 'Screen::localShadow', 'outside', 'wrongSelector', 'unknownSelector', 'rootShadow', 'rootBlockShadow', 'LaterCapture::parameterShadow', 'LaterCapture::arrowShadow'])('does not guess a selector action in %s', (name) => {
+  it('has no function named for a selector, which would mask the shadowing cases', () => {
+    const fns = [...cg.getNodesByKind('function'), ...cg.getNodesByKind('method')];
+    expect(fns.filter(n => n.name === 'selected' || n.name === 'picked')).toEqual([]);
+  });
+  it.each(['Screen::parameterShadow', 'Screen::arrowShadow', 'Screen::localShadow', 'outside', 'wrongSelector', 'unknownSelector', 'rootShadow', 'rootBlockShadow', 'LaterCapture::parameterShadow', 'LaterCapture::arrowShadow', 'ClosedDeclaration::blockShadow', 'ClosedDeclaration::varShadow'])('does not guess a selector action in %s', (name) => {
     const calls = targets(node(name, 'selectors.ts').id);
     expect(calls).not.toContain(node('reset', 'store.ts', 5).id);
     expect(calls).not.toContain(node('reset', 'store.ts', 8).id);

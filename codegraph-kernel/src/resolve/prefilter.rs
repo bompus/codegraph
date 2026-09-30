@@ -221,8 +221,20 @@ impl KernelResolver {
     /// call-site name resolves to a bare external specifier, so no project
     /// node may claim it.
     pub(super) fn is_bound_to_bare_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        Ok(self.bare_import_verdict(r)? == BareImport::External)
+    }
+
+    /// The call-site name is imported from a bare specifier that only
+    /// manifest text places in this repository: no workspace mapping says
+    /// which directory holds it, so a same-named symbol is a guess.
+    pub(super) fn is_bound_to_unmapped_package(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        Ok(self.bare_import_verdict(r)? == BareImport::UnmappedLocal)
+    }
+
+    fn bare_import_verdict(&mut self, r: &ResolveRefIn) -> Res<BareImport> {
+        let local = Ok(BareImport::Local);
         if !is_esm_family(&r.language) && !is_sfc_language(&r.language) {
-            return Ok(false);
+            return local;
         }
         let rows = self.bindings(&r.file_path)?;
         let source: Option<String> = if !rows.is_empty() {
@@ -236,9 +248,9 @@ impl KernelResolver {
                 .find(|i| i.local_name == r.reference_name)
                 .map(|i| i.source.clone())
         };
-        let Some(source) = source else { return Ok(false) };
+        let Some(source) = source else { return local };
         if source.starts_with('.') || source.starts_with('/') {
-            return Ok(false);
+            return local;
         }
         // SvelteKit's `$app/…` and Astro's `astro:…` are the framework's
         // virtual modules — unless this repository is that framework.
@@ -250,22 +262,27 @@ impl KernelResolver {
             None
         };
         if let Some(provider) = provider {
-            return Ok(!self.is_repository_package(provider, &r.file_path));
+            return Ok(match self.repository_package(provider, &r.file_path) {
+                RepositoryPackage::No => BareImport::External,
+                _ => BareImport::Local,
+            });
         }
         if source.starts_with('~') || source.starts_with('#') || source.starts_with('$') {
-            return Ok(false);
+            return local;
         }
         if source.starts_with("@/") || source.starts_with("src/") {
-            return Ok(false);
+            return local;
         }
         if self.is_alias_prefix(&source, &r.file_path) {
-            return Ok(false);
-        }
-        if self.is_repository_package(package_name_of(&source), &r.file_path) {
-            return Ok(false);
+            return local;
         }
         if self.workspaces.is_some() && self.resolve_workspace_import(&source).is_some() {
-            return Ok(false);
+            return local;
+        }
+        match self.repository_package(package_name_of(&source), &r.file_path) {
+            RepositoryPackage::Mapped => return local,
+            RepositoryPackage::Manifest => return Ok(BareImport::UnmappedLocal),
+            RepositoryPackage::No => {}
         }
         if !source.starts_with("node:") && !self.node_builtins.contains(&source) {
             let head = package_name_of(&source).to_string();
@@ -278,10 +295,29 @@ impl KernelResolver {
                 }
             };
             if local {
-                return Ok(false);
+                return Ok(BareImport::Local);
             }
         }
-        Ok(true)
+        Ok(BareImport::External)
+    }
+
+    /// A Svelte or Astro receiver the file declares, used where no binding
+    /// scope reaches: the markup, or a second `<script>` beside the one that
+    /// declares it. The rows can't type it there, so the binding-receiver
+    /// claim would refuse a call the name strategies still settle
+    /// (`counter.double()` in markup on `const counter = new Counter()`).
+    /// A script-level import stays with the claim, which reads it through
+    /// `sfc_top_level_binding`, even when a function elsewhere declares a
+    /// local of the same name.
+    pub(super) fn is_component_receiver_out_of_scope(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if !is_sfc_scoped_script(&r.language) {
+            return Ok(false);
+        }
+        let root = r.reference_name.split('.').next().unwrap_or("");
+        let rows = self.bindings(&r.file_path)?;
+        Ok(innermost_binding(&rows, root, Some(r.line)).is_none()
+            && !sfc_top_level_binding(&rows, root).is_some_and(|b| b.kind == "import")
+            && rows.iter().any(|b| b.name == root && b.kind != "import"))
     }
 
     /// Is `package` in this repository? A workspace member, a `link:`/`file:`
@@ -293,10 +329,10 @@ impl KernelResolver {
     /// only resolving it there would be binding evidence; matching the
     /// imported name across the project instead guessed wrong on vite's
     /// playground fixtures.
-    pub(super) fn is_repository_package(&mut self, package: &str, from_file: &str) -> bool {
+    fn repository_package(&mut self, package: &str, from_file: &str) -> RepositoryPackage {
         if let Some(ws) = &self.workspaces {
             if ws.local_link_names.contains(package) || self.resolve_workspace_import(package).is_some() {
-                return true;
+                return RepositoryPackage::Mapped;
             }
         }
         let mut dir = pos_dirname(from_file).to_string();
@@ -305,10 +341,10 @@ impl KernelResolver {
                 dir.clear();
             }
             if self.manifest_own_packages(&dir).contains(package) {
-                return true;
+                return RepositoryPackage::Manifest;
             }
             if dir.is_empty() {
-                return false;
+                return RepositoryPackage::No;
             }
             dir = match dir.rfind('/') {
                 Some(cut) => dir[..cut].to_string(),
@@ -414,7 +450,13 @@ impl KernelResolver {
         }
         let lines = self.read_file(&r.file_path)?;
         let first = (r.line - 1) as usize;
-        let at = js_slice(lines.get(first)?, r.column as usize);
+        let line = lines.get(first)?;
+        // Svelte markup columns run one byte short (the extractor counts from
+        // the `{`, not the expression), so `{...spread()}` lands on the
+        // spread's last dot: back over the dots so the spread, which names
+        // no receiver, starts the text.
+        let at = js_slice(line, r.column as usize);
+        let at = &line[line[..line.len() - at.len()].trim_end_matches('.').len()..];
         // A chain wrapped onto the next lines (`this.a.b\n  .filter(x)`):
         // the ref sits where the call expression starts, the name on a line
         // that continues it with `.`/`?.` or after a line ending in `.`.
@@ -492,7 +534,8 @@ fn member_call_at(at: &str, name: &str) -> Option<bool> {
             continue;
         }
         let mut k = skip_gap_back(b, i);
-        if k == 0 || b[k - 1] != b'.' {
+        // `...name()` spreads the call's result; it has no receiver.
+        if k == 0 || b[k - 1] != b'.' || at[..k].ends_with("...") {
             return None;
         }
         k -= 1;
@@ -535,6 +578,31 @@ pub(super) fn innermost_binding<'a>(
     best
 }
 
+/// Svelte and Astro: languages whose binding rows cover only the script
+/// blocks, while the markup (and, in Svelte, a second `<script>`) sees each
+/// script's top-level names.
+pub(super) fn is_sfc_scoped_script(language: &str) -> bool {
+    matches!(language, "svelte" | "astro")
+}
+
+/// A component script's top-level row for `name`: one whose scope no other
+/// row's scope strictly contains. An import wins over a declaration.
+pub(super) fn sfc_top_level_binding<'a>(rows: &'a [KBinding], name: &str) -> Option<&'a KBinding> {
+    let top_level = |r: &KBinding| {
+        !rows.iter().any(|o| {
+            o.scope_start <= r.scope_start
+                && r.scope_end <= o.scope_end
+                && (o.scope_start, o.scope_end) != (r.scope_start, r.scope_end)
+        })
+    };
+    let mut found = rows.iter().filter(|r| r.name == name && top_level(r));
+    let first = found.next()?;
+    if first.kind == "import" {
+        return Some(first);
+    }
+    found.find(|r| r.kind == "import").or(Some(first))
+}
+
 /// Does the file's outermost binding scope (a component's script) declare `name`?
 fn is_script_top_level_decl(rows: &[KBinding], name: &str) -> bool {
     let Some(start) = rows.iter().map(|r| r.scope_start).min() else { return false };
@@ -550,6 +618,26 @@ pub(super) fn package_name_of(source: &str) -> &str {
         (_, Some(first), _) => first,
         _ => source,
     }
+}
+
+/// How a bare import specifier relates to this repository.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BareImport {
+    /// Relative, aliased, mapped or otherwise the project's own.
+    Local,
+    /// In the repository by manifest text alone, with no directory for it.
+    UnmappedLocal,
+    /// A package from outside the repository.
+    External,
+}
+
+/// What places a package in this repository.
+enum RepositoryPackage {
+    /// The workspace loader maps it, or links it by name.
+    Mapped,
+    /// A manifest's own `name` or `workspace:` dependency, nothing more.
+    Manifest,
+    No,
 }
 
 #[cfg(test)]
@@ -570,5 +658,12 @@ mod tests {
         assert_eq!(member_call_at("this\n      .findAll().length", "findAll"), Some(true));
         assert_eq!(member_call_at("this.#items.list\n      .add(n)", "add"), Some(false));
         assert_eq!(member_call_at("findAll /*x*/ ()", "findAll"), None);
+    }
+
+    #[test]
+    fn member_call_at_reads_a_spread_as_no_receiver() {
+        assert_eq!(member_call_at("<p {...spread()}>", "spread"), None);
+        assert_eq!(member_call_at("f(... spread())", "spread"), None);
+        assert_eq!(member_call_at("f(...a.spread())", "spread"), Some(false));
     }
 }

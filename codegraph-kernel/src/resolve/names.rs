@@ -749,9 +749,13 @@ impl KernelResolver {
             // The Kotlin rule narrowed the set: the one left is what remains,
             // not what the call binds, unless its scope says so.
             let leftover = kotlin_shrank && !self.is_kotlin_survivor_in_scope(&candidates[0], r)?;
+            // An import from a package only manifest text places here names
+            // no directory: the one same-named symbol is a guess, not the
+            // import's target.
+            let unmapped = candidates[0].file_path != r.file_path && self.is_bound_to_unmapped_package(r)?;
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
-                confidence: if cross { 0.5 } else if leftover { 0.7 } else { 0.9 },
+                confidence: if cross { 0.5 } else if leftover || unmapped { 0.7 } else { 0.9 },
                 resolved_by: "exact-match",
             }));
         }

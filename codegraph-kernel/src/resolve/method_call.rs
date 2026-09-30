@@ -885,7 +885,15 @@ impl KernelResolver {
         let method = &r.reference_name[dot + 1..];
         let root = receiver.split('.').next().unwrap_or(receiver);
         let bindings = self.bindings(&r.file_path)?;
-        let binding = innermost_binding(&bindings, root, Some(r.line)).cloned();
+        // Svelte/Astro markup and a second script sit outside the rows'
+        // scopes but still see a script's top-level import.
+        let binding = innermost_binding(&bindings, root, Some(r.line))
+            .or_else(|| {
+                is_sfc_scoped_script(&r.language)
+                    .then(|| sfc_top_level_binding(&bindings, root).filter(|b| b.kind == "import"))
+                    .flatten()
+            })
+            .cloned();
 
         if !is_esm_family(&r.language) {
             // `binding?.kind === 'import' && !phpVariable` → br:import;

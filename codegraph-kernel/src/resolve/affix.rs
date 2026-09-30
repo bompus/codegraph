@@ -230,11 +230,13 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         ReceiverPattern { affix: Affix::new("", tail, true, true, false).lead(lead), guard }
     };
     let mut m: HashMap<&'static str, Vec<ReceiverPattern>> = HashMap::new();
-    for lang in ["typescript", "javascript", "tsx", "jsx", "arkts", "vue"] {
+    for lang in ["typescript", "javascript", "tsx", "jsx", "arkts", "vue", "svelte", "astro"] {
         m.insert(
             lang,
             vec![
-                both(r"\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", b"=", 0),
+                // `= new T(…)`, or wrapped in a Svelte rune
+                // (`$state(new T())`, `$state.raw(…)`, `$derived(…)`).
+                both(r"\s*=\s*(?:\$(?:state|derived)(?:\.raw)?\s*\(\s*)?new\s+([A-Za-z_$][A-Za-z0-9_.$]*)", b"=", 0),
                 // `g: T` or an optional `g?: T`.
                 both(r"\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*)", b"?:", 1),
             ],
