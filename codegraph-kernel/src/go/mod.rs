@@ -589,6 +589,7 @@ impl<'t> Walker<'t> {
             w.push_ref_at(parent, &import_path, imports_kind, spec);
             let local = w.import_local_name(spec, &import_path);
             w.emit_import_binding(&local, &import_path, spec);
+            w.imported_names.insert(local);
         };
 
         let spec_list = named_kids(node)
@@ -665,11 +666,20 @@ impl<'t> Walker<'t> {
                                 }
                             }
                             "call_expression" => {
-                                // Bare package-level factory chain `New().Method()`
+                                // A package-level factory chain, bare `New().Method()`
+                                // or through an import `pkg.New().Method()`,
                                 // re-encodes; instance chains keep the bare name.
                                 let inner_fn = r.child_by_field_name("function");
-                                let reencode =
-                                    inner_fn.map(|f| f.kind() == "identifier").unwrap_or(false);
+                                let reencode = inner_fn.is_some_and(|f| match f.kind() {
+                                    "identifier" => true,
+                                    "selector_expression" => f
+                                        .child_by_field_name("operand")
+                                        .is_some_and(|o| {
+                                            o.kind() == "identifier"
+                                                && self.imported_names.contains(self.text(o))
+                                        }),
+                                    _ => false,
+                                });
                                 if reencode {
                                     let inner: String = self
                                         .text(inner_fn.unwrap())
