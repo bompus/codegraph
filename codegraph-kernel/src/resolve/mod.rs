@@ -329,6 +329,7 @@ pub(super) struct SourceFile {
     rust_scope_uses: OnceCell<name_scope::RustScopeUses>,
     java_static_imports: OnceCell<name_scope::JavaStaticImports>,
     php_file_scope: OnceCell<php_scope::PhpFileScope>,
+    rust_code_lines: OnceCell<Vec<String>>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -342,6 +343,7 @@ impl SourceFile {
             rust_scope_uses: OnceCell::new(),
             java_static_imports: OnceCell::new(),
             php_file_scope: OnceCell::new(),
+            rust_code_lines: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -379,6 +381,13 @@ impl SourceFile {
     /// The file's Java static imports (javaStaticImportsOf).
     pub(super) fn java_static_imports(&self) -> &name_scope::JavaStaticImports {
         self.java_static_imports.get_or_init(|| name_scope::collect_java_static_imports(self.text()))
+    }
+
+    /// The file's lines with Rust comments and literal contents blanked
+    /// (fields::mask_rust_code); line numbers and columns are kept.
+    pub(super) fn rust_code_lines(&self) -> &Vec<String> {
+        self.rust_code_lines
+            .get_or_init(|| fields::mask_rust_code(self.text()).split('\n').map(str::to_string).collect())
     }
 
     /// The file's PHP `namespace` and header `use` imports (phpFileScope).

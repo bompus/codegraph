@@ -331,6 +331,30 @@ impl KernelResolver {
         self.is_receiver_less_call(r)
     }
 
+    /// The name in a Go file's `package` clause (the first line that starts
+    /// with `package`, outside block comments).
+    fn go_package_clause(&mut self, file: &str) -> Option<String> {
+        let lines = self.read_file(file)?;
+        let mut in_block = false;
+        for line in lines.iter() {
+            let mut code = line.as_str();
+            if in_block {
+                let Some(end) = code.find("*/") else { continue };
+                code = &code[end + 2..];
+                in_block = false;
+            }
+            let code = code.trim_start();
+            if code.starts_with("/*") && !code.contains("*/") {
+                in_block = true;
+                continue;
+            }
+            if let Some(c) = re!(r"^package\s+([A-Za-z_][A-Za-z0-9_]*)").captures(code) {
+                return Some(c[1].to_string());
+            }
+        }
+        None
+    }
+
     /// isBarePhpCall (name-matcher.ts): a PHP `calls` ref written without a
     /// receiver — `redirect($url)`, `view('books.show')` — rather than
     /// `$this->redirect()` / `Foo::view()`. PHP has no implicit `$this`, so
@@ -638,6 +662,24 @@ impl KernelResolver {
         }
         // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
         candidates.retain(|n| !((bare_js || bare_go) && n.kind == "method"));
+        // A bare Go call names its own package's function: another
+        // package's `New` needs its qualifier (a dot import cannot bring in a
+        // name the package itself declares). The package is the directory
+        // and its `package` clause: an external test package (`pkg_test`)
+        // in the same directory is another package.
+        if bare_go && candidates.len() > 1 {
+            let dir = pos_dirname(&r.file_path).to_string();
+            let own = self.go_package_clause(&r.file_path);
+            let mut same: Vec<Arc<KNode>> = Vec::new();
+            for n in &candidates {
+                if n.language == "go" && pos_dirname(&n.file_path) == dir && self.go_package_clause(&n.file_path) == own {
+                    same.push(n.clone());
+                }
+            }
+            if !same.is_empty() {
+                candidates = same;
+            }
+        }
         // A bare PHP call is a function call: nothing else is callable without a receiver.
         candidates.retain(|n| !(bare_php && n.kind != "function"));
         // A C/C++ `field` is reachable only through a receiver — `s.f`,
