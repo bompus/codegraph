@@ -17,11 +17,11 @@ import { nextjsResolver } from './nextjs';
 import { reactRouterResolver, reactRouterFilesResolver } from './react-router';
 import { tanstackRouterResolver } from './tanstack-router';
 import { vueRouterResolver } from './vue-router';
+import { angularRouterResolver } from './angular-router';
 import { svelteKitRouterResolver } from './sveltekit-router';
 import { svelteResolver } from './svelte';
 import { vueResolver } from './vue';
 import { astroResolver } from './astro';
-import { angularResolver } from './angular';
 import { solidRouterResolver } from './solid-router';
 import { solidStartResolver } from './solid-start';
 import { vikeResolver } from './vike';
@@ -71,8 +71,8 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   vueResolver,
   // Vue Router — `createRouter({ routes })` → route nodes; `router.push({ name })` / `router.push('/x')` → navigates edges
   vueRouterResolver,
+  angularRouterResolver,
   astroResolver,
-  angularResolver,
   solidRouterResolver,
   solidStartResolver,
   vikeResolver,
@@ -223,6 +223,7 @@ export { reactResolver } from './react';
 export { reactRouterResolver } from './react-router';
 export { tanstackRouterResolver } from './tanstack-router';
 export { vueRouterResolver } from './vue-router';
+export { angularRouterResolver } from './angular-router';
 export { svelteKitRouterResolver } from './sveltekit-router';
 export { svelteResolver } from './svelte';
 export { vueResolver } from './vue';

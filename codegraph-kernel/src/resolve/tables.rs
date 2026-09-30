@@ -128,6 +128,12 @@ pub(super) fn tanstack_nav_re() -> Rc<Regex> {
 pub(super) fn terra_claim_re() -> Rc<Regex> {
     re!(r"^module\.[^.:\s]+:(?:file$|var\.|output\.|remote-output\.)")
 }
+pub(super) fn angular_nav_re() -> Rc<Regex> {
+    re!(r"^(?:this\.)?_?[rR]outer\.(?:navigate|navigateByUrl|createUrlTree|parseUrl)$")
+}
+pub(super) fn angular_lazy_re() -> Rc<Regex> {
+    re!(r"^import:[^#]+#[A-Za-z0-9_$]+$")
+}
 pub(super) fn vue_nav_re() -> Rc<Regex> {
     re!(r"^\$?router\.(?:push|replace)$|^navigateTo$")
 }
@@ -351,8 +357,12 @@ pub(super) fn collect_rust_use_bindings(content: &str) -> std::collections::Hash
 /// (`f.name`), or the conservative claim for names the kernel does not know.
 pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
     match framework {
-        "angular" => name.starts_with("angular-component:"),
         "analog" => name.starts_with("analog-component:"),
+        "angular-router" => {
+            angular_nav_re().is_match(name)
+                || (name.starts_with("layout:") && name.len() > "layout:".len())
+                || angular_lazy_re().is_match(name)
+        }
         "astro" => {
             name == "astro-page-component" || name.starts_with("astro-href:") || name == "Astro.redirect"
         }

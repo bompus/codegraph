@@ -1,6 +1,6 @@
 # Framework & language coverage — what is done, what is left
 
-**Last verified: 2026-08-29** against the build at that date. Re-verify with the
+**Last verified: 2026-08-29** (Angular row: 2026-09-29) against the build at that date. Re-verify with the
 queries in [Checking this file is still true](#checking-this-file-is-still-true)
 before trusting a row; this is a snapshot, not a live view.
 
@@ -30,7 +30,7 @@ to write. That is why "add a router" is a small, self-contained job.
 
 ## Routers — routes AND navigation (done)
 
-Six. Each reads a literal destination and leaves a computed one, a path no
+Seven. Each reads a literal destination and leaves a computed one, a path no
 route serves, and a conditional whose arms disagree unresolved rather than
 guessed.
 
@@ -42,9 +42,9 @@ guessed.
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges) |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts` | sveltekit-realworld (31 edges) |
+| Angular | `frameworks/angular-router.ts` | `angular-template-synthesizer.ts` | `angular-router.test.ts`, `angular-routes.test.ts` | angular-realworld (31 edges, 18 renders), Ghostfolio (189 edges, 170 renders), ngx-admin (routes and renders; its menus are config) |
 | Astro | `frameworks/astro.ts` | — | `astro-routes.test.ts` | pinned endpoint fixture; exact page components and source navigation |
 | RedwoodSDK | `frameworks/redwood.ts` | — | `redwood-routes.test.ts` | pinned 1.7.3 typed-routes worker; exact page and API roots |
-| Angular Router | `frameworks/angular.ts` | — | `angular-routes.test.ts` | pinned official tutorial registration; exact class roots and imported-array sync |
 | Analog | `frameworks/analog.ts` | — | `analog-routes.test.ts` | pinned 2.7.1 sign-up page; filename/layout and registration sync controls |
 | Solid Router | `frameworks/solid-router.ts` | — | `solid-router.test.ts` | pinned 0.16.3 README lazy example; exact component roots, nested paths and fresh workers |
 | SolidStart | `frameworks/solid-start.ts` | — | `solid-start.test.ts` | pinned 2.0.4 About/API fixtures; page/API coexistence, file hierarchy and config sync |
@@ -79,8 +79,6 @@ Other router variants, untyped cross-file arrays, re-exported tables, local func
 
 Analog recognizes `src/app/pages/**/*.page.ts` named default classes when a root Vite config registers the platform plugin and source registers option-free `provideFileRouter()`. Directory hierarchy determines layouts before dots become URL separators; index/pathless names, parameters and catchalls follow the pinned conventions. [Official page fixture](https://github.com/analogjs/analog/blob/0896a7eaaa2acf26443ca184bc1dd9aa1a06f4d6/apps/analog-app/src/app/pages/%28auth%29/sign-up.page.ts), [route construction](https://github.com/analogjs/analog/blob/0896a7eaaa2acf26443ca184bc1dd9aa1a06f4d6/packages/router/src/lib/routes.ts). Fresh workers and config/file add/edit/delete refresh existing pages, including after reopening. Custom roots, extra route directories, `app/routes`, metadata overrides, router options, optional catchalls, Markdown, anonymous defaults and re-exports remain unsupported. No navigation is inferred. The Vite config may be an object or a `defineConfig` callback that directly returns one, as the create-analog templates write it; `prerender.routes` is allowed.
 
-Angular reads registered `provideRouter` / `RouterModule.forRoot` literal or constant arrays, nested children and relative imports. Static lazy imports can select component classes, route arrays or NgModules registering `forChild`. [Pinned tutorial](https://github.com/angular/angular/blob/9a58353b1b680f162a55969965ae6a90ae20316d/adev/src/content/tutorials/learn-angular/steps/14-routerLink/answer/src/app/app.routes.ts), [loading semantics](https://angular.dev/guide/routing/loading-strategies). Parent-side extraction enriches both ordinary and fresh worker storage without depending on database insertion order. Routes belong to their registration file; sync refreshes registrations after source changes, including after reopening. Redirects, named outlets, custom matchers, conditional registrations, dynamic loaders, path aliases, re-export modules and spread objects are excluded. No navigation is inferred.
-
 RedwoodSDK follows imported `defineApp` registrations with literal/local-constant arrays, `route`, `index`, `render`, `layout` and `prefix`. Handler arrays bind only their last handler. Standard method tables remain method-qualified; ordinary handlers remain `ANY` unless the handler returns JSX. [Pinned worker fixture](https://github.com/redwoodjs/sdk/blob/39da7118f712bd86450e493cb2c213815b1893bb/playground/typed-routes/src/worker.tsx), [router semantics](https://github.com/redwoodjs/sdk/blob/39da7118f712bd86450e493cb2c213815b1893bb/sdk/src/runtime/lib/router.ts#L682). Tests cover handler classification changes/deletion and fresh workers. Cross-file route arrays, custom methods, mutated builders, dynamic paths, duplicate/computed/spread method tables and wrapped/anonymous exported components remain unsupported; no navigation is inferred.
 
 Remix default `app/routes/` conventions and React Router configs registering an imported, option-free `flatRoutes()` call support JS/TS pages and immediate `folder/route` modules. [Pinned filename parser](https://github.com/remix-run/react-router/blob/7aea711dd1ae2bc5a076d13ff17291829690fa74/packages/react-router-fs-routes/flatRoutes.ts#L351): dot nesting, index/pathless segments, parameters, optional segments, splats and bracket escapes. Resource-only and direct `Outlet`-only defaults are excluded. Config-only full/scoped sync and reopening an index refresh existing pages. Custom configuration, folder `index` fallback, Markdown/MDX, anonymous defaults and re-exports remain unsupported.
@@ -89,12 +87,35 @@ React Router framework mode reads default exported literal arrays in `app/routes
 
 TanStack Start reads imported `createFileRoute` calls assigned to exported `const Route`: literal `server.handlers` tables, including `ANY`, and the destructured `createHandlers` callback form. Named handlers and direct inline calls bind through the existing HTTP reader. Page/API combinations retain both nodes; server-only routes do not become pages. [Pinned official handler syntax](https://github.com/TanStack/router/blob/a58e01c604e2d189ef8c8c1ad6ac8747e03aa88c/docs/start/framework/react/guide/server-routes.md#L172), [executable middleware fixture](https://github.com/TanStack/router/blob/a58e01c604e2d189ef8c8c1ad6ac8747e03aa88c/e2e/react-start/server-routes/src/routes/api/middleware-context.ts). Computed/spread tables, member handlers, custom factories and server `update` chains remain unresolved. `createServerFn` has no declared public route and gets no fabricated endpoint.
 
-Shared machinery all six use, in `frameworks/expo-router.ts`: `RouteTable` /
+Shared machinery all seven use, in `frameworks/expo-router.ts`: `RouteTable` /
 `RootedRouteTable`, `routesForFile`, `addRouteTo`, `matchRoute`, `appRootFor`,
 `parseHrefExpression`, `readHrefViaLocal`, `nthArgumentText`, `readStringAt`,
 `toHref`. Plus `pageForHref` in `frameworks/nextjs.ts` (framework-agnostic
 despite where it lives) and the object-literal walker in
 `frameworks/object-literal.ts`.
+
+Angular is the one whose markup is not indexed: a component's template is a
+`templateUrl` file (or an inline `template:` string) read at synthesis time,
+which also yields the component tree (`<app-foo>` by element selector) — the
+edge a navigation in a child component rides to its screen. A `routerLink:`
+field written in a component's class (a tab bar's or a menu's config, bound
+in a loop elsewhere) counts as a link from that component. An event binding
+(`(click)="save()"`) is a `calls` edge from the component to its own method
+carrying `metadata.trigger`, which Steps uses in place of reading a trigger
+at the edge's line (the binding is in the template, not the source there). A route with
+`children` is a layout: its component carries a `references` edge marked
+`layout: true` from each screen nested in it, and `routeLayouts` in
+`route-roots.ts` gives Screens every screen a layout serves. Known limits: a
+route with a custom `matcher` has no static address, a relative navigation
+(`relativeTo`) is left unresolved, and an edit to a template file alone is
+picked up at the next sync of any source file (templates are not watched).
+A routes array is read where it is declared, so an untyped array in a file
+that does not import `@angular/router` is not one, even when another file
+hands it to `provideRouter`. The fork adds to upstream's reader: `provideRouter`
+and `RouterModule` imported under an alias still open a routes array, and an
+entry with a named `outlet` (`/(side:x)`, not a path) or a `...spread` (fields
+the scan cannot see) names no screen. `angular-routes.test.ts` covers those,
+sync after reopening, and fresh parse workers.
 
 ---
 

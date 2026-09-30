@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`7639c78`](https://github.com/colbymchenry/codegraph/commit/7639c787), after v1.6.1, 2026-09-29) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`c3efbbf`](https://github.com/colbymchenry/codegraph/commit/c3efbbf4), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -127,7 +127,7 @@ Dispatch and framework coverage the fork adds, by kind:
 | Addition | What it links |
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
-| Angular Router | Registered `provideRouter` / `RouterModule.forRoot` route arrays, linked to component classes, including lazy imports |
+| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias still register routes, and named-`outlet` or `...spread` entries name no screen |
 | Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
@@ -502,7 +502,6 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods |
 | **Vapor** | `app.get("x", use: handler)` |
-| **Angular Router** | `provideRouter(routes)` / `RouterModule.forRoot(routes)` literal or constant arrays, nested `children`, and static lazy `loadComponent` / `loadChildren` imports, each linked to its component class |
 | **Analog** | `src/app/pages/**/*.page.ts` files (`index`, dot segments, `[param]`, `[...rest]` and `(group)` names) bound to the page's default component class; a page with a same-named folder is a layout, not a route | — |
 | **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page links to its component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
 | **RedwoodSDK** | Literal `defineApp([...])` trees with `route`, `index`, `render`, `layout` and `prefix`, plus `{ get, post, … }` method tables; each route links to its final handler and becomes a page once that handler is shown to return JSX | — |
@@ -524,6 +523,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 | **Qwik City** | `index` files under `src/routes/` (groups, `[param]` and `[...rest]` segments) bound to their `component$` page, plus `onGet`/`onPost`/… endpoint exports; layouts and `onRequest` middleware are not routes | — |
 | **Waku** | `src/pages` files (`(group)` folders, `[param]` and `[...rest]` segments) bound to their default page component, plus literal `createPage` declarations inside a `createPages` callback registered in the server entry; `_layout`, `_root` and `_slices` files are not routes | — |
 | **SvelteKit** | `src/routes/**/+page.svelte` (`[slug]` → `:slug`, `[[opt]]` → `:opt?`), joined to the `+page.server.js` beside it so a loader's guard belongs to its page | `goto('/x')`, `redirect(status, '/x')` from a load or form action, and the plain `<a href>` that is a link in a SvelteKit app |
+| **Angular** | `Routes` arrays (`RouterModule.forRoot` / `forChild`, `provideRouter`, a routes file's default export) with `component` or a lazy `loadComponent`; `children` and lazy `loadChildren` (an NgModule's through its routing module) joined into full paths; paths written as route constants or `$localize` strings; a route with children is a layout around the screens inside it | `router.navigate([...])`, `navigateByUrl`, a guard's `createUrlTree` / `parseUrl` — a command array, a route constant, or a component property holding one — `routerLink` / `[routerLink]` in the component's template, and `redirectTo`. Each template's child components (`<app-foo>`) are linked to the component that renders them |
 
 In a repository holding several apps, each app's routes are matched only against navigation written inside that app.
 
