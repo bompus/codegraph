@@ -552,6 +552,9 @@ pub struct KernelResolver {
     kotlin_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// kotlinFileScope, by file.
     kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
+    /// Python methods named `member` on classes deriving from a class, by
+    /// (class id, member).
+    py_descendants_memo: HashMap<(String, String), Rc<Vec<Arc<KNode>>>>,
     /// rubyAncestry, by class qualified name.
     ruby_ancestry_memo: HashMap<String, Rc<HashSet<String>>>,
     /// cfmlChain, by component file.
@@ -692,6 +695,7 @@ impl KernelResolver {
             dart_hierarchy_memo: HashMap::new(),
             kotlin_scope_memo: HashMap::new(),
             kotlin_supers_memo: HashMap::new(),
+            py_descendants_memo: HashMap::new(),
             ruby_ancestry_memo: HashMap::new(),
             cfml_chain_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),

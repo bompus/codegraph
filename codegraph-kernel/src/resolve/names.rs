@@ -1293,6 +1293,19 @@ pub(super) fn js_slice(s: &str, start: usize) -> &str {
     &s[js_unit_to_byte(s, start)..]
 }
 
+/// The spelling of `r`'s name at its column when the source qualified it
+/// (`Other::Sub` / `Other\Sub` / `\Sub` / `::Sub` for a ref named `Sub`):
+/// the extractors keep only the last segment. None when the name is bare
+/// there, or the site can't be read.
+pub(super) fn qualified_spelling(lines: &[String], r: &ResolveRefIn) -> Option<String> {
+    let line = lines.get((r.line - 1).max(0) as usize)?;
+    let text = js_slice(line, r.column.max(0) as usize);
+    let m = re!(r"^(?:\\|::)?(?:[A-Za-z_][A-Za-z0-9_]*(?:\\|::))*[A-Za-z_][A-Za-z0-9_]*").find(text)?;
+    let spelled = m.as_str();
+    let last = spelled.rsplit(['\\', ':']).next().unwrap_or("");
+    (last == r.reference_name && spelled.len() > last.len()).then(|| spelled.to_string())
+}
+
 /// JS `string.slice(0, i)` over UTF-16 code units.
 pub(super) fn js_prefix(s: &str, end: usize) -> &str {
     &s[..js_unit_to_byte(s, end)]

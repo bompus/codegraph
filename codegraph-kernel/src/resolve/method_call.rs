@@ -590,7 +590,7 @@ impl KernelResolver {
                     None if matches!(r.language.as_str(), "csharp" | "ruby")
                         && self.resolve_bound_type(&t, r, 0)?.is_some() =>
                     {
-                        return self.unique_csharp_extension_method(&method_name, r);
+                        return self.unique_csharp_extension_method(&t, &method_name, r);
                     }
                     None => {
                         // A known builtin/primitive receiver is external when
@@ -811,8 +811,11 @@ impl KernelResolver {
     }
 
     /// The one C# extension method (`static T M(this Owner o)`) named
-    /// `method`, for a typed receiver whose class lacks it; None elsewhere.
-    fn unique_csharp_extension_method(&mut self, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
+    /// `method` whose `this` parameter can hold a `receiver_type`: that type,
+    /// one of its project supertypes, or a type the project does not
+    /// declare (a generic `T`, `object`, a framework interface). None
+    /// elsewhere.
+    fn unique_csharp_extension_method(&mut self, receiver_type: &str, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if r.language != "csharp" {
             return Ok(None);
         }
@@ -822,13 +825,39 @@ impl KernelResolver {
             .filter(|n| n.kind == "method" && n.language == "csharp")
             .cloned()
             .collect();
+        let simple = |t: &str| -> String {
+            let t = t.split('<').next().unwrap_or(t);
+            t.rsplit('.').next().unwrap_or(t).to_string()
+        };
+        let receiver = simple(receiver_type);
+        let mut accepts: HashSet<String> = HashSet::from([receiver.clone()]);
+        let mut pending: VecDeque<Arc<KNode>> = self
+            .nodes_by_name(&receiver)?
+            .iter()
+            .filter(|n| n.language == "csharp" && is_class_like(&n.kind))
+            .cloned()
+            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        while let Some(n) = pending.pop_front() {
+            if seen.len() >= 40 || !seen.insert(n.id.clone()) {
+                continue;
+            }
+            accepts.insert(n.name.clone());
+            pending.extend(self.supertype_nodes(&n.id)?);
+        }
         let mut extensions = Vec::new();
         for n in named {
             let Some(lines) = self.read_file(&n.file_path) else { continue };
             let from = (n.start_line - 1).max(0) as usize;
             let to = ((n.start_line + 2).max(0) as usize).min(lines.len());
             let head = if from < to { lines[from..to].join(" ") } else { String::new() };
-            if re!(r"\(\s*this\s").is_match(&head) {
+            let Some(c) = re!(r"\(\s*this\s+([A-Za-z_][A-Za-z0-9_.]*)").captures(&head) else { continue };
+            let this_type = simple(&c[1]);
+            let declared = self
+                .nodes_by_name(&this_type)?
+                .iter()
+                .any(|d| d.language == "csharp" && is_class_like(&d.kind));
+            if accepts.contains(&this_type) || !declared {
                 extensions.push(n);
             }
         }

@@ -231,4 +231,161 @@ class App {
     });
     expect(ext.filter((e) => e.includes('BaseMethod'))).toEqual(['App::Run -calls-> SubExtensions::BaseMethod@Ext.cs']);
   });
+
+  it('Python: a field only ever assigned a constructor holds exactly that class, not a subclass', async () => {
+    const got = await edges({
+      'main.py': `class Store:
+    def fetch(self):
+        return 1
+
+
+class FakeStore(Store):
+    def save(self):
+        return 3
+
+
+class App:
+    def __init__(self):
+        self.cache = Store()
+
+    def run(self):
+        return self.cache.save()
+`,
+    });
+    expect(got.filter((e) => e.includes('save'))).toEqual([]);
+  });
+
+  it('Python: an assignment in another method is conflicting evidence', async () => {
+    const got = await edges({
+      'main.py': PY_ATTR.replace(
+        '    def run(self):',
+        '    def reset(self):\n        self.cache = Other()\n\n    def run(self):',
+      ),
+    });
+    expect(got.filter((e) => e.startsWith('App::run -calls->'))).toEqual([]);
+  });
+
+  it('Python: a cls.<field> receiver reads the class-body annotation', async () => {
+    const got = await edges({
+      'main.py': `class Store:
+    def fetch(self):
+        return 1
+
+
+class Other:
+    def fetch(self):
+        return 2
+
+
+class Registry:
+    cache: Store = Store()
+
+    @classmethod
+    def load(cls):
+        return cls.cache.fetch()
+`,
+    });
+    expect(got.filter((e) => e.startsWith('Registry::load -calls->'))).toEqual(['Registry::load -calls-> Store::fetch@main.py']);
+  });
+
+  it('PHP: a qualified type in the source names that class, whatever the file imports', async () => {
+    const decoy = `<?php
+namespace Other;
+class Sub { public function baseMethod() { return 1; } }
+`;
+    const sub = `<?php
+class Sub { public function other() { return 2; } }
+`;
+    const app = (head: string) => `<?php
+${head}class App {
+  public function __construct(private Other\\Sub $s) {}
+  public function run() { return $this->s->baseMethod(); }
+}
+`;
+    for (const head of ['', 'use Vendor\\Sub;\n']) {
+      const got = await edges({ 'App.php': app(head), 'Sub.php': sub, 'Decoy.php': decoy });
+      expect(got).toContain('App::__construct -references-> Other::Sub@Decoy.php');
+      expect(got).not.toContain('App::__construct -references-> Sub@Sub.php');
+      expect(got).toContain('App::run -calls-> Other::Sub::baseMethod@Decoy.php');
+    }
+  });
+
+  it('PHP: grouped and comma-separated use statements name their classes', async () => {
+    const lib = `<?php
+namespace Lib;
+class Store { public function fetch() { return 1; } }
+class Other { public function fetch() { return 2; } }
+`;
+    for (const use of ['use Lib\\{Store, Other as Alt};', 'use Lib\\Store, Lib\\Other as Alt;']) {
+      const got = await edges({
+        'Lib/Store.php': lib,
+        'App.php': `<?php
+namespace App;
+${use}
+class App {
+  private Alt $c;
+  public function run() { return $this->c->fetch(); }
+}
+`,
+      });
+      expect(got).toContain('App::App::run -calls-> Lib::Other::fetch@Lib/Store.php');
+    }
+  });
+
+  it('Ruby: a qualified constant keeps its qualifier; an inherited constant beats the top level', async () => {
+    const qualified = await edges({
+      'sub.rb': `class Sub
+  def other
+    2
+  end
+end
+`,
+      'decoy.rb': RB_DECOY('Sub'),
+      'app.rb': `class App
+  def run
+    base = Other::Sub.new
+    base.base_method
+  end
+end
+`,
+    });
+    expect(qualified).toContain('App::run -instantiates-> Other::Sub@decoy.rb');
+    expect(qualified).not.toContain('App::run -instantiates-> Sub@sub.rb');
+
+    const inherited = await edges({
+      'sub.rb': `class Sub
+end
+`,
+      'base.rb': `class Base
+  class Sub
+  end
+end
+`,
+      'child.rb': `class Child < Base
+  def run
+    Sub.new
+  end
+end
+`,
+    });
+    expect(inherited).toContain('Child::run -instantiates-> Base::Sub@base.rb');
+    expect(inherited).not.toContain('Child::run -instantiates-> Sub@sub.rb');
+  });
+
+  it("C#: an extension method for another project class doesn't match", async () => {
+    const got = await edges({
+      'App.cs': `class Sub { public int Other() { return 2; } }
+class Unrelated {}
+
+class App {
+  public int Run(Sub s) { return s.BaseMethod(); }
+}
+`,
+      'Ext.cs': `static class UnrelatedExtensions {
+  public static int BaseMethod(this Unrelated u) { return 3; }
+}
+`,
+    });
+    expect(got.filter((e) => e.includes('BaseMethod'))).toEqual([]);
+  });
 });

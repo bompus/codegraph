@@ -105,13 +105,13 @@ impl KernelResolver {
         let Some(owner) = owner else { return Ok(None) };
         // The class's own evidence first, else the nearest base along its
         // MRO whose `__init__` or body types the field, read in that base's file.
-        let mut typed = self.python_field_type(field, &owner, r)?.map(|t| (t, r.clone()));
+        let mut typed = self.python_field_evidence(field, &owner, r)?.map(|(t, exact)| (t, exact, r.clone()));
         if typed.is_none() && self.supertypes_complete {
             if let Some(mro) = self.python_mro(&owner, 0)? {
                 for class in mro.iter().skip(1) {
                     let site = r.clone().at(class);
-                    if let Some(t) = self.python_field_type(field, class, &site)? {
-                        typed = Some((t, site));
+                    if let Some((t, exact)) = self.python_field_evidence(field, class, &site)? {
+                        typed = Some((t, exact, site));
                         break;
                     }
                 }
@@ -119,15 +119,19 @@ impl KernelResolver {
         }
         // Conflicting or untyped evidence (`self.store = make_store()`) leaves
         // the call to the name strategies, as before.
-        let Some((ty, site)) = typed.filter(|(t, _)| t != UNKNOWN_TYPE && t != "object" && t != "Any") else {
+        let Some((ty, exact, site)) = typed.filter(|(t, _, _)| t != UNKNOWN_TYPE && t != "object" && t != "Any") else {
             return Ok(None);
         };
         let Some(cls) = self.python_ref_class(&ty, &site)? else { return Ok(None) };
         let mut members = self.python_members(&cls, member, r, &mut HashSet::new())?;
         let mut confidence = 0.9;
         if members.is_empty() {
-            // A base-typed field can hold a subclass: its one method of that
-            // name, else the name strategies decide as before.
+            // A field only ever assigned `Store()` holds exactly a `Store`.
+            if exact {
+                return Ok(Some(None));
+            }
+            // A declared base type can hold a subclass: its one method of
+            // that name, else the name strategies decide as before.
             members = self.python_descendant_members(&cls, member, r)?;
             if members.len() != 1 {
                 return Ok(None);
@@ -196,6 +200,10 @@ impl KernelResolver {
     /// receiver can hold a subclass): only descendants of THAT base, so
     /// unrelated same-name methods can't win.
     fn python_descendant_members(&mut self, cls: &KNode, member: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let key = (cls.id.clone(), member.to_string());
+        if let Some(hit) = self.py_descendants_memo.get(&key) {
+            return Ok(hit.as_ref().clone());
+        }
         let candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(member)?
             .iter()
@@ -216,6 +224,7 @@ impl KernelResolver {
                 }
             }
         }
+        self.py_descendants_memo.insert(key, Rc::new(descendants.clone()));
         Ok(descendants)
     }
 
@@ -517,23 +526,41 @@ impl KernelResolver {
     }
 
     /// `self.<field>`'s type within `owner`: a class-body or `self.`
-    /// annotation, an annotated or constructor assignment, or an `__init__`
-    /// (or referencing method) parameter assigned to it. Conflicting
+    /// annotation, an annotated or constructor assignment in any of its
+    /// methods, or an annotated method parameter assigned to it (the
+    /// referencing method counts only above the reference). Conflicting
     /// evidence is known-but-ambiguous, never a name-only fallback.
     fn python_field_type(&mut self, field: &str, owner: &KNode, r: &ResolveRefIn) -> Res<Option<String>> {
+        Ok(self.python_field_evidence(field, owner, r)?.map(|(t, _)| t))
+    }
+
+    /// python_field_type plus whether every piece of evidence is a
+    /// constructor call (`self.cache = Store()`): then the runtime type is
+    /// exactly that class, never a subclass.
+    fn python_field_evidence(&mut self, field: &str, owner: &KNode, r: &ResolveRefIn) -> Res<Option<(String, bool)>> {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
         let prefix = format!("{}::", owner.qualified_name);
-        let methods: Vec<Arc<KNode>> = self
-            .nodes_in_file(&r.file_path)?
+        let in_file = self.nodes_in_file(&r.file_path)?;
+        // The class's own methods: a nested class's `__init__` types its own fields.
+        let methods: Vec<Arc<KNode>> = in_file
             .iter()
-            .filter(|n| n.kind == "method" && n.qualified_name.starts_with(&prefix))
+            .filter(|n| {
+                n.kind == "method" && n.qualified_name.strip_prefix(&prefix).is_some_and(|rest| !rest.contains("::"))
+            })
             .cloned()
+            .collect();
+        let nested_classes: Vec<(i64, i64)> = in_file
+            .iter()
+            .filter(|n| n.kind == "class" && n.id != owner.id && n.start_line > owner.start_line && n.end_line <= owner.end_line)
+            .map(|n| (n.start_line, n.end_line))
             .collect();
         let mut types: Vec<String> = Vec::new();
         let mut untyped = false;
-        let mut add = |t: String| {
+        let mut declared = false;
+        let mut add = |t: String, is_declared: bool| {
+            declared |= is_declared;
             if !types.contains(&t) {
                 types.push(t);
             }
@@ -546,20 +573,19 @@ impl KernelResolver {
                 continue;
             }
             let line_no = i as i64 + 1;
+            if nested_classes.iter().any(|&(s, e)| s <= line_no && line_no <= e) {
+                continue;
+            }
             let method = methods.iter().find(|m| m.start_line <= line_no && m.end_line >= line_no);
-            if let Some(m) = method {
-                if m.id == r.from_node_id {
-                    if line_no > r.line {
-                        continue;
-                    }
-                } else if m.name != "__init__" {
-                    continue;
-                }
+            // Every method's `self.<field> = …` is evidence; the referencing
+            // method's only up to the reference.
+            if method.is_some_and(|m| m.id == r.from_node_id && line_no > r.line) {
+                continue;
             }
             let line = &lines[i];
             if let Some(c) = python_annotation_re().captures(line) {
                 if &c[2] == field && (method.is_none() || c.get(1).is_some()) {
-                    add(c[3].to_string());
+                    add(c[3].to_string(), true);
                 }
             }
             let Some(c) = python_assignment_re().captures(line) else { continue };
@@ -567,29 +593,29 @@ impl KernelResolver {
                 continue;
             }
             if let Some(t) = c.get(3) {
-                add(t.as_str().to_string());
+                add(t.as_str().to_string(), true);
                 continue;
             }
             let value = c[4].trim();
             if let Some(ctor) = constructor_type(value) {
-                add(ctor);
+                add(ctor, false);
                 continue;
             }
             match method {
                 Some(_) if value == "None" => {}
                 Some(m) if is_word(value) => match param_annotation(m.signature.as_deref().unwrap_or(""), value) {
-                    Some(t) => add(t),
+                    Some(t) => add(t, true),
                     None => untyped = true,
                 },
-                _ => add(UNKNOWN_TYPE.to_string()),
+                _ => add(UNKNOWN_TYPE.to_string(), true),
             }
         }
         Ok(match types.len() {
             0 => None,
             // An untyped reassignment (`self.store = replacement`) outvotes
             // the one typed assignment; alone it stays no evidence.
-            1 if !untyped => types.pop(),
-            _ => Some(UNKNOWN_TYPE.to_string()),
+            1 if !untyped => types.pop().map(|t| (t, !declared)),
+            _ => Some((UNKNOWN_TYPE.to_string(), false)),
         })
     }
 }

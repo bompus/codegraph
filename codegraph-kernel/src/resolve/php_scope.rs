@@ -28,15 +28,25 @@ pub(super) fn collect_php_file_scope(text: &str) -> PhpFileScope {
         .filter(|&at| at > 0)
         .unwrap_or(text.len());
     let mut uses = HashMap::new();
-    for m in re!(r"(?m)^\s*use\s+(?:function\s+|const\s+)?([A-Za-z0-9_\\]+)(?:\s+as\s+([A-Za-z0-9_]+))?\s*;")
+    // `use A\B [as C], D\E;` and the grouped `use A\{B, C as D};`.
+    for m in re!(r"(?m)^\s*use\s+(?:function\s+|const\s+)?([A-Za-z0-9_\\\s,{}]+?)\s*;")
         .captures_iter(&text[..header_end])
     {
-        let fqn = m[1].strip_prefix('\\').unwrap_or(&m[1]).to_string();
-        let alias = m
-            .get(2)
-            .map(|a| a.as_str().to_string())
-            .unwrap_or_else(|| fqn.rsplit('\\').next().unwrap_or("").to_string());
-        uses.insert(alias, fqn);
+        let body = &m[1];
+        let (prefix, items) = match (body.find('{'), body.rfind('}')) {
+            (Some(open), Some(close)) if open < close => (body[..open].trim(), &body[open + 1..close]),
+            _ => ("", body),
+        };
+        for item in items.split(',') {
+            let Some(c) = re!(r"^\s*([A-Za-z0-9_\\]+)(?:\s+as\s+([A-Za-z0-9_]+))?\s*$").captures(item) else { continue };
+            let joined = format!("{prefix}{}", &c[1]);
+            let fqn = joined.strip_prefix('\\').unwrap_or(&joined).to_string();
+            let alias = c
+                .get(2)
+                .map(|a| a.as_str().to_string())
+                .unwrap_or_else(|| fqn.rsplit('\\').next().unwrap_or("").to_string());
+            uses.insert(alias, fqn);
+        }
     }
     PhpFileScope { namespace, uses }
 }
@@ -199,7 +209,12 @@ impl KernelResolver {
         if r.language != "php" || candidates.iter().filter(|n| is_type(n)).count() < 2 {
             return Ok(candidates);
         }
-        let Some(qn) = self.php_declared_type_qn(&r.reference_name, &r.file_path)? else {
+        // `Other\Sub $s` reaches here as `Sub`; the spelling decides.
+        let spelled = self
+            .read_file(&r.file_path)
+            .and_then(|lines| names::qualified_spelling(&lines, r))
+            .unwrap_or_else(|| r.reference_name.clone());
+        let Some(qn) = self.php_declared_type_qn(&spelled, &r.file_path)? else {
             return Ok(candidates);
         };
         Ok(candidates.into_iter().filter(|n| !is_type(n) || n.qualified_name == qn).collect())
