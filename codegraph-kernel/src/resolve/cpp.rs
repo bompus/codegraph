@@ -75,12 +75,17 @@ fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Definition {
     defined: Truth,
-    value: Truth,
+    /// The replacement text, read when a condition names the macro: an
+    /// alias (`#define FLAG BACKING`) takes `BACKING`'s value at that point.
+    value: Option<Rc<str>>,
     is_macro: Truth,
 }
+
+/// Alias chains deeper than this (or cyclic) are an unknown build flag.
+const ALIAS_DEPTH: u32 = 8;
 
 /// The arms of one `#if` block seen so far, and for each name the arms that
 /// `#define`/`#undef` it: (last arm, arms counted, agreed macro-ness).
@@ -103,6 +108,10 @@ struct TuWalk {
 
 impl TuWalk {
     fn condition(&self, expression: &str) -> Truth {
+        self.condition_at(expression, 0)
+    }
+
+    fn condition_at(&self, expression: &str, depth: u32) -> Truth {
         let text = expression.trim();
         if re!(r"(?i)^(?:0x[\da-f]+|\d+)[ul]*$").is_match(text) {
             let digits = text.trim_end_matches(['u', 'U', 'l', 'L']);
@@ -115,7 +124,11 @@ impl TuWalk {
             return if c.get(1).is_some() { not(known) } else { known };
         }
         if re!(r"^\w+$").is_match(text) {
-            return self.definitions.get(text).and_then(|d| d.value);
+            if depth >= ALIAS_DEPTH {
+                return None;
+            }
+            let value = self.definitions.get(text).and_then(|d| d.value.clone())?;
+            return self.condition_at(&value, depth + 1);
         }
         None
     }
@@ -313,7 +326,7 @@ impl KernelResolver {
                     }
                 }
                 FileEvent::Define { define, name, line, function_like, value, wraps_itself } => {
-                    let prior = walk.definitions.get(name).copied();
+                    let prior = walk.definitions.get(name).cloned();
                     let is_macro = *define && *function_like && !*wraps_itself;
                     // An `#else` that ends a run of arms which all agree settles
                     // the name whichever arm the build takes.
@@ -331,7 +344,7 @@ impl KernelResolver {
                         }
                         _ => false,
                     };
-                    let now = if active == Some(true) || exhaustive || prior.and_then(|p| p.is_macro) == Some(is_macro) {
+                    let now = if active == Some(true) || exhaustive || prior.as_ref().and_then(|p| p.is_macro) == Some(is_macro) {
                         Some(is_macro)
                     } else {
                         None
@@ -349,7 +362,7 @@ impl KernelResolver {
                         } else {
                             and(prior_defined, not(active))
                         },
-                        value: if *define && active == Some(true) { walk.condition(value) } else { None },
+                        value: if *define && active == Some(true) { Some(Rc::from(value.as_str())) } else { None },
                         is_macro: now,
                     };
                     walk.definitions.insert(name.clone(), entry);
