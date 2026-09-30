@@ -97,4 +97,42 @@ describe('cross-language name resolution (#1986)', () => {
     expect(targets('wrongNative')).toEqual([]);
     expect(targets('wrongC')).toEqual([]);
   });
+
+  // Upstream's unit version of this case drove name-matcher.ts directly; the
+  // fork resolves in the kernel, so the same fixture is indexed and the edges
+  // those unit assertions imply are checked end to end.
+  it('gates qualified, method and fuzzy winners without choosing a replacement', async () => {
+    await index({
+      'caller.swift': 'func caller() {\n  Foreign.act()\n  fuzzyName()\n  FUZZYNAME()\n  Container.Winner()\n}',
+      'cfunc.c': 'int cfunc(void) { return 1; }',
+      'call.go': 'package main\nimport "C"\nfunc useC() { C.cfunc() }',
+      'call.rs': 'extern "C" { fn cfunc() -> i32; }\npub fn use_c() { unsafe { cfunc(); } }',
+      'foreign.py': 'class Foreign:\n    def act(self):\n        pass\ndef fuzzyName():\n    pass\n',
+      'near/pick.py': 'class Container:\n    class Winner:\n        pass\n',
+      'far/Winner.swift': 'class Winner {}',
+    });
+    const caller = cg!.getNodesByName('caller').find((n) => n.kind === 'function')!;
+    expect(caller).toBeDefined();
+    const edges = cg!.getOutgoingEdges(caller.id).filter((e) => e.kind !== 'contains');
+    const reached = edges.map((e) => cg!.getNode(e.target)!);
+    // The qualified method, the exact-case fuzzy winner and the nested class
+    // are all Python: a Swift caller reaches none of them.
+    expect(reached.filter((n) => n.language === 'python').map((n) => n.qualifiedName)).toEqual([]);
+    // Rejecting the Python `Container.Winner` does not fall through to the
+    // Swift type that shares its bare name.
+    expect(reached.filter((n) => n.name === 'Winner')).toEqual([]);
+    // Fuzzy is case-exact in Swift: `FUZZYNAME` names nothing.
+    expect(edges.filter((e) => (e.metadata as { refName?: string } | undefined)?.refName === 'FUZZYNAME')).toEqual([]);
+    // The ABI declarations in call.go and call.rs let a C function stand for
+    // their `cfunc` calls; nothing else, and no other language's `cfunc`, does.
+    for (const [name, own] of [['useC', 'go'], ['use_c', 'rust']] as const) {
+      const from = cg!.getNodesByName(name).find((n) => n.kind === 'function')!;
+      expect(from, name).toBeDefined();
+      const callees = cg!.getOutgoingEdges(from.id).filter((e) => e.kind === 'calls').map((e) => cg!.getNode(e.target)!);
+      for (const n of callees) {
+        expect(n.name, name).toBe('cfunc');
+        expect(['c', own], name).toContain(n.language);
+      }
+    }
+  });
 });

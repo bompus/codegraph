@@ -713,7 +713,11 @@ impl KernelResolver {
             }
             // A Vue component's own method is reached as `this.m()` inside it —
             // never as `e.preventDefault()` on an event, nor
-            // `this.editor.setValue()` on something the component holds.
+            // `this.editor.setValue()` on something the component holds. The
+            // extractors emit `this.m()` as a bare `m`, which the exact-name
+            // arm filters, so every receiver that reaches this strategy is
+            // something else and a component's own method is dropped; the
+            // `this` test mirrors upstream's matchMethodCall.
             if is_js_family(&r.language) {
                 let before = target.len();
                 target.retain(|m| {

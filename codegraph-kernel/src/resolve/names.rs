@@ -3,6 +3,10 @@
 use super::*;
 use super::name_scope::{can_name_in_type_position, is_bare_rust_name};
 
+/// The most a PHP `$this`/`self`/`parent` call settled on a repository trait
+/// no repository class uses may claim: a guess, not a proven link.
+const PHP_UNSEEN_ANCESTOR_CONFIDENCE: f64 = 0.5;
+
 impl KernelResolver {
     // -----------------------------------------------------------------------
     // Name machinery (name-matcher.ts)
@@ -528,6 +532,11 @@ impl KernelResolver {
 
     /// matchByExactName (name-matcher.ts).
     pub(super) fn match_by_exact_name(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let found = self.match_by_exact_name_uncapped(r)?;
+        self.cap_php_unseen_ancestor(found, r)
+    }
+
+    fn match_by_exact_name_uncapped(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if self.is_unknown_receiver_built_in_call(r) {
             return Ok(None);
         }
@@ -708,15 +717,38 @@ impl KernelResolver {
     /// The candidates a PHP `$this->m()` / `self::m()` / `parent::m()` call
     /// allows: methods of the class hierarchy around the call site
     /// (matchByExactName / matchFuzzy, name-matcher.ts).
+    ///
+    /// A method the hierarchy binds wins over a repository trait admitted only
+    /// because an ancestor lies outside the repository; the latter is kept
+    /// only when nothing is bound, and `cap_php_unseen_ancestor` then holds
+    /// its confidence below the trusted range.
     fn retain_php_self_scope(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
         let Some(via) = self.php_self_receiver(r)? else { return Ok(candidates) };
-        let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
+        let mut bound: Vec<Arc<KNode>> = Vec::new();
+        let mut unseen: Vec<Arc<KNode>> = Vec::new();
         for n in candidates.into_iter() {
-            if n.kind == "method" && self.is_php_method_in_scope(&n, r, via)? {
-                kept.push(n);
+            if n.kind != "method" {
+                continue;
+            }
+            match self.php_method_scope(&n, r, via)? {
+                php_scope::PhpScope::Bound => bound.push(n),
+                php_scope::PhpScope::UnseenAncestor => unseen.push(n),
+                php_scope::PhpScope::Out => {}
             }
         }
-        Ok(kept)
+        Ok(if bound.is_empty() { unseen } else { bound })
+    }
+
+    /// A `$this`/`self`/`parent` call settled on a repository trait that no
+    /// class in the repository hierarchy uses stays an untrusted guess.
+    fn cap_php_unseen_ancestor(&mut self, cand: Option<KCand>, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(mut c) = cand else { return Ok(None) };
+        if let Some(via) = self.php_self_receiver(r)? {
+            if self.php_method_scope(&c.node, r, via)? == php_scope::PhpScope::UnseenAncestor {
+                c.confidence = c.confidence.min(PHP_UNSEEN_ANCESTOR_CONFIDENCE);
+            }
+        }
+        Ok(Some(c))
     }
 
     /// matchFuzzy (name-matcher.ts).
@@ -755,7 +787,19 @@ impl KernelResolver {
             callable.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         let callable = self.retain_python_java_scope(callable, r)?;
-        let callable = self.retain_php_self_scope(callable, r)?;
+        let mut callable = self.retain_php_self_scope(callable, r)?;
+        // A Vue component's own method is `this.m()` inside that component, as
+        // in the exact-name arm: a `this.showToast()` from a plugin or mixin
+        // is not another component's `showToast`.
+        if r.reference_kind == "calls" && is_js_family(&r.language) {
+            let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(callable.len());
+            for n in callable.into_iter() {
+                if !php_scope::is_vue_component_method(&n) || self.is_this_call_in_own_file(&n, r)? {
+                    kept.push(n);
+                }
+            }
+            callable = kept;
+        }
         let gated = self.apply_language_gate(callable, r);
         let same_language: Vec<Arc<KNode>> = gated
             .iter()
@@ -789,12 +833,16 @@ impl KernelResolver {
                 self.is_bare_js_call(r)? && self.is_param_shadowed(r)?
             };
             // Fuzzy settles a name one definition carries. A class that shares
-            // its exact name with an interface or type alias is not that: a
-            // `Locator` type imported from vitest's public API is the interface
-            // it declares, not the tester's abstract class.
+            // its exact name with an interface or type alias in another file
+            // is not that: a `Locator` type imported from vitest's public API
+            // is the interface it declares, not the tester's abstract class.
+            // One in the class's own file is a declaration merge, the same
+            // symbol.
             let type_twin = only.kind == "class"
                 && self.nodes_by_name(&only.name)?.iter().any(|n| {
-                    matches!(n.kind.as_str(), "interface" | "type_alias") && same_language_family(&n.language, &only.language)
+                    matches!(n.kind.as_str(), "interface" | "type_alias")
+                        && n.file_path != only.file_path
+                        && same_language_family(&n.language, &only.language)
                 });
             let reachable =
                 reachable && !bare_decline && !shadowed && !type_twin && self.is_lexically_reachable(&only, r)?;

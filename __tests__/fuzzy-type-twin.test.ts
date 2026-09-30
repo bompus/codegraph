@@ -4,7 +4,9 @@
  * name: vitest's browser tests import `type { Locator }` from the public
  * `vitest/browser` entry, which is the interface `context.d.ts` declares, and
  * fuzzy used to land every one of those references on the tester's abstract
- * `class Locator` because an interface is not a callable kind.
+ * `class Locator` because an interface is not a callable kind. An interface
+ * in the class's own file is a TypeScript declaration merge, the same symbol,
+ * and does not count.
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'fs';
@@ -54,6 +56,31 @@ export function first(all: Locator[]): Locator {
     });
     try {
       expect(targets(cg, 'test/browser/fixtures/basic.test.tsx', 'fuzzy')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('keeps the class when its twin is a declaration merge in the same file', async () => {
+    const cg = await project({
+      'package.json': '{"name":"root","private":true,"workspaces":["packages/*"]}',
+      'packages/browser/package.json': '{"name":"@vitest/browser","exports":{"./context":{"types":"./context.d.ts"}}}',
+      'packages/browser/context.d.ts': 'export interface BrowserPage {\n  reload(): Promise<void>\n}\n',
+      'packages/browser/src/client/tester/locators.ts':
+        'export interface Locator {\n  selector: string\n}\nexport abstract class Locator {\n  abstract click(): Promise<void>\n}\n',
+      'packages/vitest/package.json': '{"name":"vitest","exports":{"./browser":{"types":"./browser/context.d.ts"}}}',
+      'packages/vitest/browser/context.d.ts': "export * from '@vitest/browser/context'\n",
+      'test/browser/fixtures/basic.test.tsx': `import type { Locator } from 'vitest/browser';
+
+export function first(all: Locator[]): Locator {
+  return all[0]
+}
+`,
+    });
+    try {
+      expect(targets(cg, 'test/browser/fixtures/basic.test.tsx', 'fuzzy')).toContain(
+        'class:Locator@packages/browser/src/client/tester/locators.ts',
+      );
     } finally {
       cg.close();
     }

@@ -55,6 +55,20 @@ pub(super) enum PhpVia {
     Parent,
 }
 
+/// How a PHP method relates to the class hierarchy around a `$this`/`self`/
+/// `parent` call.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PhpScope {
+    /// A method of the enclosing class, a repository ancestor, a trait one of
+    /// them uses, or a subclass (for `$this`/`self`).
+    Bound,
+    /// A repository trait's method, admitted only because the hierarchy
+    /// reaches a class outside the repository whose traits are unseen.
+    UnseenAncestor,
+    /// Anything else.
+    Out,
+}
+
 /// A method a Vue Options API component declares for itself
 /// (`index::handleLogin` in `index.vue`).
 pub(super) fn is_vue_component_method(n: &KNode) -> bool {
@@ -98,8 +112,8 @@ impl KernelResolver {
     /// read from source and resolved the way PHP resolves a class name,
     /// through the file's `namespace` and `use` imports. A parent outside the
     /// repository ends the chain.
-    pub(super) fn is_php_method_in_scope(&mut self, method: &KNode, r: &ResolveRefIn, via: PhpVia) -> Res<bool> {
-        let Some(cut) = method.qualified_name.rfind("::") else { return Ok(true) };
+    pub(super) fn php_method_scope(&mut self, method: &KNode, r: &ResolveRefIn, via: PhpVia) -> Res<PhpScope> {
+        let Some(cut) = method.qualified_name.rfind("::") else { return Ok(PhpScope::Bound) };
         let owner = method.qualified_name[..cut].to_string();
         let mut enclosing: Option<Arc<KNode>> = None;
         for n in self.nodes_in_file(&r.file_path)?.iter() {
@@ -112,24 +126,29 @@ impl KernelResolver {
             }
         }
         // Inside a trait, `$this` is whichever class uses it.
-        let Some(enclosing) = enclosing.filter(|e| e.kind != "trait") else { return Ok(true) };
+        let Some(enclosing) = enclosing.filter(|e| e.kind != "trait") else { return Ok(PhpScope::Bound) };
         let start = match via {
             PhpVia::Parent => self.php_supertype_qns(&enclosing)?.as_ref().clone(),
             PhpVia::SelfClass => vec![enclosing.qualified_name.clone()],
         };
         let (up, leaves_repo) = self.php_ancestry(start)?;
         if up.contains(&owner) {
-            return Ok(true);
+            return Ok(PhpScope::Bound);
         }
         // A base class may call what a subclass defines: the owner descends
         // from the caller.
         if via == PhpVia::SelfClass && self.php_ancestry(vec![owner.clone()])?.0.contains(&enclosing.qualified_name) {
-            return Ok(true);
+            return Ok(PhpScope::Bound);
         }
         // Past an ancestor outside the repository its members are unseen, the
-        // repository's traits it uses among them: a trait's method may still
-        // be the one meant, an unrelated class's never is.
-        Ok(leaves_repo && self.nodes_by_qualified_name(&owner)?.iter().any(|d| d.kind == "trait"))
+        // repository's traits it uses among them (Orchestra's TestCase uses
+        // Laravel's testing traits): a trait's method may still be the one
+        // meant, an unrelated class's never is. Nothing in the repository
+        // binds it, so the caller keeps it only below the trusted confidence.
+        if leaves_repo && self.nodes_by_qualified_name(&owner)?.iter().any(|d| d.kind == "trait") {
+            return Ok(PhpScope::UnseenAncestor);
+        }
+        Ok(PhpScope::Out)
     }
 
     /// phpAncestry: every type `start` reaches through `extends` and trait
