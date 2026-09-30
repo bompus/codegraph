@@ -431,10 +431,13 @@ impl KernelResolver {
                 None
             });
         }
+        let mut cand = cand;
+        if self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic) {
+            cand.confidence = cand.confidence.min(0.7);
+        }
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
         }
-        let mut cand = cand;
         if !is_supertype_target(&cand.node) {
             // `export const IFoo = createDecorator<IFoo>(…)` beside `export
             // interface IFoo` (VS Code's service pattern): the strategy found

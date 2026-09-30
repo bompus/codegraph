@@ -96,6 +96,8 @@ const CSHARP_STD_METHODS: &[&str] = &[
 
 #[derive(Clone, PartialEq)]
 enum Shape { Bare, Path, SelfCall, SuperCall, Chain }
+#[derive(PartialEq)]
+pub(super) enum KotlinChainEvidence { Bound, Heuristic }
 struct CallSite { shape: Shape, receiver: String, label: String, subscript: bool }
 
 /// Drop balanced call, subscript and literal arguments while walking back to the receiver.
@@ -180,7 +182,8 @@ impl KernelResolver {
             .filter(|&at| at == 0 || !line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '$' || c == '_'))
             .or_else(|| {
                 Self::cached_regex(&format!(r"(?:^|[^\w$])({})\s*(?:[(<{{\[]|!|::<)", regex::escape(name)))
-                    .ok()?.captures(line)?.get(1).map(|m| m.start())
+                    .ok()?.captures_iter(line).filter_map(|m| m.get(1))
+                    .find(|m| r.language != "kotlin" || m.start() >= js_unit_to_byte(line, r.column.max(0) as usize)).map(|m| m.start())
             })?;
         let before = &line[..at];
         let after = &line[at + name.len()..];
@@ -197,24 +200,26 @@ impl KernelResolver {
         })
     }
 
-    /// A preceding imported or receiver-bound callee can prove a chain's result type.
-    pub(super) fn kotlin_proven_chain_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
-        if r.language != "kotlin" || r.reference_kind != "calls" { return Ok(false); }
-        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false) };
-        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(false) };
+    /// A declared callee result admits a chain; unknown receivers remain heuristic.
+    pub(super) fn kotlin_chain_evidence(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<Option<KotlinChainEvidence>> {
+        if r.language != "kotlin" || r.reference_kind != "calls" || r.reference_name != n.name || !is_std_method("kotlin", &n.name) { return Ok(None); }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(None) };
         let code = super::awaited::blank_string_contents(&super::awaited::strip_ts_comments(line));
         let pat = Self::cached_regex(&format!(r"(?:^|[^\w])({})\s*\(", regex::escape(&n.name)))?;
-        let Some(at) = pat.captures(&code).and_then(|m| m.get(1)).map(|m| m.start()) else { return Ok(false) };
+        let column = js_unit_to_byte(&code, r.column.max(0) as usize);
+        let Some(at) = pat.captures_iter(&code).filter_map(|m| m.get(1)).find(|m| m.start() >= column).map(|m| m.start()) else { return Ok(None) };
         let before = code[..at].trim_end().trim_end_matches('.').trim_end();
-        if !before.ends_with(')') { return Ok(false); }
+        if !before.ends_with(')') { return Ok(None); }
         let mut depth = 0usize;
         let mut open = None;
         for (i, ch) in before.char_indices().rev() {
             if ch == ')' { depth += 1; }
             else if ch == '(' { depth -= 1; if depth == 0 { open = Some(i); break; } }
         }
-        let Some(open) = open else { return Ok(false) };
-        let Some(call) = re!(r"(?:([A-Za-z_]\w*)\s*\.)?([A-Za-z_]\w*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*$").captures(&before[..open]) else { return Ok(false) };
+        let Some(open) = open else { return Ok(None) };
+        let Some(call) = re!(r"(?:([A-Za-z_]\w*)\s*\.)?([A-Za-z_]\w*)(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\s*$").captures(&before[..open]) else { return Ok(None) };
+        if call.get(1).is_none() && before[..open][..call.get(0).unwrap().start()].trim_end().ends_with('.') { return Ok(None); }
         let name = &call[2];
         let receiver_type = match call.get(1) {
             Some(receiver) => self.infer_local_receiver_type(receiver.as_str(), r, true)?,
@@ -259,15 +264,30 @@ impl KernelResolver {
                 let extension_owner = owner(f).unwrap_or("");
                 let expected = self.resolve_bound_type(extension_owner, &declaration, 0)?;
                 let actual = self.resolve_bound_type(ty, r, 0)?;
-                if !expected.zip(actual).is_some_and(|(a, b)| a.id == b.id) { return Ok(false); }
+                if !expected.zip(actual).is_some_and(|(a, b)| a.id == b.id) { return Ok(None); }
             }
         }
-        let Some(factory) = factory else { return Ok(false) };
-        let Some(raw) = &factory.return_type else { return Ok(false) };
+        let Some(factory) = factory else { return Ok(None) };
+        let Some(raw) = &factory.return_type else { return Ok(None) };
         let ty = raw.split('<').next().unwrap_or(raw).trim().trim_end_matches('?');
-        if factory.type_parameters.as_ref().is_some_and(|ps| ps.iter().any(|p| p.split_whitespace().next() == Some(ty))) { return Ok(false); }
+        if factory.type_parameters.as_ref().is_some_and(|ps| ps.iter().any(|p| p.split_whitespace().next() == Some(ty))) { return Ok(None); }
         let mut declaration = r.clone(); declaration.file_path = factory.file_path.clone(); declaration.line = factory.start_line; declaration.from_node_id = factory.id.clone();
-        Ok(self.match_bound_type_member(ty, &n.name, &declaration)?.is_some_and(|c| c.node.id == n.id))
+        if call.get(1).is_some() && receiver_type.is_none() {
+            // A declared conflicting member can shadow the imported extension.
+            // Unannotated competitors keep the result uncertain; the shared
+            // target gate caps this hypothesis below the trust line.
+            for candidate in self.nodes_by_name(&factory.name)?.iter().filter(|c| {
+                matches!(c.language.as_str(), "kotlin" | "java") && matches!(c.kind.as_str(), "method" | "function")
+            }) {
+                let Some(raw) = &candidate.return_type else { continue };
+                let ty = raw.split('<').next().unwrap_or(raw).trim().trim_end_matches('?');
+                let mut site = declaration.clone(); site.file_path = candidate.file_path.clone(); site.line = candidate.start_line; site.from_node_id = candidate.id.clone();
+                if !self.match_bound_type_member(ty, &n.name, &site)?.is_some_and(|member| member.node.id == n.id) { return Ok(None); }
+            }
+        }
+        Ok(self.match_bound_type_member(ty, &n.name, &declaration)?
+            .filter(|c| c.node.id == n.id)
+            .map(|_| if receiver_type.is_some() { KotlinChainEvidence::Bound } else { KotlinChainEvidence::Heuristic }))
     }
 
     /// Scope predicates only eliminate candidates, never select one.
@@ -290,7 +310,7 @@ impl KernelResolver {
             "kotlin" if site.shape == Shape::Chain && is_std_method("kotlin", &r.reference_name) => {
                 Ok(!matches!(n.kind.as_str(), "method" | "function") || site.receiver == "this"
                     || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))
-                    || self.kotlin_proven_chain_target(n, r)?)
+                    || self.kotlin_chain_evidence(n, r)?.is_some())
             }
             _ => Ok(true),
         }

@@ -62,6 +62,11 @@ describe('factory returning a module binding', () => {
     expect(targets).toContain('I18nClass::baseText');
   });
 
+  it('keeps return line positions after Unicode string contents', async () => {
+    const targets = await callTargets({ 'src/i18n.ts': i18n('  const label = "中文";\n  return i18n;'), 'src/use.ts': consumer }, 'label');
+    expect(targets).toContain('I18nClass::baseText');
+  });
+
   it('types the result by a constructed binding', async () => {
     const targets = await callTargets({ 'src/i18n.ts': i18n('  return plain;'), 'src/use.ts': consumer }, 'label');
     expect(targets).toContain('I18nClass::baseText');
