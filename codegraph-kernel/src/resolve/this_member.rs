@@ -75,7 +75,8 @@ impl KernelResolver {
 
     /// matchDeferredThisMember — a node-anchored BFS from the enclosing class
     /// up implements/extends edges (depth < 5), taking the first supertype
-    /// whose `contains` edges hold a same-family function/method `member`.
+    /// whose `contains` edges hold a same-family function/method `member`,
+    /// except that an interface or protocol declaration yields to any body.
     pub(super) fn match_deferred_this_member(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         // Every queued ref starts `this.` (resolveThisMemberFnRef deferred it).
         let member = r.reference_name.get("this.".len()..).unwrap_or("");
