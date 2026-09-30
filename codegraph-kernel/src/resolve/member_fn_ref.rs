@@ -366,13 +366,27 @@ impl KernelResolver {
             return Ok(None);
         };
         let floor = caller.as_ref().map_or(1, |c| c.start_line).max(1);
+        // A nested def or class body binds its own locals, never the caller's.
+        let ceiling = caller.as_ref().map_or(i64::MAX, |c| c.end_line);
+        let nested: Vec<(i64, i64)> = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| {
+                matches!(n.kind.as_str(), "function" | "method" | "class")
+                    && n.start_line > floor
+                    && n.end_line <= ceiling
+                    && !(n.start_line <= r.line && r.line <= n.end_line)
+            })
+            .map(|n| (n.start_line, n.end_line))
+            .collect();
         let mut line_no = r.line.min(lines.len() as i64);
         let starts = python_statement_starts(&lines, (floor - 1) as usize, line_no.max(floor) as usize);
         while line_no >= floor {
             let line = &lines[(line_no - 1) as usize];
             let starts_statement = starts[(line_no - floor) as usize];
+            let in_nested = nested.iter().any(|&(s, e)| s <= line_no && line_no <= e);
             line_no -= 1;
-            if !starts_statement {
+            if !starts_statement || in_nested {
                 continue;
             }
             if let Some(c) = python_assignment_re().captures(line) {

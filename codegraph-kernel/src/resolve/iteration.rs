@@ -246,9 +246,17 @@ impl KernelResolver {
                 site.line = row as i64 + 1;
                 site.column = col as i64;
                 let root_name = node_text(root, text).to_string();
-                return Ok(self
-                    .infer_local_receiver_type(&root_name, &site, true)?
-                    .map(|ty| IterationHit { ty, site }));
+                let Some(ty) = self.infer_local_receiver_type(&root_name, &site, true)? else {
+                    return Ok(None);
+                };
+                // A member `let`/`also` on the receiver's type wins over the
+                // stdlib extension, and its lambda's `it` is whatever it passes.
+                if let Some(method) = method {
+                    if self.match_bound_type_member(&ty, method, &site)?.is_some() {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(IterationHit { ty, site }));
             }
             if r.language == "go" && node.kind() == "for_statement" {
                 let range = named_children(node).into_iter().find(|n| n.kind() == "range_clause");

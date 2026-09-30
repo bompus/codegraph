@@ -422,7 +422,7 @@ impl KernelResolver {
     /// file, its package, or an import) — an unrelated same-named class
     /// elsewhere contributes nothing.
     fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool) -> Res<Vec<String>> {
-        let type_nodes: Vec<Arc<KNode>> = self
+        let mut type_nodes: Vec<Arc<KNode>> = self
             .nodes_by_name(type_name)?
             .iter()
             // Scala singletons can inherit members even though they cannot be parents.
@@ -432,6 +432,16 @@ impl KernelResolver {
             })
             .cloned()
             .collect();
+        // A name the site binds to one type keeps that type's declarations
+        // (partial or extended parts) and drops a same-named type in another
+        // namespace, package or module.
+        if from_site && type_nodes.len() > 1 {
+            if let Some(owner) = self.resolve_bound_type(type_name, r, 0)? {
+                if type_nodes.iter().any(|n| n.id == owner.id) {
+                    type_nodes.retain(|n| same_declared_type(n, &owner));
+                }
+            }
+        }
         let mut names: Vec<String> = Vec::new();
         for tn in type_nodes {
             if from_site && r.language == "java" && !self.java_type_visible(&tn, r)? {
@@ -861,6 +871,19 @@ impl KernelResolver {
         }
         Ok(None)
     }
+}
+
+/// Whether `n` declares the same type as `owner`: the same qualified name
+/// in the same scope. A TS/JS or Python type is scoped by its module file
+/// and a Go type by its package directory; qualified names carry the
+/// namespace or package elsewhere, where a type may span files.
+fn same_declared_type(n: &KNode, owner: &KNode) -> bool {
+    n.qualified_name == owner.qualified_name
+        && match n.language.as_str() {
+            l if is_esm_family(l) || l == "python" => n.file_path == owner.file_path,
+            "go" => pos_dirname(&n.file_path) == pos_dirname(&owner.file_path),
+            _ => true,
+        }
 }
 
 /// matchBoundTypeMember's verdict for a member it proved.
