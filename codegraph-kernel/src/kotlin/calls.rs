@@ -30,6 +30,7 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(func) = func else { return };
         let mut callee_name = String::new();
+        let mut call_at = node;
 
         if func.kind() == "navigation_expression" {
             let property = func
@@ -46,6 +47,7 @@ impl<'t> Walker<'t> {
                 });
             if let Some(property) = property {
                 let method_name = self.text(property);
+                call_at = property;
                 let receiver = func
                     .child_by_field_name("object")
                     .or_else(|| func.child_by_field_name("operand"))
@@ -100,7 +102,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name, crate::buffers::EDGE_CALLS, node);
+            self.push_ref_at(caller, &callee_name, crate::buffers::EDGE_CALLS, if callee_name.contains('.') { node } else { call_at });
         }
     }
 

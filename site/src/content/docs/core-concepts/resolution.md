@@ -30,3 +30,5 @@ Static parsing misses computed and indirect calls, so flows can break at dynamic
 Every synthesized edge is marked `provenance: 'heuristic'` with the site that wired it, and is shown inline wherever a path crosses it.
 
 Java, C# and Kotlin field or property receivers use their declared types, including inherited generic members. A declared type outside the project prevents a guess at an unrelated project method. Scala local binders and class ancestry, Swift implicit receivers and argument labels, and Rust/Go bare versus chained call forms constrain name matches. Names destructured from a composable or hook result resolve to the functions it returns under those keys. Unexported ESM bindings stay local unless explicitly exposed.
+
+Kotlin chains use the callee position and declared return type, including nested and multiline calls; imported return-type hypotheses for standard method names keep confidence at most 0.7 when the receiver type is unknown.
