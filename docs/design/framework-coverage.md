@@ -36,7 +36,7 @@ arms disagree unresolved rather than guessed.
 
 | Router | Resolver | Markup synthesizer | Tests | Validated on |
 |---|---|---|---|---|
-| Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts` | — |
+| Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts`, `monorepo-app-frameworks.test.ts`, `monorepo-app-frameworks-sync.test.ts` | upstream: evanbacon.dev (`+api` endpoints), react-native-true-sheet (nearest manifest decides the app) |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
 | React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react's `paths.x.path` constants and `lazy` routes are not read yet |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |

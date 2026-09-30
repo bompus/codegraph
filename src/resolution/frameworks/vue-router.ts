@@ -35,8 +35,8 @@
  * than calls, so a synthesizer reads them (`vue-router-synthesizer.ts`).
  *
  * Left unresolved rather than guessed: a computed destination
- * (`router.push(postAuthRoute.value)`), a name or path nothing declares, and
- * a nested `children:` route, whose path is relative to its parent.
+ * (`router.push(postAuthRoute.value)`) and a name or path nothing declares.
+ * A nested `children:` route joins its path onto its parent's.
  */
 
 import type { Language, Node } from '../../types';
