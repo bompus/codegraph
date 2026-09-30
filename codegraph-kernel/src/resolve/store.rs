@@ -37,6 +37,16 @@ fn in_scope(code: &str, at: usize, call_scope: &[usize]) -> bool {
     brace_stack(code, at).iter().enumerate().all(|(i, p)| call_scope.get(i) == Some(p))
 }
 
+/// Whether `code[from..]` declares `name` where the call at the end of
+/// `code` sees it. A `var` reaches its whole function, which braces can't
+/// tell from a block, so it counts wherever it sits; any other declaration
+/// only inside a block still open at the call.
+fn declared_in_scope(code: &str, from: usize, name: &str, call_scope: &[usize]) -> bool {
+    declaration_matches(&code[from..], name, &["const", "let", "var", "function", "class"], true)
+        .into_iter()
+        .any(|at| code[from + at..].starts_with("var") || in_scope(code, from + at, call_scope))
+}
+
 /// `lines[from..to].concat(lines[to].slice(0, column)).join('\n')` — the
 /// source up to the call site, starting at line index `from`.
 fn source_before(lines: &[String], from: usize, line: i64, column: i64) -> String {
@@ -87,8 +97,7 @@ impl KernelResolver {
             if !in_scope(&code, at, &call_scope) {
                 continue;
             }
-            let rest = &code[end..];
-            if !declaration_matches(rest, name, &["const", "let", "var", "function", "class"], true).is_empty() {
+            if declared_in_scope(&code, end, name, &call_scope) {
                 return Ok(None);
             }
             return self.resolve_store_action(&format!("{store}.getState"), name, r, false);
@@ -157,8 +166,7 @@ impl KernelResolver {
             let param_shadows = parameter_bindings(rest, name).into_iter().any(|(at, body)| {
                 in_scope(&code, end + at, &call_scope) && body.is_none_or(|b| call_scope.contains(&(end + b)))
             });
-            if !declaration_matches(rest, name, &["const", "let", "var", "function", "class"], true).is_empty()
-                || param_shadows
+            if declared_in_scope(&code, end, name, &call_scope) || param_shadows
             {
                 return Ok(None);
             }

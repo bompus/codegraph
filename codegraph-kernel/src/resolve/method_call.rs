@@ -361,7 +361,8 @@ impl KernelResolver {
             }
             // A lambda parameter hides the same-named field or outer local
             // the binding rows name (lambda parameters have no row). Only a
-            // Kotlin `x.let { v -> … }` still types it.
+            // Kotlin `x.let { v -> … }` or a typed Java `(Foo f) ->` still
+            // types it.
             if let Some(b) = binding.as_ref().filter(|b| b.kind != "import") {
                 if (r.language == "java" || r.language == "kotlin")
                     && self.lambda_param_shadows(&object_or_class, r, b.line)?
@@ -369,6 +370,12 @@ impl KernelResolver {
                     if r.language == "kotlin" {
                         if let Some(hit) = self.iteration_receiver_in_tree(&object_or_class, r)? {
                             return self.match_bound_type_member(&hit.ty, &method_name, &hit.site);
+                        }
+                    }
+                    // `(Foo f) -> f.bar()` declares its parameter's type.
+                    if r.language == "java" {
+                        if let Some(ty) = self.java_lambda_param_type(&object_or_class, r)? {
+                            return self.match_bound_type_member(&ty, &method_name, r);
                         }
                     }
                     return Ok(None);
@@ -975,7 +982,15 @@ impl KernelResolver {
         let method = &r.reference_name[dot + 1..];
         let root = receiver.split('.').next().unwrap_or(receiver);
         let bindings = self.bindings(&r.file_path)?;
-        let binding = innermost_binding(&bindings, root, Some(r.line)).cloned();
+        // Svelte/Astro markup and a second script sit outside the rows'
+        // scopes but still see a script's top-level import.
+        let binding = innermost_binding(&bindings, root, Some(r.line))
+            .or_else(|| {
+                is_sfc_scoped_script(&r.language)
+                    .then(|| sfc_top_level_binding(&bindings, root).filter(|b| b.kind == "import"))
+                    .flatten()
+            })
+            .cloned();
 
         if !is_esm_family(&r.language) {
             // `binding?.kind === 'import' && !phpVariable` → br:import;

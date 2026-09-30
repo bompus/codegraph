@@ -398,7 +398,14 @@ impl KernelResolver {
                 .default_component
                 .clone()
                 .or_else(|| export_index.default_binding.clone())
-                .or_else(|| export_index.default_fn_class.clone());
+                // A file the walk already passed through for another name
+                // can't supply its default by the first-exported-declaration
+                // guess: that is a re-export cycle, which ESM rejects.
+                .or_else(|| {
+                    let file_prefix = format!("{file_path}\0");
+                    let reentered = visited.iter().filter(|k| k.starts_with(&file_prefix)).nth(1).is_some();
+                    export_index.default_fn_class.clone().filter(|_| !reentered)
+                });
             if let Some(d) = direct {
                 return self.memo_symbol_opt(memo_key, Some(d.clone()));
             }

@@ -623,6 +623,38 @@ describe('#2069 — an #undef under an undecidable #if leaves a never-seen flag 
   });
 });
 
+describe('#if on a name after its #undef reads 0', () => {
+  it.each(['c', 'cpp'] as const)('the #else arm is taken, directly or through an alias (%s)', async (language) => {
+    const cg = await indexed({
+      [`unit.${language}`]: [
+        '#define ENABLE_TRACE 1',
+        '#undef ENABLE_TRACE',
+        '#if ENABLE_TRACE',
+        '#else',
+        '#define CONDITIONAL(v) ((void)(v))',
+        '#endif',
+        '#define BACKING 1',
+        '#define ALIASED BACKING',
+        '#undef BACKING',
+        '#if ALIASED',
+        '#else',
+        '#define ALIAS_HOOK(v) ((void)(v))',
+        '#endif',
+        'void direct(void) { CONDITIONAL(1); }',
+        'void aliased(void) { ALIAS_HOOK(1); }',
+        '',
+      ].join('\n'),
+      [`decoy.${language}`]: 'void CONDITIONAL(int x) {}\nvoid ALIAS_HOOK(int x) {}\n',
+    });
+    try {
+      expect(calls(cg, 'direct')).toEqual([]);
+      expect(calls(cg, 'aliased')).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+});
+
 describe('#2070 — a call through a function-like macro never binds to a same-named type', () => {
   it.each(['c', 'cpp'] as const)('reproduction: PREFIX(scan)(x) reaches no struct PREFIX, in another file or an included header (%s)', async (language) => {
     const cg = await indexed({

@@ -259,7 +259,7 @@ impl KernelResolver {
             return Ok(outcome);
         }
         // matchBoundReceiverCall — claimed refs are terminal either way.
-        if is_binding_receiver_call(r) {
+        if is_binding_receiver_call(r) && !self.is_component_receiver_out_of_scope(r)? {
             match probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?) {
                 None => {
                     return Ok(self.refused());

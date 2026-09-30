@@ -15,7 +15,7 @@ const RUST_PRELUDE: &[&str] = &[
 ];
 
 /// A file's project `use` trees (rustUsesOf): every identifier in them, and
-/// `X` of each `use …::X::*` (`super` for `use super::*`). `std::`, `core::`
+/// `X` of each `use …::X::*` (`super` for `use super::*`), grouped or not. `std::`, `core::`
 /// and `alloc::` trees are skipped.
 #[derive(Default)]
 pub(crate) struct RustScopeUses {
@@ -35,11 +35,52 @@ pub(super) fn collect_rust_scope_uses(text: &str) -> RustScopeUses {
         for id in re!(r"[A-Za-z_][A-Za-z0-9_]*").find_iter(tree) {
             uses.names.insert(id.as_str().to_string());
         }
-        for g in re!(r"([A-Za-z0-9_]+)\s*::\s*(?:\{[^}]*)?\*").captures_iter(tree) {
-            uses.globs.insert(g[1].to_string());
-        }
+        collect_rust_use_globs(tree, &mut uses.globs);
     }
     uses
+}
+
+/// rustUseGlobs (rust-scope.ts): the module of each `*` in a `use` tree —
+/// `X` of `X::*`, also inside a group (`crate::{error::*, util::*}`), and
+/// the group's owner for a group's own `*` item (`X::{self, *}`,
+/// `X::{b::{c}, *}`).
+fn collect_rust_use_globs(tree: &str, globs: &mut HashSet<String>) {
+    let b = tree.as_bytes();
+    // The identifier before a `::` that ends at `end`, whitespace allowed.
+    let owner_before = |end: usize| -> Option<String> {
+        let mut i = end;
+        while i > 0 && b[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i < 2 || &b[i - 2..i] != b"::" {
+            return None;
+        }
+        i -= 2;
+        while i > 0 && b[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        let stop = i;
+        while i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') {
+            i -= 1;
+        }
+        (i < stop).then(|| tree[i..stop].to_string())
+    };
+    // The owner of each open group, innermost last.
+    let mut groups: Vec<Option<String>> = Vec::new();
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'{' => groups.push(owner_before(i)),
+            b'}' => {
+                groups.pop();
+            }
+            b'*' => {
+                if let Some(owner) = owner_before(i).or_else(|| groups.last().cloned().flatten()) {
+                    globs.insert(owner);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// stripCommentsForRegex(text, 'rust'): nested block and line comments
@@ -494,6 +535,22 @@ mod tests {
         assert!(!uses.names.contains("fmt"));
         assert!(uses.globs.contains("super"));
         assert!(uses.globs.contains("walk"));
+    }
+
+    #[test]
+    fn rust_use_globs_in_groups() {
+        let globs = |tree: &str| {
+            let mut g = HashSet::new();
+            collect_rust_use_globs(tree, &mut g);
+            let mut v: Vec<String> = g.into_iter().collect();
+            v.sort();
+            v
+        };
+        assert_eq!(globs("crate::walk::*"), ["walk"]);
+        assert_eq!(globs("crate::{error::*, util::*}"), ["error", "util"]);
+        assert_eq!(globs("crate::lowargs::{self, *}"), ["lowargs"]);
+        assert_eq!(globs("a::{b::{c}, *}"), ["a"]);
+        assert_eq!(globs("a :: { b, c }"), Vec::<String>::new());
     }
 
     #[test]

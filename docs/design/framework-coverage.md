@@ -112,10 +112,14 @@ picked up at the next sync of any source file (templates are not watched).
 A routes array is read where it is declared, so an untyped array in a file
 that does not import `@angular/router` is not one, even when another file
 hands it to `provideRouter`. The fork adds to upstream's reader: `provideRouter`
-and `RouterModule` imported under an alias still open a routes array, and an
-entry with a named `outlet` (`/(side:x)`, not a path) or a `...spread` (fields
-the scan cannot see) names no screen. `angular-routes.test.ts` covers those,
-sync after reopening, and fresh parse workers.
+and `RouterModule` imported under an alias (`$`-prefixed ones included) still
+open a routes array, and an entry with a named `outlet` (`/(side:x)`, not a
+path) or a `...spread` (fields the scan cannot see) names no screen.
+`angular-routes.test.ts` covers those, sync after reopening, and fresh parse
+workers. Since that verification, a lazy NgModule's routes are also found
+through a routing module in the module's own directory, a barrel in front of
+it, or the routes file it hands `forChild`. `angular-router.test.ts` covers
+that on fixtures; no corpus has been re-checked, so the date above stands.
 
 ---
 

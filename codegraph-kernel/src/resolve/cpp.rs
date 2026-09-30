@@ -127,7 +127,13 @@ impl TuWalk {
             if depth >= ALIAS_DEPTH {
                 return None;
             }
-            let value = self.definitions.get(text).and_then(|d| d.value.clone())?;
+            let definition = self.definitions.get(text)?;
+            // A name `#undef`ed for certain reads as 0 in `#if`, like any
+            // undefined identifier; one the walk has not seen stays unknown.
+            if definition.defined == Some(false) {
+                return Some(false);
+            }
+            let value = definition.value.clone()?;
             return self.condition_at(&value, depth + 1);
         }
         None
