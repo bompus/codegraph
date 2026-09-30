@@ -304,24 +304,33 @@ impl KernelResolver {
             }
         }
         let rows = self.bindings(file_path)?;
+        let by_id: HashMap<&str, &Arc<KNode>> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut default_binding: Option<Arc<KNode>> = None;
         if let Some(bound) = default_export_binding(&rows) {
-            let mut candidates: Vec<&Arc<KNode>> = nodes
-                .iter()
-                .filter(|n| n.name == bound && is_default_binding_kind(&n.kind))
-                .collect();
-            candidates.sort_by(|a, b| {
-                a.start_line
-                    .cmp(&b.start_line)
-                    .then(a.start_column.cmp(&b.start_column))
-            });
-            default_binding = candidates.first().map(|n| (*n).clone());
+            // The binding row names the declaration it exports; by name alone
+            // a same-named function nested earlier in the file would win.
+            default_binding = bound
+                .node_id
+                .as_deref()
+                .and_then(|id| by_id.get(id))
+                .filter(|n| n.name == bound.name && is_default_binding_kind(&n.kind))
+                .map(|n| (*n).clone());
+            if default_binding.is_none() {
+                let mut candidates: Vec<&Arc<KNode>> = nodes
+                    .iter()
+                    .filter(|n| n.name == bound.name && is_default_binding_kind(&n.kind))
+                    .collect();
+                candidates.sort_by(|a, b| {
+                    a.start_line
+                        .cmp(&b.start_line)
+                        .then(a.start_column.cmp(&b.start_column))
+                });
+                default_binding = candidates.first().map(|n| (*n).clone());
+            }
         }
         // Local export clauses: `export { impl as alias }` binds the renamed
         // name to the real declaration.
         if !rows.is_empty() {
-            let by_id: HashMap<&str, &Arc<KNode>> =
-                nodes.iter().map(|n| (n.id.as_str(), n)).collect();
             for r in rows.iter() {
                 let (Some(exported), Some(node_id)) = (r.exported_as.as_deref(), r.node_id.as_deref())
                 else {
@@ -361,28 +370,26 @@ impl KernelResolver {
             return Ok(None);
         }
         let fresh = depth == 0 && visited.is_empty();
-        let memo_key = if fresh {
-            Some(format!(
-                "{}\0{}{}\0{}\0{}\0{}",
-                file_path,
-                if want.is_default { 1 } else { 0 },
-                if want.is_namespace { 1 } else { 0 },
-                want.exported_name,
-                want.member_name.as_deref().unwrap_or(""),
-                language
-            ))
-        } else {
-            None
-        };
+        // A chain may re-enter a file for another name (`index.js` re-exports
+        // `card.js`'s default, which is `index.js`'s `real`), so a visit is a
+        // (file, wanted export) pair, not a file.
+        let visit_key = format!(
+            "{}\0{}{}\0{}\0{}",
+            file_path,
+            if want.is_default { 1 } else { 0 },
+            if want.is_namespace { 1 } else { 0 },
+            want.exported_name,
+            want.member_name.as_deref().unwrap_or(""),
+        );
+        let memo_key = if fresh { Some(format!("{visit_key}\0{language}")) } else { None };
         if let Some(k) = &memo_key {
             if let Some(hit) = self.exported_symbol_memo.get(k) {
                 return Ok(hit.clone());
             }
         }
-        if visited.contains(file_path) {
+        if !visited.insert(visit_key) {
             return Ok(None);
         }
-        visited.insert(file_path.to_string());
 
         let export_index = self.file_export_index(file_path)?;
         // 1. Direct hit.
@@ -527,10 +534,8 @@ impl KernelResolver {
 
 /// defaultExportBinding (import-resolver.ts): the identifier
 /// `export default NAME` names, from the file's binding rows.
-pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<String> {
-    rows.iter()
-        .find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
-        .map(|r| r.name.clone())
+pub(super) fn default_export_binding(rows: &[KBinding]) -> Option<&KBinding> {
+    rows.iter().find(|r| r.exported_as.as_deref() == Some("default") && r.node_id.is_some())
 }
 
 #[cfg(test)]

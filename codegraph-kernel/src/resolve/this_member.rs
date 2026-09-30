@@ -119,6 +119,11 @@ impl KernelResolver {
                 .collect();
         }
         let mut seen: HashSet<String> = frontier.iter().map(|n| n.id.clone()).collect();
+        // A member declared on an interface or protocol is a signature; an
+        // inherited class body anywhere up the chain is what runs, so the
+        // declaration is only a fallback. Traits stay first-hit: Scala and PHP
+        // traits carry bodies that override the parent chain.
+        let mut declared_only: Option<Arc<KNode>> = None;
         for _depth in 0..5 {
             if frontier.is_empty() {
                 break;
@@ -139,7 +144,11 @@ impl KernelResolver {
                             && (m.kind == "function" || m.kind == "method")
                             && same_language_family(&m.language, &r.language)
                         {
-                            return Ok(Some(KCand { node: m, confidence: 0.85, resolved_by: "function-ref" }));
+                            if !matches!(super_node.kind.as_str(), "interface" | "protocol") {
+                                return Ok(Some(KCand { node: m, confidence: 0.85, resolved_by: "function-ref" }));
+                            }
+                            declared_only.get_or_insert(m);
+                            break;
                         }
                     }
                     next.push(super_node);
@@ -147,6 +156,6 @@ impl KernelResolver {
             }
             frontier = next;
         }
-        Ok(None)
+        Ok(declared_only.map(|node| KCand { node, confidence: 0.85, resolved_by: "function-ref" }))
     }
 }
