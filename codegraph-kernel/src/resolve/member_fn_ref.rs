@@ -86,6 +86,63 @@ impl KernelResolver {
         Ok(self.unique_member(named, r, 0.8)?.filter(|c| c.node.kind == "method"))
     }
 
+    /// `self.<field>.method()` / `cls.<field>.method()` in Python: the field's
+    /// type from its class or a base (`self.cache = Store()` in `__init__`,
+    /// an annotation, an annotated parameter assigned to it), then the member
+    /// on that type or along its MRO, else a subclass's. `None`: the field's
+    /// type (or the subclass) is not known here, so the name strategies
+    /// decide; `Some(None)`: the type's member is data or a property.
+    pub(super) fn python_self_field_call(&mut self, receiver: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        let Some(field) = receiver.strip_prefix("self.").or_else(|| receiver.strip_prefix("cls.")).filter(|f| is_word(f)) else {
+            return Ok(None);
+        };
+        let owner = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| n.kind == "class" && n.start_line <= r.line && n.end_line >= r.line)
+            .max_by_key(|n| n.start_line)
+            .cloned();
+        let Some(owner) = owner else { return Ok(None) };
+        // The class's own evidence first, else the nearest base along its
+        // MRO whose `__init__` or body types the field, read in that base's file.
+        let mut typed = self.python_field_type(field, &owner, r)?.map(|t| (t, r.clone()));
+        if typed.is_none() && self.supertypes_complete {
+            if let Some(mro) = self.python_mro(&owner, 0)? {
+                for class in mro.iter().skip(1) {
+                    let site = r.clone().at(class);
+                    if let Some(t) = self.python_field_type(field, class, &site)? {
+                        typed = Some((t, site));
+                        break;
+                    }
+                }
+            }
+        }
+        // Conflicting or untyped evidence (`self.store = make_store()`) leaves
+        // the call to the name strategies, as before.
+        let Some((ty, site)) = typed.filter(|(t, _)| t != UNKNOWN_TYPE && t != "object" && t != "Any") else {
+            return Ok(None);
+        };
+        let Some(cls) = self.python_ref_class(&ty, &site)? else { return Ok(None) };
+        let mut members = self.python_members(&cls, member, r, &mut HashSet::new())?;
+        let mut confidence = 0.9;
+        if members.is_empty() {
+            // A base-typed field can hold a subclass: its one method of that
+            // name, else the name strategies decide as before.
+            members = self.python_descendant_members(&cls, member, r)?;
+            if members.len() != 1 {
+                return Ok(None);
+            }
+            confidence = 0.8;
+        }
+        let mut methods = members.into_iter().filter(|n| n.language == "python");
+        Ok(Some(match (methods.next(), methods.next()) {
+            (Some(m), None) if m.kind == "method" && !self.is_python_property(&m) => {
+                Some(KCand { node: m, confidence, resolved_by: "instance-method" })
+            }
+            _ => None,
+        }))
+    }
+
     /// Is `name` bound at `r` by something other than its import (a
     /// parameter, a local)? Files without binding rows keep the import.
     fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
@@ -130,8 +187,15 @@ impl KernelResolver {
         if !members.is_empty() {
             return Ok(Some(self.unique_member(members, r, 0.9)?));
         }
-        // A base-typed receiver can hold a subclass-only method: keep only
-        // descendants of THAT base, so unrelated same-name methods can't win.
+        // A base-typed receiver can hold a subclass-only method.
+        let descendants = self.python_descendant_members(&cls, member, r)?;
+        Ok(Some(self.unique_member(descendants, r, 0.8)?))
+    }
+
+    /// `member` methods of the classes deriving from `cls` (a base-typed
+    /// receiver can hold a subclass): only descendants of THAT base, so
+    /// unrelated same-name methods can't win.
+    fn python_descendant_members(&mut self, cls: &KNode, member: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
         let candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(member)?
             .iter()
@@ -147,12 +211,12 @@ impl KernelResolver {
                 .find(|c| c.kind == "class" && c.qualified_name == n.qualified_name[..sep])
                 .cloned();
             if let Some(parent) = parent {
-                if self.python_derives_from(&parent, &cls, r, &mut HashSet::new())? {
+                if self.python_derives_from(&parent, cls, r, &mut HashSet::new())? {
                     descendants.push(n);
                 }
             }
         }
-        Ok(Some(self.unique_member(descendants, r, 0.8)?))
+        Ok(descendants)
     }
 
     /// The single same-family candidate, when it is a callable other than
@@ -361,13 +425,62 @@ impl KernelResolver {
         if !is_word(receiver) {
             return Ok(None);
         }
-        let caller = self.node_by_id(&r.from_node_id)?;
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let floor = caller.as_ref().map_or(1, |c| c.start_line).max(1);
+        let mut scope = self.node_by_id(&r.from_node_id)?;
+        let mut upto = r.line;
+        // A nested def reads a name it does not bind from the function around
+        // it (`def outer(obj: Store): def inner(): submit(obj.fetch)`). Only a
+        // type found there counts; an untyped outer assignment (`app =
+        // ctx.app`) leaves the nested site as unknown as it was.
+        for depth in 0..CLASS_WALK_LIMIT {
+            if let Some(found) = self.python_scope_local_type(receiver, scope.as_deref(), upto, &lines, r)? {
+                return Ok((depth == 0 || found != UNKNOWN_TYPE).then_some(found));
+            }
+            let Some(inner) = scope else { return Ok(None) };
+            let signature = inner.signature.as_deref().unwrap_or("");
+            if let Some(t) = param_annotation(signature, receiver) {
+                return Ok(Some(t));
+            }
+            if has_param(signature, receiver) || inner.kind == "method" {
+                return Ok(None);
+            }
+            let outer = self
+                .nodes_in_file(&r.file_path)?
+                .iter()
+                .filter(|n| {
+                    matches!(n.kind.as_str(), "function" | "method" | "class")
+                        && n.id != inner.id
+                        && n.start_line <= inner.start_line
+                        && n.end_line >= inner.end_line
+                })
+                .max_by_key(|n| n.start_line)
+                .cloned();
+            match outer {
+                Some(o) if o.kind != "class" => {
+                    upto = inner.start_line - 1;
+                    scope = Some(o);
+                }
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The nearest assignment or annotation of `receiver` in `scope`'s own
+    /// body at or above line `upto`, nested def and class bodies skipped.
+    fn python_scope_local_type(
+        &mut self,
+        receiver: &str,
+        scope: Option<&KNode>,
+        upto: i64,
+        lines: &[String],
+        r: &ResolveRefIn,
+    ) -> Res<Option<String>> {
+        let floor = scope.map_or(1, |c| c.start_line).max(1);
         // A nested def or class body binds its own locals, never the caller's.
-        let ceiling = caller.as_ref().map_or(i64::MAX, |c| c.end_line);
+        let ceiling = scope.map_or(i64::MAX, |c| c.end_line);
         let nested: Vec<(i64, i64)> = self
             .nodes_in_file(&r.file_path)?
             .iter()
@@ -379,8 +492,8 @@ impl KernelResolver {
             })
             .map(|n| (n.start_line, n.end_line))
             .collect();
-        let mut line_no = r.line.min(lines.len() as i64);
-        let starts = python_statement_starts(&lines, (floor - 1) as usize, line_no.max(floor) as usize);
+        let mut line_no = upto.min(lines.len() as i64);
+        let starts = python_statement_starts(lines, (floor - 1) as usize, line_no.max(floor) as usize);
         while line_no >= floor {
             let line = &lines[(line_no - 1) as usize];
             let starts_statement = starts[(line_no - floor) as usize];
@@ -400,7 +513,7 @@ impl KernelResolver {
                 }
             }
         }
-        Ok(caller.and_then(|c| param_annotation(c.signature.as_deref().unwrap_or(""), receiver)))
+        Ok(None)
     }
 
     /// `self.<field>`'s type within `owner`: a class-body or `self.`
@@ -593,6 +706,11 @@ fn assigned_type(annotation: Option<&str>, value: &str) -> String {
         .map(str::to_string)
         .or_else(|| constructor_type(value.trim()))
         .unwrap_or_else(|| UNKNOWN_TYPE.to_string())
+}
+
+/// Does `signature` declare a parameter named `param`, annotated or not?
+fn has_param(signature: &str, param: &str) -> bool {
+    re!(r"[(,*]\s*([A-Za-z_]\w*)\s*(?:[:=,)]|$)").captures_iter(signature).any(|c| &c[1] == param)
 }
 
 /// `param: Type` in a signature.

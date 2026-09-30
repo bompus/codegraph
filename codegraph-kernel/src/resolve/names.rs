@@ -602,6 +602,8 @@ impl KernelResolver {
         let (kept, kotlin_shrank) = self.retain_lang_scope_tracked(candidates, r)?;
         candidates = kept;
         candidates = self.retain_php_self_scope(candidates, r)?;
+        candidates = self.retain_php_declared_type(candidates, r)?;
+        candidates = self.retain_ruby_lexical_constant(candidates, r)?;
         // A Vue component's own method is `this.m()` inside that component —
         // not `this.$refs['input'].click()` on an element another component renders.
         if r.reference_kind == "calls" && is_js_family(&r.language) {

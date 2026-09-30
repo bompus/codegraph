@@ -178,6 +178,33 @@ impl KernelResolver {
         Ok((qns, leaves_repo))
     }
 
+    /// The qualified name of the project type a PHP class name written in
+    /// `file` means (its namespace, or the `use` that imports it, alias
+    /// included), when the index holds one.
+    pub(super) fn php_declared_type_qn(&mut self, name: &str, file: &str) -> Res<Option<String>> {
+        let qn = self.php_type_qn(name, file);
+        let known = self
+            .nodes_by_qualified_name(&qn)?
+            .iter()
+            .any(|n| n.language == "php" && is_php_type_kind(&n.kind));
+        Ok(known.then_some(qn))
+    }
+
+    /// Among several same-named PHP types, a class name written at `r` means
+    /// the one its file's namespace or `use` names (`Sub` in a file with no
+    /// namespace is the global `Sub`, never `Other\Sub`). Other candidates,
+    /// and a name that names no indexed type, are left alone.
+    pub(super) fn retain_php_declared_type(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let is_type = |n: &KNode| n.language == "php" && is_php_type_kind(&n.kind);
+        if r.language != "php" || candidates.iter().filter(|n| is_type(n)).count() < 2 {
+            return Ok(candidates);
+        }
+        let Some(qn) = self.php_declared_type_qn(&r.reference_name, &r.file_path)? else {
+            return Ok(candidates);
+        };
+        Ok(candidates.into_iter().filter(|n| !is_type(n) || n.qualified_name == qn).collect())
+    }
+
     /// phpTypeQn: the qualified name (`A\B::C`) a PHP class name written in
     /// `file` refers to.
     fn php_type_qn(&mut self, name: &str, file: &str) -> String {

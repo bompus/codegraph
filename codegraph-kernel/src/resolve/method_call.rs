@@ -284,6 +284,18 @@ impl KernelResolver {
                 else {
                     return Ok(McShape::Done(None));
                 };
+                // The declared type as the file names it, through its
+                // namespace or `use` (`use Lib\Store as Cache;` makes `Cache`
+                // `Lib\Store`): that one type, not every same-named class.
+                if let Some(qn) = self.php_declared_type_qn(&inferred, &r.file_path)? {
+                    return Ok(McShape::Done(self.resolve_method_on_qualified_type(
+                        &qn,
+                        &php_method,
+                        r,
+                        0.9,
+                        "instance-method",
+                    )?));
+                }
                 let fqn = self.imported_fqn_of(&inferred, r)?;
                 return Ok(McShape::Done(self.resolve_method_on_type(
                     &inferred,
@@ -570,6 +582,16 @@ impl KernelResolver {
                         return Ok(Some(c));
                     }
                     None if awaited_file.is_some() => return Ok(None),
+                    // A C# or Ruby receiver whose type is a project class
+                    // that carries no such method (nor do its supertypes)
+                    // is not a call on whichever class does: the name
+                    // strategies below would guess one. A C# extension
+                    // method is the one exception.
+                    None if matches!(r.language.as_str(), "csharp" | "ruby")
+                        && self.resolve_bound_type(&t, r, 0)?.is_some() =>
+                    {
+                        return self.unique_csharp_extension_method(&method_name, r);
+                    }
                     None => {
                         // A known builtin/primitive receiver is external when
                         // it has no project method — TS returns null here
@@ -658,6 +680,14 @@ impl KernelResolver {
                 if let Some(hit) = self.resolve_object_literal_binding(holder, &method_name, r)? {
                     return Ok(Some(hit));
                 }
+            }
+        }
+
+        // Python `self.<field>.method()`: the field's type from its class
+        // settles the call when it is known.
+        if r.language == "python" && dotted {
+            if let Some(verdict) = self.python_self_field_call(&object_or_class, &method_name, r)? {
+                return Ok(verdict);
             }
         }
 
@@ -778,6 +808,34 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+
+    /// The one C# extension method (`static T M(this Owner o)`) named
+    /// `method`, for a typed receiver whose class lacks it; None elsewhere.
+    fn unique_csharp_extension_method(&mut self, method: &str, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if r.language != "csharp" {
+            return Ok(None);
+        }
+        let named: Vec<Arc<KNode>> = self
+            .nodes_by_name(method)?
+            .iter()
+            .filter(|n| n.kind == "method" && n.language == "csharp")
+            .cloned()
+            .collect();
+        let mut extensions = Vec::new();
+        for n in named {
+            let Some(lines) = self.read_file(&n.file_path) else { continue };
+            let from = (n.start_line - 1).max(0) as usize;
+            let to = ((n.start_line + 2).max(0) as usize).min(lines.len());
+            let head = if from < to { lines[from..to].join(" ") } else { String::new() };
+            if re!(r"\(\s*this\s").is_match(&head) {
+                extensions.push(n);
+            }
+        }
+        Ok(match extensions.as_slice() {
+            [only] => Some(KCand { node: only.clone(), confidence: 0.7, resolved_by: "instance-method" }),
+            _ => None,
+        })
     }
 
     /// isImportBinding (name-matcher.ts): is the root of a member call's

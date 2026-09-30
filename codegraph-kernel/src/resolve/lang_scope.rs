@@ -521,6 +521,43 @@ impl KernelResolver {
         Ok(seen)
     }
 
+    /// The Ruby class or module a constant written at `r` names, by lexical
+    /// lookup from the class or module around it outward (`Sub` inside
+    /// top-level `class App` is `::Sub`, never `Other::Sub`); None when no
+    /// indexed class or module has that qualified name.
+    pub(super) fn ruby_lexical_constant(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        let scope = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| matches!(n.kind.as_str(), "class" | "module") && n.start_line <= r.line && n.end_line >= r.line)
+            .min_by_key(|n| n.end_line - n.start_line)
+            .map(|n| n.qualified_name.clone())
+            .unwrap_or_default();
+        let (name, scope) = match name.strip_prefix("::") {
+            Some(root) => (root, String::new()),
+            None => (name, scope),
+        };
+        let qn = self.ruby_constant_qn(name, &scope)?;
+        let known = self
+            .nodes_by_qualified_name(&qn)?
+            .iter()
+            .any(|n| n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module"));
+        Ok(known.then_some(qn))
+    }
+
+    /// Among several same-named Ruby classes or modules, a constant written
+    /// at `r` means the one lexical lookup finds; the rest are dropped.
+    pub(super) fn retain_ruby_lexical_constant(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let is_const = |n: &KNode| n.language == "ruby" && matches!(n.kind.as_str(), "class" | "module");
+        if r.language != "ruby" || r.reference_kind == "calls" || candidates.iter().filter(|n| is_const(n)).count() < 2 {
+            return Ok(candidates);
+        }
+        let Some(qn) = self.ruby_lexical_constant(&r.reference_name, r)? else {
+            return Ok(candidates);
+        };
+        Ok(candidates.into_iter().filter(|n| !is_const(n) || n.qualified_name == qn).collect())
+    }
+
     /// rubyConstantQn: the class or module a constant written inside `scope`
     /// names — the nearest enclosing namespace that has it, else the name.
     fn ruby_constant_qn(&mut self, name: &str, scope: &str) -> Res<String> {
