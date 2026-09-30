@@ -507,6 +507,7 @@ function routeFilesLoadedBy(spec: string, fromFile: string, context: ResolutionC
       // `loadChildren: () => import('./layout/layout.module').then(m => m.LayoutModule)`:
       // the module holds no routes; the routing module it imports does.
       if (/@NgModule\s*\(/.test(content)) {
+        const moduleDir = path.posix.dirname(file) + '/';
         const imports = /\bimport\s+[^'"]*?from\s+(['"])([^'"]+)\1/g;
         let m: RegExpExecArray | null;
         while ((m = imports.exec(content)) !== null) {
@@ -518,7 +519,10 @@ function routeFilesLoadedBy(spec: string, fromFile: string, context: ResolutionC
           }
           // A routing module that hands `forChild` a routes array from
           // another file, or a barrel in front of the routing module: one
-          // more hop reaches the routes.
+          // more hop reaches the routes. Only inside the module's own
+          // directory: a feature module importing another feature's routing
+          // module (through its barrel) must not claim that feature's routes.
+          if (!imported.startsWith(moduleDir)) continue;
           const importedContent = context.readFile(imported);
           if (importedContent && (/\.\s*forChild\s*\(/.test(importedContent) || REEXPORT.test(importedContent))) next.push(imported);
         }

@@ -80,6 +80,59 @@ fn kotlin_callee_name<'a>(callee: TsNode, text: &'a str) -> &'a str {
     }
 }
 
+/// Whether a Kotlin signature `(a: A, block: (T) -> Unit)` ends in a
+/// function-typed parameter, so a call can pass it a trailing lambda.
+fn kotlin_takes_trailing_lambda(signature: Option<&str>) -> bool {
+    let Some(sig) = signature else { return false };
+    let sig = sig.trim();
+    let inner = sig.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(sig);
+    // Depth-0 split points, reading `->` as an arrow rather than a closer.
+    let top_level = |s: &str, target: u8| -> Vec<usize> {
+        let (b, mut depth, mut out, mut i) = (s.as_bytes(), 0i32, Vec::new(), 0);
+        while i < b.len() {
+            match b[i] {
+                b'-' if b.get(i + 1) == Some(&b'>') => {
+                    if target == b'-' && depth == 0 {
+                        out.push(i);
+                    }
+                    i += 1;
+                }
+                b'(' | b'<' | b'[' => depth += 1,
+                b')' | b'>' | b']' => depth -= 1,
+                c if c == target && depth == 0 => out.push(i),
+                _ => {}
+            }
+            i += 1;
+        }
+        out
+    };
+    // The opening parenthesis closes only at the end.
+    let encloses = |s: &str| {
+        let mut depth = 0i32;
+        s.bytes().enumerate().all(|(i, c)| {
+            match c {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            depth > 0 || i == s.len() - 1
+        })
+    };
+    let last = top_level(inner, b',').last().map_or(inner, |&i| &inner[i + 1..]);
+    let Some(&colon) = top_level(last, b':').first() else { return false };
+    let mut ty = &last[colon + 1..];
+    if let Some(&eq) = top_level(ty, b'=').first() {
+        ty = &ty[..eq];
+    }
+    let mut ty = ty.trim().trim_end_matches('?').trim();
+    // `((Int) -> Unit)?`: parentheses around the whole type.
+    if ty.starts_with('(') && ty.ends_with(')') && encloses(ty) {
+        ty = ty[1..ty.len() - 1].trim();
+    }
+    let ty = ty.strip_prefix("suspend").map_or(ty, str::trim_start);
+    !top_level(ty, b'-').is_empty()
+}
+
 /// The (row, UTF-16 column) site of `node` in `r`'s file.
 fn site_at(node: TsNode, text: &str, r: &ResolveRefIn) -> ResolveRefIn {
     let (row, col) = point16(text, node.start_byte(), node.start_position());
@@ -215,18 +268,26 @@ impl KernelResolver {
 
     /// Whether a `run`/`apply`/`with` callee is a function the project
     /// declares rather than the stdlib one: a top-level Kotlin function of
-    /// that name for a bare call, a member or extension on the receiver's
-    /// type for `x.run { }`. An untyped receiver keeps the stdlib reading.
+    /// that name visible here for a bare call, a member or visible extension
+    /// on the receiver's type for `x.run { }`. Either must take a trailing
+    /// lambda. An untyped receiver keeps the stdlib reading.
     fn kotlin_user_scope_callee(&mut self, callee: TsNode, name: &str, text: &str, r: &ResolveRefIn) -> Res<bool> {
-        let declared = self
+        let declared: Vec<Arc<KNode>> = self
             .nodes_by_name(name)?
             .iter()
-            .any(|n| n.language == "kotlin" && matches!(n.kind.as_str(), "function" | "method"));
-        if !declared {
+            .filter(|n| n.language == "kotlin" && matches!(n.kind.as_str(), "function" | "method"))
+            .cloned()
+            .collect();
+        if declared.is_empty() {
             return Ok(false);
         }
         if callee.kind() != "navigation_expression" {
-            return Ok(self.nodes_by_name(name)?.iter().any(|n| n.language == "kotlin" && n.kind == "function"));
+            for n in declared.iter().filter(|n| n.kind == "function") {
+                if kotlin_takes_trailing_lambda(n.signature.as_deref()) && self.kotlin_top_level_visible(n, r)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
         let Some(root) = named_children(callee).into_iter().next().filter(|n| n.kind() == "simple_identifier") else {
             return Ok(false);
@@ -240,17 +301,48 @@ impl KernelResolver {
     }
 
     /// Whether Kotlin type `ty` has a member `method`, its own or
-    /// inherited, or an extension `fun Ty.method` declared in any file.
+    /// inherited, or a visible extension `fun Ty.method`, that takes a
+    /// trailing lambda.
     fn kotlin_user_member(&mut self, ty: &str, method: &str, site: &ResolveRefIn) -> Res<bool> {
-        if self.match_bound_type_member(ty, method, site)?.is_some() {
-            return Ok(true);
+        if let Some(m) = self.match_bound_type_member(ty, method, site)? {
+            return Ok(kotlin_takes_trailing_lambda(m.node.signature.as_deref()));
         }
         let simple = ty.rsplit(['.', ':']).next().unwrap_or(ty);
         let simple = simple.split('<').next().unwrap_or(simple);
-        Ok(self
+        let extensions: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{simple}::{method}"))?
             .iter()
-            .any(|n| n.language == "kotlin" && n.kind == "method"))
+            .filter(|n| n.language == "kotlin" && n.kind == "method" && kotlin_takes_trailing_lambda(n.signature.as_deref()))
+            .cloned()
+            .collect();
+        for n in &extensions {
+            if self.kotlin_top_level_visible(n, site)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether a top-level Kotlin declaration (a function, or an extension)
+    /// is visible from `r`'s file: the same file or package, or imported by
+    /// name or by its package's wildcard.
+    fn kotlin_top_level_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if n.file_path == r.file_path {
+            return Ok(true);
+        }
+        let package = |this: &mut Self, file: &str| -> Res<Option<String>> {
+            Ok(this.nodes_in_file(file)?.iter().find(|n| n.kind == "namespace").map(|n| n.qualified_name.clone()))
+        };
+        let theirs = package(self, &n.file_path)?;
+        if theirs == package(self, &r.file_path)? {
+            return Ok(true);
+        }
+        let Some(pkg) = theirs else { return Ok(false) };
+        let (wildcard, named) = (format!("{pkg}.*"), format!("{pkg}.{}", n.name));
+        Ok(self
+            .import_mappings(&r.file_path)?
+            .iter()
+            .any(|i| (i.is_namespace && i.source == wildcard) || (i.local_name == n.name && i.source == named)))
     }
 
     /// inferIterationReceiver — `None` when no scoped construct introduces
@@ -602,5 +694,28 @@ impl KernelResolver {
             return Ok((!shadow && !assigned).then(|| m[2].to_string()));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kotlin_takes_trailing_lambda as trailing;
+
+    #[test]
+    fn a_trailing_lambda_needs_a_function_typed_last_parameter() {
+        for sig in [
+            "(block: (Widget) -> Unit)",
+            "(items: List<T>, f: (T) -> Unit)",
+            "(f: suspend () -> Unit)",
+            "(f: ((Int) -> Unit)?)",
+            "(block: Widget.() -> Unit = {})",
+            "(a: Map<String, Int>, b: (Pair<A, B>) -> Unit)",
+        ] {
+            assert!(trailing(Some(sig)), "{sig}");
+        }
+        for sig in ["()", "(job: Job)", "(f: (Int) -> Unit, n: Int)", "(xs: List<(Int) -> Unit>)", "(a: (A) -> (B), n: Int)"] {
+            assert!(!trailing(Some(sig)), "{sig}");
+        }
+        assert!(!trailing(None));
     }
 }

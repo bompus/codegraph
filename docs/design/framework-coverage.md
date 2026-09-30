@@ -1,6 +1,6 @@
 # Framework & language coverage — what is done, what is left
 
-**Last verified: 2026-08-29** (Angular row: 2026-09-30) against the build at that date. Re-verify with the
+**Last verified: 2026-08-29** (Angular row: 2026-09-29) against the build at that date. Re-verify with the
 queries in [Checking this file is still true](#checking-this-file-is-still-true)
 before trusting a row; this is a snapshot, not a live view.
 
@@ -116,9 +116,10 @@ and `RouterModule` imported under an alias (`$`-prefixed ones included) still
 open a routes array, and an entry with a named `outlet` (`/(side:x)`, not a
 path) or a `...spread` (fields the scan cannot see) names no screen.
 `angular-routes.test.ts` covers those, sync after reopening, and fresh parse
-workers. A lazy NgModule's routes are found through its routing module, a
-barrel in front of that module, or the routes file the routing module hands
-`forChild` (`angular-router.test.ts`, fixture only: no corpus checked).
+workers. Since that verification, a lazy NgModule's routes are also found
+through a routing module in the module's own directory, a barrel in front of
+it, or the routes file it hands `forChild`. `angular-router.test.ts` covers
+that on fixtures; no corpus has been re-checked, so the date above stands.
 
 ---
 

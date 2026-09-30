@@ -111,7 +111,7 @@ describe('an assignment to a member of a call result', () => {
     expect(targets).toEqual(['web.http::Context::statusCode']);
   });
 
-  it('is rewritten at the same offsets, and only where the target is a call result member', () => {
+  it('is rewritten at the same offsets, only in code and only where the target is a call result member', () => {
     const src = [
       'also { res().status = code }',
       'a.b(x).c?.d += 1',
@@ -121,6 +121,10 @@ describe('an assignment to a member of a call result', () => {
       'fun f() = g().h',
       'res().status == code',
       'res().status=code',
+      '/** Sets res().status = code, /* nested */ res().status = code */',
+      '// res().status = code',
+      'log("res().status = code"); res().status = code',
+      'val s = """res().status = "x""""',
     ].join('\n');
     const out = rewriteKotlinCallMemberAssignments(src);
     expect(out.length).toBe(src.length);
@@ -133,6 +137,10 @@ describe('an assignment to a member of a call result', () => {
       'fun f() = g().h',
       'res().status == code',
       'res().status=code',
+      '/** Sets res().status = code, /* nested */ res().status = code */',
+      '// res().status = code',
+      'log("res().status = code"); res().status== code',
+      'val s = """res().status = "x""""',
     ]);
   });
 });

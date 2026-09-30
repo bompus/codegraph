@@ -177,7 +177,58 @@ export function blankKotlinQualifiedReceivers(source: string): string {
   return source.replace(QUALIFIED_RECEIVER, (m) => ' '.repeat(m.length));
 }
 
-const isKotlinIdentChar = (c: string | undefined): boolean => c !== undefined && /[\w`]/.test(c);
+/** A word character or a backtick (a `quoted name`). */
+function isKotlinIdentChar(c: string | undefined): boolean {
+  if (c === undefined) return false;
+  const code = c.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) || // 0-9
+    (code >= 65 && code <= 90) || // A-Z
+    (code >= 97 && code <= 122) || // a-z
+    code === 95 || // _
+    code === 96 // `
+  );
+}
+
+/**
+ * Which offsets of Kotlin source are code rather than a comment, string or
+ * character literal. Nested block comments, raw `"""` strings and escapes are
+ * handled; a string template's `${…}` counts as part of its string.
+ */
+function kotlinCodeMask(source: string): Uint8Array {
+  const code = new Uint8Array(source.length);
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') i++;
+    } else if (c === '/' && next === '*') {
+      let depth = 0;
+      do {
+        if (source[i] === '/' && source[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (source[i] === '*' && source[i + 1] === '/') {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      } while (depth > 0 && i < source.length);
+    } else if (source.startsWith('"""', i)) {
+      const end = source.indexOf('"""', i + 3);
+      i = end === -1 ? source.length : end + 3;
+      while (source[i] === '"') i++;
+    } else if (c === '"' || c === "'") {
+      for (i++; i < source.length && source[i] !== c && source[i] !== '\n'; i++) if (source[i] === '\\') i++;
+      i++;
+    } else {
+      code[i++] = 1;
+    }
+  }
+  return code;
+}
 
 /** Index of the bracket opening the one that closes at `close`, or -1. */
 function matchingOpen(source: string, close: number): number {
@@ -188,7 +239,6 @@ function matchingOpen(source: string, close: number): number {
     const c = source[i];
     if (c === shut) depth++;
     else if (c === open && --depth === 0) return i;
-    else if (c === '\n' && depth === 0) return -1;
   }
   return -1;
 }
@@ -236,11 +286,13 @@ function isCallMemberTarget(source: string, end: number): boolean {
  * `x().y== z` (the space before `=` turns into `=`) and `x().y += z` becomes
  * `x().y +  z`: the same calls and names at the same offsets, only the
  * assignment is lost. A target written without a space before `=` is left
- * as it is.
+ * as it is, and so is one inside a comment or a string, whose text the
+ * extractor keeps (docstrings, captured literals).
  */
 export function rewriteKotlinCallMemberAssignments(source: string): string {
   if (!/\)\s*(?:\??\.|\[)/.test(source)) return source;
   let out: string[] | null = null;
+  let mask: Uint8Array | null = null;
   for (let at = source.indexOf('='); at !== -1; at = source.indexOf('=', at + 1)) {
     if (source[at + 1] === '=' || source[at + 1] === '>') continue;
     const prev = source[at - 1];
@@ -248,6 +300,8 @@ export function rewriteKotlinCallMemberAssignments(source: string): string {
     const compound = prev === '+' || prev === '-' || prev === '*' || prev === '/' || prev === '%';
     if (!compound && prev !== ' ' && prev !== '\t') continue;
     if (!isCallMemberTarget(source, compound ? at - 2 : at - 1)) continue;
+    mask ??= kotlinCodeMask(source);
+    if (!mask[at]) continue;
     out ??= source.split('');
     if (compound) out[at] = ' ';
     else out[at - 1] = '=';

@@ -7,7 +7,9 @@
  *   passes its own value (like a member `let` already did).
  * - A lambda given to the stdlib `run`, `apply` or `with` binds no `it`, so an
  *   enclosing lambda's `it` shows through. A function the project declares
- *   under one of those names is the callee instead, and its lambda binds `it`.
+ *   under one of those names is the callee instead, and its lambda binds `it`,
+ *   when it is visible at the call (same package or imported) and takes a
+ *   trailing lambda.
  * - Java `(Foo f) -> f.bar()` declares `f`'s type; it wins over a field `f`.
  */
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
@@ -64,6 +66,30 @@ fun Widget.let(block: (Gadget) -> Unit) { block(Gadget()) }
 fun Widget.run(block: (Widget) -> Unit) { block(this) }
 fun with(block: (Widget) -> Unit) { block(Widget()) }
 `,
+      // A `run` in another package, imported only by Imported.kt, and one
+      // that takes no lambda at all.
+      'src/tools/Tools.kt': `package tools
+
+import app.Widget
+
+fun run(block: (Widget) -> Unit) { block(Widget()) }
+`,
+      'src/util/Jobs.kt': `package util
+
+class Job { fun start() {} }
+
+fun run(job: Job) { job.start() }
+`,
+      'src/app/Imported.kt': `package app
+
+import tools.*
+
+fun importedRun(g: Gadget) {
+    g.also {
+        run { it.paint() }
+    }
+}
+`,
       'src/app/Use.kt': `package app
 
 fun extensionLet(w: Widget) {
@@ -95,6 +121,23 @@ fun stdApply(w: Widget, g: Gadget) {
     }
 }
 
+fun stdRun(g: Gadget) {
+    g.also {
+        run { it.paint() }
+    }
+}
+
+// A member \`run()\` that takes no lambda leaves \`t.run { }\` the stdlib one.
+class Task : Runnable {
+    override fun run() {}
+}
+
+fun memberRun(t: Task, g: Gadget) {
+    g.also {
+        t.run { it.paint() }
+    }
+}
+
 fun stdWithArgs(w: Widget, g: Gadget) {
     g.also {
         kotlin.with(w) { it.paint() }
@@ -107,8 +150,10 @@ fun stdWithArgs(w: Widget, g: Gadget) {
 
   it('types `it` only where the stdlib function is the callee', () => {
     expect(callsTo(cg, 'paint')).toEqual([
+      'memberRun -> app::Gadget::paint',
       'stdAlso -> app::Gadget::paint',
       'stdApply -> app::Gadget::paint',
+      'stdRun -> app::Gadget::paint',
       'stdWithArgs -> app::Gadget::paint',
     ]);
   });
