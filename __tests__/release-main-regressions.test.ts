@@ -99,6 +99,21 @@ beforeAll(async () => {
     selected();
   }
   `);
+  // Return annotations with their own braces. The selector is named `picked`
+  // because the project has a function named `selected` (Screen::localShadow),
+  // which routes a `selected()` call past the selector check.
+  write('annotated-selectors.ts', `import { useStore as current } from './store';
+  export function AnnotatedCapture() {
+    const picked = current((s) => s.reset);
+    function objectShadow(picked: () => void): { ok: boolean } { picked(); return { ok: true }; }
+    const arrowObjectShadow = (picked: () => void): { ok: boolean } => { picked(); return { ok: true }; };
+    function promiseShadow(picked: () => void): Promise<{ id: string }> { picked(); return Promise.resolve({ id: '' }); }
+    function recordShadow(picked: () => void): Record<string, { n: number }> { picked(); return {}; }
+    function arrayShadow(picked: () => void): { n: number }[] { picked(); return []; }
+    function captured() { picked(); }
+    return { captured, objectShadow, arrowObjectShadow, promiseShadow, recordShadow, arrayShadow };
+  }
+  `);
   write('effects.ts', `import { client } from './client';
   export function create() { return 1; }
   export function effects() {
@@ -158,6 +173,12 @@ describe('release-to-main correctness regressions', () => {
   });
   it('follows a captured selector past closed siblings that bind the same name as a parameter', () => {
     expect(targets(node('LaterCapture::captured').id)).toEqual([node('reset', 'store.ts', 5).id]);
+  });
+  it.each(['objectShadow', 'arrowObjectShadow', 'promiseShadow', 'recordShadow', 'arrayShadow'])('keeps a parameter shadow when the return annotation has braces (%s)', (name) => {
+    expect(targets(node(`AnnotatedCapture::${name}`, 'annotated-selectors.ts').id)).toEqual([]);
+  });
+  it('follows a captured selector past closed siblings with brace-bearing return annotations', () => {
+    expect(targets(node('AnnotatedCapture::captured', 'annotated-selectors.ts').id)).toEqual([node('reset', 'store.ts', 5).id]);
   });
   it.each(['barrelReset', 'barrelSelected'])('resolves %s through both a re-export and local import alias', (name) => {
     const store = cg.getNodesByKind('constant').find(n => n.name === 'useStore' && n.filePath === 'store.ts')!;
