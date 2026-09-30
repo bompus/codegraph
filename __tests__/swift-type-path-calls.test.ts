@@ -169,3 +169,35 @@ describe('Swift: a type path that fits more than one declaration', () => {
     }
   });
 });
+
+describe('Swift: a type path declared alike in two equally near modules', () => {
+  it('is left unresolved', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-swift-type-path-tie-'));
+    roots.push(root);
+    const api = 'enum API {}\nextension API {\n    enum PackageController {\n        enum GetRoute { static func query() {} }\n    }\n}\n';
+    const files: Record<string, string> = {
+      'Sources/ModA/API.swift': api,
+      'Sources/ModB/API.swift': api,
+      'Sources/ModC/Other.swift': 'enum Other {\n    enum PackageController {\n        enum GetRoute { static func query() {} }\n    }\n}\n',
+      'Sources/ModD/Caller.swift': 'extension API {\n    static func handle() { PackageController.GetRoute.query() }\n}\nenum Full { static func written() { API.PackageController.GetRoute.query() } }\n',
+    };
+    for (const [rel, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), content);
+    }
+    const cg = await CodeGraph.init(root, { index: true });
+    try {
+      for (const caller of ['handle', 'written']) {
+        const from = cg.getNodesByName(caller).find((n) => n.kind === 'method');
+        expect(from, caller).toBeDefined();
+        const queries = cg
+          .getOutgoingEdgesFrom([from!.id], ['calls'])
+          .map((e) => cg.getNode(e.target)!)
+          .filter((n) => n.name === 'query');
+        expect(queries.map((n) => n.filePath), caller).toEqual([]);
+      }
+    } finally {
+      cg.close();
+    }
+  });
+});

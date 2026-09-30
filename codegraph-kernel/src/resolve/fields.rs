@@ -986,15 +986,16 @@ pub(super) fn mask_rust_code(text: &str) -> String {
                 i = j;
             }
             '"' => {
-                // `r"…"` / `r#"…"#` / `br"…"`: no escapes, closed by `"` plus
-                // as many `#` as opened it.
+                // `r"…"` / `r#"…"#` / `br"…"` / `cr#"…"#`: no escapes, closed
+                // by `"` plus as many `#` as opened it. `b"…"` and `c"…"` are
+                // plain strings.
                 let mut hashes = 0;
                 while i > hashes && s[i - 1 - hashes] == '#' {
                     hashes += 1;
                 }
                 let ident = |k: usize| s[k].is_alphanumeric() || s[k] == '_';
                 let raw = i.checked_sub(hashes + 1).is_some_and(|k| {
-                    let k0 = if k > 0 && s[k - 1] == 'b' { k - 1 } else { k };
+                    let k0 = if k > 0 && matches!(s[k - 1], 'b' | 'c') { k - 1 } else { k };
                     s[k] == 'r' && (k0 == 0 || !ident(k0 - 1))
                 });
                 let mut j = i + 1;
@@ -1031,4 +1032,18 @@ pub(super) fn mask_rust_code(text: &str) -> String {
         }
     }
     out.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mask_rust_code;
+
+    #[test]
+    fn mask_rust_code_blanks_literals_across_lines() {
+        let src = "let a = \"x {\n }\";\nlet b = r#\"{ \" // }\"#;\nlet c = c\"{\";\nlet d = cr#\"}\" {\"#; // \"\nlet e = '{'; fn f<'a>() {}\n";
+        let masked = mask_rust_code(src);
+        assert_eq!(masked.lines().count(), src.lines().count());
+        let code: String = masked.chars().filter(|c| matches!(c, '{' | '}')).collect();
+        assert_eq!(code, "{}");
+    }
 }

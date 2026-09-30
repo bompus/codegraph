@@ -137,6 +137,22 @@ describe('a receiver-less Go call never binds to a method (#1857)', () => {
     expect(edge.metadata?.confidence).toBe(0.9);
   });
 
+  it('does not treat an external test package as the directory\'s package', async () => {
+    const files = {
+      'go.mod': GO_MOD,
+      'aaa/aaa.go': 'package aaa\n\nfunc New() int { return 1 }\n',
+      'pkg/pkg.go': 'package pkg\n\nfunc New() int { return 2 }\n',
+      'pkg/pkg_test.go': 'package pkg_test\n\nimport . "example.com/app/aaa"\n\nfunc caller() { New() }\n',
+    };
+    await callees(files, 'caller');
+    const caller = cg!.getNodesByKind('function').find((n) => n.name === 'caller')!;
+    const trusted = cg!
+      .getOutgoingEdges(caller.id)
+      .filter((e) => e.kind === 'calls' && (e.metadata?.confidence ?? 0) >= 0.9)
+      .map((e) => cg!.getNode(e.target)!.filePath);
+    expect(trusted).not.toContain('pkg/pkg.go');
+  });
+
   it('keeps a real method call through a receiver', async () => {
     const out = await callees(
       {

@@ -626,6 +626,7 @@ impl KernelResolver {
         // Twin declarations of one path in several files (a type per
         // module): the call's own file, else the nearest by directory, as
         // the type gate picks a type (swift-type-visibility.ts declarationFor).
+        // A tie is left unresolved.
         if fit.iter().any(|n| n.file_path != fit[0].file_path) {
             if fit.iter().any(|n| n.file_path == r.file_path) {
                 fit.retain(|n| n.file_path == r.file_path);
@@ -635,8 +636,11 @@ impl KernelResolver {
                 let near = fit.iter().map(|n| shared_dir_prefix(dirs, &n.file_path)).max().unwrap_or(0);
                 fit.retain(|n| shared_dir_prefix(dirs, &n.file_path) == near);
             }
+            if fit.iter().any(|n| n.file_path != fit[0].file_path) {
+                return Ok(None);
+            }
         }
-        // Of one type's overloads, the first declared.
+        // Of one type's overloads in one file, the first declared.
         let target = fit
             .into_iter()
             .reduce(|a, b| {

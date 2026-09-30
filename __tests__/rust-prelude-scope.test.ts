@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
+import { rustUseGlobs } from '../src/resolution/rust-scope';
 
 const roots: string[] = [];
 afterAll(() => {
@@ -80,5 +81,16 @@ describe('Rust: a bare name reaches what is in scope', () => {
     } finally {
       cg.close();
     }
+  });
+});
+
+describe('Rust: the modules a `use` tree globs', () => {
+  it('reads `X::*` and a group\'s own `*`, past nested groups', () => {
+    const globs = (tree: string): string[] => [...rustUseGlobs(tree)].sort();
+    expect(globs('crate::walk::*')).toEqual(['walk']);
+    expect(globs('crate::{error::*, util::*}')).toEqual(['error', 'util']);
+    expect(globs('crate::lowargs::{self, *}')).toEqual(['lowargs']);
+    expect(globs('a::{b::{c}, *}')).toEqual(['a']);
+    expect(globs('a :: { b, c }')).toEqual([]);
   });
 });

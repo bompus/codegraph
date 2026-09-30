@@ -54,13 +54,43 @@ function rustUsesOf(filePath: string, context: ResolutionContext): RustUses {
     const tree = m[1]!;
     if (/^\s*(?:::)?(?:std|core|alloc)\b/.test(tree)) continue;
     for (const id of tree.matchAll(/[A-Za-z_]\w*/g)) uses.names.add(id[0]);
-    // `X::*`, also inside a group (`crate::{error::*, util::*}`), and a
-    // group's own `*` item (`X::{self, *}`).
-    for (const g of tree.matchAll(/(\w+)\s*::\s*\*/g)) uses.globs.add(g[1]!);
-    for (const g of tree.matchAll(/(\w+)\s*::\s*\{(?:[^{}]*,)?\s*\*/g)) uses.globs.add(g[1]!);
+    for (const g of rustUseGlobs(tree)) uses.globs.add(g);
   }
   memo.set(filePath, uses);
   return uses;
+}
+
+/**
+ * The module of each `*` in a `use` tree: `X` of `X::*`, also inside a group
+ * (`crate::{error::*, util::*}`), and the group's owner for a group's own `*`
+ * item (`X::{self, *}`, `X::{b::{c}, *}`). Mirrored in the kernel
+ * (name_scope.rs collect_rust_use_globs).
+ */
+export function rustUseGlobs(tree: string): Set<string> {
+  const globs = new Set<string>();
+  // The identifier before a `::` that ends at `end`, whitespace allowed.
+  const ownerBefore = (end: number): string | null => {
+    let i = end;
+    while (i > 0 && /\s/.test(tree[i - 1]!)) i--;
+    if (i < 2 || tree.slice(i - 2, i) !== '::') return null;
+    i -= 2;
+    while (i > 0 && /\s/.test(tree[i - 1]!)) i--;
+    const stop = i;
+    while (i > 0 && /\w/.test(tree[i - 1]!)) i--;
+    return i < stop ? tree.slice(i, stop) : null;
+  };
+  // The owner of each open group, innermost last.
+  const groups: Array<string | null> = [];
+  for (let i = 0; i < tree.length; i++) {
+    const c = tree[i];
+    if (c === '{') groups.push(ownerBefore(i));
+    else if (c === '}') groups.pop();
+    else if (c === '*') {
+      const owner = ownerBefore(i) ?? groups[groups.length - 1] ?? null;
+      if (owner) globs.add(owner);
+    }
+  }
+  return globs;
 }
 
 /** The module a Rust file is: `src/glob.rs` → `glob`, `src/walk/mod.rs` → `walk`. */
