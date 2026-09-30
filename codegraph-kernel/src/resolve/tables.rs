@@ -378,6 +378,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         // react-native-bridge's claimsReference returns false — JS-visible
         // method names reach the resolver through the name-exists arm.
         "react-native-bridge" => false,
+        "react" => name.starts_with("lazy-import:"),
         "react-router" => rr_nav_re().is_match(name) || name.starts_with("react-router-module:"),
         "rails" => rails_claim_re().is_match(name),
         "solid-start" => name.starts_with("solid-start-target:"),
@@ -395,7 +396,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         }
         "vue" => name.starts_with("nuxt-page:"),
         "aspnet" | "express" | "expo-modules" | "expo-modules-js" | "fabric-view" | "fastapi" | "flask"
-        | "go" | "goframe" | "http-routing" | "nestjs" | "nuxt" | "react" | "react-router-files" | "redwood"
+        | "go" | "goframe" | "http-routing" | "nestjs" | "nuxt" | "react-router-files" | "redwood"
         | "rust" | "svelte"
         | "swiftui" | "uikit" => false,
         "vapor" => vapor_handler_re().is_match(name),
@@ -1125,4 +1126,17 @@ mod tests {
             .unwrap();
         assert_eq!(path, Some(format!("{}leaf", "m::".repeat(depth))));
     }
+}
+
+/// Test filenames and source sets, matching the shared query surface's test-path contract.
+pub(super) fn is_test_path(path: &str) -> bool {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let lower = path.to_ascii_lowercase();
+    let name = filename.to_ascii_lowercase();
+    name.starts_with("test_") || name.starts_with("test.")
+        || re!(r"[._-](?:test|tests|spec|specs)\.[a-z0-9]+$").is_match(&name)
+        || re!(r"(?:Test|Tests|TestCase|Tester|Spec|Specs)\.[A-Za-z0-9]+$").is_match(filename)
+        || re!(r"(?:^|/)(?:tests?|__tests__|specs?|testlib|testing|e2e)/").is_match(&lower)
+        || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
+        || re!(r"(?:^|/)(?:[\w.]+[-_]test(?:s|ing)?|testdata|testutils?|test[-_]utils?|fakes?|mocks?|__mocks__|stubs)/").is_match(&lower)
 }

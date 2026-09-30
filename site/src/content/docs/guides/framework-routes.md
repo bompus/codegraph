@@ -28,9 +28,9 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Play** | `GET`/`POST`/… verb routes in `conf/routes` → `Controller.method` actions (Scala + Java), including projects kept in subdirectories |
 | **Gin / chi / gorilla / mux** | `r.GET(...)`, `router.HandleFunc(...)` |
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
-| **ASP.NET** | `[HttpGet("/x")]` attributes on action methods |
-| **Vapor** | `app.get("x", use: handler)`; `use: Controller.show` links to that type's `show` (nested types and extensions included), `use: self.index` to the collection's own |
-| **React Router / Remix** | JSX/data-router pages; literal framework-mode arrays; default Remix and registered `flatRoutes()` file pages, linked to named default components |
+| **ASP.NET** | `[HttpGet("/x")]` attributes on action methods and FastEndpoints `Configure()` verb calls |
+| **Vapor** | `app.get("x", use: handler)` and closure handlers; `use: Controller.show` links to that type's `show` (nested types and extensions included), `use: self.index` to the collection's own |
+| **React Router / Remix** | JSX/data-router pages with nested children, constant paths, `Component` and lazy module exports; literal framework-mode arrays; default Remix and registered `flatRoutes()` file pages, linked to named default components |
 | **SvelteKit** | Route component nodes, named by URL: `(group)` folders dropped, `[id=matcher]` read as `:id` |
 | **TanStack Router / Start** | Page routes plus literal `server.handlers` method tables and `createHandlers` callbacks on exported file routes; middleware is excluded from handler links |
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |

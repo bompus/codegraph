@@ -34,7 +34,7 @@
 {"source":"class:e0436e1c421fad6fb415ebf1250fc957","target":"method:0fb9589fa48847b470e36febaa20fd6a","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"component:3c652b3a8468352ce722877b478d750c","target":"class:9250e5f7a14d90af56522055875d3efc","kind":"instantiates","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"GreetRequest\"}","line":13,"col":18,"provenance":null}
 {"source":"component:3c652b3a8468352ce722877b478d750c","target":"class:e0436e1c421fad6fb415ebf1250fc957","kind":"references","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"exact-match\",\"refName\":\"GreetingService\"}","line":2,"col":0,"provenance":null}
-{"source":"component:9ab44aceec99c2241ddd988791f90540","target":"component:f618e74c9653d19f14a4517ffbcc5a50","kind":"references","metadata":"{\"confidence\":0.8,\"resolvedBy\":\"framework\",\"refName\":\"Panel\"}","line":12,"col":5,"provenance":null}
+{"source":"component:9ab44aceec99c2241ddd988791f90540","target":"component:f618e74c9653d19f14a4517ffbcc5a50","kind":"references","metadata":"{\"framework\":\"astro\",\"confidence\":0.8,\"resolvedBy\":\"framework\",\"refName\":\"Panel\"}","line":12,"col":5,"provenance":null}
 {"source":"component:9ab44aceec99c2241ddd988791f90540","target":"constant:065e374572e8fdbbdc1b3f23a2d4fae7","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"component:9ab44aceec99c2241ddd988791f90540","target":"constant:a603db0f72cd274c10bfb9baaf23a035","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"component:9ab44aceec99c2241ddd988791f90540","target":"file:src/pages/index.astro","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -90,7 +90,7 @@
 {"source":"file:src/pages/index.astro","target":"import:7e12aa398bd31cc8ad3c376496090ad5","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"function:ed48ef0a7c92c2fe0641a87932a6e507","target":"function:0026a1cae8e888523240c893a10aa70d","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"increment\"}","line":7,"col":4,"provenance":null}
 {"source":"method:0fb9589fa48847b470e36febaa20fd6a","target":"class:9250e5f7a14d90af56522055875d3efc","kind":"references","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"GreetRequest\"}","line":4,"col":24,"provenance":null}
-{"source":"route:src/pages/index.astro:/:1","target":"component:9ab44aceec99c2241ddd988791f90540","kind":"references","metadata":"{\"confidence\":1,\"resolvedBy\":\"framework\",\"refName\":\"astro-page-component\"}","line":1,"col":0,"provenance":null}
+{"source":"route:src/pages/index.astro:/:1","target":"component:9ab44aceec99c2241ddd988791f90540","kind":"references","metadata":"{\"framework\":\"astro\",\"confidence\":1,\"resolvedBy\":\"framework\",\"refName\":\"astro-page-component\"}","line":1,"col":0,"provenance":null}
 == refs (9)
 {"from_node_id":"component:3c652b3a8468352ce722877b478d750c","reference_name":"Greeter.Greet","reference_kind":"calls","line":14,"col":18,"candidates":null,"file_path":"Components/Greeter.razor","language":"razor","status":"failed","name_tail":"Greet"}
 {"from_node_id":"component:9ab44aceec99c2241ddd988791f90540","reference_name":"items.map","reference_kind":"calls","line":11,"col":8,"candidates":null,"file_path":"src/pages/index.astro","language":"astro","status":"failed","name_tail":"map","failure_reason":"unknown-receiver"}

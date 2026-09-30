@@ -245,7 +245,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
     m.insert(
         "python",
         vec![
-            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            rp(r"(?m)(?:^|;)\s*", r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", false, true, false, 4),
             both(r#"\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, b":", 0),
             both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
@@ -254,7 +254,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         "java",
         vec![
             both(r"\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", b"=", 0),
-            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+", r"\s*[=;,:)]", false, true, true, 0),
+            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\s+", r"\s*[=;,:)]", false, true, true, 0),
         ],
     );
     m.insert(
@@ -321,7 +321,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         "csharp",
         vec![
             both(r"\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)", b"=", 0),
-            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+", r"\s*[=;,)]", false, true, true, 0),
+            rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\??\s+", r"\s*(?:[=;,)]|in\b)", false, true, true, 0),
         ],
     );
     m.insert(

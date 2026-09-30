@@ -227,7 +227,7 @@ impl<'t> Walker<'t> {
     // Java-style `modifiers` wrapper (probed).
 
     /// getVisibility: FIRST `modifier` child whose text is one of the four
-    /// levels wins; none → private (the C# default).
+    /// levels wins; otherwise use the containing declaration's default.
     fn visibility_of(&self, node: Node) -> u8 {
         for i in 0..node.child_count() {
             let Some(child) = node.child(i) else { continue };
@@ -241,7 +241,14 @@ impl<'t> Walker<'t> {
                 }
             }
         }
-        2 // C# defaults to private
+        let parent = node.parent().and_then(|p| {
+            if p.kind() == "declaration_list" { p.parent() } else { Some(p) }
+        });
+        match parent.map(|p| p.kind()) {
+            Some("interface_declaration") => 1,
+            None | Some("compilation_unit" | "namespace_declaration" | "file_scoped_namespace_declaration") => 4,
+            _ => 2,
+        }
     }
 
     fn is_static(&self, node: Node) -> bool {
@@ -798,5 +805,4 @@ fn find_anonymous_class_body(node: Node) -> Option<Node> {
     }
     None
 }
-
 

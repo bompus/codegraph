@@ -1,0 +1,97 @@
+{
+  "timestamp": "2026-09-30T18:51:26.117Z",
+  "corpus": "vite",
+  "repo": "https://github.com/vitejs/vite.git",
+  "commit": "8492422",
+  "codegraphSha": "b04f15c8+reconcile-2172",
+  "summary": {
+    "absentCases": 6,
+    "absentHeld": 6,
+    "presentCases": 2,
+    "presentHeld": 2,
+    "unjudgeable": 0
+  },
+  "resolvedBy": {
+    "(none)": 13114,
+    "import": 8875,
+    "exact-match": 4904,
+    "instance-method": 405,
+    "qualified-name": 312,
+    "file-path": 201,
+    "function-ref": 200,
+    "fuzzy": 16,
+    "framework": 8
+  },
+  "edges": 28035,
+  "results": [
+    {
+      "caseId": "vite-factory-receiver-control",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "function:d321dd128d90578bc69867835ec73ef8",
+          "to": "method:db73e5f5d9c7af61d0f22c5b9971ced3",
+          "resolvedBy": "instance-method"
+        }
+      ],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-external-receiver-not-project-method",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-bare-import-self-edge",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-bare-import-getEnv",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-fuzzy-nested-resolveConfig-getEnv",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-fuzzy-nested-build-scan",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-sealed-module-defineConfig",
+      "expect": "absent",
+      "pass": true,
+      "found": [],
+      "missingEndpoints": []
+    },
+    {
+      "caseId": "vite-control-relative-import",
+      "expect": "present",
+      "pass": true,
+      "found": [
+        {
+          "from": "file:packages/vite/src/node/config.ts",
+          "to": "function:0c2f36c32c5742aee412978220fd5b23",
+          "resolvedBy": "import"
+        }
+      ],
+      "missingEndpoints": []
+    }
+  ],
+  "sourceState": "Uncommitted upstream #2157-#2172 reconciliation based on b04f15c8, including native resolver ports."
+}

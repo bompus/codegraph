@@ -37,9 +37,9 @@ fn is_kotlin_type_kind(kind: &str) -> bool {
 /// A Kotlin file's `package` and the names and packages its `import`s bring in.
 #[derive(Default)]
 pub(crate) struct KotlinFileScope {
-    pkg: String,
-    imports: HashSet<String>,
-    stars: HashSet<String>,
+    pub(super) pkg: String,
+    pub(super) imports: HashSet<String>,
+    pub(super) stars: HashSet<String>,
 }
 
 fn collect_kotlin_file_scope(text: &str) -> KotlinFileScope {
@@ -77,7 +77,7 @@ fn is_bare_cfml_call(r: &ResolveRefIn) -> bool {
 
 /// Where a ref's name starts on its line, as a byte offset: at the ref's
 /// column, or just before it (a Dart ref's column sits past the name).
-fn name_start_at_column(line: &str, name: &str, column: usize) -> Option<usize> {
+pub(super) fn name_start_at_column(line: &str, name: &str, column: usize) -> Option<usize> {
     if js_slice(line, column).starts_with(name) {
         return Some(js_unit_to_byte(line, column));
     }
@@ -116,6 +116,8 @@ impl KernelResolver {
         candidates: Vec<Arc<KNode>>,
         r: &ResolveRefIn,
     ) -> Res<(Vec<Arc<KNode>>, bool)> {
+        let shape_call = matches!(r.language.as_str(), "rust" | "go" | "swift" | "scala" | "kotlin")
+            && r.reference_kind == "calls" && re!(r"^[A-Za-z_$][A-Za-z0-9_$]*$").is_match(&r.reference_name);
         let ruby_bare = is_bare_ruby_call(r);
         let cfml_bare = is_bare_cfml_call(r);
         let kotlin_call = is_bare_call_of(r, "kotlin") && !self.is_kotlin_qualified_call(r);
@@ -123,12 +125,13 @@ impl KernelResolver {
         let member_site = matches!(r.language.as_str(), "vbnet" | "csharp" | "objc")
             .then(|| self.member_site(r))
             .filter(|s| s.is_judged());
-        if !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare && member_site.is_none() {
+        if !shape_call && !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare && member_site.is_none() {
             return Ok((candidates, false));
         }
         let mut shrank = false;
         let mut kept = Vec::with_capacity(candidates.len());
         for n in candidates {
+            if shape_call && !self.call_shape_target(&n, r)? { shrank = true; continue; }
             if let Some(site) = &member_site {
                 if !self.is_member_in_reach(&n, site, r)? {
                     shrank = true;
@@ -141,7 +144,7 @@ impl KernelResolver {
             if cfml_bare && n.kind == "method" && !self.is_cfml_method_in_scope(&n, r)? {
                 continue;
             }
-            if kotlin_call && !self.is_kotlin_top_level_visible(&n, r)? {
+            if kotlin_call && (!self.is_kotlin_top_level_visible(&n, r)? || !self.kotlin_member_reachable(&n, r)?) {
                 shrank = true;
                 continue;
             }
@@ -157,9 +160,11 @@ impl KernelResolver {
     /// removing others is bound to the call site (see
     /// `is_kotlin_survivor_in_scope` and `is_member_survivor_bound`).
     pub(super) fn is_lang_survivor_bound(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if n.file_path == r.file_path { return Ok(true); }
         if r.language == "kotlin" {
             return self.is_kotlin_survivor_in_scope(n, r);
         }
+        if r.language == "swift" { return self.swift_scope_bound(n, r); }
         let site = self.member_site(r);
         self.is_member_survivor_bound(n, &site, r)
     }
@@ -243,7 +248,7 @@ impl KernelResolver {
     /// The simple names a Kotlin type's declarations list after `:` in their
     /// head (`class A(x: Int) : B(x), C by d`), constructor arguments and type
     /// arguments dropped.
-    fn kotlin_supertypes_of(&mut self, type_name: &str) -> Res<Rc<Vec<String>>> {
+    pub(super) fn kotlin_supertypes_of(&mut self, type_name: &str) -> Res<Rc<Vec<String>>> {
         if let Some(hit) = self.kotlin_supers_memo.get(type_name) {
             return Ok(hit.clone());
         }
@@ -460,7 +465,7 @@ impl KernelResolver {
             || KOTLIN_DEFAULT_IMPORTS.contains(&pkg.as_str()))
     }
 
-    fn kotlin_file_scope(&mut self, file: &str) -> Rc<KotlinFileScope> {
+    pub(super) fn kotlin_file_scope(&mut self, file: &str) -> Rc<KotlinFileScope> {
         if let Some(hit) = self.kotlin_scope_memo.get(file) {
             return hit.clone();
         }

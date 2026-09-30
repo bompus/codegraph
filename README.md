@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`a5b0160`](https://github.com/colbymchenry/codegraph/commit/a5b0160e), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`2e2b98c`](https://github.com/colbymchenry/codegraph/commit/2e2b98c9), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -113,6 +113,8 @@ Dispatch and framework coverage the fork adds, by kind:
 | NgRx effects | Dispatched actions to the effects that handle them |
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
 | `window.postMessage` | Posted messages to their listeners |
+
+Flow-annotated JavaScript is parsed through the TSX grammar. Java and C# calls through declared fields or properties use their declared types; unresolved external types remain unresolved. Rust, Go, Scala, Swift and Kotlin calls also use the receiver and lexical scope at the call site.
 
 **Server endpoints**
 
@@ -500,8 +502,8 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Play** | `GET`/`POST`/… verb routes in `conf/routes` → `Controller.method` actions (Scala + Java), including projects kept in subdirectories |
 | **Gin / chi / gorilla / mux** | `r.GET(...)`, `router.HandleFunc(...)` |
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
-| **ASP.NET** | `[HttpGet("/x")]` attributes on action methods |
-| **Vapor** | `app.get("x", use: handler)` |
+| **ASP.NET** | `[HttpGet("/x")]` attributes on action methods and FastEndpoints `Configure()` verb calls |
+| **Vapor** | `app.get("x", use: handler)` and closure handlers |
 | **Analog** | `src/app/pages/**/*.page.ts` files (`index`, dot segments, `[param]`, `[...rest]` and `(group)` names) bound to the page's default component class; a page with a same-named folder is a layout, not a route | — |
 | **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page links to its component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
 | **RedwoodSDK** | Literal `defineApp([...])` trees with `route`, `index`, `render`, `layout` and `prefix`, plus `{ get, post, … }` method tables; each route links to its final handler and becomes a page once that handler is shown to return JSX | — |
@@ -514,7 +516,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 |---|---|---|
 | **Expo Router** | Every screen file under `app/` (`app/item/[id].tsx` → `/item/[id]`, groups stripped), bound to its default-export component; `+api` files are endpoints (`GET /hello`) bound to their handlers | `router.push` / `replace` / `navigate`, template hrefs, `{ pathname }` objects, and a helper's returned href |
 | **Next.js** | App Router `app/**/page.tsx` and Pages Router pages (`(group)` stripped, `[slug]` → `:slug`); `app/api/**/route.ts` exports and `pages/api/*` are endpoints, not screens | `router.push` / `replace` / `prefetch`, `redirect()` / `permanentRedirect()` in a server action or page, `NextResponse.redirect(new URL(…))` in middleware, `<Link href>` and internal `<a href>` |
-| **React Router** | `<Route path component/element>` (v5 and v6), `createBrowserRouter([{ path, element }])`, framework mode's `app/routes.ts` (`route`, `index`, `layout`, `prefix`), and the default file convention under `app/routes/` (Remix, or React Router with `flatRoutes()`: dot nesting, index and pathless segments, `$param`, optional `($segment)` and `$` splats), each bound to its module's default component | `history.push` / `replace`, `useNavigate`'s `navigate`, a loader's `redirect`, `<Link to>` / `<NavLink to>` / `<Navigate to>` / v5's `<Redirect to>` / react-router-bootstrap's `<LinkContainer to>`, and a `styled(Link)` wrapper |
+| **React Router** | `<Route path component/element>` (v5 and v6), `createBrowserRouter` / `createHashRouter` / `createMemoryRouter` arrays with nested `children`, constant paths, `Component` and lazy module exports, framework mode's `app/routes.ts` (`route`, `index`, `layout`, `prefix`), and the default file convention under `app/routes/` (Remix, or React Router with `flatRoutes()`: dot nesting, index and pathless segments, `$param`, optional `($segment)` and `$` splats), each bound to its module's default component | `history.push` / `replace`, `useNavigate`'s `navigate`, a loader's `redirect`, `<Link to>` / `<NavLink to>` / `<Navigate to>` / v5's `<Redirect to>` / react-router-bootstrap's `<LinkContainer to>`, and a `styled(Link)` wrapper |
 | **TanStack Router** | `createFileRoute('/posts/$postId')` (file-based) and `createRoute({ path, getParentRoute })` composed up its parent chain (code-based); `_pathless` segments, `(group)` folders, `__root` and `<Outlet/>` layouts are not addresses; TanStack Start `server.handlers` (and `createHandlers`) in those files become method-qualified endpoints (`GET /api/users`) | `navigate({ to })`, a thrown `redirect({ to })`, `<Link to>` / `<Navigate to>` — where `to` is the route PATTERN and the values ride beside it in `params` |
 | **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` / `new Router(...)` and the route tables it's given (`export const constantRoutes = [...]`, per-module route files), with the view each entry names — a lazy `() => import(…)` bound to its file — and `children` joined onto their parent's path, the parent being the layout around them; plus, in a Nuxt app, `pages/` file-based routes, each linked to its page component (`index` folders, root index pages, Nuxt 4 route groups), `server/api/` and `server/routes/` endpoints (method suffixes such as `.get.ts`, catch-alls) and route middleware | `router.push` / `replace`, `$router.push` / `this.$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
 | **Solid Router** | Imported `Router`/`Route` JSX and route-config arrays (`path`, `component`, `children`) with static `lazy(() => import(...))` components. A table exported from another file as `RouteDefinition[]` (the official template's `routes.ts`) is read too, prefixed by where it is registered | — |
@@ -554,7 +556,7 @@ Real iOS and React Native codebases live across multiple languages — a Swift c
 | Expo Modules | expo-haptics | expo-camera | expo SDK sweep (7 packages) |
 | Fabric / Paper views | [react-native-segmented-control](https://github.com/react-native-segmented-control/segmented-control) | [react-native-screens](https://github.com/software-mansion/react-native-screens) | [react-native-skia](https://github.com/Shopify/react-native-skia) |
 
-Each bridge emits edges tagged `provenance:'heuristic'` with `metadata.synthesizedBy:` set to a stable channel name (e.g. `swift-objc-bridge`, `rn-event-channel`, `fabric-native-impl`, `expo-module-extract`), so the agent can tell at a glance how a hop got into the graph.
+Every bridge hop says how it got into the graph. A hop matched by a bridge resolver carries `metadata.resolvedBy: 'framework'` and `metadata.framework` naming the resolver (`swift-objc-bridge`, `react-native-bridge`, `expo-modules-js`, `fabric-view`). A synthesized channel is tagged `provenance:'heuristic'` with `metadata.synthesizedBy` (`rn-event-channel`, `fabric-native-impl`).
 
 ---
 ## Quick Start

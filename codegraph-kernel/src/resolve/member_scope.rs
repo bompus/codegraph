@@ -56,7 +56,16 @@ pub(super) enum ObjcShape {
 /// UIKit / AppKit superclasses, for a category on a system class: an
 /// `UIImageView (WebCache)` method sending `[self sd_internalSetImageWithURL:…]`
 /// reaches the `UIView (WebCache)` category.
-const OBJC_SYSTEM_SUPERS: &[(&str, &str)] = &[
+pub(super) const OBJC_SYSTEM_SUPERS: &[(&str, &str)] = &[
+    ("UISegmentedControl", "UIControl"), ("UIStepper", "UIControl"), ("UIPageControl", "UIControl"),
+    ("UIDatePicker", "UIControl"), ("UIRefreshControl", "UIControl"), ("UIStackView", "UIView"),
+    ("UINavigationBar", "UIView"), ("UIToolbar", "UIView"), ("UITabBar", "UIView"), ("UISearchBar", "UIView"),
+    ("UIVisualEffectView", "UIView"), ("UIActivityIndicatorView", "UIView"), ("UIProgressView", "UIView"),
+    ("UIPickerView", "UIView"), ("UITableViewHeaderFooterView", "UIView"),
+    ("UITableViewController", "UIViewController"), ("UICollectionViewController", "UIViewController"),
+    ("UINavigationController", "UIViewController"), ("UITabBarController", "UIViewController"),
+    ("UIPageViewController", "UIViewController"), ("UISplitViewController", "UIViewController"),
+    ("UIAlertController", "UIViewController"), ("UIHostingController", "UIViewController"),
     ("UIResponder", "NSObject"), ("UIView", "UIResponder"), ("UIViewController", "UIResponder"), ("UIWindow", "UIView"),
     ("UIControl", "UIView"), ("UIButton", "UIControl"), ("UITextField", "UIControl"), ("UISwitch", "UIControl"),
     ("UISlider", "UIControl"), ("UIImageView", "UIView"), ("UILabel", "UIView"), ("UIScrollView", "UIView"),
@@ -386,14 +395,14 @@ impl KernelResolver {
         if !dir.is_empty() {
             owners.extend(self.csharp_project_static_usings(pos_dirname(dir)).iter().cloned());
         }
-        let abs = if dir.is_empty() { self.root_abs.clone() } else { pos_resolve(&self.root_abs, dir) };
         for entry in self.csharp_dir_entries(dir) {
             let lower = entry.to_ascii_lowercase();
             if !(lower.ends_with(".csproj") || lower.ends_with(".props")) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(format!("{abs}/{entry}")) else { continue };
-            for m in re!(r#"(?i)<Using\s+Include\s*=\s*"([A-Za-z0-9_.]+)"[^>]*(?-u:\b)Static\s*=\s*"true""#).captures_iter(&text) {
+            let rel = if dir.is_empty() { entry } else { format!("{dir}/{entry}") };
+            let Some(text) = self.read_file(&rel) else { continue };
+            for m in re!(r#"(?i)<Using\s+Include\s*=\s*"([A-Za-z0-9_.]+)"[^>]*(?-u:\b)Static\s*=\s*"true""#).captures_iter(text.text()) {
                 owners.insert(m[1].rsplit('.').next().unwrap_or("").to_string());
             }
         }

@@ -218,7 +218,7 @@ class App {
 }
 `;
     for (const sub of ['Sub', 'Sub2']) {
-      const got = await edges({ 'App.cs': app, 'Decoy.cs': CS_DECOY(sub) });
+      const got = await edges({ 'App.cs': app, 'Decoy.cs': CS_DECOY(sub) }, ['calls']);
       expect(got.filter((e) => e.includes('BaseMethod'))).toEqual([]);
     }
     const ext = await edges({
@@ -228,7 +228,7 @@ class App {
   public static int BaseMethod(this Sub s) { return 3; }
 }
 `,
-    });
+    }, ['calls']);
     expect(ext.filter((e) => e.includes('BaseMethod'))).toEqual(['App::Run -calls-> SubExtensions::BaseMethod@Ext.cs']);
   });
 
@@ -474,7 +474,7 @@ class App {
   public static int BaseMethod(this Unrelated u) { return 3; }
 }
 `,
-    });
+    }, ['calls']);
     expect(got.filter((e) => e.includes('BaseMethod'))).toEqual([]);
   });
 });

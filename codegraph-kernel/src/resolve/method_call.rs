@@ -350,6 +350,9 @@ impl KernelResolver {
             McShape::Done(res) => return Ok(res),
         };
 
+        if matches!(r.language.as_str(), "java" | "kotlin") {
+            if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
+        }
         let bindings = self.bindings(&r.file_path)?;
         let binding =
             innermost_binding(&bindings, &object_or_class, Some(r.line)).cloned();
@@ -392,11 +395,14 @@ impl KernelResolver {
             }
             // TS passes requireReceiverEvidence (=true) as preserveQualifiedName
             // to both inferrers here — qualified names stay intact.
-            let mut inferred = if r.language == "cpp" {
+            let mut inferred = if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && self.explicit_this_receiver(&object_or_class, &method_name, r) {
+                self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
+            } else if r.language == "cpp" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, true)?
             } else {
                 probe!(r, "mc:infer-local", self.infer_local_receiver_type(&object_or_class, &site, true)?)
             };
+            if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             if inferred.is_none() && r.language == "go" {
                 if let Some(c) = self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
                     return Ok(Some(c));
@@ -433,6 +439,7 @@ impl KernelResolver {
                 }
             }
             if let Some(t) = inferred.take() {
+                let Some(t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 let mut bsite = r.clone();
                 if let Some(b) = &binding {
                     bsite.line = b.line;
@@ -528,6 +535,9 @@ impl KernelResolver {
             McShape::Done(res) => return Ok(res),
         };
 
+        if matches!(r.language.as_str(), "java" | "kotlin") {
+            if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
+        }
         if inferable {
             // No binding anchor under requireReceiverEvidence=false — the
             // inferrers run at the ref's own site with qualified names
@@ -539,7 +549,10 @@ impl KernelResolver {
             };
             // guarded/gofactory/iteration are evidence-gated in TS and
             // never run here; mc-await still does.
-            let mut inferred = inferred;
+            let mut inferred = if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && self.explicit_this_receiver(&object_or_class, &method_name, r) {
+                self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
+            } else { inferred };
+            if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             let mut awaited_file: Option<String> = None;
             if inferred.is_none() && is_esm_family(&r.language) {
                 if let Some(a) = self.infer_esm_awaited_call_type(&object_or_class, r)? {
@@ -570,6 +583,7 @@ impl KernelResolver {
                 }
             }
             if let Some(t) = inferred {
+                let Some(t) = self.inferred_member_type_bound(&t, r)? else { return Ok(None) };
                 // Java/Kotlin: the file's import pins WHICH same-named class.
                 let fqn = if r.language == "java" || r.language == "kotlin" {
                     self.imported_fqn_of(&t, r)?
@@ -599,6 +613,9 @@ impl KernelResolver {
                         return Ok(Some(c));
                     }
                     None if awaited_file.is_some() => return Ok(None),
+                    None if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") => {
+                        return self.unique_csharp_extension_method(&t, &method_name, r);
+                    }
                     // A C# or Ruby receiver whose type is a project class
                     // that carries no such method (nor do its supertypes)
                     // is not a call on whichever class does: the name
@@ -721,6 +738,29 @@ impl KernelResolver {
             }
         }
 
+        if r.language == "csharp" {
+            if let Some(alias) = self.csharp_using_alias(&object_or_class, &r.file_path) {
+                let name = alias.rsplit('.').next().unwrap_or(&alias);
+                let owners: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| n.language == "csharp"
+                    && is_class_like(&n.kind) && n.qualified_name.replace("::", ".") == alias).cloned().collect();
+                return match owners.as_slice() {
+                    [only] => self.resolve_method_on_qualified_type(&only.qualified_name, &method_name, r, 0.9, "instance-method"),
+                    _ => Ok(None),
+                };
+            }
+        }
+
+        // An unbound type name from outside the project cannot name a project method.
+        let type_name = re!(r"^[A-Z][A-Za-z0-9_]*$").is_match(&object_or_class)
+            && !matches!(r.language.as_str(), "go" | "c" | "cpp" | "rust" | "cuda" | "metal")
+            && (r.language != "pascal" || re!(r"^(?:[TEI][A-Z]\w*|Exception)$").is_match(&object_or_class));
+        if type_name && !self.nodes_by_name(&object_or_class)?.iter().any(|n| {
+            same_language_family(&n.language, &r.language)
+                && (!matches!(r.language.as_str(), "csharp" | "java")
+                    || is_class_like(&n.kind) || matches!(n.kind.as_str(), "enum" | "namespace" | "module"))
+        }) { return Ok(None); }
+        if r.language == "csharp" && matches!(object_or_class.as_str(), "string" | "object" | "int" | "long" | "short" | "byte" | "bool" | "char" | "double" | "float" | "decimal" | "uint" | "ulong" | "ushort" | "sbyte") { return Ok(None); }
+
         // Strategy 2 — capitalized receiver (`permissionEngine` →
         // `PermissionEngine`) against the same class scan.
         let capitalized = capitalize_first(&object_or_class);
@@ -766,6 +806,7 @@ impl KernelResolver {
                 target.retain(|m| m.file_path != r.file_path);
                 narrowed = target.len() != before;
             }
+            if !is_test_path(&r.file_path) { target.retain(|n| !is_test_path(&n.file_path)); }
             // A Vue component's own method is reached as `this.m()` inside it —
             // never as `e.preventDefault()` on an event, nor
             // `this.editor.setValue()` on something the component holds. The
@@ -779,6 +820,10 @@ impl KernelResolver {
                     !php_scope::is_vue_component_method(m) || (object_or_class == "this" && m.file_path == r.file_path)
                 });
                 narrowed |= target.len() != before;
+            }
+            if super::call_shape::is_std_method(&r.language, &method_name)
+                && !matches!(object_or_class.as_str(), "self" | "Self" | "this" | "base") {
+                target.retain(|n| shares_receiver_word(super::call_shape::receiver_link(&object_or_class), n));
             }
             let target = &target;
             // Nothing types a Ruby, CFML or Objective-C receiver here: the one
@@ -818,14 +863,15 @@ impl KernelResolver {
                 }));
             }
             if target.len() > 1 {
-                let receiver_words = split_camel_case(&object_or_class);
+                let receiver_words = split_camel_case(super::call_shape::receiver_link(&object_or_class));
                 // Same-file candidates first, so a score tie resolves to the
                 // call site's own file (`score > bestScore` keeps first seen).
                 let ordered = prefer_call_site_file(target.clone(), &r.file_path);
                 let mut best: Option<Arc<KNode>> = None;
                 let mut best_score = 0i64;
                 for m in &ordered {
-                    let class_words = split_camel_case(&m.qualified_name);
+                    let owner = m.qualified_name.rsplit_once("::").map(|(p, _)| p.rsplit([':', '.']).next().unwrap_or("")).unwrap_or("");
+                    let class_words = split_camel_case(owner);
                     let mut score = receiver_words
                         .iter()
                         .filter(|w| {
@@ -834,6 +880,7 @@ impl KernelResolver {
                                 .any(|cw| cw.eq_ignore_ascii_case(w))
                         })
                         .count() as i64;
+                    if receiver_words.last().zip(class_words.last()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b)) { score += 1; }
                     if m.language == r.language {
                         score += 1;
                     }
@@ -1031,7 +1078,7 @@ impl KernelResolver {
                 // descent: an owner means btm owns the ref (or refuses a
                 // deeper receiver); a miss falls through to br:import.
                 if (r.language == "java" || r.language == "kotlin") && self.resolve_bound_type(root, r, 0)?.is_some() {
-                    return if receiver == root { self.match_bound_type_member(root, method, r) } else { Ok(None) };
+                    return if receiver == root { self.match_bound_type_member(root, method, r) } else { self.enum_constant_call(receiver, method, r) };
                 }
                 return Ok(match self.resolve_via_import_member(r)? {
                     Some(c) => {
@@ -1283,7 +1330,7 @@ mod tests {
 /// letters or more (`web_push_request` → WebPushRequest, `executor1` →
 /// Executor, `decodedImage` → UIImage). Two-letter words are class
 /// prefixes (`SD`, `NS`, `UI`), not names.
-fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
+pub(super) fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
     let Some(cut) = method.qualified_name.rfind("::") else { return false };
     let owner_qn = &method.qualified_name[..cut];
     let flat = |w: &str| -> String {

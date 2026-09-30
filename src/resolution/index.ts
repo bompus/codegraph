@@ -873,7 +873,11 @@ export class ReferenceResolver {
     }
     const candidates: ResolvedRef[] = [];
     for (const framework of this.frameworks) {
-      const result = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
+      const resolved = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
+      // Name the resolver on the edge (`metadata.framework`): a Swift→ObjC or
+      // React Native bridge hop says how it got into the graph, as a
+      // synthesized edge's `synthesizedBy` does.
+      const result = resolved ? { ...resolved, metadata: { ...resolved.metadata, framework: framework.name } } : null;
       if (result) {
         if (result.confidence >= 0.9) {
           // Same early-win as resolveOneInner — still passes the tail gates.

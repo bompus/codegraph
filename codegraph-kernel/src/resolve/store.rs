@@ -58,12 +58,79 @@ fn source_before(lines: &[String], from: usize, line: i64, column: i64) -> Strin
 }
 
 impl KernelResolver {
+    /// A destructured callable returned by an imported or local factory.
+    pub(super) fn match_destructured_call_result(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let code = blank_string_contents(&strip_ts_comments(&source_before(&lines, 0, r.line, r.column)));
+        let binding = re!(r"(?-u:\b)(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^<>()]*>)?\s*\(");
+        let call_scope = brace_stack(&code, code.len());
+        let matches: Vec<_> = binding.captures_iter(&code).map(|m| {
+            let span = m.get(0).unwrap();
+            (span.start(), span.end(), m[1].to_string(), m[2].to_string())
+        }).collect();
+        for (at, end, names, callee_name) in matches.into_iter().rev() {
+            let key = names.split(',').find_map(|part| {
+                let mut pair = part.split(':');
+                let key = pair.next()?.trim().split('=').next()?.trim();
+                let local = pair.next().unwrap_or(key).trim().split('=').next()?.trim();
+                (local == r.reference_name && re!(r"^[A-Za-z_$][\w$]*$").is_match(key)).then(|| key.to_string())
+            });
+            let Some(key) = key else { continue };
+            if !in_scope(&code, at, &call_scope) { continue }
+            if declared_in_scope(&code, end, &r.reference_name, &call_scope) { return Ok(None) }
+            let mut binding_site = r.clone().naming(&callee_name, "calls");
+            binding_site.line = code[..at].bytes().filter(|b| *b == b'\n').count() as i64 + 1;
+            let mappings = self.import_mappings(&r.file_path)?;
+            let imported = mappings.iter().any(|m| m.local_name == callee_name);
+            let callee = if imported {
+                self.resolve_via_import(&binding_site)?.map(|c| c.node)
+            } else {
+                let bindings = self.bindings(&r.file_path)?;
+                let bound = innermost_binding(&bindings, &callee_name, Some(binding_site.line));
+                self.nodes_in_file(&r.file_path)?.iter().find(|n| n.name == callee_name
+                    && matches!(n.kind.as_str(), "function" | "constant" | "variable")
+                    && bound.is_none_or(|b| b.node_id.as_deref() == Some(n.id.as_str()))).cloned()
+            };
+            let Some(callee) = callee else { return Ok(None) };
+            if !same_language_family(&callee.language, &r.language) { return Ok(None) }
+            let Some(source) = self.read_file(&callee.file_path) else { return Ok(None) };
+            let lo = (callee.start_line - 1).max(0) as usize;
+            let hi = (callee.end_line.max(0) as usize).min(source.len());
+            let text = blank_string_contents(&strip_ts_comments(&source.get(lo..hi).unwrap_or_default().join("\n")));
+            let returns: Vec<_> = re!(r"(?-u:\b)return\s*\{([^{}]*)\}").captures_iter(&text).map(|m| m[1].to_string()).collect();
+            if returns.len() != 1 { return Ok(None) }
+            let target_name = returns[0].split(',').find_map(|part| {
+                let mut pair = part.split(':');
+                let returned_key = pair.next()?.trim();
+                let value = pair.next().unwrap_or(returned_key).trim();
+                (returned_key == key && re!(r"^[A-Za-z_$][\w$]*$").is_match(value)).then(|| value.to_string())
+            });
+            let Some(target_name) = target_name else { return Ok(None) };
+            let nodes = self.nodes_in_file(&callee.file_path)?;
+            let callable = |n: &&Arc<KNode>| n.name == target_name && n.id != callee.id
+                && matches!(n.kind.as_str(), "function" | "method" | "constant" | "variable");
+            let mut inner: Vec<_> = nodes.iter().filter(callable).filter(|n| range_within(n, &callee)
+                && !nodes.iter().any(|f| f.id != callee.id && f.id != n.id
+                    && matches!(f.kind.as_str(), "function" | "method") && range_within(f, &callee) && range_within(n, f))).cloned().collect();
+            if inner.is_empty() {
+                inner = nodes.iter().filter(callable).filter(|n| !n.qualified_name.contains("::")
+                    && !nodes.iter().any(|f| f.id != n.id && matches!(f.kind.as_str(), "function" | "method") && range_within(n, f))).cloned().collect();
+            }
+            if inner.len() != 1 { return Ok(None) }
+            return Ok(Some(KCand { node: inner.remove(0), confidence: 0.85, resolved_by: "instance-method" }));
+        }
+        Ok(None)
+    }
+
     /// matchJsStoreBindingCall — a bare JS call bound to a store action.
     pub(super) fn match_js_store_binding_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if !self.is_bare_js_call(r)? {
             return Ok(None);
         }
         if let Some(c) = self.match_destructured_store_call(r)? {
+            return Ok(Some(c));
+        }
+        if let Some(c) = self.match_destructured_call_result(r)? {
             return Ok(Some(c));
         }
         self.match_selected_store_call(r)

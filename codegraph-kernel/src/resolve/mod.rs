@@ -502,6 +502,10 @@ mod member_fn_ref;
 mod object_literal;
 mod cpp;
 mod store;
+mod esm_scope;
+mod call_shape;
+mod kotlin_calls;
+mod declared_member;
 mod live_conn;
 use self::tables::*;
 use self::affix::*;
@@ -548,6 +552,7 @@ pub struct KernelResolver {
     import_path_memo: HashMap<String, Option<String>>,
     exported_symbol_memo: HashMap<String, Option<Arc<KNode>>>,
     sealed_memo: HashMap<String, bool>,
+    esm_exports_memo: HashMap<String, (bool, HashSet<String>)>,
     c_static_memo: HashMap<String, bool>,
     rust_trait_memo: HashMap<String, bool>,
     /// javaSupertypesOf, by type name.
@@ -561,6 +566,10 @@ pub struct KernelResolver {
     /// Kotlin supertypes named in a type's head, by type name.
     kotlin_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// kotlinFileScope, by file.
+    csharp_alias_memo: HashMap<String, Rc<HashMap<String, String>>>,
+    declared_member_memo: HashMap<(String, String), Option<String>>,
+    kotlin_frames_memo: HashMap<String, Rc<Vec<kotlin_calls::KotlinFrame>>>,
+    kotlin_receiver_types_memo: Option<Rc<HashSet<String>>>,
     kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
     /// Python methods named `member` on classes deriving from a class, by
     /// (class id, member).
@@ -712,12 +721,17 @@ impl KernelResolver {
             import_path_memo: HashMap::new(),
             exported_symbol_memo: HashMap::new(),
             sealed_memo: HashMap::new(),
+            esm_exports_memo: HashMap::new(),
             c_static_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
             dart_supers_memo: HashMap::new(),
             dart_hierarchy_memo: HashMap::new(),
+            csharp_alias_memo: HashMap::new(),
+            declared_member_memo: HashMap::new(),
+            kotlin_frames_memo: HashMap::new(),
+            kotlin_receiver_types_memo: None,
             kotlin_scope_memo: HashMap::new(),
             kotlin_supers_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),

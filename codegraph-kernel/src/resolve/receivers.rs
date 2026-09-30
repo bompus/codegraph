@@ -104,6 +104,9 @@ impl KernelResolver {
                     if guard1_tail_re().is_match(rest) && !nullable_union_tail_re().is_match(rest) {
                         continue;
                     }
+                } else if pat.guard == 4 {
+                    // An assignment statement, not a trailing keyword argument.
+                    if line[m.end..].split('\n').next().is_some_and(|rest| rest.trim_end().ends_with(',')) { continue; }
                 } else if pat.guard == 3 {
                     // `(?!\s*\()` — a declarator followed by `(` is a function.
                     if cpp_call_opener_re().is_match(&line[m.end..]) {

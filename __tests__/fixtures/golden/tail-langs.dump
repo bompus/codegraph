@@ -159,9 +159,9 @@
 {"source":"class:85e303095ea33303cdff1b72c25fb6db","target":"method:1b92f98530b02ea1c9bfb4530bca5eb7","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:85e303095ea33303cdff1b72c25fb6db","target":"method:6371e3682b7f64f04708b1f642de336e","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:85e303095ea33303cdff1b72c25fb6db","target":"method:c94827fc2f9c117969234a98dadc0d05","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"class:8da3dc4378a8ad4becad38a01a3d4d63","target":"class:ed293d45f9099ac913df324c359e48c1","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"data.aws_ami.ubuntu\"}","line":8,"col":18,"provenance":null}
-{"source":"class:8da3dc4378a8ad4becad38a01a3d4d63","target":"module:af152aef0ad0bd196ff5d219b36b58c1","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"module.network\"}","line":10,"col":18,"provenance":null}
-{"source":"class:8da3dc4378a8ad4becad38a01a3d4d63","target":"variable:9c79774d08edc9a0bb27f472ee8a6a79","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"var.region\"}","line":11,"col":25,"provenance":null}
+{"source":"class:8da3dc4378a8ad4becad38a01a3d4d63","target":"class:ed293d45f9099ac913df324c359e48c1","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"data.aws_ami.ubuntu\"}","line":8,"col":18,"provenance":null}
+{"source":"class:8da3dc4378a8ad4becad38a01a3d4d63","target":"module:af152aef0ad0bd196ff5d219b36b58c1","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"module.network\"}","line":10,"col":18,"provenance":null}
+{"source":"class:8da3dc4378a8ad4becad38a01a3d4d63","target":"variable:9c79774d08edc9a0bb27f472ee8a6a79","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"var.region\"}","line":11,"col":25,"provenance":null}
 {"source":"class:8f245e11bfe6a3d101a39ded206566ec","target":"method:2cffd29cd52f93d2ea6466306f4d7618","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:8f245e11bfe6a3d101a39ded206566ec","target":"method:8c9db773f13cb8c0e5a0498432ebc819","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:8f245e11bfe6a3d101a39ded206566ec","target":"method:bab15b615c718a99979e32483e78a2bd","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -272,7 +272,7 @@
 {"source":"module:63f2cc0cb56a8e323b9dd6bdbb79713d","target":"function:f487868c7342813e789b96fab9df96ba","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"module:63f2cc0cb56a8e323b9dd6bdbb79713d","target":"import:55d60376df21c57ae15c3e8685a4ff52","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"module:63f2cc0cb56a8e323b9dd6bdbb79713d","target":"variable:bc323d601c470045a33f59b1b7c0dc11","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"module:af152aef0ad0bd196ff5d219b36b58c1","target":"variable:3da5d742eb007ccf578c71f0e64ad9c5","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"var.cidr\"}","line":5,"col":11,"provenance":null}
+{"source":"module:af152aef0ad0bd196ff5d219b36b58c1","target":"variable:3da5d742eb007ccf578c71f0e64ad9c5","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"var.cidr\"}","line":5,"col":11,"provenance":null}
 {"source":"namespace:af63efb94c68875055ed19fc348aa906","target":"class:5ed1a9fbfc5fad495850f0cc6ac2970c","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"namespace:af63efb94c68875055ed19fc348aa906","target":"import:1b0247abd099fa4aef15950d5c54181d","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"namespace:af63efb94c68875055ed19fc348aa906","target":"import:62a37b7dc6cdff95138a84c92d60323c","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -293,7 +293,7 @@
 {"source":"struct:00b863e6b6e7bd6569a36e94f72d3aaa","target":"property:1e7069012ccaabcb8a98d0790ea607ef","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:00b863e6b6e7bd6569a36e94f72d3aaa","target":"property:81982deaee358e155a33af725d85bd97","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8050a2eb89168a19b5ac70b577047b96","target":"field:e2c04abad409b6092124d38ce58616bb","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"variable:62c285bb0e5c30272251db2b4966175f","target":"class:8da3dc4378a8ad4becad38a01a3d4d63","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"aws_instance.web\"}","line":14,"col":26,"provenance":null}
+{"source":"variable:62c285bb0e5c30272251db2b4966175f","target":"class:8da3dc4378a8ad4becad38a01a3d4d63","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"aws_instance.web\"}","line":14,"col":26,"provenance":null}
 == refs (55)
 {"from_node_id":"class:85e303095ea33303cdff1b72c25fb6db","reference_name":"IGreeter","reference_kind":"implements","line":1,"col":43,"candidates":null,"file_path":"cfml/Greeter.cfc","language":"cfml","status":"failed","name_tail":"IGreeter"}
 {"from_node_id":"class:8da3dc4378a8ad4becad38a01a3d4d63","reference_name":"module.network:output.subnet_id","reference_kind":"references","line":10,"col":18,"candidates":null,"file_path":"terraform/main.tf","language":"terraform","status":"failed","name_tail":"subnet_id"}

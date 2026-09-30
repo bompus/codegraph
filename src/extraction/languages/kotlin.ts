@@ -309,9 +309,25 @@ export function rewriteKotlinCallMemberAssignments(source: string): string {
   return out ? out.join('') : source;
 }
 
-/** Every offset-preserving rewrite the Kotlin grammar needs before parsing. */
+/**
+ * A primary constructor written on the line after its class name —
+ * `expect open class ByteString` / `internal constructor(data: ByteArray) :
+ * Comparable<ByteString> {` (okio, and Kotlin Multiplatform code generally) —
+ * with a supertype list after it: the grammar reads it as two statements and
+ * drops the class, its members coming out as loose functions. Blanking the
+ * constructor's modifiers and keyword (`(data: ByteArray) : …` parses) keeps
+ * the class, its supertypes and every offset; only the visibility is lost.
+ */
+const SPLIT_PRIMARY_CONSTRUCTOR =
+  /(\bclass\s+[A-Za-z_]\w*(?:\s*<[^<>{}]*(?:<[^<>{}]*>[^<>{}]*)*>)?[ \t]*\r?\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*)((?:(?:public|private|protected|internal|actual|expect)\s+|@[\w.]+(?:\([^)]*\))?\s+)*constructor)(?=\s*\()/g;
+
+export function joinKotlinSplitConstructors(source: string): string {
+  if (!source.includes('constructor')) return source;
+  return source.replace(SPLIT_PRIMARY_CONSTRUCTOR, (_m, head: string, ctor: string) => head + ' '.repeat(ctor.length));
+}
+
 export function preParseKotlin(source: string): string {
-  return rewriteKotlinCallMemberAssignments(blankKotlinQualifiedReceivers(source));
+  return rewriteKotlinCallMemberAssignments(joinKotlinSplitConstructors(blankKotlinQualifiedReceivers(source)));
 }
 
 export const kotlinExtractor: LanguageExtractor = {

@@ -63,7 +63,7 @@ describe('cross-language name matches', () => {
 
   it('keeps a Kotlin call onto a Java method (one JVM)', async () => {
     project({
-      'src/Main.kt': 'fun main() {\n    shout()\n}\n',
+      'src/Main.kt': 'import Loud.shout\n\nfun main() {\n    shout()\n}\n',
       'src/Loud.java': 'public class Loud {\n    public static int shout() { return 1; }\n}\n',
     });
     expect(await targetsOf('main')).toContain('src/Loud.java:shout');

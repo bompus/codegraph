@@ -34,3 +34,5 @@ Language support is automatic from the file extension — there's nothing to con
 | Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections, local links, selected table rows/list items, shell command references) |
 
 Markdown files use a dedicated documentation extractor. `.mdx` files receive the same documentation indexing; embedded JSX and JavaScript are not parsed as MDX code.
+
+JavaScript files with a Flow pragma use the TSX grammar after Flow-only syntax is blanked, preserving source locations.

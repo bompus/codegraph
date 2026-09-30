@@ -257,7 +257,7 @@ impl KernelResolver {
         if !is_esm_family(&candidate.language) {
             return Ok(true);
         }
-        self.is_sealed_module(&candidate.file_path).map(|s| !s)
+        Ok(!self.is_sealed_module(&candidate.file_path)? && !self.is_unexported_module_binding(candidate)?)
     }
 
     /// isVisibleAcrossFiles (name-matcher.ts).
@@ -731,6 +731,7 @@ impl KernelResolver {
 
         // A bare Dart call means the nearest member of the hierarchy around it.
         let candidates = self.nearest_dart_members(candidates, r)?;
+        let candidates = self.nearest_swift_members(candidates, r)?;
 
         // C/C++ call-site form.
         let Some(cpp_form) = self.apply_cpp_call_site_form(r, candidates)? else {
