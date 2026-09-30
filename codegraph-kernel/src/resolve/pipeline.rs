@@ -328,6 +328,17 @@ impl KernelResolver {
             let hit = self.match_arkts_attribute(r)?;
             return self.after_name_match(r, cands, hit);
         }
+        // A Swift call through a type path (`API.PackageController.GetRoute.query`)
+        // resolves on the type the path names, or not at all: the name
+        // strategies below would bind it by the member's name alone.
+        if r.language == "swift"
+            && r.reference_kind == "calls"
+            && !r.reference_name.starts_with("Self.")
+            && re!(r"^[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)+\.[A-Za-z_][A-Za-z0-9_]*$").is_match(&r.reference_name)
+        {
+            let hit = self.resolve_swift_type_path_call(r)?;
+            return self.after_name_match(r, cands, hit);
+        }
         // matchReference in TS order: filePath, qualifiedName, the
         // per-language chain arm (cppChain/scopedChain/dottedChain),
         // methodCall's requireReceiverEvidence=false arm, exactName, fuzzy.

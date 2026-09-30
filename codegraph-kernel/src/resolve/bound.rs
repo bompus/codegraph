@@ -560,6 +560,193 @@ impl KernelResolver {
         swift_string_literal_re().replace_all(&head, "\"\"").into_owned()
     }
 
+    /// resolveSwiftTypePathCall (swift-type-visibility.ts):
+    /// `API.PackageController.GetRoute.query(on:)` lands on the `query` of the
+    /// type the path names, and `API.PackageController.Model(name:)` on that
+    /// nested type, never on the member's name alone: in a Vapor app every
+    /// route's type has a `query`. A path the call's own namespace lets it
+    /// shorten (`PackageController.GetRoute` inside `extension API`) or a
+    /// module qualifier (`Vapor.HTTPStatus`) still fits. No type on the path,
+    /// or two, leaves the call unresolved.
+    pub(super) fn resolve_swift_type_path_call(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let name = r.reference_name.as_str();
+        let Some(dot) = name.rfind('.') else { return Ok(None) };
+        let member = &name[dot + 1..];
+        let path = name[..dot].split('.').collect::<Vec<_>>().join("::");
+        // `API.PackageController.Model(name:)` constructs a nested type.
+        let mut fit = if member.as_bytes().first().is_some_and(|b| b.is_ascii_uppercase()) {
+            self.swift_members_on_path(member, &path, true)?
+        } else {
+            Vec::new()
+        };
+        if fit.is_empty() {
+            fit = self.swift_members_on_path(member, &path, false)?;
+        }
+        // The Composable Architecture's `@Reducer enum Path { case detail(Detail) }`
+        // generates `Path.State` and `Path.Action` with the same cases, so
+        // `Path.State.detail(…)` constructs the case written in `Path`.
+        if fit.is_empty() {
+            let reducer = path
+                .strip_suffix("::State")
+                .or_else(|| path.strip_suffix("::Action"))
+                .filter(|p| !p.is_empty())
+                .map(str::to_string);
+            if let Some(reducer) = reducer {
+                let suffix = format!("::{reducer}");
+                for n in self.nodes_by_name(member)?.iter() {
+                    if n.language != "swift" || n.kind != "enum_member" {
+                        continue;
+                    }
+                    let fits = match self.swift_owner_path(n)? {
+                        Some(owner) => owner == reducer || owner.ends_with(&suffix),
+                        None => false,
+                    };
+                    if fits && self.is_swift_reducer_enum(n)? {
+                        fit.push(n.clone());
+                    }
+                }
+            }
+        }
+        if fit.is_empty() {
+            return Ok(None);
+        }
+        let mut owners: HashSet<Option<String>> = HashSet::new();
+        for n in &fit {
+            owners.insert(self.swift_owner_path(n)?);
+        }
+        if owners.len() > 1 {
+            return Ok(None);
+        }
+        // Of one type's overloads, the first declared.
+        let target = fit
+            .into_iter()
+            .reduce(|a, b| {
+                if a.file_path < b.file_path || (a.file_path == b.file_path && a.start_line <= b.start_line) {
+                    a
+                } else {
+                    b
+                }
+            })
+            .expect("non-empty");
+        Ok(Some(KCand { node: target, confidence: 0.9, resolved_by: "qualified-name" }))
+    }
+
+    /// The Swift `member`s declared on `path` (types when `types`, else a
+    /// method, function or enum case): the exact owner path first, else one
+    /// the path shortens or module-qualifies.
+    fn swift_members_on_path(&mut self, member: &str, path: &str, types: bool) -> Res<Vec<Arc<KNode>>> {
+        let mut exact: Vec<Arc<KNode>> = Vec::new();
+        let mut shortened: Vec<Arc<KNode>> = Vec::new();
+        let suffix = format!("::{path}");
+        for n in self.nodes_by_name(member)?.iter() {
+            if n.language != "swift" {
+                continue;
+            }
+            let kind_fits = if types {
+                is_swift_type_kind(&n.kind)
+            } else {
+                matches!(n.kind.as_str(), "method" | "function" | "enum_member")
+            };
+            if !kind_fits || (types && self.is_swift_extension(n)) {
+                continue;
+            }
+            let Some(owner) = self.swift_owner_path(n)? else { continue };
+            if owner == path {
+                exact.push(n.clone());
+            } else if owner.ends_with(&suffix) || self.swift_module_qualified(&owner, path)? {
+                shortened.push(n.clone());
+            }
+        }
+        Ok(if exact.is_empty() { shortened } else { exact })
+    }
+
+    /// Is this case declared in a `@Reducer enum`?
+    fn is_swift_reducer_enum(&mut self, member: &KNode) -> Res<bool> {
+        let mut owner: Option<Arc<KNode>> = None;
+        for t in self.nodes_in_file(&member.file_path)?.iter() {
+            if t.kind == "enum"
+                && t.start_line <= member.start_line
+                && t.end_line >= member.end_line
+                && owner.as_ref().is_none_or(|o| t.start_line >= o.start_line)
+            {
+                owner = Some(t.clone());
+            }
+        }
+        let Some(owner) = owner else { return Ok(false) };
+        let Some(lines) = self.read_file(&owner.file_path) else { return Ok(false) };
+        // The node starts at its attributes; `@Reducer` may also sit on the line above.
+        let from = ((owner.start_line - 2).max(0) as usize).min(lines.len());
+        let to = ((owner.start_line + 1).max(0) as usize).clamp(from, lines.len());
+        let text = lines[from..to].join(" ");
+        Ok(re!(r"@Reducer\b").is_match(&text))
+    }
+
+    /// `Vapor::HTTPStatus` for a type `HTTPStatus`: a qualifier that names no
+    /// project type is a module.
+    fn swift_module_qualified(&mut self, owner: &str, path: &str) -> Res<bool> {
+        let Some(head) = path.strip_suffix(owner).and_then(|h| h.strip_suffix("::")) else {
+            return Ok(false);
+        };
+        if head.contains("::") {
+            return Ok(false);
+        }
+        Ok(!self
+            .nodes_by_name(head)?
+            .iter()
+            .any(|n| n.language == "swift" && is_swift_type_kind(&n.kind)))
+    }
+
+    /// ownerPath (swift-type-visibility.ts): the full path of the type a
+    /// member is declared on. Its qualified name starts at the outermost
+    /// declaration in its file, and an extension is named by its last
+    /// segment (the members of `extension API.PackageController { enum
+    /// GetRoute { … } }` are `PackageController::GetRoute::…`), so the
+    /// outermost extension's written path is read back from its line. None
+    /// for a top-level function.
+    fn swift_owner_path(&mut self, member: &KNode) -> Res<Option<String>> {
+        if let Some(hit) = self.swift_owner_memo.get(&member.id) {
+            return Ok(hit.clone());
+        }
+        let mut path: Option<String> = member.qualified_name.rfind("::").map(|cut| member.qualified_name[..cut].to_string());
+        if let Some(p) = path.clone() {
+            let first = p.split("::").next().unwrap_or("").to_string();
+            let mut outer: Option<Arc<KNode>> = None;
+            for t in self.nodes_in_file(&member.file_path)?.iter() {
+                if t.name == first
+                    && is_swift_type_kind(&t.kind)
+                    && t.start_line <= member.start_line
+                    && t.end_line >= member.end_line
+                    && outer.as_ref().is_none_or(|o| t.start_line < o.start_line)
+                {
+                    outer = Some(t.clone());
+                }
+            }
+            if let Some(outer) = outer {
+                if let Some(extended) = self.swift_extended_path(&outer) {
+                    path = Some(format!("{extended}{}", &p[first.len()..]));
+                }
+            }
+        }
+        self.swift_owner_memo.insert(member.id.clone(), path.clone());
+        Ok(path)
+    }
+
+    /// extendedPath (swift-type-visibility.ts): `extension API.PackageController {`
+    /// → `API::PackageController`; None for anything but an extension of a
+    /// nested type.
+    fn swift_extended_path(&mut self, node: &KNode) -> Option<String> {
+        if !self.is_swift_extension(node) {
+            return None;
+        }
+        let head = self.swift_declaration_head(node, 3);
+        let written = re!(r"\bextension\s+((?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)+[A-Za-z_][A-Za-z0-9_]*)")
+            .captures(&head)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())?;
+        let compact: String = written.chars().filter(|c| !c.is_whitespace()).collect();
+        Some(compact.split('.').collect::<Vec<_>>().join("::"))
+    }
+
     /// A Java type `r` can name by its simple name: declared in `r`'s file
     /// or package directory, or imported by name or by package wildcard.
     fn java_type_visible(&mut self, ty: &KNode, r: &ResolveRefIn) -> Res<bool> {

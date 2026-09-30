@@ -63,7 +63,7 @@ import { ansiColorsEnabled } from '../ui/color';
 import { unsupportedRuntimeBanner } from './node-version-check';
 import { installFatalHandlers } from './fatal-handler';
 import { requireKernel } from '../extraction/kernel/loader';
-import { installCommandSupervision } from './command-supervision';
+import { installCommandSupervision, watchParent } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
 // The one resolver for "which build is this?" — package version, plus the
@@ -2254,6 +2254,10 @@ ${BROWSER_ENV}=none to never open one.
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
+    // If whatever launched this server dies without signalling it (a killed
+    // launcher or host process), shut down the same way instead of serving
+    // the port forever, as `index`/`init` do.
+    watchParent(shutdown);
   });
 
 /**

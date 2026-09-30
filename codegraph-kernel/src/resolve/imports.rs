@@ -763,6 +763,17 @@ impl KernelResolver {
                 0,
             )?
             else {
+                // `import api from './api'` where the module ends in
+                // `export default new ApiClient()`: no node holds the value,
+                // so type it from the expression and find the method there.
+                if imp.is_default && is_member && r.reference_kind == "calls" && is_esm_family(&r.language) {
+                    let member = &r.reference_name[imp.local_name.len() + 1..];
+                    if !member.is_empty() && !member.contains('.') {
+                        if let Some(c) = self.resolve_default_instance_member(&resolved_path, member, r)? {
+                            return Ok(Some(c));
+                        }
+                    }
+                }
                 continue;
             };
             if !imp.is_namespace && is_member {
@@ -880,6 +891,28 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+
+    /// A member call on a module's anonymous default instance,
+    /// `export default new ApiClient()`: the method on that class, looked up
+    /// from the exporting file.
+    fn resolve_default_instance_member(
+        &mut self,
+        module_path: &str,
+        member: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        let Some(lines) = self.read_file(module_path) else { return Ok(None) };
+        let Some(type_name) = re!(r"(?m)^[ \t]*export[ \t]+default[ \t]+new[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*[(<]")
+            .captures(lines.text())
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+        else {
+            return Ok(None);
+        };
+        let mut site = r.clone();
+        site.file_path = module_path.to_string();
+        self.resolve_method_on_type(&type_name, member, &site, 0.85, "instance-method", None)
     }
 
     /// getRazorUsings: the file's own `@using` namespaces, then each
