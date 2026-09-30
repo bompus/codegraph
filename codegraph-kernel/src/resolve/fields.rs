@@ -804,6 +804,21 @@ impl KernelResolver {
                 .cloned()
                 .collect();
             if declared.len() > 1 {
+                // The field's own file says which type it means: a local
+                // declaration or an import pins the method's file.
+                if let Some(pin) = self.ts_field_type_file(cls, m1, type_name, r)? {
+                    let Some(type_file) = pin else { return Ok(None) };
+                    // Overload signatures repeat the method in that file;
+                    // the first stands for them, as the tie-break below does.
+                    let Some(pinned) = declared.iter().find(|n| n.file_path == type_file) else {
+                        return Ok(None);
+                    };
+                    return Ok(Some(KCand {
+                        node: pinned.clone(),
+                        confidence: 0.85,
+                        resolved_by: "instance-method",
+                    }));
+                }
                 let call_dirs: Vec<&str> = {
                     let mut v: Vec<&str> = r.file_path.split('/').collect();
                     v.pop();
@@ -835,6 +850,49 @@ impl KernelResolver {
             );
         }
         Ok(None)
+    }
+
+    /// The file declaring the type a TS field names, read from the owner
+    /// class's file: `Some(Some(file))` when it declares the type itself or
+    /// imports it from a project file, `Some(None)` when the import comes
+    /// from outside the repository (no project method is meant), `None`
+    /// when that file says nothing about the name.
+    fn ts_field_type_file(
+        &mut self,
+        owner: &KNode,
+        declared_type: &str,
+        type_name: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<Option<String>>> {
+        let head = declared_type.split('.').next().unwrap_or("");
+        if head == type_name
+            && self.nodes_in_file(&owner.file_path)?.iter().any(|n| {
+                n.name == type_name && matches!(n.kind.as_str(), "class" | "interface")
+            })
+        {
+            return Ok(Some(Some(owner.file_path.clone())));
+        }
+        let Some(imp) = self
+            .import_mappings(&owner.file_path)?
+            .iter()
+            .find(|m| m.local_name == head)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if self.is_external_import(&imp.source, &owner.language, &owner.file_path) {
+            return Ok(Some(None));
+        }
+        let mut type_ref = r.clone().naming(declared_type, "references");
+        type_ref.from_node_id = owner.id.clone();
+        type_ref.file_path = owner.file_path.clone();
+        type_ref.language = owner.language.clone();
+        type_ref.line = owner.start_line;
+        type_ref.column = owner.start_column;
+        Ok(self
+            .resolve_via_import(&type_ref)?
+            .filter(|c| matches!(c.node.kind.as_str(), "class" | "interface"))
+            .map(|c| Some(c.node.file_path.clone())))
     }
 }
 

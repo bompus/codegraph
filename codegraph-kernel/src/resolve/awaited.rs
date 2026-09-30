@@ -364,12 +364,25 @@ fn is_reassigned(code: &str, name: &str) -> bool {
 /// balanced parameter list followed by `=>` or a body `{` (an optional return
 /// annotation between). Control-flow parentheses are not parameter lists.
 pub(super) fn has_parameter_binding(code: &str, name: &str) -> bool {
-    let arrow = code.match_indices(name).any(|(at, _)| {
-        word_boundary_at(code, at) && code[skip_ws(code, at + name.len())..].starts_with("=>")
-    });
-    if arrow {
-        return true;
-    }
+    !parameter_bindings(code, name).is_empty()
+}
+
+/// Every parameter binding `has_parameter_binding` accepts, as
+/// `(start, body)`: the byte offset of the bare parameter or the list's `(`,
+/// and of the body's `{` when the function has a block body (else `None`).
+pub(super) fn parameter_bindings(code: &str, name: &str) -> Vec<(usize, Option<usize>)> {
+    // The `{` opening a block body at `at` (after `=>` or the list), if any.
+    let block_at = |at: usize| {
+        let at = skip_ws(code, at);
+        code[at..].starts_with('{').then_some(at)
+    };
+    let mut out: Vec<(usize, Option<usize>)> = code
+        .match_indices(name)
+        .filter_map(|(at, _)| {
+            let arrow = skip_ws(code, at + name.len());
+            (word_boundary_at(code, at) && code[arrow..].starts_with("=>")).then(|| (at, block_at(arrow + 2)))
+        })
+        .collect();
     let after_list = re!(r"^\s*(?::[^=;{]*)?(?:=>|\{)");
     let bytes = code.as_bytes();
     for i in 0..bytes.len() {
@@ -393,14 +406,15 @@ pub(super) fn has_parameter_binding(code: &str, name: &str) -> bool {
             }
             j += 1;
         }
-        if depth == 0
-            && word_occurrences(&code[i + 1..j - 1], name).next().is_some()
-            && after_list.is_match(&code[j..])
-        {
-            return true;
+        if depth != 0 || word_occurrences(&code[i + 1..j - 1], name).next().is_none() {
+            continue;
         }
+        let Some(m) = after_list.find(&code[j..]) else { continue };
+        let end = j + m.end();
+        let body = if code[..end].ends_with('{') { Some(end - 1) } else { block_at(end) };
+        out.push((i, body));
     }
-    false
+    out
 }
 
 impl AwaitedIndex {

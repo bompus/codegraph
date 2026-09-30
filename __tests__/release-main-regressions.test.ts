@@ -81,6 +81,13 @@ beforeAll(async () => {
     function localShadow() { const selected = () => 1; selected(); }
     return { captured, otherCaptured, parameterShadow, arrowShadow, localShadow };
   }
+  export function LaterCapture() {
+    const selected = current((s) => s.reset);
+    function parameterShadow(selected: () => void) { selected(); }
+    const arrowShadow = (selected: () => void) => { selected(); };
+    function captured() { selected(); }
+    return { captured, parameterShadow, arrowShadow };
+  }
   export function sibling() { const selected = current(s => s.reset); }
   export function outside() { selected(); }
   export function wrongSelector(other: any) {
@@ -149,13 +156,16 @@ describe('release-to-main correctness regressions', () => {
     expect(targets(node('Screen::captured').id)).toEqual([node('reset', 'store.ts', 5).id]);
     expect(targets(node('Screen::otherCaptured').id)).toEqual([node('reset', 'store.ts', 8).id]);
   });
+  it('follows a captured selector past closed siblings that bind the same name as a parameter', () => {
+    expect(targets(node('LaterCapture::captured').id)).toEqual([node('reset', 'store.ts', 5).id]);
+  });
   it.each(['barrelReset', 'barrelSelected'])('resolves %s through both a re-export and local import alias', (name) => {
     const store = cg.getNodesByKind('constant').find(n => n.name === 'useStore' && n.filePath === 'store.ts')!;
     // The imported store itself is also referenced by the accessor/hook call.
     // Pin the whole target set so the other store's same-named reset cannot leak in.
     expect(targets(node(name, 'barrel-consumer.ts').id).sort()).toEqual([node('reset', 'store.ts', 5).id, store.id].sort());
   });
-  it.each(['Screen::parameterShadow', 'Screen::arrowShadow', 'Screen::localShadow', 'outside', 'wrongSelector', 'unknownSelector', 'rootShadow', 'rootBlockShadow'])('does not guess a selector action in %s', (name) => {
+  it.each(['Screen::parameterShadow', 'Screen::arrowShadow', 'Screen::localShadow', 'outside', 'wrongSelector', 'unknownSelector', 'rootShadow', 'rootBlockShadow', 'LaterCapture::parameterShadow', 'LaterCapture::arrowShadow'])('does not guess a selector action in %s', (name) => {
     const calls = targets(node(name, 'selectors.ts').id);
     expect(calls).not.toContain(node('reset', 'store.ts', 5).id);
     expect(calls).not.toContain(node('reset', 'store.ts', 8).id);
