@@ -1,8 +1,8 @@
 /**
  * JS-family resolution fixes: an import from an unmapped workspace package,
- * Svelte/Astro member calls (including receivers used in markup and a
- * `{...spread()}` call), a re-export cycle's default, and `T | null` fields
- * reached through a typed receiver.
+ * Svelte/Astro member calls (including receivers and imports used in markup,
+ * a `{...spread()}` call and rune-wrapped receivers), a re-export cycle's
+ * default, and `T | null` fields reached through a typed receiver.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
@@ -125,6 +125,106 @@ export function inc() { count.set(1); userCache.set(2); }
       expect(callsFrom(cg, 'src/app.ts')).toEqual([]);
       expect(callsFrom(cg, 'src/Counter.svelte')).toEqual(['src/Counter.svelte:Counter::double@0.9', 'src/Counter.svelte:Counter::getCount@0.9']);
       expect(callsFrom(cg, 'src/Logic.svelte')).toEqual(['src/Logic.svelte:SomeLogic::trigger@0.8']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('takes a script-level import as the receiver in Svelte markup and a second script', async () => {
+    const cg = await index({
+      'src/spread.js': `export function spread() { return {}; }
+`,
+      'src/fmt.js': `export class Fmt { static money(v) { return v; } }
+`,
+      'src/stores.ts': `import { writable } from 'svelte/store';
+export const count = writable(0);
+`,
+      'src/UserCache.ts': `export class UserCache { set(v: number) { return v; } }
+`,
+      // The Paraglide `{m.key()}` idiom, and a class import used in markup.
+      'src/Markup.svelte': `<script>
+  import * as m from './spread.js';
+  import { Fmt } from './fmt.js';
+</script>
+<p>{m.spread()}</p>
+<p>{Fmt.money(1)}</p>
+`,
+      // An import in `<script module>` used from the instance script.
+      'src/Module.svelte': `<script module>
+  import { Fmt } from './fmt.js';
+</script>
+
+<script>
+  function show() {
+    return Fmt.money(2);
+  }
+</script>
+`,
+      // A function-local `count` elsewhere doesn't hide the script's
+      // import from markup: `count.set` is still a call on the imported
+      // store constant, not a guess at some class's `set`.
+      'src/Shadow.svelte': `<script>
+  import { count } from './stores';
+  function other() {
+    let count = 0;
+    return count;
+  }
+</script>
+<button on:click={() => count.set(1)}>x</button>
+`,
+    });
+    try {
+      expect({
+        markup: callsFrom(cg, 'src/Markup.svelte'),
+        module: callsFrom(cg, 'src/Module.svelte'),
+        shadow: callsFrom(cg, 'src/Shadow.svelte'),
+      }).toEqual({
+        markup: ['src/fmt.js:Fmt::money@0.9', 'src/spread.js:spread@0.9'],
+        module: ['src/fmt.js:Fmt::money@0.9'],
+        shadow: [],
+      });
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('types a receiver wrapped in a Svelte rune', async () => {
+    const cg = await index({
+      'src/Runes.svelte': `<script>
+  class Model {
+    toggle() { return 1; }
+  }
+  let model = $state(new Model());
+  let raw = $state.raw(new Model());
+  const view = $derived(new Model());
+  function tick() {
+    model.toggle();
+    raw.toggle();
+    view.toggle();
+  }
+</script>
+`,
+      'src/box.svelte.ts': `export class Box {
+  open() { return 1; }
+}
+export function useBox() {
+  const box = $state(new Box());
+  box.open();
+}
+`,
+    });
+    try {
+      const targets = (file: string, name: string) => {
+        const from = cg.getNodesInFile(file).find((n) => n.name === name)!;
+        return cg
+          .getOutgoingEdges(from.id)
+          .filter((e) => e.kind === 'calls')
+          .map((e) => `${cg.getNode(e.target)!.qualifiedName}@${e.metadata?.confidence}`);
+      };
+      expect({ tick: targets('src/Runes.svelte', 'tick'), useBox: targets('src/box.svelte.ts', 'useBox') }).toEqual({
+        tick: ['Model::toggle@0.9', 'Model::toggle@0.9', 'Model::toggle@0.9'],
+        useBox: ['Box::open@0.9'],
+      });
     } finally {
       cg.close();
     }

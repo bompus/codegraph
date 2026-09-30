@@ -306,14 +306,17 @@ impl KernelResolver {
     /// declares it. The rows can't type it there, so the binding-receiver
     /// claim would refuse a call the name strategies still settle
     /// (`counter.double()` in markup on `const counter = new Counter()`).
-    /// An imported receiver stays with the claim.
+    /// A script-level import stays with the claim, which reads it through
+    /// `sfc_top_level_binding`, even when a function elsewhere declares a
+    /// local of the same name.
     pub(super) fn is_component_receiver_out_of_scope(&mut self, r: &ResolveRefIn) -> Res<bool> {
-        if !matches!(r.language.as_str(), "svelte" | "astro") {
+        if !is_sfc_scoped_script(&r.language) {
             return Ok(false);
         }
         let root = r.reference_name.split('.').next().unwrap_or("");
         let rows = self.bindings(&r.file_path)?;
         Ok(innermost_binding(&rows, root, Some(r.line)).is_none()
+            && !sfc_top_level_binding(&rows, root).is_some_and(|b| b.kind == "import")
             && rows.iter().any(|b| b.name == root && b.kind != "import"))
     }
 
@@ -448,8 +451,10 @@ impl KernelResolver {
         let lines = self.read_file(&r.file_path)?;
         let first = (r.line - 1) as usize;
         let line = lines.get(first)?;
-        // A column inside `...` (a markup `{...spread()}` ref sits on its last
-        // dot) starts the text at the spread, which names no receiver.
+        // Svelte markup columns run one byte short (the extractor counts from
+        // the `{`, not the expression), so `{...spread()}` lands on the
+        // spread's last dot: back over the dots so the spread, which names
+        // no receiver, starts the text.
         let at = js_slice(line, r.column as usize);
         let at = &line[line[..line.len() - at.len()].trim_end_matches('.').len()..];
         // A chain wrapped onto the next lines (`this.a.b\n  .filter(x)`):
@@ -571,6 +576,31 @@ pub(super) fn innermost_binding<'a>(
         }
     }
     best
+}
+
+/// Svelte and Astro: languages whose binding rows cover only the script
+/// blocks, while the markup (and, in Svelte, a second `<script>`) sees each
+/// script's top-level names.
+pub(super) fn is_sfc_scoped_script(language: &str) -> bool {
+    matches!(language, "svelte" | "astro")
+}
+
+/// A component script's top-level row for `name`: one whose scope no other
+/// row's scope strictly contains. An import wins over a declaration.
+pub(super) fn sfc_top_level_binding<'a>(rows: &'a [KBinding], name: &str) -> Option<&'a KBinding> {
+    let top_level = |r: &KBinding| {
+        !rows.iter().any(|o| {
+            o.scope_start <= r.scope_start
+                && r.scope_end <= o.scope_end
+                && (o.scope_start, o.scope_end) != (r.scope_start, r.scope_end)
+        })
+    };
+    let mut found = rows.iter().filter(|r| r.name == name && top_level(r));
+    let first = found.next()?;
+    if first.kind == "import" {
+        return Some(first);
+    }
+    found.find(|r| r.kind == "import").or(Some(first))
 }
 
 /// Does the file's outermost binding scope (a component's script) declare `name`?
