@@ -341,7 +341,11 @@ export function parseAngularRoutes(content: string): { routes: AngularRoute[]; m
         const childClose = childOpen < 0 ? -1 : matchBracket(safe, childOpen);
         if (childOpen >= 0 && childClose > childOpen) {
           for (const child of topLevelObjects(safe, childOpen + 1, childClose)) {
-            const childPath = readFields(safe, child.start, child.end).get('path');
+            const childFields = readFields(safe, child.start, child.end);
+            // A named-outlet child renders beside the primary outlet, so it
+            // leaves the parent's own address unclaimed.
+            if (childFields.has('outlet')) continue;
+            const childPath = childFields.get('path');
             if (!childPath || pathSegments(childPath.text)?.length === 0) childClaimsAddress = true;
           }
           walk(childOpen, childClose, segs, depth + 1, component ? [...layouts, component] : layouts);

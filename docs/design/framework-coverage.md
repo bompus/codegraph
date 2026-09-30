@@ -30,9 +30,9 @@ to write. That is why "add a router" is a small, self-contained job.
 
 ## Routers — routes AND navigation (done)
 
-Seven. Each reads a literal destination and leaves a computed one, a path no
-route serves, and a conditional whose arms disagree unresolved rather than
-guessed.
+Eight, counting the fork's Astro resolver. Each reads a literal destination
+and leaves a computed one, a path no route serves, and a conditional whose
+arms disagree unresolved rather than guessed.
 
 | Router | Resolver | Markup synthesizer | Tests | Validated on |
 |---|---|---|---|---|
@@ -87,7 +87,7 @@ React Router framework mode reads default exported literal arrays in `app/routes
 
 TanStack Start reads imported `createFileRoute` calls assigned to exported `const Route`: literal `server.handlers` tables, including `ANY`, and the destructured `createHandlers` callback form. Named handlers and direct inline calls bind through the existing HTTP reader. Page/API combinations retain both nodes; server-only routes do not become pages. [Pinned official handler syntax](https://github.com/TanStack/router/blob/a58e01c604e2d189ef8c8c1ad6ac8747e03aa88c/docs/start/framework/react/guide/server-routes.md#L172), [executable middleware fixture](https://github.com/TanStack/router/blob/a58e01c604e2d189ef8c8c1ad6ac8747e03aa88c/e2e/react-start/server-routes/src/routes/api/middleware-context.ts). Computed/spread tables, member handlers, custom factories and server `update` chains remain unresolved. `createServerFn` has no declared public route and gets no fabricated endpoint.
 
-Shared machinery all seven use, in `frameworks/expo-router.ts`: `RouteTable` /
+Shared machinery all eight use, in `frameworks/expo-router.ts`: `RouteTable` /
 `RootedRouteTable`, `routesForFile`, `addRouteTo`, `matchRoute`, `appRootFor`,
 `parseHrefExpression`, `readHrefViaLocal`, `nthArgumentText`, `readStringAt`,
 `toHref`. Plus `pageForHref` in `frameworks/nextjs.ts` (framework-agnostic

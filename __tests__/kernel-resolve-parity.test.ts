@@ -650,7 +650,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
       'foo::bar', 'foo:bar', 'history.push', 'router.navigate', 'Route.navigate',
       'module.vpc:output.id', 'module.x:file', 'App\\Ctrl', 'a.b', 'x#y',
       'cics-transid:AB12', 'name:prefix', 'x.urls', 'NextResponse.redirect',
-      'this.foo', 'foo.push',
+      'this.foo', 'foo.push', 'this.router.navigate', '_router.navigateByUrl',
+      'this._router.parseUrl', 'Router.createUrlTree', 'import:./a/b#Comp', 'import:./a#$x',
+      'import:#X', 'import:./a#', 'layout:./shell', 'layout:',
       // edge shapes — near-misses and the empty string
       '', 'push2', 'navigates', 'goto2', 'hook_', 'Controller@', '@bar',
     ];

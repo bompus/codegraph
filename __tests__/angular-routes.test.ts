@@ -143,11 +143,14 @@ describe('registered Angular routes', () => {
     setup();
     write(
       'src/app.ts',
-      `import {provideRouter} from '@angular/router'; import {Home} from './home'; import {User} from './user'; provideRouter([{path:'empty',component:Home,children:[]},{path:'parent',component:Home,children:[{path:'child',component:User}]},{path:'index',component:Home,children:[{path:'',component:User}]}]);`,
+      `import {provideRouter} from '@angular/router'; import {Home} from './home'; import {User} from './user'; provideRouter([{path:'empty',component:Home,children:[]},{path:'parent',component:Home,children:[{path:'child',component:User}]},{path:'index',component:Home,children:[{path:'',component:User}]},{path:'admin',component:Home,children:[{path:'',component:User,outlet:'side'},{path:'users',component:User}]}]);`,
     );
     cg = await CodeGraph.init(dir, { index: true });
     const routes = cg.getNodesByKind('route');
+    // A named-outlet child leaves the parent's own address to the parent.
     expect(routes.map((n) => n.name).sort()).toEqual([
+      '/admin',
+      '/admin/users',
       '/empty',
       '/index',
       '/parent',
