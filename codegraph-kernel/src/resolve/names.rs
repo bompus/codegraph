@@ -292,6 +292,17 @@ impl KernelResolver {
         if private_is_file_local(lang) {
             return Ok(candidate.visibility.as_deref() != Some("private"));
         }
+        // An R test file runs in an environment of its own (testthat): its
+        // top-level `c <- ggplot(…)` is not what the package's `c(…)` calls
+        // mean. `helper-*.R` / `setup-*.R` are sourced for every test, so
+        // theirs are shared.
+        if lang == "r"
+            && matches!(candidate.kind.as_str(), "variable" | "constant")
+            && re!(r"(?:^|/)tests?/").is_match(&candidate.file_path)
+            && !re!(r"(?:^|/)(?:helper|setup)[^/]*\.[rR]$").is_match(&candidate.file_path)
+        {
+            return Ok(false);
+        }
         // A Lua `local` belongs to its chunk: a spec helper's `local it = it`
         // is not busted's `it(…)` in every other spec file.
         if (lang == "lua" || lang == "luau") && self.is_lua_local(candidate) {
@@ -588,6 +599,7 @@ impl KernelResolver {
             candidates.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         candidates = self.retain_python_java_scope(candidates, r)?;
+        candidates = self.retain_lang_scope(candidates, r)?;
         candidates = self.retain_php_self_scope(candidates, r)?;
         // A Vue component's own method is `this.m()` inside that component —
         // not `this.$refs['input'].click()` on an element another component renders.
@@ -671,6 +683,9 @@ impl KernelResolver {
         {
             candidates.retain(|n| n.file_path == r.file_path);
         }
+
+        // A bare Dart call means the nearest member of the hierarchy around it.
+        let candidates = self.nearest_dart_members(candidates, r)?;
 
         // C/C++ call-site form.
         let Some(cpp_form) = self.apply_cpp_call_site_form(r, candidates)? else {
@@ -787,6 +802,7 @@ impl KernelResolver {
             callable.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         let callable = self.retain_python_java_scope(callable, r)?;
+        let callable = self.retain_lang_scope(callable, r)?;
         let mut callable = self.retain_php_self_scope(callable, r)?;
         // A Vue component's own method is `this.m()` inside that component, as
         // in the exact-name arm: a `this.showToast()` from a plugin or mixin

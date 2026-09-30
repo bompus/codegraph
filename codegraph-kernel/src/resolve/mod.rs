@@ -477,6 +477,7 @@ mod imports;
 mod names;
 mod name_scope;
 mod php_scope;
+mod lang_scope;
 mod receivers;
 mod bound;
 mod fields;
@@ -543,6 +544,16 @@ pub struct KernelResolver {
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// phpSupertypeQns, by declaration id.
     php_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// dartSupertypesOf, by type name.
+    dart_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// dartHierarchyAt, by call site (file, line).
+    dart_hierarchy_memo: HashMap<(String, i64), Rc<HashMap<String, u32>>>,
+    /// kotlinFileScope, by file.
+    kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
+    /// rubyAncestry, by class qualified name.
+    ruby_ancestry_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// cfmlChain, by component file.
+    cfml_chain_memo: HashMap<String, Rc<HashSet<String>>>,
     /// manifest_own_packages, by directory.
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
@@ -675,6 +686,11 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
+            dart_supers_memo: HashMap::new(),
+            dart_hierarchy_memo: HashMap::new(),
+            kotlin_scope_memo: HashMap::new(),
+            ruby_ancestry_memo: HashMap::new(),
+            cfml_chain_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             swift_extension_memo: HashMap::new(),

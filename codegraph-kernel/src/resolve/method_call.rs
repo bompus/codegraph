@@ -726,7 +726,14 @@ impl KernelResolver {
                 narrowed |= target.len() != before;
             }
             let target = &target;
-            if target.len() == 1 && !narrowed && target[0].language == r.language {
+            // Nothing types a Ruby or CFML receiver: there the one method must
+            // also belong to something the receiver is named after
+            // (`web_push_request.legacy_encrypt` → WebPushRequest), or
+            // rubocop's `node.loc` lands on the project's one `loc`.
+            let untyped_unnamed = matches!(r.language.as_str(), "ruby" | "cfml" | "cfscript")
+                && !re!(r"(?i)^(?:self|self\.class|this|super)$").is_match(&object_or_class)
+                && target.first().is_none_or(|m| !shares_receiver_word(&object_or_class, m));
+            if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed {
                 return Ok(Some(KCand {
                     node: target[0].clone(),
                     confidence: 0.7,
@@ -1126,4 +1133,24 @@ mod tests {
         assert_eq!(own("function f({ a }: { a: T }): R {\n  const g = function () {\n    return 1;\n  };\n  return i;\n}"), vec![4]);
         assert_eq!(own("function f() {\n  const re = /\\}/;\n  return i;\n}"), vec![2]);
     }
+}
+
+/// sharesReceiverWord (name-matcher.ts): whether a receiver is named after
+/// the owner of `method`, case aside — the receiver's last segment is the
+/// owner's name (`cbsecurity` → CBSecurity), or they share a word
+/// (`web_push_request` → WebPushRequest, `executor1` → Executor).
+fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
+    let Some(cut) = method.qualified_name.rfind("::") else { return false };
+    let owner_qn = &method.qualified_name[..cut];
+    let flat = |w: &str| -> String {
+        let alnum: String = w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        alnum.trim_end_matches(|c: char| c.is_ascii_digit()).to_ascii_lowercase()
+    };
+    let receiver_last = receiver.rsplit('.').next().unwrap_or("");
+    let owner_last = re!(r"::|\.").split(owner_qn).last().unwrap_or("");
+    if flat(receiver_last) == flat(owner_last) {
+        return true;
+    }
+    let owner: HashSet<String> = split_camel_case(owner_qn).iter().map(|w| flat(w)).collect();
+    split_camel_case(receiver).iter().any(|w| owner.contains(&flat(w)))
 }

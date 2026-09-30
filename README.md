@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`7ac8eef`](https://github.com/colbymchenry/codegraph/commit/7ac8eefb), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`bd97414`](https://github.com/colbymchenry/codegraph/commit/bd974143), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
