@@ -33,7 +33,8 @@ import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
 import { withNoMatchFastPath } from './ignore-prefilter';
-import { detectFrameworks, detectFrameworksWithSkips } from '../resolution/frameworks';
+import { detectFrameworks, detectFrameworksWithSkips, getFrameworkResolver } from '../resolution/frameworks';
+import { declaredDependencies } from '../resolution/frameworks/package-deps';
 import { extractSolidStartRoutes, isSolidStartRoute } from '../resolution/frameworks/solid-start';
 import { extractVikeRoutes, isVikePage } from '../resolution/frameworks/vike';
 import { extractQwikCityRoutes, isQwikCityRoute } from '../resolution/frameworks/qwik-city';
@@ -1924,7 +1925,86 @@ export class ExtractionOrchestrator {
     ).map((r) => r.name);
     // Route extractors resolve imports across the whole project, not just this run's files.
     this.frameworkSourceContext = this.buildDetectionContext([...new Set([...this.queries.getAllFilePaths(), ...fileList])]);
+    this.gateFrameworksByApp();
     return this.detectedFrameworkNames;
+  }
+
+  /**
+   * Which detected frameworks extract only inside their own apps: those with
+   * `appDependencies` that some manifest names. Every manifest the project
+   * has is read, not only this run's files, so a scoped sync that re-detects
+   * from one changed file gates exactly as the full index did.
+   */
+  private gateFrameworksByApp(): void {
+    const declared = declaredDependencies(this.frameworkSourceContext!);
+    this.gatedFrameworks = new Map();
+    for (const name of this.detectedFrameworkNames ?? []) {
+      const deps = getFrameworkResolver(name)?.appDependencies;
+      // Gated only when some manifest names the framework: otherwise detection
+      // found it by other evidence and every file is its app's.
+      if (deps && deps.some((d) => declared.has(d))) this.gatedFrameworks.set(name, deps);
+    }
+    this.appFrameworkMemo.clear();
+    this.manifestDependencies.clear();
+  }
+
+  /** Detected frameworks whose extractors run only inside their own apps, with the packages that mark one. */
+  private gatedFrameworks = new Map<string, readonly string[]>();
+  /** `<dir>|<framework>` → does the package.json at or above `dir` declare the framework. */
+  private appFrameworkMemo = new Map<string, boolean>();
+  /** Directory → the dependency names its package.json declares, null without one. */
+  private manifestDependencies = new Map<string, Set<string> | null>();
+
+  /**
+   * The detected frameworks whose extractors apply to `filePath`: all of them,
+   * except one with `appDependencies` when neither the file's package.json nor
+   * an enclosing one declares any of them.
+   */
+  private frameworksForFile(filePath: string, names: string[]): string[] {
+    if (this.gatedFrameworks.size === 0) return names;
+    const slash = filePath.lastIndexOf('/');
+    const dir = slash < 0 ? '' : filePath.slice(0, slash);
+    const kept = names.filter((name) => this.frameworkAppliesIn(dir, name));
+    return kept.length === names.length ? names : kept;
+  }
+
+  private frameworkAppliesIn(dir: string, name: string): boolean {
+    const deps = this.gatedFrameworks.get(name);
+    if (!deps) return true;
+    const key = `${dir}|${name}`;
+    const memo = this.appFrameworkMemo.get(key);
+    if (memo !== undefined) return memo;
+    // The nearest manifest that names ANY gated framework decides: true-sheet's
+    // root package.json declares expo-router for its example app, and its
+    // `docs/` Next.js app — whose own package.json declares `next` — is not
+    // an Expo app for it.
+    let applies = false;
+    for (let d: string | null = dir; d !== null; d = d === '' ? null : d.includes('/') ? d.slice(0, d.lastIndexOf('/')) : '') {
+      const declared = this.dependenciesDeclaredIn(d);
+      if (!declared) continue;
+      if (deps.some((dep) => declared.has(dep))) {
+        applies = true;
+        break;
+      }
+      if ([...this.gatedFrameworks].some(([other, otherDeps]) => other !== name && otherDeps.some((dep) => declared.has(dep)))) break;
+    }
+    this.appFrameworkMemo.set(key, applies);
+    return applies;
+  }
+
+  private dependenciesDeclaredIn(dir: string): Set<string> | null {
+    if (this.manifestDependencies.has(dir)) return this.manifestDependencies.get(dir)!;
+    let declared: Set<string> | null = null;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(this.rootDir, dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+      declared = new Set();
+      for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
+        const group = pkg[field];
+        if (group && typeof group === 'object') for (const name of Object.keys(group)) declared.add(name);
+      }
+    } catch { /* no or unreadable manifest */ }
+    this.manifestDependencies.set(dir, declared);
+    return declared;
   }
 
   /**
@@ -2120,8 +2200,9 @@ export class ExtractionOrchestrator {
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
       const language = detectLanguage(filePath, content, overrides);
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames));
-      return pool.requestParse({ filePath, content, language, frameworkNames });
+      const names = this.frameworksForFile(filePath, frameworkNames);
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, names));
+      return pool.requestParse({ filePath, content, language, frameworkNames: names });
     };
 
     // --- Bounded rolling-window dispatch, ordered commit ---
@@ -2744,7 +2825,7 @@ export class ExtractionOrchestrator {
     // Extract from source. Use cached framework names if indexAll has run,
     // otherwise detect on the spot so single-file re-index paths still emit
     // route nodes / middleware / etc.
-    const frameworkNames = this.ensureDetectedFrameworks();
+    const frameworkNames = this.frameworksForFile(relativePath, this.ensureDetectedFrameworks());
     const result = extractFromSource(relativePath, content, language, frameworkNames);
 
     // Store in database
@@ -3372,6 +3453,7 @@ export class ExtractionOrchestrator {
         this.detectedFrameworkNames = [...new Set([
           ...previous.filter((name) => name !== 'react-router-files'), ...detected,
         ])];
+        this.gateFrameworksByApp();
       }
       if (hadFileRoutes !== detected.includes('react-router-files')) {
         const scope = this.scopedSyncMatcher();

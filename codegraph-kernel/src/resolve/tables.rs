@@ -135,7 +135,7 @@ pub(super) fn angular_lazy_re() -> Rc<Regex> {
     re!(r"^import:[^#]+#[A-Za-z0-9_$]+$")
 }
 pub(super) fn vue_nav_re() -> Rc<Regex> {
-    re!(r"^\$?router\.(?:push|replace)$|^navigateTo$")
+    re!(r"^(?:this\.)?\$?router\.(?:push|replace)$|^navigateTo$")
 }
 /// matchByFilePath's shape gate — `\.ext` (1–4 chars) or `.markdown` tail.
 pub(super) fn file_path_ext_re() -> Rc<Regex> {
@@ -390,10 +390,12 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "vike" => name.starts_with("vike-page:"),
         "qwik-city" => name.starts_with("qwik-target:") || name.starts_with("qwik-default:"),
         "waku" => name.starts_with("waku-target:") || name.starts_with("waku-component:"),
-        "vue-router" => vue_nav_re().is_match(name),
+        "vue-router" => {
+            vue_nav_re().is_match(name) || name.starts_with("import:") || name.starts_with("layout:")
+        }
         "vue" => name.starts_with("nuxt-page:"),
-        "aspnet" | "express" | "expo-modules" | "fabric-view" | "fastapi" | "flask"
-        | "go" | "goframe" | "http-routing" | "nestjs" | "react" | "react-router-files" | "redwood"
+        "aspnet" | "express" | "expo-modules" | "expo-modules-js" | "fabric-view" | "fastapi" | "flask"
+        | "go" | "goframe" | "http-routing" | "nestjs" | "nuxt" | "react" | "react-router-files" | "redwood"
         | "rust" | "svelte"
         | "swiftui" | "uikit" => false,
         "vapor" => vapor_handler_re().is_match(name),

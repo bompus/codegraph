@@ -715,7 +715,9 @@ impl KernelResolver {
             callable.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         // Python names are case-sensitive too: the builtin `dir(…)` is not a class `Dir`.
-        if r.language == "python" {
+        // So are JavaScript's and TypeScript's: an imported `type RsbuildConfig`
+        // is not a local `rsbuildConfig`, nor vitest's `Mock` a `mock`.
+        if r.language == "python" || is_js_family(&r.language) {
             callable.retain(|n| n.name == r.reference_name);
         }
         let callable = self.retain_python_java_scope(callable, r)?;

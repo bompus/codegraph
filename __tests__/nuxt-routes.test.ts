@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
 import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
-import { vueResolver } from '../src/resolution/frameworks/vue';
+import { nuxtResolver } from '../src/resolution/frameworks/vue';
 import { vueRouteTable } from '../src/resolution/frameworks/vue-router';
 
 beforeAll(async () => {
@@ -36,7 +36,7 @@ describe('Nuxt default file routes', () => {
     ['server/api/[...].ts', 'ANY /api/*'],
   ])('%s becomes %s', (file, route) => {
     expect(
-      vueResolver.extract!(file, 'export default defineEventHandler(() => "ok")').nodes.map(
+      nuxtResolver.extract!(file, 'export default defineEventHandler(() => "ok")').nodes.map(
         (n) => n.name,
       ),
     ).toEqual([route]);
@@ -48,7 +48,7 @@ describe('Nuxt default file routes', () => {
     'server/utils/health.ts',
     'components/Index.vue',
   ])('does not turn %s into an endpoint', (file) => {
-    expect(vueResolver.extract!(file, '').nodes).toEqual([]);
+    expect(nuxtResolver.extract!(file, '').nodes).toEqual([]);
   });
 
   it('binds a default export and a wrapped handler without treating wrapper options as handlers', () => {
@@ -58,7 +58,7 @@ describe('Nuxt default file routes', () => {
       'export default eventHandler(handler)',
       'export default defineEventHandler({ onRequest: middleware, handler })',
     ]) {
-      const result = vueResolver.extract!('server/api/x.get.ts', source);
+      const result = nuxtResolver.extract!('server/api/x.get.ts', source);
       expect(result.references).toEqual([
         expect.objectContaining({
           fromNodeId: result.nodes[0].id,
@@ -71,14 +71,14 @@ describe('Nuxt default file routes', () => {
       'export default defineEventHandler(() => load())',
       'export default defineEventHandler({ onRequest: middleware, handler() { return load(); } })',
     ]) {
-      expect(vueResolver.extract!('server/api/x.ts', source).references).toEqual([
+      expect(nuxtResolver.extract!('server/api/x.ts', source).references).toEqual([
         expect.objectContaining({ referenceName: 'load', referenceKind: 'calls' }),
       ]);
     }
   });
 
   it('includes root-level pages in the Vue navigation route table', () => {
-    const nodes = vueResolver.extract!('pages/index.vue', '<template>Home</template>').nodes;
+    const nodes = nuxtResolver.extract!('pages/index.vue', '<template>Home</template>').nodes;
     const table = vueRouteTable({ getNodesByKind: () => nodes } as any);
     expect(table.byRoot.get('')?.exact.get('/')).toBe(nodes[0]);
   });

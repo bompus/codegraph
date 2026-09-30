@@ -38,11 +38,11 @@ arms disagree unresolved rather than guessed.
 |---|---|---|---|---|
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts` | — |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
-| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop; pinned official framework config and flat filenames |
+| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react's `paths.x.path` constants and `lazy` routes are not read yet |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
-| Vue Router / Nuxt | `frameworks/vue-router.ts` | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges) |
-| SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts` | sveltekit-realworld (31 edges) |
-| Angular | `frameworks/angular-router.ts` | `angular-template-synthesizer.ts` | `angular-router.test.ts`, `angular-routes.test.ts` | angular-realworld (31 edges, 18 renders), Ghostfolio (189 edges, 170 renders), ngx-admin (routes and renders; its menus are config) |
+| Vue Router / Nuxt | `frameworks/vue-router.ts` (Nuxt file routes: `nuxtResolver` in `frameworks/vue.ts`) | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges); vue-element-admin (62 routes), vue-admin-template (14), vben (192), halo console (34) — named tables, module files, `children` + layouts; Nuxt: mealie, elk, nuxt/movies |
+| SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts`, `sveltekit-route-names.test.ts` | sveltekit-realworld (31 edges); shadcn-svelte and skeleton (`(group)` layouts: 13 and 23 edges), svelte.dev (74), kit's test apps (47) |
+| Angular | `frameworks/angular-router.ts` | `angular-template-synthesizer.ts` | `angular-router.test.ts`, `angular-routes.test.ts` | angular-realworld (31 edges, 18 renders), Ghostfolio (189 edges, 170 renders), ngx-admin (routes and renders; its menus are config), angular-spotify (Nx libs behind barrels: 14 routes), jira-clone (class-constant paths, mount-only redirects), jhipster (60), ionic-conference (18), Angular-JumpStart (18) |
 | Astro | `frameworks/astro.ts` | — | `astro-routes.test.ts` | pinned endpoint fixture; exact page components and source navigation |
 | RedwoodSDK | `frameworks/redwood.ts` | — | `redwood-routes.test.ts` | pinned 1.7.3 typed-routes worker; exact page and API roots |
 | Analog | `frameworks/analog.ts` | — | `analog-routes.test.ts` | pinned 2.7.1 sign-up page; filename/layout and registration sync controls |
@@ -306,6 +306,10 @@ Each of these cost real debugging time; they are not hypothetical.
    `name` is written above its `path`, so a text window handed every entry its
    predecessor's name — silently, for every route in the file. Use
    `frameworks/object-literal.ts`.
+   A lazy view binds by the FILE it imports, never by the import's last
+   segment: vue-element-admin's views are all `…/index.vue`.
+   Nuxt's `pages/` convention belongs to a Nuxt app only — a plain Vue app's
+   `pages/` folder (halo's console) holds components a router config names.
 5. **A receiver is required for a generic verb.** `push` and `replace` are two
    of the most common method names in JavaScript; claiming a bare one puts every
    `paths.push('/tmp/x')` one string-match away from a route.

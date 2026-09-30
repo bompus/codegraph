@@ -699,12 +699,20 @@ impl KernelResolver {
                 .filter(|m| m.language == r.language)
                 .cloned()
                 .collect();
-            let target = if !same_lang.is_empty() {
-                &same_lang
-            } else {
-                &methods
-            };
-            if target.len() == 1 && target[0].language == r.language {
+            let mut target = if !same_lang.is_empty() { same_lang } else { methods };
+            // A receiver the file imports (`import CameraManager from
+            // './ExpoCameraManager'`) is another module's value, never a
+            // method declared in the calling file. Ruling the caller's file
+            // out may reject a guess; it never makes the one method left a
+            // likelier one, so a narrowed set takes no unique-name shortcut.
+            let mut narrowed = false;
+            if is_js_family(&r.language) && self.is_import_bound_receiver(&object_or_class, r)? {
+                let before = target.len();
+                target.retain(|m| m.file_path != r.file_path);
+                narrowed = target.len() != before;
+            }
+            let target = &target;
+            if target.len() == 1 && !narrowed && target[0].language == r.language {
                 return Ok(Some(KCand {
                     node: target[0].clone(),
                     confidence: 0.7,
@@ -748,6 +756,14 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+
+    /// isImportBinding (name-matcher.ts): is the root of a member call's
+    /// receiver (`CameraManager` in `CameraManager.x`) one of the file's
+    /// imports? Used only to rule candidates out, never to pick one.
+    fn is_import_bound_receiver(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
+        let root = receiver.split('.').next().unwrap_or("");
+        Ok(!root.is_empty() && self.import_mappings(&r.file_path)?.iter().any(|i| i.local_name == root))
     }
 
     /// Java/Kotlin field receiver inference — non-exclusive: `Some` settles

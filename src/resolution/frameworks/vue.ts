@@ -1,8 +1,8 @@
 /**
  * Vue / Nuxt Framework Resolver
  *
- * Handles Vue component references, compiler macros (defineProps, etc.),
- * Nuxt auto-imports, and Nuxt file-based routing patterns.
+ * Handles Vue component references, compiler macros (defineProps, etc.) and
+ * Nuxt auto-imports; `nuxtResolver` reads Nuxt's file-based routes.
  */
 
 import { Node } from '../../types';
@@ -10,6 +10,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { httpHandlerReferences } from './http-routing';
+import { dependsOn } from './package-deps';
 
 /**
  * Vue 3 compiler macros — compiler-provided, not user code
@@ -194,6 +195,26 @@ export const vueResolver: FrameworkResolver = {
       }
     }
 
+    return null;
+  },
+};
+
+/**
+ * Nuxt's file-based routes: `pages/` screens, `server/api/` endpoints and
+ * `middleware/`. Its own resolver, detected only in a Nuxt app: a plain Vue
+ * app keeps its views in a `pages/` folder just as often (halo's console
+ * does), and those are components a router config names, not addresses.
+ */
+export const nuxtResolver: FrameworkResolver = {
+  name: 'nuxt',
+  appDependencies: ['nuxt', 'nuxt3', '@nuxt/kit'],
+
+  detect(context: ResolutionContext): boolean {
+    if (dependsOn(context, 'nuxt', 'nuxt3', '@nuxt/kit')) return true;
+    return context.getAllFiles().some((f) => /(?:^|\/)nuxt\.config\.(?:[cm]?[jt]s)$/.test(f));
+  },
+
+  resolve(): ResolvedRef | null {
     return null;
   },
 
