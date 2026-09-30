@@ -526,26 +526,27 @@ impl KernelResolver {
     /// top-level `class App` is `::Sub`, never `Other::Sub`); None when no
     /// indexed class or module has that qualified name.
     pub(super) fn ruby_lexical_constant(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<String>> {
-        let here = self
-            .nodes_in_file(&r.file_path)?
-            .iter()
-            .filter(|n| matches!(n.kind.as_str(), "class" | "module") && n.start_line <= r.line && n.end_line >= r.line)
-            .min_by_key(|n| n.end_line - n.start_line)
-            .cloned();
         if let Some(root) = name.strip_prefix("::") {
             return self.ruby_known_constant(root);
         }
-        // Lexical nesting first, innermost outward, the top level last.
-        let mut prefix = here.as_ref().map(|n| n.qualified_name.clone()).unwrap_or_default();
-        while !prefix.is_empty() {
-            if let Some(qn) = self.ruby_known_constant(&format!("{prefix}::{name}"))? {
+        // Module.nesting: the classes and modules whose bodies enclose the
+        // site, innermost first. `class Other::App` opens `Other::App` alone,
+        // so `Other` is not searched.
+        let mut nesting: Vec<Arc<KNode>> = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| matches!(n.kind.as_str(), "class" | "module") && n.start_line <= r.line && n.end_line >= r.line)
+            .cloned()
+            .collect();
+        nesting.sort_by_key(|n| n.end_line - n.start_line);
+        for scope in &nesting {
+            if let Some(qn) = self.ruby_known_constant(&format!("{}::{name}", scope.qualified_name))? {
                 return Ok(Some(qn));
             }
-            prefix = prefix.rfind("::").map_or(String::new(), |i| prefix[..i].to_string());
         }
         // Then the ancestors of the class around the site (`Base::Sub` for
         // `Sub` inside `class Child < Base`); more than one is ambiguous.
-        if let Some(class) = here.filter(|n| n.kind == "class") {
+        if let Some(class) = nesting.first().filter(|n| n.kind == "class") {
             let ancestry = self.ruby_ancestry(&class.qualified_name)?;
             let mut inherited: Vec<String> = Vec::new();
             for a in ancestry.iter().filter(|a| **a != class.qualified_name) {

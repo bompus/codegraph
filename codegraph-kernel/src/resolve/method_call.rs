@@ -552,6 +552,16 @@ impl KernelResolver {
                     return Ok(Some(hit));
                 }
             }
+            // Ruby: the receiver's class as written (`x = Other::Sub.new`),
+            // found by constant lookup from the site, settles the call on it
+            // or its ancestry; the normalized `Sub` could be any `Sub`.
+            if inferred.is_some() && r.language == "ruby" {
+                if let Some(raw) = self.infer_local_receiver_type(&object_or_class, r, true)? {
+                    if let Some(qn) = self.ruby_lexical_constant(&raw, r)? {
+                        return self.resolve_method_on_qualified_type(&qn, &method_name, r, 0.9, "instance-method");
+                    }
+                }
+            }
             if let Some(t) = inferred {
                 // Java/Kotlin: the file's import pins WHICH same-named class.
                 let fqn = if r.language == "java" || r.language == "kotlin" {

@@ -351,6 +351,28 @@ end
     });
     expect(qualified).toContain('App::run -instantiates-> Other::Sub@decoy.rb');
     expect(qualified).not.toContain('App::run -instantiates-> Sub@sub.rb');
+    // The receiver typed from it keeps the qualifier too.
+    expect(qualified).toContain('App::run -calls-> Other::DecoyBase::base_method@decoy.rb');
+
+    // Even when the top-level Sub has a method of that name.
+    const namesake = await edges({
+      'sub.rb': `class Sub
+  def base_method
+    2
+  end
+end
+`,
+      'decoy.rb': RB_DECOY('Sub'),
+      'app.rb': `class App
+  def run
+    base = Other::Sub.new
+    base.base_method
+  end
+end
+`,
+    });
+    expect(namesake).toContain('App::run -calls-> Other::DecoyBase::base_method@decoy.rb');
+    expect(namesake).not.toContain('App::run -calls-> Sub::base_method@sub.rb');
 
     const inherited = await edges({
       'sub.rb': `class Sub
@@ -370,6 +392,73 @@ end
     });
     expect(inherited).toContain('Child::run -instantiates-> Base::Sub@base.rb');
     expect(inherited).not.toContain('Child::run -instantiates-> Sub@sub.rb');
+  });
+
+  it("Ruby: compact nesting (class Other::App) doesn't search Other", async () => {
+    const got = await edges({
+      'sub.rb': `class Sub
+end
+`,
+      'other.rb': `module Other
+  class Sub
+  end
+end
+`,
+      'app.rb': `class Other::App
+  def run
+    Sub.new
+  end
+end
+`,
+    });
+    expect(got).toContain('Other::App::run -instantiates-> Sub@sub.rb');
+    expect(got).not.toContain('Other::App::run -instantiates-> Other::Sub@other.rb');
+  });
+
+  it("Python: a subclass's reassignment conflicts with the base's field type", async () => {
+    const got = await edges({
+      'main.py': PY_ATTR.replace(
+        '    def again(self):',
+        '    def swap(self):\n        self.cache = Other()\n\n    def again(self):',
+      ),
+    });
+    expect(got).not.toContain('Child::again -calls-> Other::fetch@main.py');
+    expect(got).toContain('App::run -calls-> Store::fetch@main.py');
+  });
+
+  it("Python: a subclass may narrow its base's declared field type", async () => {
+    const got = await edges({
+      'main.py': `class Store:
+    def fetch(self):
+        return 1
+
+
+class FastStore(Store):
+    def fetch(self):
+        return 2
+
+
+class App:
+    cache: Store
+
+
+class Child(App):
+    def __init__(self):
+        self.cache: FastStore = FastStore()
+
+    def run(self):
+        return self.cache.fetch()
+`,
+    });
+    expect(got).toContain('Child::run -calls-> FastStore::fetch@main.py');
+    expect(got).not.toContain('Child::run -calls-> Store::fetch@main.py');
+  });
+
+  it('Python: a conditional constructor names no one class', async () => {
+    const got = await edges({
+      'main.py': PY_ATTR.replace('self.cache = Store()', 'self.cache = Store() if flag else Other()'),
+    });
+    expect(got.filter((e) => e.startsWith('App::run -calls->'))).toEqual([]);
   });
 
   it("C#: an extension method for another project class doesn't match", async () => {

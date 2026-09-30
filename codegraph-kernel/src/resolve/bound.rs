@@ -465,7 +465,13 @@ impl KernelResolver {
                 }
             }
             for target in targets {
-                let name = if r.language == "php" { &target.qualified_name } else { &target.name };
+                // PHP, and Ruby from a qualified start, name supertypes
+                // by qualified name.
+                let name = if r.language == "php" || (qualified && r.language == "ruby") {
+                    &target.qualified_name
+                } else {
+                    &target.name
+                };
                 if !name.is_empty() && name != type_name && !names.contains(name) {
                     names.push(name.clone());
                 }
@@ -787,8 +793,8 @@ impl KernelResolver {
         self.resolve_method_on_type_at(type_name, method, r, confidence, resolved_by, preferred_fqn, 0, false)
     }
 
-    /// resolve_method_on_type for a PHP type named by its fully qualified
-    /// name (`Lib::Store`, or `Sub` in the global namespace): only that
+    /// resolve_method_on_type for a PHP or Ruby type named by its fully
+    /// qualified name (`Lib::Store`, or `Sub` at the top level): only that
     /// type's member, or its supertypes' along their qualified names.
     pub(super) fn resolve_method_on_qualified_type(
         &mut self,
@@ -837,8 +843,9 @@ impl KernelResolver {
             // The conformance fallback: the method may live on a supertype
             // (transitively, depth-capped), still validated by name.
             if depth < 4 {
-                // PHP supertypes come back by qualified name.
-                let php = r.language == "php";
+                // PHP supertypes, and Ruby ones from a qualified start, come
+                // back by qualified name.
+                let php = r.language == "php" || (qualified && r.language == "ruby");
                 for supertype in self.supertype_names(type_name, r, depth == 0 && !qualified, qualified)? {
                     if let Some(via) = self.resolve_method_on_type_at(
                         &supertype, method, r, confidence, resolved_by, preferred_fqn, depth + 1, php,
