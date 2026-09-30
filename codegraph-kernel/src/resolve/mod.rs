@@ -328,6 +328,7 @@ pub(super) struct SourceFile {
     rust_uses: OnceCell<HashMap<String, String>>,
     rust_scope_uses: OnceCell<name_scope::RustScopeUses>,
     java_static_imports: OnceCell<name_scope::JavaStaticImports>,
+    php_file_scope: OnceCell<php_scope::PhpFileScope>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -340,6 +341,7 @@ impl SourceFile {
             rust_uses: OnceCell::new(),
             rust_scope_uses: OnceCell::new(),
             java_static_imports: OnceCell::new(),
+            php_file_scope: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -377,6 +379,11 @@ impl SourceFile {
     /// The file's Java static imports (javaStaticImportsOf).
     pub(super) fn java_static_imports(&self) -> &name_scope::JavaStaticImports {
         self.java_static_imports.get_or_init(|| name_scope::collect_java_static_imports(self.text()))
+    }
+
+    /// The file's PHP `namespace` and header `use` imports (phpFileScope).
+    pub(super) fn php_file_scope(&self) -> &php_scope::PhpFileScope {
+        self.php_file_scope.get_or_init(|| php_scope::collect_php_file_scope(self.text()))
     }
 }
 
@@ -469,6 +476,7 @@ mod prefilter;
 mod imports;
 mod names;
 mod name_scope;
+mod php_scope;
 mod receivers;
 mod bound;
 mod fields;
@@ -533,6 +541,8 @@ pub struct KernelResolver {
     rust_trait_memo: HashMap<String, bool>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    /// phpSupertypeQns, by declaration id.
+    php_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// manifest_own_packages, by directory.
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
@@ -664,6 +674,7 @@ impl KernelResolver {
             c_static_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
+            php_supers_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             swift_extension_memo: HashMap::new(),

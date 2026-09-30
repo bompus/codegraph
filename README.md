@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`72a9346`](https://github.com/colbymchenry/codegraph/commit/72a9346b), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`7ac8eef`](https://github.com/colbymchenry/codegraph/commit/7ac8eefb), after v1.6.1, 2026-09-30) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -539,10 +539,10 @@ Real iOS and React Native codebases live across multiple languages — a Swift c
 | **ObjC → Swift** | ObjC `[obj fooWithBar:]` | Swift `@objc func foo(bar:)` | Reverse-bridge name candidates; verifies `@objc` exposure from source |
 | **React Native legacy bridge** | JS `NativeModules.X.fn(...)` | ObjC `RCT_EXPORT_METHOD` / `RCT_REMAP_METHOD` · Java/Kotlin `@ReactMethod` | Parses macro/annotation declarations to build a JS-name → native-method map |
 | **React Native TurboModules** | JS `import M from './NativeM'; M.fn(...)` | Native impl matching the Codegen spec | Treats the `Native<X>.ts` spec interface as ground truth |
-| **RN native → JS events** | JS `new NativeEventEmitter(...).addListener('e', cb)` | ObjC `[self sendEventWithName:@"e" body:...]` · Swift `sendEvent(withName: "e", ...)` · Java/Kotlin `.emit("e", ...)` | Synthesized cross-language event channel keyed by literal event name |
+| **RN native → JS events** | JS `new NativeEventEmitter(...).addListener('e', cb)` | ObjC `[self sendEventWithName:@"e" body:...]` · Swift `sendEvent(withName: "e", ...)` · Java/Kotlin `.emit("e", ...)` | Synthesized cross-language event channel keyed by event name, written as a literal or as a constant the language scopes to the call site |
 | **Expo Modules** | JS `requireNativeModule('X').fn(...)`, directly or through a binding (`export default requireNativeModule<T>('X')`) | Swift / Kotlin `Module { Name("X"); AsyncFunction("fn") { ... } }` | Parses the Expo DSL literals into method nodes; a call on a binding resolves to module `X`'s `fn` on both platforms, else to the method on the binding's declared type |
 | **Fabric view components** | JSX `<MyView prop={v}/>` | TS Codegen spec + native impl class | Spec → `component` node; convention-based name+suffix lookup (`View`/`ComponentView`/`Manager`/`ViewManager`) bridges to native |
-| **Legacy Paper view managers** | JSX `<MyView prop={v}/>` | ObjC `RCT_EXPORT_VIEW_PROPERTY` · Java/Kotlin `@ReactProp` | Same as Fabric — Paper-era declarations also produce `component` + `property` nodes |
+| **Legacy Paper view managers** | JSX `<MyView prop={v}/>`, through a `requireNativeComponent('X')` module | ObjC `RCT_EXPORT_VIEW_PROPERTY` · Java/Kotlin `@ReactProp` | Same as Fabric — `requireNativeComponent('X')` is a JS `component` node, and Paper-era declarations also produce `component` + `property` nodes |
 
 **Validated on real codebases** (small + medium + large for each bridge):
 
@@ -1010,7 +1010,7 @@ is written):
 | Scala | `.scala`, `.sc` | Full support (classes, traits, objects, methods, type aliases, Scala 3 enums) |
 | Dart | `.dart` | Full support |
 | Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
-| Vue | `.vue` | Full support (script + script-setup extraction, Nuxt page/API/middleware routes) |
+| Vue | `.vue` | Full support (script + script-setup extraction, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
 | Astro | `.astro` | Full support (frontmatter + script extraction, template component/call references, `src/pages/` routes) |
 | Liquid | `.liquid` | Full support |
 | Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX form files) |

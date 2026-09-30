@@ -288,6 +288,11 @@ impl KernelResolver {
         if private_is_file_local(lang) {
             return Ok(candidate.visibility.as_deref() != Some("private"));
         }
+        // A Lua `local` belongs to its chunk: a spec helper's `local it = it`
+        // is not busted's `it(…)` in every other spec file.
+        if (lang == "lua" || lang == "luau") && self.is_lua_local(candidate) {
+            return Ok(false);
+        }
         self.is_cross_file_reachable(candidate, r)
     }
 
@@ -334,9 +339,10 @@ impl KernelResolver {
         if !is_call {
             return Ok(false);
         }
-        // `$obj->name(` / `Foo::name(` / `$obj?->name(`, should a column ever land on the name.
+        // `$obj->name(` / `Foo::name(` / `$obj?->name(`, should a column ever land on
+        // the name — but not `'size' => filesize($zip)` or `$x ? a : name()`.
         let before = js_prefix(line, at).trim_end();
-        Ok(!(before.ends_with('>') || before.ends_with(':')))
+        Ok(!(before.ends_with("->") || before.ends_with("::")))
     }
 
     fn is_receiver_less_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
@@ -573,6 +579,18 @@ impl KernelResolver {
             candidates.retain(|n| self.is_rust_name_in_scope(n, r));
         }
         candidates = self.retain_python_java_scope(candidates, r)?;
+        candidates = self.retain_php_self_scope(candidates, r)?;
+        // A Vue component's own method is `this.m()` inside that component —
+        // not `this.$refs['input'].click()` on an element another component renders.
+        if r.reference_kind == "calls" && is_js_family(&r.language) {
+            let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
+            for n in candidates.into_iter() {
+                if !php_scope::is_vue_component_method(&n) || self.is_this_call_in_own_file(&n, r)? {
+                    kept.push(n);
+                }
+            }
+            candidates = kept;
+        }
         // Nested locals reachable only from inside their container (#1230).
         let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
@@ -687,6 +705,20 @@ impl KernelResolver {
         Ok(None)
     }
 
+    /// The candidates a PHP `$this->m()` / `self::m()` / `parent::m()` call
+    /// allows: methods of the class hierarchy around the call site
+    /// (matchByExactName / matchFuzzy, name-matcher.ts).
+    fn retain_php_self_scope(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let Some(via) = self.php_self_receiver(r)? else { return Ok(candidates) };
+        let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
+        for n in candidates.into_iter() {
+            if n.kind == "method" && self.is_php_method_in_scope(&n, r, via)? {
+                kept.push(n);
+            }
+        }
+        Ok(kept)
+    }
+
     /// matchFuzzy (name-matcher.ts).
     pub(super) fn match_fuzzy(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         if self.is_unknown_receiver_built_in_call(r) {
@@ -703,24 +735,27 @@ impl KernelResolver {
         let candidates = self.nodes_by_lower_name(&r.reference_name)?;
         let type_ref = self.is_dotnet_type_ref(r);
         let rust_bare = is_bare_rust_name(r);
+        // Names are case-sensitive in every language but a handful: Rust's
+        // `Bytes` is not the method `bytes`, Python's builtin `dir(…)` not a
+        // class `Dir`, an imported `type RsbuildConfig` not a local
+        // `rsbuildConfig`, a Java `Node` not a `node()`. Only PHP,
+        // Pascal/Delphi, CFML, COBOL and VB.NET resolve a name without regard
+        // to case, which is what this fallback's lowercase index is for.
+        let case_exact = !is_case_insensitive_language(&r.language);
         let mut callable: Vec<Arc<KNode>> = candidates
             .iter()
             .filter(|n| matches!(n.kind.as_str(), "function" | "method" | "class"))
             .filter(|n| !type_ref || can_name_in_type_position(n))
-            // Rust names are case-sensitive: `Bytes` is not the method `bytes`.
-            .filter(|n| !rust_bare || n.name == r.reference_name)
+            // `new …MockData()` makes an instance of a type; a method is never what it names.
+            .filter(|n| !(r.reference_kind == "instantiates" && n.kind == "method"))
+            .filter(|n| !case_exact || n.name == r.reference_name)
             .cloned()
             .collect();
         if rust_bare {
             callable.retain(|n| self.is_rust_name_in_scope(n, r));
         }
-        // Python names are case-sensitive too: the builtin `dir(…)` is not a class `Dir`.
-        // So are JavaScript's and TypeScript's: an imported `type RsbuildConfig`
-        // is not a local `rsbuildConfig`, nor vitest's `Mock` a `mock`.
-        if r.language == "python" || is_js_family(&r.language) {
-            callable.retain(|n| n.name == r.reference_name);
-        }
         let callable = self.retain_python_java_scope(callable, r)?;
+        let callable = self.retain_php_self_scope(callable, r)?;
         let gated = self.apply_language_gate(callable, r);
         let same_language: Vec<Arc<KNode>> = gated
             .iter()
@@ -753,7 +788,16 @@ impl KernelResolver {
             } else {
                 self.is_bare_js_call(r)? && self.is_param_shadowed(r)?
             };
-            let reachable = reachable && !bare_decline && !shadowed && self.is_lexically_reachable(&only, r)?;
+            // Fuzzy settles a name one definition carries. A class that shares
+            // its exact name with an interface or type alias is not that: a
+            // `Locator` type imported from vitest's public API is the interface
+            // it declares, not the tester's abstract class.
+            let type_twin = only.kind == "class"
+                && self.nodes_by_name(&only.name)?.iter().any(|n| {
+                    matches!(n.kind.as_str(), "interface" | "type_alias") && same_language_family(&n.language, &only.language)
+                });
+            let reachable =
+                reachable && !bare_decline && !shadowed && !type_twin && self.is_lexically_reachable(&only, r)?;
             if reachable {
                 let cross = only.language != r.language;
                 return Ok(Some(KCand {

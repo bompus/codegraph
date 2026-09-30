@@ -26,6 +26,7 @@ import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs,
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
+import { gateSuperSelfCall } from './super-self';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworksWithSkips } from './frameworks';
@@ -1356,9 +1357,11 @@ export class ReferenceResolver {
     // `extension X {}` node, nor on a nested type it cannot name bare
     // (./swift-type-visibility); a name a declaration around the reference
     // declares as a type parameter is that parameter (./type-parameters); a
-    // bare Rust name reaches only what is in scope (./rust-scope).
+    // bare Rust name reaches only what is in scope (./rust-scope); a call
+    // through `super` is never the method making it (./super-self).
     const settled = gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context);
-    return { ref, result: gateRustScope(gateTypeParameter(settled, ref, this.context), ref, this.context) };
+    const scoped = gateRustScope(gateTypeParameter(settled, ref, this.context), ref, this.context);
+    return { ref, result: gateSuperSelfCall(scoped, ref, this.context) };
   }
 
   /**

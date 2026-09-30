@@ -711,6 +711,16 @@ impl KernelResolver {
                 target.retain(|m| m.file_path != r.file_path);
                 narrowed = target.len() != before;
             }
+            // A Vue component's own method is reached as `this.m()` inside it —
+            // never as `e.preventDefault()` on an event, nor
+            // `this.editor.setValue()` on something the component holds.
+            if is_js_family(&r.language) {
+                let before = target.len();
+                target.retain(|m| {
+                    !php_scope::is_vue_component_method(m) || (object_or_class == "this" && m.file_path == r.file_path)
+                });
+                narrowed |= target.len() != before;
+            }
             let target = &target;
             if target.len() == 1 && !narrowed && target[0].language == r.language {
                 return Ok(Some(KCand {

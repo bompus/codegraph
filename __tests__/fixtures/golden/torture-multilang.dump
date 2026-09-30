@@ -1470,7 +1470,7 @@
 {"id":"variable:fb450996c12f335b36201ead67a34f64","kind":"variable","name":"INIT_MAP","qualified_name":"INIT_MAP","file_path":"torture.py","language":"python","start_line":54,"end_line":54,"start_column":0,"end_column":26,"docstring":null,"signature":"= {\"a\": helper()}","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:feb330d554c5d0caaa8978323a006e52","kind":"variable","name":"MD_BARE","qualified_name":"MD_BARE","file_path":"torture.rb","language":"ruby","start_line":238,"end_line":238,"start_column":0,"end_column":21,"docstring":null,"signature":"= 'README.md'","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fedacda34e94b85718ac655a74368326","kind":"variable","name":"okG","qualified_name":"okG","file_path":"torture.lua","language":"lua","start_line":12,"end_line":12,"start_column":6,"end_column":9,"docstring":null,"signature":"= pcall(require, \"app.guarded\")","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (1923)
+== edges (1921)
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"class:25244cbdbe3e9bc720df9fc4d54fac0a","kind":"extends","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"app::Config\"}","line":98,"col":35,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:0795ac46f5bef3826c20039a05014ebc","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:35a476809e2727e80d7f2c8c404180b2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -1580,7 +1580,6 @@
 {"source":"class:552d43adfe08bef50c2e74379829cede","target":"field:f29bceac487c5448482cb92dfd0f8565","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:552d43adfe08bef50c2e74379829cede","target":"method:3f2bd9f586140961b586ddfdd78b761f","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:552d43adfe08bef50c2e74379829cede","target":"method:d1652c1221606ad0531f562bde7823d3","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"class:552d43adfe08bef50c2e74379829cede","target":"method:d1652c1221606ad0531f562bde7823d3","kind":"decorates","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"fuzzy\",\"refName\":\"Builder\"}","line":100,"col":0,"provenance":null}
 {"source":"class:5545c7494bbd6c81f0a1d85a3cf99570","target":"class:0939ad4dcc3f8b9686a6f2915ddc27f6","kind":"extends","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Base\"}","line":73,"col":23,"provenance":null}
 {"source":"class:5545c7494bbd6c81f0a1d85a3cf99570","target":"class:25244cbdbe3e9bc720df9fc4d54fac0a","kind":"extends","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"app::Config\"}","line":73,"col":42,"provenance":null}
 {"source":"class:5545c7494bbd6c81f0a1d85a3cf99570","target":"method:3279340c86e9bdc524388fe76f0cf53c","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -2041,7 +2040,6 @@
 {"source":"file:TortureMisc.scala","target":"class:03d0532ab595135614d179f0152018fd","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:TortureMisc.scala","target":"class:51948ff3c9fbd115f2b5813c3fae49b2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:TortureMisc.scala","target":"class:8012df717530395d785370b6c3ce0964","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:TortureMisc.scala","target":"class:8012df717530395d785370b6c3ce0964","kind":"imports","metadata":"{\"confidence\":0.5,\"resolvedBy\":\"fuzzy\",\"refName\":\"a\"}","line":25,"col":0,"provenance":null}
 {"source":"file:TortureMisc.scala","target":"class:b094eaef50b2d6fb45fe274ef3100088","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:TortureMisc.scala","target":"class:e5bc7df0a1a421851c1fb1629606722a","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:TortureMisc.scala","target":"class:f8b6f1cf76adb83fb455575fe0dbb4b1","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -3394,7 +3392,7 @@
 {"source":"variable:36e608fb368763b7f8a74a69f477cec7","target":"function:692077921d04b315880bc35a0bc872a9","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"view\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":49,"col":24,"provenance":null}
 {"source":"variable:6b7262d2883839c6f601126f4dd59e9b","target":"function:d8f9c30c4ee99a9302a150e8eed67acf","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"TargetCb\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":14,"col":9,"provenance":null}
 {"source":"variable:788d75a828c79f9847e0be0e2b73a196","target":"variable:8fef25ea8abe486ee94190ed47c3644b","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
-== refs (1269)
+== refs (1271)
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Mix2","reference_kind":"implements","line":34,"col":37,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Mix2"}
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Paint","reference_kind":"implements","line":34,"col":59,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Paint"}
 {"from_node_id":"class:066eb79e83cf3105cebd14593747068f","reference_name":"BaseService","reference_kind":"extends","line":13,"col":14,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"BaseService"}
@@ -3425,6 +3423,7 @@
 {"from_node_id":"class:40ba5f950ab3c448fb944e41327f6130","reference_name":"QBase","reference_kind":"extends","line":118,"col":42,"candidates":null,"file_path":"torture.R","language":"r","status":"failed","name_tail":"QBase"}
 {"from_node_id":"class:54c0d1e485f298b4f9827706f928657f","reference_name":"BaseW","reference_kind":"extends","line":42,"col":69,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"BaseW"}
 {"from_node_id":"class:54c0d1e485f298b4f9827706f928657f","reference_name":"Ordered","reference_kind":"extends","line":42,"col":100,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"Ordered"}
+{"from_node_id":"class:552d43adfe08bef50c2e74379829cede","reference_name":"Builder","reference_kind":"decorates","line":100,"col":0,"candidates":null,"file_path":"Torture.java","language":"java","status":"failed","name_tail":"Builder"}
 {"from_node_id":"class:552d43adfe08bef50c2e74379829cede","reference_name":"Getter","reference_kind":"decorates","line":98,"col":0,"candidates":null,"file_path":"Torture.java","language":"java","status":"failed","name_tail":"Getter"}
 {"from_node_id":"class:552d43adfe08bef50c2e74379829cede","reference_name":"Slf4j","reference_kind":"decorates","line":99,"col":0,"candidates":null,"file_path":"Torture.java","language":"java","status":"failed","name_tail":"Slf4j"}
 {"from_node_id":"class:594b551daf02d1f8f97af43b2a5bfd56","reference_name":"Comparable","reference_kind":"extends","line":101,"col":44,"candidates":null,"file_path":"torture.kt","language":"kotlin","status":"failed","name_tail":"Comparable"}
@@ -3592,6 +3591,7 @@
 {"from_node_id":"file:TortureHtml.php","reference_name":"html_echo","reference_kind":"calls","line":11,"col":4,"candidates":null,"file_path":"TortureHtml.php","language":"php","status":"failed","name_tail":"html_echo"}
 {"from_node_id":"file:TortureIndent.scala","reference_name":"summonOrd","reference_kind":"calls","line":19,"col":28,"candidates":null,"file_path":"TortureIndent.scala","language":"scala","status":"failed","name_tail":"summonOrd"}
 {"from_node_id":"file:TortureMini.dart","reference_name":"dart:async","reference_kind":"imports","line":1,"col":0,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"async"}
+{"from_node_id":"file:TortureMisc.scala","reference_name":"a","reference_kind":"imports","line":25,"col":0,"candidates":null,"file_path":"TortureMisc.scala","language":"scala","status":"failed","name_tail":"a"}
 {"from_node_id":"file:TortureMisc.scala","reference_name":"single","reference_kind":"imports","line":24,"col":0,"candidates":null,"file_path":"TortureMisc.scala","language":"scala","status":"failed","name_tail":"single"}
 {"from_node_id":"file:TortureScript.kts","reference_name":"println","reference_kind":"calls","line":2,"col":0,"candidates":null,"file_path":"TortureScript.kts","language":"kotlin","status":"failed","name_tail":"println"}
 {"from_node_id":"file:TortureScript.sc","reference_name":"println","reference_kind":"calls","line":3,"col":0,"candidates":null,"file_path":"TortureScript.sc","language":"scala","status":"failed","name_tail":"println"}

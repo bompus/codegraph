@@ -24,7 +24,7 @@ Language support is automatic from the file extension — there's nothing to con
 | Scala | `.scala`, `.sc` | Full support (classes, traits, objects, methods, type aliases, Scala 3 enums) |
 | Dart | `.dart` | Full support |
 | Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
-| Vue | `.vue` | Full support (script + script-setup, Nuxt page/API/middleware routes) |
+| Vue | `.vue` | Full support (script + script-setup, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
 | Astro | `.astro` | Full support (frontmatter + script extraction, template component/call references, `src/pages/` routes) |
 | Liquid | `.liquid` | Full support |
 | Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX forms) |

@@ -75,6 +75,22 @@ impl KernelResolver {
         false
     }
 
+    /// The prefilter's existence check for a ref: `hasAnyPossibleMatch`, or
+    /// for a language whose names ignore case (PHP, Pascal, CFML, COBOL,
+    /// VB.NET) the name or any `.`/`::`/`->` part of it in any case —
+    /// `formatprice()` calls `FormatPrice`, which the exact-name set never lists.
+    pub(super) fn has_any_possible_match_in(&self, name: &str, language: &str) -> bool {
+        if self.has_any_possible_match(name) {
+            return true;
+        }
+        if !is_case_insensitive_language(language) {
+            return false;
+        }
+        let known_lower = |n: &str| self.nodes_by_lower_name(n).is_ok_and(|list| !list.is_empty());
+        known_lower(name)
+            || re!(r"::|->|\.").split(name).any(|part| !part.is_empty() && known_lower(part))
+    }
+
     /// hasAnyPossibleMatch (index.ts) — the full check: direct name, then the
     /// receiver/member segments around `.`/`::`/`:`/`$`, then the path tail.
     /// A bare name only reaches the direct check; the separator branches

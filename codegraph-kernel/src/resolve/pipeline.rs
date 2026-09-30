@@ -178,7 +178,7 @@ impl KernelResolver {
             &r.reference_name
         };
         let pre_pass = probe!(r, "pre-pass", is_nix_path_import_ref(r)
-            || self.has_any_possible_match(existence)
+            || self.has_any_possible_match_in(existence, &r.language)
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));
         if !pre_pass {
@@ -556,7 +556,7 @@ impl KernelResolver {
     /// this path, so the miss is terminal either way.
     pub(super) fn resolve_function_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         let pre_pass = probe!(r, "pre-pass",
-            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
+            self.has_any_possible_match_in(&r.reference_name, &r.language) || self.matches_any_import(r)?);
         if !pre_pass {
             return Ok(ResolveOutcome::unresolved());
         }
@@ -658,7 +658,7 @@ impl KernelResolver {
         // framework resolvers — every name arm finds nothing — so it settles
         // through the framework merge alone.
         let pre_pass = probe!(r, "pre-pass",
-            self.has_any_possible_match(&r.reference_name) || self.matches_any_import(r)?);
+            self.has_any_possible_match_in(&r.reference_name, &r.language) || self.matches_any_import(r)?);
         if !pre_pass {
             if self.framework_claims(&r.reference_name) {
                 return Ok(ResolveOutcome::no_candidates());

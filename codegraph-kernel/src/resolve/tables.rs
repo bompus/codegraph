@@ -682,6 +682,12 @@ pub(super) fn no_nested_functions(lang: &str) -> bool {
 /// JS_FAMILY (name-matcher.ts): the bare-call method guard applies to these.
 /// Vue, Svelte and Astro components' scripts and template expressions
 /// included: a bare `t('key')` in a `.vue` file resolves as in a `.ts` one.
+/// CASE_INSENSITIVE_LANGUAGES (name-matcher.ts): languages whose
+/// identifiers resolve regardless of case.
+pub(super) fn is_case_insensitive_language(lang: &str) -> bool {
+    matches!(lang, "php" | "pascal" | "cfml" | "cfscript" | "cfquery" | "cobol" | "vbnet")
+}
+
 pub(super) fn is_js_family(lang: &str) -> bool {
     matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "vue" | "svelte" | "astro")
 }
