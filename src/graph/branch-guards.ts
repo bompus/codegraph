@@ -33,11 +33,10 @@ import * as fs from 'fs';
 import type { Language } from '../types';
 import { loadGrammarsForLanguages } from '../extraction/grammars';
 import {
-  parseSourceTree,
-  parseSourceTreeSync,
   type ParsedTree as Tree,
   type TreeNode as SyntaxNode,
 } from '../extraction/parse-tree';
+import { parseWithinBudget } from '../extraction/parse-budget';
 
 // =============================================================================
 // Public shape
@@ -214,8 +213,7 @@ async function treeFor(absPath: string, language: Language): Promise<CachedTree 
 }
 
 async function parse(source: string, language: Language): Promise<Tree | null> {
-  // Kernel first, wasm fallback (parse-tree.ts).
-  return parseSourceTree(source, language);
+  return parseWithinBudget(source, language);
 }
 
 // =============================================================================
@@ -290,9 +288,7 @@ export function guardsForFileSync(
     } catch {
       return out;
     }
-    // The kernel path is synchronous; the wasm path serves only a grammar
-    // that warmBranchGuardGrammars already loaded.
-    const tree = parseSourceTreeSync(source, language);
+    const tree = parseWithinBudget(source, language);
     if (!tree) return out;
     cached = { key, tree, source };
     remember(absPath, cached);

@@ -75,6 +75,7 @@ function decodeKernelBundle(bundle: KernelStoreBundle): StoreBundle {
   if (bundle.buffers.literalSource !== undefined) {
     captureLiterals(bundle.buffers.literalSource, decoded.nodes);
   }
+  if (bundle.extraRefs?.length) decoded.unresolvedReferences.push(...bundle.extraRefs);
   return finalizeStoreBundle(decoded, bundle.filePath, bundle.language, bundle.file);
 }
 

@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as path from 'path';
 import { resolveViewerDir } from './assets';
+import { stopHighlightWorker } from './highlight/bounded-tokenize';
 import {
   ALLOWED_METHODS,
   READ_METHODS,
@@ -216,7 +217,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       closed = true;
       return new Promise<void>((resolve) => {
         server.closeAllConnections();
-        server.close(() => resolve());
+        server.close(() => { void stopHighlightWorker().then(resolve); });
       });
     },
   };

@@ -2,6 +2,7 @@ import { Binding, Node, Edge, ExtractionResult, ExtractionError, UnresolvedRefer
 import { generateNodeId } from './tree-sitter-helpers';
 import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
+import { foldScriptResult, sfcFileNode } from './sfc-script';
 
 /**
  * Astro built-in components — compiler-provided (`<Fragment>`) or shipped by
@@ -47,8 +48,9 @@ export class AstroExtractor {
     const startTime = Date.now();
 
     try {
-      // Create component node for the .astro file itself
+      this.nodes.push(sfcFileNode(this.filePath, this.source, 'astro'));
       const componentNode = this.createComponentNode();
+      this.edges.push({ source: `file:${this.filePath}`, target: componentNode.id, kind: 'contains' });
 
       // Extract and process the frontmatter block (--- fenced, TypeScript)
       const frontmatter = this.extractFrontmatter();
@@ -198,59 +200,14 @@ export class AstroExtractor {
       return;
     }
 
-    // Kernel first, wasm fallback (block-extract.ts)
+    // The embedded-block seam preserves native extraction and literal metadata.
     const result = extractEmbeddedBlock(this.filePath, block.content, 'typescript');
 
-    // Offset line numbers from the block back to .astro file positions
-    for (const node of result.nodes) {
-      node.startLine += block.startLine;
-      node.endLine += block.startLine;
-      node.language = 'astro'; // Mark as astro, not TS
-
-      this.nodes.push(node);
-
-      // Add containment edge from component to this node
-      this.edges.push({
-        source: componentNodeId,
-        target: node.id,
-        kind: 'contains',
-      });
-    }
-
-    // Offset edges (they reference line numbers)
-    for (const edge of result.edges) {
-      if (edge.line) {
-        edge.line += block.startLine;
-      }
-      this.edges.push(edge);
-    }
-
-    // Offset unresolved references
-    for (const ref of result.unresolvedReferences) {
-      ref.line += block.startLine;
-      ref.filePath = this.filePath;
-      ref.language = 'astro';
-      this.unresolvedReferences.push(ref);
-    }
-
-    // Offset binding rows (scopes and lines are block-relative)
-    for (const b of result.bindings ?? []) {
-      this.bindings.push({
-        ...b,
-        filePath: this.filePath,
-        scopeStart: b.scopeStart + block.startLine,
-        scopeEnd: b.scopeEnd + block.startLine,
-        line: b.line + block.startLine,
-      });
-    }
-
-    // Carry over errors
-    for (const error of result.errors) {
-      if (error.line) {
-        error.line += block.startLine;
-      }
-      this.errors.push(error);
-    }
+    foldScriptResult(
+      result,
+      { filePath: this.filePath, componentNodeId, lineOffset: block.startLine, language: 'astro', perInstance: label === 'frontmatter' },
+      { nodes: this.nodes, edges: this.edges, unresolvedReferences: this.unresolvedReferences, errors: this.errors, bindings: this.bindings }
+    );
   }
 
   /**

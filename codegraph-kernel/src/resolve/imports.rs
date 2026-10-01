@@ -643,35 +643,23 @@ impl KernelResolver {
         if is_nix_path_import_ref(r) {
             return self.resolve_import_path_to_file_node(r);
         }
-        // TS/JS path-shaped `imports` ref whose referenceName IS the module
-        // specifier — the module ref of `import … from './x'` or a dynamic
-        // `import('./x')` call site. Resolve the specifier (extension- and
-        // alias-aware) straight to the file node like the c/cpp include arm:
-        // name-match would bind the file's own `import` STATEMENT node —
-        // `./cmd.config` literally matches that node's name — or a same-named
-        // file elsewhere. Needs no binding rows, so it precedes the empty-
-        // imports early return, mirroring the TS-side arm's position ahead of
-        // the mappings lookup (import-resolver.ts resolveViaImport).
-        if r.reference_kind == "imports"
-            && is_esm_import_language(&r.language)
-            && r.reference_name.contains('/')
-        {
-            if let Some(resolved) =
+        // Module-path imports resolve to the exact indexed file or nothing,
+        // including extensionless CommonJS paths and configured aliases.
+        if is_js_path_import_ref(r) {
+            let Some(resolved) =
                 self.resolve_import_path(&r.reference_name, &r.file_path, &r.language)?
-            {
-                if let Some(file_node) = self
-                    .nodes_in_file(&resolved)?
-                    .iter()
-                    .find(|n| n.kind == "file")
-                    .cloned()
-                {
-                    return Ok(Some(KCand {
-                        node: file_node,
-                        confidence: 0.9,
-                        resolved_by: "import",
-                    }));
-                }
+            else {
+                return Ok(None);
+            };
+            if resolved == r.file_path {
+                return Ok(None);
             }
+            return Ok(self
+                .nodes_in_file(&resolved)?
+                .iter()
+                .find(|n| n.kind == "file")
+                .cloned()
+                .map(|node| KCand { node, confidence: 0.9, resolved_by: "import" }));
         }
         let imports = self.import_mappings(&r.file_path)?;
         if imports.is_empty() && self.read_file(&r.file_path).is_none() {

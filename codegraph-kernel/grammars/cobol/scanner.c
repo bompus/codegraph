@@ -129,14 +129,19 @@ bool tree_sitter_COBOL_external_scanner_scan(void *payload, TSLexer *lexer,
     if(valid_symbols[LINE_PREFIX_COMMENT] && lexer->get_column(lexer) <= 5) {
         // The sequence area is ignored content — but the free-format
         // preprocessor plants the CGWIDE sentinel here on the first line.
+        const unsigned start_column = lexer->get_column(lexer);
         int match = 0;
-        while(lexer->get_column(lexer) <= 5) {
+        while(lexer->get_column(lexer) <= 5 && !lexer->eof(lexer) &&
+              lexer->lookahead != '\n' && lexer->lookahead != '\r') {
             if(match >= 0 && match < 6 && lexer->lookahead == CG_WIDE_SENTINEL[match]) {
                 match++;
             } else {
                 match = -1;
             }
             lexer->advance(lexer, true);
+        }
+        if(lexer->get_column(lexer) == start_column) {
+            return false;
         }
         if(match == 6 && wide) {
             *wide = 1;

@@ -2,6 +2,7 @@ import { Binding, Node, Edge, ExtractionResult, ExtractionError, UnresolvedRefer
 import { generateNodeId } from './tree-sitter-helpers';
 import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
+import { foldScriptResult, sfcFileNode } from './sfc-script';
 
 /** Svelte 5 rune names — compiler builtins, not real functions */
 const SVELTE_RUNES = new Set([
@@ -14,7 +15,7 @@ const SVELTE_RUNES = new Set([
  *
  * Svelte files are multi-language (script + template + style). Rather than
  * parsing the full Svelte grammar, we extract the <script> block content
- * and delegate it to the TypeScript/JavaScript extractor (kernel first, wasm fallback).
+ * and delegate it to the TypeScript/JavaScript extractor (kernel first).
  *
  * Also extracts function calls from template expressions (`{fn(...)}`) so
  * cross-file call edges are captured even when calls live in markup.
@@ -43,8 +44,9 @@ export class SvelteExtractor {
     const startTime = Date.now();
 
     try {
-      // Create component node for the .svelte file itself
+      this.nodes.push(sfcFileNode(this.filePath, this.source, 'svelte'));
       const componentNode = this.createComponentNode();
+      this.edges.push({ source: `file:${this.filePath}`, target: componentNode.id, kind: 'contains' });
 
       // Extract and process script blocks
       const scriptBlocks = this.extractScriptBlocks();
@@ -135,8 +137,8 @@ export class SvelteExtractor {
       // Detect TypeScript from lang attribute
       const isTypeScript = /lang\s*=\s*["'](ts|typescript)["']/.test(attrs);
 
-      // Detect module script
-      const isModule = /context\s*=\s*["']module["']/.test(attrs);
+      // Svelte 4 uses context="module"; Svelte 5 also accepts the module attribute.
+      const isModule = /context\s*=\s*["']module["']|(?:^|\s)module(?=[\s=]|$)/.test(attrs);
 
       // Calculate the 0-indexed line where the content begins. The content
       // starts right after the opening tag's `>` — its leading `\n` is part
@@ -178,59 +180,14 @@ export class SvelteExtractor {
       return;
     }
 
-    // Kernel first, wasm fallback (block-extract.ts)
+    // The embedded-block seam preserves native extraction and literal metadata.
     const result = extractEmbeddedBlock(this.filePath, block.content, scriptLanguage);
 
-    // Offset line numbers from script block back to .svelte file positions
-    for (const node of result.nodes) {
-      node.startLine += block.startLine;
-      node.endLine += block.startLine;
-      node.language = 'svelte'; // Mark as svelte, not TS/JS
-
-      this.nodes.push(node);
-
-      // Add containment edge from component to this node
-      this.edges.push({
-        source: componentNodeId,
-        target: node.id,
-        kind: 'contains',
-      });
-    }
-
-    // Offset edges (they reference line numbers)
-    for (const edge of result.edges) {
-      if (edge.line) {
-        edge.line += block.startLine;
-      }
-      this.edges.push(edge);
-    }
-
-    // Offset unresolved references
-    for (const ref of result.unresolvedReferences) {
-      ref.line += block.startLine;
-      ref.filePath = this.filePath;
-      ref.language = 'svelte';
-      this.unresolvedReferences.push(ref);
-    }
-
-    // Offset binding rows (scopes and lines are block-relative)
-    for (const b of result.bindings ?? []) {
-      this.bindings.push({
-        ...b,
-        filePath: this.filePath,
-        scopeStart: b.scopeStart + block.startLine,
-        scopeEnd: b.scopeEnd + block.startLine,
-        line: b.line + block.startLine,
-      });
-    }
-
-    // Carry over errors
-    for (const error of result.errors) {
-      if (error.line) {
-        error.line += block.startLine;
-      }
-      this.errors.push(error);
-    }
+    foldScriptResult(
+      result,
+      { filePath: this.filePath, componentNodeId, lineOffset: block.startLine, language: 'svelte', perInstance: !block.isModule },
+      { nodes: this.nodes, edges: this.edges, unresolvedReferences: this.unresolvedReferences, errors: this.errors, bindings: this.bindings }
+    );
   }
 
   /**

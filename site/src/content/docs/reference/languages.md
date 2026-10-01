@@ -23,15 +23,17 @@ Language support is automatic from the file extension — there's nothing to con
 | Kotlin | `.kt`, `.kts` | Full support |
 | Scala | `.scala`, `.sc` | Full support (classes, traits, objects, methods, type aliases, Scala 3 enums) |
 | Dart | `.dart` | Full support |
-| Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
-| Vue | `.vue` | Full support (script + script-setup, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
-| Astro | `.astro` | Full support (frontmatter + script extraction, template component/call references, `src/pages/` routes) |
+| Svelte | `.svelte` | Full support (instance and module script extraction, Svelte 5 runes, SvelteKit routes) |
+| Vue | `.vue` | Full support (script + script-setup with component ownership, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
+| Astro | `.astro` | Full support (component-owned frontmatter + browser-script extraction, template component/call references, `src/pages/` routes) |
 | Liquid | `.liquid` | Full support |
 | Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX forms) |
 | Lua | `.lua` | Full support (functions, methods, locals, `require` imports, call edges) |
 | R | `.R`, `.r` | Full support (functions, S4/R5/R6 classes with methods, `library`/`require` imports, `source()` file references, call edges) |
 | Luau | `.luau` | Full support (Lua, plus typed signatures, `type` aliases, Roblox `require`) |
 | Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections, local links, selected table rows/list items, shell command references) |
+
+Vue, Svelte and Astro files have one file node containing their component. Top-level script members belong to that component, while nested symbols retain their own parents. Vue `<script setup>`, Svelte instance scripts and Astro frontmatter assign top-level execution, including constant initializers, to the component. Imports, module-level execution and Astro browser scripts remain with the file. Svelte recognizes both `context="module"` and `<script module>`.
 
 Markdown files use a dedicated documentation extractor. `.mdx` files receive the same documentation indexing; embedded JSX and JavaScript are not parsed as MDX code.
 
@@ -49,7 +51,11 @@ Calls through class names follow inherited class methods in Python, Pascal, Ruby
 
 Lua local aliases can call a function exported by a required project module, including a renamed field and bounded module re-exports. The returned module table determines its exported fields. Standard-library aliases, external modules and out-of-scope locals do not become project calls.
 
-CommonJS calls follow explicit `module.exports` defaults, module forwarding, destructured bindings and `require('./module').member` aliases. Namespace re-exports such as `export * as core` expose members through their namespace, including nested namespaces, without exposing those members as flat wildcard exports.
+CommonJS calls follow explicit `module.exports` defaults, module forwarding, destructured bindings and `require('./module').member` aliases.
+
+Literal local `require` calls create file dependencies even when used for side effects or inside functions. Computed specifiers, external packages and a locally shadowed `require` do not create these dependencies.
+
+Namespace re-exports such as `export * as core` expose members through their namespace, including nested namespaces, without exposing those members as flat wildcard exports.
 
 C++ access macros and conditionals inside declarations preserve class members. A normalized mid-declaration conditional indexes its first branch and preserves source locations.
 

@@ -63,13 +63,13 @@ export interface ParsedTree {
   delete(): void;
 }
 
-/** Parse with the kernel. Null only when the binary carries no grammar for `language`. */
-export async function parseSourceTree(source: string, language: Language): Promise<ParsedTree | null> {
-  return parseSourceTreeSync(source, language);
+/** Parse with the kernel. An optional budget bounds cooperative parsing; cancellation returns null. */
+export async function parseSourceTree(source: string, language: Language, budgetMs?: number): Promise<ParsedTree | null> {
+  return parseSourceTreeSync(source, language, budgetMs);
 }
 
 /** Synchronous form; the kernel path is always synchronous. */
-export function parseSourceTreeSync(source: string, language: Language): ParsedTree | null {
+export function parseSourceTreeSync(source: string, language: Language, budgetMs?: number): ParsedTree | null {
   requireKernel();
-  return parseNativeTree(source, language) as ParsedTree | null;
+  return parseNativeTree(source, language, budgetMs) as ParsedTree | null;
 }

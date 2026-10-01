@@ -11,6 +11,7 @@ import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { generateNodeId } from '../../extraction/tree-sitter-helpers';
 import { httpHandlerReferences } from './http-routing';
+import { pageComponentRef, resolvePageComponent } from './page-component';
 import {
   addRouteTo,
   appRootFor,
@@ -76,7 +77,7 @@ const ASTRO_VIRTUAL_MODULES = [
 export const astroResolver: FrameworkResolver = {
   name: 'astro',
   claimsReference: (name) =>
-    name === 'astro-page-component' || name.startsWith('astro-href:') || name === 'Astro.redirect',
+    name.startsWith('page-component:') || name.startsWith('astro-href:') || name === 'Astro.redirect',
 
   detect(context: ResolutionContext): boolean {
     // Check for astro in package.json
@@ -99,12 +100,8 @@ export const astroResolver: FrameworkResolver = {
   },
 
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    if (ref.referenceName === 'astro-page-component') {
-      const target = context.getNodeById?.(pageComponentId(ref.filePath));
-      return target
-        ? { original: ref, targetNodeId: target.id, confidence: 1, resolvedBy: 'framework' }
-        : null;
-    }
+    const page = resolvePageComponent(ref, context);
+    if (page) return page;
     const link = ref.referenceName.startsWith('astro-href:');
     const redirect =
       ref.referenceName === 'Astro.redirect' &&
@@ -272,15 +269,7 @@ export const astroResolver: FrameworkResolver = {
         };
         if (node.language === 'astro') {
           nodes.push(node);
-          references.push({
-            fromNodeId: node.id,
-            referenceName: 'astro-page-component',
-            referenceKind: 'references',
-            filePath,
-            language: 'astro',
-            line: 1,
-            column: 0,
-          });
+          references.push(pageComponentRef(node, '.astro', 'astro'));
         } else if (content.includes('export')) {
           const tree = parseSourceTreeSync(content, node.language);
           if (!tree) return { nodes, references };

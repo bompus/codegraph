@@ -345,10 +345,10 @@ function splitNames(buf: Buffer, count: number, from: number): { names: string[]
 }
 
 /**
- * Parse with the kernel, or null when it cannot (no binary, language not
- * compiled in, stack guard tripped). Callers fall back to the wasm parser.
+ * Parse with the kernel, or null when unavailable or cancelled. The optional
+ * budget applies to parser progress callbacks, not external scanners or serialization.
  */
-export function parseNativeTree(source: string, language: Language): NativeTree | null {
+export function parseNativeTree(source: string, language: Language, budgetMs?: number): NativeTree | null {
   const kernel = getKernel();
   if (!kernel || typeof kernel.parseTree !== 'function') return null;
   // A fresh kernel instance (tests reset it) must not reuse another's tables.
@@ -363,7 +363,7 @@ export function parseNativeTree(source: string, language: Language): NativeTree 
   if (!names) return null;
   let buffers;
   try {
-    buffers = kernel.parseTree(source, language);
+    buffers = kernel.parseTree(source, language, budgetMs);
   } catch {
     return null;
   }

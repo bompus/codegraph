@@ -289,8 +289,8 @@ export interface KernelModule {
   KernelResolver?: new (config: KernelResolverConfig) => KernelResolverLike;
   /** Parse-tree service for read-time consumers (Phase 3). OPTIONAL: absent
    *  on older binaries — kernel/tree.ts feature-detects and the consumers
-   *  keep the wasm parser. */
-  parseTree?(content: string, language: string): KernelTreeBuffers;
+   *  return no tree when that optional API is unavailable. */
+  parseTree?(content: string, language: string, budgetMs?: number): KernelTreeBuffers;
   /** Kind and field name tables for a grammar, fetched once per language. */
   treeNames?(language: string): KernelTreeNames | null;
   contractInfo(): KernelContractInfo;

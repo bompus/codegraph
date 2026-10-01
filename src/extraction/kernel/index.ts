@@ -14,6 +14,7 @@
  */
 
 import type { Binding, ExtractionResult, Language, Node } from '../../types';
+import { commonJsRequireRefs } from '../commonjs-requires';
 import { EXTRACTORS } from '../languages';
 import { getKernel, kernelSupports } from './loader';
 import { decodeExtractBuffers } from './decode';
@@ -142,6 +143,8 @@ export function materializeKernelResult(
   );
   if (b.literalSource !== undefined) captureLiterals(b.literalSource, decoded.nodes);
   decoded.durationMs = result.durationMs;
+  // References read beside the tables (a CommonJS `require`) ride on the transport.
+  if (result.unresolvedReferences.length > 0) decoded.unresolvedReferences.push(...result.unresolvedReferences);
   return decoded;
 }
 
@@ -176,6 +179,8 @@ export function tryKernelExtract(
     // unrouted ones keep theirs, and a quoted-key explore query silently stops
     // finding holders.
     captureLiterals(pre, result.nodes);
+    // Read beside the tables, as TreeSitterExtractor does (a CommonJS `require`).
+    result.unresolvedReferences.push(...commonJsRequireRefs(filePath, source, language));
     result.durationMs = Date.now() - t0;
     return result;
   } catch (err) {

@@ -1,0 +1,28 @@
+name: Highlight process lifecycle
+on:
+  pull_request:
+    branches: [fork/consolidated]
+    paths:
+      - 'src/ui-server/highlight/**'
+      - 'scripts/check-highlight-lifecycle.cjs'
+      - '.github/workflows/highlight-lifecycle.yml'
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/check-highlight-lifecycle.cjs

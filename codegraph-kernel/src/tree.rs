@@ -59,7 +59,8 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use tree_sitter::{Node, Parser};
+use std::time::{Duration, Instant};
+use tree_sitter::{Node, ParseOptions, Parser};
 
 use crate::langs::grammar_for;
 
@@ -115,6 +116,10 @@ struct Row {
 
 /// Parse with this thread's parser for `language` (created on first use).
 pub(crate) fn parse_with_cached_parser(content: &str, language: &str) -> Result<tree_sitter::Tree> {
+    parse_with_cached_parser_budget(content, language, None)
+}
+
+fn parse_with_cached_parser_budget(content: &str, language: &str, budget_ms: Option<u32>) -> Result<tree_sitter::Tree> {
     // One parser per language per thread: read-time callers parse many small
     // files in a row, and Parser::new + set_language per call was measurable
     // against a sub-millisecond parse.
@@ -132,14 +137,41 @@ pub(crate) fn parse_with_cached_parser(content: &str, language: &str) -> Result<
                 v.insert(parser)
             }
         };
-        parser
-            .parse(content, None)
-            .ok_or_else(|| Error::from_reason("parser returned null tree".to_string()))
+        let tree = if let Some(ms) = budget_ms {
+            if ms == 0 {
+                return Err(Error::from_reason("parse budget exceeded"));
+            }
+            let started = Instant::now();
+            let budget = Duration::from_millis(u64::from(ms));
+            let mut cancelled = false;
+            let mut progress = |_: &tree_sitter::ParseState| {
+                cancelled = started.elapsed() >= budget;
+                cancelled
+            };
+            let bytes = content.as_bytes();
+            let tree = parser.parse_with_options(
+                &mut |offset, _| bytes.get(offset..).unwrap_or_default(),
+                None,
+                Some(ParseOptions::new().progress_callback(&mut progress)),
+            );
+            if tree.is_none() {
+                // Cancellation leaves resumable state in the cached parser.
+                // The next request must start from its own source instead.
+                parser.reset();
+                if cancelled {
+                    return Err(Error::from_reason("parse budget exceeded"));
+                }
+            }
+            tree
+        } else {
+            parser.parse(content, None)
+        };
+        tree.ok_or_else(|| Error::from_reason("parser returned null tree".to_string()))
     })
 }
 
-fn parse_tree_inner(content: &str, language: &str) -> Result<TreeBuffers> {
-    let tree = parse_with_cached_parser(content, language)?;
+fn parse_tree_inner(content: &str, language: &str, budget_ms: Option<u32>) -> Result<TreeBuffers> {
+    let tree = parse_with_cached_parser_budget(content, language, budget_ms)?;
 
     // ASCII: byte offsets ARE UTF-16 offsets and tree-sitter's byte columns
     // are code-unit columns. Only a non-ASCII file pays for the prefix table.
@@ -330,7 +362,9 @@ pub fn tree_names(language: String) -> Option<TreeNames> {
 /// Parse `content` with the native grammar for `language` and return the
 /// whole tree. The walk is a cursor loop, not recursion, so deep nesting
 /// needs no stack guard; a missing grammar surfaces as a napi error.
+/// An optional request budget cancels parsing at progress callbacks. It does
+/// not interrupt external scanners or bound tree serialization.
 #[napi]
-pub fn parse_tree(content: String, language: String) -> Result<TreeBuffers> {
-    parse_tree_inner(&content, &language)
+pub fn parse_tree(content: String, language: String, budget_ms: Option<u32>) -> Result<TreeBuffers> {
+    parse_tree_inner(&content, &language, budget_ms)
 }

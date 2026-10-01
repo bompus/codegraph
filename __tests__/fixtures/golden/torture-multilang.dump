@@ -1486,7 +1486,7 @@
 {"id":"variable:fb450996c12f335b36201ead67a34f64","kind":"variable","name":"INIT_MAP","qualified_name":"INIT_MAP","file_path":"torture.py","language":"python","start_line":54,"end_line":54,"start_column":0,"end_column":26,"docstring":null,"signature":"= {\"a\": helper()}","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:feb330d554c5d0caaa8978323a006e52","kind":"variable","name":"MD_BARE","qualified_name":"MD_BARE","file_path":"torture.rb","language":"ruby","start_line":238,"end_line":238,"start_column":0,"end_column":21,"docstring":null,"signature":"= 'README.md'","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fedacda34e94b85718ac655a74368326","kind":"variable","name":"okG","qualified_name":"okG","file_path":"torture.lua","language":"lua","start_line":12,"end_line":12,"start_column":6,"end_column":9,"docstring":null,"signature":"= pcall(require, \"app.guarded\")","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (1919)
+== edges (1915)
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"class:25244cbdbe3e9bc720df9fc4d54fac0a","kind":"extends","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"app::Config\"}","line":98,"col":35,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:0795ac46f5bef3826c20039a05014ebc","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:0083dc18baa2b629e8572db20ba2b464","target":"method:35a476809e2727e80d7f2c8c404180b2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -2799,13 +2799,9 @@
 {"source":"file:torture.tsx","target":"function:f00a265ed388e20f65b3357ab065773e","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"function:f11355267c15b025e65a025974c2a4d1","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"import:29c3cc32eeee07c3c2b96bf6f1b275d2","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:torture.tsx","target":"import:29c3cc32eeee07c3c2b96bf6f1b275d2","kind":"imports","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"./side-effect\"}","line":7,"col":0,"provenance":null}
 {"source":"file:torture.tsx","target":"import:4935bc32d5f33e8f95c3cb009bf0935d","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:torture.tsx","target":"import:4935bc32d5f33e8f95c3cb009bf0935d","kind":"imports","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"./default-module\"}","line":6,"col":0,"provenance":null}
 {"source":"file:torture.tsx","target":"import:7bff5cb286a60587ad04b8eed5de0e67","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:torture.tsx","target":"import:7bff5cb286a60587ad04b8eed5de0e67","kind":"imports","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"./namespace-module\"}","line":5,"col":0,"provenance":null}
 {"source":"file:torture.tsx","target":"import:92cf06e18d12ccca19cc4fcd24ce1065","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
-{"source":"file:torture.tsx","target":"import:92cf06e18d12ccca19cc4fcd24ce1065","kind":"imports","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"qualified-name\",\"refName\":\"./helpers\"}","line":8,"col":0,"provenance":null}
 {"source":"file:torture.tsx","target":"import:d3f11476b3c70d68f9f9724f3e6ab699","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"interface:a05baa699fc9324830859524f09604c9","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:torture.tsx","target":"type_alias:600473b4a3158649443b2f214febf906","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -3406,7 +3402,7 @@
 {"source":"variable:36e608fb368763b7f8a74a69f477cec7","target":"function:692077921d04b315880bc35a0bc872a9","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"view\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":49,"col":24,"provenance":null}
 {"source":"variable:6b7262d2883839c6f601126f4dd59e9b","target":"function:d8f9c30c4ee99a9302a150e8eed67acf","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"TargetCb\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":14,"col":9,"provenance":null}
 {"source":"variable:788d75a828c79f9847e0be0e2b73a196","target":"variable:8fef25ea8abe486ee94190ed47c3644b","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
-== refs (1295)
+== refs (1299)
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Mix2","reference_kind":"implements","line":34,"col":37,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Mix2"}
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Paint","reference_kind":"implements","line":34,"col":59,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Paint"}
 {"from_node_id":"class:066eb79e83cf3105cebd14593747068f","reference_name":"BaseService","reference_kind":"extends","line":13,"col":14,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"BaseService"}
@@ -3747,7 +3743,11 @@
 {"from_node_id":"file:torture.scala","reference_name":"xs.drop","reference_kind":"calls","line":117,"col":54,"candidates":null,"file_path":"torture.scala","language":"scala","status":"failed","name_tail":"drop"}
 {"from_node_id":"file:torture.swift","reference_name":"Foundation","reference_kind":"imports","line":1,"col":0,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"Foundation"}
 {"from_node_id":"file:torture.swift","reference_name":"TortureKit","reference_kind":"imports","line":213,"col":0,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"TortureKit"}
+{"from_node_id":"file:torture.tsx","reference_name":"./default-module","reference_kind":"imports","line":6,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"/default-module"}
 {"from_node_id":"file:torture.tsx","reference_name":"./dynamic-module","reference_kind":"imports","line":211,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"/dynamic-module"}
+{"from_node_id":"file:torture.tsx","reference_name":"./helpers","reference_kind":"imports","line":8,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"/helpers"}
+{"from_node_id":"file:torture.tsx","reference_name":"./namespace-module","reference_kind":"imports","line":5,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"/namespace-module"}
+{"from_node_id":"file:torture.tsx","reference_name":"./side-effect","reference_kind":"imports","line":7,"col":0,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"/side-effect"}
 {"from_node_id":"file:torture.tsx","reference_name":"CONFIG_TABLE","reference_kind":"imports","line":8,"col":19,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"CONFIG_TABLE"}
 {"from_node_id":"file:torture.tsx","reference_name":"DefaultThing","reference_kind":"function_ref","line":201,"col":31,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"DefaultThing"}
 {"from_node_id":"file:torture.tsx","reference_name":"DefaultThing","reference_kind":"imports","line":6,"col":7,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"DefaultThing"}

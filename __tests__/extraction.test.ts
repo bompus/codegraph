@@ -9799,8 +9799,9 @@ function greet() {
     expect(componentNode?.name).toBe('Static');
     expect(componentNode?.language).toBe('vue');
 
-    // Only the component node should exist (no script nodes)
-    expect(result.nodes.length).toBe(1);
+    // A scriptless component has its file parent and no script nodes.
+    expect(result.nodes.map((n) => n.kind).sort()).toEqual(['component', 'file']);
+    expect(result.edges).toContainEqual(expect.objectContaining({ source: 'file:Static.vue', target: componentNode!.id, kind: 'contains' }));
   });
 
   it('should create containment edges from component to script nodes', () => {

@@ -178,6 +178,7 @@ impl KernelResolver {
             &r.reference_name
         };
         let pre_pass = probe!(r, "pre-pass", is_nix_path_import_ref(r)
+            || is_js_path_import_ref(r)
             || self.has_any_possible_match_in(existence, &r.language)
             || self.matches_any_import(r)?
             || self.framework_claims(&r.reference_name));

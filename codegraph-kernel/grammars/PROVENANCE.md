@@ -19,3 +19,8 @@ Phase 4 notes record the kind-table drift.
 | objc | npm tree-sitter-objc 2.1.0 (the revision tree-sitter-wasms 0.1.13 built; wasm sha 7c1b5bfdca7e64b6…) | package `src/` | ABI 14; replaces the crates.io 3.0.2 pin (35 kinds differed) |
 | solidity | JoranHonig/tree-sitter-solidity | b239a95f (the revision tree-sitter-wasms 0.1.13 pinned) | ABI 14; replaces the crates.io 1.2.13 pin (39 kinds differed) |
 | cfml, cfscript, cfquery, cfml-common | cfmleditor/tree-sitter-cfml | a224ff10 (2026-06-30, the last commit before the 2026-07-02 vendoring) | three grammars sharing `common/scanner.h` + `tag.h` (include paths rewritten to `../cfml-common/`); ABI 15 |
+
+The COBOL scanner also supports the `CGWIDE` sequence-area sentinel for
+preprocessed free-format source. Its sequence-area loop stops at EOF and
+CR/LF boundaries, so a short final line cannot spin at EOF or consume the
+next line. A boundary with no consumed sequence-area text returns no token.

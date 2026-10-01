@@ -132,13 +132,15 @@ direct calls from inline handlers. They do not add Screens navigation.
 `http-routing.test.ts` covers all nine through full indexing and imported-handler
 resolution, as well as false-positive controls, prefixes and same-file mounts.
 
-Nuxt file routing in `frameworks/vue.ts` now includes root index pages, `index`
-folders anywhere in the path, a `calls` link from each page route to its own
-file's component (a `nuxt-page:` reference, since every `index.vue` shares a
-name), Nuxt 4 route groups, server method suffixes, `server/routes/` and server catch-all
-segments. `nuxt-routes.test.ts` checks extraction and imported-handler resolution;
-the existing Next Pages/App Router and Vue navigation tests remain controls.
-This update does not re-verify the older coverage rows above.
+Nuxt file routing in `frameworks/vue.ts` includes root index pages, `index`
+folders anywhere in the path, Nuxt 4 route groups, server method suffixes,
+`server/routes/` and server catch-all segments. Each page route calls the component
+extracted from the same file. `page-component.ts` resolves that exact file's
+component, including scriptless pages, without choosing a same-named component
+elsewhere. Astro pages use the same call contract. `nuxt-routes.test.ts` checks
+extraction and imported-handler resolution; the existing Next Pages/App Router
+and Vue navigation tests remain controls. The older coverage rows above retain
+their recorded measurements.
 
 Untouched official source checks (routes and indexing, no application execution):
 
@@ -412,3 +414,26 @@ Interface dispatch synthesis links supported base methods to concrete overrides.
 ### Express inline handler bodies
 
 Express uses the last registration argument as the handler, excluding a trailing comma. Inline arrows and function expressions contribute their body calls, including handlers inside wrapper calls and chained `router.route(path)` registrations. An earlier inline middleware does not replace a named final handler. Regression coverage is in `__tests__/express-inline-function-handler.test.ts`.
+
+
+### Single-file component ownership
+
+`extraction/sfc-script.ts` folds Vue, Svelte and Astro script results into one
+whole-file node containing the component. Top-level script members have the
+component as their only parent; nested symbols retain their script parent. Vue
+`<script setup>`, Svelte instance scripts and Astro frontmatter
+assign top-level calls and references, including constant initializers, to the
+component. Imports, module-level execution and Astro browser scripts remain with the file. Svelte
+recognizes `context="module"` and `<script module>`. The native embedded-block
+seam preserves literal metadata and rebases binding scopes and lines to full-file
+positions. `sfc-component-owns-script.test.ts` covers hierarchy and execution
+ownership.
+
+### Rails resource action filters
+
+`frameworks/ruby.ts` reads literal `only:` and `except:` action filters for both
+`resources` and `resource`. Supported forms are symbol/string arrays, a single
+symbol or string, `%i`/`%w` lists with brackets or parentheses, and hash-rocket
+options such as `:only => [:index, :show]`. These filters restrict which REST
+actions receive routes; namespaces, scopes, nested resources and member/collection
+blocks keep their existing path and controller rules.

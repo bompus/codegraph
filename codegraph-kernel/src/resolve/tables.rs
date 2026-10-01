@@ -364,7 +364,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
                 || angular_lazy_re().is_match(name)
         }
         "astro" => {
-            name == "astro-page-component" || name.starts_with("astro-href:") || name == "Astro.redirect"
+            name.starts_with("page-component:") || name.starts_with("astro-href:") || name == "Astro.redirect"
         }
         "cics" => name.starts_with("cics-transid:"),
         "django" => name == "_iterable_class" || name.ends_with(".urls"),
@@ -394,7 +394,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         "vue-router" => {
             vue_nav_re().is_match(name) || name.starts_with("import:") || name.starts_with("layout:")
         }
-        "vue" => name.starts_with("nuxt-page:"),
+        "vue" => name.starts_with("page-component:"),
         "aspnet" | "express" | "expo-modules" | "expo-modules-js" | "fabric-view" | "fastapi" | "flask"
         | "go" | "goframe" | "http-routing" | "nestjs" | "nuxt" | "react-router-files" | "redwood"
         | "rust" | "svelte"
@@ -505,12 +505,27 @@ pub(super) fn is_nix_path_import_ref(r: &ResolveRefIn) -> bool {
         && !r.reference_name.chars().any(|c| c.is_whitespace() || "{}()[];\"'<>$".contains(c))
 }
 
+/// A JS-family module path names a file, never an imported symbol. Bare
+/// packages keep their existing import handling; slash paths and `#`
+/// specifiers retain the external-package and configured-alias checks.
+pub(super) fn is_js_path_import_ref(r: &ResolveRefIn) -> bool {
+    let name = r.reference_name.as_str();
+    r.reference_kind == "imports"
+        && is_esm_import_language(&r.language)
+        && (name.starts_with("./")
+            || name.starts_with("../")
+            || name == "."
+            || name == ".."
+            || name.starts_with('#')
+            || name.contains('/'))
+}
+
 /// resolveOneInner's import-only refs: a PHP include path, a COBOL copybook,
-/// a Nix path import or any Terraform ref resolves through the import arm
+/// a Nix or JS module path import, or any Terraform ref, resolves through the import arm
 /// (and frameworks) only — a name match would bind an unrelated same-named
 /// file or cross a module boundary Terraform forbids.
 pub(super) fn is_import_only_ref(r: &ResolveRefIn) -> bool {
-    is_php_include_path_ref(r) || is_cobol_copybook_ref(r) || is_nix_path_import_ref(r) || r.language == "terraform"
+    is_php_include_path_ref(r) || is_cobol_copybook_ref(r) || is_nix_path_import_ref(r) || is_js_path_import_ref(r) || r.language == "terraform"
 }
 
 /// isPhpIncludePathRef (import-resolver.ts): a PHP `imports` ref shaped like

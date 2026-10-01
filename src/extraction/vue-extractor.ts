@@ -2,6 +2,7 @@ import { Binding, Node, Edge, ExtractionResult, ExtractionError, UnresolvedRefer
 import { generateNodeId } from './tree-sitter-helpers';
 import { extractEmbeddedBlock } from './block-extract';
 import { isLanguageSupported } from './grammars';
+import { foldScriptResult, sfcFileNode } from './sfc-script';
 import { vueOptionsMembers } from './vue-options-api';
 
 /**
@@ -32,7 +33,7 @@ function kebabToPascal(name: string): string {
  *
  * Vue SFCs are multi-language (script + template + style). Rather than
  * parsing the full Vue grammar, we extract the <script> block content
- * and delegate it to the TypeScript/JavaScript extractor (kernel first, wasm fallback).
+ * and delegate it to the TypeScript/JavaScript extractor (kernel first).
  *
  * Every .vue file produces a component node (Vue components are always importable).
  */
@@ -58,8 +59,9 @@ export class VueExtractor {
     const startTime = Date.now();
 
     try {
-      // Create component node for the .vue file itself
+      this.nodes.push(sfcFileNode(this.filePath, this.source, 'vue'));
       const componentNode = this.createComponentNode();
+      this.edges.push({ source: `file:${this.filePath}`, target: componentNode.id, kind: 'contains' });
 
       // Extract and process script blocks
       const scriptBlocks = this.extractScriptBlocks();
@@ -248,7 +250,7 @@ export class VueExtractor {
       return;
     }
 
-    // Kernel first, wasm fallback (block-extract.ts)
+    // The embedded-block seam preserves native extraction and literal metadata.
     const result = extractEmbeddedBlock(this.filePath, block.content, scriptLanguage);
 
     // An Options API component's functions — `methods`, `computed`, `watch`,
@@ -256,56 +258,11 @@ export class VueExtractor {
     // part of the file. Name each one, and hand it the calls written inside it.
     if (!block.isSetup) this.addOptionsMembers(block, result, componentNodeId);
 
-    // Offset line numbers from script block back to .vue file positions
-    for (const node of result.nodes) {
-      node.startLine += block.startLine;
-      node.endLine += block.startLine;
-      node.language = 'vue'; // Mark as vue, not TS/JS
-
-      this.nodes.push(node);
-
-      // Add containment edge from component to this node
-      this.edges.push({
-        source: componentNodeId,
-        target: node.id,
-        kind: 'contains',
-      });
-    }
-
-    // Offset edges (they reference line numbers)
-    for (const edge of result.edges) {
-      if (edge.line) {
-        edge.line += block.startLine;
-      }
-      this.edges.push(edge);
-    }
-
-    // Offset unresolved references
-    for (const ref of result.unresolvedReferences) {
-      ref.line += block.startLine;
-      ref.filePath = this.filePath;
-      ref.language = 'vue';
-      this.unresolvedReferences.push(ref);
-    }
-
-    // Offset binding rows (scopes and lines are block-relative)
-    for (const b of result.bindings ?? []) {
-      this.bindings.push({
-        ...b,
-        filePath: this.filePath,
-        scopeStart: b.scopeStart + block.startLine,
-        scopeEnd: b.scopeEnd + block.startLine,
-        line: b.line + block.startLine,
-      });
-    }
-
-    // Carry over errors
-    for (const error of result.errors) {
-      if (error.line) {
-        error.line += block.startLine;
-      }
-      this.errors.push(error);
-    }
+    foldScriptResult(
+      result,
+      { filePath: this.filePath, componentNodeId, lineOffset: block.startLine, language: 'vue', perInstance: block.isSetup },
+      { nodes: this.nodes, edges: this.edges, unresolvedReferences: this.unresolvedReferences, errors: this.errors, bindings: this.bindings }
+    );
   }
 
   /**

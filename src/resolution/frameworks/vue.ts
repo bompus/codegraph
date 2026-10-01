@@ -11,6 +11,7 @@ import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { httpHandlerReferences } from './http-routing';
 import { dependsOn } from './package-deps';
+import { pageComponentRef, resolvePageComponent } from './page-component';
 
 /** The languages a Vue app's scripts are written in. */
 const VUE_SCRIPT_LANGUAGES: ReadonlySet<string> = new Set(['vue', 'javascript', 'typescript', 'tsx', 'jsx']);
@@ -79,10 +80,10 @@ const NUXT_AUTO_IMPORTS = new Set([
 const NUXT_VIRTUAL_MODULES = ['#imports', '#components', '#app', '#build', '#head'];
 
 /** Reference name prefix binding a Nuxt page route to its own file's component. */
-const NUXT_PAGE = 'nuxt-page:';
 
 export const vueResolver: FrameworkResolver = {
   name: 'vue',
+  claimsReference: (name) => name.startsWith('page-component:'),
 
   detect(context: ResolutionContext): boolean {
     // Check for vue or nuxt in package.json
@@ -104,16 +105,7 @@ export const vueResolver: FrameworkResolver = {
     return allFiles.some((f) => f.endsWith('.vue'));
   },
 
-  claimsReference: (name) => name.startsWith(NUXT_PAGE),
-
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    if (ref.referenceName.startsWith(NUXT_PAGE)) {
-      const file = ref.referenceName.slice(NUXT_PAGE.length);
-      const component = context.getNodesInFile(file).find((n) => n.kind === 'component');
-      return component
-        ? { original: ref, targetNodeId: component.id, confidence: 1, resolvedBy: 'framework' }
-        : null;
-    }
     // Vue's macros, auto-imports and components are a script's, never a
     // backend's: mealie's Python `QueryFilterBuilder(...)` is not the
     // `QueryFilterBuilder.vue` component.
@@ -221,8 +213,9 @@ export const nuxtResolver: FrameworkResolver = {
     return context.getAllFiles().some((f) => /(?:^|\/)nuxt\.config\.(?:[cm]?[jt]s)$/.test(f));
   },
 
-  resolve(): ResolvedRef | null {
-    return null;
+  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+    // A page route names the component its file is.
+    return resolvePageComponent(ref, context);
   },
 
   extract(filePath: string, content: string) {
@@ -238,9 +231,8 @@ export const nuxtResolver: FrameworkResolver = {
     if (pagesIndex !== -1 && normalized.endsWith('.vue')) {
       const routePath = filePathToNuxtRoute(normalized, pagesIndex + '/pages/'.length);
       if (routePath !== null) {
-        const id = `route:${filePath}:${routePath}:1`;
-        nodes.push({
-          id,
+        const route: Node = {
+          id: `route:${filePath}:${routePath}:1`,
           kind: 'route',
           name: routePath,
           qualifiedName: `${filePath}::route:${routePath}`,
@@ -251,20 +243,9 @@ export const nuxtResolver: FrameworkResolver = {
           endColumn: 0,
           language: 'vue',
           updatedAt: now,
-        });
-        // The page IS this file's component. A bare name would be ambiguous
-        // (every `index.vue` is a component named `index`), so the reference
-        // names the file and `resolve` binds it to that file's component.
-        // `calls`, as every component-backed screen binds (route-roots.ts).
-        references.push({
-          fromNodeId: id,
-          referenceName: `${NUXT_PAGE}${filePath}`,
-          referenceKind: 'calls',
-          line: 1,
-          column: 0,
-          filePath,
-          language: 'vue',
-        });
+        };
+        nodes.push(route);
+        references.push(pageComponentRef(route, '.vue', 'vue'));
       }
     }
 

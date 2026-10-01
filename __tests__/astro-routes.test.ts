@@ -172,7 +172,7 @@ export function POST(){return getItems()}`,
       write('src/pages/api.ts', 'export function GET(){return new Response("ok")}');
       const script = `const {CodeGraph}=require(${JSON.stringify(path.resolve('dist/index.js'))});
 (async()=>{const cg=await CodeGraph.init(${JSON.stringify(dir)},{index:true});
-console.log(JSON.stringify(cg.getNodesByKind('route').map(r=>[r.name,cg.getOutgoingEdges(r.id).filter(e=>e.kind==='references').map(e=>cg.getNode(e.target)?.name)]).sort()));cg.close();})().catch(e=>{console.error(e);process.exit(1)});`;
+console.log(JSON.stringify(cg.getNodesByKind('route').map(r=>[r.name,cg.getOutgoingEdges(r.id).filter(e=>e.kind==='references'||e.kind==='calls').map(e=>[cg.getNode(e.target)?.name,e.kind,cg.getNode(e.target)?.filePath])]).sort()));cg.close();})().catch(e=>{console.error(e);process.exit(1)});`;
       const output = execFileSync(process.execPath, ['-e', script], {
         encoding: 'utf8',
         timeout: 60000,
@@ -184,8 +184,8 @@ console.log(JSON.stringify(cg.getNodesByKind('route').map(r=>[r.name,cg.getOutgo
         },
       });
       expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual([
-        ['/', ['index']],
-        ['GET /api', ['GET']],
+        ['/', [['index', 'calls', 'src/pages/index.astro']]],
+        ['GET /api', [['GET', 'references', 'src/pages/api.ts']]],
       ]);
     },
   );

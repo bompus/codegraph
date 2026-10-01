@@ -132,7 +132,7 @@
 {"id":"variable:d66985bd46f73c589bf626a476ca4dd9","kind":"variable","name":"name","qualified_name":"name","file_path":"nix/module.nix","language":"nix","start_line":6,"end_line":6,"start_column":4,"end_column":61,"docstring":null,"signature":"= mkOption { type = types.str; default = \"world\"; }","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:ec44d88622b9664503f7698cd63e9df9","kind":"variable","name":"options.services.greeter","qualified_name":"options.services.greeter","file_path":"nix/module.nix","language":"nix","start_line":4,"end_line":7,"start_column":2,"end_column":4,"docstring":null,"signature":"= {\n    enable = mkEnableOption \"greeter\";\n    name = mkOption { type = types.str; default = \"world\"; ...","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fc46c3957e062c09f1d7dfd0c4e39e68","kind":"variable","name":"WS-COUNT","qualified_name":"WS-COUNT","file_path":"cobol/GREETWS.cpy","language":"cobol","start_line":2,"end_line":2,"start_column":7,"end_column":50,"docstring":null,"signature":"01 WS-COUNT PIC 9(4) VALUE ZERO","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (161)
+== edges (162)
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"class:ef405d3eb35a6ee244944eec0c93b6d4","kind":"extends","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Ownable\"}","line":5,"col":0,"provenance":null}
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"field:084206ff4dcb8c3b848851b6f90bb652","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"field:d5355ecdd0413fd3b56cdb0e7f75e0d5","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -173,6 +173,7 @@
 {"source":"class:ef405d3eb35a6ee244944eec0c93b6d4","target":"method:8774622dcc04ad898541b769e736065f","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:ef405d3eb35a6ee244944eec0c93b6d4","target":"method:bce8c6cce85fec8bd2df9223eaf629de","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:arkts/Greeter.ets","target":"class:3e6591165ac27455fccf18fc888a0823","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
+{"source":"file:arkts/Greeter.ets","target":"file:arkts/util.ets","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"./util\"}","line":1,"col":0,"provenance":null}
 {"source":"file:arkts/Greeter.ets","target":"function:5616f3b8fc746c8c0c09a11ece0dbf24","kind":"imports","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"import\",\"refName\":\"formatName\"}","line":1,"col":9,"provenance":null}
 {"source":"file:arkts/Greeter.ets","target":"import:00cbe392ac9a605f9cae41475a23f438","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:arkts/Greeter.ets","target":"struct:00b863e6b6e7bd6569a36e94f72d3aaa","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -294,11 +295,10 @@
 {"source":"struct:00b863e6b6e7bd6569a36e94f72d3aaa","target":"property:81982deaee358e155a33af725d85bd97","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"struct:8050a2eb89168a19b5ac70b577047b96","target":"field:e2c04abad409b6092124d38ce58616bb","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"variable:62c285bb0e5c30272251db2b4966175f","target":"class:8da3dc4378a8ad4becad38a01a3d4d63","kind":"references","metadata":"{\"framework\":\"terraform\",\"confidence\":0.95,\"resolvedBy\":\"framework\",\"refName\":\"aws_instance.web\"}","line":14,"col":26,"provenance":null}
-== refs (55)
+== refs (54)
 {"from_node_id":"class:85e303095ea33303cdff1b72c25fb6db","reference_name":"IGreeter","reference_kind":"implements","line":1,"col":43,"candidates":null,"file_path":"cfml/Greeter.cfc","language":"cfml","status":"failed","name_tail":"IGreeter"}
 {"from_node_id":"class:8da3dc4378a8ad4becad38a01a3d4d63","reference_name":"module.network:output.subnet_id","reference_kind":"references","line":10,"col":18,"candidates":null,"file_path":"terraform/main.tf","language":"terraform","status":"failed","name_tail":"subnet_id"}
 {"from_node_id":"class:aa6851d523fe7c352fff4cc32fdcb79f","reference_name":"NSObject","reference_kind":"extends","line":5,"col":21,"candidates":null,"file_path":"objc/Greeter.h","language":"objc","status":"failed","name_tail":"NSObject"}
-{"from_node_id":"file:arkts/Greeter.ets","reference_name":"./util","reference_kind":"imports","line":1,"col":0,"candidates":null,"file_path":"arkts/Greeter.ets","language":"arkts","status":"failed","name_tail":"/util"}
 {"from_node_id":"file:nix/default.nix","reference_name":"builtins.concatStringsSep","reference_kind":"calls","line":14,"col":25,"candidates":null,"file_path":"nix/default.nix","language":"nix","status":"failed","name_tail":"concatStringsSep"}
 {"from_node_id":"file:nix/default.nix","reference_name":"map","reference_kind":"calls","line":7,"col":14,"candidates":null,"file_path":"nix/default.nix","language":"nix","status":"failed","name_tail":"map"}
 {"from_node_id":"file:nix/default.nix","reference_name":"map","reference_kind":"calls","line":9,"col":9,"candidates":null,"file_path":"nix/default.nix","language":"nix","status":"failed","name_tail":"map"}

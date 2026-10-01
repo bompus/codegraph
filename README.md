@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`81e08b7`](https://github.com/colbymchenry/codegraph/commit/81e08b76), after v1.6.1, 2026-10-01) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`e12f5bbb`](https://github.com/colbymchenry/codegraph/commit/e12f5bbb925b91e0fd1f641c67db34065cc6b7f4), after v1.6.1, 2026-10-01) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -102,6 +102,8 @@ Compared with upstream `main` at `290e03f`. Each item was checked against upstre
 
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
+Vue, Svelte and Astro files have one file node containing their component. The component contains top-level script members, while nested functions and methods keep their own parents. Vue `<script setup>`, Svelte instance scripts and Astro frontmatter assign top-level calls and references, including constant initializers, to the component. Imports, module-level execution and Astro browser scripts remain with the file. Svelte recognizes both `context="module"` and the `module` attribute.
+
 Dispatch and framework coverage the fork adds, by kind:
 
 **Dispatch links**
@@ -118,7 +120,11 @@ Kotlin infix expressions contribute call edges with parenthesized operands and c
 
 Kotlin `when` guards, open-ended ranges, multi-dollar strings and nullable function-type receivers retain their source offsets during normalization. Multi-dollar strings retain their interpolation threshold. C++ namespace-opening macros and aliases use the declarations visible to each caller; argument-compatible overloads resolve when the declaration and call supply enough evidence, and ambiguous owners remain unresolved. Objective-C `super` calls follow the superclass, Solidity bare calls follow contract inheritance, and Erlang bare calls honor explicit module imports.
 
-Lua local aliases follow members exported by a required project module, including renamed members and bounded re-exports. Standard-library and external-module aliases remain unresolved. CommonJS calls follow explicit default exports, module forwarding and `require('./module').member` bindings. TypeScript namespace re-exports retain their namespace boundary and allow nested member calls. C++ access macros and mid-declaration conditionals preserve members, indexing the first branch of each normalized conditional. Visible class-scoped aliases and declared complex receivers retain their method owners; unsubstituted template parameters and ambiguous owners remain unresolved.
+Lua local aliases follow members exported by a required project module, including renamed members and bounded re-exports. Standard-library and external-module aliases remain unresolved. CommonJS calls follow explicit default exports, module forwarding and `require('./module').member` bindings.
+
+Literal local `require` calls also create file dependencies, including side-effect calls and calls inside functions. Computed specifiers, external packages and a locally shadowed `require` do not create these dependencies.
+
+TypeScript namespace re-exports retain their namespace boundary and allow nested member calls. C++ access macros and mid-declaration conditionals preserve members, indexing the first branch of each normalized conditional. Visible class-scoped aliases and declared complex receivers retain their method owners; unsubstituted template parameters and ambiguous owners remain unresolved.
 
 Java and Kotlin enum constants retain their own methods and body calls. Explicit external imports own their names, while project imports follow nested types and aliases. Scala block locals and package objects, C# namespaces and nested types, and Java types follow their lexical and import scopes. Calls distinguish overloads by argument shape or Swift labels; receiver calls keep the owner supplied by construction, typed properties, Kotlin DSL lambdas or pytest fixtures. Python package imports follow bounded re-exports. Framework name heuristics start in the calling file and apply the native visibility checks. React and Express naming conventions require imports to reach another file. NestJS provider lookup also supports convention siblings in the same directory. Minified bundles, private component scripts and test suites do not supply unrelated production call targets.
 
@@ -138,7 +144,7 @@ React Router links and `navigate` calls can use a route-config object's `getHref
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
 | Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file behind an NgModule's routing module or an `export *` barrel sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
-| Astro routes | Pages linked to their components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
+| Astro routes | Pages calling their own file's components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
 | RedwoodSDK routes | `defineApp` route trees (`route`, `index`, `render`, `layout`, `prefix`, method tables), linked to their handlers |
@@ -505,7 +511,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **NestJS** | `@Controller` + `@Get/@Post/...` (with `RouterModule` prefixes, `setGlobalPrefix` and URI versioning), GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
 | **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
-| **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax, `resources` / `resource`, and the paths and controller modules of `namespace`, `scope`, nested resources and `member` / `collection` blocks; a Rails engine's `config/routes.rb` too |
+| **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax, `resources` / `resource` with literal `only:` / `except:` action filters, and the paths and controller modules of `namespace`, `scope`, nested resources and `member` / `collection` blocks; a Rails engine's `config/routes.rb` too |
 | **Spring** | `@GetMapping`, `@PostMapping`, `@RequestMapping` on methods |
 | **Play** | `GET`/`POST`/… verb routes in `conf/routes` → `Controller.method` actions (Scala + Java), including projects kept in subdirectories |
 | **Gin / chi / gorilla / mux** | `r.GET(...)`, `router.HandleFunc(...)` |
@@ -513,7 +519,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods and FastEndpoints `Configure()` verb calls |
 | **Vapor** | `app.get("x", use: handler)` and closure handlers |
 | **Analog** | `src/app/pages/**/*.page.ts` files (`index`, dot segments, `[param]`, `[...rest]` and `(group)` names) bound to the page's default component class; a page with a same-named folder is a layout, not a route | — |
-| **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page links to its component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
+| **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page calls its own file's component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
 | **RedwoodSDK** | Literal `defineApp([...])` trees with `route`, `index`, `render`, `layout` and `prefix`, plus `{ get, post, … }` method tables; each route links to its final handler and becomes a page once that handler is shown to return JSX | — |
 
 ### Routers — routes *and* the navigation between them
@@ -526,7 +532,7 @@ These frameworks additionally emit **`navigates`** edges: the function that send
 | **Next.js** | App Router `app/**/page.tsx` and Pages Router pages (`(group)` stripped, `[slug]` → `:slug`); `app/api/**/route.ts` exports and `pages/api/*` are endpoints, not screens | `router.push` / `replace` / `prefetch`, `redirect()` / `permanentRedirect()` in a server action or page, `NextResponse.redirect(new URL(…))` in middleware, `<Link href>` and internal `<a href>` |
 | **React Router** | `<Route path component/element>` (v5 and v6), `createBrowserRouter` / `createHashRouter` / `createMemoryRouter` arrays with nested `children`, constant paths, `Component` and lazy module exports, framework mode's `app/routes.ts` (`route`, `index`, `layout`, `prefix`), and the default file convention under `app/routes/` (Remix, or React Router with `flatRoutes()`: dot nesting, index and pathless segments, `$param`, optional `($segment)` and `$` splats), each bound to its module's default component | `history.push` / `replace`, `useNavigate`'s `navigate`, a loader's `redirect`, `<Link to>` / `<NavLink to>` / `<Navigate to>` / v5's `<Redirect to>` / react-router-bootstrap's `<LinkContainer to>`, and a `styled(Link)` wrapper |
 | **TanStack Router** | `createFileRoute('/posts/$postId')` (file-based) and `createRoute({ path, getParentRoute })` composed up its parent chain (code-based); `_pathless` segments, `(group)` folders, `__root` and `<Outlet/>` layouts are not addresses; TanStack Start `server.handlers` (and `createHandlers`) in those files become method-qualified endpoints (`GET /api/users`) | `navigate({ to })`, a thrown `redirect({ to })`, `<Link to>` / `<Navigate to>` — where `to` is the route PATTERN and the values ride beside it in `params` |
-| **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` / `new Router(...)` and the route tables it's given (`export const constantRoutes = [...]`, per-module route files), with the view each entry names — a lazy `() => import(…)` bound to its file — and `children` joined onto their parent's path, the parent being the layout around them; plus, in a Nuxt app, `pages/` file-based routes, each linked to its page component (`index` folders, root index pages, Nuxt 4 route groups), `server/api/` and `server/routes/` endpoints (method suffixes such as `.get.ts`, catch-alls) and route middleware | `router.push` / `replace`, `$router.push` / `this.$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
+| **Vue Router** / **Nuxt** | `createRouter({ routes: [...] })` / `new Router(...)` and the route tables it's given (`export const constantRoutes = [...]`, per-module route files), with the view each entry names — a lazy `() => import(…)` bound to its file — and `children` joined onto their parent's path, the parent being the layout around them; plus, in a Nuxt app, `pages/` file-based routes, each calling its own file's page component (`index` folders, root index pages, Nuxt 4 route groups), `server/api/` and `server/routes/` endpoints (method suffixes such as `.get.ts`, catch-alls) and route middleware | `router.push` / `replace`, `$router.push` / `this.$router.push`, Nuxt's `navigateTo`, `<router-link>` / `<RouterLink>` / `<NuxtLink>` — **by route name** (`push({ name: 'profile' })`) as well as by path |
 | **Solid Router** | Imported `Router`/`Route` JSX and route-config arrays (`path`, `component`, `children`) with static `lazy(() => import(...))` components. A table exported from another file as `RouteDefinition[]` (the official template's `routes.ts`) is read too, prefixed by where it is registered | — |
 | **SolidStart** | SolidStart 1 (`app.config` with `defineConfig`) and 2 (the `solidStart()` Vite plugin): `src/routes/` file routes (`[param]`, `[[optional]]`, `[...rest]`, `(group)` folders, `index`), each page bound to its default component; exported `GET`/`POST`/… functions in API route files become endpoints | — |
 | **Vike** | `+Page` files under `pages/` (filesystem routing, `index`, `(group)` folders, `@param` segments) and `+route` string overrides, each bound to its page component | — |
@@ -1019,9 +1025,9 @@ is written):
 | Kotlin | `.kt`, `.kts` | Full support |
 | Scala | `.scala`, `.sc` | Full support (classes, traits, objects, methods, type aliases, Scala 3 enums) |
 | Dart | `.dart` | Full support |
-| Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
-| Vue | `.vue` | Full support (script + script-setup extraction, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
-| Astro | `.astro` | Full support (frontmatter + script extraction, template component/call references, `src/pages/` routes) |
+| Svelte | `.svelte` | Full support (instance and module script extraction, Svelte 5 runes, SvelteKit routes) |
+| Vue | `.vue` | Full support (script + script-setup extraction with component ownership, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
+| Astro | `.astro` | Full support (component-owned frontmatter + browser-script extraction, template component/call references, `src/pages/` routes) |
 | Liquid | `.liquid` | Full support |
 | Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX form files) |
 | Lua | `.lua` | Full support (functions, methods with receivers, local variables, `require` imports, call edges) |

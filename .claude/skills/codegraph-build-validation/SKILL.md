@@ -97,6 +97,12 @@ Behavior that differs by platform (path resolution, drive letters, `SENSITIVE_PA
 
 The development host and default test target are Ubuntu under WSL. Run CodeGraph build and test commands through `fnm exec --using codegraph` so they use the supported Node 24 runtime, and have a Rust toolchain on PATH for the kernel. Platform-sensitive changes (file watching, sockets or named pipes, paths and symlinks, process lifecycle, and inotify limits) still need validation on every affected operating system.
 
+The **Highlight process lifecycle** pull-request job runs
+`node scripts/check-highlight-lifecycle.cjs` on Linux, Windows and macOS. It
+transpiles the production process adapter and uses a deliberately stuck helper
+to check deadline handling, queued requests, reaping, restart and shutdown. It
+does not load native grammars; native parse correctness uses the engine tests.
+
 ### Linux and containers
 
 Run Linux validation directly in WSL. Use Docker only when a clean container or PID-1 behavior is part of the test; Docker is optional isolation, not the default Linux route.
