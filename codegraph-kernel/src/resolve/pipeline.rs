@@ -259,7 +259,9 @@ impl KernelResolver {
             return Ok(outcome);
         }
         // matchBoundReceiverCall — claimed refs are terminal either way.
-        if is_binding_receiver_call(r) && !self.is_component_receiver_out_of_scope(r)? {
+        let namespace_chain = is_unresolved_js_member_call(r) && self.import_mappings(&r.file_path)?.iter()
+            .any(|m| m.is_namespace && m.local_name == r.reference_name.split('.').next().unwrap_or(""));
+        if is_binding_receiver_call(r) && !namespace_chain && !self.is_component_receiver_out_of_scope(r)? {
             match probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?) {
                 None => {
                     return Ok(self.refused());
@@ -288,6 +290,17 @@ impl KernelResolver {
         // isUnresolvedJsMemberCall — terminal null; framework candidates are
         // discarded by the TS `return null` as well.
         if is_unresolved_js_member_call(r) {
+            let root = r.reference_name.split('.').next().unwrap_or("");
+            let namespace = self.import_mappings(&r.file_path)?.iter().any(|m| m.is_namespace && m.local_name == root);
+            if namespace {
+                if let Some(c) = self.resolve_via_import_member(r)? {
+                    if matches!(c.node.kind.as_str(), "function" | "method" | "class" | "constant" | "variable") {
+                        if let Some(c) = self.gate_language(Some(c), r) {
+                            return self.finish(r, c, None, true);
+                        }
+                    }
+                }
+            }
             return Ok(ResolveOutcome::unresolved());
         }
         // A TS/JS/Python `x().y` call names the root's import, not the
@@ -432,6 +445,13 @@ impl KernelResolver {
             } else {
                 None
             });
+        }
+        if r.reference_kind == "calls" && is_esm_family(&r.language) && !self.is_shadowed_import_name(r)? {
+            // A failed imported call must not become a call to its require variable.
+            if cand.node.file_path == r.file_path && matches!(cand.node.kind.as_str(), "variable" | "constant") {
+                let rows = self.bindings(&r.file_path)?;
+                if rows.iter().any(|b| b.kind == "import" && b.name == r.reference_name && b.node_id.as_deref() == Some(cand.node.id.as_str())) { return Ok(None); }
+            }
         }
         let mut cand = cand;
         self.cap_chain_confidence(&mut cand, r)?;
@@ -630,6 +650,10 @@ impl KernelResolver {
 
     /// resolveOneInner's bare slice (a name with no separator).
     pub(super) fn resolve_bare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if let Some(result) = self.cpp_complex_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
+
         // resolveOneInner, bare slice:
         //   builtin/external → CFML/jvm/razor/phpStatic arms all dead →
         //   prefilter → frameworks (TS) → boundReceiver (dead) → chain guard

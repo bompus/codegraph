@@ -18,6 +18,7 @@ impl KernelResolver {
         if depth > 4 {
             return Ok(None);
         }
+        if r.language == "cpp" { if let Some(owner) = self.cpp_type_owner(ty, r, depth, false)? { return Ok(Some(owner)); } }
         if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && ty.contains('.') {
             let name = ty.rsplit('.').next().unwrap_or(ty);
             let owners: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| {

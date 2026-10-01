@@ -469,7 +469,9 @@ impl KernelResolver {
                 // `using T = int;` / `enum T` in a nearer scope hides an outer
                 // class `T`: the declaration constructs no class there.
                 if named.iter().any(|n| n.language == "cpp" && matches!(n.kind.as_str(), "type_alias" | "enum")) {
-                    return Ok(None);
+                    let Some(owner) = self.cpp_type_owner(&qualified, r, 0, true)? else { return Ok(None) };
+                    let expanded = r.clone().naming(&format!("::{}::{}/{argc}", owner.qualified_name, owner.name), "calls");
+                    return self.match_cpp_constructor(&expanded);
                 }
                 continue;
             }

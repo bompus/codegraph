@@ -343,6 +343,16 @@ impl KernelResolver {
             return false;
         }
         let Some(lines) = self.read_file(&candidate.file_path) else { return false };
+        let site = ResolveRefIn { row_id: None, from_node_id: candidate.id.clone(), reference_name: candidate.name.clone(), reference_kind: "references".to_string(), line: candidate.start_line, column: candidate.start_column, candidates: None, file_path: candidate.file_path.clone(), language: candidate.language.clone(), failure_reason: None };
+        if let Some(tree) = self.parsed_tree(&lines, &site) {
+            let mut node = super::iteration::descendant_for_position(tree.root_node(), lines.text(), ((site.line - 1).max(0) as usize, site.column.max(0) as usize));
+            while let Some(parent) = node.parent() {
+                if matches!(parent.kind(), "variable_declaration" | "function_declaration") {
+                    return lines.text()[parent.start_byte()..parent.end_byte()].trim_start().starts_with("local ");
+                }
+                node = parent;
+            }
+        }
         lines
             .get((candidate.start_line - 1).max(0) as usize)
             .is_some_and(|line| re!(r"^\s*local(?-u:\b)").is_match(line))

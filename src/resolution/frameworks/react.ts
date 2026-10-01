@@ -11,6 +11,7 @@ import { dependsOn } from './package-deps';
 import { detectLanguage } from '../../extraction/grammars';
 import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { resolveImportPath } from '../import-resolver';
+import { innermostBinding } from '../gates';
 
 export const reactResolver: FrameworkResolver = {
   name: 'react',
@@ -234,6 +235,135 @@ function constantPathValue(expr: string, fromFile: string, context: ResolutionCo
   const text = lines.slice(decl.startLine - 1, decl.endLine).join('\n');
   const open = text.indexOf('{', Math.max(0, text.search(new RegExp(`\\b${name}\\b`))));
   return open < 0 ? null : readObjectPath(text, open, keys);
+}
+
+/**
+ * The href a route-config object names — `paths.app.discussion.getHref(id)`
+ * or `paths.app.discussion.path` against `export const paths = { app: {
+ * discussion: { path: 'discussions/:discussionId', getHref: (id: string) =>
+ * \`/app/discussions/${id}\` } } }` (bulletproof-react's `config/paths.ts`)
+ * — as the string or template literal it returns, ready for the href reader.
+ * An optional query suffix is dropped; a whole-segment parameter stays a
+ * hole. Computed path fragments return null.
+ */
+export function configHrefExpression(expr: string, fromFile: string, context: ResolutionContext, line?: number): string | null {
+  const m = /^\s*([A-Za-z_$][\w$]*)((?:\s*\??\.\s*[A-Za-z_$][\w$]*)+)\s*(\((?:[^()]|\([^()]*\))*\))?\s*$/.exec(expr);
+  if (!m) return null;
+  const root = m[1]!;
+  const binding = line === undefined ? undefined : innermostBinding(context.getBindings?.(fromFile) ?? [], root, line);
+  if (binding && (binding.kind === 'param' || binding.kind === 'local')) return null;
+  const keys = m[2]!.split('.').map((k) => k.replace(/[?\s]/g, '')).filter(Boolean);
+  let file = fromFile;
+  let name = root;
+  const mapping = context.getImportMappings(fromFile, 'tsx').find((x) => x.localName === root) ??
+    context.getImportMappings(fromFile, 'typescript').find((x) => x.localName === root);
+  if (mapping) {
+    const resolved = resolveImportPath(mapping.source, fromFile, 'typescript', context);
+    if (!resolved) return null;
+    file = resolved;
+    if (mapping.exportedName && mapping.exportedName !== 'default' && mapping.exportedName !== '*') name = mapping.exportedName;
+  }
+  let decl: Node | undefined;
+  if (mapping) {
+    const imported = context.resolveImport?.({ fromNodeId: '', referenceName: root, referenceKind: 'references', line: line ?? 1, column: 0, filePath: fromFile, language: detectLanguage(fromFile) ?? 'typescript' });
+    decl = imported ? context.getNodeById?.(imported.targetNodeId) ?? undefined : undefined;
+    if (!decl || (decl.kind !== 'constant' && decl.kind !== 'variable')) return null;
+    file = decl.filePath;
+    name = decl.name;
+  } else {
+    decl = context.getNodesInFile(file).find((n) => n.name === name && (n.kind === 'constant' || n.kind === 'variable'));
+  }
+  if (!decl) return null;
+  const lines = context.readFile(file)?.split('\n') ?? [];
+  const declarationLines = lines.slice(decl.startLine - 1, decl.endLine);
+  if (declarationLines.length === 0) return null;
+  declarationLines[declarationLines.length - 1] = declarationLines.at(-1)!.slice(0, decl.endColumn);
+  declarationLines[0] = declarationLines[0]!.slice(decl.startColumn);
+  const text = declarationLines.join('\n');
+  const initializer = new RegExp(`(?:^|\\s)${name.replace(/\$/g, '\\$')}\\s*(?::[^=;]+)?=\\s*\\{`).exec(text);
+  if (!initializer) return null;
+  const open = initializer.index + initializer[0].length - 1;
+  let value = readObjectValue(text, open, keys);
+  if (value === null) return null;
+  // A function's value is what it returns: `(id: string) => \`/app/…\``, `() => { return '/'; }`.
+  if (m[3] !== undefined) {
+    const body = /^(?:async\s+)?(?:\([^()]*(?:\([^()]*\)[^()]*)*\)|[A-Za-z_$][\w$]*)\s*(?::\s*[^=]+?)?=>\s*/.exec(value);
+    if (!body) return null;
+    value = value.slice(body[0].length).trim();
+    if (value.startsWith('{')) value = /^\{\s*return\s+([\s\S]*?)\s*;?\s*}\s*$/.exec(value)?.[1] ?? '';
+  }
+  if (!/^[`'"]/.test(value)) return null;
+  const literalTree = parseSourceTreeSync(value, 'typescript');
+  const statement = literalTree?.rootNode.namedChildren[0];
+  const literal = statement?.namedChildren[0];
+  if (!literalTree || literalTree.rootNode.hasError || literalTree.rootNode.namedChildCount !== 1 || statement?.type !== 'expression_statement' || statement.namedChildCount !== 1 || !literal || !['string', 'template_string'].includes(literal.type)) return null;
+  // `/auth/login${redirectTo ? … : ''}`: a hole glued to a segment is a suffix, not a segment.
+  return value.startsWith('`') ? dropGluedTemplateHoles(value) : value;
+}
+
+/** Keep whole-segment parameters, omit optional query suffixes, and refuse computed path fragments. */
+function dropGluedTemplateHoles(template: string): string | null {
+  let out = '';
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] === '$' && template[i + 1] === '{') {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < template.length; j++) {
+        if (template[j] === '{') depth++;
+        else if (template[j] === '}' && --depth === 0) break;
+      }
+      const hole = template.slice(i, j + 1);
+      const next = template[j + 1];
+      if (out.endsWith('/') && (next === '/' || next === '`' || next === '?' || next === undefined)) out += hole;
+      else if (!out.includes('?') && !/\?\s*[`'"]\?[^`'"]*[`'"]\s*:\s*['"]['"]\s*}/.test(hole)) return null;
+      i = j;
+      continue;
+    }
+    out += template[i];
+  }
+  return out;
+}
+
+/** Walk `keys` into the object literal opening at `at`; the final value's source text, or null. */
+function readObjectValue(text: string, at: number, keys: string[]): string | null {
+  const skipString = (j: number): number => {
+    const quote = text[j]!;
+    for (j++; j < text.length && text[j] !== quote; j++) if (text[j] === '\\') j++;
+    return j + 1;
+  };
+  const skipValue = (j: number): number => {
+    let depth = 0;
+    for (; j < text.length; j++) {
+      const ch = text[j]!;
+      if (ch === '"' || ch === "'" || ch === '`') { j = skipString(j) - 1; continue; }
+      if (ch === '{' || ch === '[' || ch === '(') depth++;
+      else if (ch === '}' || ch === ']' || ch === ')') { if (depth === 0) return j; depth--; }
+      else if (ch === ',' && depth === 0) return j;
+    }
+    return j;
+  };
+  let selected: string | null = null;
+  let i = at + 1;
+  while (i < text.length) {
+    const m = /^\s*(?:([A-Za-z_$][\w$]*)|["']([^"']+)["'])\s*:\s*/.exec(text.slice(i));
+    if (!m) {
+      const next = skipValue(i);
+      if (/^\s*(?:\.\.\.|\[)/.test(text.slice(i))) selected = null;
+      if (text[next] !== ',') return selected;
+      i = next + 1;
+      continue;
+    }
+    const key = m[1] ?? m[2]!;
+    const valueAt = i + m[0].length;
+    const end = skipValue(valueAt);
+    if (key === keys[0]) {
+      selected = keys.length === 1 ? text.slice(valueAt, end).trim()
+        : text[valueAt] === '{' ? readObjectValue(text, valueAt, keys.slice(1)) : null;
+    }
+    if (text[end] !== ',') return selected;
+    i = end + 1;
+  }
+  return null;
 }
 
 /** Walk `keys` into the object literal opening at `at`; the string literal at the end, or null. */

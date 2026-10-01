@@ -306,7 +306,7 @@ impl KernelResolver {
         // A Lua `local` belongs to its chunk: a spec helper's `local it = it`
         // is not busted's `it(…)` in every other spec file.
         if (lang == "lua" || lang == "luau") && self.is_lua_local(candidate) {
-            return Ok(false);
+            return Ok(self.lua_alias_target(r)?.flatten().is_some_and(|n| n.id == candidate.id));
         }
         self.is_cross_file_reachable(candidate, r)
     }
@@ -1026,6 +1026,9 @@ impl KernelResolver {
     }
 
     pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if let Some(alias) = self.lua_alias_target(r)? {
+            return Ok(alias.map(|node| { let resolved_by = if node.file_path == r.file_path { "exact-match" } else { "import" }; KCand { node, confidence: 0.9, resolved_by } }));
+        }
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));
         }

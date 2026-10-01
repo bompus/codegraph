@@ -260,6 +260,12 @@ impl KernelResolver {
                 // `export * as ns from` exports one name, `ns`, not the
                 // module's members (reExportsFromBindings).
                 if r.exported_as.as_deref().is_some_and(|a| a != "*") {
+                    out.push(KReExport {
+                        kind: "namespace",
+                        exported_name: r.exported_as.clone(),
+                        original_name: None,
+                        source: r.target_spec.clone().unwrap(),
+                    });
                     continue;
                 }
                 out.push(KReExport {
@@ -394,6 +400,7 @@ impl KernelResolver {
         let export_index = self.file_export_index(file_path)?;
         // 1. Direct hit.
         if want.is_default {
+            let forwarded = self.reexports(file_path)?.iter().any(|r| r.kind == "named" && r.exported_name.as_deref() == Some("default"));
             let direct = export_index
                 .default_component
                 .clone()
@@ -404,7 +411,7 @@ impl KernelResolver {
                 .or_else(|| {
                     let file_prefix = format!("{file_path}\0");
                     let reentered = visited.iter().filter(|k| k.starts_with(&file_prefix)).nth(1).is_some();
-                    export_index.default_fn_class.clone().filter(|_| !reentered)
+                    export_index.default_fn_class.clone().filter(|_| !reentered && !forwarded)
                 });
             if let Some(d) = direct {
                 return self.memo_symbol_opt(memo_key, Some(d.clone()));
@@ -509,6 +516,21 @@ impl KernelResolver {
                 )?;
                 if chained.is_some() {
                     return self.memo_symbol_opt(memo_key, chained);
+                }
+            }
+        }
+        // Namespace exports consume one path segment without exposing their members flat.
+        if want.is_namespace {
+            if let Some((head, rest)) = want.member_name.as_deref().and_then(|m| m.split_once('.')) {
+                if let Some(rex) = reexports.iter().find(|r| r.kind == "namespace" && r.exported_name.as_deref() == Some(head)) {
+                    let result = if let Some(next) = self.resolve_import_path(&rex.source, file_path, language)? {
+                        self.find_exported_symbol(&next, &ExportWant {
+                            is_default: false, is_namespace: true,
+                            exported_name: rest.split('.').next().unwrap_or("").to_string(),
+                            member_name: Some(rest.to_string()),
+                        }, language, visited, depth + 1)?
+                    } else { None };
+                    return self.memo_symbol_opt(memo_key, result);
                 }
             }
         }

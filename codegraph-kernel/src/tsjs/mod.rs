@@ -144,7 +144,9 @@ struct Extra {
 }
 
 
-pub struct Walker<'t> {
+pub type RequireBinding = (String, String);
+
+struct Walker<'t> {
     src: &'t str,
     file_path: &'t str,
     variant: Variant,
@@ -183,7 +185,7 @@ pub struct Walker<'t> {
     /// Line → (name, spec) of module-level `require()` declarators, so the
     /// walk's decl row becomes an `import` row. Keyed by line: the lookup is
     /// per declaration and a `(String, u32)` key would cost an allocation each.
-    import_decls: HashMap<u32, Vec<(String, String)>>,
+    import_decls: HashMap<u32, Vec<(String, RequireBinding)>>,
     /// Line → names whose binding row the pre-walk already emitted.
     scoped_rows: HashMap<u32, Vec<String>>,
     /// `exports.x = function () {}` / `module.exports.x = () => …`: (x, line),

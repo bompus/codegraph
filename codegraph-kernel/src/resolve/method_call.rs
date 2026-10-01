@@ -1371,7 +1371,7 @@ pub(super) fn shares_receiver_word(receiver: &str, method: &KNode) -> bool {
 /// the library's, never the one project method that shares its name (busted's
 /// `assert.truthy` went to a condition helper 987 times, `string.find` to a
 /// picker's `find`, Neovim's `vim.split` to a build module's).
-const LUA_LIBRARY_TABLES: &[&str] = &[
+pub(super) const LUA_LIBRARY_TABLES: &[&str] = &[
     "string", "table", "math", "io", "os", "coroutine", "debug", "utf8", "package", "bit", "bit32", "jit", "ffi",
     "vim", "ngx", "assert", "spy", "stub", "mock", "love",
 ];

@@ -1,6 +1,7 @@
 import type { TreeNode as SyntaxNode } from '../parse-tree';
 import { getChildByField, getNodeText } from '../tree-sitter-helpers';
 import type { LanguageExtractor } from '../tree-sitter-types';
+import { stripCommentsForRegex } from '../../resolution/strip-comments';
 
 /**
  * Find the function NAME's `qualified_identifier` (`Foo::bar`) inside a
@@ -702,6 +703,7 @@ const LONE_MACRO_CONTINUATION_END_RE = /[=+\-*/%&|^<>?:,(\\]$/;
 export function blankLoneMacroLines(source: string): string {
   if (!/^[ \t]*_*[A-Z][A-Z0-9_]{3,}[ \t]*\r?$/m.test(source)) return source;
   const lines = source.split('\n');
+  const codeLines = stripCommentsForRegex(source, 'cpp').split('\n');
   const content = (l: string): string => l.replace(/\r$/, '').trim();
   let changed = false;
   for (let i = 0; i < lines.length; i++) {
@@ -713,7 +715,13 @@ export function blankLoneMacroLines(source: string): string {
     if (!(m[1] as string).includes('_')) continue;
     let prev = i - 1;
     while (prev >= 0 && content(lines[prev] as string) === '') prev--;
-    if (prev >= 0 && LONE_MACRO_CONTINUATION_END_RE.test(content(lines[prev] as string))) continue;
+    // Judged on the line's code: a comment — `/// @sa https://…/meta/`, a
+    // block comment's `*/` — ends in whatever it likes but continues nothing,
+    // while `CURLE_TOO_LARGE, /* 100 */` continues with its comma. A template
+    // head (`template<typename T, typename... Args>`) before a declaration
+    // continues nothing either.
+    const prevCode = prev >= 0 ? (codeLines[prev] ?? '').trim() : '';
+    if (prevCode !== '' && !/^template\s*</.test(prevCode) && LONE_MACRO_CONTINUATION_END_RE.test(prevCode)) continue;
     let next = i + 1;
     while (next < lines.length && content(lines[next] as string) === '') next++;
     if (next < lines.length) {
@@ -965,9 +973,98 @@ function normalizeCppComInterfaces(source: string): string {
  * annotations, and CUDA specifiers + launch syntax (by `.cu`/`.cuh` extension
  * or by content, for CUDA living in `.h`/`.hpp` headers). Offset-preserving;
  * directive lines are restored at the end (see restoreDirectiveLines). */
+/**
+ * An access specifier spelled as a macro — nlohmann/json's
+ * `JSON_PRIVATE_UNLESS_TESTED:` (private, or public under test), Qt's
+ * `Q_SIGNALS:` — is rewritten to the keyword it stands for, padded to the
+ * same length. tree-sitter-cpp reads `NAME:` inside a class as an error, and
+ * json.hpp's recovery lost members around each one.
+ */
+const ACCESS_MACRO_LINE = /^([ \t]*)([A-Z][A-Z0-9]*_[A-Z0-9_]*)([ \t]*):(?!:)(?=[ \t]*(?:\/\/[^\n]*)?\r?$)/gm;
+export function rewriteCppAccessMacros(source: string): string {
+  if (!/_[A-Z0-9_]*[ \t]*:(?!:)/.test(source)) return source;
+  return source.replace(ACCESS_MACRO_LINE, (m, indent: string, name: string, gap: string) => {
+    const keyword = /PRIVATE/.test(name) ? 'private' : /PROTECTED/.test(name) ? 'protected'
+      : /PUBLIC|^Q_SIGNALS$|^Q_SLOTS$/.test(name) ? 'public' : null;
+    if (!keyword || keyword.length > name.length + gap.length) return m;
+    return `${indent}${keyword}${' '.repeat(name.length + gap.length - keyword.length)}:`;
+  });
+}
+
+/**
+ * A preprocessor conditional in the middle of a declaration or expression —
+ * inside a constructor's member-initializer list (nlohmann/json's
+ * `noexcept\n#ifdef JSON_NO_THREAD_LOCAL\n : m_okay(false)\n#else\n :
+ * m_okay(…)\n#endif`), between a template head and its function
+ * (`template <…>\n#if defined(JSON_HAS_CPP_14)\n constexpr\n#endif\n auto
+ * get()`), inside an argument list — is an error to tree-sitter-cpp, and
+ * json.hpp's recovery took the whole `basic_json` class with it. Where the
+ * code before the `#if` has not ended a statement or declaration (`;`, `{`,
+ * `}`, a label's `:`), its directives are blanked and so is every branch
+ * after the first: one consistent configuration, every newline and offset
+ * kept. A conditional between whole declarations is left alone.
+ */
+export function flattenMidStatementConditionals(source: string): string {
+  if (!source.includes('#')) return source;
+  const lines = source.split('\n');
+  const codeLines = stripCommentsForRegex(source, 'cpp').split('\n');
+  const directive = (i: number) => /^[ \t]*#[ \t]*(\w+)/.exec(codeLines[i] ?? '')?.[1] ?? null;
+  const code = (i: number) => (codeLines[i] ?? '').trim();
+  let changed = false;
+  const blank = (i: number) => {
+    lines[i] = (lines[i] ?? '').replace(/[^\r]/g, ' ');
+    changed = true;
+  };
+  let lastCode = '';          // the last non-directive code line, trimmed
+  let region = 0;             // #if depth inside a flattened conditional (0 = none)
+  let skipFrom = 0;           // the depth whose later branches are blanked (0 = none)
+  let continued = false;      // inside a `\`-continued directive (a multi-line #define)
+  for (let i = 0; i < lines.length; i++) {
+    if (continued) {
+      continued = /\\\s*$/.test(lines[i] ?? '');
+      continue;
+    }
+    const d = directive(i);
+    if (d !== null) {
+      // A directive continued with `\` spans lines; its body is not code.
+      if (/\\\s*$/.test(lines[i]!)) {
+        continued = true;
+        if (region === 0) continue;
+      }
+      const opens = /^if/.test(d);
+      if (region === 0) {
+        // Not after a statement macro written without its `;`
+        // (`RAPIDJSON_DIAG_OFF(padded)`), either.
+        const mid = opens && lastCode !== '' && !/[;{}]$|^[\w\s]*:$|\*\/$/.test(lastCode) &&
+          !/^(?:public|private|protected)\s*:$/.test(lastCode) && !/^[A-Z][A-Z0-9_]*(?:\s*\(.*\))?$/.test(lastCode);
+        if (!mid) continue;
+        region = 1;
+        blank(i);
+        continue;
+      }
+      if (opens) region++;
+      else if (/^(?:else|elif|elifdef|elifndef)$/.test(d) && skipFrom === 0) skipFrom = region;
+      else if (d === 'endif') {
+        if (skipFrom === region) skipFrom = 0;
+        region--;
+      }
+      if (/^(?:if|ifdef|ifndef|else|elif|elifdef|elifndef|endif)$/.test(d)) blank(i);
+      continue;
+    }
+    const text = lines[i] ?? '';
+    if (region > 0 && skipFrom > 0) {
+      if (text.trim() !== '') blank(i);
+      continue;
+    }
+    const trimmed = code(i);
+    if (trimmed !== '') lastCode = trimmed;
+  }
+  return changed ? lines.join('\n') : source;
+}
+
 function preParseCppSource(source: string, filePath?: string): string {
   const rawStrings = maskCppRawStrings(source);
-  source = rawStrings.source;
+  source = flattenMidStatementConditionals(rewriteCppAccessMacros(rawStrings.source));
   // blankCLeadingAttrMacros runs AFTER the api-prefix blank so a stacked
   // `FMT_NORETURN FMT_API void f(…)` reduces to the `MACRO Ret name(` shape
   // it matches (the _API token is already spaces by then).

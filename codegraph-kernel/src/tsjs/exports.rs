@@ -75,6 +75,8 @@ impl<'t> Walker<'t> {
                         _ => {}
                     }
                 }
+            } else if let Some(spec) = self.require_spec(right) {
+                self.emit_reexport_binding("default", "default", &spec, expr);
             } else if right.kind() == "identifier" {
                 self.later_exports.entry(self.text(right).to_string()).or_insert(("default".to_string(), EXPORT_CJS));
             }
@@ -148,21 +150,21 @@ impl<'t> Walker<'t> {
     }
 
     /// The `require()` spec a module-level declarator on `line` binds `name` to.
-    pub(super) fn import_decl_spec(&self, name: &str, line: u32) -> Option<&str> {
+    pub(super) fn import_decl_spec(&self, name: &str, line: u32) -> Option<&(String, String)> {
         self.import_decls
             .get(&line)?
             .iter()
             .find(|(n, _)| n == name)
-            .map(|(_, spec)| spec.as_str())
+            .map(|(_, binding)| binding)
     }
 
     /// Records the spec (a later declarator of the same name on the same line
     /// replaces it, as a keyed insert did).
-    pub(super) fn set_import_decl(&mut self, name: String, line: u32, spec: String) {
+    pub(super) fn set_import_decl(&mut self, name: String, line: u32, spec: String, imported: String) {
         let entries = self.import_decls.entry(line).or_default();
         match entries.iter_mut().find(|(n, _)| *n == name) {
-            Some(entry) => entry.1 = spec,
-            None => entries.push((name, spec)),
+            Some(entry) => entry.1 = (spec, imported),
+            None => entries.push((name, (spec, imported))),
         }
     }
 
@@ -183,7 +185,7 @@ impl<'t> Walker<'t> {
         if self.has_scoped_row(name, line) {
             return;
         }
-        let require_spec = self.import_decl_spec(name, line).map(str::to_string);
+        let require_spec = self.import_decl_spec(name, line).cloned();
         // Scope from the AST, not the node stack: an IIFE or a callback has no
         // node, so a function declared inside one is still nested. The same
         // rule the pre-walk and the AST-only emitter use (bindings.rs).
@@ -218,7 +220,7 @@ impl<'t> Walker<'t> {
         let name_ref = self.arena.put(name);
         let exported_ref = self.arena.put_opt(exported_as.as_deref());
         let (kind_code, target_spec, target_name) = match require_spec {
-            Some(spec) => (BINDING_IMPORT, self.arena.put(&spec), self.arena.put("default")),
+            Some((spec, imported)) => (BINDING_IMPORT, self.arena.put(&spec), self.arena.put(&imported)),
             None => (if at_module_scope { BINDING_DECL } else { BINDING_LOCAL }, NONE_STR, NONE_STR),
         };
         self.tables.push_binding(&BindingRow {

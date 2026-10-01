@@ -49,7 +49,7 @@ impl KernelResolver {
         let values:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,n),_)|visible.contains(f) && n==name).map(|(_,v)|v.clone()).collect();
         Ok(if values.len()==1 {values.into_iter().next().unwrap()} else {name.to_string()})
     }
-    fn namespace_frames(&mut self,file:&str)->Res<Vec<(i64,i64,Vec<String>)>> {
+    pub(super) fn namespace_frames(&mut self,file:&str)->Res<Vec<(i64,i64,Vec<String>)>> {
         self.prepare_namespace_macros()?;
         if let Some(hit)=self.cpp_namespaces.frames.get(file) {return Ok(hit.clone());}
         let visible=self.namespace_visible_files(file,"cpp")?;
@@ -74,7 +74,7 @@ impl KernelResolver {
         }
         self.cpp_namespaces.frames.insert(file.to_string(),frames.clone());Ok(frames)
     }
-    fn namespace_visible_files(&mut self,file:&str,language:&str)->Res<HashSet<String>> {
+    pub(super) fn namespace_visible_files(&mut self,file:&str,language:&str)->Res<HashSet<String>> {
         if let Some(hit)=self.cpp_namespaces.includes.get(file) {return Ok(hit.clone());}
         let mut seen=HashSet::new();let mut pending=vec![file.to_string()];
         while let Some(file)=pending.pop() {

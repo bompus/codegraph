@@ -76,7 +76,23 @@ impl<'t> Walker<'t> {
         let scope = scope.map(|s| self.lexical_block(node).unwrap_or(s));
         let range = scope.unwrap_or((1, self.line_count));
         // `require('./m')` / `await import('./m')`: an import, whatever the scope.
-        if let Some(spec) = value.and_then(|v| self.require_spec(v)) {
+        let require_binding = value.and_then(|v| {
+            if v.kind() == "member_expression" {
+                let object = v.child_by_field_name("object")?;
+                if name_node.kind() != "identifier" {
+                    if name_node.kind() == "object_pattern" && self.require_spec(object).is_some() {
+                        for (name, leaf) in self.pattern_leaves(name_node) { self.push_scoped_row(&name, BINDING_LOCAL, leaf, range); }
+                    }
+                    return None;
+                }
+                let property = v.child_by_field_name("property")?;
+                if property.kind() != "property_identifier" { return None; }
+                self.require_spec(object).map(|spec| (spec, self.text(property).to_string()))
+            } else {
+                self.require_spec(v).map(|spec| (spec, "default".to_string()))
+            }
+        });
+        if let Some((spec, imported)) = require_binding {
             match name_node.kind() {
                 "identifier" => {
                     let name = self.text(name_node).to_string();
@@ -84,9 +100,9 @@ impl<'t> Walker<'t> {
                         // The walk creates a node for a module-level declarator;
                         // its row becomes the `import` row (it may be re-exported).
                         let line = self.line_of(name_node);
-                        self.set_import_decl(name, line, spec);
+                        self.set_import_decl(name, line, spec, imported);
                     } else {
-                        self.push_import_row(&name, &spec, "default", name_node, range);
+                        self.push_import_row(&name, &spec, &imported, name_node, range);
                         let line = self.line_of(name_node);
                         self.mark_scoped_row(&name, line);
                     }
@@ -210,7 +226,7 @@ impl<'t> Walker<'t> {
     }
 
     /// The specifier of `require('x')`, `import('x')`, or either under `await`.
-    fn require_spec(&self, value: Node<'t>) -> Option<String> {
+    pub(super) fn require_spec(&self, value: Node<'t>) -> Option<String> {
         let call = if value.kind() == "await_expression" { value.named_child(0)? } else { value };
         if call.kind() != "call_expression" {
             return None;

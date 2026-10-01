@@ -208,7 +208,8 @@ impl KernelResolver {
     pub(super) fn probe_extensions(&self, base: &str, language: &str) -> Option<String> {
         extension_resolution(language)
             .iter()
-            .map(|ext| format!("{base}{ext}"))
+            .filter(|ext| !base.is_empty() || ext.starts_with('/'))
+            .map(|ext| if base.is_empty() { ext.trim_start_matches('/').to_string() } else { format!("{base}{ext}") })
             .find(|candidate| self.file_exists(candidate))
             .or_else(|| self.file_exists(base).then(|| base.to_string()))
             .or_else(|| self.find_source_for_emitted(base, language))

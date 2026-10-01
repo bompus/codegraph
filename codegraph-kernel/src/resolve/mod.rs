@@ -330,6 +330,7 @@ pub(super) struct SourceFile {
     java_static_imports: OnceCell<name_scope::JavaStaticImports>,
     php_file_scope: OnceCell<php_scope::PhpFileScope>,
     rust_code_lines: OnceCell<Vec<String>>,
+    cpp_field_tree: OnceCell<Option<Rc<tree_sitter::Tree>>>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -344,6 +345,7 @@ impl SourceFile {
             java_static_imports: OnceCell::new(),
             php_file_scope: OnceCell::new(),
             rust_code_lines: OnceCell::new(),
+            cpp_field_tree: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -487,6 +489,7 @@ mod names;
 mod name_scope;
 mod php_scope;
 mod lang_scope;
+mod lua_alias;
 mod member_scope;
 mod receivers;
 mod bound;
@@ -502,6 +505,8 @@ mod this_member;
 mod member_fn_ref;
 mod object_literal;
 mod cpp;
+mod cpp_types;
+mod cpp_receivers;
 mod cpp_namespace;
 mod inherited_method;
 mod store;
@@ -551,6 +556,8 @@ pub struct KernelResolver {
     bindings_cache: HashMap<String, Rc<Vec<KBinding>>>,
     import_map_cache: HashMap<String, Rc<Vec<KImport>>>,
     reexport_cache: HashMap<String, Rc<Vec<KReExport>>>,
+    lua_declaration_memo: HashMap<String, Arc<Vec<Arc<KNode>>>>,
+    lua_member_memo: HashMap<String, Option<Arc<KNode>>>,
     export_index: HashMap<String, Rc<FileExportIndexK>>,
     import_path_memo: HashMap<String, Option<String>>,
     exported_symbol_memo: HashMap<String, Option<Arc<KNode>>>,
@@ -725,6 +732,8 @@ impl KernelResolver {
             bindings_cache: HashMap::new(),
             import_map_cache: HashMap::new(),
             reexport_cache: HashMap::new(),
+            lua_declaration_memo: HashMap::new(),
+            lua_member_memo: HashMap::new(),
             export_index: HashMap::new(),
             import_path_memo: HashMap::new(),
             exported_symbol_memo: HashMap::new(),

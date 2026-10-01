@@ -347,7 +347,8 @@ function resolveRelativeImport(
 
   // Try each extension
   for (const ext of extensions) {
-    const candidatePath = relativePath + ext;
+    if (relativePath === '' && !ext.startsWith('/')) continue;
+    const candidatePath = relativePath === '' ? ext.slice(1) : relativePath + ext;
     if (context.fileExists(candidatePath)) {
       return candidatePath;
     }
