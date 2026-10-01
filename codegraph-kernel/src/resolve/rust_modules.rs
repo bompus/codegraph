@@ -161,6 +161,12 @@ impl KernelResolver {
     pub(super) fn rust_resolve_under(&self, start_dir: Option<String>, rest: &[&str]) -> Option<String> {
         let mut dir = start_dir?;
         let mut target: Option<String> = None;
+        if rest.is_empty() {
+            let paths=[pos_join(&dir,"mod.rs"),pos_join(&dir,"lib.rs"),pos_join(&dir,"main.rs"),pos_join(pos_dirname(&dir),&format!("{}.rs",pos_basename(&dir)))];
+            let mut files:Vec<_>=paths.into_iter().filter(|file|self.file_exists(file)).collect();
+            files.sort();files.dedup();
+            return match files.as_slice() {[only]=>Some(only.clone()),_=>None};
+        }
         for seg in rest {
             if *seg == "self" || *seg == "crate" || *seg == "super" {
                 continue;

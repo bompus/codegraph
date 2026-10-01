@@ -33,4 +33,6 @@ Java, C# and Kotlin field or property receivers use their declared types, includ
 
 Kotlin chains use the callee position and declared return type, including nested and multiline calls; imported return-type hypotheses for standard method names keep confidence at most 0.7 when the receiver type is unknown.
 
-Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls retain compatible imported extensions.
+Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls retain compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types.
+
+Rust chains follow declared method returns and field types. Matches without a proved receiver type keep confidence at most 0.7.

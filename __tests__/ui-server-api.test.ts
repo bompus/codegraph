@@ -1051,6 +1051,7 @@ export default app;
  * engine's real hub (400+ call edges, 170+ distinct callers). (The issue's
  * original probe was `LRUCache.get`; binding-model resolution stopped
  * fuzzy-binding every `.get` call to it, so the busiest symbol moved.)
+
  *
  * `.codegraph/` is gitignored, so this only runs on a machine that has indexed
  * this repository. The fixture test above covers the same properties in CI; this
@@ -1100,6 +1101,7 @@ describe.runIf(CodeGraph.isInitialized(path.resolve(__dirname, '..')))(
       const body = JSON.parse(res.body);
 
       expect(body.counts.fanIn).toBeGreaterThanOrEqual(300);
+
       expect(body.counts.hub).toBe(true);
       // Grouped by calling symbol, so the row count is the distinct-caller
       // count, never the edge count.

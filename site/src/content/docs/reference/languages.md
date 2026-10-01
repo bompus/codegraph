@@ -40,3 +40,9 @@ JavaScript files with a Flow pragma use the TSX grammar after Flow-only syntax i
 Kotlin infix expressions, such as `Users.id eq id1`, contribute calls to the indexed infix function. The native scanner preserves surrounding declarations for same-line infix names beginning with `e`. Numeric bitwise calls remain unresolved when a project extension cannot be distinguished from Kotlin built-ins.
 
 Kotlin infix call extraction accepts parenthesized operands and comments, including nested block comments. Numeric bitwise guesses are filtered while methods and extensions on project types remain eligible.
+
+Kotlin `when` guards, open-ended ranges, multi-dollar strings and nullable receivers in function types are normalized before parsing while preserving source offsets. Comments stay intact, and multi-dollar strings keep their interpolation threshold.
+
+C++ calls through namespace-opening macros and namespace aliases can reach a unique visible declaration; ambiguous overloads remain unresolved. Objective-C `super` messages target the superclass. Solidity bare calls follow the enclosing contract’s inheritance, and Erlang bare calls follow explicit module imports.
+
+Calls through class names follow inherited class methods in Python, Pascal, Ruby, PHP, JavaScript, TypeScript and the Java family. Receiver-name guesses exclude dispatched request handlers and test doubles the caller does not mention. Rust and Go chains preserve declared project receiver types while filtering unrelated standard-library method guesses; Rust factory lookup honors local function shadowing. R bare calls stay with functions, and JavaScript fetch response methods remain external.

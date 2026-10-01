@@ -111,7 +111,7 @@ impl KernelResolver {
     /// class is reachable through its instances, and an object-literal method
     /// a function returns through the object — neither is scoped by the
     /// function it sits in.
-    fn lexical_scope_of(&mut self, candidate: &KNode) -> Res<Option<(i64, i64)>> {
+    pub(super) fn lexical_scope_of(&mut self, candidate: &KNode) -> Res<Option<(i64, i64)>> {
         if let Some(hit) = self.lexical_scope_memo.get(&candidate.id) {
             return Ok(*hit);
         }
@@ -331,6 +331,14 @@ impl KernelResolver {
         self.is_receiver_less_call(r)
     }
 
+    fn is_bare_r_call(&mut self, r: &ResolveRefIn) -> bool {
+        if r.language != "r" || r.reference_kind != "calls" { return false; }
+        let Some(lines) = self.read_file(&r.file_path) else { return false };
+        let Some(line) = lines.get((r.line-1).max(0) as usize) else { return false };
+        let Ok(pattern) = Self::cached_regex(&format!(r"(?:^|[^\w.])({})\s*\(",regex::escape(&r.reference_name))) else { return false };
+        pattern.captures(line).is_some_and(|m| !re!(r"(?:\$|@|::)\s*$").is_match(&line[..m.get(1).unwrap().start()]))
+    }
+
     /// The name in a Go file's `package` clause (the first line that starts
     /// with `package`, outside block comments).
     fn go_package_clause(&mut self, file: &str) -> Option<String> {
@@ -384,7 +392,7 @@ impl KernelResolver {
         Ok(!(before.ends_with("->") || before.ends_with("::")))
     }
 
-    fn is_receiver_less_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn is_receiver_less_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.reference_kind != "calls" {
             return Ok(false);
         }
@@ -577,6 +585,7 @@ impl KernelResolver {
         }
         let bare_js = self.is_bare_js_call(r)?;
         let bare_go = self.is_bare_go_call(r)?;
+        let bare_r = self.is_bare_r_call(r);
         let bare_php = self.is_bare_php_call(r)?;
         if bare_js {
             if self.is_param_shadowed(r)? {
@@ -663,7 +672,7 @@ impl KernelResolver {
             candidates = kept;
         }
         // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
-        candidates.retain(|n| !((bare_js || bare_go) && n.kind == "method"));
+        candidates.retain(|n| !((bare_js || bare_go || bare_r) && n.kind == "method"));
         // A bare Go call names its own package's function: another
         // package's `New` needs its qualifier (a dot import cannot bring in a
         // name the package itself declares). The package is the directory
@@ -893,7 +902,7 @@ impl KernelResolver {
                             &r.file_path,
                             Some(r.line),
                         )?));
-            let bare_decline = bare_decline || (only.kind == "method" && self.is_bare_go_call(r)?);
+            let bare_decline = bare_decline || (only.kind == "method" && (self.is_bare_go_call(r)? || self.is_bare_r_call(r)));
             // Fuzzy is case-insensitive, so it may find the class `View` for `view(…)`.
             let bare_decline = bare_decline || (only.kind != "function" && self.is_bare_php_call(r)?);
             let shadowed = if only.file_path != r.file_path {
@@ -957,7 +966,7 @@ impl KernelResolver {
             return Ok(None);
         };
         let arity_tail = format!("/{}", &m[2]);
-        let candidates: Vec<Arc<KNode>> = self
+        let mut candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(&m[1])?
             .iter()
             .filter(|n| n.language == "erlang" && n.kind == "function" && n.qualified_name.ends_with(&arity_tail))
@@ -968,6 +977,19 @@ impl KernelResolver {
         }
         if let Some(same) = candidates.iter().find(|n| n.file_path == r.file_path) {
             return Ok(Some(Some(KCand { node: same.clone(), confidence: 0.95, resolved_by: "exact-match" })));
+        }
+        if let Some(source) = self.read_file(&r.file_path) {
+            for imported in re!(r"(?m)^[ \t]*-import\s*\(\s*'?([A-Za-z_][\w@]*)'?\s*,\s*\[([^\]]*)\]\s*\)\s*\.").captures_iter(source.text()) {
+                let pattern = Self::cached_regex(&format!(r"(?:^|[\s,])'?{}'?\s*/\s*{}\b",regex::escape(&m[1]),&m[2]))?;
+                if pattern.is_match(&imported[2]) {
+                    let selected = candidates.iter().find(|n| n.qualified_name.starts_with(&format!("{}::",&imported[1]))).cloned();
+                    return Ok(Some(selected.map(|node| KCand{node,confidence:0.9,resolved_by:"exact-match"})));
+                }
+            }
+        }
+        if !r.file_path.ends_with(".hrl") {
+            candidates.retain(|n| n.file_path.ends_with(".hrl"));
+            if candidates.is_empty() { return Ok(Some(None)); }
         }
         if candidates.len() == 1 {
             return Ok(Some(Some(KCand { node: candidates[0].clone(), confidence: 0.8, resolved_by: "exact-match" })));

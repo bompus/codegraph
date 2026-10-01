@@ -502,6 +502,8 @@ mod this_member;
 mod member_fn_ref;
 mod object_literal;
 mod cpp;
+mod cpp_namespace;
+mod inherited_method;
 mod store;
 mod esm_scope;
 mod call_shape;
@@ -569,6 +571,9 @@ pub struct KernelResolver {
     /// kotlinFileScope, by file.
     csharp_alias_memo: HashMap<String, Rc<HashMap<String, String>>>,
     declared_member_memo: HashMap<(String, String), Option<String>>,
+    declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
+    declared_member_walks: HashMap<(String, String), Option<String>>,
+    member_shadow_memo: HashMap<(String, String, i64), bool>,
     kotlin_frames_memo: HashMap<String, Rc<Vec<kotlin_calls::KotlinFrame>>>,
     kotlin_receiver_types_memo: Option<Rc<HashSet<String>>>,
     kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
@@ -618,6 +623,8 @@ pub struct KernelResolver {
     factory_init_memo: HashMap<(String, i64, String, Option<String>), Rc<method_call::FactoryInit>>,
     /// C/C++ directive summaries and per-root macro timelines (#1838).
     cpp_macros: cpp::MacroCache,
+    cpp_namespaces: cpp_namespace::NamespaceCache,
+    inherited_class_methods: HashMap<(String,String), Option<Arc<KNode>>>,
     file_cache: FileCache,
     /// Trees the iteration and guard inference walk, by language and file.
     tree_cache: TreeCache,
@@ -731,6 +738,9 @@ impl KernelResolver {
             dart_hierarchy_memo: HashMap::new(),
             csharp_alias_memo: HashMap::new(),
             declared_member_memo: HashMap::new(),
+            declared_member_lines: HashMap::new(),
+            declared_member_walks: HashMap::new(),
+            member_shadow_memo: HashMap::new(),
             kotlin_frames_memo: HashMap::new(),
             kotlin_receiver_types_memo: None,
             kotlin_scope_memo: HashMap::new(),
@@ -758,6 +768,8 @@ impl KernelResolver {
             rust_crate_root_memo: HashMap::new(),
             factory_init_memo: HashMap::new(),
             cpp_macros: cpp::MacroCache::default(),
+            cpp_namespaces: cpp_namespace::NamespaceCache::default(),
+            inherited_class_methods: HashMap::new(),
             file_cache: FileCache::new(1024),
             tree_cache: TreeCache::new(32),
         })
@@ -948,8 +960,8 @@ impl KernelResolver {
 
     /// resolveChainedCallsViaConformance's per-ref match, run after the main
     /// pass wrote every implements/extends edge: PHP `this->prop.method`
-    /// through the method-call arm, Rust's `::` chains through the scoped
-    /// arm, every other chain through the dotted arm, then the language gate.
+    /// through the method-call arm, Rust chains through bound factory returns,
+    /// every other chain through the dotted arm, then the language gate.
     #[napi]
     pub fn resolve_deferred_chains(&mut self, refs: Vec<ResolveRefIn>) -> Result<Vec<ResolveOutcome>> {
         let mut out = Vec::with_capacity(refs.len());
@@ -962,7 +974,7 @@ impl KernelResolver {
                 let c = if r.language == "php" && php_prop_shape_re().is_match(&r.reference_name) {
                     self.match_method_call_free(&r)?
                 } else if r.language == "rust" {
-                    self.match_scoped_call_chain(&r)?
+                    self.match_call_chain(&r)?
                 } else {
                     self.match_dotted_call_chain(&r)?
                 };

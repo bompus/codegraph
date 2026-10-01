@@ -755,13 +755,15 @@ impl KernelResolver {
 
         // An unbound type name from outside the project cannot name a project method.
         let type_name = re!(r"^[A-Z][A-Za-z0-9_]*$").is_match(&object_or_class)
-            && !matches!(r.language.as_str(), "go" | "c" | "cpp" | "rust" | "cuda" | "metal")
+            && !matches!(r.language.as_str(), "go" | "c" | "cpp" | "cuda" | "metal")
+            && (r.language != "rust" || (object_or_class != "Self" && object_or_class.chars().any(|c| c.is_ascii_lowercase())))
             && (r.language != "pascal" || re!(r"^(?:[TEI][A-Z]\w*|Exception)$").is_match(&object_or_class));
         if type_name && !self.nodes_by_name(&object_or_class)?.iter().any(|n| {
             same_language_family(&n.language, &r.language)
-                && (!matches!(r.language.as_str(), "csharp" | "java")
-                    || is_class_like(&n.kind) || matches!(n.kind.as_str(), "enum" | "namespace" | "module"))
+                && (!matches!(r.language.as_str(), "csharp" | "java" | "rust")
+                    || is_class_like(&n.kind) || matches!(n.kind.as_str(), "enum" | "namespace" | "module" | "trait" | "type_alias"))
         }) { return Ok(None); }
+        if r.language == "rust" && r.reference_name.contains("::") && re!(r"^[a-z_]\w*(?:::[a-z_]\w*)*$").is_match(&object_or_class) { return Ok(None); }
         if r.language == "csharp" && matches!(object_or_class.as_str(), "string" | "object" | "int" | "long" | "short" | "byte" | "bool" | "char" | "double" | "float" | "decimal" | "uint" | "ulong" | "ushort" | "sbyte") { return Ok(None); }
 
         // Strategy 2 — capitalized receiver (`permissionEngine` →
@@ -809,6 +811,12 @@ impl KernelResolver {
                 target.retain(|m| m.file_path != r.file_path);
                 narrowed = target.len() != before;
             }
+            let before = target.len();
+            target.retain(|m| {
+                let owner = m.qualified_name.rsplit_once("::").map(|(o,_)| o.rsplit([':', '.']).next().unwrap_or("")).unwrap_or("");
+                !(matches!(m.name.as_str(), "get"|"post"|"put"|"patch"|"delete"|"head"|"options"|"index"|"show"|"store"|"update"|"destroy"|"create"|"edit"|"list"|"retrieve"|"partial_update") && re!(r"(?:View|ViewSet|APIView|Controller|Endpoint|ViewMixin)$").is_match(owner))
+            });
+            narrowed |= target.len() != before;
             if !is_test_path(&r.file_path) { target.retain(|n| !is_test_path(&n.file_path)); }
             // A Vue component's own method is reached as `this.m()` inside it —
             // never as `e.preventDefault()` on an event, nor
@@ -875,6 +883,8 @@ impl KernelResolver {
                 for m in &ordered {
                     let owner = m.qualified_name.rsplit_once("::").map(|(p, _)| p.rsplit([':', '.']).next().unwrap_or("")).unwrap_or("");
                     let class_words = split_camel_case(owner);
+                    let double = re!(r"(?i)\b(?:fake|mock|mocked|stub|dummy|spy)\b");
+                    if double.is_match(&class_words.join(" ")) && !receiver_words.iter().any(|w| double.is_match(w)) && !self.read_file(&r.file_path).is_some_and(|s| s.text().contains(owner)) { continue; }
                     let mut score = receiver_words
                         .iter()
                         .filter(|w| {
@@ -1027,6 +1037,11 @@ impl KernelResolver {
                 return Ok(Some(KCand { node: mn.clone(), confidence, resolved_by }));
             }
         }
+        for c in &candidates {
+            if c.language == r.language && is_class_like(&c.kind) {
+                if let Some(node) = self.inherited_class_method(c,method)? { return Ok(Some(KCand{node,confidence,resolved_by})); }
+            }
+        }
         Ok(None)
     }
 
@@ -1080,7 +1095,7 @@ impl KernelResolver {
                 // java/kotlin bound-type resolution runs before the import
                 // descent: an owner means btm owns the ref (or refuses a
                 // deeper receiver); a miss falls through to br:import.
-                if (r.language == "java" || r.language == "kotlin") && self.resolve_bound_type(root, r, 0)?.is_some() {
+                if (r.language == "java" || r.language == "kotlin" || r.language == "python") && self.resolve_bound_type(root, r, 0)?.is_some() {
                     return if receiver == root { self.match_bound_type_member(root, method, r) } else { self.enum_constant_call(receiver, method, r) };
                 }
                 return Ok(match self.resolve_via_import_member(r)? {

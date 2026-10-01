@@ -152,7 +152,7 @@ pub(super) fn site_at(node: TsNode, text: &str, r: &ResolveRefIn) -> ResolveRefI
 
 /// The call a Kotlin lambda is an argument of: climb through the argument
 /// wrappers, never out of an enclosing body.
-fn kotlin_lambda_call(lambda: TsNode) -> Option<TsNode> {
+pub(super) fn kotlin_lambda_call(lambda: TsNode) -> Option<TsNode> {
     let mut call = lambda.parent();
     while let Some(c) = call {
         match c.kind() {
@@ -284,7 +284,7 @@ impl KernelResolver {
     /// `with`, which takes its value as `this` and binds nothing. A
     /// user-defined function of one of those names is the callee when the
     /// project declares it, and its lambda binds `it` like any other.
-    fn kotlin_lambda_names<'a>(&mut self, lambda: TsNode, text: &'a str, r: &ResolveRefIn) -> Res<Vec<&'a str>> {
+    pub(super) fn kotlin_lambda_names<'a>(&mut self, lambda: TsNode, text: &'a str, r: &ResolveRefIn) -> Res<Vec<&'a str>> {
         if let Some(names) = kotlin_declared_lambda_names(lambda, text) {
             return Ok(names);
         }

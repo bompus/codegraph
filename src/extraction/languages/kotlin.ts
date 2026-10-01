@@ -326,8 +326,90 @@ export function joinKotlinSplitConstructors(source: string): string {
   return source.replace(SPLIT_PRIMARY_CONSTRUCTOR, (_m, head: string, ctor: string) => head + ctor.replace(/[^\r\n]/g, ' '));
 }
 
+/**
+ * Kotlin syntax outside the grammar's coverage, rewritten
+ * to an older equivalent of the same length so every offset survives — each
+ * one otherwise made error recovery drop the class around it (Exposed: 158 of
+ * 1,004 files):
+ *
+ * - a `when` guard (Kotlin 2.1), `is H2Dialect if dialect.mode == X ->`,
+ *   becomes a second condition, `is H2Dialect,   dialect.mode == X ->`, so
+ *   the guard's references are kept;
+ * - an open-ended range (1.9), `1..<n`, becomes `1.. n`;
+ * - a multi-dollar string (2.1) uses ordinary interpolation only where its
+ *   dollar threshold is met;
+ * - a nullable receiver in a function type, `Op<Boolean>?.() -> Op<Boolean>`,
+ *   becomes `Op<Boolean>.( ) -> …`.
+ */
+const WHEN_GUARD = /^([ \t]*!?(?:is|in)[ \t]+(?:(?!->)[^\n])*?[\w>?)\]'"])([ \t]+)if(?=[ \t(])/gm;
+const MULTI_DOLLAR_STRING = /(?<![\w$"])\$\$+(?=")/g;
+const NULLABLE_RECEIVER_FN = /([\w>])\?\.\(\)(?=\s*->)/g;
+
+export function rewriteNewerKotlinSyntax(source: string): string {
+  const mask = kotlinCodeMask(source);
+  let out = source;
+  if (source.includes('if')) {
+    const code = source.split('').map((c, i) => mask[i] || c === '\n' || c === '\r' ? c : ' ').join('');
+    const chars = out.split('');
+    for (const m of code.matchAll(WHEN_GUARD)) {
+      const at = m.index! + m[1]!.length + m[2]!.length;
+      let gap = at;
+      while (gap > 0 && /[ \t]/.test(source[gap - 1]!)) gap--;
+      chars[gap] = ',';
+      for (let i = gap + 1; i < at + 2; i++) chars[i] = ' ';
+    }
+    out = chars.join('');
+  }
+  const rewrite = (pattern: RegExp, replacement: (...groups: any[]) => string) => {
+    out = out.replace(pattern, (...groups: any[]) => {
+      const at = groups[groups.length - 2] as number;
+      return mask[at] ? replacement(...groups) : groups[0];
+    });
+  };
+  if (out.includes('..<')) rewrite(/\.\.</g, () => '.. ');
+  if (out.includes('$$')) out = normalizeKotlinDollarStrings(out);
+  if (out.includes('?.()')) rewrite(NULLABLE_RECEIVER_FN, (_m, type: string) => `${type}.( )`);
+  return out;
+}
+
+/** Preserve offsets and interpolation thresholds when removing a string's dollar prefix. */
+function normalizeKotlinDollarStrings(source: string): string {
+  const mask = kotlinCodeMask(source);
+  const chars = source.split('');
+  for (const prefix of source.matchAll(MULTI_DOLLAR_STRING)) {
+    const at = prefix.index!;
+    if (!mask[at]) continue;
+    const threshold = prefix[0].length;
+    chars.fill(' ', at, at + threshold);
+    const quote = at + threshold;
+    const raw = source.startsWith('"""', quote);
+    const delimiter = raw ? '"""' : '"';
+    for (let i = quote + delimiter.length; i < source.length;) {
+      if (source.startsWith(delimiter, i)) break;
+      if (!raw && source[i] === '\\') { i += 2; continue; }
+      if (source[i] !== '$') { i++; continue; }
+      const start = i;
+      while (source[i] === '$') i++;
+      const interpolates = i - start >= threshold && (source[i] === '{' || /[A-Za-z_]/.test(source[i] ?? ''));
+      chars.fill(' ', start, interpolates ? i - 1 : i);
+      if (interpolates && source[i] === '{') {
+        // Nested strings/comments inside a template expression do not close
+        // the containing string or change its interpolation threshold.
+        const expressionMask = kotlinCodeMask(source.slice(i + 1));
+        let depth = 1;
+        for (let j = i + 1; j < source.length; j++) {
+          if (!expressionMask[j - i - 1]) continue;
+          if (source[j] === '{') depth++;
+          if (source[j] === '}' && --depth === 0) { i = j + 1; break; }
+        }
+      }
+    }
+  }
+  return chars.join('');
+}
+
 export function preParseKotlin(source: string): string {
-  return rewriteKotlinCallMemberAssignments(joinKotlinSplitConstructors(blankKotlinQualifiedReceivers(source)));
+  return rewriteKotlinCallMemberAssignments(rewriteNewerKotlinSyntax(joinKotlinSplitConstructors(blankKotlinQualifiedReceivers(source))));
 }
 
 export const kotlinExtractor: LanguageExtractor = {

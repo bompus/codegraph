@@ -42,6 +42,7 @@ impl Worker {
 }
 `,
     'src/main.rs': `mod guard;
+mod local;
 use guard::flag;
 fn get(handler: u8) -> u8 { handler }
 fn run(sym: Option<&str>) {
@@ -49,7 +50,23 @@ fn run(sym: Option<&str>) {
     let _ = get(1);
     let _ = flag("n").short('n');
 }
+struct Other;
+impl Other { fn short(self, c: char) -> Self { self } }
+fn shadowed() {
+    fn flag(name: &str) -> Other { Other }
+    let _ = flag("local").short('x');
+}
 fn main() { run(None); }
+`,
+    'src/local.rs': `use crate::Other;
+fn flag(name: &str) -> crate::guard::Arg { crate::guard::Arg }
+fn shadowedLocal() {
+    fn flag(name: &str) -> Other {
+        let _ = name.len();
+        Other
+    }
+    let _ = flag("local").short('x');
+}
 `,
     'go.mod': 'module example.com/app\n\ngo 1.21\n',
     'flags.go': `package app
@@ -92,6 +109,14 @@ describe('Rust and Go call shapes', () => {
     expect(targets.some((t) => t.endsWith('MutexGuard::map'))).toBe(false);
     expect(targets.some((t) => t.endsWith('CookieJar::get'))).toBe(false);
     expect(targets.some((t) => t.endsWith('Arg::short'))).toBe(true);
+  });
+
+  it('Rust: a local factory shadows an imported factory', () => {
+    for (const [file, caller, owner] of [['src/main.rs', 'shadowed', 'Other'], ['src/local.rs', 'shadowedLocal', 'Other']]) {
+      const targets = callsIn(file!, caller!);
+      expect(targets.some(t => t.endsWith('Arg::short'))).toBe(false);
+      expect(targets.some(t => t.endsWith(`${owner}::short`))).toBe(true);
+    }
   });
 
   it('Rust: keeps a nested function called without a receiver', () => {

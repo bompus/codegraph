@@ -766,7 +766,21 @@ impl KernelResolver {
     pub(super) fn match_call_chain(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         match r.language.as_str() {
             "c" | "cpp" => self.match_cpp_call_chain(r),
-            "php" | "rust" => self.match_scoped_call_chain(r),
+            "rust" => {
+                let Some(m)=call_chain_re().captures(&r.reference_name) else {return Ok(None)};
+                if let Some(hit)=self.rust_chain_member(&super::call_shape::receiver_name(&m[1]),&m[2],r)? {return Ok(Some(hit));}
+                // Unresolved imports can still name a constructor's unique matching member.
+                let Some((path,_))=m[1].split_once("::") else {return Ok(None)};
+                let factory_owner=m[1].split('(').next().unwrap_or("").rsplit_once("::").map(|(owner,_)|owner.rsplit("::").next().unwrap_or(path)).unwrap_or(path);
+                let owners:Vec<_>=self.nodes_by_name(factory_owner)?.iter().filter(|n|n.language=="rust" && matches!(n.kind.as_str(),"struct"|"enum"|"class")).cloned().collect();
+                if owners.is_empty() {return Ok(None);}
+                if owners.len()>1 {
+                    let members=self.nodes_by_name(&m[2])?;
+                    if members.iter().filter(|n|n.language=="rust" && n.kind=="method" && super::call_shape::owner(n)==Some(factory_owner)).count()!=1 {return Ok(None);}
+                }
+                Ok(self.match_scoped_call_chain(r)?.filter(|hit|super::call_shape::owner(&hit.node)==Some(factory_owner)).map(|mut hit|{hit.confidence=hit.confidence.min(0.7);hit}))
+            },
+            "php" => self.match_scoped_call_chain(r),
             "java" | "kotlin" | "csharp" | "swift" | "go" | "scala" | "dart" | "objc"
             | "pascal" => self.match_dotted_call_chain(r),
             _ => Ok(None),

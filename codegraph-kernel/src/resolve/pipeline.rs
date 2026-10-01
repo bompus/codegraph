@@ -368,6 +368,7 @@ impl KernelResolver {
             // bare JS call.
             name_cand = probe!(r, "match_reference_bare", self.match_reference_bare(r)?);
         }
+        if name_cand.is_none() { name_cand = self.match_cpp_macro_namespaced(r)?; }
         self.after_name_match(r, cands, name_cand)
     }
 
@@ -433,7 +434,7 @@ impl KernelResolver {
             });
         }
         let mut cand = cand;
-        self.cap_kotlin_chain_confidence(&mut cand, r)?;
+        self.cap_chain_confidence(&mut cand, r)?;
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
         }
@@ -766,10 +767,12 @@ impl KernelResolver {
         ))
     }
 
-    fn cap_kotlin_chain_confidence(&mut self, cand: &mut KCand, r: &ResolveRefIn) -> Res<()> {
+    fn cap_chain_confidence(&mut self, cand: &mut KCand, r: &ResolveRefIn) -> Res<()> {
+        if cand.confidence>0.7 && self.rust_chain_is_heuristic(&cand.node,r)? {cand.confidence=0.7;}
         if cand.confidence > 0.7 && (self.kotlin_chain_evidence(&cand.node, r)? == Some(super::call_shape::KotlinChainEvidence::Heuristic)
-            || (r.language == "kotlin" && r.reference_kind == "calls" && super::call_shape::is_std_method("kotlin", &r.reference_name)
-                && self.kotlin_call_receiver_type(r)?.is_some_and(|hit| hit.heuristic))) {
+            || (r.language == "kotlin" && r.reference_kind == "calls"
+                && (self.kotlin_call_receiver_type(r)?.is_some_and(|hit| hit.heuristic)
+                    || (self.is_kotlin_qualified_call(r) && self.kotlin_call_receiver_type(r)?.is_none() && (self.kotlin_visible_extension(&cand.node,r)? || self.kotlin_unique_unknown_member(&cand.node,r)?))))) {
             cand.confidence = 0.7;
         }
         Ok(())
@@ -783,7 +786,7 @@ impl KernelResolver {
     /// the merged first-max on the TS side.
     pub(super) fn settle(&mut self, r: &ResolveRefIn, mut cands: Vec<KCand>) -> Res<ResolveOutcome> {
         for cand in &mut cands {
-            self.cap_kotlin_chain_confidence(cand, r)?;
+            self.cap_chain_confidence(cand, r)?;
         }
         let reported = self
             .frameworks_active

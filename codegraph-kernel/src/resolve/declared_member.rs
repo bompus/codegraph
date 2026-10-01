@@ -29,7 +29,7 @@ impl KernelResolver {
         let to = ((n.start_line + count).max(0) as usize).min(lines.len());
         super::awaited::strip_ts_comments(&lines[from..to.max(from)].join("\n"))
     }
-    fn declared_member_type(&mut self, cls: &KNode, name: &str) -> Res<Option<String>> {
+    pub(super) fn declared_member_type(&mut self, cls: &KNode, name: &str) -> Res<Option<String>> {
         let key = (cls.id.clone(), name.to_string());
         if let Some(hit) = self.declared_member_memo.get(&key) { return Ok(hit.clone()); }
         let escaped = regex::escape(name);
@@ -39,21 +39,27 @@ impl KernelResolver {
             format!(r"(?:^|[\s(,])([A-Za-z_][\w.]*)\s*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?(?:\s*\[[\s,]*\])*\??\s+{escaped}\s*(?:[=;,)]|\{{)")
         };
         let re = Self::cached_regex(&pattern)?;
-        let text = self.declaration_head(cls, cls.end_line - cls.start_line);
-        let text = super::awaited::blank_string_contents(&text);
-        let mut depth = 0usize;
-        let mut found = None;
-        for line in text.lines() {
-            if depth <= 1 {
-                if let Some(m) = re.captures(line) {
-                    let before = &line[..m.get(0).unwrap().start()];
-                    let in_params = depth == 1 && before.matches('(').count() > before.matches(')').count();
-                    if !in_params && !matches!(&m[1], "return" | "new" | "throw" | "var" | "val" | "get" | "set" | "init" | "class" | "interface" | "object" | "static" | "final") {
-                        found = if m[1].contains('.') { Some(m[1].to_string()) } else { self.normalize_inferred_type_name(&m[1])? }; break;
-                    }
+        if !self.declared_member_lines.contains_key(&cls.id) {
+            let text = self.declaration_head(cls, cls.end_line - cls.start_line);
+            let text = super::awaited::blank_string_contents(&text);
+            let mut depth=0usize;let mut out=Vec::new();
+            for line in text.lines() {
+                if depth<=1 {out.push((line.to_string(),depth));}
+                for ch in line.chars() {if ch=='{' {depth+=1;} else if ch=='}' {depth=depth.saturating_sub(1);}}
+            }
+            self.declared_member_lines.insert(cls.id.clone(),Rc::new(out));
+        }
+        let lines=self.declared_member_lines[&cls.id].clone();
+        let mut found=None;
+        for (line,depth) in lines.iter() {
+            if !line.contains(name) {continue;}
+            if let Some(m)=re.captures(line) {
+                let before=&line[..m.get(0).unwrap().start()];
+                let in_params=*depth==1 && before.matches('(').count()>before.matches(')').count();
+                if !in_params && !matches!(&m[1], "return"|"new"|"throw"|"var"|"val"|"get"|"set"|"init"|"class"|"interface"|"object"|"static"|"final") {
+                    found=if m[1].contains('.') {Some(m[1].to_string())} else {self.normalize_inferred_type_name(&m[1])?};break;
                 }
             }
-            for ch in line.chars() { if ch == '{' { depth += 1; } else if ch == '}' { depth = depth.saturating_sub(1); } }
         }
         self.declared_member_memo.insert(key, found.clone()); Ok(found)
     }
@@ -73,12 +79,24 @@ impl KernelResolver {
         let Some(cls) = nodes.iter().filter(|n| n.language == r.language && class_kind(&n.kind) && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line) else { return Ok(None) };
         if !receiver.starts_with("this.") {
             if let Some(f) = nodes.iter().filter(|n| n.language == r.language && matches!(n.kind.as_str(), "method" | "function") && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line) {
+                let key=(f.id.clone(),name.to_string(),r.line);
+                if self.member_shadow_memo.get(&key)==Some(&true) {return Ok(None);}
+                if !self.member_shadow_memo.contains_key(&key) {
                 let body = self.declaration_head(f, r.line - f.start_line);
                 let n = regex::escape(name);
-                if Self::cached_regex(&format!(r"\b(?:var|val|out\s+[\w.<>?]+|foreach\s*\(\s*[\w.<>?,\s]+?)\s+{n}\b|\bfor\s*\([^;)]*\s{n}\s*:|\b{n}\s*=>|[(,]\s*{n}\s*(?:,[^()]*)?\)\s*=>|\b{n}\s*(?:,[^{{}}]*)?->"))?.is_match(&body) { return Ok(None); }
+                let shadowed = Self::cached_regex(&format!(r"\b(?:var|val|out\s+[\w.<>?]+|foreach\s*\(\s*[\w.<>?,\s]+?)\s+{n}\b|\bfor\s*\([^;)]*\s{n}\s*:|\b{n}\s*=>|[(,]\s*{n}\s*(?:,[^()]*)?\)\s*=>|\b{n}\s*(?:,[^{{}}]*)?->"))?.is_match(&body);
+                self.member_shadow_memo.insert(key.clone(),shadowed);
+                if shadowed { return Ok(None); }
+                }
             }
         }
-        let mut queue = VecDeque::from([(cls.clone(), HashMap::<String, String>::new())]);
+        let key=(cls.id.clone(),name.to_string());
+        if let Some(hit)=self.declared_member_walks.get(&key) {return Ok(hit.clone());}
+        let result=self.walk_declared_member_receiver(cls,name)?;
+        self.declared_member_walks.insert(key,result.clone());Ok(result)
+    }
+    fn walk_declared_member_receiver(&mut self,cls:&KNode,name:&str)->Res<Option<String>> {
+        let mut queue = VecDeque::from([(Arc::new(cls.clone()), HashMap::<String, String>::new())]);
         let mut seen = HashSet::new();
         while seen.len() < 8 {
             let Some((decl, args)) = queue.pop_front() else { break };
@@ -98,7 +116,7 @@ impl KernelResolver {
                 let given: Vec<String> = at.map(|at| angle_arguments(&head[at..])).unwrap_or_default().iter().map(|a| {
                     let simple = a.split('<').next().unwrap_or("").trim(); args.get(simple).cloned().unwrap_or_else(|| simple.to_string())
                 }).collect();
-                for parent in self.nodes_by_name(&sup)?.iter().filter(|n| n.language == r.language && class_kind(&n.kind)) {
+                for parent in self.nodes_by_name(&sup)?.iter().filter(|n| n.language == cls.language && class_kind(&n.kind)) {
                     let head = self.declaration_head(parent, 3);
                     let at = Self::cached_regex(&format!(r"\b{}\s*<", regex::escape(&parent.name)))?.find(&head).map(|m| m.start());
                     let params = at.map(|at| angle_arguments(&head[at..])).unwrap_or_default();

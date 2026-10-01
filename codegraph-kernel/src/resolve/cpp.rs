@@ -50,6 +50,7 @@ struct Event {
 }
 
 type Timeline = HashMap<String, Vec<Event>>;
+type TypeAliases = HashMap<String,(HashSet<String>,bool)>;
 
 const ROOT_TIMELINE_CAP: usize = 32;
 
@@ -63,6 +64,7 @@ pub(super) struct MacroCache {
     by_basename: Option<HashMap<String, Vec<String>>>,
     /// Per root file (oldest first): macro name → define/undef events in root-file line order.
     roots: VecDeque<(String, Rc<Timeline>)>,
+    type_aliases: VecDeque<(String,Rc<TypeAliases>)>,
 }
 
 /// CPP_DEFINE_SIGNATURE (types.ts): the constant extraction mints from a
@@ -93,6 +95,7 @@ const ALIAS_DEPTH: u32 = 8;
 struct Arms {
     arm: usize,
     in_else: bool,
+    aliases: TypeAliases,
     defs: HashMap<String, (usize, usize, Truth)>,
 }
 
@@ -104,6 +107,9 @@ struct TuWalk {
     scanning: HashSet<String>,
     macro_names: HashSet<String>,
     once: HashMap<String, Truth>,
+    type_aliases: Option<TypeAliases>,
+    stop_at: Option<(String,i64)>,
+    stopped: bool,
 }
 
 impl TuWalk {
@@ -216,7 +222,7 @@ impl KernelResolver {
                 });
                 continue;
             }
-            if let Some(inc) = re!(r#"^\s*#\s*include\s*([<"])([^>"]+)[>"]"#).captures(text) {
+            if let Some(inc) = re!(r#"^\s*#\s*(?:include|import)\s*([<"])([^>"]+)[>"]"#).captures(text) {
                 let quote = if &inc[1] == "\"" { '"' } else { '<' };
                 events.push(FileEvent::Include { quote, spec: inc[2].to_string(), line });
             }
@@ -229,7 +235,7 @@ impl KernelResolver {
         events
     }
 
-    fn resolve_cpp_include(&mut self, file: &str, quote: char, spec: &str, language: &str) -> Res<Option<String>> {
+    pub(super) fn resolve_cpp_include(&mut self, file: &str, quote: char, spec: &str, language: &str) -> Res<Option<String>> {
         let key = format!("{language}\0{file}\0{quote}{spec}");
         if let Some(hit) = self.cpp_macros.includes.get(&key) {
             return Ok(hit.clone());
@@ -276,7 +282,7 @@ impl KernelResolver {
     }
 
     fn scan_tu_file(&mut self, walk: &mut TuWalk, file: &str, inherited: Truth, include_line: Option<i64>, language: &str) {
-        if inherited == Some(false) || walk.scanning.contains(file) || walk.once.get(file) == Some(&Some(true)) {
+        if walk.stopped || inherited == Some(false) || walk.scanning.contains(file) || walk.once.get(file) == Some(&Some(true)) {
             return;
         }
         walk.scanning.insert(file.to_string());
@@ -285,6 +291,8 @@ impl KernelResolver {
         let mut frames: Vec<(Truth, Truth)> = Vec::new();
         let mut arms: Vec<Arms> = Vec::new();
         for ev in self.summarize(file).iter() {
+            if walk.stopped {break;}
+            if walk.stop_at.as_ref().is_some_and(|(target,limit)|target==file && matches!(ev,FileEvent::Define{line,..}|FileEvent::Include{line,..} if line>limit)) {break;}
             match ev {
                 FileEvent::Branch { op, expression, guard } => {
                     match op.as_str() {
@@ -355,6 +363,21 @@ impl KernelResolver {
                     } else {
                         None
                     };
+                    if let Some(aliases)=&mut walk.type_aliases {
+                        let value=value.trim();
+                        let simple=*define && !*function_like && re!(r"^[A-Za-z_]\w*$").is_match(value);
+                        if let Some(arm)=arms.last_mut() {
+                            let entry=arm.aliases.entry(name.clone()).or_insert_with(||(HashSet::new(),false));
+                            if simple {entry.0.insert(value.to_string());} else {entry.1=true;}
+                        }
+                        if active==Some(true) {
+                            if simple {aliases.insert(name.clone(),(HashSet::from([value.to_string()]),false));} else {aliases.remove(name);}
+                        } else if exhaustive {
+                            if let Some(entry)=arms.last().and_then(|a|a.aliases.get(name)) {aliases.insert(name.clone(),entry.clone());}
+                        } else if simple {
+                            aliases.entry(name.clone()).or_insert_with(||(HashSet::new(),true)).0.insert(value.to_string());
+                        } else if let Some(entry)=aliases.get_mut(name) {entry.1=true;}
+                    }
                     // A name the walk has not seen is an unknown build flag,
                     // as `#ifdef` reads it: an `#undef` under an unknown
                     // condition leaves it unknown, not undefined (upstream
@@ -382,7 +405,32 @@ impl KernelResolver {
                 }
             }
         }
+        if walk.stop_at.as_ref().is_some_and(|(target,_)|target==file) {walk.stopped=true;}
         walk.scanning.remove(file);
+    }
+
+    /// Possible simple type aliases at a declaration, evaluated in its caller's import context.
+    pub(super) fn cpp_type_alias_names(&mut self,r:&ResolveRefIn,file:&str,line:i64,name:&str)->Vec<String> {
+        let key=format!("{}\0{}\0{}",r.file_path,file,line);
+        let aliases=match self.cpp_macros.type_aliases.iter().find(|(k,_)|k==&key) {
+            Some((_,aliases))=>aliases.clone(),
+            None=>{
+                let mut walk=TuWalk{type_aliases:Some(HashMap::new()),stop_at:Some((file.to_string(),line)),..TuWalk::default()};
+                self.scan_tu_file(&mut walk,&r.file_path,Some(true),None,&r.language);
+                let aliases=Rc::new(if walk.stopped {walk.type_aliases.unwrap_or_default()} else {HashMap::new()});
+                if self.cpp_macros.type_aliases.len()>=ROOT_TIMELINE_CAP {self.cpp_macros.type_aliases.pop_front();}
+                self.cpp_macros.type_aliases.push_back((key,aliases.clone()));aliases
+            }
+        };
+        let mut queue=VecDeque::from([(name.to_string(),0)]);let mut seen=HashSet::new();let mut result=HashSet::new();
+        while let Some((name,depth))=queue.pop_front() {
+            if depth>=ALIAS_DEPTH || !seen.insert(name.clone()) {continue;}
+            if let Some((targets,literal))=aliases.get(&name) {
+                if *literal {result.insert(name);}
+                queue.extend(targets.iter().cloned().map(|name|(name,depth+1)));
+            } else {result.insert(name);}
+        }
+        result.into_iter().collect()
     }
 
     /// matchCppConstructor: `ns::T::T/<arity>` → the single admitting

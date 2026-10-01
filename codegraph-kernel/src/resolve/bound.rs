@@ -99,6 +99,10 @@ impl KernelResolver {
         if b.kind != "import" {
             return self.node_by_opt_id(b.node_id.as_deref());
         }
+        if r.language=="rust" {
+            let path=b.target_spec.as_deref().unwrap_or(ty);
+            return Ok(self.match_rust_path_reference(&r.clone().naming(path,"references"))?.map(|c|c.node));
+        }
         let ref2 = r.clone().naming(ty, "references");
         let hit = if ty.contains('.') {
             self.resolve_via_import_member(&ref2)?
@@ -229,6 +233,7 @@ impl KernelResolver {
             Some(o) => o,
             None => return Ok(None),
         };
+        if owner.language == "python" && self.python_type_assigns(&owner, method)? { return Ok(None); }
         let member = self.own_bound_member(&owner, method, site)?;
         if let Some(m) = member {
             return Ok(Some(bound_member_cand(m)));
@@ -247,6 +252,7 @@ impl KernelResolver {
             // reaches a shared base only after every class deriving it.
             let Some(mro) = self.python_mro(&owner, 0)? else { return Ok(None) };
             for class in mro.iter().skip(1) {
+                if self.python_type_assigns(class, method)? { return Ok(None); }
                 if let Some(m) = self.own_bound_member(class, method, site)? {
                     return Ok(Some(bound_member_cand(m)));
                 }

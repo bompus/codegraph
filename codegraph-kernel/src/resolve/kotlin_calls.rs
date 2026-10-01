@@ -116,22 +116,25 @@ impl KernelResolver {
         if n.kind != "method" || !matches!(n.language.as_str(), "kotlin" | "java") { return Ok(true); }
         if self.kotlin_precondition(r) { return Ok(false); }
         // Top-level extensions use package imports; their receiver is not an enclosing class.
-        if n.language == "kotlin" && !self.nodes_in_file(&n.file_path)?.iter().any(|o| {
+        let dispatch=self.nodes_in_file(&n.file_path)?.iter().filter(|o| {
             o.id != n.id && matches!(o.kind.as_str(), "class" | "interface" | "object" | "enum" | "struct" | "trait")
                 && o.start_line <= n.start_line && o.end_line >= n.end_line
-        }) { return Ok(true); }
+        }).min_by_key(|o|o.end_line-o.start_line).cloned();
+        if n.language == "kotlin" && dispatch.is_none() { return Ok(true); }
         if r.file_path.ends_with(".kts") { return Ok(true); }
         let Some((path, _)) = n.qualified_name.rsplit_once("::") else { return Ok(true) };
         let mut parts = path.rsplit([':', '.']).filter(|v| !v.is_empty());
         let mut owner = parts.next().unwrap_or("");
         let companion = owner == "Companion";
         if companion { owner = parts.next().unwrap_or(owner); }
+        let member_extension=dispatch.as_ref().is_some_and(|decl|decl.name!=owner && !companion);
+        if member_extension {owner=&dispatch.as_ref().unwrap().name;}
         if n.name == owner { return Ok(true); }
         let mut queue: VecDeque<String> = self.nodes_in_file(&r.file_path)?.iter().filter(|t| t.start_line <= r.line && t.end_line >= r.line)
             .filter_map(|t| if matches!(t.kind.as_str(), "class" | "interface" | "enum" | "struct" | "trait") { Some(t.name.clone()) }
                 else if matches!(t.kind.as_str(), "function" | "method") { t.qualified_name.rsplit_once("::").map(|(p, _)| p.rsplit([':', '.']).next().unwrap_or("").to_string()) } else { None }).collect();
         for frame in self.kotlin_frames(&r.file_path).iter().filter(|f| f.start <= r.line && f.end >= r.line) { queue.extend(frame.names.iter().cloned()); }
-        if self.kotlin_receiver_types()?.contains(owner) { return Ok(true); }
+        if !member_extension && self.kotlin_receiver_types()?.contains(owner) { return Ok(true); }
         let mut seen = HashSet::new();
         while seen.len() < 60 {
             let Some(name) = queue.pop_front() else { break };

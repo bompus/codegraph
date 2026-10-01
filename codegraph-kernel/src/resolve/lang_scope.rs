@@ -118,6 +118,7 @@ impl KernelResolver {
     ) -> Res<(Vec<Arc<KNode>>, bool)> {
         let shape_call = matches!(r.language.as_str(), "rust" | "go" | "swift" | "scala" | "kotlin")
             && r.reference_kind == "calls" && re!(r"^[A-Za-z_$][A-Za-z0-9_$]*$").is_match(&r.reference_name);
+        let solidity_bare = r.language == "solidity" && self.is_receiver_less_call(r)?;
         let ruby_bare = is_bare_ruby_call(r);
         let cfml_bare = is_bare_cfml_call(r);
         let kotlin_call = is_bare_call_of(r, "kotlin") && !self.is_kotlin_qualified_call(r);
@@ -125,12 +126,13 @@ impl KernelResolver {
         let member_site = matches!(r.language.as_str(), "vbnet" | "csharp" | "objc")
             .then(|| self.member_site(r))
             .filter(|s| s.is_judged());
-        if !shape_call && !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare && member_site.is_none() {
+        if !shape_call && !solidity_bare && !ruby_bare && !cfml_bare && !kotlin_call && !dart_bare && member_site.is_none() {
             return Ok((candidates, false));
         }
         let mut shrank = false;
         let mut kept = Vec::with_capacity(candidates.len());
         for n in candidates {
+            if solidity_bare && !self.solidity_member_in_scope(&n,r)? { shrank = true; continue; }
             if shape_call && !self.call_shape_target(&n, r)? { shrank = true; continue; }
             if let Some(site) = &member_site {
                 if !self.is_member_in_reach(&n, site, r)? {
@@ -173,7 +175,7 @@ impl KernelResolver {
     /// `pkg.helper()`, a chain's later link such as `.where { … }`) reaches the resolver as its bare
     /// name, but the qualifier, not the file's imports, says what it names.
     /// `this.` and `super.` calls are still judged.
-    fn is_kotlin_qualified_call(&mut self, r: &ResolveRefIn) -> bool {
+    pub(super) fn is_kotlin_qualified_call(&mut self, r: &ResolveRefIn) -> bool {
         if self.kotlin_infix_site(r).is_some() { return true; }
         let Some(lines) = self.read_file(&r.file_path) else { return false };
         let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return false };
@@ -244,6 +246,49 @@ impl KernelResolver {
                 && o.end_line >= n.end_line
                 && (o.start_line < n.start_line || o.end_line > n.end_line)
         }))
+    }
+
+    /// A bare Solidity method must belong to the enclosing contract or a bound ancestor.
+    fn solidity_member_in_scope(&mut self,n:&KNode,r:&ResolveRefIn)->Res<bool> {
+        if n.kind != "method" || n.language != "solidity" { return Ok(true); }
+        let Some((owner,_)) = n.qualified_name.rsplit_once("::") else { return Ok(true) };
+        let mut pending: VecDeque<Arc<KNode>> = self.nodes_in_file(&r.file_path)?.iter().filter(|c| is_class_like(&c.kind) && c.start_line<=r.line && c.end_line>=r.line).cloned().collect();
+        let mut seen = HashSet::new();
+        while seen.len()<60 {
+            let Some(decl)=pending.pop_front() else {break};
+            if !seen.insert(decl.id.clone()) {continue;}
+            if decl.qualified_name==owner && decl.file_path==n.file_path {return Ok(true);}
+            for id in self.outgoing_edge_targets(&decl.id, &["extends"])? {
+                if let Some(parent)=self.node_by_id(&id)? { pending.push_back(parent); }
+            }
+            let Some(lines)=self.read_file(&decl.file_path) else {continue};
+            let from=(decl.start_line-1).max(0) as usize;let to=((decl.start_line+10).max(0) as usize).min(lines.len());
+            let head=super::call_shape::flat_head(&lines[from.min(to)..to].join("\n"),false);
+            let Some(m)=re!(r"\bis\b([\s\S]*)$").captures(&head) else {continue};
+            for name in m[1].split(',').map(str::trim) {
+                let mut site=r.clone();site.file_path=decl.file_path.clone();site.line=decl.start_line;site.column=decl.start_column;
+                if let Some(parent)=self.solidity_parent(name,&site)? {pending.push_back(parent);}
+            }
+        }
+        Ok(false)
+    }
+
+    fn solidity_parent(&mut self,name:&str,site:&ResolveRefIn)->Res<Option<Arc<KNode>>> {
+        // Generic Solidity extraction retains symbolic imports in the import
+        // node's signature rather than lexical binding rows.
+        for import in self.nodes_in_file(&site.file_path)?.iter().filter(|n|n.kind=="import") {
+            let Some(signature)=import.signature.as_deref() else {continue};
+            let Some(m)=re!(r#"\bimport\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']"#).captures(signature) else {continue};
+            for symbol in m[1].split(',') {
+                let words:Vec<_>=symbol.split_whitespace().collect();
+                let (exported,local)=match words.as_slice() {[exported] => (*exported,*exported),[exported,"as",local] => (*exported,*local),_=>continue};
+                if local!=name {continue;}
+                let Some(file)=self.resolve_import_path(&m[2],&site.file_path,"solidity")? else {return Ok(None)};
+                let parents:Vec<_>=self.nodes_in_file(&file)?.iter().filter(|n|n.language=="solidity" && is_class_like(&n.kind) && n.name==exported).cloned().collect();
+                return Ok(match parents.as_slice() {[parent]=>Some(parent.clone()),_=>None});
+            }
+        }
+        self.resolve_bound_type(name,site,0)
     }
 
     /// The simple names a Kotlin type's declarations list after `:` in their

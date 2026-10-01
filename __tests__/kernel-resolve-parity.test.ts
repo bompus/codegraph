@@ -375,10 +375,8 @@ const FIXTURE: Record<string, string> = {
     '    pub fn miss(&self) { self.unknown.new(); }',
     '}',
     // `x.y` local receiver inference (R5): `: T` annotations (let or
-    // param) type the receiver for rmot. `let w = Widget::new()` (spaced
-    // `=`) is an inference MISS even in TS — the pattern's `=` must
-    // follow the optional `:T` group — so it falls to the strat arms
-    // (unique-method @0.7) exactly like undeclared receivers.
+    // param) type the receiver for rmot. Spaced constructor initializers
+    // also donate their type; undeclared receivers stay on the fallback.
     'pub struct Ctx;',
     'impl Ctx {',
     '    pub fn run(&self) {}',
@@ -835,10 +833,9 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     seed(nodeId('miss', 'sub.rs', 'method'), 'self.unknown.new', 'src/sub.rs', 'rust', 'calls', 8);
     // Rust `x.y` local receiver inference (R5) — `let v: Widget`, a
     // typed param `p: &Widget`, and `ctx: Ctx` (the §5.25 shape) feed
-    // inferLocalReceiverType → rmot @0.9. `let w = Widget::new()` (spaced
-    // `=`), `w.new` scope-bounded out of `useit` into `unbound`, and the
-    // undeclared `w.inner`/`z` receivers all miss → the unique-method
-    // strat arm @0.7, exactly like TS. `z.nomethod` misses both.
+    // inferLocalReceiverType → rmot @0.9, including spaced initializers.
+    // `w.new` outside `useit` and undeclared `w.inner`/`z` receivers
+    // stay on the unique-method fallback at 0.7. `z.nomethod` misses both.
     const useitFn = nodeId('useit', 'sub.rs');
     seed(useitFn, 'w.again', 'src/sub.rs', 'rust', 'calls', 18);
     seed(useitFn, 'v.new', 'src/sub.rs', 'rust', 'calls', 20);
@@ -1441,19 +1438,19 @@ describe.skipIf(!kernelBuilt)('kernel resolver (Phase 4)', () => {
     expect(ctxRun.targetNodeId).toBe(nodeId('run', 'sub.rs', 'method'));
     // Inference misses land on the strat arms exactly like TS: `new` and
     // `again` are unique rust methods → strat3 single-candidate @0.7.
-    // `let w = Widget::new()` is a miss in TS too — the pattern needs `=`
-    // right after the optional `:T` group, so only `w=T`/`w: T` donate.
+    // A spaced constructor initializer now types `w.again` at 0.9.
+    // Unbound receivers and unresolved property chains stay at 0.7.
     // `w.new` in `unbound` is scope-bounded out — w's decl is in `useit`.
-    for (const [n, want] of [
-      ['w.again', 'again'],
-      ['w.new', 'new'],
-      ['z.again', 'again'],
-      ['w.inner.again', 'again'],
+    for (const [n, want, confidence] of [
+      ['w.again', 'again', 0.9],
+      ['w.new', 'new', 0.7],
+      ['z.again', 'again', 0.7],
+      ['w.inner.again', 'again', 0.7],
     ] as const) {
       const h = at(n, 'src/sub.rs', 'calls');
       expect(h.status).toBe('resolved');
       expect(h.resolvedBy).toBe('instance-method');
-      expect(h.confidence).toBe(0.7);
+      expect(h.confidence).toBe(confidence);
       expect(h.targetNodeId).toBe(nodeId(want, 'sub.rs', 'method'));
     }
     // `z.nomethod` — inference and strat both miss, and no `nomethod`

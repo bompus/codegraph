@@ -390,7 +390,15 @@ impl KernelResolver {
     /// Whether `cls` assigns `member` as data: `member = …` / `member: T` in
     /// the class body, or `self.member = …` inside one of its methods (a
     /// method's bare locals and keyword arguments don't count).
-    fn python_class_assigns(&mut self, cls: &KNode, member: &str) -> Res<bool> {
+    pub(super) fn python_class_assigns(&mut self, cls: &KNode, member: &str) -> Res<bool> {
+        self.python_member_assignment(cls,member,true)
+    }
+
+    pub(super) fn python_type_assigns(&mut self, cls: &KNode, member: &str) -> Res<bool> {
+        self.python_member_assignment(cls,member,false)
+    }
+
+    fn python_member_assignment(&mut self, cls: &KNode, member: &str, instance: bool) -> Res<bool> {
         let Some(lines) = self.read_file(&cls.file_path) else {
             return Ok(false);
         };
@@ -414,9 +422,13 @@ impl KernelResolver {
             if &c[2] != member || line.trim_start().starts_with('#') {
                 continue;
             }
+            if !instance {
+                let code=super::awaited::blank_string_contents(line);
+                if !code.split('#').next().unwrap_or("").contains('=') {continue;}
+            }
             let line_no = (lo + i + 1) as i64;
             let in_method = bodies.iter().any(|&(s, e)| s <= line_no && line_no <= e);
-            if !in_method || c.get(1).is_some() {
+            if !in_method || (instance && c.get(1).is_some()) {
                 return Ok(true);
             }
         }
@@ -785,7 +797,7 @@ fn python_base_names(lines: &[String], at: usize) -> Vec<String> {
 /// `Store(...)` as a value names `Store`; a conditional expression
 /// (`Store() if cond else Other()`) names no one class.
 fn constructor_type(value: &str) -> Option<String> {
-    let c = re!(r"^([A-Z][\w.]*)\s*\(").captures(value)?;
+    let c = re!(r"^(_*[A-Z][\w.]*)\s*\(").captures(value)?;
     let open = c.get(0)?.end() - 1;
     let mut depth = 0usize;
     for (i, b) in value.bytes().enumerate().skip(open) {
@@ -803,6 +815,7 @@ fn constructor_type(value: &str) -> Option<String> {
             _ => {}
         }
     }
+    if let Some(m) = re!(r"^([A-Z]\w*)\.objects\.(?:create|get|first|last|latest|earliest|get_by_natural_key)$").captures(&c[1]) { return Some(m[1].to_string()); }
     Some(c[1].to_string())
 }
 

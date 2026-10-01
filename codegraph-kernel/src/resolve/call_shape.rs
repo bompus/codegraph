@@ -32,7 +32,7 @@ const RUST_STD_METHODS: &[&str] = &[
     "as_mut", "as_deref", "clone", "cloned", "copied", "iter",
     "iter_mut", "into_iter", "collect", "enumerate", "zip", "rev",
     "chain", "skip", "step_by", "peekable", "flat_map", "filter_map",
-    "flatten", "any", "all", "len", "is_empty", "push",
+    "flatten", "filter", "line_number", "any", "all", "len", "is_empty", "push",
     "push_str", "pop", "extend", "drain", "clear", "retain",
     "truncate", "reserve", "with_capacity", "capacity", "sort", "sort_by",
     "sort_by_key", "dedup", "split_off", "contains_key", "to_string", "to_owned",
@@ -40,7 +40,7 @@ const RUST_STD_METHODS: &[&str] = &[
     "try_into", "borrow", "borrow_mut", "deref", "deref_mut", "chars",
     "bytes", "lines", "starts_with", "ends_with", "trim", "to_lowercase",
     "to_uppercase", "windows", "chunks", "then", "then_some", "eq",
-    "cmp", "partial_cmp", "read_to_end", "read_to_string", "fetch_add", "fetch_sub",
+    "cmp", "partial_cmp", "read_to_end", "read_to_string", "fetch_add", "fetch_sub", "current_dir", "stdout", "stderr", "stdin", "success", "failure",
 ];
 
 const GO_STD_METHODS: &[&str] = &[
@@ -150,6 +150,12 @@ pub(super) fn is_std_method(language: &str, name: &str) -> bool {
 pub(super) fn owner(n: &KNode) -> Option<&str> {
     n.qualified_name.rsplit_once("::").map(|(path, _)| path.rsplit([':', '.']).next().unwrap_or(""))
 }
+
+fn rust_return_owner(raw:&str,owner:&str)->String {
+    let ty=re!(r"^&(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?").replace(raw.trim(),"");
+    let ty=ty.split('<').next().unwrap_or("").trim();
+    if matches!(ty,"Self"|"self") {owner.to_string()} else {ty.to_string()}
+}
 pub(super) fn type_kind(kind: &str) -> bool {
     matches!(kind, "class" | "struct" | "enum" | "interface" | "trait" | "protocol" | "module" | "namespace")
 }
@@ -189,7 +195,41 @@ impl KernelResolver {
 
     fn call_site(&mut self, r: &ResolveRefIn) -> Option<CallSite> {
         let lines = self.read_file(&r.file_path)?;
-        let line = lines.get((r.line - 1).max(0) as usize)?;
+        if r.language=="rust" && r.reference_kind=="calls" {
+            if let Some(tree)=self.parsed_tree(&lines,r) {
+                let mut node=super::iteration::descendant_for_position(tree.root_node(),lines.text(),((r.line-1).max(0) as usize,r.column.max(0) as usize+1));
+                loop {
+                    if node.kind()=="field_expression" {
+                        if let (Some(field),Some(value))=(node.child_by_field_name("field"),node.child_by_field_name("value")) {
+                            if &lines.text()[field.start_byte()..field.end_byte()]==r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name) {
+                                let receiver=super::awaited::strip_ts_comments(&lines.text()[value.start_byte()..value.end_byte()]);
+                                let receiver:String=receiver.chars().filter(|c|!c.is_whitespace()).collect();
+                                return Some(CallSite{shape:if receiver=="self" {Shape::SelfCall} else {Shape::Chain},receiver:receiver_name(&receiver),label:String::new(),subscript:false});
+                            }
+                        }
+                    }
+                    let Some(parent)=node.parent() else {break};
+                    if matches!(parent.kind(),"arguments"|"expression_statement"|"let_declaration"|"block"|"source_file"|"function_item") {break;}
+                    node=parent;
+                }
+            }
+        }
+        let idx = (r.line - 1).max(0) as usize;
+        let mut text = lines.get(idx)?.to_string();
+        if r.language=="go" && text.trim_start().starts_with('.') {
+            for prev in lines[idx.saturating_sub(12)..idx].iter().rev() {
+                text = format!("{} {}",prev.trim(),text.trim_start());
+                if !prev.trim_start().starts_with('.') { break; }
+            }
+        }
+        if r.language=="go" && !text.contains(&r.reference_name) {
+            for next in lines.iter().skip(idx+1).take(12) {
+                if !next.trim_start().starts_with('.') {break;}
+                text.push(' ');text.push_str(next.trim());
+                if next.contains(&r.reference_name) {break;}
+            }
+        }
+        let line = text.as_str();
         let name = &r.reference_name;
         let at = super::lang_scope::name_start_at_column(line, name, r.column.max(0) as usize)
             .filter(|&at| at == 0 || !line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '$' || c == '_'))
@@ -316,6 +356,25 @@ impl KernelResolver {
     pub(super) fn call_shape_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if self.kotlin_number_bitwise(n, r) { return Ok(false); }
         let Some(site) = self.call_site(r) else { return Ok(true) };
+        if r.language=="rust" && site.shape==Shape::Chain && n.kind=="method" {
+            if let Some(member)=self.rust_chain_member(&site.receiver,&n.name,r)? {return Ok(member.node.id==n.id);}
+            if is_std_method("rust",&n.name) {
+                return Ok(site.receiver=="self" || site.receiver.split(['.',':']).any(|part|owner(n).is_some_and(|owner|part.eq_ignore_ascii_case(owner))));
+            }
+        }
+        if r.language == "go" && site.receiver.rsplit('.').next() == Some("Header") && matches!(n.name.as_str(), "Get"|"Set"|"Add"|"Del"|"Values"|"Clone"|"Write") {
+            let member=if let Some(receiver)=site.receiver.strip_suffix(".Header") {
+                let ty=self.infer_local_receiver_type(receiver,r,true)?;
+                if let Some(ty)=ty {
+                    if let Some(factory)=self.match_bound_type_member(&ty,"Header",r)? {
+                        if let Some(return_type)=factory.node.return_type.as_deref() {
+                            self.match_bound_type_member(return_type.trim_start_matches('*'),&n.name,&r.clone().at(&factory.node))?
+                        } else {None}
+                    } else {None}
+                } else {None}
+            } else {self.match_bound_type_member(&site.receiver,&n.name,r)?};
+            return Ok(member.is_some_and(|member|member.node.id==n.id));
+        }
         match r.language.as_str() {
             "rust" | "go" => Ok(match site.shape {
                 Shape::Path => true,
@@ -330,16 +389,86 @@ impl KernelResolver {
             }),
             "swift" => self.swift_call_target(n, r, &site),
             "scala" => self.scala_call_target(n, r, &site),
-            "kotlin" if site.shape == Shape::Chain && is_std_method("kotlin", &r.reference_name) => {
+            "kotlin" if site.shape == Shape::Chain => {
+                if !self.kotlin_unknown_receiver_allowed(r)? {return Ok(false);}
+                if self.kotlin_infix_site(r).is_some() && !is_std_method("kotlin",&r.reference_name) {return Ok(true);}
                 if let Some(receiver) = self.kotlin_call_receiver_type(r)? {
                     return self.kotlin_receiver_accepts(n, &receiver, r);
                 }
                 Ok(!matches!(n.kind.as_str(), "method" | "function") || site.receiver == "this"
-                    || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))
+                    || (is_std_method("kotlin",&r.reference_name) && !site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))
+                    || self.kotlin_unknown_extension_target(n,r)?
+                    || self.kotlin_unique_unknown_member(n,r)?
                     || self.kotlin_chain_evidence(n, r)?.is_some())
             }
             _ => Ok(true),
         }
+    }
+
+    pub(super) fn rust_chain_is_heuristic(&mut self,n:&KNode,r:&ResolveRefIn)->Res<bool> {
+        if r.language!="rust" || r.reference_kind!="calls" || n.kind!="method" || !is_std_method("rust",&n.name) {return Ok(false);}
+        let Some(site)=self.call_site(r) else {return Ok(false)};
+        Ok(site.shape==Shape::Chain && self.rust_chain_member(&site.receiver,&n.name,r)?.is_none())
+    }
+
+    pub(super) fn rust_chain_member(&mut self,receiver:&str,method:&str,r:&ResolveRefIn)->Res<Option<KCand>> {
+        let mut links=receiver.split('.');
+        let root=links.next().unwrap_or("");
+        let mut site=r.clone();
+        let mut ty=if let Some((owner,factory))=root.rsplit_once("::") {
+            let Some(call)=self.match_bound_type_member(owner,factory,r)? else {return Ok(None)};
+            let Some(ret)=call.node.return_type.as_deref() else {return Ok(None)};
+            site=r.clone().at(&call.node);
+            rust_return_owner(ret,super::call_shape::owner(&call.node).unwrap_or(owner))
+        } else if root=="self" {
+            let mut field_links=links.clone();
+            let field_call=match (field_links.next(),field_links.next()) {
+                (Some(field),Some(method))=>self.match_rust_self_field_call(field,method,r)?,
+                _=>None,
+            };
+            if let Some(call)=field_call {
+                let Some(ret)=call.node.return_type.as_deref() else {return Ok(None)};
+                links=field_links;
+                site=r.clone().at(&call.node);
+                rust_return_owner(ret,owner(&call.node).unwrap_or(""))
+            } else {
+                self.node_by_id(&r.from_node_id)?.and_then(|n|n.qualified_name.rsplit_once("::").map(|(owner,_)|owner.to_string())).unwrap_or_default()
+            }
+        } else if let Some(ty)=self.infer_local_receiver_type(root,r,true)? {ty}
+        else {
+            let reference=r.clone().naming(root,"calls");
+            // A local function shadows an imported factory in its lexical scope.
+            let candidates=self.nodes_in_file(&r.file_path)?.iter().filter(|n|n.name==root && n.kind=="function").cloned().collect::<Vec<_>>();
+            let mut visible=Vec::new();
+            for candidate in candidates {if self.is_lexically_reachable(&candidate,r)? {visible.push(candidate);}}
+            let mut ranked=Vec::new();
+            for candidate in visible {
+                let rank=self.lexical_scope_of(&candidate)?.map_or(i64::MAX,|(start,end)|end-start);
+                ranked.push((rank,candidate));
+            }
+            ranked.sort_by_key(|(rank,_)|*rank);
+            if ranked.len()>1 && ranked[0].0==ranked[1].0 {return Ok(None);}
+            let mut factory=ranked.first().map(|(_,candidate)|candidate.clone());
+            if factory.is_none() {
+                let path=self.read_file(&r.file_path).and_then(|file|file.rust_uses().get(root).cloned());
+                factory=match path {
+                    Some(path)=>self.match_rust_path_reference(&r.clone().naming(&path,"calls"))?.map(|c|c.node).filter(|n|n.kind=="function"),
+                    None=>self.resolve_via_import(&reference)?.map(|c|c.node).filter(|n|n.kind=="function"),
+                };
+            }
+            let Some(factory)=factory else {return Ok(None)};
+            let Some(ret)=factory.return_type.as_deref() else {return Ok(None)};
+            site=r.clone().at(&factory);
+            rust_return_owner(ret,"")
+        };
+        for (depth,link) in links.enumerate() {
+            if depth>=32 {return Ok(None);}
+            let Some(call)=self.match_bound_type_member(&ty,link,&site)? else {return Ok(None)};
+            let Some(ret)=call.node.return_type.as_deref() else {return Ok(None)};
+            ty=rust_return_owner(ret,&ty);
+            site=r.clone().at(&call.node);
+        }
+        self.match_bound_type_member(&ty,method,&site)
     }
 
     fn swift_head(&mut self, n: &KNode) -> (Vec<String>, bool) {

@@ -51,6 +51,7 @@ pub(super) enum ObjcShape {
     /// A message to `self` / `super` / `[self class]`, whose receiver the
     /// extractor drops.
     SelfSend,
+    SuperSend,
 }
 
 /// UIKit / AppKit superclasses, for a category on a system class: an
@@ -127,7 +128,8 @@ impl KernelResolver {
         }
         match site.objc_shape {
             Some(ObjcShape::CCall) if is_objc_member_kind(&n.kind) => Ok(false),
-            Some(ObjcShape::SelfSend) => self.is_objc_self_send_target(n, r),
+            Some(ObjcShape::SelfSend) => self.is_objc_self_send_target(n, r, false),
+            Some(ObjcShape::SuperSend) => self.is_objc_self_send_target(n, r, true),
             _ => Ok(true),
         }
     }
@@ -164,7 +166,7 @@ impl KernelResolver {
         if site.csharp_bare {
             return Ok(is_csharp_member_kind(&n.kind) && self.csharp_member_verdict(n, r)? == Some(true));
         }
-        if site.objc_shape == Some(ObjcShape::SelfSend) && is_objc_member_kind(&n.kind) {
+        if matches!(site.objc_shape, Some(ObjcShape::SelfSend | ObjcShape::SuperSend)) && is_objc_member_kind(&n.kind) {
             let Some(owner) = n.qualified_name.rfind("::").map(|cut| n.qualified_name[..cut].to_string()) else {
                 return Ok(false);
             };
@@ -422,12 +424,17 @@ impl KernelResolver {
             return None;
         }
         let mut shape = None;
-        for at in word_occurrences(line, name, true) {
+        let column=names::js_unit_to_byte(line,r.column.max(0) as usize);
+        let occurrences:Vec<_>=word_occurrences(line, name, true).collect();
+        let at=occurrences.iter().copied().find(|at|*at>=column).or_else(||occurrences.last().copied())?;
+        {
             let before = &line[..at];
             let after = &line[at + name.len()..];
             if after.trim_start().starts_with('(') && !re!(r"\[\s*[A-Za-z0-9_.]+\s+$").is_match(before) {
                 shape.get_or_insert(ObjcShape::CCall);
-            } else if re!(r"\[\s*(?:self|super|\[\s*self\s+class\s*\])\s+$").is_match(before) {
+            } else if re!(r"\[\s*super\s+$").is_match(before) {
+                return Some(ObjcShape::SuperSend);
+            } else if re!(r"\[\s*(?:self|\[\s*self\s+class\s*\])\s+$").is_match(before) {
                 return Some(ObjcShape::SelfSend);
             }
         }
@@ -441,37 +448,86 @@ impl KernelResolver {
     /// sender's own file, or in the file named after a class of its
     /// hierarchy, still counts (as does any, when the sender's own class was
     /// lost too). A function elsewhere is never what `[super init]` sends to.
-    fn is_objc_self_send_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+    fn is_objc_self_send_target(&mut self, n: &KNode, r: &ResolveRefIn, to_super: bool) -> Res<bool> {
         let hierarchy = self.objc_hierarchy_at(r)?;
+        let sender = self.objc_sender_at(r)?;
+        if let Some(sender)=&sender {
+            let mut pending=VecDeque::new();
+            if to_super {pending.extend(self.objc_supertypes_at(sender,r)?);} else {pending.push_back(sender.clone());}
+            let mut seen=HashSet::new();
+            let mut owners=HashSet::new();
+            while let Some(owner)=pending.pop_front() {
+                if seen.len()>=30 {return Ok(false);}
+                if !seen.insert(owner.clone()) {continue;}
+                let members=self.nodes_by_qualified_name(&format!("{owner}::{}",r.reference_name))?;
+                if members.iter().any(|m|m.language=="objc" && is_objc_member_kind(&m.kind)) {
+                    owners.insert(owner);
+                } else {pending.extend(self.objc_supertypes_at(&owner,r)?);}
+            }
+            if !owners.is_empty() {return Ok(owners.len()==1 && owners.contains(n.qualified_name.rsplit_once("::").map(|(owner,_)|owner).unwrap_or("")));}
+
+        }
+        let sender=if to_super {sender} else {None};
         if is_objc_member_kind(&n.kind) {
             let Some(cut) = n.qualified_name.rfind("::") else { return Ok(true) };
-            return Ok(hierarchy.is_none_or(|h| h.contains(&n.qualified_name[..cut])));
+            return Ok(hierarchy.is_none_or(|h| h.contains(&n.qualified_name[..cut])) && sender.as_deref() != Some(&n.qualified_name[..cut]));
         }
         let Some(hierarchy) = hierarchy else { return Ok(true) };
         if n.file_path == r.file_path {
-            return Ok(true);
+            return Ok(!to_super);
         }
         let base = pos_basename(&n.file_path);
         let stem = base.rfind('.').map_or(base, |i| &base[..i]);
-        Ok(hierarchy.contains(stem))
+        Ok(hierarchy.contains(stem) && sender.as_deref() != Some(stem))
+    }
+
+    fn objc_sender_at(&mut self, r: &ResolveRefIn) -> Res<Option<String>> {
+        let nodes = self.nodes_in_file(&r.file_path)?;
+        Ok(nodes.iter().filter(|c| c.kind == "class" && c.start_line <= r.line && c.end_line >= r.line)
+            .min_by_key(|c| c.end_line-c.start_line).map(|c| c.name.clone())
+            .or_else(|| nodes.iter().filter(|n| n.kind == "method" && n.start_line <= r.line && n.end_line >= r.line)
+                .min_by_key(|n| n.end_line-n.start_line).and_then(|n| n.qualified_name.rsplit_once("::").map(|(o,_)| o.to_string()))))
     }
 
     /// objcHierarchyAt: the class a message is written in and every class it
     /// inherits from; `None` outside any class.
     fn objc_hierarchy_at(&mut self, r: &ResolveRefIn) -> Res<Option<Rc<HashSet<String>>>> {
-        let here = self
-            .nodes_in_file(&r.file_path)?
-            .iter()
-            .filter(|c| c.kind == "class" && c.start_line <= r.line && c.end_line >= r.line)
-            .min_by_key(|c| c.end_line - c.start_line)
-            .map(|c| c.name.clone());
+        let here = self.objc_sender_at(r)?;
         let Some(here) = here else { return Ok(None) };
-        if let Some(hit) = self.objc_hierarchy_memo.get(&here) {
+        let key=format!("{}\0{here}",r.file_path);
+        if let Some(hit) = self.objc_hierarchy_memo.get(&key) {
             return Ok(Some(hit.clone()));
         }
-        let seen = Rc::new(self.objc_type_closure(vec![here.clone()], 30)?);
-        self.objc_hierarchy_memo.insert(here, seen.clone());
+        let mut seen=HashSet::new();let mut pending=VecDeque::from([here]);
+        while seen.len()<30 {
+            let Some(name)=pending.pop_front() else {break};
+            if !seen.insert(name.clone()) {continue;}
+            pending.extend(self.objc_supertypes_at(&name,r)?);
+        }
+        let seen=Rc::new(seen);
+        self.objc_hierarchy_memo.insert(key, seen.clone());
         Ok(Some(seen))
+    }
+
+    fn objc_supertypes_at(&mut self,name:&str,r:&ResolveRefIn)->Res<Vec<String>> {
+        let parents=self.objc_supertypes_of(name)?;
+        let declarations:Vec<_>=self.nodes_by_name(name)?.iter().filter(|n|n.language=="objc" && matches!(n.kind.as_str(),"class"|"protocol")).cloned().collect();
+        let pattern=Self::cached_regex(&format!(r"@interface\s+{}\s*:\s*([A-Za-z0-9_]+)",regex::escape(name)))?;
+        let mut result=HashSet::new();
+        for parent in parents.iter() {
+            let mut declared=false;
+            for decl in &declarations {
+                let Some(lines)=self.read_file(&decl.file_path) else {continue};
+                for (index,line) in lines.iter().enumerate() {
+                    if pattern.captures(line).is_some_and(|m|&m[1]==parent) {
+                        declared=true;
+                        result.extend(self.cpp_type_alias_names(r,&decl.file_path,index as i64+1,parent));
+                    }
+                }
+            }
+            if !declared {result.insert(parent.clone());}
+        }
+        Ok(result.into_iter().collect())
     }
 
     /// Every class `start` reaches through `@interface` superclasses (at most `cap`).
@@ -497,16 +553,16 @@ impl KernelResolver {
         let decls: Vec<Arc<KNode>> = self
             .nodes_by_name(name)?
             .iter()
-            .filter(|d| d.kind == "class" && d.language == "objc")
+            .filter(|d| matches!(d.kind.as_str(),"class"|"protocol") && d.language == "objc")
             .cloned()
             .collect();
         let mut supers: Vec<String> = Vec::new();
         for decl in decls {
             let Some(lines) = self.read_file(&decl.file_path) else { continue };
-            let Some(line) = lines.get((decl.start_line - 1).max(0) as usize) else { continue };
-            if let Some(m) = re!(r"@interface\s+[A-Za-z0-9_]+\s*:\s*([A-Za-z0-9_]+)").captures(line) {
-                if !supers.iter().any(|s| s == &m[1]) {
-                    supers.push(m[1].to_string());
+            let pattern=Self::cached_regex(&format!(r"@interface\s+{}\s*:\s*([A-Za-z0-9_]+)",regex::escape(name)))?;
+            for line in lines.iter() {
+                if let Some(m)=pattern.captures(line) {
+                    if !supers.iter().any(|s|s==&m[1]) {supers.push(m[1].to_string());}
                 }
             }
         }

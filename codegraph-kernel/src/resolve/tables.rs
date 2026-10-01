@@ -950,7 +950,7 @@ pub(super) static JS_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLoc
         "lastIndexOf", "includes", "find", "findIndex", "findLast", "findLastIndex", "filter", "map", "forEach",
         "reduce", "reduceRight", "some", "every", "flat", "flatMap", "fill", "at", "keys", "values", "entries",
         "get", "set", "has", "delete", "clear", "add",
-        "then", "catch", "finally",
+        "then", "catch", "finally", "text", "json", "arrayBuffer", "blob", "formData",
         "split", "trim", "trimStart", "trimEnd", "startsWith", "endsWith", "replace", "replaceAll", "match",
         "matchAll", "toLowerCase", "toUpperCase", "padStart", "padEnd", "charAt", "charCodeAt", "codePointAt",
         "substring", "substr", "repeat", "localeCompare", "normalize",

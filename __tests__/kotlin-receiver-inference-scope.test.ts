@@ -17,6 +17,44 @@ import api.count
 import api.External
 fun run(createColumn: () -> External) = createColumn().count()
 `, 'Expression::count'],
+  ['shadowed factory with unique ordinary member', `package api
+class Column { fun count(): Int = 0 }
+class External
+fun createColumn(): Column = Column()
+`, `package app
+import api.createColumn
+import api.External
+fun run(createColumn: () -> External) = createColumn().count()
+`, 'api::Column::count'],
+  ['callable reference shadows factory', `package api
+open class Expression
+class Column : Expression()
+class External
+fun createColumn(): Column = Column()
+fun Expression.count(): Int = 0
+`, `package app
+import api.createColumn
+import api.count
+import api.External
+fun makeExternal(): External = External()
+fun run() {
+    val createColumn = ::makeExternal
+    createColumn().count()
+}
+`, 'Expression::count'],
+  ['callable type alias shadows factory', `package api
+open class Expression
+class Column : Expression()
+class External
+typealias Factory = () -> External
+fun createColumn(): Column = Column()
+fun Expression.count(): Int = 0
+`, `package app
+import api.createColumn
+import api.count
+import api.Factory
+fun run(createColumn: Factory) = createColumn().count()
+`, 'Expression::count'],
   ['shadowed apply', `package api
 class Other
 class Validator {

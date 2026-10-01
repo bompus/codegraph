@@ -245,7 +245,8 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
     m.insert(
         "python",
         vec![
-            rp(r"(?m)(?:^|;)\s*", r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", false, true, false, 4),
+            rp(r"(?m)(?:^|;)\s*", r"\s*=\s*([A-Z]\w*)\.objects\.(?:create|get|first|last|latest|earliest|get_by_natural_key)\s*\(", false, true, false, 4),
+            rp(r"(?m)(?:^|;)\s*", r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(", false, true, false, 4),
             both(r#"\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, b":", 0),
             both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
@@ -260,7 +261,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
     m.insert(
         "kotlin",
         vec![
-            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            both(r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
             both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
     );
@@ -272,7 +273,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
             // initializer's type, not the annotation's.
             rp(
                 r"(?-u:\b)let\s+(?:mut\s+)?",
-                r"(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+                r"(?:\s*:[^=]+)?\s*=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
                 false,
                 true,
                 false,
@@ -327,7 +328,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
     m.insert(
         "swift",
         vec![
-            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            both(r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
             both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
     );
@@ -366,7 +367,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
     m.insert(
         "dart",
         vec![
-            both(r"\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
+            both(r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(", b"=", 0),
             rp(r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+", r"\s*[=;,)]", false, true, true, 0),
         ],
     );
