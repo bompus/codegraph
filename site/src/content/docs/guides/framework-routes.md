@@ -10,7 +10,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Django** | `path()`, `re_path()`, `url()`, `include()` in `urls.py` (CBV `.as_view()`, dotted paths) |
 | **Flask** | `@app.route('/path', methods=[...])`, blueprint routes, `add_url_rule(…)` and a project helper that passes paths with a `view_func=` |
 | **FastAPI** | `@app.get(...)`, `@router.post(...)`, all standard methods |
-| **Express** | `app.get(...)`, `router.post(...)` with middleware chains |
+| **Express** | `app.get(...)`, `router.post(...)` with middleware chains; inline arrow and function-expression handlers, including wrapper calls |
 | **Hono** | Imported `Hono` instances, method/path arrays, `basePath()` and same-file `.route()` mounts |
 | **Elysia** | Imported `Elysia` instances, method calls, `.route()`, literal constructor prefixes and `.group()` callbacks |
 | **Fastify** | Imported factories, shorthand methods, `.route({ method, url, handler })`, inline `.register()` callbacks with literal prefixes; default-exported plugin files, mounted at their `@fastify/autoload` directory prefix |
@@ -81,3 +81,5 @@ Computed paths, spread configuration, cross-file mounts, plugin factories, mutab
 React Router `<Link to>` and `navigate` can read destinations returned by a route-config object's arrow helper, such as `paths.app.discussion.getHref(id)`. Whole-segment template parameters remain route parameters, and optional query suffixes are omitted from the path. Factory-created config objects, shadowed bindings, spread overrides and computed path fragments remain unresolved. Arrow-function attributes before a link's `to` attribute are supported.
 
 Inline HTTP handler calls retain simple member receivers. Framework name conventions prefer visible declarations in the calling file, then the applicable package or directory; they exclude unrelated nested types and test-local declarations. React and Express naming conventions require imports to reach another file. NestJS provider lookup also supports convention siblings in the same directory. Vue/React conventions apply to script references, and Astro component conventions apply to `.astro` markup.
+
+Express treats the last registration argument as the handler, excluding a trailing comma. Inline arrow and function-expression handlers contribute their body calls, including when passed through a wrapper call. An inline middleware before a named handler does not replace that handler.

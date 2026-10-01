@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`34ede4d`](https://github.com/colbymchenry/codegraph/commit/34ede4de), after v1.6.1, 2026-10-01) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`81e08b7`](https://github.com/colbymchenry/codegraph/commit/81e08b76), after v1.6.1, 2026-10-01) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -500,7 +500,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Django** | `path()`, `re_path()`, `url()`, `include()` in `urls.py` (CBV `.as_view()`, dotted paths) |
 | **Flask** | `@app.route('/path', methods=[...])`, blueprint routes, `add_url_rule(…)` and a project helper that passes paths with a `view_func=` |
 | **FastAPI** | `@app.get(...)`, `@router.post(...)`, all standard methods |
-| **Express** | `app.get(...)`, `router.post(...)` with middleware chains |
+| **Express** | `app.get(...)`, `router.post(...)` with middleware chains; inline arrow and function-expression handlers, including wrapper calls |
 | **Hono / Elysia / Fastify / Koa / H3 / Hyper-Express / Bun / Effect / Vixeny** | Literal routes on each framework's app or router builder (`new Hono().get('/users', handler)`), with same-file prefixes and mounts; an imported handler is linked, an inline one contributes its direct calls. Fastify plugin files (`export default async function (fastify) { … }`) are read too, and files loaded by a literal `@fastify/autoload` registration get their directory prefix, `autoPrefix`/`prefixOverride` exports and `routeParams` folders |
 | **NestJS** | `@Controller` + `@Get/@Post/...` (with `RouterModule` prefixes, `setGlobalPrefix` and URI versioning), GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
 | **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax |

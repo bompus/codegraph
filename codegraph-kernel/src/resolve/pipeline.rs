@@ -432,6 +432,22 @@ impl KernelResolver {
         Some(cand)
     }
 
+    /// A rejected imported callee must not be revived as its local require binding.
+    pub(super) fn is_import_binding_call_target(&mut self, node: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if r.reference_kind != "calls"
+            || !is_esm_family(&r.language)
+            || node.file_path != r.file_path
+            || !matches!(node.kind.as_str(), "variable" | "constant")
+            || self.is_shadowed_import_name(r)?
+        {
+            return Ok(false);
+        }
+        Ok(self.bindings(&r.file_path)?.iter().any(|binding|
+            binding.kind == "import"
+                && binding.name == r.reference_name
+                && binding.node_id.as_deref() == Some(node.id.as_str())))
+    }
+
     /// gateTargetKind (index.ts): the imports/inheritance target-kind gates
     /// plus the out-of-repo import check.
     pub(super) fn gate_target_kind(&mut self, cand: KCand, r: &ResolveRefIn) -> Res<Option<KCand>> {
@@ -446,12 +462,8 @@ impl KernelResolver {
                 None
             });
         }
-        if r.reference_kind == "calls" && is_esm_family(&r.language) && !self.is_shadowed_import_name(r)? {
-            // A failed imported call must not become a call to its require variable.
-            if cand.node.file_path == r.file_path && matches!(cand.node.kind.as_str(), "variable" | "constant") {
-                let rows = self.bindings(&r.file_path)?;
-                if rows.iter().any(|b| b.kind == "import" && b.name == r.reference_name && b.node_id.as_deref() == Some(cand.node.id.as_str())) { return Ok(None); }
-            }
+        if self.is_import_binding_call_target(&cand.node, r)? {
+            return Ok(None);
         }
         let mut cand = cand;
         self.cap_chain_confidence(&mut cand, r)?;

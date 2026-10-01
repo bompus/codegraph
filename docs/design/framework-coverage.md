@@ -408,3 +408,7 @@ select name, file_path from nodes where kind='route' order by name;   -- duplica
 Framework name heuristics share the native resolver's lexical and cross-file visibility checks. They prefer the calling file and applicable package/directory, and refuse unrelated function-local declarations, nested types and test-suite symbols from production code. Rust heuristics also honor module/import reachability. React and Express naming conventions require imports to reach another file. NestJS provider lookup also supports convention siblings in the same directory. Vue/React conventions accept only script references; Astro component-name conventions accept only `.astro` references. Inline HTTP handler references retain simple dotted receivers, including optional access; calls on arbitrary returned expressions remain unresolved.
 
 Interface dispatch synthesis links supported base methods to concrete overrides. JavaScript and TypeScript constructors are excluded because construction does not dispatch to descendant constructors.
+
+### Express inline handler bodies
+
+Express uses the last registration argument as the handler, excluding a trailing comma. Inline arrows and function expressions contribute their body calls, including handlers inside wrapper calls and chained `router.route(path)` registrations. An earlier inline middleware does not replace a named final handler. Regression coverage is in `__tests__/express-inline-function-handler.test.ts`.

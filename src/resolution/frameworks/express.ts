@@ -10,6 +10,7 @@ import { stripCommentsForRegex } from '../strip-comments';
 import { resolveImportPath } from '../import-resolver';
 import { dependsOn } from './package-deps';
 import { extractHttpRoutes } from './http-routing';
+import { parseSourceTreeSync, TreeNode } from '../../extraction/parse-tree';
 
 function extractTailIdent(expr: string): string | null {
   const cleaned = expr.replace(/\s+/g, '').replace(/\(\)$/, '');
@@ -51,25 +52,28 @@ const RESERVED_CALLS = new Set([
 ]);
 
 /**
- * The calls an inline handler's body makes, each once, framework noise aside.
+ * The calls an inline handler's body makes at their lexical positions, framework noise aside.
  * A member call keeps its receiver (`userService.find`, `c.text`) so it
  * resolves as one: bare, hono's `c.text('…')` matched its client's
  * `ClientResponse.text` 423 times. A member of an expression (`a.b().c(`)
  * names nothing this can follow.
  */
-function handlerCallNames(body: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const callRe = /((?:[A-Za-z_$][\w$]*\s*\??\.\s*)*)([A-Za-z_$][\w$]*)\s*\(/g;
-  let cm: RegExpExecArray | null;
-  while ((cm = callRe.exec(body)) !== null) {
-    const method = cm[2]!;
-    const receiver = cm[1]!.replace(/\s|\?/g, '').replace(/\.$/, '');
-    if (!receiver && /\.\s*$/.test(body.slice(0, cm.index))) continue;
-    const name = receiver ? `${receiver}.${method}` : method;
-    if (seen.has(name) || RESERVED_CALLS.has(method)) continue;
-    seen.add(name);
-    out.push(name);
+function handlerCalls(body: TreeNode): Array<{ name: string; start: number }> {
+  const out: Array<{ name: string; start: number }> = [];
+  const stack = [body];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.type === 'call_expression' || node.type === 'new_expression') {
+      const callee = node.childForFieldName(node.type === 'new_expression' ? 'constructor' : 'function');
+      const name = callee?.text.replace(/\s|\?/g, '') ?? '';
+      const method = name.split('.').at(-1)!;
+      if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(name)
+          && !RESERVED_CALLS.has(method)) {
+        out.push({ name, start: callee!.startIndex });
+      }
+    }
+    const children = node.namedChildren;
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]!);
   }
   return out;
 }
@@ -135,7 +139,8 @@ export const expressResolver: FrameworkResolver = {
     // loader's `validate` in another package. The patterns below stay for the
     // file's own declarations.
     const sameFile = (id: string | null): string | null =>
-      id !== null && context.getNodeById?.(id)?.filePath === ref.filePath ? id : null;
+      id !== null && context.getNodeById?.(id)?.filePath === ref.filePath
+        && (ref.referenceKind !== 'calls' || (context.isNameCandidateVisible?.(id, ref) ?? true)) ? id : null;
     // Pattern 1: Middleware references
     if (isMiddlewareName(ref.referenceName)) {
       const result = sameFile(resolveMiddleware(ref.referenceName, context, ref.filePath));
@@ -220,37 +225,28 @@ export const expressResolver: FrameworkResolver = {
       const openParen = safe.indexOf('(', match.index);
       const closeParen = openParen >= 0 ? matchDelim(safe, openParen, '(', ')') : -1;
       const args = closeParen > openParen ? safe.slice(openParen + 1, closeParen) : '';
-      const arrowAt = args.indexOf('=>');
+      const inline = inlineHandlerBody(args, filePath.endsWith('.tsx') ? 'tsx' : lang);
 
-      if (arrowAt >= 0) {
-        // Inline arrow handler (`router.post('/x', async (req,res) => {…})`). The
-        // arrow is anonymous, so its body — the actual request→service flow — would
-        // be lost. Attribute the body's calls to the route node as `calls` edges so
-        // `trace(route, service)` connects. Body = balanced `{…}` after `=>`, or the
-        // single-expression tail for `=> expr` arrows.
-        const afterArrow = args.slice(arrowAt + 2);
-        const braceAt = afterArrow.indexOf('{');
-        let body = afterArrow;
-        let bodyStart = openParen + 1 + arrowAt + 2;
-        if (braceAt >= 0 && afterArrow.slice(0, braceAt).trim() === '') {
-          const end = matchDelim(afterArrow, braceAt, '{', '}');
-          if (end > braceAt) {
-            body = afterArrow.slice(braceAt + 1, end);
-            bodyStart += braceAt + 1;
-          }
-        }
-        for (const name of handlerCallNames(body)) {
+      if (inline) {
+        // Inline handler (`router.post('/x', async (req,res) => {…})`,
+        // `app.get('/x', function (req, res) {…})`). It is anonymous, so its
+        // body — the actual request→service flow — would be lost. Attribute the
+        // body's calls to the route node as `calls` edges so
+        // `trace(route, service)` connects.
+        const bodyStart = openParen + 1 + inline.start;
+        for (const call of inline.calls) {
+          const at = openParen + 1 + call.start;
           references.push({
             fromNodeId: routeNode.id,
-            referenceName: name,
+            referenceName: call.name,
             referenceKind: 'calls',
-            line,
-            column: 0,
+            line: safe.slice(0, at).split('\n').length,
+            column: at - (safe.lastIndexOf('\n', at - 1) + 1),
             filePath,
             language: lang,
           });
         }
-        references.push(...replyRefs(safe, bodyStart, bodyStart + body.length, routeNode.id, filePath, lang));
+        references.push(...replyRefs(safe, bodyStart, bodyStart + inline.body.length, routeNode.id, filePath, lang));
       } else {
         // Named handler: the LAST comma-separated arg (earlier ones are middleware).
         const parts = args.split(',').map((s) => s.trim()).filter(Boolean);
@@ -300,11 +296,14 @@ export const expressResolver: FrameworkResolver = {
           updatedAt: now,
         };
         nodes.push(routeNode);
-        if (args.includes('=>')) {
-          for (const name of handlerCallNames(args)) {
-            references.push({ fromNodeId: routeNode.id, referenceName: name, referenceKind: 'calls', line, column: 0, filePath, language: lang });
+        const inline = inlineHandlerBody(args, filePath.endsWith('.tsx') ? 'tsx' : lang);
+        if (inline) {
+          for (const call of inline.calls) {
+            const at = openParen + 1 + call.start;
+            references.push({ fromNodeId: routeNode.id, referenceName: call.name, referenceKind: 'calls', line: safe.slice(0, at).split('\n').length, column: at - (safe.lastIndexOf('\n', at - 1) + 1), filePath, language: lang });
           }
-          references.push(...replyRefs(safe, openParen + 1, closeParen, routeNode.id, filePath, lang));
+          const bodyStart = openParen + 1 + inline.start;
+          references.push(...replyRefs(safe, bodyStart, bodyStart + inline.body.length, routeNode.id, filePath, lang));
         } else {
           const parts = splitTopLevel(args).map((s) => s.trim()).filter(Boolean);
           const last = parts[parts.length - 1];
@@ -432,6 +431,62 @@ function splitTopLevel(args: string): string[] {
   }
   out.push(args.slice(start));
   return out;
+}
+
+/**
+ * The body of a handler written inline as a registration's LAST argument — an
+ * arrow (`async (req, res) => {…}`, `req => …`) or a function expression
+ * (`function (req, res) {…}`, the form Express's own examples use), bare or
+ * inside a wrapper call (`asyncHandler(async (req, res) => {…})`). `start` is
+ * the body's offset into `args`. Null when the last argument names a handler
+ * instead: an inline middleware before a named handler is not the handler.
+ */
+function inlineHandlerBody(args: string, language: 'javascript' | 'typescript' | 'tsx'): { body: string; start: number; calls: Array<{ name: string; start: number }> } | null {
+  // A trailing comma (Prettier's default) leaves an empty last part.
+  const parts = splitTopLevel(args);
+  let lastStart = args.length;
+  let last = '';
+  for (let i = parts.length - 1, end = args.length; i >= 0; i--) {
+    const start = end - parts[i]!.length;
+    if (parts[i]!.trim() !== '') {
+      last = parts[i]!;
+      lastStart = start;
+      break;
+    }
+    end = start - 1;
+  }
+  if (!last) return null;
+  const tree = parseSourceTreeSync(`(${last})`, language);
+  if (!tree) return null;
+  try {
+    if (tree.rootNode.hasError) return null;
+    let handler: TreeNode | null = tree.rootNode.namedChildren[0]?.namedChildren[0] ?? null;
+    const unwrap = (node: TreeNode | null): TreeNode | null => {
+      while (node?.type === 'parenthesized_expression') node = node.namedChildren[0] ?? null;
+      return node;
+    };
+    const inline = (node: TreeNode | null): boolean =>
+      !!node && ['arrow_function', 'function_expression', 'generator_function'].includes(node.type);
+    handler = unwrap(handler);
+    while (handler?.type === 'call_expression') {
+      const candidates = handler.childForFieldName('arguments')?.namedChildren
+        .filter((node) => node.type !== 'comment').map(unwrap)
+        .filter((node) => inline(node) || node?.type === 'call_expression') ?? [];
+      if (candidates.length !== 1) return null;
+      handler = candidates[0] ?? null;
+    }
+    if (!inline(handler)) return null;
+    const body = handler!.childForFieldName('body');
+    if (!body) return null;
+    const block = body.type === 'statement_block';
+    // The synthetic opening parenthesis adds one character to each position.
+    const start = body.startIndex - 1 + (block ? 1 : 0);
+    const end = body.endIndex - 1 - (block ? 1 : 0);
+    return { body: last.slice(start, end), start: lastStart + start,
+      calls: handlerCalls(body).map((call) => ({ name: call.name, start: lastStart + call.start - 1 })) };
+  } finally {
+    tree.delete();
+  }
 }
 
 /** `/api` + `/users` → `/api/users`; `/api/` + `/` → `/api`. */
