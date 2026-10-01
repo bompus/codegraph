@@ -9,6 +9,8 @@ const GLOBALS: &[&str] = &[
     "describe", "it", "before_each", "after_each", "setup", "teardown", "lazy_setup", "lazy_teardown", "pending", "finally", "insulate", "expose",
 ];
 
+pub(super) fn is_global(name: &str) -> bool { GLOBALS.contains(&name) }
+
 fn path(raw: &str) -> Vec<String> { raw.split('.').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect() }
 fn require_alias(raw: &str) -> Option<(String, Vec<String>)> {
     let m = re!(r#"^(?:require|[A-Za-z_]\w*(?:[Rr]equire|_module|[Ii]mport))\s*\(?\s*(?:"([^"]+)"|'([^']+)')\s*\)?((?:\s*\.\s*[A-Za-z_]\w*)*)\s*$"#).captures(raw)?;
@@ -175,11 +177,18 @@ impl KernelResolver {
                 if let Some((module, mut prefix)) = require_alias(decl.signature.as_deref().unwrap_or("").trim_start_matches('=').trim()) {
                     if !members.is_empty() { prefix.extend_from_slice(members); return self.lua_module_member(&module, &prefix, &{ let mut at = site.clone().at(&decl); at.column = decl.start_column; at }, depth); }
                 }
-                return Ok(None);
+                let identity=decl.signature.as_deref().unwrap_or("").trim_start_matches('=').trim()==root
+                    && (root=="kong" || super::method_call::LUA_LIBRARY_TABLES.contains(&root.as_str()));
+                if !identity { return Ok(None); }
             }
         }
         if members.is_empty() { return Ok(GLOBALS.contains(&root.as_str()).then_some(None)); }
-        if !super::method_call::LUA_LIBRARY_TABLES.contains(&root.as_str()) || members.len() != 1 { return Ok(None); }
+        if !super::method_call::LUA_LIBRARY_TABLES.contains(&root.as_str()) || (members.len()>1 && matches!(root.as_str(),"kong"|"ngx"|"vim")) {
+            let member=members.last().unwrap(); let holder=if members.len()>1 {&members[members.len()-2]}else{root};
+            let owned:Vec<_>=self.nodes_by_name(member)?.iter().filter(|n|matches!(n.language.as_str(),"lua"|"luau")&&n.kind=="method"&&super::method_call::shares_receiver_word(holder,n)&&!(is_test_path(&n.file_path)&&!is_test_path(&site.file_path))).cloned().collect();
+            return Ok(if owned.len()==1{Some(Some(owned[0].clone()))}else{None});
+        }
+        if members.len() != 1 { return Ok(None); }
         let targets: Vec<_> = self.nodes_by_name(&members[0])?.iter().filter(|n|
             matches!(n.kind.as_str(), "function" | "method") && n.qualified_name.split("::").next().unwrap_or("").split('.').next() == Some(root.as_str()) && (n.file_path != site.file_path || (n.start_line, n.start_column) < (site.line, site.column)) && (n.file_path == site.file_path || !is_test_path(&n.file_path))).cloned().collect();
         Ok(Some(if targets.len() == 1 { Some(targets[0].clone()) } else { None }))

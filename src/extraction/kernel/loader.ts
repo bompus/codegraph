@@ -271,6 +271,7 @@ export interface KernelResolverLike {
   resolveDeferredThisMembers(refs: ResolveRefIn[]): ResolveOutcome[];
   /** The import arm for one ref, behind `context.resolveImport`. */
   resolveViaImportRef(ref: ResolveRefIn): ResolveOutcome;
+  isNameCandidateVisible(nodeId: string, ref: ResolveRefIn): boolean;
   /** Deterministic conn teardown — must run while no other-build conn can do
    *  shm work (before pool workers spawn / after they die). Without it the
    *  rusqlite conn closes at GC time, whose shm teardown races node:sqlite

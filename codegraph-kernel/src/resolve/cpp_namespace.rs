@@ -109,7 +109,14 @@ impl KernelResolver {
             path.extend(n.qualified_name.split("::").map(str::to_string));
             if path==parts {matches.push(n.clone());}
         }
-        // Namespace ownership alone cannot choose between overloads.
-        Ok((matches.len()==1).then(||KCand{node:matches[0].clone(),confidence:0.8,resolved_by:"qualified-name"}))
+        let args = if r.reference_kind=="calls" { self.call_arguments(r,name) } else { None };
+        let mut best=None; let mut best_score=i64::MIN;let mut tied=false;
+        for n in matches {
+            if args.as_ref().is_some_and(|args| !self.cpp_overload_compatible(&n,args,r)) {continue;}
+            let score=if is_test_path(&n.file_path){-10}else{0} + args.as_ref().map(|args|self.cpp_overload_fit(&n,args,r)).unwrap_or(0);
+            if score>best_score {best_score=score;best=Some(n);tied=false;}else if score==best_score{tied=true;}
+        }
+        if tied{return Ok(None);}
+        Ok(best.map(|node|KCand{node,confidence:0.8,resolved_by:"qualified-name"}))
     }
 }

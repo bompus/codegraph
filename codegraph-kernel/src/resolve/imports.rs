@@ -683,6 +683,19 @@ impl KernelResolver {
                 return Ok(Some(c));
             }
         }
+        if r.language == "kotlin" && r.reference_kind != "imports" {
+            let (root,member)=r.reference_name.split_once('.').map(|(root,member)|(root,Some(member))).unwrap_or((&r.reference_name,None));
+            if let Some(imp)=imports.iter().find(|m|m.local_name==root && m.local_name!=m.exported_name) {
+                let parts:Vec<_>=imp.source.split('.').collect();
+                for i in (1..parts.len()).rev() {
+                    let qn=format!("{}::{}",parts[..i].join("."),parts[i..].join("::"));
+                    if let Some(owner)=self.nodes_by_qualified_name(&qn)?.first().cloned() {
+                        let target=if let Some(member)=member {if member.contains('.') {return Ok(None);}self.nodes_by_qualified_name(&format!("{}::{member}",owner.qualified_name))?.first().cloned()}else{Some(owner)};
+                        return Ok(target.map(|node|KCand{node,confidence:0.9,resolved_by:"import"}));
+                    }
+                }
+            }
+        }
         if r.language == "java" || r.language == "kotlin" {
             if let Some(node) = self.resolve_java_imported_reference(r, &imports)? {
                 return Ok(Some(KCand {
@@ -755,13 +768,15 @@ impl KernelResolver {
                 },
             };
             let mut visited = HashSet::new();
-            let Some(target) = self.find_exported_symbol(
+            let target = self.find_exported_symbol(
                 &resolved_path,
                 &want,
                 &r.language,
                 &mut visited,
                 0,
-            )?
+            )?;
+            let target = if target.is_none() && r.language == "python" { self.python_module_symbol(&resolved_path,want.member_name.as_deref().unwrap_or(&want.exported_name),0,&mut HashSet::new())? } else { target };
+            let Some(target) = target
             else {
                 // `import api from './api'` where the module ends in
                 // `export default new ApiClient()`: no node holds the value,
@@ -1374,14 +1389,7 @@ impl KernelResolver {
             if resolved_path == r.file_path {
                 continue;
             }
-            let nodes = self.nodes_in_file(&resolved_path)?;
-            let target = nodes.iter().find(|n| {
-                n.name == member
-                    && matches!(
-                        n.kind.as_str(),
-                        "function" | "class" | "variable" | "constant"
-                    )
-            });
+            let target = self.python_module_symbol(&resolved_path,member,0,&mut HashSet::new())?;
             if let Some(target) = target {
                 return Ok(Some(KCand {
                     node: target.clone(),

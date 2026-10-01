@@ -155,6 +155,7 @@ impl KernelResolver {
             }
             kept.push(n);
         }
+        if kotlin_call { kept = self.lexical_kotlin_members(kept, r)?; }
         Ok((kept, shrank))
     }
 

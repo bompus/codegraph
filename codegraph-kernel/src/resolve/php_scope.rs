@@ -94,6 +94,25 @@ pub(super) fn is_vue_component_method(n: &KNode) -> bool {
 }
 
 impl KernelResolver {
+    pub(super) fn php_class_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "php" || n.language != "php" || !is_php_type_kind(&n.kind)
+            || !re!(r"^[A-Za-z_]\w*$").is_match(&r.reference_name)
+            || re!(r"(?i)^(?:self|static|parent)$").is_match(&r.reference_name) { return Ok(true); }
+        // Extraction keeps a PHP type path's leaf; honor the written qualifier.
+        if let Some(source)=self.read_file(&r.file_path) {
+            if let Some(line)=source.get((r.line-1).max(0) as usize) {
+                let pattern=Self::cached_regex(&format!(r"(?:^|[^\w\\])((?:[A-Za-z_]\w*\\)+{})\b",regex::escape(&r.reference_name)))?;
+                if let Some(path)=pattern.captures(line) {return Ok(n.qualified_name.replace("::","\\").eq_ignore_ascii_case(&path[1]));}
+            }
+        }
+        let source = self.read_file(&r.file_path);
+        let scope = source.as_ref().map(|s| s.php_file_scope());
+        let Some(scope) = scope else { return Ok(true); };
+        let fqn = n.qualified_name.replace("::", "\\");
+        let expected = scope.uses.get(&r.reference_name).cloned().unwrap_or_else(|| if scope.namespace.is_empty() { r.reference_name.clone() } else { format!("{}\\{}",scope.namespace,r.reference_name) });
+        Ok(fqn.eq_ignore_ascii_case(&expected))
+    }
+
     /// phpSelfReceiver (name-matcher.ts): how a bare PHP method name was
     /// written at its call site; `None` for anything but `$this->`,
     /// `self::`, `static::` and `parent::`.

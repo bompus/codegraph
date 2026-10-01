@@ -429,7 +429,7 @@ pub(super) fn guard2_tail_re() -> Rc<Regex> {
 }
 /// `^NAME\s*[(<]` / `(^|[^A-Za-z0-9_])NAME\s*\(` after the literal name.
 pub(super) fn bare_call_opener_re() -> Rc<Regex> {
-    re!(r"^\s*[(<]")
+    re!(r"^\s*(?:\?\.\s*)?[(<]")
 }
 pub(super) fn cpp_call_opener_re() -> Rc<Regex> {
     re!(r"^\s*\(")

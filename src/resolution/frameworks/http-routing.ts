@@ -629,9 +629,8 @@ function fastifyPlugin(program: SyntaxNode, source: string): SyntaxNode | null {
 /** Bind a named handler, or the direct calls made by an anonymous handler. */
 export function httpHandlerReferences(route: Node, raw: SyntaxNode | null): UnresolvedRef[] {
   const references: UnresolvedRef[] = [];
-  const reference = (target: SyntaxNode, kind: 'references' | 'calls'): void => {
-    const name = target.text;
-    if (!name || !/^[A-Za-z_$][\w$]*$/.test(name)) return;
+  const reference = (target: SyntaxNode, kind: 'references' | 'calls', name = target.text): void => {
+    if (!name || !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(name)) return;
     references.push({
       fromNodeId: route.id,
       referenceName: name,
@@ -670,9 +669,11 @@ export function httpHandlerReferences(route: Node, raw: SyntaxNode | null): Unre
     if (FUNCTIONS.has(node.type)) return;
     if (node.type === 'call_expression') {
       const callee = field(node, 'function');
-      // The normal extraction pass retains member receivers. A bare member
-      // name here could otherwise resolve to an unrelated same-named function.
       if (callee?.type === 'identifier' && !locals.has(callee.text)) reference(callee, 'calls');
+      else if (callee?.type === 'member_expression') {
+        const name = callee.text.replace(/\s|\?/g, '');
+        reference(callee, 'calls', name);
+      }
     }
     for (const child of node.namedChildren) calls(child);
   };

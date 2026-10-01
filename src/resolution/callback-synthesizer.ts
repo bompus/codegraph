@@ -1356,7 +1356,10 @@ async function interfaceOverrideEdges(queries: QueryBuilder, onYield: MaybeYield
     // typical graph extend/implement nothing and skip in one hop.
     const sups = queries.getOutgoingEdges(cls.id, ['implements', 'extends']);
     if (sups.length === 0) continue;
-    const implMethods = methodsOf(cls.id).filter((n) => IFACE_OVERRIDE_LANGS.has(n.language));
+    const implMethods = methodsOf(cls.id).filter((n) =>
+      IFACE_OVERRIDE_LANGS.has(n.language) &&
+      !(['javascript', 'typescript'].includes(n.language) && n.name === 'constructor')
+    );
     if (implMethods.length === 0) continue;
     // Group impl methods by name to handle OVERLOADS: an interface `list()` and
     // `list(params)` are distinct nodes and a call may resolve to either, so

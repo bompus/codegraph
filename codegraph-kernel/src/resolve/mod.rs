@@ -487,6 +487,13 @@ mod prefilter;
 mod imports;
 mod names;
 mod name_scope;
+mod language_type_scope;
+mod resolver_upstream;
+mod js_scope_upstream;
+mod overloads_upstream;
+mod scala_type_scope;
+mod swift_type_scope;
+mod kotlin_type_scope;
 mod php_scope;
 mod lang_scope;
 mod lua_alias;
@@ -514,6 +521,7 @@ mod esm_scope;
 mod call_shape;
 mod kotlin_calls;
 mod declared_member;
+mod declarations_upstream;
 mod live_conn;
 use self::tables::*;
 use self::affix::*;
@@ -576,7 +584,6 @@ pub struct KernelResolver {
     /// Kotlin supertypes named in a type's head, by type name.
     kotlin_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// kotlinFileScope, by file.
-    csharp_alias_memo: HashMap<String, Rc<HashMap<String, String>>>,
     declared_member_memo: HashMap<(String, String), Option<String>>,
     declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
     declared_member_walks: HashMap<(String, String), Option<String>>,
@@ -610,6 +617,22 @@ pub struct KernelResolver {
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
     lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
+    language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
+    scala_package_object_membership_memo: HashMap<String, Option<(String, i64, i64)>>,
+    cpp_default_declaration_memo: HashMap<String, declarations_upstream::CppDefaultDeclarationIndex>,
+    cpp_declaration_memo: HashMap<String, declarations_upstream::CppDeclarationCache>,
+    scala_block_scope_memo: HashMap<String, language_type_scope::ScalaBlockScope>,
+    language_type_ancestors_memo: HashMap<String, Rc<HashSet<String>>>,
+    scala_imports_memo: HashMap<String, Rc<scala_type_scope::ScalaImports>>,
+    scala_imported_ancestors_memo: HashMap<String, HashSet<String>>,
+    scala_package_object_supers: Option<HashMap<String, Vec<String>>>,
+    language_jvm_packages: Option<HashSet<String>>,
+    kotlin_lambda_receiver_memo: HashMap<String, Option<String>>,
+    upstream_js_bindings: HashMap<String, js_scope_upstream::JsBindingIndex>,
+    csharp_namespace_globals_memo: HashMap<Option<String>, Rc<HashSet<String>>>,
+    upstream_scope_memo: HashMap<String, bool>,
+    upstream_rust_uses: HashMap<String, (HashSet<String>, HashSet<String>)>,
+    upstream_rust_deps: Option<HashSet<String>>,
     /// isSwiftExtension (swift-type-visibility.ts) memo, by node id.
     swift_extension_memo: HashMap<String, bool>,
     /// swiftExtendedConformances memo, by node id.
@@ -618,6 +641,7 @@ pub struct KernelResolver {
     swift_owner_memo: HashMap<String, Option<String>>,
     root_import_memo: HashMap<String, bool>,
     /// matchSelectedStoreCall's per-file selector names (`const a = f((s) =>`).
+    destructured_call_names_memo: HashMap<String, (Rc<SourceFile>, HashSet<String>)>,
     selector_names_memo: HashMap<String, Rc<HashSet<String>>>,
     /// inferEsmAwaitedCallType's per-file index (`None`: no awaited binding).
     awaited_files: HashMap<String, Option<Rc<awaited::AwaitedFile>>>,
@@ -745,7 +769,6 @@ impl KernelResolver {
             php_supers_memo: HashMap::new(),
             dart_supers_memo: HashMap::new(),
             dart_hierarchy_memo: HashMap::new(),
-            csharp_alias_memo: HashMap::new(),
             declared_member_memo: HashMap::new(),
             declared_member_lines: HashMap::new(),
             declared_member_walks: HashMap::new(),
@@ -766,10 +789,27 @@ impl KernelResolver {
             objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
+            language_type_scope_memo: HashMap::new(),
+            scala_package_object_membership_memo: HashMap::new(),
+            cpp_default_declaration_memo: HashMap::new(),
+            cpp_declaration_memo: HashMap::new(),
+            scala_block_scope_memo: HashMap::new(),
+            language_type_ancestors_memo: HashMap::new(),
+            scala_imports_memo: HashMap::new(),
+            scala_imported_ancestors_memo: HashMap::new(),
+            scala_package_object_supers: None,
+            language_jvm_packages: None,
+            kotlin_lambda_receiver_memo: HashMap::new(),
+            upstream_js_bindings: HashMap::new(),
+            csharp_namespace_globals_memo: HashMap::new(),
+            upstream_scope_memo: HashMap::new(),
+            upstream_rust_uses: HashMap::new(),
+            upstream_rust_deps: None,
             swift_extension_memo: HashMap::new(),
             swift_conformance_memo: HashMap::new(),
             swift_owner_memo: HashMap::new(),
             root_import_memo: HashMap::new(),
+            destructured_call_names_memo: HashMap::new(),
             selector_names_memo: HashMap::new(),
             awaited_files: HashMap::new(),
             cobol_copybooks: None,
@@ -935,6 +975,26 @@ impl KernelResolver {
             out.push(o);
         }
         Ok(out)
+    }
+
+    /// Scope checks shared with the framework name heuristics.
+    #[napi]
+    pub fn is_name_candidate_visible(&mut self, node_id: String, r: ResolveRefIn) -> Result<bool> {
+        match per_ref(&r, false, || {
+            let Some(node) = self.node_by_id(&node_id)? else { return Ok(false) };
+            if !self.is_lexically_reachable(&node, &r)? || !self.language_type_visible(&node, &r)? {
+                return Ok(false);
+            }
+            if node.file_path != r.file_path && !self.is_visible_across_files(&node, &r)? {
+                return Ok(false);
+            }
+            let candidate = KCand { node: node.clone(), confidence: 1.0, resolved_by: "framework" };
+            if !self.name_post_guard(&candidate, &r)? { return Ok(false); }
+            Ok(r.language != "rust" || self.is_rust_name_in_scope(&node, &r))
+        }) {
+            Ok(visible) => Ok(visible),
+            Err(Halt::Napi(error)) => Err(error),
+        }
     }
 
     /// resolveViaImport for one ref: what a framework resolver reaches through

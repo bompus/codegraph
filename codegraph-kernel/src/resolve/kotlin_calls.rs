@@ -44,9 +44,33 @@ impl KernelResolver {
             if ch == '\n' { line += 1; }
             match ch {
                 '{' => {
-                    let names = if re!(r"(?:\bwith\s*\([^{}]*\)|\.\s*(?:apply|run)(?:\s*<[^<>]*>)?)\s*$").is_match(&pending) {
+                    let mut names = if re!(r"(?:\bwith\s*\([^{}]*\)|\.\s*(?:apply|run)(?:\s*<[^<>]*>)?)\s*$").is_match(&pending) {
                         vec!["*".to_string()]
                     } else { head_names(&pending) };
+                    if names.is_empty() {
+                        let call = re!(r"(?:^|[^\w$])([a-z_]\w*)\s*(?:<[^<>{}]*>)?\s*(?:\([^(){}]*\))?\s*$").captures(&pending).map(|m| m[1].to_string());
+                        if let Some(call) = call.filter(|name| !matches!(name.as_str(), "if" | "else" | "for" | "while" | "do" | "when" | "try" | "catch" | "finally" | "init" | "get" | "set" | "constructor" | "fun" | "class" | "object" | "interface" | "return" | "by" | "lazy" | "apply" | "run" | "also" | "let" | "with" | "use")) {
+                            let site = ResolveRefIn { row_id: None, from_node_id: String::new(), reference_name: call.clone(), reference_kind: "calls".to_string(), line, column: 0, candidates: None, file_path: file.to_string(), language: "kotlin".to_string(), failure_reason: None };
+                            let mut owners: HashSet<String> = stack.iter().flat_map(|(_, names): &(i64, Vec<String>)| names.iter().filter(|name| name.as_str() != "*").cloned()).collect();
+                            // An explicit typed receiver also proves dispatch: m.single { ... }, m: Module.
+                            if let Ok(pattern) = Self::cached_regex(&format!(r"(?:^|[^\w$])([A-Za-z_]\w*)\s*\.\s*{}\s*(?:<[^<>{{}}]*>)?\s*(?:\([^(){{}}]*\))?\s*$", regex::escape(&call))) {
+                                if let Some(receiver) = pattern.captures(&pending) {
+                                    if let Ok(Some(ty)) = self.infer_local_receiver_type(&receiver[1], &site, true) {
+                                        owners.insert(ty.split('<').next().unwrap_or(&ty).trim_end_matches('?').to_string());
+                                    }
+                                }
+                            }
+                            let mut queue: VecDeque<_> = owners.iter().cloned().collect();
+                            while owners.len() < 60 {
+                                let Some(owner) = queue.pop_front() else { break };
+                                if let Ok(supers) = self.kotlin_supertypes_of(&owner) {
+                                    for parent in supers.iter() { if owners.insert(parent.clone()) { queue.push_back(parent.clone()); } }
+                                }
+                            }
+
+                            if let Ok(Some(receiver)) = self.kotlin_lambda_receiver(&call, &site, &owners) { names.push(receiver); }
+                        }
+                    }
                     stack.push((line, names)); pending.clear();
                 }
                 '}' => {
@@ -59,6 +83,28 @@ impl KernelResolver {
         }
         let frames = Rc::new(frames);
         self.kotlin_frames_memo.insert(file.to_string(), frames.clone()); frames
+    }
+    pub(super) fn lexical_kotlin_members(&mut self, candidates: Vec<Arc<KNode>>, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        if candidates.len() < 2 { return Ok(candidates); }
+        let mut queue: VecDeque<String> = self.nodes_in_file(&r.file_path)?.iter().filter(|n| n.start_line <= r.line && n.end_line >= r.line).filter_map(|n| {
+            if super::call_shape::type_kind(&n.kind) { Some(n.name.clone()) }
+            else if matches!(n.kind.as_str(), "function" | "method") { super::call_shape::owner(n).map(str::to_string) } else { None }
+        }).collect();
+        for frame in self.kotlin_frames(&r.file_path).iter().filter(|f| f.start <= r.line && r.line <= f.end) { queue.extend(frame.names.iter().cloned()); }
+        let mut hierarchy = HashSet::new();
+        while hierarchy.len() < 60 {
+            let Some(name) = queue.pop_front() else { break };
+            if name == "*" { return Ok(candidates); }
+            if !hierarchy.insert(name.clone()) { continue; }
+            queue.extend(self.kotlin_supertypes_of(&name)?.iter().cloned());
+            queue.extend(platform_supers(&name).iter().map(|s| s.to_string()));
+        }
+        let lexical: Vec<_> = candidates.iter().filter(|n| n.kind == "method" && n.qualified_name.rsplit_once("::").is_some_and(|(path, _)| {
+            let mut owners = path.rsplit("::");
+            let owner = owners.next().unwrap_or("");
+            hierarchy.contains(if owner == "Companion" { owners.next().unwrap_or("") } else { owner })
+        })).cloned().collect();
+        Ok(if lexical.is_empty() { candidates } else { lexical })
     }
     fn kotlin_receiver_types(&mut self) -> Res<Rc<HashSet<String>>> {
         if let Some(hit) = &self.kotlin_receiver_types_memo { return Ok(hit.clone()); }
@@ -113,6 +159,20 @@ impl KernelResolver {
             || tail.get(end + 1..).is_some_and(|rest| rest.trim_start().starts_with('{'))
     }
     pub(super) fn kotlin_member_reachable(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if r.file_path.ends_with(".kts") && matches!(n.kind.as_str(), "method" | "field" | "property") {
+            let Some(owner) = super::call_shape::owner(n) else { return Ok(false) };
+            if !self.nodes_by_name(owner)?.iter().any(|c| super::call_shape::type_kind(&c.kind)) { return Ok(true); }
+            // Build logic can introduce a project-owned DSL receiver, e.g. testDb { dialects(...) }.
+            let mut queue: VecDeque<String> = self.kotlin_frames(&r.file_path).iter().filter(|f| f.start <= r.line && r.line <= f.end).flat_map(|f| f.names.iter().filter(|name| name.as_str() != "*").cloned()).collect();
+            let mut seen = HashSet::new();
+            while seen.len() < 60 {
+                let Some(name) = queue.pop_front() else { break };
+                if !seen.insert(name.clone()) { continue; }
+                if name == owner { return Ok(true); }
+                queue.extend(self.kotlin_supertypes_of(&name)?.iter().cloned());
+            }
+            return Ok(false);
+        }
         if n.kind != "method" || !matches!(n.language.as_str(), "kotlin" | "java") { return Ok(true); }
         if self.kotlin_precondition(r) { return Ok(false); }
         // Top-level extensions use package imports; their receiver is not an enclosing class.
@@ -121,7 +181,6 @@ impl KernelResolver {
                 && o.start_line <= n.start_line && o.end_line >= n.end_line
         }).min_by_key(|o|o.end_line-o.start_line).cloned();
         if n.language == "kotlin" && dispatch.is_none() { return Ok(true); }
-        if r.file_path.ends_with(".kts") { return Ok(true); }
         let Some((path, _)) = n.qualified_name.rsplit_once("::") else { return Ok(true) };
         let mut parts = path.rsplit([':', '.']).filter(|v| !v.is_empty());
         let mut owner = parts.next().unwrap_or("");

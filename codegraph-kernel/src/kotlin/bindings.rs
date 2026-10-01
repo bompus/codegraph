@@ -89,7 +89,8 @@ impl<'t> Walker<'t> {
     pub(super) fn emit_import_binding(&mut self, local: &str, fqn: &str, node: Node<'t>) {
         let line = self.line_of(node);
         let line_count = self.line_count;
-        self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((fqn, local)), false, None);
+        let target = fqn.rsplit('.').next().unwrap_or(fqn);
+        self.push_binding_row(BINDING_IMPORT, local, NONE, (1, line_count), line, Some((fqn, target)), false, None);
     }
 
     /// `import a.b.C [as D]` binds `D` or `C`; `import a.b.*` records its package scope.

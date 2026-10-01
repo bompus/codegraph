@@ -93,6 +93,11 @@ impl KernelResolver {
     /// (`case class B()` in a test method), or a method of such a type —
     /// declared inside a function is reachable only from inside it.
     pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if self.js_declaration_reachable(candidate, r) == Some(false) { return Ok(false); }
+        if matches!(candidate.kind.as_str(), "variable" | "constant") || (candidate.kind == "field" && candidate.language == "scala") {
+            if !self.scala_block_reachable(candidate, r) { return Ok(false); }
+            return Ok(self.local_declaration_scope(candidate)?.is_none_or(|(start,end)| r.file_path == candidate.file_path && r.line >= start && r.line <= end));
+        }
         if candidate.kind != "function" && candidate.kind != "method" && !is_local_type_kind(&candidate.kind) {
             return Ok(true);
         }
@@ -257,14 +262,23 @@ impl KernelResolver {
         if !is_esm_family(&candidate.language) {
             return Ok(true);
         }
+        if self.js_typed_destructured_member(r)?.is_some_and(|member| member.id == candidate.id) {
+            return Ok(true);
+        }
         Ok(!self.is_sealed_module(&candidate.file_path)? && !self.is_unexported_module_binding(candidate)?)
     }
 
     /// isVisibleAcrossFiles (name-matcher.ts).
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if candidate.language == "go" && self.go_external_qualified(r)? { return Ok(false); }
+        if !self.language_type_visible(candidate,r)? { return Ok(false); }
         if candidate.file_path == r.file_path {
             return Ok(true);
         }
+        if self.is_minified_script(&candidate.file_path)
+            || (super::resolver_upstream::test_suite_path(&candidate.file_path) && !is_test_path(&r.file_path))
+            || self.sfc_private(candidate) || !self.php_class_visible(candidate, r)?
+            || !self.language_type_visible(candidate, r)? { return Ok(false); }
         let lang = candidate.language.as_str();
         if lang == "c" || lang == "cpp" {
             return Ok(candidate.kind != "function"
@@ -651,7 +665,9 @@ impl KernelResolver {
         // Nested locals reachable only from inside their container (#1230).
         let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
-            if self.is_lexically_reachable(&n, r)? {
+            if self.is_lexically_reachable(&n, r)? && self.language_type_visible(&n, r)? && self.php_class_visible(&n,r)?
+                && !(matches!(r.language.as_str(),"lua"|"luau") && r.reference_kind=="calls" && !r.reference_name.contains(['.',':']) && n.kind=="method")
+                && !(r.language=="python" && r.reference_kind=="calls" && n.file_path!=r.file_path && self.is_receiver_less_call(r)? && self.python_locally_bound(&r.reference_name,r)? && !self.python_fixture_reachable(&n,&r.file_path)) {
                 kept.push(n);
             }
         }
@@ -1026,9 +1042,17 @@ impl KernelResolver {
     }
 
     pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        if let Some(node) = self.js_typed_destructured_member(r)? {
+            return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "exact-match" }));
+        }
+        if self.java_outside_import(r)? { return Ok(None); }
         if let Some(alias) = self.lua_alias_target(r)? {
             return Ok(alias.map(|node| { let resolved_by = if node.file_path == r.file_path { "exact-match" } else { "import" }; KCand { node, confidence: 0.9, resolved_by } }));
         }
+        if matches!(r.language.as_str(), "lua" | "luau") && r.reference_kind == "calls"
+            && super::lua_alias::is_global(&r.reference_name)
+            && !self.nodes_in_file(&r.file_path)?.iter().any(|n| n.name == r.reference_name && n.kind == "function") { return Ok(None); }
+        if let Some(alias) = self.csharp_alias_type_target(r)? { return Ok(Some(alias)); }
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));
         }
@@ -1230,7 +1254,7 @@ impl KernelResolver {
             "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "cpp" | "python" | "php"
         );
         let bare_class_ok = r.language == "python";
-        let mut candidates: Vec<Arc<KNode>> = self
+        let candidates: Vec<Arc<KNode>> = self
             .nodes_by_name(&r.reference_name)?
             .iter()
             .filter(|n| {
@@ -1242,6 +1266,15 @@ impl KernelResolver {
             })
             .cloned()
             .collect();
+        let named_count = candidates.len();
+        let mut reachable = Vec::new();
+        for candidate in candidates { if self.is_lexically_reachable(&candidate,r)? { reachable.push(candidate); } }
+        let candidates = reachable;
+        if r.language == "python" && self.python_locally_bound(&r.reference_name,r)?
+            && !candidates.iter().any(|n| self.python_fixture_reachable(n,&r.file_path)) { return Ok(None); }
+        let mut local = Vec::new();
+        for candidate in candidates { if !self.outside_js_local(&candidate,r)? { local.push(candidate); } }
+        let mut candidates = local;
         if candidates.is_empty() {
             return Ok(None);
         }
@@ -1302,7 +1335,7 @@ impl KernelResolver {
             }));
         }
         // Cross-file: only an unambiguous match resolves.
-        if candidates.len() == 1 {
+        if candidates.len() == 1 && (named_count == 1 || (r.language == "python" && self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == r.reference_name))) {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),
                 confidence: 0.8,

@@ -356,6 +356,14 @@ export class ReferenceResolver {
    */
   private createContext(): ResolutionContext {
     return {
+      isNameCandidateVisible: (nodeId, ref) => {
+        const kernel = this.kernelResolver ?? this.liveKernel(1);
+        return kernel.isNameCandidateVisible(nodeId, {
+          rowId: ref.rowId, fromNodeId: ref.fromNodeId,
+          referenceName: ref.referenceName, referenceKind: ref.referenceKind,
+          line: ref.line, column: ref.column, filePath: ref.filePath, language: ref.language,
+        });
+      },
       // The kernel's import arm; open whenever frameworks resolve refs.
       resolveImport: (ref) => {
         // postExtract runs before resolution opens a kernel; open the live one

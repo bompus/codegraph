@@ -131,15 +131,6 @@ impl KernelResolver {
         }
         Ok(None)
     }
-    pub(super) fn csharp_using_alias(&mut self, name: &str, file: &str) -> Option<String> {
-        if !self.csharp_alias_memo.contains_key(file) {
-            let text = self.read_file(file).map(|s| super::awaited::strip_ts_comments(s.text())).unwrap_or_default();
-            let aliases = re!(r"(?m)^\s*(?:global\s+)?using\s+([A-Za-z_]\w*)\s*=\s*(?:global::)?([\w.]+)\s*(?:<[^;>]*>)?\s*;")
-                .captures_iter(&text).map(|m| (m[1].to_string(), m[2].to_string())).collect();
-            self.csharp_alias_memo.insert(file.to_string(), Rc::new(aliases));
-        }
-        self.csharp_alias_memo[file].get(name).cloned()
-    }
     pub(super) fn inferred_member_type_bound(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<String>> {
         if !matches!(r.language.as_str(), "java" | "kotlin" | "csharp") { return Ok(Some(ty.to_string())); }
         let simple = ty.rsplit('.').next().unwrap_or(ty);

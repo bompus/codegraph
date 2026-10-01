@@ -3,6 +3,314 @@
 use super::*;
 
 impl KernelResolver {
+    pub(super) fn csharp_extension_recursion_proven(
+        &mut self,
+        method: &KNode,
+        r: &ResolveRefIn,
+    ) -> Res<bool> {
+        if r.language != "csharp" || method.id != r.from_node_id {
+            return Ok(false);
+        }
+        let Some(source) = self.read_file(&r.file_path) else {
+            return Ok(false);
+        };
+        let Some(tree) = self.parsed_tree(&source, r) else {
+            return Ok(false);
+        };
+        let Some(line) = source.get((r.line - 1).max(0) as usize) else {
+            return Ok(false);
+        };
+        let point = tree_sitter::Point::new(
+            (r.line - 1).max(0) as usize,
+            super::names::js_unit_to_byte(line, r.column.max(0) as usize),
+        );
+        let text = |node: tree_sitter::Node<'_>| &source.text()[node.start_byte()..node.end_byte()];
+        let mut current = tree.root_node().descendant_for_point_range(point, point);
+        let mut receiver = None;
+        let mut argument_count = None;
+        let mut lambda = None;
+        let mut declaration = None;
+        while let Some(node) = current {
+            if receiver.is_none() && node.kind() == "invocation_expression" {
+                if let Some(member) = node.child_by_field_name("function") {
+                    if member.kind() == "member_access_expression"
+                        && member
+                            .child_by_field_name("name")
+                            .is_some_and(|name| text(name) == method.name)
+                    {
+                        receiver = member
+                            .child_by_field_name("expression")
+                            .filter(|node| node.kind() == "identifier")
+                            .map(text);
+                        argument_count = node
+                            .child_by_field_name("arguments")
+                            .map(|arguments| arguments.named_child_count());
+                    }
+                }
+            }
+            if lambda.is_none() && node.kind() == "lambda_expression" {
+                let Some(parameters) = node.child_by_field_name("parameters") else {
+                    return Ok(false);
+                };
+                let Some(receiver) = receiver else {
+                    return Ok(false);
+                };
+                if parameters.kind() != "implicit_parameter" || text(parameters) != receiver {
+                    return Ok(false);
+                }
+                lambda = Some(node);
+            }
+            if node.kind() == "method_declaration" {
+                declaration = Some(node);
+                break;
+            }
+            current = node.parent();
+        }
+        let (Some(lambda), Some(declaration)) = (lambda, declaration) else {
+            return Ok(false);
+        };
+        let Some(parameters) = declaration.child_by_field_name("parameters") else {
+            return Ok(false);
+        };
+        let Some(first) = super::iteration::named_children(parameters)
+            .into_iter()
+            .find(|node| node.kind() == "parameter")
+        else {
+            return Ok(false);
+        };
+        if !re!(r"^\s*this\b").is_match(text(first)) {
+            return Ok(false);
+        }
+        let Some(extension_type) = first.child_by_field_name("type") else {
+            return Ok(false);
+        };
+        let Some(argument) = lambda.parent().filter(|node| node.kind() == "argument") else {
+            return Ok(false);
+        };
+        let Some(arguments) = argument
+            .parent()
+            .filter(|node| node.kind() == "argument_list")
+        else {
+            return Ok(false);
+        };
+        if arguments.named_child_count() != 1 {
+            return Ok(false);
+        }
+        let Some(select) = arguments
+            .parent()
+            .filter(|node| node.kind() == "invocation_expression")
+        else {
+            return Ok(false);
+        };
+        let Some(member) = select
+            .child_by_field_name("function")
+            .filter(|node| node.kind() == "member_access_expression")
+        else {
+            return Ok(false);
+        };
+        if !member
+            .child_by_field_name("name")
+            .is_some_and(|node| text(node) == "Select")
+        {
+            return Ok(false);
+        }
+        if self.nodes_by_name("Select")?.iter().any(|node| {
+            node.language == "csharp" && matches!(node.kind.as_str(), "method" | "function")
+        }) {
+            return Ok(false);
+        }
+        let Some(collection) = member
+            .child_by_field_name("expression")
+            .filter(|node| node.kind() == "member_access_expression")
+        else {
+            return Ok(false);
+        };
+        let Some(root) = collection
+            .child_by_field_name("expression")
+            .filter(|node| node.kind() == "identifier")
+        else {
+            return Ok(false);
+        };
+        let Some(property) = collection.child_by_field_name("name") else {
+            return Ok(false);
+        };
+        let mut root_type = None;
+        let mut scope = select.parent();
+        while let Some(node) = scope {
+            if node.kind() == "if_statement"
+                && node
+                    .child_by_field_name("consequence")
+                    .is_some_and(|branch| {
+                        branch.start_byte() <= select.start_byte()
+                            && select.end_byte() <= branch.end_byte()
+                    })
+            {
+                let mut patterns: Vec<_> = node
+                    .child_by_field_name("condition")
+                    .filter(|condition| condition.kind() == "is_pattern_expression")
+                    .map(super::iteration::named_children)
+                    .unwrap_or_default();
+                while let Some(pattern) = patterns.pop() {
+                    if pattern.kind() == "declaration_pattern"
+                        && pattern
+                            .child_by_field_name("name")
+                            .is_some_and(|name| text(name) == text(root))
+                    {
+                        root_type = pattern.child_by_field_name("type").map(text);
+                        break;
+                    }
+                }
+                if root_type.is_some() {
+                    break;
+                }
+            }
+            if node.kind() == "method_declaration" {
+                break;
+            }
+            scope = node.parent();
+        }
+        let Some(root_type) = root_type else {
+            return Ok(false);
+        };
+        let Some(owner) = self.resolve_bound_type(root_type, r, 0)? else {
+            return Ok(false);
+        };
+        if !self.language_type_visible(&owner, r)? {
+            return Ok(false);
+        }
+        let fields: Vec<_> = self
+            .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, text(property)))?
+            .iter()
+            .filter(|node| {
+                node.file_path == owner.file_path
+                    && matches!(node.kind.as_str(), "property" | "field")
+            })
+            .cloned()
+            .collect();
+        let [field] = fields.as_slice() else {
+            return Ok(false);
+        };
+        let Some(signature) = &field.signature else {
+            return Ok(false);
+        };
+        let Some(element) = re!(r"^(?:System\.Collections\.Generic\.)?(IEnumerable|IReadOnlyList|IList|List|IReadOnlyCollection|ICollection)\s*<\s*([A-Za-z_][\w.]*)\s*>").captures(signature) else { return Ok(false) };
+        if self
+            .nodes_by_name(&element[1])?
+            .iter()
+            .any(|node| node.language == "csharp" && is_class_like(&node.kind))
+        {
+            return Ok(false);
+        }
+        let method_site = r.clone().at(method);
+        let field_site = r.clone().at(field);
+        let Some(expected) = self.resolve_bound_type(text(extension_type), &method_site, 0)? else {
+            return Ok(false);
+        };
+        let Some(actual) = self.resolve_bound_type(&element[2], &field_site, 0)? else {
+            return Ok(false);
+        };
+        if actual.id != expected.id
+            || !self.language_type_visible(&expected, &method_site)?
+            || !self.language_type_visible(&actual, &field_site)?
+        {
+            return Ok(false);
+        }
+        let Some(argument_count) = argument_count else {
+            return Ok(false);
+        };
+        let mut owners = VecDeque::from([actual]);
+        let mut seen = HashSet::new();
+        while let Some(owner) = owners.pop_front() {
+            if !seen.insert(owner.id.clone()) {
+                continue;
+            }
+            if seen.len() > 60 {
+                return Ok(false);
+            }
+            let instances = self
+                .nodes_by_qualified_name(&format!("{}::{}", owner.qualified_name, method.name))?;
+            for instance in instances.iter().filter(|node| {
+                node.language == "csharp"
+                    && node.kind == "method"
+                    && node.file_path == owner.file_path
+            }) {
+                if self.csharp_instance_accepts_arity(
+                    instance,
+                    owner.kind == "interface",
+                    argument_count,
+                    r,
+                ) != Some(false)
+                {
+                    return Ok(false);
+                }
+            }
+            owners.extend(self.supertype_nodes(&owner.id)?);
+        }
+        Ok(true)
+    }
+
+    fn csharp_instance_accepts_arity(
+        &mut self,
+        method: &KNode,
+        interface: bool,
+        count: usize,
+        r: &ResolveRefIn,
+    ) -> Option<bool> {
+        let source = self.read_file(&method.file_path)?;
+        let site = r.clone().at(method);
+        let tree = self.parsed_tree(&source, &site)?;
+        let line = source.get((method.start_line - 1).max(0) as usize)?;
+        let point = tree_sitter::Point::new(
+            (method.start_line - 1).max(0) as usize,
+            super::names::js_unit_to_byte(line, method.start_column.max(0) as usize),
+        );
+        let mut current = tree.root_node().descendant_for_point_range(point, point);
+        while let Some(node) = current {
+            if node.kind() == "method_declaration" {
+                let children = super::iteration::named_children(node);
+                let modifiers: Vec<_> = children
+                    .iter()
+                    .filter(|child| child.kind() == "modifier")
+                    .map(|child| &source.text()[child.start_byte()..child.end_byte()])
+                    .collect();
+                if modifiers.contains(&"static")
+                    || modifiers.contains(&"private")
+                    || (!interface
+                        && !modifiers.contains(&"public")
+                        && !modifiers.contains(&"internal"))
+                {
+                    return Some(false);
+                }
+                let parameters = node.child_by_field_name("parameters")?;
+                let parameters: Vec<_> = super::iteration::named_children(parameters)
+                    .into_iter()
+                    .filter(|parameter| parameter.kind() == "parameter")
+                    .collect();
+                let mut required = 0;
+                let mut variadic = false;
+                for parameter in &parameters {
+                    let mut cursor = parameter.walk();
+                    let optional = parameter
+                        .children(&mut cursor)
+                        .any(|child| child.kind() == "=");
+                    let params = super::iteration::named_children(*parameter)
+                        .iter()
+                        .any(|child| {
+                            child.kind() == "modifier"
+                                && &source.text()[child.start_byte()..child.end_byte()] == "params"
+                        });
+                    variadic |= params;
+                    if !optional && !params {
+                        required += 1;
+                    }
+                }
+                return Some(required <= count && (variadic || count <= parameters.len()));
+            }
+            current = node.parent();
+        }
+        None
+    }
+
     /// The br:factory tail of matchBoundReceiverCall's ESM arm — receiver's
     /// initializer ends in a call/new-factory expression whose return type
     /// carries the method.
@@ -402,6 +710,7 @@ impl KernelResolver {
             } else {
                 probe!(r, "mc:infer-local", self.infer_local_receiver_type(&object_or_class, &site, true)?)
             };
+            if inferred.is_none() { if let Some(verdict)=self.python_fixture_member(&object_or_class,&method_name,r)? { return Ok(verdict); } }
             if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             if inferred.is_none() && r.language == "go" {
                 if let Some(c) = self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
@@ -552,6 +861,7 @@ impl KernelResolver {
             let mut inferred = if matches!(r.language.as_str(), "java" | "kotlin" | "csharp") && self.explicit_this_receiver(&object_or_class, &method_name, r) {
                 self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
             } else { inferred };
+            if inferred.is_none() { if let Some(verdict)=self.python_fixture_member(&object_or_class,&method_name,r)? { return Ok(verdict); } }
             if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             let mut awaited_file: Option<String> = None;
             if inferred.is_none() && is_esm_family(&r.language) {
@@ -742,7 +1052,7 @@ impl KernelResolver {
         }
 
         if r.language == "csharp" {
-            if let Some(alias) = self.csharp_using_alias(&object_or_class, &r.file_path) {
+            if let Some(alias) = self.csharp_alias_at(&object_or_class, r) {
                 let name = alias.rsplit('.').next().unwrap_or(&alias);
                 let owners: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| n.language == "csharp"
                     && is_class_like(&n.kind) && n.qualified_name.replace("::", ".") == alias).cloned().collect();
@@ -771,7 +1081,10 @@ impl KernelResolver {
         let capitalized = capitalize_first(&object_or_class);
         if capitalized != object_or_class && !vb_value_receiver {
             if let Some(hit) = self.class_method_scan(&capitalized, &method_name, r, 0.8, "instance-method")? {
-                return Ok(Some(hit));
+                if r.language != "csharp" || hit.node.id != r.from_node_id
+                    || self.same_owner_receiver_proven(&hit.node, r) {
+                    return Ok(Some(hit));
+                }
             }
         }
 
@@ -817,7 +1130,8 @@ impl KernelResolver {
                 !(matches!(m.name.as_str(), "get"|"post"|"put"|"patch"|"delete"|"head"|"options"|"index"|"show"|"store"|"update"|"destroy"|"create"|"edit"|"list"|"retrieve"|"partial_update") && re!(r"(?:View|ViewSet|APIView|Controller|Endpoint|ViewMixin)$").is_match(owner))
             });
             narrowed |= target.len() != before;
-            if !is_test_path(&r.file_path) { target.retain(|n| !is_test_path(&n.file_path)); }
+            if !is_test_path(&r.file_path) { target.retain(|n| !super::resolver_upstream::test_suite_path(&n.file_path)); }
+            let mut visible=Vec::new();for n in target {if self.language_type_visible(&n,r)? {visible.push(n);}}target=visible;
             // A Vue component's own method is reached as `this.m()` inside it —
             // never as `e.preventDefault()` on an event, nor
             // `this.editor.setValue()` on something the component holds. The
@@ -834,7 +1148,9 @@ impl KernelResolver {
             }
             if super::call_shape::is_std_method(&r.language, &method_name)
                 && !matches!(object_or_class.as_str(), "self" | "Self" | "this" | "base") {
-                target.retain(|n| shares_receiver_word(super::call_shape::receiver_link(&object_or_class), n));
+                let mut kept=Vec::new();
+                for n in target {if self.dart_receiver_names_owner(super::call_shape::receiver_link(&object_or_class),&n)? {kept.push(n);}}
+                target=kept;
             }
             let target = &target;
             // Nothing types a Ruby, CFML or Objective-C receiver here: the one
@@ -866,7 +1182,9 @@ impl KernelResolver {
             let lua_library = target.len() == 1
                 && matches!(r.language.as_str(), "lua" | "luau")
                 && is_lua_library_call(&object_or_class, &method_name, r, &target[0]);
-            if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed && !lua_library {
+            if target.len() == 1 && !narrowed && target[0].language == r.language && !untyped_unnamed && !lua_library
+                && !self.unnamed_test_double(&target[0], &object_or_class, r)
+                && (target[0].id != r.from_node_id || self.same_owner_receiver_proven(&target[0], r)) {
                 return Ok(Some(KCand {
                     node: target[0].clone(),
                     confidence: 0.7,
@@ -903,7 +1221,7 @@ impl KernelResolver {
                     }
                 }
                 if let Some(bm) = best {
-                    if best_score >= 2 {
+                    if best_score >= 2 && (bm.id != r.from_node_id || self.same_owner_receiver_proven(&bm,r)) {
                         return Ok(Some(KCand {
                             node: bm,
                             confidence: 0.65,
@@ -1019,6 +1337,9 @@ impl KernelResolver {
         resolved_by: &'static str,
     ) -> Res<Option<KCand>> {
         let candidates = prefer_call_site_file(self.nodes_by_name(class_name)?.iter().cloned().collect(), &r.file_path);
+        let type_ref=r.clone().naming(class_name,"references");
+        let mut visible=Vec::new();for c in candidates {if self.language_type_visible(&c,&type_ref)? {visible.push(c);}}
+        let candidates=visible;
         for c in &candidates {
             let class_like = matches!(c.kind.as_str(), "class" | "struct" | "union" | "interface")
                 || (c.language == "scala" && c.kind == "module");

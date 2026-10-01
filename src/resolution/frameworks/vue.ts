@@ -12,6 +12,9 @@ import { parseSourceTreeSync } from '../../extraction/parse-tree';
 import { httpHandlerReferences } from './http-routing';
 import { dependsOn } from './package-deps';
 
+/** The languages a Vue app's scripts are written in. */
+const VUE_SCRIPT_LANGUAGES: ReadonlySet<string> = new Set(['vue', 'javascript', 'typescript', 'tsx', 'jsx']);
+
 /**
  * Vue 3 compiler macros — compiler-provided, not user code
  */
@@ -111,6 +114,10 @@ export const vueResolver: FrameworkResolver = {
         ? { original: ref, targetNodeId: component.id, confidence: 1, resolvedBy: 'framework' }
         : null;
     }
+    // Vue's macros, auto-imports and components are a script's, never a
+    // backend's: mealie's Python `QueryFilterBuilder(...)` is not the
+    // `QueryFilterBuilder.vue` component.
+    if (!VUE_SCRIPT_LANGUAGES.has(ref.language)) return null;
 
     // Pattern 1: Vue compiler macros (defineProps, defineEmits, etc.)
     if (VUE_COMPILER_MACROS.has(ref.referenceName)) {

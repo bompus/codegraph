@@ -54,3 +54,7 @@ CommonJS calls follow explicit `module.exports` defaults, module forwarding, des
 C++ access macros and conditionals inside declarations preserve class members. A normalized mid-declaration conditional indexes its first branch and preserves source locations.
 
 C++ receiver lookup follows visible class-scoped type aliases, declared fields, project subscript return types and explicitly typed standard-container elements. Unsubstituted template parameters and ambiguous method owners remain unresolved.
+
+Java/Kotlin enum constants with bodies retain their own methods and calls. Explicit imports, aliases and nested types participate in JVM name resolution. Scala block locals and package objects, C# block/file namespaces and Java nested types are scoped to their declarations and imports. Overload calls use argument shape, with Swift argument labels preserved. Python package imports can follow bounded package re-exports; pytest fixture returns can supply receiver types.
+
+Pytest fixture receiver inference uses default test function and file names, or an explicit fixture decorator. Custom collection naming without that source evidence remains unresolved.

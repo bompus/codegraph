@@ -73,6 +73,16 @@ const KOTLIN_STD_METHODS: &[&str] = &[
     "coerceAtLeast", "coerceAtMost", "coerceIn",
 ];
 
+const DART_STD_METHODS: &[&str] = &[
+    "endsWith", "startsWith", "contains", "split", "substring", "trim", "trimLeft", "trimRight", "toLowerCase",
+    "toUpperCase", "replaceAll", "replaceFirst", "replaceRange", "indexOf", "lastIndexOf", "padLeft", "padRight",
+    "codeUnitAt", "allMatches", "firstMatch", "hasMatch", "addAll", "removeAt", "removeWhere", "removeLast",
+    "retainWhere", "insertAll", "where", "whereType", "forEach", "toList", "toSet", "join", "reduce", "fold",
+    "any", "every", "firstWhere", "lastWhere", "singleWhere", "containsKey", "containsValue", "putIfAbsent",
+    "sublist", "take", "takeWhile", "skip", "skipWhile", "expand", "cast", "compareTo", "elementAt", "followedBy",
+    "asMap", "getRange", "setAll", "fillRange", "shuffle", "sort", "indexWhere", "lastIndexWhere",
+];
+
 const CSHARP_STD_METHODS: &[&str] = &[
     "ToString", "Equals", "GetHashCode", "GetType", "CompareTo", "Add",
     "AddRange", "Remove", "RemoveAt", "RemoveAll", "Contains", "ContainsKey",
@@ -98,7 +108,7 @@ const CSHARP_STD_METHODS: &[&str] = &[
 enum Shape { Bare, Path, SelfCall, SuperCall, Chain }
 #[derive(PartialEq)]
 pub(super) enum KotlinChainEvidence { Bound, Heuristic }
-struct CallSite { shape: Shape, receiver: String, label: String, subscript: bool }
+struct CallSite { shape: Shape, receiver: String, label: String, subscript: bool, constructed: Option<String> }
 
 /// Drop balanced call, subscript and literal arguments while walking back to the receiver.
 pub(super) fn receiver_name(text: &str) -> String {
@@ -142,7 +152,7 @@ pub(super) fn receiver_link(receiver: &str) -> &str {
 pub(super) fn is_std_method(language: &str, name: &str) -> bool {
     match language {
         "rust" => RUST_STD_METHODS, "go" => GO_STD_METHODS,
-        "kotlin" => KOTLIN_STD_METHODS, "csharp" => CSHARP_STD_METHODS,
+        "kotlin" => KOTLIN_STD_METHODS, "csharp" => CSHARP_STD_METHODS, "dart" => DART_STD_METHODS,
         _ => &[],
     }.contains(&name)
 }
@@ -204,7 +214,7 @@ impl KernelResolver {
                             if &lines.text()[field.start_byte()..field.end_byte()]==r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name) {
                                 let receiver=super::awaited::strip_ts_comments(&lines.text()[value.start_byte()..value.end_byte()]);
                                 let receiver:String=receiver.chars().filter(|c|!c.is_whitespace()).collect();
-                                return Some(CallSite{shape:if receiver=="self" {Shape::SelfCall} else {Shape::Chain},receiver:receiver_name(&receiver),label:String::new(),subscript:false});
+                                return Some(CallSite{shape:if receiver=="self" {Shape::SelfCall} else {Shape::Chain},receiver:receiver_name(&receiver),label:String::new(),subscript:false,constructed:None});
                             }
                         }
                     }
@@ -256,6 +266,7 @@ impl KernelResolver {
             shape, receiver: receiver_name(&before),
             label: re!(r"^\s*\(\s*([A-Za-z_]\w*)\s*:[^:]").captures(after).map(|m| m[1].to_string()).unwrap_or_default(),
             subscript: after.trim_start().starts_with('['),
+            constructed: re!(r"(?:^|[^\w$.])([A-Z][\w$]*)\s*(?:<[^<>()]*>)?\s*\([^()]*\)\s*[?!]?\s*\.\s*$").captures(&before).map(|m| m[1].to_string()),
         })
     }
 
@@ -486,7 +497,7 @@ impl KernelResolver {
         (supers, &head[1] == "extension")
     }
 
-    fn swift_decl(&mut self, name: &str) -> Res<(Vec<String>, bool)> {
+    pub(super) fn swift_decl(&mut self, name: &str) -> Res<(Vec<String>, bool)> {
         let mut supers: Vec<String> = match name {
             "RandomAccessCollection" => vec!["BidirectionalCollection"],
             "BidirectionalCollection" | "MutableCollection" | "RangeReplaceableCollection" => vec!["Collection"],
@@ -534,6 +545,14 @@ impl KernelResolver {
         };
         if !swift_member(n) { return Ok(true); }
         if site.shape == Shape::Chain {
+            if let Some(constructed) = &site.constructed {
+                if !self.nodes_by_name(constructed)?.iter().any(|f| f.kind == "function") {
+                    return Ok(self.swift_type_closure(constructed)?.contains(owner));
+                }
+            }
+            if let Some(ty) = self.swift_property_receiver_type(&site.receiver, r)? {
+                return Ok(self.swift_type_closure(&ty)?.contains(owner));
+            }
             if site.receiver.is_empty() || !SWIFT_STD_METHODS.contains(&n.name.as_str()) { return Ok(true); }
             if shares_receiver_word(site.receiver.rsplit('.').next().unwrap_or(""), n) || !self.swift_decl(owner)?.1 { return Ok(true); }
             if site.label.is_empty() || SWIFT_STD_LABELS.contains(&site.label.as_str()) { return Ok(false); }
@@ -567,6 +586,10 @@ impl KernelResolver {
         if site.shape == Shape::Chain {
             if n.file_path == r.file_path { return Ok(true); }
             if member { return Ok(!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n)); }
+            if type_kind(&n.kind) {
+                let holder = owner(n).map(str::to_string).or_else(|| self.read_file(&n.file_path).and_then(|source| re!(r"(?m)^\s*package\s+([\w.]+)\s*$").captures_iter(source.text()).last().map(|m| m[1].rsplit('.').next().unwrap_or("").to_string()))).unwrap_or_default();
+                return Ok(!holder.is_empty() && site.receiver.rsplit('.').next() == Some(holder.as_str()));
+            }
             if n.kind != "function" { return Ok(true); }
             return Ok(self.read_file(&n.file_path).is_some_and(|lines| {
                 let from = (n.start_line - 4).max(0) as usize;
@@ -576,27 +599,12 @@ impl KernelResolver {
         }
         let nodes = self.nodes_in_file(&r.file_path)?;
         let lines = self.read_file(&r.file_path);
-        if let (Some(f), Some(lines)) = (nodes.iter().filter(|f| matches!(f.kind.as_str(), "method" | "function")
-            && f.start_line <= r.line && f.end_line >= r.line).min_by_key(|f| f.end_line - f.start_line), &lines) {
-            let from = (f.start_line - 1).max(0) as usize;
-            let to = (r.line.max(0) as usize).min(lines.len());
-            let text = lines[from.min(to)..to].join("\n");
-            let name = regex::escape(&r.reference_name);
-            let pattern = format!(r"(?:[(,\[]\s*(?:implicit\s+|using\s+)?{name}\s*:)|(?:\b(?:val|var|def|lazy\s+val)\s+{name}\b)|(?:^|[^\w$.]){name}\s*(?:=>|<-)|\(\s*{name}\s*(?:,[^)]*)?\)\s*=>");
-            if Self::cached_regex(&pattern)?.is_match(&text) {
-                return Ok(n.file_path == r.file_path && n.start_line >= f.start_line && n.end_line <= f.end_line);
-            }
+        if let Some((start, end)) = self.scala_local_binder(r)? {
+            return Ok(n.file_path == r.file_path && n.start_line >= start && n.end_line <= end);
         }
         if !member || n.file_path == r.file_path { return Ok(true); }
         let Some(owner) = owner(n) else { return Ok(true) };
-        if let Some(lines) = &lines {
-            for m in re!(r"(?m)^\s*import\s+([\w.]+?)\.(?:([_*])|\{([^}]*)\}|([\w$]+))\s*$").captures_iter(lines.text()) {
-                let imported = m[1].rsplit('.').next().unwrap_or("");
-                let wildcard = m.get(2).is_some() || m.get(3).is_some_and(|x| x.as_str().split(',').any(|v| matches!(v.trim(), "_" | "*")));
-                if wildcard && (imported == owner || imported.starts_with(|c: char| c.is_ascii_lowercase())) { return Ok(true); }
-                if imported == owner && m.get(3).or_else(|| m.get(4)).is_some_and(|x| x.as_str().split(',').any(|v| v.trim().split("=>").next().unwrap_or("").trim() == r.reference_name)) { return Ok(true); }
-            }
-        }
+        if self.scala_imported_member(owner, &r.reference_name, &r.file_path)? { return Ok(true); }
         let mut queue: VecDeque<String> = nodes.iter().filter(|t| type_kind(&t.kind) && t.start_line <= r.line && t.end_line >= r.line).map(|t| t.name.clone()).collect();
         if queue.is_empty() { return Ok(true); }
         // Open anonymous class bodies introduce their bases as implicit receivers.

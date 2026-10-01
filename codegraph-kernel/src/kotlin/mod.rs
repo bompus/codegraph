@@ -131,6 +131,7 @@ pub struct Walker<'t> {
     tables: Tables,
     md_ref_keys: HashSet<String>,
     stack: Vec<Scope>,
+    enum_entry_binding_scope: Option<(u32, u32)>,
     node_ids: Vec<String>,
     /// Type-like rows (struct/union/class/enum/trait) by name, in creation
     /// order: the TS owner lookups scan `this.nodes` for the FIRST
@@ -207,6 +208,7 @@ impl<'t> Walker<'t> {
             tables: Tables::default(),
             md_ref_keys: HashSet::new(),
             stack: Vec::new(),
+            enum_entry_binding_scope: None,
             node_ids: Vec::new(),
             type_rows: HashMap::new(),
             defined_fn_names: HashSet::new(),
@@ -221,7 +223,7 @@ impl<'t> Walker<'t> {
     markdown_refs_impl!();
 
     walker_pos_impl!();
-    inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module");
+    inside_class_like_impl!("class" | "struct" | "interface" | "trait" | "enum" | "module" | "enum_member");
 
     push_ref_impl!();
 
@@ -763,7 +765,8 @@ impl<'t> Walker<'t> {
         for i in 0..body.named_child_count() {
             let Some(child) = body.named_child(i) else { continue };
             if child.kind() == "enum_entry" {
-                self.extract_enum_members(child);
+                let member = self.extract_enum_members(child);
+                self.visit_enum_entry_body(child, member);
             } else {
                 self.visit_node(child);
             }
@@ -771,18 +774,35 @@ impl<'t> Walker<'t> {
         self.stack.pop();
     }
 
-    fn extract_enum_members(&mut self, node: Node<'t>) {
-        // name field → null (zero fields) → the identifier-children scan: one
-        // enum_member per direct simple_identifier, positioned AT the
-        // identifier. Entry value_arguments and entry class_bodies (override
-        // methods!) are never visited — invisible (quirk).
-        for i in 0..node.named_child_count() {
-            let Some(child) = node.named_child(i) else { continue };
+    fn extract_enum_members(&mut self, node: Node<'t>) -> Option<(u32, String)> {
+        // Entries expose their name as a direct identifier, with no name field.
+        // Keep the member positioned at that identifier; skip value arguments.
+        let mut first = None;
+        for child in named_kids(node) {
             if matches!(child.kind(), "simple_identifier" | "identifier" | "property_identifier") {
                 let name = self.text(child).to_string();
-                self.create_node("enum_member", &name, child, Extra::default());
+                let row = self.create_node("enum_member", &name, child, Extra::default());
+                if first.is_none() {
+                    first = row.map(|row| (row, name));
+                }
             }
         }
+        first
+    }
+
+    /// A constant's direct class body declares members under that constant.
+    fn visit_enum_entry_body(&mut self, node: Node<'t>, member: Option<(u32, String)>) {
+        stack_guard!();
+        let Some((row, name)) = member else { return };
+        let Some(body) = named_kids(node).find(|child| child.kind() == "class_body") else { return };
+        // The member node spans its identifier; its bindings span the full entry.
+        let previous_scope = self.enum_entry_binding_scope.replace((self.line_of(node), node.end_position().row as u32 + 1));
+        self.stack.push(Scope { row, kind: "enum_member", name });
+        for child in named_kids(body) {
+            self.visit_node(child);
+        }
+        self.stack.pop();
+        self.enum_entry_binding_scope = previous_scope;
     }
 
     /// extractTypeAlias — plain node; the alias-value ref walk reads the
@@ -826,7 +846,16 @@ impl<'t> Walker<'t> {
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: JVM) --------------------
 
-    enclosing_scope_impl!("file" | "namespace");
+    fn enclosing_scope(&self) -> Option<(u32, u32)> {
+        let top = self.stack.last()?;
+        if matches!(top.kind, "file" | "namespace") {
+            return None;
+        }
+        if top.kind == "enum_member" {
+            return self.enum_entry_binding_scope;
+        }
+        Some(self.tables.node_lines(top.row))
+    }
 
     push_binding_row_impl!();
 

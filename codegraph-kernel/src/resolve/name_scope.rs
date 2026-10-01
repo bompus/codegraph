@@ -252,6 +252,7 @@ impl KernelResolver {
     /// the prelude's unless the file defines it or imports a project item of
     /// that name.
     pub(super) fn is_rust_name_in_scope(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
+        if let Some(visible) = self.rust_upstream_name_visible(candidate, r) { return visible; }
         let name = r.reference_name.as_str();
         // Bare in the SOURCE: the index keeps `crate::error::Result` by its
         // last segment, and a path is not a prelude lookup.

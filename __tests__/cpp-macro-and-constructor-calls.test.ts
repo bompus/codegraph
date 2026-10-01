@@ -365,9 +365,7 @@ describe('#1839 — local object initialization calls the constructor, not the t
       expect(bySignature('constructor_default')).toEqual(['method WithConstructor::WithConstructor()']);
       expect(bySignature('constructor_braced')).toEqual(['method WithConstructor::WithConstructor()']);
       expect(bySignature('constructor_value')).toEqual(['method WithConstructor::WithConstructor(int value)']);
-      // The temporary already resolved to a constructor before (#1839); which
-      // overload a plain `T()` call picks is the generic name matcher's choice.
-      expect(bySignature('constructor_temporary').every((c) => c.startsWith('method WithConstructor::WithConstructor('))).toBe(true);
+      expect(bySignature('constructor_temporary')).toEqual(['method WithConstructor::WithConstructor()']);
       // No `calls` edge ever targets the class or struct node.
       for (const caller of ['aggregate_initialization', 'constructor_default', 'constructor_braced', 'constructor_value', 'constructor_temporary']) {
         const kinds = cg

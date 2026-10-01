@@ -83,7 +83,7 @@ impl KernelResolver {
         // a receiver; instance attributes aren't nodes, so a unique function
         // of the member's name is no evidence.
         let named: Vec<Arc<KNode>> = self.nodes_by_name(member)?.iter().cloned().collect();
-        Ok(self.unique_member(named, r, 0.8)?.filter(|c| c.node.kind == "method"))
+        Ok(self.unique_member(named, r, 0.8)?.filter(|c| c.node.kind == "method" && super::method_call::shares_receiver_word(super::call_shape::receiver_link(receiver), &c.node)))
     }
 
     /// `self.<field>.method()` / `cls.<field>.method()` in Python: the field's

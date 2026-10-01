@@ -402,3 +402,9 @@ scripts/try-repo.sh <preset>        # prints the navigation count and says which
 select count(*) from edges where kind='navigates';
 select name, file_path from nodes where kind='route' order by name;   -- duplicates = a layout drawn as a screen
 ```
+
+## Name heuristics and inline handlers
+
+Framework name heuristics share the native resolver's lexical and cross-file visibility checks. They prefer the calling file and applicable package/directory, and refuse unrelated function-local declarations, nested types and test-suite symbols from production code. Rust heuristics also honor module/import reachability. React and Express naming conventions require imports to reach another file. NestJS provider lookup also supports convention siblings in the same directory. Vue/React conventions accept only script references; Astro component-name conventions accept only `.astro` references. Inline HTTP handler references retain simple dotted receivers, including optional access; calls on arbitrary returned expressions remain unresolved.
+
+Interface dispatch synthesis links supported base methods to concrete overrides. JavaScript and TypeScript constructors are excluded because construction does not dispatch to descendant constructors.

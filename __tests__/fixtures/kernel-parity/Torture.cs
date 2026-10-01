@@ -201,3 +201,8 @@ namespace Torture.Markdown
         }
     }
 }
+
+static class TopLevelGuard
+{
+    public static T AgainstNull<T>(T value) where T : class => value;
+}

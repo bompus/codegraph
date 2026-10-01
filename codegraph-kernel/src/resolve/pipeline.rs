@@ -579,7 +579,8 @@ impl KernelResolver {
     /// this path, so the miss is terminal either way.
     pub(super) fn resolve_function_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         let pre_pass = probe!(r, "pre-pass",
-            self.has_any_possible_match_in(&r.reference_name, &r.language) || self.matches_any_import(r)?);
+            self.has_any_possible_match_in(&r.reference_name, &r.language) || self.matches_any_import(r)?
+                || (r.language == "csharp" && self.csharp_alias_at(&r.reference_name, r).is_some()));
         if !pre_pass {
             return Ok(ResolveOutcome::unresolved());
         }
@@ -637,6 +638,20 @@ impl KernelResolver {
                 None => Ok(ResolveOutcome::unresolved()),
             };
         }
+        if is_js_family(&r.language) && r.reference_kind == "calls" {
+            if let Some(caller) = self.node_by_id(&r.from_node_id)? {
+                let name = r.reference_name.rsplit(['.', ':']).next().unwrap_or(&r.reference_name);
+                if caller.name == name && caller.kind == "method"
+                    && self.same_owner_receiver_proven(&caller, r)
+                {
+                    return self.finish_pre_framework(r, KCand {
+                        node: caller,
+                        confidence: 0.9,
+                        resolved_by: "instance-method",
+                    });
+                }
+            }
+        }
         match route(r) {
             Route::Unresolved => Ok(ResolveOutcome::unresolved()),
             Route::CInclude => self.resolve_c_include_import_ref(r),
@@ -685,7 +700,9 @@ impl KernelResolver {
         // framework resolvers — every name arm finds nothing — so it settles
         // through the framework merge alone.
         let pre_pass = probe!(r, "pre-pass",
-            self.has_any_possible_match_in(&r.reference_name, &r.language) || self.matches_any_import(r)?);
+            self.has_any_possible_match_in(&r.reference_name, &r.language) || self.matches_any_import(r)?
+                || self.js_typed_destructured_member(r)?.is_some()
+                || (r.language == "csharp" && self.csharp_alias_at(&r.reference_name, r).is_some()));
         if !pre_pass {
             if self.framework_claims(&r.reference_name) {
                 return Ok(ResolveOutcome::no_candidates());
@@ -764,6 +781,11 @@ impl KernelResolver {
         is_final: bool,
     ) -> Res<ResolveOutcome> {
         let mut winner = winner;
+        if !self.name_post_guard(&winner,r)? { return Ok(ResolveOutcome::unresolved()); }
+        if winner.node.id == r.from_node_id && is_inheritance_ref(&r.reference_kind) {
+            let Some(other) = self.other_supertype_named(r)? else { return Ok(ResolveOutcome::unresolved()); }; winner=other;
+        }
+        winner=self.retarget_overload(winner,r)?;
         if r.reference_kind == "calls" {
             // memberName = the last `.` segment — `Cls::member` and bare
             // names carry none (no '.' → bare arm); `a.b::c` yields `b::c`,
@@ -833,7 +855,7 @@ impl KernelResolver {
     /// and nothing calls into a Nix binding symbolically. A rejection never
     /// promotes a runner-up (#1745).
     pub(super) fn name_result_stands(&mut self, c: &KCand, r: &ResolveRefIn) -> Res<bool> {
-        if !self.is_visible_across_files(&c.node, r)? {
+        if !self.name_post_guard(c,r)? || !self.is_visible_across_files(&c.node, r)? {
             return Ok(false);
         }
         // Nix binds lexically or through explicit imports: a Nix ref's name

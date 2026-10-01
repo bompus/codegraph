@@ -362,7 +362,7 @@ impl KernelResolver {
 
     /// The nearest directory at or above `dir` holding a `.csproj`; `None`
     /// when there is none, so project-less files share one scope.
-    fn csharp_project_of(&mut self, dir: &str) -> Option<String> {
+    pub(super) fn csharp_project_of(&mut self, dir: &str) -> Option<String> {
         if let Some(hit) = self.csharp_project_memo.get(dir) {
             return hit.clone();
         }
@@ -378,7 +378,7 @@ impl KernelResolver {
     }
 
     /// The sorted entry names of a repository directory.
-    fn csharp_dir_entries(&self, dir: &str) -> Vec<String> {
+    pub(super) fn csharp_dir_entries(&self, dir: &str) -> Vec<String> {
         let abs = if dir.is_empty() { self.root_abs.clone() } else { pos_resolve(&self.root_abs, dir) };
         let mut entries: Vec<String> = std::fs::read_dir(&abs)
             .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())

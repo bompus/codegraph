@@ -105,33 +105,18 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
-    // extractFilePackage: the FIRST top-level namespace declaration mints ONE
-    // `namespace` node that stays pushed for the ENTIRE file — a second
-    // top-level namespace's types nest under the first's node/QN, nested
-    // namespaces leave no trace, and every import ref in a namespaced file
-    // hangs off this node (checklist §namespace).
+    // A file-scoped namespace covers the whole file. Block namespaces scope
+    // their own bodies in visit_node.
     let root = tree.root_node();
     let mut pkg_pushed = false;
-    for i in 0..root.named_child_count() {
-        let Some(child) = root.named_child(i) else { continue };
-        if child.kind() != "namespace_declaration"
-            && child.kind() != "file_scoped_namespace_declaration"
-        {
+    for child in named_kids(root) {
+        if child.kind() != "file_scoped_namespace_declaration" {
             continue;
         }
-        // csharpExtractor.extractPackage: `name` field ?? first
-        // qualified_name/identifier named child. No trim.
-        let name_node = child.child_by_field_name("name").or_else(|| {
-            named_kids(child)
-                .find(|c| matches!(c.kind(), "qualified_name" | "identifier"))
-        });
-        if let Some(name_node) = name_node {
-            let pkg = w.text(name_node).to_string();
-            if !pkg.is_empty() {
-                if let Some(row) = w.create_node("namespace", &pkg, child, Extra::default()) {
-                    w.stack.push(Scope { row, kind: "namespace", name: pkg });
-                    pkg_pushed = true;
-                }
+        if let Some(pkg) = namespace_name(&w, child) {
+            if let Some(row) = w.create_node("namespace", &pkg, child, Extra::default()) {
+                w.stack.push(Scope { row, kind: "namespace", name: pkg });
+                pkg_pushed = true;
             }
         }
         break;
@@ -154,6 +139,15 @@ fn record_is_struct(node: Node) -> bool {
     (0..node.child_count())
         .filter_map(|i| node.child(i))
         .any(|c| c.kind() == "struct")
+}
+
+/// The namespace name field, with a qualified-name/identifier fallback.
+fn namespace_name(w: &Walker, node: Node) -> Option<String> {
+    let name_node = node.child_by_field_name("name").or_else(|| {
+        named_kids(node).find(|child| matches!(child.kind(), "qualified_name" | "identifier"))
+    })?;
+    let name = w.text(name_node);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 impl<'t> Walker<'t> {
@@ -308,6 +302,35 @@ impl<'t> Walker<'t> {
         let kind = node.kind();
         let mut skip_children = false;
 
+        // Nested block namespaces combine with the outer namespace's name,
+        // replacing its stack entry while this body's declarations are walked.
+        if kind == "namespace_declaration" {
+            if let Some(ns_name) = namespace_name(self, node) {
+                let outer = match self.stack.last() {
+                    Some(top) if top.kind == "namespace" => self.stack.pop(),
+                    _ => None,
+                };
+                let full = match &outer {
+                    Some(scope) => format!("{}.{}", scope.name, ns_name),
+                    None => ns_name,
+                };
+                let row = self.create_node("namespace", &full, node, Extra::default());
+                if let Some(row) = row {
+                    self.stack.push(Scope { row, kind: "namespace", name: full });
+                }
+                for child in named_kids(node) {
+                    self.visit_node(child);
+                }
+                if row.is_some() {
+                    self.stack.pop();
+                }
+                if let Some(outer) = outer {
+                    self.stack.push(outer);
+                }
+                return;
+            }
+        }
+
         self.maybe_capture_fn_refs(node);
         let md_owner = self.top_row();
         self.markdown_refs_from_string(node, md_owner);
@@ -346,7 +369,7 @@ impl<'t> Walker<'t> {
                 skip_children = true;
             }
         }
-        // Everything else (namespace_declaration, global_statement, delegates,
+        // Everything else (global_statement, delegates,
         // events, operators, indexers, destructors, local functions, preproc_*)
         // falls through: no node minted, children visited — their bodies' calls
         // attribute to the enclosing scope (checklist §dispatch).

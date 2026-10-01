@@ -826,7 +826,7 @@ fn directive_lines(source: &str) -> Vec<String> {
 /// maskCppRawStrings (c-cpp.ts): blank every raw string literal
 /// (`R"delim(…)delim"`) except its newlines, skipping comments and ordinary
 /// literals, so a `#define` inside one is never read as a directive.
-fn mask_cpp_raw_strings(source: &str) -> std::borrow::Cow<'_, str> {
+pub(super) fn mask_cpp_raw_strings(source: &str) -> std::borrow::Cow<'_, str> {
     if !source.contains("R\"") {
         return std::borrow::Cow::Borrowed(source);
     }

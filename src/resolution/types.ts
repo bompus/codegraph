@@ -105,6 +105,8 @@ export interface ResolutionResult {
  * Context for resolution - provides access to the graph
  */
 export interface ResolutionContext {
+  /** Native scope checks shared by framework name heuristics. */
+  isNameCandidateVisible?(nodeId: string, ref: UnresolvedRef): boolean;
   /** Get all nodes in a file */
   getNodesInFile(filePath: string): Node[];
   /** Get all nodes by name */
