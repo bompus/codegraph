@@ -859,21 +859,37 @@ describe('Shared MCP daemon (issue #411)', () => {
     // A launcher connecting just as the daemon stops is accepted but is not yet a
     // client. The stop used to wait on that socket with the writer lock held and
     // the socket gone, so every other new client failed until it closed.
-    const env = { CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '30000', CODEGRAPH_PPID_POLL_MS: '5000' };
+    // The idle timeout drives the stop: SIGTERM on Windows ends the process
+    // without running it. The pending socket connects while the proxy is a
+    // registered client, so the idle timer can't fire first, and the long
+    // client-hello wait keeps it from becoming a client before the stop runs.
+    const env = {
+      CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '2000',
+      CODEGRAPH_DAEMON_CLIENT_HELLO_TIMEOUT_MS: '60000',
+      CODEGRAPH_PPID_POLL_MS: '5000',
+    };
     const server = spawnServer(tempDir, env);
     servers.push(server);
     sendInitialize(server.child, `file://${tempDir}`, 1);
     await waitFor(() => findResponse(server.stdout, 1), 20000, 25, 'initialize response');
-    // Attached means the daemon is listening with its SIGTERM handler installed.
     await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 8000, 25, 'daemon attach log');
     await waitFor(() => (readLockPid(realRoot) ?? 0) > 0, 8000, 25, 'daemon pidfile');
     const daemonPid = readLockPid(realRoot)!;
     const { socketPath } = JSON.parse(fs.readFileSync(path.join(realRoot, '.codegraph', 'daemon.pid'), 'utf8'));
+    // The daemon arms its idle timer when it starts listening, so the proxy must
+    // register within those 2 s. If it doesn't, the daemon stops by design and
+    // the test fails before its assertion: at the alive check, or at the pending
+    // connection once the daemon has closed its listener.
+    sendMessage(server.child, { jsonrpc: '2.0', id: 2, method: 'ping' });
+    await waitFor(() => findResponse(server.stdout, 2), 8000, 25, 'ping response');
+    expect(isAlive(daemonPid)).toBe(true);
     const pending = net.connect(socketPath);
-    await new Promise((resolve, reject) => pending.once('connect', resolve).once('error', reject));
+    // The daemon's hello line proves it accepted the connection.
+    await new Promise((resolve, reject) => pending.once('data', resolve).once('error', reject));
+    // The only client leaves; the daemon idles out with the socket still pending.
+    server.child.stdin.end();
     try {
-      process.kill(daemonPid, 'SIGTERM');
-      expect(await waitProcessExit(daemonPid, 5000)).toBe(true);
+      expect(await waitProcessExit(daemonPid, 8000)).toBe(true);
       expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
     } finally {
       pending.destroy();
