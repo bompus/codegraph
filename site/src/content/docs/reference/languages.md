@@ -31,6 +31,7 @@ Language support is automatic from the file extension — there's nothing to con
 | Lua | `.lua` | Full support (functions, methods, locals, `require` imports, call edges) |
 | R | `.R`, `.r` | Full support (functions, S4/R5/R6 classes with methods, `library`/`require` imports, `source()` file references, call edges) |
 | Luau | `.luau` | Full support (Lua, plus typed signatures, `type` aliases, Roblox `require`) |
+| CFML | `.cfc`, `.cfm`, `.cfs` | Full support (tag-based `<cfcomponent>`/`<cfinterface>`/`<cffunction>` and bare-script `component { ... }` styles, `extends`/`implements`, embedded `<cfscript>`, calls written in tags such as `<cfset>`, `<cfif>`, `<cfloop condition>` and `#…#` expressions) |
 | Markdown | `.md`, `.mdx`, `.markdown` | Documentation structure (headings, sections, local links, selected table rows/list items, shell command references) |
 
 Vue, Svelte and Astro files have one file node containing their component. Top-level script members belong to that component, while nested symbols retain their own parents. Vue `<script setup>`, Svelte instance scripts and Astro frontmatter assign top-level execution, including constant initializers, to the component. Imports, module-level execution and Astro browser scripts remain with the file. Svelte recognizes both `context="module"` and `<script module>`.
@@ -47,7 +48,7 @@ Kotlin `when` guards, open-ended ranges, multi-dollar strings and nullable recei
 
 C++ calls through namespace-opening macros and namespace aliases can reach a unique visible declaration; ambiguous overloads remain unresolved. Objective-C `super` messages target the superclass. Solidity bare calls follow the enclosing contract’s inheritance, and Erlang bare calls follow explicit module imports.
 
-Calls through class names follow inherited class methods in Python, Pascal, Ruby, PHP, JavaScript, TypeScript and the Java family. Receiver-name guesses exclude dispatched request handlers and test doubles the caller does not mention. Rust and Go chains preserve declared project receiver types while filtering unrelated standard-library method guesses; Rust factory lookup honors local function shadowing. R bare calls stay with functions, and JavaScript fetch response methods remain external.
+Calls through class names follow inherited class methods in Python, Pascal, Ruby, PHP, JavaScript, TypeScript and the Java family. A Python call on `self` inside a class skips a same-named import unless the class or an in-repo ancestor binds the name as an attribute, and links to the method or nested class the class declares or inherits through single bases. Receiver-name guesses exclude dispatched request handlers and test doubles the caller does not mention. Rust and Go chains preserve declared project receiver types while filtering unrelated standard-library method guesses; Rust factory lookup honors local function shadowing. R bare calls stay with functions, and JavaScript fetch response methods remain external.
 
 Lua local aliases can call a function exported by a required project module, including a renamed field and bounded module re-exports. The returned module table determines its exported fields. Standard-library aliases, external modules and out-of-scope locals do not become project calls.
 

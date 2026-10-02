@@ -132,7 +132,7 @@
 {"id":"variable:d66985bd46f73c589bf626a476ca4dd9","kind":"variable","name":"name","qualified_name":"name","file_path":"nix/module.nix","language":"nix","start_line":6,"end_line":6,"start_column":4,"end_column":61,"docstring":null,"signature":"= mkOption { type = types.str; default = \"world\"; }","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:ec44d88622b9664503f7698cd63e9df9","kind":"variable","name":"options.services.greeter","qualified_name":"options.services.greeter","file_path":"nix/module.nix","language":"nix","start_line":4,"end_line":7,"start_column":2,"end_column":4,"docstring":null,"signature":"= {\n    enable = mkEnableOption \"greeter\";\n    name = mkOption { type = types.str; default = \"world\"; ...","visibility":null,"is_exported":1,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
 {"id":"variable:fc46c3957e062c09f1d7dfd0c4e39e68","kind":"variable","name":"WS-COUNT","qualified_name":"WS-COUNT","file_path":"cobol/GREETWS.cpy","language":"cobol","start_line":2,"end_line":2,"start_column":7,"end_column":50,"docstring":null,"signature":"01 WS-COUNT PIC 9(4) VALUE ZERO","visibility":null,"is_exported":0,"is_async":0,"is_static":0,"is_abstract":0,"decorators":null,"type_parameters":null,"return_type":null}
-== edges (162)
+== edges (164)
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"class:ef405d3eb35a6ee244944eec0c93b6d4","kind":"extends","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Ownable\"}","line":5,"col":0,"provenance":null}
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"field:084206ff4dcb8c3b848851b6f90bb652","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"class:1354e5dd108f836e76d61a4ecedb6262","target":"field:d5355ecdd0413fd3b56cdb0e7f75e0d5","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
@@ -183,8 +183,10 @@
 {"source":"file:cobol/GREETER.cbl","target":"module:63f2cc0cb56a8e323b9dd6bdbb79713d","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:cobol/GREETWS.cpy","target":"variable:0029ccc8b588525f6b395eeba021d8ab","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:cobol/GREETWS.cpy","target":"variable:fc46c3957e062c09f1d7dfd0c4e39e68","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
+{"source":"file:d0d900a1a730bea1efdf2729f1adb288","target":"class:85e303095ea33303cdff1b72c25fb6db","kind":"instantiates","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"Greeter\"}","line":1,"col":17,"provenance":null}
 {"source":"file:d0d900a1a730bea1efdf2729f1adb288","target":"function:da378a51663a2531c07b9a7a60d4d181","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"exact-match\",\"refName\":\"shout\"}","line":8,"col":11,"provenance":null}
 {"source":"file:d0d900a1a730bea1efdf2729f1adb288","target":"function:da378a51663a2531c07b9a7a60d4d181","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
+{"source":"file:d0d900a1a730bea1efdf2729f1adb288","target":"method:6371e3682b7f64f04708b1f642de336e","kind":"calls","metadata":"{\"confidence\":0.9,\"resolvedBy\":\"instance-method\",\"refName\":\"greeter.greet\"}","line":2,"col":17,"provenance":null}
 {"source":"file:erlang/counter.erl","target":"namespace:f596155bb751fabdca26671539d4c89f","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:erlang/counter_tests.erl","target":"namespace:e96e1e122a8df78e6f4d85a703bb5724","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}
 {"source":"file:nix/default.nix","target":"function:da152b7196cce56b54fa235498504a30","kind":"contains","metadata":null,"line":null,"col":null,"provenance":null}

@@ -39,8 +39,16 @@ fn not(a: Truth) -> Truth {
 enum FileEvent {
     Define { define: bool, name: String, line: i64, function_like: bool, value: String, wraps_itself: bool },
     Include { quote: char, spec: String, line: i64 },
-    Branch { op: String, expression: String, guard: bool },
-    Once,
+    Branch { op: String, expression: String, guard: bool, line: i64 },
+    Once { line: i64 },
+}
+
+impl FileEvent {
+    fn line(&self) -> i64 {
+        match self {
+            FileEvent::Define { line, .. } | FileEvent::Include { line, .. } | FileEvent::Branch { line, .. } | FileEvent::Once { line } => *line,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -50,9 +58,17 @@ struct Event {
 }
 
 type Timeline = HashMap<String, Vec<Event>>;
+
+/// A root file's macro timeline; from `cutoff` on, nothing is known.
+struct RootTimeline {
+    events: Timeline,
+    cutoff: Option<i64>,
+}
 type TypeAliases = HashMap<String,(HashSet<String>,bool)>;
 
 const ROOT_TIMELINE_CAP: usize = 32;
+/// Directive events one translation-unit walk may evaluate (#2127).
+const WALK_EVENT_BUDGET: usize = 1_000_000;
 
 /// Directive summaries are cached per file but evaluated in translation-unit
 /// order on every inclusion: an included file can change its flags.
@@ -63,7 +79,7 @@ pub(super) struct MacroCache {
     /// Indexed files by basename, for `#include "dir/name.h"` no include root explains.
     by_basename: Option<HashMap<String, Vec<String>>>,
     /// Per root file (oldest first): macro name → define/undef events in root-file line order.
-    roots: VecDeque<(String, Rc<Timeline>)>,
+    roots: VecDeque<(String, Rc<RootTimeline>)>,
     type_aliases: VecDeque<(String,Rc<TypeAliases>)>,
 }
 
@@ -77,7 +93,7 @@ fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Definition {
     defined: Truth,
     /// The replacement text, read when a condition names the macro: an
@@ -99,7 +115,28 @@ struct Arms {
     defs: HashMap<String, (usize, usize, Truth)>,
 }
 
+/// One finished visit of a file: the truth it was entered under, `version`
+/// before and after, and the include cycles the recursion stack cut in it.
+struct Visit {
+    inherited: Truth,
+    start: u64,
+    end: u64,
+    cuts: Vec<String>,
+}
+
 /// walkTranslationUnit's state for one root file.
+///
+/// A guard the walk cannot decide (a header reached under an unknown `#if`)
+/// re-enters its header on every inclusion path, which is exponential in the
+/// include graph's depth (#2127). Every change a later directive could observe
+/// (definitions, `#pragma once`, the macro-name set, type aliases) bumps
+/// `version`. A re-entry with the same inherited truth, while `version` still
+/// equals that of an earlier visit which itself changed nothing, starts from
+/// the same state, so it would take the same branches and change nothing
+/// again; the events it would push repeat each name's current state, already
+/// its last event. Include cycles that visit cut must still be cut. A hard
+/// budget bounds whatever is left: past it, nothing is known and nothing is
+/// suppressed.
 #[derive(Default)]
 struct TuWalk {
     timeline: Timeline,
@@ -110,6 +147,11 @@ struct TuWalk {
     type_aliases: Option<TypeAliases>,
     stop_at: Option<(String,i64)>,
     stopped: bool,
+    version: u64,
+    cuts: Vec<String>,
+    visits: HashMap<String, Visit>,
+    spent: usize,
+    cutoff: Option<i64>,
 }
 
 impl TuWalk {
@@ -187,7 +229,11 @@ impl KernelResolver {
                 t
             }
         };
+        if timeline.cutoff.is_some_and(|cutoff| r.line >= cutoff) {
+            return Ok(false);
+        }
         let last = timeline
+            .events
             .get(&r.reference_name)
             .and_then(|events| events.iter().rfind(|e| e.line <= r.line).copied());
         Ok(last.is_some_and(|e| e.defined == Some(true)))
@@ -206,7 +252,7 @@ impl KernelResolver {
             if let Some(b) = re!(r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)$").captures(text) {
                 let (op, expression) = (b[1].to_string(), b[2].to_string());
                 let guard = guards_itself(&lines, i, &op, &expression);
-                events.push(FileEvent::Branch { op, expression, guard });
+                events.push(FileEvent::Branch { op, expression, guard, line });
                 continue;
             }
             if let Some(d) = re!(r"^\s*#\s*(define|undef)\s+(\w+)(\(?)").captures(text) {
@@ -227,7 +273,7 @@ impl KernelResolver {
                 events.push(FileEvent::Include { quote, spec: inc[2].to_string(), line });
             }
             if re!(r"^\s*#\s*pragma\s+once\b").is_match(text) {
-                events.push(FileEvent::Once);
+                events.push(FileEvent::Once { line });
             }
         }
         let events = Rc::new(events);
@@ -275,16 +321,33 @@ impl KernelResolver {
         Ok(target)
     }
 
-    fn walk_translation_unit(&mut self, root_file: &str, language: &str) -> Timeline {
+    fn walk_translation_unit(&mut self, root_file: &str, language: &str) -> RootTimeline {
         let mut walk = TuWalk::default();
         self.scan_tu_file(&mut walk, root_file, Some(true), None, language);
-        walk.timeline
+        RootTimeline { events: walk.timeline, cutoff: walk.cutoff }
     }
 
     fn scan_tu_file(&mut self, walk: &mut TuWalk, file: &str, inherited: Truth, include_line: Option<i64>, language: &str) {
-        if walk.stopped || inherited == Some(false) || walk.scanning.contains(file) || walk.once.get(file) == Some(&Some(true)) {
+        if walk.stopped || walk.cutoff.is_some() || inherited == Some(false) || walk.once.get(file) == Some(&Some(true)) {
             return;
         }
+        if walk.scanning.contains(file) {
+            walk.cuts.push(file.to_string());
+            return;
+        }
+        if let Some(seen) = walk.visits.get(file) {
+            if seen.inherited == inherited
+                && seen.start == seen.end
+                && seen.end == walk.version
+                && seen.cuts.iter().all(|c| walk.scanning.contains(c))
+            {
+                let cuts = seen.cuts.clone();
+                walk.cuts.extend(cuts);
+                return;
+            }
+        }
+        let start = walk.version;
+        let first_cut = walk.cuts.len();
         walk.scanning.insert(file.to_string());
         let mut active = inherited;
         // (parent, taken)
@@ -292,9 +355,16 @@ impl KernelResolver {
         let mut arms: Vec<Arms> = Vec::new();
         for ev in self.summarize(file).iter() {
             if walk.stopped {break;}
+            if walk.cutoff.is_none() {
+                walk.spent += 1;
+                if walk.spent > WALK_EVENT_BUDGET {
+                    walk.cutoff = Some(include_line.unwrap_or(ev.line()));
+                }
+            }
+            if walk.cutoff.is_some() {break;}
             if walk.stop_at.as_ref().is_some_and(|(target,limit)|target==file && matches!(ev,FileEvent::Define{line,..}|FileEvent::Include{line,..} if line>limit)) {break;}
             match ev {
-                FileEvent::Branch { op, expression, guard } => {
+                FileEvent::Branch { op, expression, guard, .. } => {
                     match op.as_str() {
                         "if" | "ifdef" | "ifndef" => {
                             let known = walk.definitions.get(expression.trim()).and_then(|d| d.defined);
@@ -329,9 +399,13 @@ impl KernelResolver {
                     continue;
                 }
                 _ if active == Some(false) => continue,
-                FileEvent::Once => {
+                FileEvent::Once { .. } => {
                     let prior = walk.once.get(file).copied().unwrap_or(Some(false));
-                    walk.once.insert(file.to_string(), or(prior, active));
+                    let next = or(prior, active);
+                    if next != prior {
+                        walk.version += 1;
+                    }
+                    walk.once.insert(file.to_string(), next);
                 }
                 FileEvent::Include { quote, spec, line } => {
                     // A resolution error only loses this include's macros.
@@ -364,6 +438,7 @@ impl KernelResolver {
                         None
                     };
                     if let Some(aliases)=&mut walk.type_aliases {
+                        let before=aliases.get(name).cloned();
                         let value=value.trim();
                         let simple=*define && !*function_like && re!(r"^[A-Za-z_]\w*$").is_match(value);
                         if let Some(arm)=arms.last_mut() {
@@ -377,6 +452,7 @@ impl KernelResolver {
                         } else if simple {
                             aliases.entry(name.clone()).or_insert_with(||(HashSet::new(),true)).0.insert(value.to_string());
                         } else if let Some(entry)=aliases.get_mut(name) {entry.1=true;}
+                        if aliases.get(name)!=before.as_ref() {walk.version+=1;}
                     }
                     // A name the walk has not seen is an unknown build flag,
                     // as `#ifdef` reads it: an `#undef` under an unknown
@@ -394,9 +470,12 @@ impl KernelResolver {
                         value: if *define && active == Some(true) { Some(Rc::from(value.as_str())) } else { None },
                         is_macro: now,
                     };
+                    if walk.definitions.get(name) != Some(&entry) {
+                        walk.version += 1;
+                    }
                     walk.definitions.insert(name.clone(), entry);
-                    if *function_like {
-                        walk.macro_names.insert(name.clone());
+                    if *function_like && walk.macro_names.insert(name.clone()) {
+                        walk.version += 1;
                     }
                     if walk.macro_names.contains(name) {
                         let line = include_line.unwrap_or(*line);
@@ -407,6 +486,14 @@ impl KernelResolver {
         }
         if walk.stop_at.as_ref().is_some_and(|(target,_)|target==file) {walk.stopped=true;}
         walk.scanning.remove(file);
+        let mut own: Vec<String> = Vec::new();
+        for cut in walk.cuts.split_off(first_cut) {
+            if !own.contains(&cut) {
+                own.push(cut);
+            }
+        }
+        walk.cuts.extend(own.iter().cloned());
+        walk.visits.insert(file.to_string(), Visit { inherited, start, end: walk.version, cuts: own });
     }
 
     /// Possible simple type aliases at a declaration, evaluated in its caller's import context.
@@ -417,7 +504,8 @@ impl KernelResolver {
             None=>{
                 let mut walk=TuWalk{type_aliases:Some(HashMap::new()),stop_at:Some((file.to_string(),line)),..TuWalk::default()};
                 self.scan_tu_file(&mut walk,&r.file_path,Some(true),None,&r.language);
-                let aliases=Rc::new(if walk.stopped {walk.type_aliases.unwrap_or_default()} else {HashMap::new()});
+                // A walk the budget cut off never saw the declaration's whole context.
+                let aliases=Rc::new(if walk.stopped && walk.cutoff.is_none() {walk.type_aliases.unwrap_or_default()} else {HashMap::new()});
                 if self.cpp_macros.type_aliases.len()>=ROOT_TIMELINE_CAP {self.cpp_macros.type_aliases.pop_front();}
                 self.cpp_macros.type_aliases.push_back((key,aliases.clone()));aliases
             }

@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`a5184ed5`](https://github.com/colbymchenry/codegraph/commit/a5184ed5d4cb4bb0a3341cdc1afdec0016152dc7) (after v1.6.1, merged 2026-10-02) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`7c01910e`](https://github.com/colbymchenry/codegraph/commit/7c01910e545165cae56353044014ca03d479e646) (after v1.6.1, merged 2026-10-02) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -1033,7 +1033,7 @@ is written):
 | Lua | `.lua` | Full support (functions, methods with receivers, local variables, `require` imports, call edges) |
 | R | `.R` `.r` | Full support (functions in every assignment form, S4/R5/R6 classes with methods, `library`/`require` imports, `source()` file references, call edges) |
 | Luau | `.luau` | Full support (everything in Lua, plus `type`/`export type` aliases, typed signatures, and Roblox instance-path `require`) |
-| CFML | `.cfc`, `.cfm`, `.cfs` | Full support (tag-based `<cfcomponent>`/`<cffunction>` and bare-script `component { ... }` styles, `extends`/`implements`, embedded `<cfscript>` delegation, call edges) |
+| CFML | `.cfc`, `.cfm`, `.cfs` | Full support (tag-based `<cfcomponent>`/`<cfinterface>`/`<cffunction>` and bare-script `component { ... }` styles, `extends`/`implements`, embedded `<cfscript>` delegation, call edges, including calls written in tags such as `<cfset>`, `<cfif>`, `<cfloop condition>` and `#…#` expressions) |
 | COBOL | `.cbl`, `.cob`, `.cpy` | Full support (programs, sections/paragraphs with PERFORM/GO TO call edges, CALL 'literal' cross-program calls, COPY copybook imports — including standalone `.cpy` files — DATA DIVISION records/fields/88-levels, EXEC CICS LINK/XCTL and EXEC SQL INCLUDE targets; fixed and free format) |
 | Visual Basic .NET | `.vb` | Full support (classes, Modules, interfaces, structures, enums, properties, events, `Declare` P/Invoke, `Handles`/`WithEvents`, `Inherits`/`Implements` edges, call edges through VB's call/index paren ambiguity, `As New` instantiation, interpolated strings, LINQ, Unicode identifiers) |
 | Erlang | `.erl`, `.hrl`, `.escript`, `.app.src`, `.app` | Full support (functions with multi-clause/multi-arity grouping, `-spec` signatures, records with fields, `-type`/`-opaque` aliases, `-define` macros, `-include`/`-include_lib`/`-import` edges, local and `mod:fn` remote call edges, `fun name/arity` references, `spawn`/`apply`/`proc_lib`/`timer`/`rpc` MFA-argument call edges, `gen_server:call/cast(?MODULE)` → own `handle_call`/`handle_cast` links, `-behaviour` links, `-export`-based visibility) |

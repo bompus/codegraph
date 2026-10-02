@@ -689,6 +689,20 @@ impl KernelResolver {
         }
         // A receiver-less JS/TS or Go call cannot reach a method (#1714, #1857).
         candidates.retain(|n| !((bare_js || bare_go || bare_r) && n.kind == "method"));
+        // `self.get_ip()` names the method (or nested class) the calling
+        // class declares or inherits along single bases, never a module
+        // function or another class's method that shares the name (upstream
+        // settles that by node order alone).
+        if r.language == "python"
+            && candidates.len() > 1
+            && candidates.iter().any(|n| n.kind == "method" || n.kind == "class")
+        {
+            if let Some(own) = self.python_self_method(r)? {
+                if candidates.iter().any(|n| n.id == own.id) {
+                    candidates.retain(|n| n.id == own.id);
+                }
+            }
+        }
         // A bare Go call names its own package's function: another
         // package's `New` needs its qualifier (a dot import cannot bring in a
         // name the package itself declares). The package is the directory

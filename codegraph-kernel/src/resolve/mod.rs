@@ -656,6 +656,10 @@ pub struct KernelResolver {
     cpp_macros: cpp::MacroCache,
     cpp_namespaces: cpp_namespace::NamespaceCache,
     inherited_class_methods: HashMap<(String,String), Option<Arc<KNode>>>,
+    /// A Python class and its in-repo ancestors, by class id.
+    python_hierarchies: HashMap<String, Rc<Vec<Arc<KNode>>>>,
+    /// Whether a Python class rebinds a name as an attribute, by (class id, name).
+    python_rebinds: HashMap<(String, String), bool>,
     file_cache: FileCache,
     /// Trees the iteration and guard inference walk, by language and file.
     tree_cache: TreeCache,
@@ -819,6 +823,8 @@ impl KernelResolver {
             cpp_macros: cpp::MacroCache::default(),
             cpp_namespaces: cpp_namespace::NamespaceCache::default(),
             inherited_class_methods: HashMap::new(),
+            python_hierarchies: HashMap::new(),
+            python_rebinds: HashMap::new(),
             file_cache: FileCache::new(1024),
             tree_cache: TreeCache::new(32),
         })

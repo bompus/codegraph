@@ -901,12 +901,16 @@ impl KernelResolver {
         Ok(true)
     }
 
-    fn collapsed_non_recursion(&mut self, r: &ResolveRefIn) -> Res<bool> {
+    /// bareCallReceiver: the text a call recorded by its bare name is written
+    /// on, read from the call site (`this.container.classList` for
+    /// `this.container.classList.toggle()`); None for a call written bare or
+    /// not found.
+    fn bare_call_receiver(&mut self, r: &ResolveRefIn) -> Res<Option<(Rc<SourceFile>, String)>> {
         if !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) {
-            return Ok(false);
+            return Ok(None);
         }
         let Some(lines) = self.read_file(&r.file_path) else {
-            return Ok(false);
+            return Ok(None);
         };
         let whole = lines
             .iter()
@@ -922,18 +926,192 @@ impl KernelResolver {
             regex::escape(&r.reference_name)
         ))?;
         let Some(found) = pat.captures(text).and_then(|m| m.get(1)) else {
-            return Ok(false);
+            return Ok(None);
         };
         let before = text[..found.start()].trim_end();
-        let Some(head) = before
+        let head = before
             .strip_suffix('.')
-            .map(|s| s.trim_end_matches('?').trim_end())
+            .map(|s| s.trim_end_matches('?').trim_end().to_string());
+        Ok(head.map(|h| (lines, h)))
+    }
+
+    /// isPythonSelfCall: a Python call recorded by its bare name but written
+    /// on the instance, `self.get_ip(request)`, which a same-named import must
+    /// not claim.
+    pub(super) fn is_python_self_call(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        if r.language != "python" || r.reference_kind != "calls" {
+            return Ok(false);
+        }
+        Ok(self.bare_call_receiver(r)?.is_some_and(|(_, head)| is_self_receiver(&head)))
+    }
+
+    /// The innermost class around a call site.
+    fn python_enclosing_class(&mut self, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        Ok(self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| n.kind == "class" && n.start_line <= r.line && n.end_line >= r.line)
+            .max_by_key(|n| n.start_line)
+            .cloned())
+    }
+
+    /// Whether a class binds `name` as an attribute: an assignment or import
+    /// in its body (`get_ip = staticmethod(get_ip)`, `from m import get_ip`)
+    /// or an assignment to `self.get_ip` anywhere in it. A local of the same
+    /// name inside a method does not count.
+    fn python_class_rebinds(&mut self, cls: &KNode, name: &str) -> Res<bool> {
+        let key = (cls.id.clone(), name.to_string());
+        if let Some(&hit) = self.python_rebinds.get(&key) {
+            return Ok(hit);
+        }
+        let hit = self.python_class_rebinds_uncached(cls, name)?;
+        self.python_rebinds.insert(key, hit);
+        Ok(hit)
+    }
+
+    fn python_class_rebinds_uncached(&mut self, cls: &KNode, name: &str) -> Res<bool> {
+        let Some(lines) = self.read_file(&cls.file_path) else {
+            return Ok(false);
+        };
+        let from = (cls.start_line - 1).max(0) as usize;
+        let to = (cls.end_line.max(0) as usize).min(lines.len());
+        let lines = &lines[from.min(to)..to];
+        let assign = r"\s*(?::[^=]*)?=(?:[^=]|$)";
+        let on_self = Self::cached_regex(&format!(r"^\s*self\s*\.\s*{}{assign}", regex::escape(name)))?;
+        if lines.iter().any(|l| on_self.is_match(l)) {
+            return Ok(true);
+        }
+        let Some(body) = python_class_body(lines, &cls.name) else {
+            return Ok(false);
+        };
+        let bare = Self::cached_regex(&format!(r"^\s*{}{assign}", regex::escape(name)))?;
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let code = |l: &str| l.split('#').next().unwrap_or("").trim().to_string();
+        let Some(body_indent) = lines[body..]
+            .iter()
+            .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+            .map(|l| indent(l))
         else {
             return Ok(false);
         };
-        if re!(r"(?:^|[^\w$.])(?:this|self|super|Self)$|(?:^|[^\w$.])super\s*\([^()]*\)$")
-            .is_match(head)
-        {
+        let mut at = body;
+        while at < lines.len() {
+            let line = &lines[at];
+            at += 1;
+            if indent(line) != body_indent || line.trim().is_empty() {
+                continue;
+            }
+            if bare.is_match(line) {
+                return Ok(true);
+            }
+            let stmt = code(line);
+            if !(stmt.starts_with("import ") || stmt.starts_with("from ")) {
+                continue;
+            }
+            // `from m import (a,  # note\n b)` runs on to its closing
+            // parenthesis; each line's comment ends at its own line.
+            let mut text = stmt;
+            while text.contains('(') && !text.contains(')') && at < lines.len() {
+                text.push(' ');
+                text.push_str(&code(&lines[at]));
+                at += 1;
+            }
+            if python_import_binds(&text, name) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A class and its in-repo ancestors, nearest first.
+    fn python_class_hierarchy(&mut self, cls: Arc<KNode>) -> Res<Rc<Vec<Arc<KNode>>>> {
+        if let Some(hit) = self.python_hierarchies.get(&cls.id) {
+            return Ok(hit.clone());
+        }
+        let key = cls.id.clone();
+        let mut queue = VecDeque::from([(cls, 0)]);
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        while let Some((cls, depth)) = queue.pop_front() {
+            if depth > 5 || !seen.insert(cls.id.clone()) {
+                continue;
+            }
+            let parents = self.supertype_nodes(&cls.id)?;
+            queue.extend(parents.into_iter().filter(|n| n.language == "python").map(|n| (n, depth + 1)));
+            out.push(cls);
+        }
+        let out = Rc::new(out);
+        self.python_hierarchies.insert(key, out.clone());
+        Ok(out)
+    }
+
+    /// Whether `self.<name>()` must not resolve through a same-named import:
+    /// it is written inside a class, and neither that class nor an in-repo
+    /// ancestor binds the name as an attribute (which may hold the import).
+    pub(super) fn python_self_skips_import(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let Some(cls) = self.python_enclosing_class(r)? else {
+            return Ok(false);
+        };
+        for cls in self.python_class_hierarchy(cls)?.iter() {
+            if self.python_class_rebinds(cls, &r.reference_name)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The member `self.<name>()` reaches, written on plain `self`: the
+    /// nearest method or nested class of that name along the class around
+    /// the call and a chain of single in-repo bases. None when a class on
+    /// the way binds the name as an attribute, or lists other than one base,
+    /// where only the full MRO could tell.
+    pub(super) fn python_self_method(&mut self, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if !self.bare_call_receiver(r)?.is_some_and(|(_, head)| re!(r"(?:^|[^\w$.])self$").is_match(&head)) {
+            return Ok(None);
+        }
+        let Some(mut cls) = self.python_enclosing_class(r)? else {
+            return Ok(None);
+        };
+        let name = r.reference_name.as_str();
+        for _ in 0..6 {
+            if self.python_class_rebinds(&cls, name)? {
+                return Ok(None);
+            }
+            let members = self.nodes_in_file(&cls.file_path)?;
+            if let Some(m) = members.iter().find(|m| {
+                (m.kind == "method" || m.kind == "class")
+                    && m.name == name
+                    && m.qualified_name.rsplit_once("::").is_some_and(|(owner, _)| owner == cls.qualified_name)
+            }) {
+                return Ok(Some(m.clone()));
+            }
+            let Some(lines) = self.read_file(&cls.file_path) else {
+                return Ok(None);
+            };
+            let from = (cls.start_line - 1).max(0) as usize;
+            let to = (cls.end_line.max(0) as usize).min(lines.len());
+            if python_base_count(&lines[from.min(to)..to], &cls.name) != 1 {
+                return Ok(None);
+            }
+            let parents: Vec<_> = self
+                .supertype_nodes(&cls.id)?
+                .into_iter()
+                .filter(|n| n.language == "python" && n.kind == "class")
+                .collect();
+            let [parent] = parents.as_slice() else {
+                return Ok(None);
+            };
+            cls = parent.clone();
+        }
+        Ok(None)
+    }
+
+    fn collapsed_non_recursion(&mut self, r: &ResolveRefIn) -> Res<bool> {
+        let Some((lines, head)) = self.bare_call_receiver(r)? else {
+            return Ok(false);
+        };
+        let head = head.as_str();
+        if is_self_receiver(head) {
             return Ok(false);
         }
         // Same-type field recursion (`this.next.visit()` on Node.next: Node).
@@ -1435,4 +1613,100 @@ fn cpp_scalar_binding(
             }
         })
     })
+}
+
+/// The bases a Python class header lists, keyword arguments
+/// (`metaclass=…`) and `**` unpacking left out; 0 when the header is not
+/// found, has no parentheses, or unpacks a sequence of bases (`*bases`).
+fn python_base_count(lines: &[String], name: &str) -> usize {
+    let text = lines.iter().take(20).map(String::as_str).collect::<Vec<_>>().join("\n");
+    let Ok(head) = KernelResolver::cached_regex(&format!(r"(?m)^\s*class\s+{}\s*\(", regex::escape(name))) else {
+        return 0;
+    };
+    let Some(m) = head.find(&text) else {
+        return 0;
+    };
+    let (mut depth, mut count, mut part, mut unpacked) = (0usize, 0usize, String::new(), false);
+    let flush = |part: &mut String, count: &mut usize, unpacked: &mut bool| {
+        let p = part.trim();
+        if p.starts_with('*') && !p.starts_with("**") {
+            *unpacked = true;
+        } else if !p.is_empty() && !p.starts_with('*') && !re!(r"^[A-Za-z_]\w*\s*=").is_match(p) {
+            *count += 1;
+        }
+        part.clear();
+    };
+    for c in text[m.end()..].chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth == 0 => {
+                flush(&mut part, &mut count, &mut unpacked);
+                return if unpacked { 0 } else { count };
+            }
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                flush(&mut part, &mut count, &mut unpacked);
+                continue;
+            }
+            _ => {}
+        }
+        part.push(c);
+    }
+    0
+}
+
+/// The index of the first line of a Python class's body, past a header
+/// that may run over several lines (`class A(\n    Base,\n):`); None when
+/// the header is not found or the body shares its line.
+fn python_class_body(lines: &[String], name: &str) -> Option<usize> {
+    let head = KernelResolver::cached_regex(&format!(r"^\s*class\s+{}\b", regex::escape(name))).ok()?;
+    let at = lines.iter().position(|l| head.is_match(l))?;
+    let mut depth = 0usize;
+    for (i, line) in lines.iter().enumerate().skip(at) {
+        for (j, c) in line.char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                '#' => break,
+                ':' if depth == 0 => {
+                    let rest = line[j + 1..].trim();
+                    return (rest.is_empty() || rest.starts_with('#')).then_some(i + 1);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Whether an `import` or `from … import` statement binds `name`.
+fn python_import_binds(stmt: &str, name: &str) -> bool {
+    let (names, from) = if let Some(rest) = stmt.strip_prefix("from ") {
+        match rest.split_once(" import ") {
+            Some((_, names)) => (names, true),
+            None => return false,
+        }
+    } else if let Some(rest) = stmt.strip_prefix("import ") {
+        (rest, false)
+    } else {
+        return false;
+    };
+    let names = names.replace(['(', ')', '\\'], " ");
+    names.split(',').any(|part| {
+        let mut words = part.split_whitespace();
+        let Some(first) = words.next() else {
+            return false;
+        };
+        let bound = match (words.next(), words.next()) {
+            (Some("as"), Some(alias)) => alias,
+            _ if from => first,
+            _ => first.split('.').next().unwrap_or(first),
+        };
+        bound == name
+    })
+}
+
+/// `this.m()` / `self.m()` / `super.m()` / `super().m()`: a call on the caller's own object.
+fn is_self_receiver(head: &str) -> bool {
+    re!(r"(?:^|[^\w$.])(?:this|self|super|Self)$|(?:^|[^\w$.])super\s*\([^()]*\)$").is_match(head)
 }

@@ -833,7 +833,15 @@ impl KernelResolver {
         }
 
         let mut cands: Vec<KCand> = Vec::new();
-        let import_cand = probe!(r, "resolve_via_import", self.resolve_via_import(r)?);
+        // `self.get_ip()` is a method call on the instance even when the file
+        // also imports a function named `get_ip`: the import never names it,
+        // unless the class rebinds the name to it (`get_ip = staticmethod(get_ip)`).
+        let self_call = r.language == "python"
+            && r.reference_kind == "calls"
+            && self.import_mappings(&r.file_path)?.iter().any(|m| m.local_name == r.reference_name)
+            && self.is_python_self_call(r)?
+            && self.python_self_skips_import(r)?;
+        let import_cand = if self_call { None } else { probe!(r, "resolve_via_import", self.resolve_via_import(r)?) };
         let import_result = self.gate_language(import_cand, r);
         let mut final_import: Option<KCand> = None;
         if let Some(c) = import_result {

@@ -163,6 +163,29 @@ from ..services import auth_service
       expect(mappings.find((m) => m.localName === 'auth_service')).toMatchObject({ source: '..services' });
       expect(extractImportMappings('src/main.py', content, 'python')).toEqual([]);
     });
+
+    it('should extract parenthesized Python from-imports', () => {
+      const content = `
+from store.base import (
+    Base,
+    helper as h,  # a comment, with a comma and a call()
+)
+"""
+from docstring import NotAnImport
+"""
+from store.rows import (Row, Col)
+`;
+
+      const rows = tryKernelExtract('src/main.py', content, 'python')?.bindings ?? [];
+      const mappings = importMappingsFromBindings(rows) ?? [];
+
+      expect(mappings.map((m) => [m.localName, m.exportedName, m.source])).toEqual([
+        ['Base', 'Base', 'store.base'],
+        ['h', 'helper', 'store.base'],
+        ['Row', 'Row', 'store.rows'],
+        ['Col', 'Col', 'store.rows'],
+      ]);
+    });
   });
 
   describe('Framework Detection', () => {

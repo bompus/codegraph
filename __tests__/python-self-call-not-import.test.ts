@@ -1,0 +1,326 @@
+/**
+ * A Python call written on the instance, `self.get_ip(request)`, is a method
+ * call even when the file also imports a function named `get_ip`. The
+ * extractor records it by its bare name, and the import strategy claimed it:
+ * django-allauth's `DefaultAccountAdapter.send_notification_mail` calling
+ * `self.get_client_ip(self.request)` was linked to `httpkit.get_client_ip`,
+ * which `adapter.py` imports, instead of the adapter's own method.
+ */
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { CodeGraph } from '../src';
+
+describe('Python self-calls do not resolve through a same-named import', () => {
+  const dirs: string[] = [];
+  let cg: CodeGraph | undefined;
+
+  afterEach(() => {
+    cg?.close();
+    cg = undefined;
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function callsIn(files: Record<string, string>): Promise<string[]> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-py-self-'));
+    dirs.push(dir);
+    for (const [rel, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), content);
+    }
+    cg = await CodeGraph.init(dir, { index: true });
+    const rows = (cg as any).db.db
+      .prepare(
+        `SELECT s.qualified_name s, t.qualified_name t, t.file_path f FROM edges e
+         JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE e.kind IN ('calls', 'instantiates')`,
+      )
+      .all() as { s: string; t: string; f: string }[];
+    return rows.map((r) => `${r.s} -> ${r.t} (${r.f})`).sort();
+  }
+
+  const httpkit = 'def get_ip(request):\n    return "1.2.3.4"\n';
+
+  it('a method calling its own same-named method through self', async () => {
+    expect(
+      await callsIn({
+        'pkg/__init__.py': '',
+        'pkg/httpkit.py': httpkit,
+        'pkg/adapter.py': [
+          'from pkg.httpkit import get_ip',
+          '',
+          '',
+          'class Adapter:',
+          '    def get_ip(self, request):',
+          '        return get_ip(request)',
+          '',
+          '    def notify(self, request):',
+          '        return self.get_ip(request)',
+          '',
+        ].join('\n'),
+      }),
+    ).toEqual([
+      // The bare call is still the imported function.
+      'Adapter::get_ip -> get_ip (pkg/httpkit.py)',
+      'Adapter::notify -> Adapter::get_ip (pkg/adapter.py)',
+    ]);
+  });
+
+  it('a method a base class in another file declares', async () => {
+    expect(
+      await callsIn({
+        'pkg/__init__.py': '',
+        'pkg/httpkit.py': httpkit,
+        'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+        'pkg/adapter.py': [
+          'from pkg.base import Base',
+          'from pkg.httpkit import get_ip',
+          '',
+          '',
+          'class Adapter(Base):',
+          '    def notify(self, request):',
+          '        return self.get_ip(request)',
+          '',
+          '    def raw(self, request):',
+          '        return get_ip(request)',
+          '',
+        ].join('\n'),
+      }),
+    ).toEqual([
+      'Adapter::notify -> Base::get_ip (pkg/base.py)',
+      'Adapter::raw -> get_ip (pkg/httpkit.py)',
+    ]);
+  });
+  it('a same-named local in another method rebinds nothing', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/httpkit.py': httpkit,
+      'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        'from pkg.httpkit import get_ip',
+        '',
+        '',
+        'class Adapter(Base):',
+        '    def cached(self, request):',
+        '        get_ip = self.__dict__.get("ip")',
+        '        return get_ip',
+        '',
+        '    def notify(self, request):',
+        '        return self.get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::notify'))).toEqual([
+      'Adapter::notify -> Base::get_ip (pkg/base.py)',
+    ]);
+  });
+
+  // The class body or an instance attribute rebinding the name to the
+  // import makes `self.get_ip()` the imported function at runtime.
+  it.each([
+    ['a class attribute', ['    get_ip = staticmethod(get_ip)', '']],
+    ['an instance attribute', ['    def __init__(self):', '        self.get_ip = get_ip', '']],
+  ])('a name %s rebinds to the import', async (_label, body) => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/httpkit.py': httpkit,
+      'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        'from pkg.httpkit import get_ip',
+        '',
+        '',
+        'class Adapter(Base):',
+        ...body,
+        '    def notify(self, request):',
+        '        return self.get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::notify'))).toEqual([
+      'Adapter::notify -> get_ip (pkg/httpkit.py)',
+    ]);
+  });
+
+  // Python's MRO for Adapter(Left, Right) with Left(Root) reaches Root
+  // before Right; a breadth-first ancestor search would pick Right.
+  it('a method two bases could supply', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'class Root:',
+        '    def get_ip(self, request):',
+        '        return "root"',
+        '',
+        '',
+        'class Left(Root):',
+        '    pass',
+        '',
+        '',
+        'class Right:',
+        '    def get_ip(self, request):',
+        '        return "right"',
+        '',
+      ].join('\n'),
+      'pkg/adapter.py': [
+        'from pkg.base import Left, Right',
+        '',
+        '',
+        'class Adapter(Left, Right):',
+        '    def notify(self, request):',
+        '        return self.get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls).toEqual(['Adapter::notify -> Root::get_ip (pkg/base.py)']);
+  });
+  // A class with more than one base leaves the choice to node order; one
+  // that unpacks its bases (`*bases`) has more than its header shows.
+  it('a method behind unpacked bases', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'class Root:',
+        '    def get_ip(self, request):',
+        '        return "root"',
+        '',
+        '',
+        'class Left(Root):',
+        '    pass',
+        '',
+        '',
+        'class Right:',
+        '    def get_ip(self, request):',
+        '        return "right"',
+        '',
+      ].join('\n'),
+      'pkg/adapter.py': [
+        'from pkg.base import Left, Right',
+        '',
+        'bases = (Left,)',
+        '',
+        '',
+        'class Adapter(*bases, Right):',
+        '    def notify(self, request):',
+        '        return self.get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls).toEqual(['Adapter::notify -> Root::get_ip (pkg/base.py)']);
+  });
+
+  // A header over several lines still ends at its colon; the body's
+  // rebinding counts.
+  it('a class header over several lines', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/httpkit.py': httpkit,
+      'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        'from pkg.httpkit import get_ip',
+        '',
+        '',
+        'class Adapter(',
+        '  Base,',
+        '):',
+        '    get_ip = staticmethod(get_ip)',
+        '',
+        '    def notify(self, request):',
+        '        return self.get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::notify'))).toEqual([
+      'Adapter::notify -> get_ip (pkg/httpkit.py)',
+    ]);
+  });
+
+  // cpython's email.message.Message imports `walk` in its class body, so
+  // `self.walk()` is that function, not the base's method it shadows.
+  it('a function the class body imports', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/iterators.py': 'def unused():\n    pass\n\n\ndef walk(self):\n    yield self\n',
+      'pkg/base.py': 'class Base:\n    def walk(self):\n        return []\n',
+      'pkg/message.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Message(Base):',
+        '    from pkg.iterators import (',
+        '        unused,  # a comment ends at its line',
+        '        walk,',
+        '    )',
+        '',
+        '    def get_charsets(self):',
+        '        return [part for part in self.walk()]',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Message::get_charsets'))).toEqual([
+      'Message::get_charsets -> walk (pkg/iterators.py)',
+    ]);
+  });
+
+  // `self` outside any class is whatever the function is later bound to;
+  // the import still names it.
+  it('a self-call outside any class', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/httpkit.py': httpkit,
+      'pkg/other.py': 'class Other:\n    def lookup(self, request):\n        return "other"\n',
+      'pkg/factory.py': [
+        'from pkg.httpkit import get_ip as lookup',
+        '',
+        '',
+        'def notify(self, request):',
+        '    return self.lookup(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('notify'))).toEqual(['notify -> get_ip (pkg/httpkit.py)']);
+  });
+  // imaplib's `raise self.error(...)` instantiates the class IMAP4 nests.
+  it('a class the calling class nests', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/helpers.py': 'def error(message):\n    return message\n',
+      'pkg/other.py': 'class Other:\n    def error(self, message):\n        return message\n',
+      'pkg/imap.py': [
+        'class IMAP4:',
+        '    class error(Exception):',
+        '        pass',
+        '',
+        '    def expunge(self):',
+        '        raise self.error("no")',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('IMAP4::expunge'))).toEqual([
+      'IMAP4::expunge -> IMAP4::error (pkg/imap.py)',
+    ]);
+  });
+  it('a class the calling class nests, nearer than an inherited method', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Base:\n    def error(self, message):\n        return message\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Adapter(Base):',
+        '    class error(Exception):',
+        '        pass',
+        '',
+        '    def expunge(self):',
+        '        raise self.error("no")',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::expunge'))).toEqual([
+      'Adapter::expunge -> Adapter::error (pkg/adapter.py)',
+    ]);
+  });
+});
