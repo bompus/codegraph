@@ -1,10 +1,10 @@
-//! codegraph-kernel — native extraction kernel (napi-rs).
+//! codegraph-kernel — native extraction kernel and reference resolver (napi-rs).
 //!
-//! Replaces ONLY the parse+extract walk inside the parse workers, behind the
-//! existing `ExtractionResult` contract. Input `(filePath, content, language)`
-//! per file; output flat typed buffers — one boundary crossing per file.
-//! Everything downstream (resolution, synthesis, frameworks, MCP) is
-//! untouched and consumes the decoded result exactly as before.
+//! Extraction replaces the parse+extract walk inside the parse workers, behind
+//! the `ExtractionResult` contract. Input `(filePath, content, language)` per
+//! file; output flat typed buffers — one boundary crossing per file.
+//! Reference resolution runs here too (`resolve/`, entered at `resolve/mod.rs`);
+//! synthesis, framework resolvers and MCP stay on the TypeScript side.
 //!
 //! Calls are synchronous by design: the existing `ParseWorkerPool` workers
 //! already parallelize per-file, so each worker thread drives its own kernel

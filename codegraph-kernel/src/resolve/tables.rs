@@ -1,17 +1,17 @@
-//! Language, kind and framework tables — ports of the TS sets in src/resolution/{index,name-matcher,frameworks}.ts — plus the fixed regexes and small predicates the resolver shares.
+//! Language, kind and framework tables — ports of the TS sets in upstream's src/resolution/{index,name-matcher,frameworks}.ts (name-matcher.ts no longer exists here; `git show upstream/main:<path>`) — plus the fixed regexes and small predicates the resolver shares.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Tables — ports of the TS sets in src/resolution/{index,name-matcher,
-// import-resolver}.ts.
+// Tables — ports of the TS sets in upstream's src/resolution/{index,
+// name-matcher,import-resolver}.ts.
 // ---------------------------------------------------------------------------
 
-/// Kernel pipeline eligibility: every language with a native walker. The
-/// first thirteen are BINDINGS_LANGUAGES (src/extraction/kernel/index.ts);
-/// the last eight emit no binding rows, so — exactly like rust before its
-/// `use` rows landed — their import mappings are empty on both engines and
-/// every arm they reach is a bindings-free join or a ported source scan.
+/// Kernel pipeline eligibility: every language with a native walker. Only
+/// the BINDINGS_LANGUAGES set (src/extraction/kernel/index.ts) emits binding
+/// rows; every other language here emits none, so — exactly like rust before
+/// its `use` rows landed — its import mappings are empty on both engines and
+/// every arm it reaches is a bindings-free join or a ported source scan.
 /// Their language-specific TS arms (receiver-type patterns, the lua `:` /
 /// r `$` receiver shapes, lua `require`) are ported below.
 pub(super) fn is_migrated_language(lang: &str) -> bool {
