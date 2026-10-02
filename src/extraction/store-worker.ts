@@ -33,6 +33,7 @@ import { createDatabase, SqliteDatabase } from '../db/sqlite-adapter';
 import { finalizeStoreBundle, type KernelStoreBundle, type StoreBundle } from './store-writer';
 import { decodeExtractBuffers } from './kernel/decode';
 import { captureLiterals } from './literal-capture';
+import { collectBeforeExit } from '../worker-teardown';
 
 if (!parentPort) {
   throw new Error('store-worker must be run as a worker thread');
@@ -146,6 +147,8 @@ port.on('message', (msg: InMessage) => {
         } catch {
           /* already closed */
         }
+        // No GC marking in flight when the thread ends (worker-teardown.ts).
+        collectBeforeExit();
         process.exit(0);
         break;
       }
