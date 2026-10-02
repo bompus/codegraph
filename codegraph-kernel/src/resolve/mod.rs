@@ -1220,12 +1220,13 @@ mod tests {
     }
 
     const RECEIVERS: [&str; 7] = ["user", "x", "my_var", "über", "Foo", "this", "req"];
-    const LINES: [&str; 20] = [
+    const LINES: &[&str] = &[
         "const user = new UserStore();",
         "let user: Foo<Bar> | null = x;",
         "user = Foo.new; user: Bar",
         "  user := &Store{}",
         "var user *pkg.Client",
+        "func f(user *Client, x int)",
         "func f(user pkg.Client, x int)",
         "Foo user = new Foo(); Bar user;",
         "private ?Foo $user;  $user = new Bar;",
@@ -1240,6 +1241,24 @@ mod tests {
         "a.user: Foo;this.user: Bar",
         "user: Foo<Bar>[]",
         "type Foo = Bar; mod user; pub(crate) mod user ;",
+        "const user = $state(new UserStore());",
+        "const user = $state.raw(new UserStore());",
+        "const user = $derived(new UserStore());",
+        "user?: UserStore;",
+        "user = Model.objects.create(); user = Model.objects.get();",
+        "user = Model.objects.first(); user = Model.objects.last();",
+        "user = Model.objects.latest(); user = Model.objects.earliest();",
+        "user = Model.objects.get_by_natural_key();",
+        "user = _Private(); holder.user = _Private();",
+        "user = Foo();\n user = _Private();",
+        "user: \"Foo\"; user: 'Bar'",
+        "Map<String, List<Foo>>[] user;",
+        "Dictionary<String, List<Foo>>[,]? user in users",
+        "let user = Foo::new(); let mut user : Foo = Bar::new();",
+        "Foo * _Nullable user; NSArray<Foo *> *user;",
+        "- (void)read:(nullable Foo *)user;",
+        "$this->user = new Repository;",
+        "user := Foo.Create;",
         "",
     ];
 
@@ -1251,24 +1270,25 @@ mod tests {
     fn affix_receiver_patterns_match_the_formatted_regexes() {
         let originals: &[(&str, &[&str])] = &[
             ("typescript", &[
-                r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
-                r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.$]*)",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(?:\$(?:state|derived)(?:\.raw)?\s*\(\s*)?new\s+([A-Za-z_$][A-Za-z0-9_.$]*)",
+                r"(?-u:\b)R(?-u:\b)\s*\??\s*:\s*([A-Z][A-Za-z0-9_.$]*)",
             ]),
             ("python", &[
-                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?m)(?:^|;)\s*R(?-u:\b)\s*=\s*([A-Z]\w*)\.objects\.(?:create|get|first|last|latest|earliest|get_by_natural_key)\s*\(",
+                r"(?m)(?:^|;)\s*R(?-u:\b)\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(",
                 r#"(?-u:\b)R(?-u:\b)\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#,
                 r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("java", &[
                 r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)",
-                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,:)]",
+                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\s+R(?-u:\b)\s*[=;,:)]",
             ]),
             ("kotlin", &[
-                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(",
                 r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("rust", &[
-                r"(?-u:\b)let\s+(?:mut\s+)?R(?-u:\b)(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
+                r"(?-u:\b)let\s+(?:mut\s+)?R(?-u:\b)(?:\s*:[^=]+)?\s*=\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
                 r"(?-u:\b)R\s*:\s*&?(?:mut\s+)?([A-Z][A-Za-z0-9_]*)",
             ]),
             ("go", &[
@@ -1286,19 +1306,23 @@ mod tests {
             ]),
             ("csharp", &[
                 r"(?-u:\b)R(?-u:\b)\s*=\s*new\s+([A-Za-z_][A-Za-z0-9_.]*)",
-                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]",
+                r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)(?:\s*<[^;=(){}<>]*(?:<[^;=(){}<>]*>[^;=(){}<>]*)*>)?(?:\s*\[[\s,]*\])*\??\s+R(?-u:\b)\s*(?:[=;,)]|in\b)",
             ]),
             ("swift", &[
-                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(",
                 r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("ruby", &[r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_:]*)\.new(?-u:\b)"]),
+            ("objc", &[
+                r"(?-u:\b)([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>;]*>\s*)?\*\s*(?:(?:_Nullable|_Nonnull|__strong|__weak|__unsafe_unretained|const)\s+)*R(?-u:\b)",
+                r"\(\s*(?:(?:nullable|nonnull|__kindof)\s+)*([A-Z][A-Za-z0-9_]*)\s*(?:<[^<>)]*>\s*)?\*[^)]*\)\s*R(?-u:\b)",
+            ]),
             ("scala", &[
                 r"(?-u:\b)R(?-u:\b)\s*=\s*(?:new\s+)?([A-Z][A-Za-z0-9_.]*)",
                 r"(?-u:\b)R(?-u:\b)\s*:\s*([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("dart", &[
-                r"(?-u:\b)R(?-u:\b)\s*=\s*([A-Z][A-Za-z0-9_.]*)\s*\(",
+                r"(?-u:\b)R(?-u:\b)\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(",
                 r"(?-u:\b)([A-Z][A-Za-z0-9_.]*)\s+R(?-u:\b)\s*[=;,)]",
             ]),
             ("lua", &[
@@ -1320,16 +1344,20 @@ mod tests {
         let mut check = |label: &str, pats: &[&str], affixes: &'static [ReceiverPattern]| {
             assert_eq!(affixes.len(), pats.len(), "{label}");
             for (pat, rp) in pats.iter().zip(affixes) {
+                let mut matches = 0usize;
                 for recv in RECEIVERS {
                     for line in LINES {
+                        let expected = regex_matches(pat, line, recv);
+                        matches += expected.len();
                         assert_eq!(
                             affix_matches(&rp.affix, line, recv),
-                            regex_matches(pat, line, recv),
+                            expected,
                             "{label} {pat:?} recv={recv:?} line={line:?}"
                         );
                         cases += 1;
                     }
                 }
+                assert!(matches > 0, "{label} {pat:?} has no positive fixture");
             }
         };
         for (lang, pats) in originals {
