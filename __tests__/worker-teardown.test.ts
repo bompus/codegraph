@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Worker } from 'worker_threads';
 import CodeGraph from '../src/index';
+import { createDatabase } from '../src/db/sqlite-adapter';
 import { terminateOnceStarted, workerStarted } from '../src/worker-teardown';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -116,8 +117,15 @@ describe('real workers are never terminated before they have started', () => {
   it('the resolver pool, torn down while its workers boot', async () => {
     vi.stubEnv('CODEGRAPH_RESOLVE_WORKERS', '2');
     const { ResolverPool } = require('../dist/resolution/resolver-pool') as typeof import('../src/resolution/resolver-pool');
-    const pool = ResolverPool.tryCreate(dbPath, root);
+    // The pool's workers resolve through a private copy of the index, as the
+    // resolver builds one before creating the pool; one without it fails to
+    // start, and nothing here waits on its readiness.
+    const snapshot = path.join(root, '.codegraph', 'kernel-snapshot.db');
+    const { db } = createDatabase(dbPath);
+    try { db.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`); } finally { db.close(); }
+    const pool = ResolverPool.tryCreate(dbPath, root, snapshot);
     expect(pool).not.toBeNull();
+    pool!.ready().catch(() => undefined);
     await pool!.destroy(0); // the close fallback fires at once, mid-boot
     expect(startedWhenEnded).toEqual([true, true]);
   }, 30_000);
