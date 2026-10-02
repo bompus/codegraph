@@ -543,6 +543,38 @@ function walkBidirectional(
   return null;
 }
 
+/** The type a member is declared on, or null for a top-level symbol. */
+function containerOf(cg: CodeGraph, id: string): string | null {
+  for (const e of cg.getIncomingEdges(id)) if (e.kind === 'contains') return e.source;
+  return null;
+}
+
+/**
+ * Whether `from` is an override calling the method it overrides — `super().m()`
+ * from `m`: the same name, declared on a type that extends the callee's type.
+ */
+function callsOwnSuper(cg: CodeGraph, from: Node, to: Node): boolean {
+  if (from.name !== to.name) return false;
+  const sub = containerOf(cg, from.id);
+  const base = containerOf(cg, to.id);
+  if (!sub || !base || sub === base) return false;
+  const seen = new Set([sub]);
+  let frontier = [sub];
+  for (let depth = 0; depth < 4 && frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const e of cg.getOutgoingEdges(id)) {
+        if (e.kind !== 'extends' || seen.has(e.target)) continue;
+        if (e.target === base) return true;
+        seen.add(e.target);
+        next.push(e.target);
+      }
+    }
+    frontier = next;
+  }
+  return false;
+}
+
 function chainTo(
   parent: Map<string, { prev: string | null; edge: Edge | null; node: Node }>,
   target: string
@@ -601,6 +633,15 @@ export function resolveNamedSymbolFlow(
         for (const id of reached) {
           const steps = chainTo(parent, id);
           if (!deepest || steps.length > deepest.length) deepest = steps;
+        }
+        // An override that hands off to the named method it overrides adds a
+        // step without adding a mechanism, and that extra step would otherwise
+        // let it outrank the flow the agent asked about. Start at the base.
+        while (
+          deepest && deepest.length > 2 && namedIds.has(deepest[1]!.node.id)
+          && callsOwnSuper(cg, deepest[0]!.node, deepest[1]!.node)
+        ) {
+          deepest = [{ node: deepest[1]!.node, edge: null }, ...deepest.slice(2)];
         }
         if (deepest) found.push(deepest);
       }
