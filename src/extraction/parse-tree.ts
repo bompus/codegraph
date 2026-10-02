@@ -23,7 +23,7 @@ export interface TreePoint {
   column: number;
 }
 
-/** The node surface shared by the wasm `Node` and the kernel facade. */
+/** The node surface the walkers read through the kernel's NativeNode facade. */
 export interface TreeNode {
   readonly id: number;
   readonly type: string;

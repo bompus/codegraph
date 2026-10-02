@@ -175,7 +175,7 @@ const treeCache = new Map<string, CachedTree>();
  */
 export const MAX_PARSE_BYTES = 256 * 1024;
 
-/** A wasm tree held above is native memory: evict explicitly (a kernel tree's delete is a no-op). */
+/** Evict through `delete()` to keep the ParsedTree contract (a kernel tree's delete is a no-op). */
 function remember(path: string, entry: CachedTree): void {
   const old = treeCache.get(path);
   if (old) old.tree.delete();

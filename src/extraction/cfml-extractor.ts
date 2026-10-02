@@ -93,7 +93,7 @@ export class CfmlExtractor {
 
   /** Legacy tag-based CFML: walk `<cfcomponent>`/`<cffunction>`, delegating `<cfscript>` bodies. */
   private extractTagBased(): void {
-    // Kernel first, wasm fallback (parse-tree.ts): the tag-aware cfml grammar
+    // Always the kernel parser (parse-tree.ts): the tag-aware cfml grammar
     // is compiled into the kernel (Phase 4b), so this walk runs on the
     // serialized native tree through the NativeNode facade.
     const tree = parseSourceTreeSync(this.source, 'cfml');
