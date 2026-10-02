@@ -1,6 +1,6 @@
-# tree-sitter-cobol.wasm — provenance & rebuild
+# COBOL grammar provenance and rebuild
 
-`src/extraction/wasm/tree-sitter-cobol.wasm` is built from
+The native grammar in `codegraph-kernel/grammars/cobol/` is generated from
 [yutaro-sakamoto/tree-sitter-cobol](https://github.com/yutaro-sakamoto/tree-sitter-cobol)
 at commit `e99dbdc3d800d5fa2796476efd60af91f6b43d93` with the patch in
 `tree-sitter-cobol.patch` applied (grammar.js + src/scanner.c; everything else
@@ -54,6 +54,15 @@ mainframe and GnuCOBOL code:
    `SECURITY.` headers.
 10. **`CALL ... GIVING`** — upstream *intended* to support it but a misnested
     `field()` call swallowed the GIVING alternative entirely.
+11. **No hang when the input ends inside the sequence area.** The scanner
+    skips columns 1-6 by advancing until column 7, but `advance()` is a no-op
+    at end of input, so a file whose last line stops in that area (`    .`,
+    `X\n    .`, a sentence closed by a short `    .` line) spun forever inside
+    the scanner — parse timeouts and a zero-symbol file when indexing. The
+    loop stops at `eof()`. The native scanner also stops at CR/LF boundaries
+    and refuses an empty sequence-area token, so a short line cannot consume
+    the next line. These native guards are documented in
+    `codegraph-kernel/grammars/PROVENANCE.md`.
 
 ## Measured parse health (at vendoring time)
 
@@ -88,41 +97,20 @@ cat > tree-sitter.json <<'JSON'
 JSON
 npm install tree-sitter-cli@0.24.5
 npx tree-sitter generate
-npx tree-sitter build --wasm -o tree-sitter-cobol.wasm   # needs emscripten or Docker
+# Copy regenerated parser.c, node-types.json and scanner.c into
+# codegraph-kernel/grammars/cobol/. Preserve the native scanner's
+# fixed-size portability arrays and EOF/CR/LF/empty-token guards.
+# Then, from the CodeGraph checkout:
+fnm exec --using codegraph npm run build:kernel
 ```
 
 The patches are written to be upstreamable — each is independent and comes
 with the failing construct documented above.
 
-## Upstreaming
+## Upstream grammar contribution
 
-Sent as [yutaro-sakamoto/tree-sitter-cobol#41](https://github.com/yutaro-sakamoto/tree-sitter-cobol/pull/41)
-(branch `real-world-cobol-sources` on the colbymchenry fork). If upstream
-merges it, the vendored wasm can track upstream releases instead of this
-patch. Until then, `git apply tree-sitter-cobol.patch` on upstream commit
-`e99dbdc3` reproduces the fork exactly. The PR body as sent:
-
-> **Parse real-world CICS/DB2 and GnuCOBOL sources**
->
-> This adds the constructs that block the grammar on production COBOL, found
-> while integrating it into a code-indexing tool. Measured on public corpora:
-> AWS CardDemo goes from 9/31 to 43/44 clean parses, CobolCraft (free-format
-> GnuCOBOL) from 0 to 17/17, NIST COBOL85 unchanged at 373/382, and the
-> existing corpus tests keep their single pre-existing failure (`comment`).
->
-> - `EXEC ... END-EXEC` blocks as an external-scanner token (`exec_statement`)
-> - Fixed-format single-quote string continuation + doubled-quote escapes
-> - `COPY ... REPLACING ==pseudo-text==` with multiple pairs
-> - `FD`/`LINKAGE SECTION` record descriptions supplied via `COPY`
-> - `NOT=`, `CALL ... GIVING` (a misnested `field()` dropped it), `FREE`,
->   `ENTRY`, `PROGRAM-ID ... IS RECURSIVE`, empty `DATE-COMPILED.` headers
-> - `FUNCTION <name>(refmod)`, `VALUE <constant>`, `PIC X(CONSTANT)`
-> - Relational and abbreviated-combined `WHEN` objects, bitwise `B-*` ops,
->   `>>` directives-as-comments, COBOL-2002 usages (`BINARY-LONG-LONG`, ...)
-> - A `copybook_fragment` entry point so standalone `.cpy` files parse
-> - An opt-in wide mode (sentinel in the first line's sequence area) that a
->   free-format preprocessor can use to relax the column-72 margin
->
-> Happy to split any of these out or adjust naming/style. Each item is
-> independent; `tree-sitter test` passes minus the one pre-existing failure.
-
+The grammar extensions were proposed in
+[yutaro-sakamoto/tree-sitter-cobol#41](https://github.com/yutaro-sakamoto/tree-sitter-cobol/pull/41).
+The vendored source and native portability/boundary guards remain the build
+inputs. The patch records the grammar changes against `e99dbdc3`; the native
+scanner also carries the guards described in `PROVENANCE.md`.

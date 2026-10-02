@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`e12f5bbb`](https://github.com/colbymchenry/codegraph/commit/e12f5bbb925b91e0fd1f641c67db34065cc6b7f4), after v1.6.1, 2026-10-01) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains all of upstream `main` (last merged: [`ec738ec7`](https://github.com/colbymchenry/codegraph/commit/ec738ec7a322a680dae39a904194ce9271e6873f), after v1.6.1, 2026-10-01) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -509,7 +509,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Express** | `app.get(...)`, `router.post(...)` with middleware chains; inline arrow and function-expression handlers, including wrapper calls |
 | **Hono / Elysia / Fastify / Koa / H3 / Hyper-Express / Bun / Effect / Vixeny** | Literal routes on each framework's app or router builder (`new Hono().get('/users', handler)`), with same-file prefixes and mounts; an imported handler is linked, an inline one contributes its direct calls. Fastify plugin files (`export default async function (fastify) { … }`) are read too, and files loaded by a literal `@fastify/autoload` registration get their directory prefix, `autoPrefix`/`prefixOverride` exports and `routeParams` folders |
 | **NestJS** | `@Controller` + `@Get/@Post/...` (with `RouterModule` prefixes, `setGlobalPrefix` and URI versioning), GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
-| **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax |
+| **Laravel** | `Route::get()`, `Route::resource()`, string class/action handlers with namespace paths, tuple syntax |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
 | **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax, `resources` / `resource` with literal `only:` / `except:` action filters, and the paths and controller modules of `namespace`, `scope`, nested resources and `member` / `collection` blocks; a Rails engine's `config/routes.rb` too |
 | **Spring** | `@GetMapping`, `@PostMapping`, `@RequestMapping` on methods |
@@ -517,7 +517,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Gin / chi / gorilla / mux** | `r.GET(...)`, `router.HandleFunc(...)` |
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods and FastEndpoints `Configure()` verb calls |
-| **Vapor** | `app.get("x", use: handler)` and closure handlers |
+| **Vapor** | `app.get("x", use: handler)` and route-owned closure body calls |
 | **Analog** | `src/app/pages/**/*.page.ts` files (`index`, dot segments, `[param]`, `[...rest]` and `(group)` names) bound to the page's default component class; a page with a same-named folder is a layout, not a route | — |
 | **Astro** | `src/pages/` file-based routes (`.astro` pages + `.ts` endpoints, `[param]`/`[...rest]` syntax); each page calls its own file's component, exported `GET`/`POST`/… endpoint methods link to their handlers, and `<a href>` / `Astro.redirect` link to the page they name |
 | **RedwoodSDK** | Literal `defineApp([...])` trees with `route`, `index`, `render`, `layout` and `prefix`, plus `{ get, post, … }` method tables; each route links to its final handler and becomes a page once that handler is shown to return JSX | — |

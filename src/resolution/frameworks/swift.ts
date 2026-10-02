@@ -8,6 +8,7 @@ import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
 import { stripCommentsForRegex } from '../strip-comments';
 import { pickByNameAndKind } from './name-heuristic';
+import { parseSourceTreeSync, type TreeNode } from '../../extraction/parse-tree';
 
 // No extract(): a SwiftUI view is its own struct node, and a UIKit controller
 // its class. A one-line `component`/`class` twin per `struct X: View` (and per
@@ -363,33 +364,62 @@ export const vaporResolver: FrameworkResolver = {
       if (handlerName) references.push({ fromNodeId: id, referenceName: handlerName, referenceKind: 'references', line, column: 0, filePath, language: 'swift' });
     }
 
-    // A route whose handler is a trailing closure — `app.get("hello") { req in … }`,
-    // `app.webSocket("chat") { req, ws in … }`, `routes.on(.GET, "x") { … }`. It has
-    // no handler symbol; the closure's calls belong to the function registering it.
-    // An HTTP client's `req.client.get("https://…") { … }` is not a route.
-    const closureRegex = /\b(\w+)\.(get|post|put|patch|delete|head|options|webSocket|on)\s*\(([^()]*)\)\s*\{/g;
-    while ((match = closureRegex.exec(safe)) !== null) {
-      const [, receiver, verb, args] = match;
-      if (/\buse:/.test(args!) || receiver === 'client' || /^\s*"https?:/.test(args!)) continue;
-      // A route registration is a statement: `if let v = req.parameters.get("x") {`
-      // opens the `if` body, not a trailing closure.
-      const lineStart = safe.lastIndexOf('\n', match.index) + 1;
-      if (!/^\s*(?:(?:try|await)\s+)*$/.test(safe.slice(lineStart, match.index))) continue;
-      let method = verb === 'webSocket' ? 'WS' : verb!.toUpperCase();
-      let segs = args!;
-      if (verb === 'on') {
-        const on = /^\s*\.([A-Z]+)\s*,?(.*)$/s.exec(args!);
-        if (!on) continue;
-        method = on[1]!;
-        segs = on[2]!;
+    // A trailing closure is the handler. Read actual call nodes so string
+    // literals, comments and adjacent declarations cannot invent route calls.
+    const tree = parseSourceTreeSync(content, 'swift');
+    try {
+      for (const call of tree?.rootNode.descendantsOfType('call_expression') ?? []) {
+        let statement = call;
+        while (statement.parent && /^(try|await)_expression$/.test(statement.parent.type)) statement = statement.parent;
+        if (statement.parent?.type !== 'statements' && statement.parent?.type !== 'source_file') continue;
+        const callee = call.namedChildren[0];
+        const suffix = call.namedChildren.find((n) => n.type === 'call_suffix');
+        const closure = suffix?.namedChildren.find((n) => n.type === 'lambda_literal');
+        const args = suffix?.namedChildren.find((n) => n.type === 'value_arguments');
+        if (!callee || callee.type !== 'navigation_expression' || !closure || !args) continue;
+        const verb = callee.namedChildren.at(-1)?.text.replace(/^\./, '').trim();
+        if (!verb || !/^(get|post|put|patch|delete|head|options|webSocket|on)$/.test(verb)) continue;
+        const builder = vaporRouteBuilder(callee.namedChildren[0]!, groupPrefix);
+        if (!builder || builder.receiver === 'client') continue;
+        const values = args.namedChildren.filter((n) => n.type === 'value_argument');
+        if (values.some((n) => /^use\s*:/.test(n.text))) continue;
+        let method = verb === 'webSocket' ? 'WS' : verb.toUpperCase();
+        if (verb === 'on') {
+          const on = /^\.([A-Z]+)$/.exec(values.shift()?.text.trim() ?? '');
+          if (!on) continue;
+          method = on[1]!;
+        }
+        const segments = values.filter((n) => n.namedChildren.length === 1 && n.namedChildren[0]?.type === 'line_string_literal').map((n) => n.text);
+        if (segments.some((s) => /^"https?:/.test(s))) continue;
+        const routePath = builder.prefix + segJoin('', segments.join(',')) || '/';
+        const line = call.startPosition.row + 1;
+        const id = `route:${filePath}:${line}:${method}:${routePath}`;
+        nodes.push({
+          id, kind: 'route', name: `${method} ${routePath}`,
+          qualifiedName: `${filePath}::route:${routePath}`, filePath,
+          startLine: line, endLine: closure.endPosition.row + 1,
+          startColumn: call.startPosition.column, endColumn: closure.endPosition.column,
+          language: 'swift', updatedAt: now,
+        });
+        // Preserve each written call so overload labels and branch sites
+        // reach resolution with their original positions.
+        const collectCalls = (node: TreeNode): void => {
+          if (/^(function|class|protocol)_declaration$/.test(node.type)) return;
+          if (node.type === 'call_expression') {
+            const head = node.namedChildren[0];
+            // A call on a computed receiver needs type inference; never turn
+            // `.get()` following `query()` into an unrelated bare `get`.
+            const name = head?.text.replace(/[\s?!]/g, '');
+            if (name && /^(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*$/.test(name)) {
+              references.push({ fromNodeId: id, referenceName: name, referenceKind: 'calls', line: node.startPosition.row + 1, column: node.startPosition.column, filePath, language: 'swift' });
+            }
+          }
+          for (const child of node.namedChildren) collectCalls(child);
+        };
+        collectCalls(closure);
       }
-      const line = safe.slice(0, match.index).split('\n').length;
-      const routePath = (groupPrefix.get(receiver!) ?? '') + segJoin('', segs) || '/';
-      nodes.push({
-        id: `route:${filePath}:${line}:${method}:${routePath}`, kind: 'route', name: `${method} ${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`, filePath, startLine: line, endLine: line,
-        startColumn: 0, endColumn: match[0].length, language: 'swift', updatedAt: now,
-      });
+    } finally {
+      tree?.delete();
     }
 
     return { nodes, references };
@@ -468,6 +498,19 @@ export const vaporResolver: FrameworkResolver = {
     return updates;
   },
 };
+
+/** A simple builder or chained `grouped` registration, keeping literal prefixes. */
+function vaporRouteBuilder(node: TreeNode, prefixes: ReadonlyMap<string, string>): { receiver: string; prefix: string } | null {
+  if (node.type === 'simple_identifier') return { receiver: node.text, prefix: prefixes.get(node.text) ?? '' };
+  if (node.type !== 'call_expression') return null;
+  const callee = node.namedChildren[0];
+  if (callee?.type !== 'navigation_expression' || callee.namedChildren.at(-1)?.text !== '.grouped') return null;
+  const base = vaporRouteBuilder(callee.namedChildren[0]!, prefixes);
+  if (!base) return null;
+  const args = node.namedChildren.find((n) => n.type === 'call_suffix')?.namedChildren.find((n) => n.type === 'value_arguments');
+  const segments = args?.namedChildren.filter((n) => n.type === 'value_argument' && n.namedChildren.length === 1 && n.namedChildren[0]?.type === 'line_string_literal') ?? [];
+  return { receiver: base.receiver, prefix: base.prefix + segments.map((n) => '/' + n.text.slice(1, -1)).join('') };
+}
 
 /** Per-enum case maps for `var path` switch resolution (see postExtract). */
 interface EnumPathInfo {

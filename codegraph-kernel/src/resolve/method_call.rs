@@ -837,6 +837,13 @@ impl KernelResolver {
     /// the btm terminal) never run here — inferred types terminal-match via
     /// rmot, and the name-similarity strategies close the arm.
     pub(super) fn match_method_call_free(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        // A route owns the handler's calls but has no receiver type of its
+        // own. Keep proven members; a name-similarity fallback can invent a
+        // call to another type's private implementation.
+        if r.language == "swift" && r.reference_kind == "calls"
+            && self.node_by_id(&r.from_node_id)?.is_some_and(|n| n.kind == "route") {
+            return self.match_method_call(r);
+        }
         // PHP `$this->prop.method` takes the declared-type path in both
         // modes (inside method_call_shape).
         let (object_or_class, method_name, inferable, dotted) = match self.method_call_shape(r)? {

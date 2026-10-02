@@ -437,3 +437,21 @@ symbol or string, `%i`/`%w` lists with brackets or parentheses, and hash-rocket
 options such as `:only => [:index, :show]`. These filters restrict which REST
 actions receive routes; namespaces, scopes, nested resources and member/collection
 blocks keep their existing path and controller rules.
+
+### Laravel string controller handlers
+
+Laravel reads string `Class@action` handlers and string resource controllers,
+including namespace paths under the controllers root. Resource options follow
+the controller argument. Exact written paths distinguish same-named controller
+classes; ambiguous or missing namespace targets remain unresolved.
+`laravel-controller-strings.test.ts` covers these through full indexing.
+
+### Vapor trailing closure handlers
+
+Vapor route closures contribute direct body-call references from the route,
+retaining each written call site and its argument labels. Route-call receiver
+inference respects local and conditional bindings; unsupported loop, guard,
+pattern and capture bindings stay unresolved instead of reusing an outer type.
+Named `use:` handlers keep their existing typed
+resolution. `vapor-closure-route-body.test.ts` checks closure ownership and
+false-positive controls through full indexing.

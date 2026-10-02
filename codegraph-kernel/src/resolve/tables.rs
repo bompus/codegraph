@@ -80,7 +80,7 @@ pub(super) fn expo_nav_re() -> Rc<Regex> {
     re!(r"(?:^|\.)(?:push|replace|navigate|dismissTo)$|^[a-z][A-Za-z]*(?:Push|Replace|Navigate)$")
 }
 pub(super) fn laravel_claim_re() -> Rc<Regex> {
-    re!(r"^[A-Za-z_][A-Za-z0-9_]*Controller@[A-Za-z0-9_]+$")
+    re!(r"^(?:[A-Za-z_][A-Za-z0-9_\\]*@[A-Za-z0-9_]+|[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z0-9_]+)+)$")
 }
 /// swift-type-visibility.ts TYPE_KINDS.
 pub(super) fn is_swift_type_kind(kind: &str) -> bool {

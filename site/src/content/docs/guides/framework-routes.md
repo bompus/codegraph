@@ -21,7 +21,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Effect v4** | `HttpRouter.add(method, path, handler)` / `.route()` from `effect/unstable/http` or its `HttpRouter` submodule |
 | **Vixeny** | Option-free `wrap()()` builders with `.get/.post/.put/.delete` or `.route({ method, path, f })` |
 | **NestJS** | `@Controller` + `@Get/@Post/...` (with `RouterModule` prefixes, `setGlobalPrefix` and URI versioning), GraphQL `@Resolver` + `@Query/@Mutation`, `@MessagePattern`/`@EventPattern`, `@SubscribeMessage` |
-| **Laravel** | `Route::get()`, `Route::resource()`, `Controller@action`, tuple syntax; `Route::prefix()` and group prefixes, and the `/api` mount of `routes/api.php` |
+| **Laravel** | `Route::get()`, `Route::resource()`, string class/action handlers with namespace paths, tuple syntax; `Route::prefix()` and group prefixes, and the `/api` mount of `routes/api.php` |
 | **Drupal** | `*.routing.yml` routes (`_controller`, `_form`, entity handlers); `hook_*` implementations in `.module`/`.theme`/`.install`/`.inc` |
 | **Rails** | `get '/x', to: 'users#index'`, hash-rocket `=>` syntax, `resources` / `resource` with literal `only:` / `except:` action filters, and the paths and controller modules of `namespace`, `scope`, nested resources and `member` / `collection` blocks; a Rails engine's `config/routes.rb` too |
 | **Spring** | `@GetMapping`, `@PostMapping`, `@RequestMapping` on methods |
@@ -29,7 +29,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Gin / chi / gorilla / mux** | `r.GET(...)`, `router.HandleFunc(...)` |
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods and FastEndpoints `Configure()` verb calls |
-| **Vapor** | `app.get("x", use: handler)` and closure handlers; `use: Controller.show` links to that type's `show` (nested types and extensions included), `use: self.index` to the collection's own |
+| **Vapor** | `app.get("x", use: handler)` and route-owned closure body calls; `use: Controller.show` links to that type's `show` (nested types and extensions included), `use: self.index` to the collection's own |
 | **React Router / Remix** | JSX/data-router pages with nested children, constant paths, `Component` and lazy module exports; literal framework-mode arrays; default Remix and registered `flatRoutes()` file pages, linked to named default components |
 | **SvelteKit** | Route component nodes, named by URL: `(group)` folders dropped, `[id=matcher]` read as `:id` |
 | **TanStack Router / Start** | Page routes plus literal `server.handlers` method tables and `createHandlers` callbacks on exported file routes; middleware is excluded from handler links |

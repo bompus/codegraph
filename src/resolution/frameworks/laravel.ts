@@ -49,7 +49,7 @@ export const laravelResolver: FrameworkResolver = {
   // pre-filter would drop them before resolve() runs (Pattern 4). Claim them —
   // same hook the django ORM / Rails routing work needed.
   claimsReference(name: string): boolean {
-    return /^[A-Za-z_][A-Za-z0-9_]*Controller@\w+$/.test(name);
+    return CONTROLLER_ACTION.test(name) || NAMESPACED_CLASS.test(name);
   },
 
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
@@ -82,8 +82,16 @@ export const laravelResolver: FrameworkResolver = {
       return null;
     }
 
+    // Pattern 5: a resource route's controller, named by string or `::class`.
+    if (ref.referenceKind === 'imports' && ref.fromNodeId.includes(':RESOURCE:')) {
+      const result = resolveControllerClass(ref.referenceName, context);
+      if (result) {
+        return { original: ref, targetNodeId: result, confidence: 0.9, resolvedBy: 'framework' };
+      }
+    }
+
     // Pattern 4: Controller method references
-    const controllerMatch = ref.referenceName.match(/^([A-Z][a-zA-Z]+Controller)@(\w+)$/);
+    const controllerMatch = ref.referenceName.match(CONTROLLER_ACTION);
     if (controllerMatch) {
       const [, controller, method] = controllerMatch;
       const result = resolveControllerMethod(controller!, method!, context);
@@ -172,7 +180,8 @@ export const laravelResolver: FrameworkResolver = {
       nodes.push(routeNode);
 
       if (handlerExpr) {
-        const controllerName = extractLaravelHandler(handlerExpr);
+        // The controller is the first argument; an options array may follow.
+        const controllerName = extractLaravelHandler(splitArgs(handlerExpr)[0] ?? handlerExpr);
         if (controllerName) {
           references.push({
             fromNodeId: routeNode.id,
@@ -463,28 +472,35 @@ function splitArgs(args: string): string[] {
 
 /**
  * Parse a Laravel route handler expression and return the symbol to link.
- *  - `[Class::class, 'method']`  -> `method`
- *  - `'Controller@method'`       -> `method`
+ *  - `[Class::class, 'method']`  -> `Class@method`
+ *  - `'Controller@method'`       -> `Controller@method`
  *  - `Class::class`              -> `Class`
  *  - anything else (closure etc) -> null
  */
 function extractLaravelHandler(expr: string): string | null {
   const trimmed = expr.trim();
-  const short = (s: string) => s.split('\\').pop()!; // strip namespace
 
   // [Class::class, 'method'] → `Class@method` (PRECISE — keep the controller, so
   // common action names like `index`/`show` resolve to the RIGHT controller, not
   // whichever one name-matching happens to pick first).
   const tupleMatch = trimmed.match(/^\[\s*([A-Za-z_\\][\w\\]*)::class\s*,\s*['"]([^'"]+)['"]\s*\]/);
-  if (tupleMatch) return `${short(tupleMatch[1]!)}@${tupleMatch[2]!}`;
+  if (tupleMatch) return `${controllerPath(tupleMatch[1]!)}@${tupleMatch[2]!}`;
 
-  // 'Controller@method' (possibly namespaced) → `Controller@method`
+  // 'Controller@method' → `Controller@method`, keeping the namespace below
+  // the controllers root: akaunting writes 'Common\Uploads@inline' for
+  // App\Http\Controllers\Common\Uploads, and a `Portal\Uploads` beside it is a
+  // different controller.
   const atMatch = trimmed.match(/^['"]([^'"@]+)@([^'"]+)['"]$/);
-  if (atMatch) return `${short(atMatch[1]!)}@${atMatch[2]!}`;
+  if (atMatch) return `${controllerPath(atMatch[1]!)}@${atMatch[2]!}`;
 
   // Class::class (Route::resource controller) → `Class`
   const classMatch = trimmed.match(/^([A-Za-z_\\][\w\\]*)::class/);
-  if (classMatch) return short(classMatch[1]!);
+  if (classMatch) return controllerPath(classMatch[1]!);
+
+  // A controller named by string — no `use` brings it in, so its namespace
+  // path below the controllers root is what finds it.
+  const stringClass = trimmed.match(/^['"]([A-Za-z_\\][\w\\]*)['"]$/);
+  if (stringClass) return controllerPath(stringClass[1]!);
 
   return null;
 }
@@ -539,38 +555,60 @@ function resolveModelCall(
 }
 
 /**
- * Resolve a Controller@method reference
+ * A route's `Controller@action`: a class name, or a namespace path under the
+ * controllers root (`Common\\Uploads`), or a fully qualified one
+ * (`Modules\\OfflinePayments\\Http\\Controllers\\Settings`).
  */
+const CONTROLLER_ACTION = /^([A-Za-z_][\w\\]*)@(\w+)$/;
+
+/** Preserve the written namespace, dropping only its optional leading separator. */
+function controllerPath(written: string): string {
+  return written.replace(/^\\+/, '');
+}
+
+/** A class written with its namespace path (`Common\\Companies`). */
+const NAMESPACED_CLASS = /^[A-Za-z_]\w*(?:\\\w+)+$/;
+
+/** Resolve a controller's written path without choosing an unrelated namespace. */
+function findController(controller: string, context: ResolutionContext): Node | null {
+  const rel = controllerPath(controller).replace(/\\/g, '/');
+  const className = rel.split('/').pop()!;
+  const classes = context.getNodesByName(className)
+    .filter((n) => n.kind === 'class' && /(?:^|\/)Controllers\//.test(n.filePath));
+  if (rel.includes('/')) {
+    // PHP namespaces, rather than a file suffix, distinguish an explicit App
+    // controller from a module whose path ends with the same relative name.
+    const qualified = (n: Node) => n.qualifiedName.replace(/::|\\/g, '/').toLowerCase();
+    const written = rel.toLowerCase();
+    const appName = `app/http/controllers/${written}`;
+    const app = written.includes('/http/controllers/') ? [] :
+      classes.filter((n) => qualified(n) === appName);
+    if (app.length > 0) return app.length === 1 ? app[0]! : null;
+    const exact = classes.filter((n) => qualified(n) === written);
+    return exact.length === 1 ? exact[0]! : null;
+  }
+  const suffix = `/${rel.toLowerCase()}.php`;
+  const exact = classes.filter((n) => `/${n.filePath.toLowerCase()}`.endsWith(suffix));
+  const conventional = exact.filter((n) => n.filePath.toLowerCase() === `app/http/controllers/${rel.toLowerCase()}.php`);
+  if (conventional.length === 1) return conventional[0]!;
+  return classes.length === 1 ? classes[0]! : null;
+}
+
+/** A resource names the controller class rather than one REST action. */
+function resolveControllerClass(controller: string, context: ResolutionContext): string | null {
+  return findController(controller, context)?.id ?? null;
+}
+
+/** Resolve the method inside the controller the route actually names. */
 function resolveControllerMethod(
   controller: string,
   method: string,
   context: ResolutionContext
 ): string | null {
-  // Try app/Http/Controllers/
-  const controllerPath = `app/Http/Controllers/${controller}.php`;
-  if (context.fileExists(controllerPath)) {
-    const nodes = context.getNodesInFile(controllerPath);
-    const methodNode = nodes.find(
-      (n) => n.kind === 'method' && n.name === method
-    );
-    if (methodNode) {
-      return methodNode.id;
-    }
-  }
-
-  // Try name-based lookup for namespaced controllers
-  const controllerCandidates = context.getNodesByName(controller);
-  for (const ctrl of controllerCandidates) {
-    if (ctrl.kind === 'class' && ctrl.filePath.includes('Controllers')) {
-      const nodesInFile = context.getNodesInFile(ctrl.filePath);
-      const methodNode = nodesInFile.find(
-        (n) => n.kind === 'method' && n.name === method
-      );
-      if (methodNode) {
-        return methodNode.id;
-      }
-    }
-  }
-
-  return null;
+  const owner = findController(controller, context);
+  if (!owner) return null;
+  const methods = context.getNodesInFile(owner.filePath).filter((n) =>
+    n.kind === 'method' && n.name === method &&
+    n.qualifiedName === `${owner.qualifiedName}::${method}`);
+  return methods.length === 1 ? methods[0]!.id : null;
 }

@@ -177,6 +177,9 @@ impl KernelResolver {
         if lines.is_empty() {
             return Ok(None);
         }
+        if site.language == "swift" && self.node_by_id(&site.from_node_id)?.is_some_and(|n| n.kind == "route") {
+            return self.infer_swift_lexical_receiver_type(&scan_receiver, site, preserve, pats, &lines);
+        }
         let call_idx = (site.line - 1).clamp(0, lines.len() as i64 - 1) as usize;
         let start_idx = if component_scoped {
             0usize
@@ -231,6 +234,105 @@ impl KernelResolver {
         }
         if php_property {
             return self.infer_php_assigned_property_type(&scan_receiver, &lines, call_idx);
+        }
+        Ok(None)
+    }
+
+    /// Swift route-call declarations belong to parsed lexical scopes, not every later
+    /// line in the registering function. Reuse the existing type patterns on
+    /// the nearest visible declaration; an untyped binding shadows outer ones.
+    fn infer_swift_lexical_receiver_type(
+        &mut self,
+        receiver: &str,
+        site: &ResolveRefIn,
+        preserve: bool,
+        pats: &'static [ReceiverPattern],
+        file: &Rc<SourceFile>,
+    ) -> Res<Option<String>> {
+        use super::iteration::{descendant_for_position, named_children};
+        let Some(tree) = self.parsed_tree(file, site) else { return Ok(None) };
+        let text = file.text();
+        let row = (site.line - 1).max(0) as usize;
+        let column = site.column.max(0) as usize;
+        let call = descendant_for_position(tree.root_node(), text, (row, column + 1));
+        let contains_receiver = |pattern: tree_sitter::Node<'_>| {
+            let mut pending = vec![pattern];
+            while let Some(name) = pending.pop() {
+                if name.kind() == "simple_identifier" && &text[name.start_byte()..name.end_byte()] == receiver { return true; }
+                pending.extend(named_children(name));
+            }
+            false
+        };
+        let mut scope = call.parent();
+        while let Some(node) = scope {
+            if matches!(node.kind(), "for_statement" | "catch_block" | "switch_entry") {
+                let children = named_children(node);
+                let in_body = children.iter().any(|n| n.kind() == "statements"
+                    && n.start_byte() <= call.start_byte() && call.end_byte() <= n.end_byte());
+                if in_body && node.kind() == "catch_block" && receiver == "error"
+                    && !children.iter().any(|n| n.kind() == "pattern") { return Ok(None); }
+                if in_body && children.into_iter().filter(|n| matches!(n.kind(), "pattern" | "switch_pattern"))
+                    .any(contains_receiver) { return Ok(None); }
+            }
+
+            if matches!(node.kind(), "statements" | "source_file" | "class_body") {
+                for declaration in named_children(node).into_iter().rev() {
+                    if declaration.end_byte() > call.start_byte() { continue; }
+                    if declaration.kind() == "guard_statement" {
+                        let children = named_children(declaration);
+                        if children.windows(2).any(|pair| pair[0].kind() == "value_binding_pattern"
+                            && pair[1].kind() == "simple_identifier"
+                            && &text[pair[1].start_byte()..pair[1].end_byte()] == receiver) { return Ok(None); }
+                    }
+                    if declaration.kind() != "property_declaration" { continue; }
+                    let patterns: Vec<_> = named_children(declaration).into_iter()
+                        .filter(|n| n.kind() == "pattern").collect();
+                    for (index, pattern) in patterns.iter().enumerate() {
+                        if contains_receiver(*pattern) {
+                            let end = patterns.get(index + 1).map_or(declaration.end_byte(), |n| n.start_byte());
+                            return self.infer_match_text(&text[pattern.start_byte()..end], receiver, pats, preserve);
+                        }
+                    }
+                }
+            }
+            if matches!(node.kind(), "if_statement" | "while_statement") {
+                let children = named_children(node);
+                if let Some(body) = children.iter().find(|n| n.kind() == "statements") {
+                    if body.start_byte() <= call.start_byte() && call.end_byte() <= body.end_byte() {
+                        let header = &text[node.start_byte()..body.start_byte()];
+                        let binds_receiver = children.windows(2).any(|pair|
+                            pair[0].kind() == "value_binding_pattern" && pair[1].kind() == "simple_identifier"
+                            && &text[pair[1].start_byte()..pair[1].end_byte()] == receiver);
+                        if binds_receiver { return self.infer_match_text(header, receiver, pats, preserve); }
+                    }
+                }
+            }
+            if matches!(node.kind(), "lambda_literal" | "function_declaration") {
+                if node.kind() == "lambda_literal" {
+                    let children = named_children(node);
+                    let in_body = children.iter().any(|n| n.kind() == "statements"
+                        && n.start_byte() <= call.start_byte() && call.end_byte() <= n.end_byte());
+                    if in_body && children.into_iter().filter(|n| n.kind() == "capture_list")
+                        .flat_map(named_children).filter(|n| n.kind() == "capture_list_item")
+                        .any(|item| named_children(item).into_iter().find(|n| n.kind() == "simple_identifier")
+                            .is_some_and(|name| &text[name.start_byte()..name.end_byte()] == receiver)) { return Ok(None); }
+                }
+                let mut parameters = if node.kind() == "lambda_literal" {
+                    named_children(node).into_iter().find(|n| n.kind() == "lambda_function_type")
+                        .map(named_children).unwrap_or_default()
+                } else { named_children(node) };
+                while let Some(parameter) = parameters.pop() {
+                    if parameter.kind() == "lambda_function_type_parameters" {
+                        parameters.extend(named_children(parameter));
+                    } else if matches!(parameter.kind(), "parameter" | "lambda_parameter") {
+                        let name = named_children(parameter).into_iter().rfind(|n| n.kind() == "simple_identifier");
+                        if name.is_some_and(|name| &text[name.start_byte()..name.end_byte()] == receiver) {
+                            return self.infer_match_text(&text[parameter.start_byte()..parameter.end_byte()], receiver, pats, preserve);
+                        }
+                    }
+                }
+            }
+            scope = node.parent();
         }
         Ok(None)
     }

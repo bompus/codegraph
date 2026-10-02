@@ -843,6 +843,14 @@
             {/if}
           {/each}
         </p>
+        {#if payload.steps.length === 1 && payload.truncated.steps === 0 && payload.truncated.hubs === 0 && payload.truncated.chrome === 0 && !payload.steps[0]?.cut}
+          <p>
+            Within the selected depth, this symbol reaches no reply, database, queue, network or
+            other {kindWord('screen', payload.project)} that the picture draws. Calls between plain functions
+            fold into the lines between steps, so a helper that only computes appears alone.
+            {#if payload.anchor}<a href={symbolHref(payload.anchor.id)}>View callers and callees</a>{/if}
+          </p>
+        {/if}
         {#if readAs === 'order'}
           <p class="dim">
             <span class="mark">●</span> The anchor is at the top, and each row down is what happens next: a line

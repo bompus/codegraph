@@ -158,3 +158,10 @@ The one thing it writes is a trail you asked it to save, as JSON under `.codegra
 It sends nothing anywhere — no code, no paths, no analytics. The page in your browser talks only to the server on your own machine, and that server makes no outbound connections at all. See [Telemetry](https://github.com/colbymchenry/codegraph/blob/main/TELEMETRY.md) for the complete picture.
 
 The viewer reads an index that already exists, so run [`codegraph init`](/codegraph/guides/indexing/) in the project first.
+
+## A single step
+
+When Steps shows only its starting symbol and the walk is complete, the side
+panel explains that it found no reply, database, queue, network or other screen
+within the selected depth. Calls between plain functions fold into the lines
+between steps. Follow **View callers and callees** to inspect those calls.

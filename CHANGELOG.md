@@ -83,6 +83,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Laravel string handlers retain namespace paths and resolve controller names without a `Controller` suffix, including resource routes with options.
+- Vapor routes with trailing closure handlers now link to the calls in that handler body.
+
 - Kotlin receiver types carry through declared factory returns, compatible property extensions and verified receiver-preserving fluent methods. Same-name methods on incompatible types are rejected.
 
 - Kotlin nested and multiline return chains keep the callee position and declared return type. Imported return-type hypotheses with an unknown receiver are capped before candidate ranking, so a stronger framework candidate can win. Re-index to refresh call positions.
