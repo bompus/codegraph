@@ -70,11 +70,13 @@ const MAX_SCALED_PARSE_TIMEOUT_MS = 20_000;
 const HARD_KILL_MULTIPLIER = 3;
 /**
  * How long `destroy()` waits for a worker that has not yet reported
- * 'grammars-loaded' before terminating it anyway. Upstream added this because
- * terminating a worker mid WebAssembly grammar compile crashed the process on
- * Windows (0xC0000005). This worker compiles no WebAssembly and answers as soon
- * as its modules have loaded (the kernel loads on its first parse), so here the
- * wait only spans that boot; the cap bounds a boot that is wedged.
+ * 'grammars-loaded' before terminating it anyway. The worker sends that once its
+ * modules have loaded (the kernel itself loads on the first parse). Terminating
+ * a worker while it is still loading its modules can take the whole process
+ * down with an access violation (0xC0000005, seen on Windows): a pool torn down
+ * right after a short index often has a late-spawned worker in exactly that
+ * state. A start finishes in well under a second normally and a few seconds
+ * under heavy load; the cap only bounds a start that is wedged.
  */
 const GRAMMAR_LOAD_SETTLE_MS = 15_000;
 /**
