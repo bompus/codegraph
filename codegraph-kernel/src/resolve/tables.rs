@@ -1131,6 +1131,12 @@ mod tests {
 
     #[test]
     fn deeply_nested_rust_use_does_not_overflow_the_stack() {
+        // Compile the shared regexes on the test thread. The small stack
+        // checks nesting safety, independent of regex compiler stack usage.
+        assert_eq!(
+            collect_rust_use_bindings("use warmup::Leaf;\n").get("Leaf").map(String::as_str),
+            Some("warmup::Leaf"),
+        );
         let depth = 3000;
         let src = format!("use {}leaf{};\n", "m::{".repeat(depth), "}".repeat(depth));
         let path = std::thread::Builder::new()
