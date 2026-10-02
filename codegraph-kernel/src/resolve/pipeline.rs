@@ -148,6 +148,100 @@ impl KernelResolver {
     /// resolveOneInner for non-bare refs, arms in the original TS order. A
     /// bound-receiver claim is terminal — a refusal never falls through to
     /// name matching.
+    /// resolvePhpQualifiedClassRef (import-resolver.ts, #2256): a PHP class
+    /// name written with a namespace in it — `new Field\FirstName()` through
+    /// `use App\Fields as Field;`, `extends Sub\Base`, `\Ns\X::make()`. A
+    /// leading `\` is absolute; otherwise a first segment a `use` imports is
+    /// replaced by what it imports, and any other name is relative to the
+    /// namespace in effect at the ref. None leaves the ref to the later arms
+    /// (not a qualified class name, a type mention naming no single class, or
+    /// a member the class inherits); Some carries the terminal outcome, an
+    /// unresolved one when no single project class has the name.
+    fn resolve_php_qualified_class(&mut self, r: &ResolveRefIn) -> Res<Option<ResolveOutcome>> {
+        if r.language != "php" {
+            return Ok(None);
+        }
+        let (name, member) = if r.reference_kind == "calls" {
+            let Some(call) = php_qualified_static_call_re().captures(&r.reference_name) else {
+                return Ok(None);
+            };
+            (call.get(1).unwrap().as_str().to_string(), Some(call.get(2).unwrap().as_str().to_string()))
+        } else if matches!(r.reference_kind.as_str(), "instantiates" | "extends" | "implements" | "references") {
+            (r.reference_name.clone(), None)
+        } else {
+            return Ok(None);
+        };
+        let Some(separator) = name.find('\\') else {
+            return Ok(None);
+        };
+        let fqn = if separator == 0 {
+            name[1..].to_string()
+        } else {
+            let head = &name[..separator];
+            let imported = self
+                .import_mappings(&r.file_path)?
+                .iter()
+                .find(|i| i.local_name == head)
+                .map(|i| i.source.trim_start_matches('\\').to_string());
+            match imported {
+                Some(source) => format!("{source}{}", &name[separator..]),
+                None => {
+                    // `namespace App;` applies until the next namespace statement.
+                    let namespace = self
+                        .nodes_in_file(&r.file_path)?
+                        .iter()
+                        .filter(|n| n.kind == "namespace" && n.start_line <= r.line)
+                        .max_by_key(|n| n.start_line)
+                        .map(|n| n.qualified_name.clone());
+                    match namespace {
+                        Some(ns) => format!("{ns}\\{name}"),
+                        None => name.clone(),
+                    }
+                }
+            }
+        };
+        let qualified_name = match fqn.rfind('\\') {
+            Some(cut) => format!("{}::{}", &fqn[..cut], &fqn[cut + 1..]),
+            None => fqn,
+        };
+        let classes: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(&qualified_name)?
+            .iter()
+            .filter(|n| n.language == "php" && is_static_member_container(&n.kind))
+            .cloned()
+            .collect();
+        // A type mention can name something other than a class (a namespaced
+        // constant or function), so it keeps the ordinary arms.
+        if classes.len() != 1 {
+            return Ok((r.reference_kind != "references").then(ResolveOutcome::unresolved));
+        }
+        let owner = classes[0].clone();
+        let target = match member {
+            None => owner,
+            Some(member) => {
+                let methods: Vec<Arc<KNode>> = self
+                    .nodes_by_qualified_name(&format!("{}::{member}", owner.qualified_name))?
+                    .iter()
+                    .filter(|n| n.language == "php" && n.kind == "method" && n.file_path == owner.file_path)
+                    .cloned()
+                    .collect();
+                // A method the class inherits is left to the arms that walk supertypes.
+                if methods.len() != 1 {
+                    return Ok(None);
+                }
+                methods[0].clone()
+            }
+        };
+        let cand = KCand { node: target, confidence: 0.95, resolved_by: "import" };
+        let Some(cand) = self.gate_language(Some(cand), r) else {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        };
+        match self.gate_target_kind(cand, r)? {
+            Some(winner) => self.finish_pre_framework(r, winner).map(Some),
+            None => Ok(Some(ResolveOutcome::unresolved())),
+        }
+    }
+
     pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
@@ -165,6 +259,11 @@ impl KernelResolver {
                 },
                 None => Ok(ResolveOutcome::unresolved()),
             };
+        }
+        // A PHP class written with a namespace in it answers ahead of the
+        // prefilter, which would drop most of them (#2256).
+        if let Some(outcome) = self.resolve_php_qualified_class(r)? {
+            return Ok(outcome);
         }
         // Prefilter — `existenceName` strips arkts' leading '.';
         // matchJsStoreBindingCall needs a dot-free name, so a non-bare

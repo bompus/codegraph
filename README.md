@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`fdc7754a`](https://github.com/colbymchenry/codegraph/commit/fdc7754a72065ac9a06702aa32ee3bf116a0658f) (after v1.6.1, merged 2026-10-02) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`a5184ed5`](https://github.com/colbymchenry/codegraph/commit/a5184ed5d4cb4bb0a3341cdc1afdec0016152dc7) (after v1.6.1, merged 2026-10-02) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -1014,7 +1014,7 @@ is written):
 | Rust | `.rs` | Full support |
 | Java | `.java` | Full support |
 | C# | `.cs` | Full support |
-| PHP | `.php` | Full support |
+| PHP | `.php`, `.inc` | Full support (see Pascal for `.inc` include files) |
 | Ruby | `.rb` | Full support |
 | C | `.c`, `.h` | Full support |
 | C++ | `.cpp`, `.hpp`, `.cc` | Full support |
@@ -1029,7 +1029,7 @@ is written):
 | Vue | `.vue` | Full support (script + script-setup extraction with component ownership, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
 | Astro | `.astro` | Full support (component-owned frontmatter + browser-script extraction, template component/call references, `src/pages/` routes) |
 | Liquid | `.liquid` | Full support |
-| Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX form files) |
+| Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr`, `.inc` | Full support (classes, records, interfaces, enums, DFM/FMX form files; a `.inc` include is Pascal when it has no PHP open tag and reads as Pascal, unless `codegraph.json` maps `.inc`) |
 | Lua | `.lua` | Full support (functions, methods with receivers, local variables, `require` imports, call edges) |
 | R | `.R` `.r` | Full support (functions in every assignment form, S4/R5/R6 classes with methods, `library`/`require` imports, `source()` file references, call edges) |
 | Luau | `.luau` | Full support (everything in Lua, plus `type`/`export type` aliases, typed signatures, and Roblox instance-path `require`) |

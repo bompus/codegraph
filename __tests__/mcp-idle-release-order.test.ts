@@ -64,11 +64,11 @@ describe('idle release order (#2087)', () => {
       expect((await done).content[0]!.text).toContain('path exceeds maximum length');
     };
 
-    await call('a'); // t=10: A in use, its catch-up still running
+    await call('a'); // A used at t=0, its catch-up still running
     await vi.advanceTimersByTimeAsync(1490);
-    await call('b'); // t=1510: the timer is armed for B, due at 4510
+    await call('b'); // B used at t=1500: the timer is armed for B, due at 4500
     await vi.advanceTimersByTimeAsync(990);
-    settleA(); // t=2510: A is due at 3010, which the 1 s floor moves to 3510
+    settleA(); // t=2500: A is due at 3000, which the 1 s floor moves to 3500
     await vi.advanceTimersByTimeAsync(1100);
     expect(released).toEqual(['a']);
     await vi.advanceTimersByTimeAsync(1000);

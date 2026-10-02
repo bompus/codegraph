@@ -2265,6 +2265,14 @@ export class CodeGraph {
   }
 
   /**
+   * Whether the index holds any file under `dir`, a project-relative POSIX
+   * directory (e.g. `packages/api`).
+   */
+  hasFilesUnder(dir: string): boolean {
+    return this.queries.hasFilesUnder(dir);
+  }
+
+  /**
    * Get all tracked files
    */
   getFiles(): FileRecord[] {

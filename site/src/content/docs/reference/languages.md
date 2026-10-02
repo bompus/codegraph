@@ -14,7 +14,7 @@ Language support is automatic from the file extension — there's nothing to con
 | Rust | `.rs` | Full support |
 | Java | `.java` | Full support |
 | C# | `.cs` | Full support |
-| PHP | `.php` | Full support |
+| PHP | `.php`, `.inc` | Full support (see Pascal for `.inc` include files) |
 | Ruby | `.rb` | Full support |
 | C | `.c`, `.h` | Full support |
 | C++ | `.cpp`, `.hpp`, `.cc` | Full support |
@@ -27,7 +27,7 @@ Language support is automatic from the file extension — there's nothing to con
 | Vue | `.vue` | Full support (script + script-setup with component ownership, Options API methods, computed properties, watchers and lifecycle hooks, Nuxt page/API/middleware routes) |
 | Astro | `.astro` | Full support (component-owned frontmatter + browser-script extraction, template component/call references, `src/pages/` routes) |
 | Liquid | `.liquid` | Full support |
-| Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX forms) |
+| Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr`, `.inc` | Full support (classes, records, interfaces, enums, DFM/FMX forms; a `.inc` include is Pascal when it has no PHP open tag and reads as Pascal, unless `codegraph.json` maps `.inc`) |
 | Lua | `.lua` | Full support (functions, methods, locals, `require` imports, call edges) |
 | R | `.R`, `.r` | Full support (functions, S4/R5/R6 classes with methods, `library`/`require` imports, `source()` file references, call edges) |
 | Luau | `.luau` | Full support (Lua, plus typed signatures, `type` aliases, Roblox `require`) |

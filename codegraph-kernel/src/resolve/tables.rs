@@ -189,6 +189,11 @@ pub(super) static CONSTRUCTS_VIA_BARE_CALL: LazyLock<HashSet<&'static str>> =
 pub(super) fn php_static_call_re() -> Rc<Regex> {
     re!(r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$")
 }
+/// resolvePhpQualifiedClassRef's static-call shape — a namespaced class and a
+/// member, `^(.*\\[^\\.:]+)(?:\.|::)(\w+)$`.
+pub(super) fn php_qualified_static_call_re() -> Rc<Regex> {
+    re!(r"^(.*\\[^\\.:]+)(?:\.|::)([A-Za-z0-9_]+)$")
+}
 
 /// RUST_NON_PROJECT_FIELD_TYPES (name-matcher.ts): primitives and prelude
 /// types — a field of one never names a project type.
