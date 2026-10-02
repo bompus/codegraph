@@ -82,6 +82,21 @@ const MAX_CONCURRENT_SPAWN = 2;
  * immediately disabling recovery for the remaining files.
  */
 const CRASH_BUDGET = 100;
+/** Rejection prefix for a parse whose worker died. */
+const WORKER_DIED = 'Parse worker died';
+/** Rejection prefix for a parse killed at the hard-timeout backstop. */
+const TIMED_OUT = 'Parse timed out';
+
+/**
+ * Whether a parse failure lost its worker or hung: the failures the
+ * orchestrator's retry pass re-attempts on a fresh worker. Node reports a
+ * dying worker through `error` (uncaught exception, heap exhaustion) or
+ * `exit` (non-zero code), whichever fires first; both reject with the same
+ * prefix.
+ */
+export function isRetryableParseFailure(message: string): boolean {
+  return message.startsWith(WORKER_DIED) || message.startsWith(TIMED_OUT);
+}
 
 /**
  * Resolve the pool size from the `CODEGRAPH_PARSE_WORKERS` override and the
@@ -280,8 +295,8 @@ export class ParseWorkerPool {
     this.pending.add(w);
     this.parseCounts.set(w, 0);
     w.on('message', (m) => this.onMessage(w, (m ?? {}) as ParseWorkerMessage));
-    w.on('error', (e) => this.onWorkerGone(w, `Worker error: ${e?.message ?? 'unknown'}`));
-    w.on('exit', (code) => { if (code !== 0) this.onWorkerGone(w, `Worker exited with code ${code}`); });
+    w.on('error', (e) => this.onWorkerGone(w, `${WORKER_DIED}: ${e?.message ?? 'unknown error'}`));
+    w.on('exit', (code) => { if (code !== 0) this.onWorkerGone(w, `${WORKER_DIED}: exited with code ${code}`); });
     // Readiness handshake; the worker replies 'grammars-loaded' and only then is idle.
     w.postMessage({ type: 'load-grammars', languages: this.languages });
   }
@@ -399,12 +414,12 @@ export class ParseWorkerPool {
     this.log(`TIMEOUT: ${job.task.filePath} got no result after ${totalMs}ms — killing worker`);
     // Terminate the unresponsive worker and reject this parse. A timeout isn't a
     // crash — don't charge the budget — but the worker is gone, so spawn a
-    // replacement to keep capacity. The rejection message contains "timed out"
-    // so the orchestrator's retry pass re-attempts the file.
+    // replacement to keep capacity. isRetryableParseFailure selects the
+    // rejection, so the orchestrator's retry pass re-attempts the file.
     this.removeWorker(w);
     this.inflight.delete(w);
     try { void w.terminate(); } catch { /* already gone */ }
-    this.settle(job, undefined, new Error(`Parse timed out after ${totalMs}ms`));
+    this.settle(job, undefined, new Error(`${TIMED_OUT} after ${totalMs}ms`));
     if (this.healthy) this.spawnOne();
     this.drain();
   }

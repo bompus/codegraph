@@ -690,12 +690,6 @@ export class TreeSitterExtractor {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
 
-      // Let the worker report memory-related exceptions as a file-level
-      // parse_error. This bypasses the generic extractor's partial-result path.
-      if (msg.includes('memory access out of bounds') || msg.includes('out of memory')) {
-        throw error;
-      }
-
       this.errors.push({
         message: `Parse error: ${msg}`,
         filePath: this.filePath,
