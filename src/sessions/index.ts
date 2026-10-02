@@ -431,6 +431,7 @@ export function projectRemotes(projectRoot: string): string[] {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     return [...new Set(out.split('\n').map((l) => l.split(' ')[1]).filter(Boolean).map((u) => normalizeRemote(u!)))];
   } catch {

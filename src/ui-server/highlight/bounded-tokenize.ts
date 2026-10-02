@@ -33,7 +33,9 @@ function retire(outcome: BoundedTokenize): Promise<void> {
 
 function ensureChild(file: string): ChildProcess {
   if (child) return child;
-  const c = fork(file, [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [] });
+  // fork() passes its options on to spawn(), which reads windowsHide; ForkOptions
+  // just doesn't declare it, hence the spread.
+  const c = fork(file, [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [], ...{ windowsHide: true } });
   c.unref();
   c.channel?.unref();
   c.on('message', (msg: { id: number; result: TokenizeResult | null }) => {

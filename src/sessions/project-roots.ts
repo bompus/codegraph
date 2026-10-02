@@ -39,6 +39,7 @@ export function projectWorktreeRoots(projectRoot: string): string[] {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     for (const line of out.split('\n')) {
       if (!line.startsWith('worktree ')) continue;

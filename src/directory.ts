@@ -1078,3 +1078,13 @@ export function validateDirectory(projectRoot: string): {
     errors,
   };
 }
+
+/**
+ * Claude Code hands a subagent's report back to the parent session as a
+ * `<agent-message from="…">…</agent-message>` prompt, which UserPromptSubmit
+ * hooks also receive (#2184). Only a prompt that is entirely that envelope is
+ * skipped; a user question that mentions the marker is still a prompt.
+ */
+export function isAgentMessage(prompt: string): boolean {
+  return /^\s*<agent-message(?:\s[^>]*)?>[\s\S]*<\/agent-message>\s*$/.test(prompt);
+}

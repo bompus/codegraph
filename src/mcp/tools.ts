@@ -2137,20 +2137,20 @@ function canonicalPath(p: string): string {
 export const MAX_CACHED_PROJECTS = 8;
 
 /**
- * How long an explicit-`projectPath` project may go unqueried before the
- * handler releases it. A cached project can hold that project's writer lock
- * (#1835), so a long-lived daemon that was asked about another checkout once
- * would otherwise keep that checkout's own daemon from starting for as long as
- * it lives. Releasing costs the next query a reopen + catch-up.
- * `CODEGRAPH_PROJECT_IDLE_RELEASE_MS` overrides it; `0` keeps projects until
- * LRU eviction or shutdown.
+ * How long an explicit-`projectPath` project may go unused before the handler
+ * releases it (#2087). Releasing frees its SQLite handle, its watcher and the
+ * writer lock the engine may hold on that project — which otherwise stays held
+ * for the whole life of this daemon, locking the project's own daemon and
+ * `codegraph index` out. The next call reopens it and catches up.
+ * `CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS` overrides it; `0` never releases.
  */
-export const DEFAULT_PROJECT_IDLE_RELEASE_MS = 600_000;
-
-export function resolveProjectIdleReleaseMs(raw = process.env.CODEGRAPH_PROJECT_IDLE_RELEASE_MS): number {
-  if (raw === undefined || raw === '') return DEFAULT_PROJECT_IDLE_RELEASE_MS;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PROJECT_IDLE_RELEASE_MS;
+const DEFAULT_PROJECT_IDLE_TIMEOUT_MS = 600_000;
+function resolveProjectIdleTimeoutMs(): number {
+  const raw = process.env.CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_PROJECT_IDLE_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PROJECT_IDLE_TIMEOUT_MS;
+  return Math.floor(n);
 }
 
 /**
@@ -2178,10 +2178,10 @@ export class ToolHandler {
   // CANONICAL (realpath) index root. Map insertion order doubles as LRU order:
   // a hit re-inserts, and `MAX_CACHED_PROJECTS` bounds the size (#1835).
   private projectCache: Map<string, CodeGraph> = new Map();
-  // When each cached root was last queried; idle ones are released (see
-  // DEFAULT_PROJECT_IDLE_RELEASE_MS). The default project is never cached.
-  private projectLastUsed: Map<string, number> = new Map();
-  private projectIdleSweep: NodeJS.Timeout | null = null;
+  // When each cached root was last handed to a call, and the one timer that
+  // releases the oldest once it has been idle long enough (#2087).
+  private projectUsedAt: Map<string, number> = new Map();
+  private idleReleaseTimer: NodeJS.Timeout | null = null;
   // Engine hook that watches + catches up an explicit project (null for the
   // CLI and worker-thread handlers, which never own a watcher).
   private projectLifecycle: ProjectLifecycle | null = null;
@@ -2552,7 +2552,7 @@ export class ToolHandler {
       // Refresh LRU position.
       this.projectCache.delete(canonicalRoot);
       this.projectCache.set(canonicalRoot, cached);
-      this.projectLastUsed.set(canonicalRoot, Date.now());
+      this.projectUsedAt.set(canonicalRoot, Date.now());
       return this.freshen(cached);
     }
 
@@ -2562,7 +2562,7 @@ export class ToolHandler {
       if (isSameIndexRoot(root, resolvedRoot)) {
         this.projectCache.delete(root);
         this.projectCache.set(root, open);
-        this.projectLastUsed.set(root, Date.now());
+        this.projectUsedAt.set(root, Date.now());
         return this.freshen(open);
       }
     }
@@ -2570,8 +2570,7 @@ export class ToolHandler {
     const open = () => loadCodeGraph().openSync(canonicalRoot);
     const cg = this.projectLifecycle?.open(canonicalRoot, open) ?? open();
     this.projectCache.set(canonicalRoot, cg);
-    this.projectLastUsed.set(canonicalRoot, Date.now());
-    this.armProjectIdleSweep();
+    this.projectUsedAt.set(canonicalRoot, Date.now());
     this.trimProjects();
     return cg;
   }
@@ -2591,26 +2590,21 @@ export class ToolHandler {
     await this.awaitCatchUpGate(gate);
   }
 
-  /** Release cached projects idle past the TTL even when no tool call arrives. */
-  private armProjectIdleSweep(): void {
-    const idleMs = resolveProjectIdleReleaseMs();
-    if (this.projectIdleSweep || idleMs === 0) return;
-    this.projectIdleSweep = setInterval(() => this.trimProjects(), Math.min(idleMs, 60_000));
-    this.projectIdleSweep.unref();
-  }
-
-  /** Never evict a graph while a tool call or its timed-out reconcile uses it. */
+  /**
+   * Never evict a graph while a tool call or its timed-out reconcile uses it.
+   * Evicts over the LRU bound, on close, and once idle past the timeout
+   * (#2087). The cache is in last-use order, so idle entries lead it.
+   */
   private trimProjects(): void {
     if (this.activeCalls > 0) return;
-    const idleMs = resolveProjectIdleReleaseMs();
+    const idleMs = resolveProjectIdleTimeoutMs();
     const now = Date.now();
-    // Map order is LRU order, so the idle entries come first.
     for (const [root, cg] of this.projectCache) {
-      const idle = idleMs > 0 && now - (this.projectLastUsed.get(root) ?? now) >= idleMs;
+      const idle = idleMs > 0 && now - (this.projectUsedAt.get(root) ?? now) >= idleMs;
       if (!this.closing && this.projectCache.size <= MAX_CACHED_PROJECTS && !idle) break;
       if (this.projectGates.has(cg)) continue;
       this.projectCache.delete(root);
-      this.projectLastUsed.delete(root);
+      this.projectUsedAt.delete(root);
       if (this.projectLifecycle) {
         this.pendingCloses++;
         void Promise.resolve(this.projectLifecycle.release(cg)).finally(() => {
@@ -2619,12 +2613,32 @@ export class ToolHandler {
         });
       } else cg.close();
     }
-    if (this.projectCache.size === 0 && this.projectIdleSweep) {
-      clearInterval(this.projectIdleSweep);
-      this.projectIdleSweep = null;
-    }
     if (this.closing && this.projectCache.size === 0 && this.pendingCloses === 0) {
       for (const resolve of this.closeWaiters.splice(0)) resolve();
+    }
+    this.scheduleIdleRelease(idleMs);
+  }
+
+  /**
+   * Arm one unref'd timer for the oldest project a trim could release. A
+   * project whose catch-up is still running is trimmed when that settles; the
+   * 1s floor keeps a project a trim must skip from re-arming in a tight loop.
+   * Every trim re-arms, so an older project whose catch-up settles after a
+   * newer one armed the timer keeps its own deadline.
+   */
+  private scheduleIdleRelease(idleMs: number): void {
+    if (this.idleReleaseTimer) clearTimeout(this.idleReleaseTimer);
+    this.idleReleaseTimer = null;
+    if (this.closing || idleMs <= 0) return;
+    for (const [root, cg] of this.projectCache) {
+      if (this.projectGates.has(cg)) continue;
+      const due = (this.projectUsedAt.get(root) ?? Date.now()) + idleMs - Date.now();
+      this.idleReleaseTimer = setTimeout(() => {
+        this.idleReleaseTimer = null;
+        this.trimProjects();
+      }, Math.min(Math.max(due, 1000), 0x7fffffff)); // setTimeout's 32-bit cap
+      this.idleReleaseTimer.unref();
+      return;
     }
   }
 
@@ -2660,6 +2674,8 @@ export class ToolHandler {
   closeAll(): Promise<void> {
     this.closing = true;
     this.worktreeMismatchCache.clear();
+    if (this.idleReleaseTimer) clearTimeout(this.idleReleaseTimer);
+    this.idleReleaseTimer = null;
     this.trimProjects();
     if (this.projectCache.size === 0 && this.activeCalls === 0 && this.pendingCloses === 0) return Promise.resolve();
     return new Promise((resolve) => this.closeWaiters.push(resolve));
@@ -9002,6 +9018,7 @@ export class ToolHandler {
       }
     }
 
+    // Text only, for the same reason as the stale-answer path (#2088).
     return this.textResult(lines.join('\n'));
   }
 

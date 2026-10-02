@@ -53,7 +53,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, isHostNotification, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
+import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, isHostNotification, isAgentMessage, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
@@ -1603,7 +1603,8 @@ program
       // Keywords fire on their own; a token or prose word is only a CANDIDATE
       // verified against the graph below, so a tech brand ("JavaScript") that
       // merely looks like code doesn't inject spurious context.
-      if (isHostNotification(prompt)) { gate('noop-notification'); return; }
+      // Host notifications and subagent hand-backs (#2184) are not user prompts.
+      if (isHostNotification(prompt) || isAgentMessage(prompt)) { gate('noop-notification'); return; }
       const keyworded = hasStructuralKeyword(prompt);
       // "review my changes", `main..HEAD`: explore answers these from the diff,
       // so a confirmed change question gets the full injection like a keyword.

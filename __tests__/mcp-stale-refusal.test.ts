@@ -149,6 +149,7 @@ describe('a degraded index names changed files and still answers (#1959)', () =>
     expect(raw._cgAnswerFiles!.length).toBeGreaterThan(200);
     const result = await handler.execute('codegraph_impact', { symbol: 'alphaOnly' });
     expect(result.isError).toBeFalsy();
+    expect(result).not.toHaveProperty('structuredContent');
     const text = result.content[0].text;
     expect(text).toContain('validation budget');
     expect(text).toContain('alphaOnly');

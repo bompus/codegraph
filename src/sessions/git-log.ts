@@ -18,6 +18,7 @@ function git(root: string, args: string[]): string | null {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
     });
   } catch {
     return null;

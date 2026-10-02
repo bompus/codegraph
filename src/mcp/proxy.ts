@@ -30,6 +30,7 @@ import { CodeGraphPackageVersion } from './version';
 import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
+import { ErrorCodes } from './transport';
 import { ExploreSessionState } from './explore-session-state';
 import { getTelemetry, ClientInfo } from '../telemetry';
 import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
@@ -333,11 +334,13 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       } else if (msg.method === 'prompts/list') {
         writeClient({ jsonrpc: '2.0', id: msg.id, result: { prompts: [] } });
       } else if (msg.method === 'server/discover' && msg.id !== undefined) {
-        // A dual-era client (Claude Code) probes this before `initialize` and
-        // holds the handshake until it hears back. Method-not-found is the
-        // legacy-server answer that sends it to `initialize`; forwarded, the
-        // probe waited on the daemon connection, about 6 s when it was down.
-        writeClient({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found: server/discover' } });
+        // Dual-era clients (Claude Code, Antigravity 2.5) probe this before
+        // `initialize` and wait for the answer. Method-not-found is the
+        // legacy-server answer that sends them on to `initialize`. Answer
+        // locally: forwarded, the probe waited on the daemon connection (about
+        // 6 s when it was down) and was lost if the client closed stdin first.
+        // (#2084)
+        writeClient({ jsonrpc: '2.0', id: msg.id, error: { code: ErrorCodes.MethodNotFound, message: 'Method not found: server/discover' } });
       } else {
         routeToDaemon(line);
       }

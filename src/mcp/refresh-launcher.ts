@@ -69,6 +69,7 @@ class Backend {
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
         env: {
           ...process.env,
           [HOST_PPID_ENV]: String(parseHostPpid(process.env[HOST_PPID_ENV]) ?? EARLY_PPID),
