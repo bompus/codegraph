@@ -62,9 +62,9 @@ Distributed as `@colbymchenry/codegraph` on npm; same binary serves as installer
 ### Layered pipeline
 
 ```
-files → ExtractionOrchestrator (tree-sitter) → DB (nodes/edges/files)
+files → ExtractionOrchestrator → codegraph-kernel walkers (Rust, tree-sitter) → DB (nodes/edges/files)
               ↓
-       ReferenceResolver (imports, name-matching, framework patterns)
+       KernelResolver (codegraph-kernel/src/resolve) → framework resolvers + synthesizers (src/resolution)
               ↓
        GraphQueryManager / GraphTraverser (callers, callees, impact)
               ↓
@@ -77,7 +77,8 @@ The public API surface is `src/index.ts`, which re-exports types and the `CodeGr
 
 - `src/index.ts` is the public library API; `src/codegraph.ts` is the `CodeGraph` class that wires the system together.
 - `src/db/` owns the `node:sqlite` database, schema, and prepared queries. Source development requires Node 22.13 or newer (or Bun 1.4.0 or newer); published bundles carry their own supported runtime.
-- `src/extraction/` parses supported languages; `src/resolution/` connects imports, names, frameworks, callbacks, and cross-tier flows.
+- `src/extraction/` schedules parsing; `src/resolution/` drives the kernel resolver, maps imports, and runs framework resolvers and synthesizers (callbacks, routers, cross-tier flows) over its verdicts.
+- `codegraph-kernel/` is the Rust (napi-rs) kernel. `src/<lang>/` holds each language's extraction walker; `src/resolve/` is the only reference resolver, entered at `mod.rs`. Files named `*_upstream.rs` port upstream's deleted TypeScript resolver (`src/resolution/name-matcher.ts` and friends); read the original with `git show upstream/main:<path>`. Kernel tests are `__tests__/kernel-*.test.ts`.
 - `src/graph/` owns shared graph derivations. If more than one surface renders a derivation, put it here rather than in an individual handler.
 - `src/context/` and `src/search/` format and retrieve context; `src/sync/` owns watching and git-hook helpers.
 - `src/mcp/` defines the MCP server and its agent-facing instructions; `src/installer/` defines host integrations.

@@ -59,7 +59,10 @@ wasm path. Add the grammar in one of two ways:
 Then map the language token to the grammar in `grammar_for`
 (`codegraph-kernel/src/langs.rs`). A language walked by the generic TypeScript
 extractor goes in the parse-only block; only a language with a bespoke Rust
-walker also joins `LANGUAGES` there. Build and stage the kernel:
+walker also joins `LANGUAGES` there. Add the token to `is_migrated_language`
+(`codegraph-kernel/src/resolve/tables.rs`) as well: the resolver routes a
+language missing there to `Unresolved`, so none of its references resolve.
+Build and stage the kernel:
 ```bash
 npm run build:kernel
 ```
