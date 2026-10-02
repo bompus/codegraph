@@ -118,8 +118,11 @@ export function finalizeDaemonExit(
 /** How often the daemon sweeps connected clients for a dead peer process (#692). */
 const DEFAULT_CLIENT_SWEEP_MS = 30_000;
 
-/** How long the daemon waits for the optional client-hello before proceeding without it. */
-const CLIENT_HELLO_TIMEOUT_MS = 3_000;
+/**
+ * How long the daemon waits for the optional client-hello before proceeding
+ * without it. `CODEGRAPH_DAEMON_CLIENT_HELLO_TIMEOUT_MS` overrides it.
+ */
+const DEFAULT_CLIENT_HELLO_TIMEOUT_MS = 3_000;
 
 /** Bytes/parse-window for an oversized hello line — bounded against a malicious peer. */
 const MAX_HELLO_LINE_BYTES = 4096;
@@ -862,6 +865,14 @@ function resolveClientSweepMs(): number {
   return Math.floor(parsed); // 0 disables the sweep
 }
 
+function resolveClientHelloTimeoutMs(): number {
+  const raw = process.env.CODEGRAPH_DAEMON_CLIENT_HELLO_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_CLIENT_HELLO_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CLIENT_HELLO_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
 /**
  * Parse one client-hello line. Returns the peer pids if `line` is a well-formed
  * client-hello (carries the `codegraph_client` marker), or null otherwise — in
@@ -967,7 +978,7 @@ function readClientHello(
     const timer = setTimeout(() => {
       const partial = chunks.length === 0 ? undefined : (chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total));
       finish({ pid: null, hostPid: null }, partial);
-    }, CLIENT_HELLO_TIMEOUT_MS);
+    }, resolveClientHelloTimeoutMs());
     timer.unref?.();
     socket.on('data', onData);
     socket.on('error', onEnd);
