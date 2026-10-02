@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import * as path from 'path';
 import { Worker } from 'worker_threads';
-import { terminateOnceStarted, workerStarted } from '../worker-teardown';
+import { terminateOnceStarted, workerStarted, WORKER_START_SETTLE_MS } from '../worker-teardown';
 
 export interface PendingChangeCounts {
   added: number;
@@ -15,6 +15,8 @@ let liveMeasurements = 0;
 const active = new Map<string, Promise<PendingChangeCounts | null>>();
 /** Every measurement worker not yet terminated, with its load — for {@link endFreshnessMeasurements}. */
 const live = new Map<Worker, Promise<void>>();
+/** Workers {@link endFreshnessMeasurements} is already terminating. */
+const ending = new WeakSet<Worker>();
 
 export function measurePendingChanges(root: string, timeoutMs = MEASURE_TIMEOUT_MS): Promise<PendingChangeCounts | null> {
   const key = path.resolve(root);
@@ -32,9 +34,34 @@ export function measurePendingChanges(root: string, timeoutMs = MEASURE_TIMEOUT_
  * Terminate every measurement still running, each once it has loaded its
  * modules (worker-teardown.ts) — for a server that is about to exit, since
  * exiting tears the workers down the same way terminating them does.
+ *
+ * `thenAfter` sweeps again once it settles: a `codegraph_status` call still
+ * running when the server starts stopping can start a measurement after the
+ * first sweep. The whole wait ends by `capMs`. A worker inside a synchronous
+ * Git call terminates only when that call returns, which the fallback scan
+ * lets run for 30 s; past the cap the server goes on stopping with that worker
+ * loaded but not yet gone, rather than outliving the deadline its stopper
+ * gives it (`stopDaemonAt()`, the proxy fallback's backstop).
  */
-export async function endFreshnessMeasurements(): Promise<void> {
-  await Promise.all([...live].map(([worker, loaded]) => terminateOnceStarted(worker, loaded)));
+export async function endFreshnessMeasurements(
+  opts: { capMs?: number; thenAfter?: Promise<unknown> } = {},
+): Promise<void> {
+  const capMs = opts.capMs ?? WORKER_START_SETTLE_MS;
+  const sweep = () => Promise.all(
+    [...live].filter(([worker]) => !ending.has(worker)).map(([worker, loaded]) => {
+      ending.add(worker);
+      return terminateOnceStarted(worker, loaded, capMs);
+    }),
+  );
+  let cap: NodeJS.Timeout | undefined;
+  await Promise.race([
+    Promise.all([sweep(), opts.thenAfter?.then(sweep, sweep)]),
+    new Promise<void>((resolve) => {
+      cap = setTimeout(resolve, capMs);
+      cap.unref?.();
+    }),
+  ]);
+  clearTimeout(cap);
 }
 
 function runMeasurement(root: string, timeoutMs: number): Promise<PendingChangeCounts | null> {
