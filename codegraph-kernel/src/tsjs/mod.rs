@@ -2,8 +2,8 @@
 //! `TreeSitterExtractor`'s TS/JS paths (src/extraction/tree-sitter.ts) plus
 //! the typescript/javascript LanguageExtractor configs.
 //!
-//! Porting contract (R2 of the migration plan): behavior parity with the wasm
-//! path, verified by scripts/kernel-parity.mjs over real repos — including
+//! Porting contract: behavior parity with the generic TypeScript extractor,
+//! checked by the kernel parity tests — including
 //! bug-for-bug fidelity where the TS code has quirks. Every function notes the
 //! TS function it mirrors; if you change one side, change the other or the
 //! parity gate fails. Positions are emitted in UTF-16 code units (what
@@ -200,10 +200,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     let t0 = std::time::Instant::now();
     let tree = crate::langs::parse(language, source)?;
 
-    // Files with parse ERRORS are extracted natively like any other file. Error
-    // RECOVERY differs between UTF-8 (native) and UTF-16 (web-tree-sitter)
-    // parsing, so an erroring file's graph may differ from the wasm path's; the
-    // kernel's recovery is canonical (kernel-only-extraction-plan.md, Phase 1).
+    // Files with parse errors are extracted from the recovered native tree.
 
     let mut w = Walker::new(source, file_path, variant);
 

@@ -63,11 +63,9 @@ const FILE_IO_BATCH_SIZE = 10;
  */
 const SYNC_RECONCILE_YIELD_INTERVAL = 1000;
 
-// PARSER_RESET_INTERVAL moved to parse-worker.ts (runs in worker thread)
-
 /**
  * Maximum time (ms) to wait for a single file to parse in the worker thread.
- * If tree-sitter hangs or WASM runs out of memory, this prevents the entire
+ * If a parser worker hangs, this prevents the entire
  * indexing run from freezing. The worker is restarted after a (hard) timeout.
  * Env-overridable via CODEGRAPH_PARSE_TIMEOUT_MS for slow storage (#1231).
  */
@@ -75,10 +73,7 @@ const PARSE_TIMEOUT_MS = resolveParseTimeoutMs(process.env.CODEGRAPH_PARSE_TIMEO
 
 /**
  * Number of files to parse before recycling the worker thread.
- * WASM linear memory can grow but NEVER shrink (WebAssembly spec limitation).
- * The only way to reclaim tree-sitter's WASM heap is to destroy the entire
- * V8 isolate by terminating the worker thread and spawning a fresh one.
- * This interval balances memory usage against the cost of reloading grammars.
+ * Recycling replaces workers after a bounded number of parses.
  */
 const WORKER_RECYCLE_INTERVAL = 250;
 
@@ -2447,7 +2442,7 @@ export class ExtractionOrchestrator {
 
         // Honour MAX_SOURCE_FILE_SIZE_BYTES. Without this check, vendored generated
         // headers, minified bundles, and other multi-MB files get indexed,
-        // wasting WASM heap and the worker recycle budget on inputs with no
+        // consuming parser memory and the worker recycle budget on inputs with no
         // useful symbols. The single-file extractFile path already enforces
         // this; the bulk path used to silently skip the check.
         if (stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
@@ -2528,12 +2523,9 @@ export class ExtractionOrchestrator {
     // so synchronous work here blocks the animation from rendering.
     await new Promise(resolve => setImmediate(resolve));
 
-    // Retry pass: files that failed due to WASM memory corruption may succeed
-    // on a fresh worker with a clean heap. Recycle before each attempt so
-    // every file gets the absolute cleanest WASM state possible. Timeouts are
-    // retried too (#1231): most are main-thread-stall artifacts, not slow
-    // parses, and this pass parses one file at a time with the store strictly
-    // after each parse resolves, so the stall window can't recur here.
+    // Retry selected worker failures and timeouts after recycling idle workers.
+    // Parse one file at a time and store only after its parse resolves, keeping
+    // synchronous storage from delaying another retry's result handling.
     const retryableErrors = errors.filter(
       (e) => e.code === 'parse_error' && e.filePath &&
         (e.message.includes('Worker exited') ||
@@ -2542,11 +2534,10 @@ export class ExtractionOrchestrator {
     );
 
     if (retryableErrors.length > 0 && pool) {
-      log(`Retrying ${retryableErrors.length} files that failed due to WASM memory errors or timeouts...`);
+      log(`Retrying ${retryableErrors.length} files that failed due to worker errors or timeouts...`);
 
-      // Fresh WASM heaps for the retry phase. A retry that still crashes its
-      // worker makes the pool respawn it, so later retries keep landing on clean
-      // workers too.
+      // Fresh workers for the retry phase. If a retry crashes its worker,
+      // the pool replaces that worker before accepting more work.
       pool.recycleAll();
 
       const stillFailing: typeof retryableErrors = [];
@@ -2599,7 +2590,7 @@ export class ExtractionOrchestrator {
       }
 
       // Last resort: for files that still crash on a clean worker, strip
-      // comment-only lines to reduce WASM memory pressure. Many compiler
+      // comment-only lines to reduce parser input. Many compiler
       // test files are 90%+ comments (CHECK directives) that don't contribute
       // code nodes but consume parser memory.
       if (stillFailing.length > 0) {

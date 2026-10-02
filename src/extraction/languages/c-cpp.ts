@@ -676,11 +676,8 @@ export function blankCppAnnotationMacroCalls(source: string, keepReturnTypeMacro
  * namespace-management macros (`FMT_BEGIN_NAMESPACE`, `FMT_END_EXPORT`,
  * `JEMALLOC_DIAGNOSTIC_DISABLE_SPURIOUS`), Qt's `Q_OBJECT`, and friends. A
  * bare identifier is not a statement or declaration in C or C++, so
- * tree-sitter drops into error recovery at every one — and since the kernel
- * path defers ANY erroring file to wasm, this single idiom deferred 13/73 fmt
- * files and a comparable share of jemalloc, forfeiting the native-parse win
- * on exactly the header-heavy trees it targets (the wasm path also mis-nests
- * scopes around them today). Replacing the token with equal-length spaces
+ * tree-sitter drops into error recovery at every one, which can mis-nest
+ * scopes in header-heavy trees. Replacing the token with equal-length spaces
  * preserves every byte offset and the surrounding declarations parse clean.
  *
  * Matched tightly so a real identifier can never be touched — ALL of:
@@ -1130,12 +1127,8 @@ export function blankCLeadingAttrMacros(source: string): string {
  *
  * is NOT valid C — `extern "C" {` (and any other C++-only line under the
  * guard) drops tree-sitter-c into error recovery, so effectively every public
- * C header carries parse errors. The wasm path shrugs (recovery keeps the
- * rest); the kernel path defers EVERY erroring file to wasm by policy — so
- * this one idiom pushed C-header deferral to ~32% on redis (vs the <10%
- * gate) and forfeited the native-parse win exactly where C repos have the
- * most files. A C compiler never sees the guarded lines (`__cplusplus` is
- * only defined for C++), so blanking the region BODY mirrors the
+ * C header carries parse errors. A C compiler never sees the guarded lines
+ * (`__cplusplus` is only defined for C++), so blanking the region BODY mirrors the
  * preprocessor's own view of the file.
  *
  * Matched conservatively, line-based and offset-preserving:
@@ -1186,11 +1179,10 @@ export function blankCCplusplusGuardBodies(source: string): string {
  * &list) { … }` (git), `list_for_each_entry(pos, head, member) { … }` (the
  * Linux kernel's core iteration idiom). A call followed by a brace block is
  * not a C statement, so tree-sitter-c drops into error recovery at every use —
- * these macros are the single largest source of parse errors in macro-heavy C
- * trees (git: ~39% of files error; the kernel path defers each one to wasm).
+ * these macros cause parse errors in macro-heavy C trees.
  * Blanking JUST the macro call leaves the brace block as a bare compound
- * statement — valid C — so the body's calls/locals extract normally on both
- * arms instead of riding error recovery.
+ * statement — valid C — so the body's calls/locals extract normally with both
+ * the bespoke and generic extractors instead of relying on error recovery.
  *
  * C-ONLY, and matched tightly:
  *  - the call must be INDENTED (statement position; file-scope definitions
@@ -1811,7 +1803,7 @@ export function blankCNamedVariadicDefineDots(source: string): string {
  * cleanly — at the cost of the references inside the initializer, which the
  * broken parse was not yielding either. Statement-level only (`);` follows),
  * macro-cased name only, offsets preserved. Runs before the kernel route
- * point, so both the wasm and kernel C arms see the same bytes.
+ * point, so both the bespoke and generic C extractors see the same bytes.
  */
 export function blankCDesignatedMacroArgs(source: string): string {
   if (source.indexOf('=') === -1) return source;

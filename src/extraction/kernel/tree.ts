@@ -1,6 +1,5 @@
 /**
- * Native parse trees for read-time consumers (Phase 3 of
- * docs/design/kernel-only-extraction-plan.md). TS mirror of
+ * Native parse trees for extraction and read-time consumers. TS mirror of
  * codegraph-kernel/src/tree.rs — the row layout there is the contract.
  *
  * `parseNativeTree` asks the kernel for the whole CST in one crossing and
@@ -8,11 +7,10 @@
  * web-tree-sitter `Node` surface that `syntax-tokens.ts`,
  * `graph/branch-guards.ts` and `mcp/explore-source-ranges.ts` use. Positions
  * come back in UTF-16 units, so `source.slice(startIndex, endIndex)` is exact
- * and `startPosition.column` matches what the wasm parser reported.
+ * and `startPosition.column` uses UTF-16 code units.
  *
  * The facade is deliberately structural: consumers type their nodes as
- * `TreeNode` (src/extraction/parse-tree.ts), which both this class and the
- * wasm `Node` satisfy, so the same walkers run on either tree.
+ * `TreeNode` (src/extraction/parse-tree.ts), which this class satisfies.
  */
 
 import { getKernel } from './loader';

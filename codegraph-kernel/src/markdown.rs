@@ -1,9 +1,9 @@
 //! Markdown path references from code string literals — the kernel half of the
 //! code → documentation edge (`open("docs/guide.md#install")`).
 //!
-//! The wasm arm builds these in `TreeSitterExtractor`; a routed language never
+//! The generic extractor builds these in `TreeSitterExtractor`; a routed language never
 //! reaches it, so without this the edge is absent for every kernel language.
-//! `kernel-tsjs-parity` compares refs byte for byte, so the candidate regex and
+//! `kernel-generic-extractor-tree` compares refs byte for byte, so the candidate regex and
 //! the normalizer below mirror `extractMarkdownPathCandidates` and
 //! `normalizeMarkdownPathReference` (src/extraction/tree-sitter.ts) exactly —
 //! including the rejections. Change one side and the parity gate fails.
@@ -152,11 +152,11 @@ fn normalize(reference_name: &str, file_path: &str) -> Option<String> {
 
 /// Every markdown path reference in one string literal's text, as
 /// (normalized name, UTF-16 offset of the match within `text`). The offset is
-/// added to the literal's own column, mirroring the wasm arm.
+/// added to the literal's own column, mirroring the generic extractor.
 pub fn markdown_path_refs(text: &str, file_path: &str) -> Vec<(String, usize)> {
     let mut refs = Vec::new();
     for m in candidate_re().find_iter(text) {
-        // A `scheme://host/x.md` URL is not a repo path. The wasm arm looks
+        // A `scheme://host/x.md` URL is not a repo path. The generic extractor looks
         // for the `://` suffix, because the candidate starts after the scheme.
         let start = m.start();
         let prefix = &text[..start];
@@ -190,8 +190,8 @@ mod tests {
     fn a_scheme_prefixed_path_is_whatever_the_wasm_arm_makes_of_it() {
         // Not asserted either way here on purpose. The candidate pattern can
         // start inside a URL (at the `//`), so the `://` look-back does not
-        // always fire, and the wasm arm — not a guess about it — is the spec.
-        // `kernel-tsjs-parity` pins this against a torture fixture instead.
+        // always fire; the generic extractor defines the parity contract.
+        // `kernel-generic-extractor-tree` checks the torture fixtures instead.
         let _ = markdown_path_refs("'https://example.com/a.md'", "src/x.ts");
     }
 

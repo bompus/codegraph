@@ -17,9 +17,9 @@
 //! multi-case enum entries minting only the first case, `/** */` block docs
 //! ignored AND chain-breaking, init/deinit/subscript minting no nodes with
 //! their bodies routed through visitNode (calls → class, static reads →
-//! nothing). Positions in UTF-16 code units. Files with parse errors defer
-//! to wasm (structurally high incidence, 9–27% — the sweep runs
-//! --max-deferral 0.3 by measured both-arm reality).
+//! nothing). Positions in UTF-16 code units. Files with parse errors are walked
+//! using the recovered native tree. A parse-collapse warning is emitted when
+//! an erroring tree yields no symbols.
 
 mod calls;
 mod refs;

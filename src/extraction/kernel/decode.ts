@@ -156,11 +156,11 @@ export function decodeExtractBuffers(
     const row = buffers.refs.subarray(i * REF_ROW_SIZE, (i + 1) * REF_ROW_SIZE);
     const fromIdx = row.readUInt32LE(REF.fromIdx);
     const kindByte = row.readUInt8(REF.kind);
-    // No filePath/language on ordinary refs: the wasm extractors emit them
+    // No filePath/language on ordinary refs: the generic extractors emit them
     // WITHOUT the denormalized fields (the store fills `ref.filePath ??
     // filePath`), and the kernel must match the extractFromSource seam
     // exactly. Two exceptions are flagged, both re-attaching this decode
-    // call's own values, which are the exact ones the wasm side would set:
+    // call's own values, matching the generic extractor:
     // REF_FLAG_FILE_PATH for the ruby/php visitNode hooks, which put
     // `filePath: ctx.filePath` on their mixin/trait `implements` refs; and
     // FILE_PATH|LANGUAGE for the markdown path refs, the sole caller of

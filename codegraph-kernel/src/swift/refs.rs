@@ -166,7 +166,7 @@ impl<'t> Walker<'t> {
         // shared `assignment` case — a declared-then-assigned `let X: T`
         // followed by `X = …` branches counts one bump per assignment (the
         // directly_assignable_expression's simple_identifier child), pruning
-        // X exactly as the wasm arm does (caught by the swift-nio sweep).
+        // X exactly as the generic extractor does (caught by the swift-nio sweep).
         let mut decl_counts: HashMap<&str, u32> = HashMap::new();
         let mut dstack: Vec<Node> = vec![root];
         let mut dvisited = 0usize;

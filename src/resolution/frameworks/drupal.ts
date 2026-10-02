@@ -38,7 +38,7 @@
  *
  * - Twig templates (out of scope for v1): `.twig` files are tracked as file nodes but no
  *   symbol extraction is performed (no tree-sitter Twig grammar). Implement when a Twig
- *   grammar WASM is available.
+ *   native grammar and extractor are available.
  *
  * ## TODOs for future iterations
  *

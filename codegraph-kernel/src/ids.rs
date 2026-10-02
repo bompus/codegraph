@@ -9,14 +9,14 @@
 //!
 //!   `file:${filePath}`
 //!
-//! Node identity is how the wasm path and the kernel path agree on the same
+//! Node identity is how the generic extractor and the kernel walker agree on the same
 //! graph — a drift here breaks every edge. Pinned by the node-id parity test
 //! in `__tests__/kernel-scaffold.test.ts`.
 
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// Per-extraction collision handling, matching NodeIdAllocator in the wasm path.
+/// Per-extraction collision handling, matching NodeIdAllocator in the generic extractor.
 #[derive(Default)]
 pub struct NodeIdAllocator {
     first_columns: HashMap<String, u32>,

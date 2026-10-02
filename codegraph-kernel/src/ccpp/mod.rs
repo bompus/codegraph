@@ -5,7 +5,7 @@
 //!
 //! The seven preParse blanking passes are NOT here: the TS route point
 //! (src/extraction/kernel/index.ts) applies `extractor.preParse` before the
-//! kernel call, so this walker receives the SAME blanked bytes the wasm
+//! kernel call, so this walker receives the SAME blanked bytes the generic
 //! extractor parses (all blanks are equal-length-space replacements — every
 //! offset survives). `.metal`/`.cu`/`.cuh` arrive as language 'cpp' with their
 //! dialect blanks already applied.

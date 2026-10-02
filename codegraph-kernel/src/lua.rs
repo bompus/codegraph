@@ -513,7 +513,7 @@ impl<'t> Walker<'t> {
             );
             // The ladder skips a declaration's children, so the positionally
             // paired value's string literals are reached here. A name with no
-            // value contributes nothing, as the wasm arm's undefined does.
+            // value contributes nothing, as the generic extractor's undefined does.
             if let (Some(row), Some(v)) = (row, values.get(i)) {
                 self.markdown_refs_from_subtree(*v, row);
             }

@@ -2,26 +2,19 @@
  * Parse worker pool — runs tree-sitter parsing across N worker threads so a full
  * `codegraph index` uses every core instead of pinning one.
  *
- * Why this exists: `ExtractionOrchestrator.indexAll()` already reads files in
- * parallel, but it parsed them through a SINGLE worker thread, so on an
- * N-core machine indexing a large repo used one core and left the rest idle
- * (issue #1015, the parse-time half of #320). Spreading the parse calls across a
- * pool of workers — each its own tree-sitter WASM heap — restores multi-core
- * throughput. SQLite storage stays on the main thread (it isn't thread-safe), so
- * only the CPU-bound parse step is parallelised; results are stored as they
- * arrive, in whatever order they finish.
+ * Each worker loads the native kernel and parses independently. SQLite storage
+ * is serialized outside the parse workers, optionally through a store worker.
+ * The orchestrator stores results in submission order.
  *
  * Design mirrors {@link ../mcp/query-pool} (idle-list dispatch, lazy growth,
  * throttled cold-starts, crash recovery), with parse-specific behaviour:
- *   - per-worker recycle: WASM linear memory grows but never shrinks, so each
- *     worker is torn down and replaced after `recycleInterval` parses to reclaim
- *     its heap — the same reason the old single worker recycled.
+ *   - per-worker recycle: each worker is torn down and replaced after
+ *     `recycleInterval` parses to release its accumulated state.
  *   - reject, don't retry: a parse that crashes or times out its worker REJECTS
  *     (with a message the orchestrator's retry pass recognises) rather than being
  *     silently requeued — the orchestrator owns the smarter two-stage retry
- *     (fresh worker, then comment-stripped) on a clean WASM heap.
- *   - a size-1 pool reproduces the old single-worker path exactly, which is the
- *     conservative rollback: set `CODEGRAPH_PARSE_WORKERS=1`.
+ *     (fresh worker, then comment-stripped).
+ *   - set `CODEGRAPH_PARSE_WORKERS=1` to run with a single worker.
  *
  * Memory: peak scales with pool size (≈ size × a worker's pre-recycle heap), so
  * the default is capped and the env var lets constrained machines dial it down.
@@ -57,7 +50,7 @@ export interface ParseTask {
 export const DEFAULT_PARSE_POOL_CAP = 8;
 /** Hard ceiling on pool size regardless of an explicit env override. */
 const MAX_PARSE_POOL_SIZE = 16;
-/** Parses a worker performs before it's recycled to reclaim WASM heap. */
+/** Parses a worker performs before it's recycled to release accumulated state. */
 const DEFAULT_RECYCLE_INTERVAL = 250;
 /** Base per-parse timeout; scaled up for large files by the caller's formula. */
 const DEFAULT_PARSE_TIMEOUT_MS = 10_000;
@@ -77,7 +70,7 @@ const MAX_SCALED_PARSE_TIMEOUT_MS = 20_000;
 const HARD_KILL_MULTIPLIER = 3;
 /**
  * Max workers cold-starting at once. A worker's cold start is heavy (module load
- * + grammar WASM compile); starting the whole pool simultaneously thrashes CPU.
+ * + native kernel load); starting the whole pool simultaneously thrashes CPU.
  * Warming a couple at a time keeps each start fast while the pool still reaches
  * full size within a few parses of a large run.
  */
@@ -85,8 +78,8 @@ const MAX_CONCURRENT_SPAWN = 2;
 /**
  * Total worker deaths before the pool stops respawning and fails outstanding
  * work, so a systematically-broken worker platform degrades instead of
- * respawning forever. Set high: normal per-file WASM crashes are cleared by the
- * orchestrator's retry pass and shouldn't trip this on a merely-crashy repo.
+ * respawning forever. The budget allows isolated per-file crashes without
+ * immediately disabling recovery for the remaining files.
  */
 const CRASH_BUDGET = 100;
 
@@ -225,8 +218,9 @@ export class ParseWorkerPool {
       // only moves the cliff a deeply nested file falls off (#1581 — the
       // 8 MiB main thread still dies at 100k levels). The native kernel
       // guards its own recursion against THIS thread's real stack bounds
-      // (codegraph-kernel/src/stack.rs) and defers such a file to the wasm
-      // path, which catches its JS RangeError per file.
+      // (codegraph-kernel/src/stack.rs) and defers such a file to the generic
+      // extractor over the serialized native tree. Extraction errors are
+      // reported per file by the worker.
       this.createWorker = () => new Worker(scriptPath);
     } else {
       throw new Error('ParseWorkerPool requires workerScriptPath or createWorker');
@@ -320,8 +314,8 @@ export class ParseWorkerPool {
             : ` (parse genuinely took ${parseMs}ms)`;
         this.log(`Late parse-result accepted: ${job.task.filePath}${detail}`);
       }
-      // Recycle the worker once it's done enough parses to have grown its WASM
-      // heap; otherwise return it to the idle set for the next job.
+      // Recycle at the configured parse count; otherwise return the worker
+      // to the idle set for the next job.
       if ((this.parseCounts.get(w) ?? 0) >= this.recycleInterval) {
         this.recycle(w);
       } else {
@@ -351,7 +345,7 @@ export class ParseWorkerPool {
   private recycle(w: ParsePoolWorker): void {
     this.log(`Recycling worker after ${this.parseCounts.get(w)} parses (heap: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS)`);
     this.removeWorker(w);
-    // Fire-and-forget: worker.terminate() can hang if WASM is wedged.
+    // Do not block replacement on termination of an unresponsive worker.
     try { void w.terminate(); } catch { /* already gone */ }
     if (this.healthy && !this.destroyed) this.spawnOne();
   }
@@ -403,7 +397,7 @@ export class ParseWorkerPool {
   private onHardTimeout(w: ParsePoolWorker, job: ParseJob, totalMs: number): void {
     if (job.settled || !this.workers.has(w)) return;
     this.log(`TIMEOUT: ${job.task.filePath} got no result after ${totalMs}ms — killing worker`);
-    // Kill the (WASM-wedged) worker and reject this parse. A timeout isn't a
+    // Terminate the unresponsive worker and reject this parse. A timeout isn't a
     // crash — don't charge the budget — but the worker is gone, so spawn a
     // replacement to keep capacity. The rejection message contains "timed out"
     // so the orchestrator's retry pass re-attempts the file.
@@ -455,8 +449,8 @@ export class ParseWorkerPool {
   }
 
   /**
-   * Recycle every idle worker now (fresh WASM heaps). The orchestrator calls
-   * this before its retry pass so crash-on-memory files get the cleanest heap.
+   * Recycle every idle worker now. The orchestrator calls this before its
+   * retry pass so subsequent parses start with fresh worker state.
    */
   recycleAll(): void {
     for (const w of [...this.idle]) this.recycle(w);
