@@ -107,6 +107,13 @@ function unwrap(expr: ts.Expression): ts.Expression {
 /** Variable initializer or function parameter that `name` refers to at `from`. */
 function resolveBinding(name: string, from: ts.Node): ts.VariableDeclaration | ts.ParameterDeclaration | null {
   for (let scope: ts.Node | undefined = from.parent; scope; scope = scope.parent) {
+    // A loop variable shadows any outer binding and takes values this
+    // reader can't follow.
+    if ((ts.isForOfStatement(scope) || ts.isForInStatement(scope) || ts.isForStatement(scope))
+      && scope.initializer && ts.isVariableDeclarationList(scope.initializer)
+      && scope.initializer.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === name)) {
+      return null;
+    }
     if (ts.isFunctionLike(scope)) {
       const param = scope.parameters.find((p) => ts.isIdentifier(p.name) && p.name.text === name);
       if (param) return param;
@@ -129,44 +136,94 @@ function callSitesOf(param: ts.ParameterDeclaration, sf: ts.SourceFile): ts.Expr
   if (!fnName) return null;
   const index = fn.parameters.indexOf(param);
   const args: ts.Expression[] = [];
+  let missing = false;
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === fnName) {
-      const arg = node.arguments[index];
+      // An omitted argument takes the parameter's default, unless a spread
+      // at or before its position may supply it.
+      const spread = node.arguments.slice(0, index + 1).some(ts.isSpreadElement);
+      const arg = spread ? undefined : node.arguments[index] ?? param.initializer;
       if (arg) args.push(arg);
+      else missing = true;
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return args.length > 0 ? args : null;
+  return args.length > 0 && !missing ? args : null;
 }
 
-/** True when `expr` provably evaluates to options with `windowsHide: true`. */
-function hidesWindow(expr: ts.Expression | undefined, sf: ts.SourceFile, seen = new Set<ts.Node>()): boolean {
+/** A property name's text, or null when it is computed. */
+function keyName(name: ts.PropertyName): string | null {
+  return ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name) ? name.text : null;
+}
+
+/** False only when `expr` provably has no `windowsHide` key, so spreading it can't override one. */
+function mayCarryWindowsHide(expr: ts.Expression, active = new Set<ts.Node>()): boolean {
+  const e = unwrap(expr);
+  if (active.has(e)) return true; // a cycle proves nothing
+  active.add(e);
+  try {
+    if (ts.isObjectLiteralExpression(e)) {
+      return e.properties.some((prop) => {
+        if (ts.isSpreadAssignment(prop)) return mayCarryWindowsHide(prop.expression, active);
+        const key = prop.name ? keyName(prop.name) : null;
+        return key === null || key === 'windowsHide';
+      });
+    }
+    if (ts.isIdentifier(e)) {
+      const binding = resolveBinding(e.text, e);
+      if (binding && ts.isVariableDeclaration(binding) && binding.initializer) return mayCarryWindowsHide(binding.initializer, active);
+    }
+    return true;
+  } finally {
+    active.delete(e);
+  }
+}
+
+/**
+ * True when `expr` provably evaluates to options with `windowsHide: true`.
+ * `active` holds the bindings being followed, so a cycle is unproven while a
+ * value spread twice is not. A variable is read from its initializer, so a
+ * later mutation or a getter's side effect goes unseen; this guards against
+ * an omitted option, not against code written to evade it.
+ */
+function hidesWindow(expr: ts.Expression | undefined, sf: ts.SourceFile, active = new Set<ts.Node>()): boolean {
   if (!expr) return false;
   const e = unwrap(expr);
-  if (seen.has(e)) return false;
-  seen.add(e);
-  if (ts.isObjectLiteralExpression(e)) {
-    let hidden = false;
-    for (const prop of e.properties) {
-      if (ts.isPropertyAssignment(prop) && prop.name.getText(sf) === 'windowsHide') {
-        hidden = unwrap(prop.initializer).kind === ts.SyntaxKind.TrueKeyword;
-      } else if (ts.isShorthandPropertyAssignment(prop) && prop.name.text === 'windowsHide') {
-        hidden = false; // not provable statically
-      } else if (ts.isSpreadAssignment(prop) && hidesWindow(prop.expression, sf, seen)) {
-        hidden = true;
+  if (active.has(e)) return false;
+  active.add(e);
+  try {
+    if (ts.isObjectLiteralExpression(e)) {
+      let hidden = false;
+      for (const prop of e.properties) {
+        if (ts.isSpreadAssignment(prop)) {
+          // A spread that doesn't provably hide clears an earlier `true` unless
+          // it provably has no windowsHide key of its own.
+          if (hidesWindow(prop.expression, sf, active)) hidden = true;
+          else if (mayCarryWindowsHide(prop.expression)) hidden = false;
+          continue;
+        }
+        const key = prop.name ? keyName(prop.name) : null;
+        if (ts.isPropertyAssignment(prop) && key === 'windowsHide') {
+          hidden = unwrap(prop.initializer).kind === ts.SyntaxKind.TrueKeyword;
+        } else if (key === null || key === 'windowsHide') {
+          // A computed key, shorthand, accessor or method that may set it.
+          hidden = false;
+        }
       }
+      return hidden; // last write wins, matching object-literal semantics
     }
-    return hidden; // last write wins, matching object-literal semantics
+    if (ts.isIdentifier(e)) {
+      const binding = resolveBinding(e.text, e);
+      if (!binding) return false;
+      if (ts.isVariableDeclaration(binding)) return hidesWindow(binding.initializer, sf, active);
+      const sites = callSitesOf(binding, sf);
+      return sites !== null && sites.every((arg) => hidesWindow(arg, sf, active));
+    }
+    return false;
+  } finally {
+    active.delete(e);
   }
-  if (ts.isIdentifier(e)) {
-    const binding = resolveBinding(e.text, e);
-    if (!binding) return false;
-    if (ts.isVariableDeclaration(binding)) return hidesWindow(binding.initializer, sf, seen);
-    const sites = callSitesOf(binding, sf);
-    return sites !== null && sites.every((arg) => hidesWindow(arg, sf, seen));
-  }
-  return false;
 }
 
 function commandLabel(call: ts.CallExpression, sf: ts.SourceFile): string {
@@ -204,5 +261,41 @@ describe('child processes set windowsHide (#1092, #2094)', () => {
     }
     expect(seen).toBeGreaterThan(0); // guard against a false pass if the imports move
     expect(offenders, `spawned without windowsHide:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('reads spreads and quoted keys the way an object literal evaluates', () => {
+    const hides = (literal: string): boolean => {
+      const sf = ts.createSourceFile('t.ts', `const key = "windowsHide"; const base = { windowsHide: true }; const cwd = { cwd: "/" }; const opts = ${literal};`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const decl = (sf.statements[3] as ts.VariableStatement).declarationList.declarations[0]!;
+      return hidesWindow(decl.initializer, sf);
+    };
+    expect(hides('{ ...{ windowsHide: true } }')).toBe(true);
+    expect(hides('{ windowsHide: true, ...{ cwd: "/" } }')).toBe(true);
+    expect(hides('{ ...unknown, windowsHide: true }')).toBe(true);
+    expect(hides('{ windowsHide: true, ...{ windowsHide: false } }')).toBe(false);
+    expect(hides('{ windowsHide: true, ...unknown }')).toBe(false);
+    expect(hides('{ windowsHide: true, "windowsHide": false }')).toBe(false);
+    expect(hides('{ windowsHide: true, [key]: false }')).toBe(false);
+    expect(hides('{ ...{ windowsHide: true, get windowsHide() { return false; } } }')).toBe(false);
+    expect(hides('{ ...base, ...base }')).toBe(true);
+    expect(hides('{ windowsHide: true, ...{ ...cwd, ...cwd } }')).toBe(true);
+  });
+
+  it('follows a parameter to every call, defaults and loop variables included', () => {
+    const hidesParam = (source: string): boolean => {
+      const sf = ts.createSourceFile('t.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      let found: ts.Expression | undefined;
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'spawn') found = node.arguments[0];
+        ts.forEachChild(node, visit);
+      };
+      visit(sf);
+      return hidesWindow(found, sf);
+    };
+    expect(hidesParam('function run(opts) { spawn(opts); } run({ windowsHide: true });')).toBe(true);
+    expect(hidesParam('function run(opts = { windowsHide: false }) { spawn(opts); } run({ windowsHide: true }); run();')).toBe(false);
+    expect(hidesParam('function run(opts) { spawn(opts); } run({ windowsHide: true }); run();')).toBe(false);
+    expect(hidesParam('function run(cmd, opts = { windowsHide: true }) { spawn(opts); } run(...["git", {}]);')).toBe(false);
+    expect(hidesParam('const opts = { windowsHide: true }; for (const opts of [{ windowsHide: false }]) spawn(opts);')).toBe(false);
   });
 });
