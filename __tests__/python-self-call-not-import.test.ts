@@ -323,4 +323,176 @@ describe('Python self-calls do not resolve through a same-named import', () => {
       'Adapter::expunge -> Adapter::error (pkg/adapter.py)',
     ]);
   });
+  it('super() reaches the base method an override extends, past a same-named import', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/httpkit.py': httpkit,
+      'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        'from pkg.httpkit import get_ip',
+        '',
+        '',
+        'class Adapter(Base):',
+        '    def get_ip(self, request):',
+        '        return super().get_ip(request)',
+        '',
+        '    def legacy(self, request):',
+        '        return super(Adapter, self).get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::'))).toEqual([
+      'Adapter::get_ip -> Base::get_ip (pkg/base.py)',
+      'Adapter::legacy -> Base::get_ip (pkg/base.py)',
+    ]);
+  });
+  it('super() skips an intermediate class that does not declare the method', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'class Base(object):',
+        '    def get_ip(self, request):',
+        '        return "base"',
+        '',
+        '',
+        'class Middle(Base):',
+        '    def other(self):',
+        '        return 1',
+        '',
+      ].join('\n'),
+      'pkg/adapter.py': [
+        'from pkg.base import Middle',
+        '',
+        '',
+        'class Adapter(Middle):',
+        '    def get_ip(self, request):',
+        '        return super().get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::'))).toEqual([
+      'Adapter::get_ip -> Base::get_ip (pkg/base.py)',
+    ]);
+  });
+  it('super() follows the method resolution order across several bases', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'class Root:',
+        '    def get_ip(self, request):',
+        '        return "root"',
+        '',
+        '',
+        'class Left(Root):',
+        '    def other(self):',
+        '        return 1',
+        '',
+        '',
+        'class Right(Root):',
+        '    def get_ip(self, request):',
+        '        return "right"',
+        '',
+      ].join('\n'),
+      'pkg/adapter.py': [
+        'from pkg.base import Left, Right',
+        '',
+        '',
+        'class Adapter(Left, Right):',
+        '    def get_ip(self, request):',
+        '        return super().get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    // Adapter, Left, Right, Root: Right comes before the Root that Left extends.
+    expect(calls.filter((c) => c.startsWith('Adapter::'))).toEqual([
+      'Adapter::get_ip -> Right::get_ip (pkg/base.py)',
+    ]);
+  });
+  it('super(Cls, self) starts after the class it names', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Adapter(Base):',
+        '    def get_ip(self, request):',
+        '        return "adapter"',
+        '',
+        '',
+        'class Child(Adapter):',
+        '    def get_ip(self, request):',
+        '        return super(Adapter, self).get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Child::'))).toEqual([
+      'Child::get_ip -> Base::get_ip (pkg/base.py)',
+    ]);
+  });
+  it('super().__init__() reaches the base constructor', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Base:\n    def __init__(self, name):\n        self.name = name\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Adapter(Base):',
+        '    def __init__(self, name):',
+        '        super().__init__(name)',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Adapter::'))).toEqual([
+      'Adapter::__init__ -> Base::__init__ (pkg/base.py)',
+    ]);
+  });
+  it('super() past a base the index does not hold', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Base:\n    def get_ip(self, request):\n        return "base"\n',
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        'from vendor.mixins import ForwardedMixin',
+        '',
+        '',
+        'class Adapter(ForwardedMixin, Base):',
+        '    def get_ip(self, request):',
+        '        return super().get_ip(request)',
+        '',
+      ].join('\n'),
+    });
+    // ForwardedMixin comes first at runtime and may define get_ip itself.
+    expect(calls.filter((c) => c.startsWith('Adapter::'))).toEqual([]);
+  });
+  it('super() reaches an in-repo base whose own base the index does not hold', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'from vendor.forms import Form',
+        '',
+        '',
+        'class Base(Form):',
+        '    def clean(self):',
+        '        return "base"',
+        '',
+      ].join('\n'),
+      'pkg/adapter.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Adapter(Base):',
+        '    def clean(self):',
+        '        return super().clean()',
+        '',
+      ].join('\n'),
+    });
+    // Form comes after Base, which declares clean first.
+    expect(calls.filter((c) => c.startsWith('Adapter::'))).toEqual([
+      'Adapter::clean -> Base::clean (pkg/base.py)',
+    ]);
+  });
 });

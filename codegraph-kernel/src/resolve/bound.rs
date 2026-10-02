@@ -406,6 +406,84 @@ impl KernelResolver {
         }
     }
 
+    /// `super().<name>()`, which the extractor records as `super().<name>`:
+    /// the method the class around the call inherits, the first one along
+    /// its C3 linearization after the class itself, or after the class
+    /// `super(Cls, self)` names (written on one line). None when a class up to
+    /// the one that declares the method lists a base the index does not hold,
+    /// which may come first at runtime, or a class on the way binds the name
+    /// in its body, where only runtime could tell.
+    pub(super) fn python_super_method(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some(name) = r.reference_name.strip_prefix("super().").filter(|n| re!(r"^[A-Za-z_]\w*$").is_match(n)) else {
+            return Ok(None);
+        };
+        if !self.supertypes_complete {
+            return Ok(None);
+        }
+        let Some(cls) = self
+            .nodes_in_file(&r.file_path)?
+            .iter()
+            .filter(|n| n.kind == "class" && n.start_line <= r.line && n.end_line >= r.line)
+            .max_by_key(|n| n.start_line)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let Some(lines) = self.read_file(&r.file_path) else {
+            return Ok(None);
+        };
+        let line = lines.get((r.line - 1).max(0) as usize).map(|l| l.as_str()).unwrap_or("");
+        let col = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
+        let Some(call) = re!(r"^super\s*\(\s*(?:\)|([A-Za-z_]\w*)\s*,)").captures(&line[col..]) else {
+            return Ok(None);
+        };
+        let Some(mro) = self.python_mro(&cls, 0)? else { return Ok(None) };
+        let named = call.get(1).map_or(cls.name.as_str(), |m| m.as_str());
+        let mut at = mro.iter().enumerate().filter(|(_, c)| c.name == named).map(|(i, _)| i);
+        let (Some(start), None) = (at.next(), at.next()) else {
+            return Ok(None);
+        };
+        // C3 puts a class's bases after it, so only the bases of classes up
+        // to the hit can come before the hit.
+        for class in &mro[..=start] {
+            if !self.python_bases_indexed(class)? {
+                return Ok(None);
+            }
+        }
+        for class in mro.iter().skip(start + 1) {
+            if self.python_type_assigns(class, name)? {
+                return Ok(None);
+            }
+            if let Some(m) = self.own_bound_member(class, name, r)? {
+                return Ok(Some(bound_member_cand(m)));
+            }
+            if !self.python_bases_indexed(class)? {
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether every base a Python class header lists, `object` aside, is
+    /// one of its indexed `extends` targets.
+    fn python_bases_indexed(&mut self, class: &KNode) -> Res<bool> {
+        let Some(lines) = self.read_file(&class.file_path) else {
+            return Ok(false);
+        };
+        let from = (class.start_line - 1).max(0) as usize;
+        let to = (class.end_line.max(0) as usize).min(lines.len());
+        let Some(bases) = super::overloads_upstream::python_bases(&lines[from.min(to)..to], &class.name) else {
+            return Ok(false);
+        };
+        let mut indexed: Vec<String> = Vec::new();
+        for t in self.outgoing_edge_targets(&class.id, &["extends"])? {
+            if self.node_by_id(&t)?.is_some_and(|n| is_class_like(&n.kind)) && !indexed.contains(&t) {
+                indexed.push(t);
+            }
+        }
+        Ok(bases.iter().filter(|b| b.as_str() != "object").count() == indexed.len())
+    }
+
     /// matchBoundTypeMember's per-type member rule: `Owner::method`, a
     /// method (or a C/C++ callable field) of the site's language family,
     /// declared in the owner's file (Go: its package directory; C++: anywhere),

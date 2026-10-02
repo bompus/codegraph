@@ -998,7 +998,13 @@ impl KernelResolver {
             cand = self.match_by_qualified_name(r)?;
         }
         if cand.is_none() {
-            cand = self.match_store_accessor_chain(r)?;
+            // Python's `super()` is the one inner call whose result the
+            // class around the call names.
+            cand = if r.language == "python" && r.reference_name.starts_with("super().") {
+                self.python_super_method(r)?
+            } else {
+                self.match_store_accessor_chain(r)?
+            };
         }
         let Some(cand) = cand else {
             return Ok(self.chain_miss());
