@@ -13,8 +13,15 @@ export default defineConfig({
     include: ['__tests__/**/*.test.ts'],
     // Bun's os.homedir() ignores runtime HOME mutation; the setup file
     // restores Node semantics for suites that redirect HOME for isolation.
-    // Inherited by the engine project only — the ui project stands alone.
-    setupFiles: ['__tests__/bun-homedir.setup.ts', '__tests__/file-tmpdir.setup.ts'],
+    // A throwaway home dir (and git global config) per test file, inside that
+    // file's temp dir, so nothing the suite runs can write to the developer's
+    // real one (#2275). Inherited by the engine project only — the ui project
+    // stands alone.
+    setupFiles: [
+      '__tests__/bun-homedir.setup.ts',
+      '__tests__/file-tmpdir.setup.ts',
+      '__tests__/setup-home-sandbox.ts',
+    ],
     // Suites need a kernel and a current dist/ (#1879). Every run's
     // temp files go in one directory that is removed afterwards.
     globalSetup: ['__tests__/kernel.global-setup.ts', '__tests__/global-setup-dist.ts', '__tests__/run-tmpdir.global-setup.ts'],

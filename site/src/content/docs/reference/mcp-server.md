@@ -9,7 +9,7 @@ CodeGraph runs as a [Model Context Protocol](https://modelcontextprotocol.io/) s
 codegraph serve --mcp
 ```
 
-The tools below are listed in every workspace. Where the project has no `.codegraph/` index, a call returns guidance (for example, to pass `projectPath` for a sub-project that is indexed) instead of an error, and indexing stays your decision. A project opened by `projectPath` is watched and kept in sync while the session uses it, and released after 10 minutes without a query; set `CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS` to change that (`0` keeps it open until the server exits).
+The tools below are listed in every workspace. Where the project has no `.codegraph/` index, a call returns guidance (for example, to pass `projectPath` for a sub-project that is indexed) instead of an error, and indexing stays your decision. A project opened by `projectPath` is watched and kept in sync while the session uses it, and released after 10 minutes without a query; set `CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS` to change that (`0` keeps it open until the server exits). A session that can't reach the shared background server serves itself and keeps retrying the server, first after 5 seconds and backing off to every 5 minutes; `CODEGRAPH_DAEMON_RETRY_MS` and `CODEGRAPH_DAEMON_RETRY_MAX_MS` set those delays, and `CODEGRAPH_DAEMON_RETRY_MS=0` turns retrying off.
 
 ## Two tools by default: `codegraph_explore` and `codegraph_sessions`
 

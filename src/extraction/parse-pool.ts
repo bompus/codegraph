@@ -69,6 +69,15 @@ const MAX_SCALED_PARSE_TIMEOUT_MS = 20_000;
  */
 const HARD_KILL_MULTIPLIER = 3;
 /**
+ * How long `destroy()` waits for a worker that has not yet reported
+ * 'grammars-loaded' before terminating it anyway. Upstream added this because
+ * terminating a worker mid WebAssembly grammar compile crashed the process on
+ * Windows (0xC0000005). This worker compiles no WebAssembly and answers as soon
+ * as its modules have loaded (the kernel loads on its first parse), so here the
+ * wait only spans that boot; the cap bounds a boot that is wedged.
+ */
+const GRAMMAR_LOAD_SETTLE_MS = 15_000;
+/**
  * Max workers cold-starting at once. A worker's cold start is heavy (module load
  * + native kernel load); starting the whole pool simultaneously thrashes CPU.
  * Warming a couple at a time keeps each start fast while the pool still reaches
@@ -195,6 +204,8 @@ export interface ParseWorkerPoolOptions {
   parseTimeoutMs?: number;
   /** Worker factory (tests inject a fake). Defaults to a real `worker_threads` Worker. */
   createWorker?: () => ParsePoolWorker;
+  /** How long destroy() waits on a worker still loading grammars (tests shorten it). Default 15s. */
+  loadSettleMs?: number;
   /** Optional verbose logger (the orchestrator's `[worker] …` logger). */
   log?: (msg: string) => void;
 }
@@ -207,6 +218,10 @@ export class ParseWorkerPool {
   // Spawned but not yet 'grammars-loaded'. Growth counts these so a single first
   // parse doesn't spawn the whole pool before the eager worker reports ready.
   private pending = new Set<ParsePoolWorker>();
+  // Each worker's grammar load, settled when it reports 'grammars-loaded' or
+  // goes away — what destroy() waits on before terminating it (see
+  // GRAMMAR_LOAD_SETTLE_MS).
+  private loads = new Map<ParsePoolWorker, { settled: Promise<void>; settle: () => void }>();
   private parseCounts = new Map<ParsePoolWorker, number>();
   private nextId = 1;
   private totalCrashes = 0;
@@ -217,6 +232,7 @@ export class ParseWorkerPool {
   private readonly recycleInterval: number;
   private readonly parseTimeoutMs: number;
   private readonly createWorker: () => ParsePoolWorker;
+  private readonly loadSettleMs: number;
   private readonly log: (msg: string) => void;
 
   constructor(opts: ParseWorkerPoolOptions) {
@@ -224,6 +240,7 @@ export class ParseWorkerPool {
     this.maxSize = Math.max(1, Math.min(opts.size, MAX_PARSE_POOL_SIZE));
     this.recycleInterval = opts.recycleInterval ?? DEFAULT_RECYCLE_INTERVAL;
     this.parseTimeoutMs = opts.parseTimeoutMs ?? DEFAULT_PARSE_TIMEOUT_MS;
+    this.loadSettleMs = opts.loadSettleMs ?? GRAMMAR_LOAD_SETTLE_MS;
     this.log = opts.log ?? (() => {});
     if (opts.createWorker) {
       this.createWorker = opts.createWorker;
@@ -294,15 +311,19 @@ export class ParseWorkerPool {
     this.workers.add(w);
     this.pending.add(w);
     this.parseCounts.set(w, 0);
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    this.loads.set(w, { settled, settle });
     w.on('message', (m) => this.onMessage(w, (m ?? {}) as ParseWorkerMessage));
-    w.on('error', (e) => this.onWorkerGone(w, `${WORKER_DIED}: ${e?.message ?? 'unknown error'}`));
-    w.on('exit', (code) => { if (code !== 0) this.onWorkerGone(w, `${WORKER_DIED}: exited with code ${code}`); });
+    w.on('error', (e) => { this.loadSettled(w); this.onWorkerGone(w, `${WORKER_DIED}: ${e?.message ?? 'unknown error'}`); });
+    w.on('exit', (code) => { this.loadSettled(w); if (code !== 0) this.onWorkerGone(w, `${WORKER_DIED}: exited with code ${code}`); });
     // Readiness handshake; the worker replies 'grammars-loaded' and only then is idle.
     w.postMessage({ type: 'load-grammars', languages: this.languages });
   }
 
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {
     if (m.type === 'grammars-loaded') {
+      this.loadSettled(w);
       if (!this.workers.has(w)) return; // recycled/destroyed before ready
       this.pending.delete(w);
       this.idle.push(w);
@@ -363,6 +384,32 @@ export class ParseWorkerPool {
     // Do not block replacement on termination of an unresponsive worker.
     try { void w.terminate(); } catch { /* already gone */ }
     if (this.healthy && !this.destroyed) this.spawnOne();
+  }
+
+  /** The worker's grammar load is over: it reported ready, errored or exited. */
+  private loadSettled(w: ParsePoolWorker): void {
+    const load = this.loads.get(w);
+    if (!load) return;
+    this.loads.delete(w);
+    load.settle();
+  }
+
+  /**
+   * Terminate a worker, but not while it is still loading grammars: wait for
+   * the load to finish (or the worker to go away), up to `loadSettleMs`
+   * (GRAMMAR_LOAD_SETTLE_MS — see that constant for the crash this avoids).
+   */
+  private async terminateSettled(w: ParsePoolWorker): Promise<void> {
+    const load = this.loads.get(w);
+    if (load) {
+      let cap: NodeJS.Timeout | undefined;
+      await Promise.race([
+        load.settled,
+        new Promise<void>((resolve) => { cap = setTimeout(resolve, this.loadSettleMs); cap.unref?.(); }),
+      ]);
+      clearTimeout(cap);
+    }
+    try { await w.terminate(); } catch { /* already gone */ }
   }
 
   private removeWorker(w: ParsePoolWorker): void {
@@ -485,6 +532,6 @@ export class ParseWorkerPool {
     }
     this.inflight.clear();
     this.queue = [];
-    await Promise.all(ws.map((w) => Promise.resolve(w.terminate()).catch(() => { /* already gone */ })));
+    await Promise.all(ws.map((w) => this.terminateSettled(w)));
   }
 }
