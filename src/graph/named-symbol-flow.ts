@@ -550,11 +550,11 @@ function containerOf(cg: CodeGraph, id: string): string | null {
 }
 
 /**
- * Whether `from` is an override calling the method it overrides — `super().m()`
- * from `m`: the same name, declared on a type that extends the callee's type.
+ * Whether `from` is declared on a type that extends the one `to` is declared on.
+ * For two definitions of one name, that makes a call from `from` to `to` an
+ * override calling the method it overrides (`super().m()` from `m`).
  */
-function callsOwnSuper(cg: CodeGraph, from: Node, to: Node): boolean {
-  if (from.name !== to.name) return false;
+function declaredOnSubtype(cg: CodeGraph, from: Node, to: Node): boolean {
   const sub = containerOf(cg, from.id);
   const base = containerOf(cg, to.id);
   if (!sub || !base || sub === base) return false;
@@ -572,6 +572,12 @@ function callsOwnSuper(cg: CodeGraph, from: Node, to: Node): boolean {
     }
     frontier = next;
   }
+  return false;
+}
+
+/** Whether one query token resolved to both `a` and `b`, which share its name. */
+function sharesToken(tokenNodes: ReadonlyMap<string, string[]>, a: string, b: string): boolean {
+  for (const ids of tokenNodes.values()) if (ids.includes(a) && ids.includes(b)) return true;
   return false;
 }
 
@@ -634,12 +640,15 @@ export function resolveNamedSymbolFlow(
           const steps = chainTo(parent, id);
           if (!deepest || steps.length > deepest.length) deepest = steps;
         }
-        // An override that hands off to the named method it overrides adds a
-        // step without adding a mechanism, and that extra step would otherwise
-        // let it outrank the flow the agent asked about. Start at the base.
+        // An override that hands off to the method it overrides adds a step
+        // without adding a mechanism, and that extra step would otherwise let
+        // it outrank the flow the agent asked about. When one token named both
+        // (a bare `pre_sql_setup` keeps every definition), start at the base;
+        // an override the agent named on its own keeps its step.
         while (
-          deepest && deepest.length > 2 && namedIds.has(deepest[1]!.node.id)
-          && callsOwnSuper(cg, deepest[0]!.node, deepest[1]!.node)
+          deepest && deepest.length > 2
+          && sharesToken(flow.tokenNodes, deepest[0]!.node.id, deepest[1]!.node.id)
+          && declaredOnSubtype(cg, deepest[0]!.node, deepest[1]!.node)
         ) {
           deepest = [{ node: deepest[1]!.node, edge: null }, ...deepest.slice(2)];
         }

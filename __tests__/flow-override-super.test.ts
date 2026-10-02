@@ -1,10 +1,11 @@
 /**
  * An override that calls the method it overrides (`super().save()`) is one step
  * longer than the base method's own flow, and explore's Flow prefers the
- * longest chain. When the agent named both, the chain starts at the base: the
- * override adds a hop, not a mechanism. A different method calling up through
- * `super()`, or a same-named call into a type the caller does NOT extend, is
- * its own step and stays.
+ * longest chain. When one bare token named both (`save` keeps every
+ * definition), the chain starts at the base: the override adds a hop, not a
+ * mechanism. An override the agent named on its own, a different method
+ * calling up through `super()`, and a same-named call into a type the caller
+ * does NOT extend each keep their first step.
  */
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import * as fs from 'fs';
@@ -25,6 +26,12 @@ beforeAll(async () => {
     def write(self):
         pass
 
+    def load(self):
+        self.read()
+
+    def read(self):
+        pass
+
 
 class AuditedStore(Store):
     def save(self):
@@ -37,9 +44,9 @@ class Audited(Store):
 
 
 class Wrapper:
-    def save(self):
+    def load(self):
         store = Store()
-        store.save()
+        store.load()
 `);
   cg = await CodeGraph.init(root, { index: true });
 });
@@ -53,8 +60,12 @@ const firstChain = (query: string) =>
   resolveNamedSymbolFlow(cg, query).chains[0]?.steps.map((s) => s.node.qualifiedName);
 
 describe('explore flow and an override that calls its super method', () => {
-  it('starts at the base method the override hands off to', () => {
-    expect(firstChain('AuditedStore.save Store.save write')).toEqual(['Store::save', 'Store::write']);
+  it('starts at the base method when one token named the override and the base', () => {
+    expect(firstChain('save write')).toEqual(['Store::save', 'Store::write']);
+  });
+
+  it('keeps an override the agent named on its own', () => {
+    expect(firstChain('AuditedStore.save Store.save write')).toEqual(['AuditedStore::save', 'Store::save', 'Store::write']);
   });
 
   it('keeps a different method that calls up through super()', () => {
@@ -62,6 +73,6 @@ describe('explore flow and an override that calls its super method', () => {
   });
 
   it('keeps the first step of a same-named delegation to an unrelated type', () => {
-    expect(firstChain('Wrapper.save Store.save write')).toEqual(['Wrapper::save', 'Store::save', 'Store::write']);
+    expect(firstChain('load read')).toEqual(['Wrapper::load', 'Store::load', 'Store::read']);
   });
 });
