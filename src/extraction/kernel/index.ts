@@ -5,12 +5,11 @@
  * by contractInfo) is extracted here. A language the kernel only PARSES (no
  * walker) returns null and the caller runs the generic TypeScript extractor
  * over the kernel's serialized tree instead (tree-sitter.ts → parse-tree.ts).
- * The only other null is the stack-overflow guard's `defer:` (stack.rs), which
- * takes the same generic path — parse_tree is iterative, so it survives the
- * nesting the recursive walker would not.
+ * Walker failures, including the stack guard's `defer:` (stack.rs), return null
+ * and take the same generic path. Native tree serialization is iterative.
  *
- * The per-language routing table, the CODEGRAPH_KERNEL kill switch and the
- * old fallback parser were removed in Phase 5 of kernel-only-extraction-plan.md.
+ * CODEGRAPH_KERNEL=0 disables bespoke walkers for debugging; parsing still
+ * requires the native kernel.
  */
 
 import type { Binding, ExtractionResult, Language, Node } from '../../types';

@@ -12,7 +12,7 @@
 //!
 //! Per-language extraction lives in a dedicated walker module (tsjs/ for
 //! typescript/tsx/javascript/jsx) that mirrors the TS extractor for behavioral
-//! parity — verified by scripts/kernel-parity.mjs and the §5 gate.
+//! parity — checked by kernel-generic-extractor-tree.test.ts and golden dumps.
 
 #![deny(clippy::all)]
 
@@ -308,7 +308,7 @@ macro_rules! enclosing_scope_impl {
 
 /// The markdown path-reference pair, for a walker with the usual shape
 /// (`text`, `line_of`, `col_of`, `arena`, `tables`, `file_path`). Every routed
-/// language needs the same two methods, and the wasm arm they must match is
+/// language needs the same two methods, and the generic extractor they must match is
 /// one implementation, so this is one implementation too — see markdown.rs for
 /// what it mirrors and why the two ref flags are set only here.
 macro_rules! markdown_refs_impl {
@@ -416,7 +416,7 @@ pub struct ExtractBuffers {
 
 /// Wire-contract description — the TS loader verifies this against
 /// src/types.ts before routing anything to the kernel, so an out-of-date
-/// `.node` degrades to the wasm path instead of mis-decoding.
+/// `.node` is rejected instead of mis-decoding.
 #[napi(object)]
 pub struct ContractInfo {
     pub abi_version: u32,
@@ -427,9 +427,8 @@ pub struct ContractInfo {
     pub languages: Vec<String>,
 }
 
-/// Grammar identity for the grammar-source-parity gate: the wasm grammar and
-/// the native grammar must expose identical node-kind/field tables, or
-/// kernel-vs-fallback routing would be non-deterministic.
+/// Grammar identity: exposes the native grammar's ABI and node-kind/field tables
+/// for grammar inspection and compatibility checks.
 #[napi(object)]
 pub struct GrammarInfo {
     pub abi_version: u32,

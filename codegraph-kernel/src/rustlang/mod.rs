@@ -393,7 +393,7 @@ impl<'t> Walker<'t> {
             return;
         }
 
-        // Match the wasm walker's sibling-attribute handling for Tauri commands.
+        // Match the generic extractor's sibling-attribute handling for Tauri commands.
         let mut decorators = None;
         if node.kind() == "function_item" {
             let mut sibling = node.prev_named_sibling();
@@ -674,7 +674,7 @@ impl<'t> Walker<'t> {
                             // resolver can read the owner off the calling
                             // method's qualified name and resolve the method on
                             // THAT type, instead of matching a bare name by file
-                            // proximity (#1861). Mirrors the wasm extractor.
+                            // proximity (#1861). Mirrors the generic extractor.
                             "self" => {
                                 callee_name = format!("self.{method_name}");
                             }

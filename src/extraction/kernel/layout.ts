@@ -7,14 +7,13 @@
  *
  * THIS FILE AND buffers.rs MUST MATCH BYTE FOR BYTE. Any layout change bumps
  * KERNEL_ABI_VERSION on both sides — the loader refuses a version it doesn't
- * know and the extraction path falls back to wasm.
+ * know. Parsing requires a verified native binary.
  *
  * NodeKind / EdgeKind / provenance / visibility cross the boundary as indexes
  * into NODE_KINDS / EDGE_KINDS (src/types.ts) and the small tables below, so
  * those array orders are part of the contract (append, never reorder). The
  * loader additionally verifies the kernel's own kind tables against
- * NODE_KINDS/EDGE_KINDS at load time, so a stale .node degrades to the wasm
- * path instead of mis-decoding.
+ * NODE_KINDS/EDGE_KINDS at load time, rejecting stale binaries before decoding.
  */
 
 export const KERNEL_ABI_VERSION = 3;

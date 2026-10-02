@@ -690,9 +690,8 @@ export class TreeSitterExtractor {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
 
-      // WASM memory errors leave the module in a corrupted state — all subsequent
-      // parses would also fail. Re-throw so the worker can detect and crash,
-      // forcing a clean restart with a fresh heap.
+      // Let the worker report memory-related exceptions as a file-level
+      // parse_error. This bypasses the generic extractor's partial-result path.
       if (msg.includes('memory access out of bounds') || msg.includes('out of memory')) {
         throw error;
       }

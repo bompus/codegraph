@@ -185,7 +185,7 @@ function library(source: string, name: string): Binding | null {
   return constructors[framework].includes(name) ? { kind: 'factory', framework } : null;
 }
 
-/** Source-level declarations only; the same hook runs after native and WASM extraction. */
+/** Source-level declarations only; the same hook runs after bespoke and generic extraction. */
 export function extractHttpRoutes(
   filePath: string,
   source: string,

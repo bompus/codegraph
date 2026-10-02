@@ -91,7 +91,7 @@ pub fn line_starts(src: &str) -> Vec<usize> {
 }
 
 /// UTF-16 code units in `s` — what web-tree-sitter (and JS string ops)
-/// count, so kernel-emitted columns are byte-identical to the wasm path's.
+/// count, so kernel-emitted columns match the generic extractor's UTF-16 positions.
 pub fn utf16_len(s: &str) -> usize {
     s.chars().map(|c| c.len_utf16()).sum()
 }

@@ -5,8 +5,8 @@
  * workers, so they exercise the real scheduling code without spawning threads or
  * needing a built dist.
  *
- * End-to-end behavior with real worker threads (each worker owns a tree-sitter
- * WASM heap and runs extractFromSource) is covered by the extraction suite
+ * End-to-end behavior with real worker threads (each worker loads the native
+ * kernel and runs extractFromSource) is covered by the extraction suite
  * against a real temp project; here we pin the orchestration that makes the
  * parallelism safe.
  */
@@ -50,7 +50,7 @@ class FakeWorker implements ParsePoolWorker {
     const action = this.behavior(m as ParseMsg);
     if ('crash' in action) {
       this.alive = false;
-      setTimeout(() => this.exitCb?.(1), 0); // simulate a WASM-OOM exit(1)
+      setTimeout(() => this.exitCb?.(1), 0); // simulate a worker crash
       return;
     }
     if ('hang' in action) return; // never reply → timeout path

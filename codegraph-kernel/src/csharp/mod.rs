@@ -1,8 +1,8 @@
 //! C# extraction — a faithful Rust port of `TreeSitterExtractor`'s C# paths
 //! (src/extraction/tree-sitter.ts) plus languages/csharp.ts.
 //!
-//! Same porting contract as the other walkers: behavior parity with the wasm
-//! path, bug-for-bug, verified by scripts/kernel-parity.mjs and the full-index
+//! Same porting contract as the other walkers: behavior parity with the generic
+//! extractor, bug-for-bug, checked by the kernel parity tests and the full-index
 //! dump-diff gate. The authoritative quirk list is
 //! docs/design/csharp-kernel-port-checklist.md — including every deliberate
 //! emission hole (property/accessor bodies, constructor initializers,

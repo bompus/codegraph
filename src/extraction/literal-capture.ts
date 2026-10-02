@@ -4,9 +4,8 @@
  * explore query naming the literal seeds on its readers and writers instead
  * of degrading to bag-of-words FTS (the literal is never a symbol name).
  *
- * The capture is a regex over the file's source text, not a tree walk: the
- * per-node JS↔WASM crossing is the parse floor (docs/design/native-extraction-kernel.md),
- * and a second walk would pay it again for strings alone. Quotes inside a
+ * The capture is a regex over the file's source text, avoiding another tree
+ * traversal for strings alone. Quotes inside a
  * comment can produce a spurious literal; the predicate below keeps only
  * identifier-shaped values, so prose never qualifies.
  */

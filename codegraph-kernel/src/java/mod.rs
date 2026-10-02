@@ -2,8 +2,8 @@
 //! paths (src/extraction/tree-sitter.ts) plus languages/java.ts, including
 //! the Lombok member synthesizer (#912).
 //!
-//! Same porting contract as tsjs/: behavior parity with the wasm path,
-//! bug-for-bug, verified by scripts/kernel-parity.mjs and the full-index
+//! Same porting contract as tsjs/: behavior parity with the generic extractor,
+//! bug-for-bug, checked by the kernel parity tests and the full-index
 //! dump-diff gate. Positions in UTF-16 code units. Files with parse errors
 //! are walked like any other (tree-sitter's recovery is canonical).
 

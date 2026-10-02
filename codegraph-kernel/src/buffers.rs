@@ -131,7 +131,7 @@ pub const FUNCTION_REF_CODE: u8 = 200;
 /// Ref-row flag bit 0: the ref carries `filePath` = the extracted file.
 pub const REF_FLAG_FILE_PATH: u8 = 1;
 /// The ref carries the file's language, as `addReference` (tree-sitter.ts)
-/// emits it. Ordinary refs must NOT set this: their wasm counterparts have no
+/// emits it. Ordinary refs must NOT set this: their generic counterparts have no
 /// `language` field and parity compares the objects whole.
 pub const REF_FLAG_LANGUAGE: u8 = 2;
 
@@ -533,10 +533,10 @@ impl EmitOut {
     }
 }
 
-/// The wasm extractor's parse-collapse warning (tree-sitter.ts, #1522): a tree
+/// The generic extractor's parse-collapse warning (tree-sitter.ts, #1522): a tree
 /// with errors that yielded no symbol at all is indexed but contributes
 /// nothing to the graph. Emitted as the file's only `errors` entry so the CLI
-/// can surface it exactly as the wasm path does. NONE_STR otherwise.
+/// can surface it exactly as the generic extractor does. NONE_STR otherwise.
 pub fn parse_collapse_warning(
     arena: &mut Arena,
     tables: &Tables,

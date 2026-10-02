@@ -13,8 +13,8 @@ export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'li
 
 /**
  * Every language the native kernel carries a grammar for (codegraph-kernel/src/
- * langs.rs). `tsx` and `jsx` ride another grammar there, exactly as they did
- * on the wasm side. This is the single list `isLanguageSupported`,
+ * langs.rs). `tsx` uses the TSX grammar and `jsx` uses JavaScript.
+ * This is the single list `isLanguageSupported`,
  * `hasTreeSitterGrammar` and `getSupportedLanguages` answer from.
  */
 const GRAMMAR_LANGUAGES: ReadonlySet<GrammarLanguage> = new Set<GrammarLanguage>([

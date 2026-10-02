@@ -174,7 +174,7 @@ pub fn run_guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String
     let out = f();
     if overflowed() {
         return Err(
-            "defer: nesting too deep for the native walker — wasm recovery handles it".to_string(),
+            "defer: nesting too deep for the native walker — use the generic extractor".to_string(),
         );
     }
     out
