@@ -22,7 +22,7 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
-import { DEFAULT_PARSE_POOL_CAP, FILES_PER_PARSE_WORKER, ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
+import { DEFAULT_PARSE_POOL_CAP, FILES_PER_PARSE_WORKER, ParseWorkerPool, isRetryableParseFailure, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
 import { StoreWriter, StoreBundle, finalizeStoreBundle, attachBindings } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
@@ -2527,10 +2527,7 @@ export class ExtractionOrchestrator {
     // Parse one file at a time and store only after its parse resolves, keeping
     // synchronous storage from delaying another retry's result handling.
     const retryableErrors = errors.filter(
-      (e) => e.code === 'parse_error' && e.filePath &&
-        (e.message.includes('Worker exited') ||
-         e.message.includes('memory access out of bounds') ||
-         e.message.includes('timed out'))
+      (e) => e.code === 'parse_error' && e.filePath && isRetryableParseFailure(e.message)
     );
 
     if (retryableErrors.length > 0 && pool) {

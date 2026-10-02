@@ -11,31 +11,33 @@
  * parallelism safe.
  */
 import { describe, it, expect } from 'vitest';
-import { ParseWorkerPool, resolveParseBudgetMs, resolveParsePoolSize, resolveParseTimeoutMs, type ParsePoolWorker, type ParseTask } from '../src/extraction/parse-pool';
+import { ParseWorkerPool, isRetryableParseFailure, resolveParseBudgetMs, resolveParsePoolSize, resolveParseTimeoutMs, type ParsePoolWorker, type ParseTask } from '../src/extraction/parse-pool';
 import type { Language, ExtractionResult } from '../src/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface ParseMsg { type: 'parse'; id: number; filePath: string; content: string; language: Language }
-type Action = { result: ExtractionResult } | { crash: true } | { hang: true } | { wait: Promise<ExtractionResult> };
+type Action = { result: ExtractionResult } | { crash: true } | { error: string } | { hang: true } | { wait: Promise<ExtractionResult> };
 
 /**
  * Fake worker speaking the same {load-grammars → grammars-loaded} /
  * {parse → parse-result} protocol as the real parse-worker. `behavior` decides
- * per parse whether to return a result, crash (exit≠0), hang (never reply —
- * exercises the timeout), or wait on a promise (hold a parse in-flight to
- * observe concurrency). Emits 'grammars-loaded' on a macrotask so the pool has
- * wired its listeners first.
+ * per parse whether to return a result, crash (exit≠0), die with an error
+ * (`error` then exit 1, as Node reports an uncaught exception or heap
+ * exhaustion), hang (never reply — exercises the timeout), or wait on a
+ * promise (hold a parse in-flight to observe concurrency). Emits
+ * 'grammars-loaded' on a macrotask so the pool has wired its listeners first.
  */
 class FakeWorker implements ParsePoolWorker {
   private msgCb?: (m: unknown) => void;
   private exitCb?: (code: number) => void;
+  private errorCb?: (e: Error) => void;
   alive = true;
   constructor(private behavior: (m: ParseMsg) => Action, private onTerminate?: () => void) {}
   on(event: string, cb: (...args: any[]) => void): void {
     if (event === 'message') this.msgCb = cb;
     else if (event === 'exit') this.exitCb = cb;
-    // 'error' unused by the fakes
+    else if (event === 'error') this.errorCb = cb;
   }
   private reply(id: number, result: ExtractionResult): void {
     if (this.alive) this.msgCb?.({ type: 'parse-result', id, result });
@@ -51,6 +53,11 @@ class FakeWorker implements ParsePoolWorker {
     if ('crash' in action) {
       this.alive = false;
       setTimeout(() => this.exitCb?.(1), 0); // simulate a worker crash
+      return;
+    }
+    if ('error' in action) {
+      this.alive = false;
+      setTimeout(() => { this.errorCb?.(new Error(action.error)); this.exitCb?.(1); }, 0);
       return;
     }
     if ('hang' in action) return; // never reply → timeout path
@@ -176,13 +183,31 @@ describe('ParseWorkerPool', () => {
 
   it('rejects a parse whose worker crashes (retry-pass-recognisable message) and keeps serving', async () => {
     const { pool, counts } = makePool(1, (m) => (m.filePath === 'poison.ts' ? { crash: true } : { result: result(7) }));
-    // The message must contain "Worker exited" so the orchestrator's retry pass
-    // re-attempts it (that's the filter it uses).
-    await expect(pool.requestParse(task('poison.ts'))).rejects.toThrow(/Worker exited/);
+    // The orchestrator's retry pass re-attempts only messages this predicate selects.
+    const err = await pool.requestParse(task('poison.ts')).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(isRetryableParseFailure((err as Error).message)).toBe(true);
     const ok = await pool.requestParse(task('good.ts'));
     expect(ok.durationMs).toBe(7);
     expect(counts().spawned).toBe(2); // respawned after the crash
     await pool.destroy();
+  });
+
+  it('rejects a worker that dies through `error` before `exit` as retryable (heap exhaustion)', async () => {
+    const oom = 'Worker terminated due to reaching memory limit: JS heap out of memory';
+    const { pool, counts } = makePool(1, (m) => (m.filePath === 'huge.ts' ? { error: oom } : { result: result(5) }));
+    const err = await pool.requestParse(task('huge.ts')).catch((e: Error) => e);
+    expect((err as Error).message).toContain(oom);
+    expect(isRetryableParseFailure((err as Error).message)).toBe(true);
+    const ok = await pool.requestParse(task('next.ts'));
+    expect(ok.durationMs).toBe(5);
+    expect(counts().spawned).toBe(2); // one death, one replacement, though both events fired
+    await pool.destroy();
+  });
+
+  it('does not select per-file extraction errors a live worker reports', () => {
+    expect(isRetryableParseFailure('Parse worker error: unexpected token')).toBe(false);
+    expect(isRetryableParseFailure('Parse error: out of memory')).toBe(false);
   });
 
   it('times out a hung parse (at the hard-kill backstop) and stays usable', async () => {

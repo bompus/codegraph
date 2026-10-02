@@ -121,7 +121,7 @@ describe('failure markers vs later real results (#1557 × #1541)', () => {
       // row under the SAME content hash the retry will store with.
       await orch.storeExtractionResult(rel, content, 'python', stats, {
         nodes: [], edges: [], unresolvedReferences: [],
-        errors: [{ message: 'Worker exited with code 1', filePath: rel, severity: 'error', code: 'parse_error' }],
+        errors: [{ message: 'Parse worker died: exited with code 1', filePath: rel, severity: 'error', code: 'parse_error' }],
         durationMs: 0,
       });
       expect(cg.getFile(rel)?.nodeCount).toBe(0);
