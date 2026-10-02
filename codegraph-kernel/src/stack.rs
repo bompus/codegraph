@@ -18,9 +18,10 @@
 //! latches a per-thread flag. `run_guarded` wraps a whole extraction: when
 //! the flag is set afterwards the result is discarded and replaced by a
 //! `defer:` error, which the TS side (`src/extraction/kernel/index.ts`)
-//! already treats as "this file takes the wasm path" — and the wasm walker
-//! catches its own JS `RangeError` per file, so the file lands as a partial
-//! result with a recorded parse error instead of a dead process.
+//! already treats as "the generic extractor takes this file": it walks the
+//! kernel's serialized tree (built iteratively) in JS and catches its own
+//! `RangeError` per file, so the file lands as a partial result with a
+//! recorded parse error instead of a dead process.
 //!
 //! The per-thread stack bounds come from the OS (glibc/musl
 //! `pthread_getattr_np`, macOS `pthread_get_stackaddr_np`, Win32
@@ -166,7 +167,7 @@ pub fn overflowed() -> bool {
 }
 
 /// Run one extraction under the guard. A walk that tripped the guard returns
-/// a `defer:` error — the TS side's routine "take the wasm path" signal —
+/// a `defer:` error — the TS side's routine "use the generic extractor" signal —
 /// regardless of what the truncated walk produced.
 pub fn run_guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     begin();

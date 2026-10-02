@@ -564,7 +564,7 @@ export class TreeSitterExtractor {
   // Memoized "is this a Vue store file" verdict (per-extractor = per-file).
   private vueStoreFile: boolean | null = null;
   // Source already went through the extractor's preParse at the kernel route
-  // point (this instance is the wasm fallback for a kernel-deferred file) —
+  // point (this instance is the generic extractor for a kernel-deferred file) —
   // don't blank it a second time.
   private sourceIsPreParsed = false;
 
@@ -615,7 +615,7 @@ export class TreeSitterExtractor {
       if (this.extractor?.preParse && !this.sourceIsPreParsed) {
         this.source = this.extractor.preParse(this.source, this.filePath);
       }
-      // Kernel first, wasm fallback (parse-tree.ts): every language the
+      // Always the kernel parser (parse-tree.ts): every language the
       // kernel binary carries a grammar for is parsed natively even when it
       // has no bespoke Rust walker — this generic extractor then walks the
       // serialized tree through the NativeNode facade.
@@ -704,8 +704,8 @@ export class TreeSitterExtractor {
         code: 'parse_error',
       });
     } finally {
-      // Free tree-sitter WASM memory immediately — trees hold native heap memory
-      // invisible to V8's GC that accumulates across thousands of files.
+      // Drop the tree with the file; a kernel tree is plain Buffers, so
+      // `delete()` is a no-op kept for the ParsedTree contract.
       if (this.tree) {
         this.tree.delete();
         this.tree = null;
@@ -2119,7 +2119,7 @@ export class TreeSitterExtractor {
     const isAsync = this.extractor.isAsync?.(node);
     const isStatic = this.extractor.isStatic?.(node);
     // Only persist abstract when true — a false return must not mint `isAbstract: false`
-    // on every ordinary method (breaks kernel↔wasm parity JSON equality).
+    // on every ordinary method (breaks kernel-walker↔generic-extractor parity JSON equality).
     const isAbstract = this.extractor.isAbstract?.(node) ? true : undefined;
     const returnType = this.extractor.getReturnType?.(node, this.source);
     const extraProps: Partial<Node> = {
@@ -7895,7 +7895,8 @@ export function extractFromSource(
   } else {
     // Native-kernel route (docs/design/rust-kernel-migration-plan.md): gated
     // per language, null when not routed/available or on a kernel error —
-    // the wasm TreeSitterExtractor below stays the fallback either way.
+    // the generic TreeSitterExtractor below, over the kernel's serialized
+    // tree, stays the fallback either way.
     const kernelResult = tryKernelExtract(filePath, source, detectedLanguage);
     if (kernelResult) {
       result = kernelResult;
