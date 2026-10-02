@@ -1154,7 +1154,8 @@ mod tests {
              qualified_name TEXT NOT NULL, file_path TEXT NOT NULL, language TEXT NOT NULL, \
              start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, start_column INTEGER NOT NULL, \
              end_column INTEGER NOT NULL, signature TEXT, visibility TEXT, \
-             is_exported INTEGER NOT NULL DEFAULT 0, return_type TEXT, type_parameters TEXT, decorators TEXT); \
+             is_exported INTEGER NOT NULL DEFAULT 0, return_type TEXT, type_parameters TEXT, decorators TEXT, \
+             is_async INTEGER NOT NULL DEFAULT 0); \
              CREATE INDEX idx_nodes_name ON nodes(name); \
              CREATE INDEX idx_nodes_qualified_name ON nodes(qualified_name); \
              CREATE INDEX idx_nodes_file_path ON nodes(file_path); \
