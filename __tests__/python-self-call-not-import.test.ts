@@ -546,6 +546,30 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     });
     expect(calls.filter((c) => /^Child\S* -> (Base|Mid)::m /.test(c))).toEqual([]);
   });
+  it('super() links from an f-string field, on one line or several (Python 3.12)', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Base:\n    def m(self):\n        return "base"\n\n    def n(self):\n        return "base"\n',
+      'pkg/child.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Child(Base):',
+        '    def m(self):',
+        '        return f"{(',
+        '            super().m()',
+        '        )}"',
+        '',
+        '    def n(self):',
+        '        return f"{super().n()!r:>{10}}"',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => c.startsWith('Child::'))).toEqual([
+      'Child::m -> Base::m (pkg/base.py)',
+      'Child::n -> Base::n (pkg/base.py)',
+    ]);
+  });
   it('super() still links in a classmethod, a one-line method, a nested block or function, a conditional method, a comprehension, under a plain metaclass', async () => {
     const calls = await callsIn({
       'pkg/__init__.py': '',

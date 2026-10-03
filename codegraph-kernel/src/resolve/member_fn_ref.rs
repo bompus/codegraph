@@ -729,6 +729,16 @@ fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> 
 /// spaces, byte for byte, and any comment cut off, so prose never reads as a
 /// binding and byte columns still line up.
 pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(bool, String)> {
+    python_code_lines_as(lines, lo, hi, false)
+}
+
+/// [`python_code_lines`], but the expressions in f- and t-string fields stay
+/// as code: they run in the enclosing frame.
+pub(super) fn python_field_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(bool, String)> {
+    python_code_lines_as(lines, lo, hi, true)
+}
+
+fn python_code_lines_as(lines: &[String], lo: usize, hi: usize, field_code: bool) -> Vec<(bool, String)> {
     let hi = hi.min(lines.len());
     let mut out = Vec::with_capacity(hi.saturating_sub(lo));
     let mut depth = 0usize;
@@ -744,7 +754,7 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
     for (k, line) in lines.iter().enumerate().take(hi).skip(lo) {
         let start = depth == 0 && open.is_empty() && !continued;
         let mut code = line.as_bytes().to_vec();
-        let (escaped_eol, _) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
+        let (escaped_eol, _) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open, field_code);
         python_drop_broken(&mut open, escaped_eol);
         // A field of a single-quoted f-string may run on to later lines
         // (Python 3.12), and the lookahead reads past `hi` to the file's end;
@@ -778,9 +788,11 @@ const PY_LOOKAHEAD_LINES: usize = 1000;
 /// Scans one line from the strings and fields `open` at its start: blanks
 /// string contents in `code` (opening and closing quotes of the outermost
 /// string kept), cuts a comment off, and tracks bracket `depth` outside
-/// strings. Returns whether the line ends in a backslash inside a string or
-/// field, and the fewest levels left open at any point.
-fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut Vec<PyOpen>) -> (bool, usize) {
+/// strings. With `field_code`, a field's expression stays (its closing `}`
+/// and the `:` before its format spec still blanked). Returns whether the
+/// line ends in a backslash inside a string or field, and the fewest levels
+/// left open at any point.
+fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut Vec<PyOpen>, field_code: bool) -> (bool, usize) {
     let mut low = open.len();
     let mut escaped_eol = false;
     let mut i = 0;
@@ -804,7 +816,8 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
             continue;
         };
         let k = open.len() - 1;
-        // The bytes this step reads, all blanked.
+        let mut keep = false;
+        // The bytes this step reads, blanked unless kept.
         let n = match top {
             PyOpen::Str { quote, triple, fields } => {
                 if b[i] == quote && (!triple || b[i..].starts_with(&[quote; 3])) {
@@ -872,12 +885,15 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
                         open.pop();
                         low = low.min(open.len());
                     }
+                    keep = field_code && !(d == 0 && matches!(c, b'}' | b':'));
                     1
                 }
             },
         };
-        for c in code.iter_mut().skip(i).take(n) {
-            *c = b' ';
+        if !keep {
+            for c in code.iter_mut().skip(i).take(n) {
+                *c = b' ';
+            }
         }
         i += n;
     }
@@ -922,7 +938,7 @@ fn python_closes_within(rest: &[String], open: &[PyOpen], first: usize, budget: 
     for (j, line) in rest.iter().enumerate() {
         *budget = budget.checked_sub(1).ok_or(())?;
         let mut code = line.as_bytes().to_vec();
-        let (escaped_eol, low) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
+        let (escaped_eol, low) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open, false);
         if low <= first {
             return Ok(Some(j));
         }
@@ -1094,5 +1110,11 @@ mod tests {
         assert_eq!(code[2].1, "  \" + \"  \"  ");
         let lines = vec!["x = f\"{d[\"k\"]}\"  # c".to_string()];
         assert_eq!(python_code_lines(&lines, 0, 1)[0].1, "x = f\"        \"  ");
+        // Field code can stay, with the same statement starts.
+        assert_eq!(super::python_field_code_lines(&lines, 0, 1)[0].1, "x = f\" d[   ] \"  ");
+        let lines: Vec<String> = ["    return f\"{(", "        super().render()", "    )}\"", "x = 1"].map(String::from).into();
+        let code = super::python_field_code_lines(&lines, 0, 4);
+        assert_eq!(code.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, false, false, true]);
+        assert_eq!(code[1].1, lines[1]);
     }
 }

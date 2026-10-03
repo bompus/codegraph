@@ -448,13 +448,15 @@ impl KernelResolver {
             return Ok(None);
         };
         let named = call.get(1).map(|m| m.as_str());
-        let file = source.python_file();
-        let Some((def, receiver)) = python_method_frame(file, at, col, named) else {
+        // A call in an f-string field runs in the method too, and a lambda or
+        // comprehension around it in the field still hides the method.
+        let Some((def, receiver)) = python_method_frame(source.python_field_file(), at, col, named) else {
             return Ok(None);
         };
         if call.get(2).is_some_and(|m| m.as_str() != receiver) {
             return Ok(None);
         }
+        let file = source.python_file();
         let fns = file.functions_around(Some(def));
         if !file.bindings(&fns, "super", true)?.is_empty() {
             return Ok(None);
@@ -1483,7 +1485,16 @@ pub(crate) struct PyFile {
 
 impl PyFile {
     pub(super) fn new(lines: &[String]) -> Self {
-        let code = super::member_fn_ref::python_code_lines(lines, 0, lines.len());
+        Self::from_code(super::member_fn_ref::python_code_lines(lines, 0, lines.len()))
+    }
+
+    /// The same statements and scopes, with f- and t-string field
+    /// expressions kept as code.
+    pub(super) fn with_field_code(lines: &[String]) -> Self {
+        Self::from_code(super::member_fn_ref::python_field_code_lines(lines, 0, lines.len()))
+    }
+
+    fn from_code(code: Vec<(bool, String)>) -> Self {
         let mut stmts: Vec<(usize, String)> = Vec::new();
         for (i, (start, c)) in code.iter().enumerate() {
             match stmts.last_mut() {
