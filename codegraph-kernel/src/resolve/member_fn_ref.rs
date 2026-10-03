@@ -729,8 +729,8 @@ fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> 
 /// spaces, byte for byte, and any comment cut off, so prose never reads as a
 /// binding and byte columns still line up.
 pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(bool, String)> {
-    let lines = lines.get(lo..hi.min(lines.len())).unwrap_or(&[]);
-    let mut out = Vec::with_capacity(lines.len());
+    let hi = hi.min(lines.len());
+    let mut out = Vec::with_capacity(hi.saturating_sub(lo));
     let mut depth = 0usize;
     // The strings and f-string fields open here, innermost last.
     let mut open: Vec<PyOpen> = Vec::new();
@@ -738,17 +738,21 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
     // Lines before this one are known to close the single-quoted string open
     // across them.
     let mut checked_to = 0;
-    for (k, line) in lines.iter().enumerate() {
+    // The lines left for looking ahead: each valid string's span is read
+    // once, so only strings that never close spend it.
+    let mut budget = 2 * hi.saturating_sub(lo) + PY_LOOKAHEAD_LINES;
+    for (k, line) in lines.iter().enumerate().take(hi).skip(lo) {
         let start = depth == 0 && open.is_empty() && !continued;
         let mut code = line.as_bytes().to_vec();
         let (escaped_eol, _) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
         python_drop_broken(&mut open, escaped_eol);
         // A field of a single-quoted f-string may run on to later lines
-        // (Python 3.12); one that never closes is cut here, as Python would
-        // reject it, so it can't swallow the rest of the file.
+        // (Python 3.12), and the lookahead reads past `hi` to the file's end;
+        // one that never closes is cut here, as Python would reject it, so
+        // it can't swallow the rest of the file.
         if k >= checked_to {
             if let Some(first) = open.iter().position(|o| matches!(o, PyOpen::Str { triple: false, .. })) {
-                match python_closes_within(&lines[k + 1..], &open, first) {
+                match python_closes_within(&lines[k + 1..], &open, first, &mut budget) {
                     Some(m) => checked_to = k + 1 + m,
                     None => {
                         open.truncate(first);
@@ -765,8 +769,8 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
     out
 }
 
-/// How many lines a field of a single-quoted f-string may run on.
-const PY_FIELD_LINES: usize = 100;
+/// The lines `python_code_lines` may read ahead beyond twice its window.
+const PY_LOOKAHEAD_LINES: usize = 1000;
 
 /// Scans one line from the strings and fields `open` at its start: blanks
 /// string contents in `code` (opening and closing quotes of the outermost
@@ -824,10 +828,12 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
                 }
             }
             // The format spec is literal text, but for its own fields.
+            // A backslash escapes only another backslash here: `\}` still
+            // closes the field and `\{` opens one.
             PyOpen::Field { spec: true, .. } => match b[i] {
                 b'\\' => {
                     escaped_eol = i + 1 == b.len();
-                    2
+                    if b.get(i + 1) == Some(&b'\\') { 2 } else { 1 }
                 }
                 b'{' => {
                     open.push(PyOpen::Field { depth: 0, spec: false });
@@ -899,13 +905,15 @@ fn python_pop_fields(open: &mut Vec<PyOpen>) {
     }
 }
 
-/// Within how many of `rest`'s lines (`PY_FIELD_LINES` at most) the string
-/// `open[first]` closes, scanning on from `open`; None when a line's end
-/// breaks it first or it runs past them.
-fn python_closes_within(rest: &[String], open: &[PyOpen], first: usize) -> Option<usize> {
+/// Within how many of `rest`'s lines the string `open[first]` closes,
+/// scanning on from `open` and spending `budget` a line; None when a line's
+/// end breaks it first, or it is still open at the end of `rest` or of the
+/// budget.
+fn python_closes_within(rest: &[String], open: &[PyOpen], first: usize, budget: &mut usize) -> Option<usize> {
     let mut open = open.to_vec();
     let mut depth = 0;
-    for (j, line) in rest.iter().take(PY_FIELD_LINES).enumerate() {
+    for (j, line) in rest.iter().enumerate() {
+        *budget = budget.checked_sub(1)?;
         let mut code = line.as_bytes().to_vec();
         let (escaped_eol, low) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
         if low <= first {
@@ -1056,6 +1064,16 @@ mod tests {
         assert_eq!(starts("a = f\"{x\nb = 1"), [true, true]);
         assert_eq!(starts("a = f\"{(\nb = 1\ndef later():\n    return 1"), [true, true, true, true]);
         assert_eq!(starts("a = f\"\"\"{\"abc\nx\"\"\"\ny = 1"), [true, false, true]);
+        // A window that ends inside a string still sees it close beyond.
+        let lines: Vec<String> = ["def cb(obj):", "    return f\"{log(\\", "        obj=Decoy(),\\", "        f=obj.fetch\\", "    )}\""].map(String::from).into();
+        assert_eq!(python_code_lines(&lines, 0, 4).iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, true, false, false]);
+        // A backslash in a format spec escapes only a backslash.
+        let lines = vec!["x = rf\"{1:\\}\"; y = 1".to_string()];
+        assert!(python_code_lines(&lines, 0, 1)[0].1.ends_with("\"; y = 1"));
+        // A long valid string is never cut short.
+        let long = format!("a = \"\\\n{}\"\nb = 1", "x\\\n".repeat(150));
+        let s = starts(&long);
+        assert_eq!((s[0], s[1..152].iter().any(|s| *s), s[152]), (true, false, true));
         // A comment in a field is cut, and multibyte text stays aligned.
         let lines: Vec<String> = ["a = f\"{(", "    1  # setattr(s, \"c\", 1)", ")}\" + \"\u{fc}\"  # \u{e9}"].map(String::from).into();
         let code = python_code_lines(&lines, 0, 3);

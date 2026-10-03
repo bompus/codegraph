@@ -1728,6 +1728,14 @@ def init():
         'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{1:>\\\n10}"; settings.conn = Decoy()\n', 'c.py': consumer }, []],
       field_newline: [{ 'settings.py': header,
         'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{1\n    }"; settings.conn = Decoy()\n', 'c.py': consumer }, []],
+      spec_backslash_brace: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = rf"{1:\\}"; settings.conn = Decoy()\n', 'c.py': consumer }, []],
+      // A string past the 100th line, or past the reference line, still closes.
+      long_string_shows_write: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\nlabel = "\\\nsettings.conn = Decoy()\\\n' + 'x\\\n'.repeat(150) + '"\n',
+        'c.py': consumer }, ['cb -> Store::fetch']],
+      keyword_in_continued_field: [{ 'm.py': 'from store import Store\nfrom decoy import Decoy\n\ndef log(**kw):\n    return kw\n\n' +
+        'def cb(obj: Store, pool):\n    return f"{log(\\\n        obj=Decoy(),\\\n        job=pool.submit(obj.fetch)\\\n    )}"\n' }, ['cb -> Store::fetch']],
       // A field that never closes (a syntax error) leaves later lines code.
       unfinished_field: [{ 'settings.py': header,
         'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{(\n    settings.conn = Decoy()\n', 'c.py': consumer }, []],
