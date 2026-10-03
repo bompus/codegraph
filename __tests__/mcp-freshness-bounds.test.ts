@@ -122,25 +122,6 @@ describe('bounded freshness validation (#1959)', () => {
     expect(await retry).toEqual({ added: 0, modified: 1, removed: 0 });
   });
   // Last in the file: the stuck worker below keeps its concurrency slot.
-  it('a server shutting down also ends a measurement started while its calls finish', async () => {
-    vi.useFakeTimers();
-    let drain!: () => void;
-    const drained = new Promise<void>((resolve) => { drain = resolve; });
-    let ended = false;
-    const ending = endFreshnessMeasurements({ thenAfter: drained }).then(() => { ended = true; });
-    // A status call still running starts its measurement after the first sweep.
-    const late = measurePendingChanges('/freshness-late');
-    const w = workers[workers.length - 1];
-    drain();
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(ended).toBe(false);
-    w.emit('message', { type: 'loaded' });
-    await ending;
-    expect(w.terminate).toHaveBeenCalled();
-    w.emit('exit', 1);
-    expect(await late).toBeNull();
-  });
-
   it('a server shutting down stops waiting on a measurement past its cap', async () => {
     vi.useFakeTimers();
     const pending = measurePendingChanges('/freshness-stuck-in-git');

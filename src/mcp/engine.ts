@@ -279,9 +279,10 @@ export class MCPEngine {
     this.toolHandler.setQueryPool(null);
     const poolDown = this.queryPool ? this.queryPool.destroy() : Promise.resolve();
     this.queryPool = null;
+    // Closing first: a status call still in flight then starts no measurement
+    // after the sweep.
     const drained = this.toolHandler.closeAll();
-    // Swept again once the calls in flight finish, which can still start one.
-    const measurementsDown = endFreshnessMeasurements({ thenAfter: drained });
+    const measurementsDown = endFreshnessMeasurements();
     this.stopPromise = Promise.all([drained, poolDown, measurementsDown]).then(async () => {
       if (this.initPromise) await this.initPromise;
       if (this.defaultLease) {

@@ -49,6 +49,18 @@ describe('MCP status freshness (#1959)', () => {
     expect(changed).toContain('**Changes since index:** 1 added, 1 modified, 1 removed');
   });
 
+  it('a status call that resumes after the server starts closing starts no measurement', async () => {
+    // Stopping ends the measurements live at that moment; a call still waiting
+    // on the catch-up gate must not start one that could be loading at exit.
+    let open!: () => void;
+    handler.setCatchUpGate(new Promise<void>((resolve) => { open = resolve; }));
+    const status = handler.execute('codegraph_status', {});
+    const closed = handler.closeAll();
+    open();
+    expect((await status).content[0].text).toContain('**Changes since index:** unknown');
+    await closed;
+  });
+
   it('returns unknown rather than a false zero when the measurement cannot open an index', async () => {
     expect(await measurePendingChanges(path.join(root, 'missing'))).toBeNull();
   });
