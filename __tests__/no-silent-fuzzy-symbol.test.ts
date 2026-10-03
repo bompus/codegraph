@@ -4,7 +4,7 @@
  * with zero callers). Fuzzy FTS hits may appear only as did-you-mean hints.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -142,6 +142,17 @@ describe.skipIf(!HAS_SQLITE)('no silent fuzzy substitution (#1473) — MCP', () 
     const all = findAllSymbols(cg, 'Calls');
     expect(all.nodes).toEqual([]);
     expect(all.note).toMatch(/Did you mean:/);
+  });
+
+  it('flow token resolution skips the did-you-mean search it would discard', async () => {
+    const { findAllSymbols, resolveNamedTokens } = await import('../src/graph/named-symbol-flow');
+    const searchNodes = vi.spyOn(cg, 'searchNodes');
+    expect(findAllSymbols(cg, 'Calls', { suggest: false })).toEqual({ nodes: [], note: '' });
+    // Words that name nothing ("the", "and") are the common case in explore queries.
+    const flow = resolveNamedTokens(cg, 'how the callsEfOnly and alsoCallsEf work');
+    expect(flow.tokenNodes.get('callsEfOnly')?.length).toBe(1);
+    expect(flow.tokenNodes.get('the')).toEqual([]);
+    expect(searchNodes).not.toHaveBeenCalled();
   });
 });
 
