@@ -3718,17 +3718,21 @@ export class QueryBuilder {
   }
 
   /**
-   * Get all distinct node names (lightweight — just name strings for pre-filtering)
+   * Get all distinct node names, sorted (lightweight — just name strings for
+   * pre-filtering). Kept until the change stamp moves; like
+   * {@link getDominantFile}, a list read inside a transaction is never kept,
+   * since a ROLLBACK leaves the stamp where the read saw it.
    */
   getAllNodeNames(): string[] {
-    const stamp = this.getChangeStamp();
-    if (this.allNodeNames?.stamp === stamp) return this.allNodeNames.names;
+    const inTransaction = this.db.inTransaction !== false;
+    const stamp = inTransaction ? undefined : this.getChangeStamp();
+    if (stamp !== undefined && this.allNodeNames?.stamp === stamp) return this.allNodeNames.names;
     if (!this.stmts.getAllNodeNames) {
-      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
+      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes ORDER BY name');
     }
     const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
     const names = rows.map((r) => r.name);
-    this.allNodeNames = { stamp, names };
+    this.allNodeNames = stamp === undefined ? undefined : { stamp, names };
     return names;
   }
 

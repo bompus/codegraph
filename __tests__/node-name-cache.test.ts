@@ -61,6 +61,18 @@ describe('distinct node-name cache', () => {
     expect(reader.searchNodes('loadAcount').map((r) => r.node.name)).toEqual(['loadAccount']);
   });
 
+  it('keeps no list read inside a transaction that rolls back', () => {
+    const connection = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    const queries = track(connection);
+    queries.insertNode(makeNode('getUser'));
+    const db = connection.getDb();
+    db.exec('BEGIN');
+    db.exec('DELETE FROM nodes');
+    expect(queries.getAllNodeNames()).toEqual([]);
+    db.exec('ROLLBACK');
+    expect(queries.searchNodes('getUsre').map((r) => r.node.name)).toEqual(['getUser']);
+  });
+
   it('drops the list when rebound to another database', () => {
     // Fresh connections to two databases report the same change stamp.
     for (const [file, name] of [['a.db', 'getUser'], ['b.db', 'loadAccount']]) {
