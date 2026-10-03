@@ -1,9 +1,10 @@
 /**
  * The fork's maintenance scripts: index metrics and the call-edge diff
  * (scripts/index-metrics.mjs), the upstream-PR lockfile guard
- * (scripts/pr-guard.mjs), and probe-explore's row format and MCP mode
- * (scripts/agent-eval/probe-explore.mjs). The probe rows are a contract: a
- * deployment gate reads `sourceAt` and `mustMatchAt` from them.
+ * (scripts/pr-guard.mjs), probe-explore's row format and MCP mode
+ * (scripts/agent-eval/probe-explore.mjs), and the changelog rebuild after an
+ * upstream merge (scripts/changelog-reconcile.mjs). The probe rows are a
+ * contract: a deployment gate reads `sourceAt` and `mustMatchAt` from them.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,6 +19,8 @@ import { callEdgeKey, CALL_EDGES_SQL, diffCallEdges, formatEdgeDiff, readIndexMe
 import { deniedPrFiles } from '../scripts/pr-guard.mjs';
 // @ts-expect-error untyped .mjs script
 import { probeRow, selectTasks } from '../scripts/agent-eval/probe-explore.mjs';
+// @ts-expect-error untyped .mjs script
+import { reconcileChangelog } from '../scripts/changelog-reconcile.mjs';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -171,5 +174,117 @@ require("node:readline").createInterface({input: process.stdin}).on("line", (lin
     expect(rows[1].id).toBe('memory');
     expect(readFileSync(join(out, 'literal.md'), 'utf8')).toContain('fixture source');
     expect(() => process.kill(pid, 0)).toThrow();
+  });
+});
+
+describe('changelog-reconcile', () => {
+  const HEAD = '# Changelog\n\nIntro.\n\n## [Unreleased]';
+  const log = (unreleased: string, ...releases: string[]) =>
+    [HEAD, unreleased, ...releases].join('\n').replace(/\n*$/, '\n');
+  const OLD = '## [1.0.0] - 2026-01-01\n\n### Fixes\n\n- Old fix.\n';
+  const unreleasedOf = (text: string) => text.split('## [Unreleased]\n')[1].split('\n## [')[0];
+
+  it('drops entries upstream released, continuation lines included, and keeps the fork-only ones', () => {
+    const shared = '- Shared fix.\n  - with a nested point;\n  and a closing line.';
+    const fork = log(`\n### Fixes\n\n${shared}\n\n- Fork fix.\n  More about it.\n`, OLD);
+    const upstream = log('', `## [1.1.0] - 2026-02-01\n\n### Fixes\n\n${shared}\n`, OLD);
+    const result = reconcileChangelog({ fork, upstream });
+    expect(unreleasedOf(result.text)).toBe('\n### Fixes\n\n- Fork fix.\n  More about it.\n');
+    expect(result.text.slice(result.text.indexOf('## [1.1.0]'))).toBe(upstream.slice(upstream.indexOf('## [1.1.0]')));
+    expect(result.dropped).toEqual([{ entry: shared, reason: 'released in 1.1.0' }]);
+  });
+
+  it('drops an entry carried from upstream that upstream released under new wording', () => {
+    const base = log('\n### Fixes\n\n- Calls through a module alias now reach the function it names.\n', OLD);
+    const fork = log('\n### Fixes\n\n- Calls through a module alias now reach the function it names.\n- Fork fix.\n', OLD);
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n### Fixes\n\n- Calls made through a module alias now reach the function the alias names.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream, base }).text)).toBe('\n### Fixes\n\n- Fork fix.\n');
+    // Without the merge base the carried entry stays, flagged as reading like the released one.
+    const result = reconcileChangelog({ fork, upstream });
+    expect(unreleasedOf(result.text)).toContain('- Calls through a module alias now reach the function it names.');
+    expect(result.review).toEqual([
+      { entry: '- Calls through a module alias now reach the function it names.', like: '- Calls made through a module alias now reach the function the alias names.', release: '1.1.0' },
+    ]);
+  });
+
+  it('dedupes against every release since the fork parent and reviews only against those', () => {
+    const fork = log(
+      '\n### Fixes\n\n- First release fix.\n\n- Second release fix.\n\n- Old fix, reworded by the fork.\n',
+      OLD,
+    );
+    const upstream = log(
+      '',
+      '## [1.2.0] - 2026-03-01\n\n### Fixes\n\n- Second release fix.\n',
+      '## [1.1.0] - 2026-02-01\n\n### Fixes\n\n- First release fix.\n',
+      OLD,
+    );
+    const result = reconcileChangelog({ fork, upstream });
+    expect(unreleasedOf(result.text)).toBe('\n### Fixes\n\n- Old fix, reworded by the fork.\n');
+    expect(result.newReleases).toEqual(['1.2.0', '1.1.0']);
+    expect(result.review).toEqual([]);
+  });
+
+  it('removes the headings a drop empties and keeps one already empty', () => {
+    const fork = log(
+      '\n### Removed\n\n### Fixes\n\n#### Parsing\n\n- Shared fix.\n\n#### Indexing\n\n- Fork fix.\n\n### Features\n\n- Shared feature.\n',
+      OLD,
+    );
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Shared fix.\n- Shared feature.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe(
+      '\n### Removed\n\n### Fixes\n\n#### Indexing\n\n- Fork fix.\n',
+    );
+  });
+
+  it("adds upstream's own unreleased entries under their heading", () => {
+    const fork = log('\n### Fixes\n\n- Fork fix.\n', OLD);
+    const upstream = log('\n### Fixes\n\n- New upstream fix.\n\n### Features\n\n- New upstream feature.\n', OLD);
+    const result = reconcileChangelog({ fork, upstream });
+    expect(unreleasedOf(result.text)).toBe(
+      '\n### Fixes\n\n- Fork fix.\n- New upstream fix.\n\n### Features\n\n- New upstream feature.\n',
+    );
+    expect(result.added).toEqual(['- New upstream fix.', '- New upstream feature.']);
+  });
+
+  it('leaves the file alone when upstream released nothing, and notes a released section the fork edited', () => {
+    const fork = log('\n### Fixes\n\n- Fork fix.\n\n\n- Spaced fork fix.\n', OLD);
+    expect(reconcileChangelog({ fork, upstream: log('', OLD), base: log('', OLD) })).toMatchObject({
+      text: fork,
+      tailDiffers: false,
+    });
+    const edited = reconcileChangelog({ fork, upstream: log('', OLD.replace('Old fix', 'Old fix, as upstream wrote it')) });
+    expect(edited.tailDiffers).toBe(true);
+    expect(edited.text).toContain('- Old fix, as upstream wrote it.');
+  });
+
+  it('rebuilds the file a union merge of an upstream release got wrong', () => {
+    const repo = scratch();
+    const run = (...args: string[]) => {
+      const r = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const commit = (text: string, message: string) => {
+      writeFileSync(join(repo, 'CHANGELOG.md'), text);
+      run('add', '.');
+      run('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', message);
+    };
+    run('init', '-q', '-b', 'upstream');
+    writeFileSync(join(repo, '.gitattributes'), 'CHANGELOG.md merge=union\n');
+    commit(log('\n### Fixes\n\n- Upstream fix.\n', OLD), 'base');
+    run('checkout', '-qb', 'fork');
+    commit(log('\n### Fixes\n\n- Upstream fix.\n- Fork fix.\n', OLD), 'fork');
+    run('checkout', '-q', 'upstream');
+    commit(log('', '## [1.1.0] - 2026-02-01\n\n### Fixes\n\n- Upstream fix, as released.\n', OLD), 'release');
+    run('checkout', '-q', 'fork');
+    run('-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '-q', '--no-edit', 'upstream');
+
+    const script = resolve('scripts/changelog-reconcile.mjs');
+    const check = spawnSync(process.execPath, [script, '--check'], { cwd: repo, encoding: 'utf8' });
+    expect(check.status).toBe(1);
+    const write = spawnSync(process.execPath, [script], { cwd: repo, encoding: 'utf8' });
+    expect(write.status, write.stderr).toBe(0);
+    expect(readFileSync(join(repo, 'CHANGELOG.md'), 'utf8')).toBe(
+      log('\n### Fixes\n\n- Fork fix.\n', '## [1.1.0] - 2026-02-01\n\n### Fixes\n\n- Upstream fix, as released.\n', OLD),
+    );
   });
 });

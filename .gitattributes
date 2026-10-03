@@ -1,3 +1,5 @@
 # Upstream and the fork both append CHANGELOG bullets under the same headings;
 # keep both sides instead of stopping the merge on a conflict nobody disputes.
+# Union misfiles fork entries once upstream has cut a release, so after every
+# upstream merge run `node scripts/changelog-reconcile.mjs` to rebuild the file.
 CHANGELOG.md merge=union
