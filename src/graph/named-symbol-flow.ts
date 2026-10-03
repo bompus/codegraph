@@ -543,6 +543,70 @@ function walkBidirectional(
   return null;
 }
 
+/** The type a member is declared on, or null for a top-level symbol. */
+function containerOf(cg: CodeGraph, id: string): string | null {
+  for (const e of cg.getIncomingEdges(id)) if (e.kind === 'contains') return e.source;
+  return null;
+}
+
+/**
+ * Whether `from` is declared on a type that extends the one `to` is declared on.
+ * For two definitions of one name, that makes a call from `from` to `to` an
+ * override calling the method it overrides (`super().m()` from `m`).
+ */
+function declaredOnSubtype(cg: CodeGraph, from: Node, to: Node): boolean {
+  const sub = containerOf(cg, from.id);
+  const base = containerOf(cg, to.id);
+  if (!sub || !base || sub === base) return false;
+  const seen = new Set([sub]);
+  let frontier = [sub];
+  for (let depth = 0; depth < 4 && frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const e of cg.getOutgoingEdges(id)) {
+        if (e.kind !== 'extends' || seen.has(e.target)) continue;
+        if (e.target === base) return true;
+        seen.add(e.target);
+        next.push(e.target);
+      }
+    }
+    frontier = next;
+  }
+  return false;
+}
+
+/**
+ * Whether the query named `a` only through a token that also named `b`: a bare
+ * `save` names every definition, `AuditedStore.save` names the override alone.
+ */
+function namedOnlyAlongside(tokenNodes: ReadonlyMap<string, string[]>, a: string, b: string): boolean {
+  let named = false;
+  for (const ids of tokenNodes.values()) {
+    if (!ids.includes(a)) continue;
+    if (!ids.includes(b)) return false;
+    named = true;
+  }
+  return named;
+}
+
+/**
+ * A chain without the overrides that lead it into the method they override.
+ * Such a hand-off adds a step without adding a mechanism, and the extra step
+ * would otherwise let it outrank the flow the agent asked about. Only a step
+ * the agent named through the same token as the base goes; an override it
+ * named on its own keeps its step.
+ */
+function dropOverrideHandoffs(cg: CodeGraph, tokenNodes: ReadonlyMap<string, string[]>, steps: FlowStep[]): FlowStep[] {
+  while (
+    steps.length > 2
+    && namedOnlyAlongside(tokenNodes, steps[0]!.node.id, steps[1]!.node.id)
+    && declaredOnSubtype(cg, steps[0]!.node, steps[1]!.node)
+  ) {
+    steps = [{ node: steps[1]!.node, edge: null }, ...steps.slice(2)];
+  }
+  return steps;
+}
+
 function chainTo(
   parent: Map<string, { prev: string | null; edge: Edge | null; node: Node }>,
   target: string
@@ -596,10 +660,11 @@ export function resolveNamedSymbolFlow(
     } else {
       for (const seed of [...flow.named.values()].slice(0, MAX_SEEDS)) {
         const { parent, reached } = walkCalls(cg, seed, namedIds, maxHops, maxBridge);
-        // Explore's rule: the DEEPEST named sink this seed can reach.
+        // Explore's rule: the DEEPEST named sink this seed can reach, measured
+        // once override hand-offs are dropped so a hand-off can't win on length.
         let deepest: FlowStep[] | null = null;
         for (const id of reached) {
-          const steps = chainTo(parent, id);
+          const steps = dropOverrideHandoffs(cg, flow.tokenNodes, chainTo(parent, id));
           if (!deepest || steps.length > deepest.length) deepest = steps;
         }
         if (deepest) found.push(deepest);

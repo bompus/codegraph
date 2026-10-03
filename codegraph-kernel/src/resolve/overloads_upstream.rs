@@ -1619,20 +1619,27 @@ fn cpp_scalar_binding(
 /// (`metaclass=…`) and `**` unpacking left out; 0 when the header is not
 /// found, has no parentheses, or unpacks a sequence of bases (`*bases`).
 fn python_base_count(lines: &[String], name: &str) -> usize {
+    python_bases(lines, name).map_or(0, |bases| bases.len())
+}
+
+/// The bases a Python class header lists, as written, keyword arguments
+/// (`metaclass=…`) and `**` unpacking left out; empty for a header without
+/// parentheses, None when the header is not found or unpacks a sequence of
+/// bases (`*bases`).
+pub(super) fn python_bases(lines: &[String], name: &str) -> Option<Vec<String>> {
     let text = lines.iter().take(20).map(String::as_str).collect::<Vec<_>>().join("\n");
-    let Ok(head) = KernelResolver::cached_regex(&format!(r"(?m)^\s*class\s+{}\s*\(", regex::escape(name))) else {
-        return 0;
-    };
-    let Some(m) = head.find(&text) else {
-        return 0;
-    };
-    let (mut depth, mut count, mut part, mut unpacked) = (0usize, 0usize, String::new(), false);
-    let flush = |part: &mut String, count: &mut usize, unpacked: &mut bool| {
+    if KernelResolver::cached_regex(&format!(r"(?m)^\s*class\s+{}\s*:", regex::escape(name))).ok()?.is_match(&text) {
+        return Some(Vec::new());
+    }
+    let head = KernelResolver::cached_regex(&format!(r"(?m)^\s*class\s+{}\s*\(", regex::escape(name))).ok()?;
+    let m = head.find(&text)?;
+    let (mut depth, mut bases, mut part, mut unpacked) = (0usize, Vec::new(), String::new(), false);
+    let flush = |part: &mut String, bases: &mut Vec<String>, unpacked: &mut bool| {
         let p = part.trim();
         if p.starts_with('*') && !p.starts_with("**") {
             *unpacked = true;
         } else if !p.is_empty() && !p.starts_with('*') && !re!(r"^[A-Za-z_]\w*\s*=").is_match(p) {
-            *count += 1;
+            bases.push(p.to_string());
         }
         part.clear();
     };
@@ -1640,19 +1647,19 @@ fn python_base_count(lines: &[String], name: &str) -> usize {
         match c {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' if depth == 0 => {
-                flush(&mut part, &mut count, &mut unpacked);
-                return if unpacked { 0 } else { count };
+                flush(&mut part, &mut bases, &mut unpacked);
+                return if unpacked { None } else { Some(bases) };
             }
             ')' | ']' | '}' => depth -= 1,
             ',' if depth == 0 => {
-                flush(&mut part, &mut count, &mut unpacked);
+                flush(&mut part, &mut bases, &mut unpacked);
                 continue;
             }
             _ => {}
         }
         part.push(c);
     }
-    0
+    None
 }
 
 /// The index of the first line of a Python class's body, past a header
