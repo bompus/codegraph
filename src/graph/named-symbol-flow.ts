@@ -545,8 +545,7 @@ function walkBidirectional(
 
 /** The type a member is declared on, or null for a top-level symbol. */
 function containerOf(cg: CodeGraph, id: string): string | null {
-  for (const e of cg.getIncomingEdges(id)) if (e.kind === 'contains') return e.source;
-  return null;
+  return cg.getIncomingEdges(id, ['contains'])[0]?.source ?? null;
 }
 
 /**

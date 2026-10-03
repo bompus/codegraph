@@ -13,6 +13,7 @@ import {
   Node,
   NodeKind,
   Edge,
+  EdgeKind,
   FileRecord,
   ExtractionResult,
   Subgraph,
@@ -30,7 +31,7 @@ import {
 } from './types';
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
-import { QueryBuilder } from './db/queries';
+import { QueryBuilder, type NodeSpan } from './db/queries';
 import {
   isInitialized,
   createDirectory,
@@ -1979,6 +1980,11 @@ export class CodeGraph {
     return this.queries.getNodesByFile(filePath);
   }
 
+  /** The name, kind and line span of every node in a file, without the rest of each row. */
+  getNodeSpansInFile(filePath: string): NodeSpan[] {
+    return this.queries.getNodeSpansByFile(filePath);
+  }
+
   /**
    * Get all nodes in several files, in one batched query.
    */
@@ -2247,10 +2253,11 @@ export class CodeGraph {
   }
 
   /**
-   * Get incoming edges to a node
+   * Get incoming edges to a node, only those of `kinds` when given. Filtering
+   * here rather than in the caller reads fewer rows from a hub's edge list.
    */
-  getIncomingEdges(nodeId: string): Edge[] {
-    return this.queries.getIncomingEdges(nodeId);
+  getIncomingEdges(nodeId: string, kinds?: EdgeKind[]): Edge[] {
+    return this.queries.getIncomingEdges(nodeId, kinds);
   }
 
   // ===========================================================================
@@ -2277,6 +2284,16 @@ export class CodeGraph {
    */
   getFiles(): FileRecord[] {
     return this.queries.getAllFiles();
+  }
+
+  /** Every tracked file path, sorted; reads one column instead of whole file records. */
+  getFilePaths(): string[] {
+    return this.queries.getAllFilePaths();
+  }
+
+  /** Every tracked file path with its generated flag, sorted by path. */
+  getFilePathsWithGenerated(): Array<{ path: string; generated: boolean }> {
+    return this.queries.getAllFilePathsWithGenerated();
   }
 
   /**
