@@ -515,6 +515,13 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     ['under a metaclass the index does not hold', 'from vendor.meta import Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
     ['past a tuple assignment that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    m, other = (lambda self: "mid"), None')],
     ['past a class-body import that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    from builtins import len as m')],
+    ['in a generator expression', 'class Child(Base):\n    def run(self):\n        return next(super().m() for _ in range(1))\n'],
+    ['with the named class redefined', 'class Child(Base):\n    def m(self):\n        return super(Child, self).m()\n\n\nSaved = Child\n\n\nclass Child:\n    pass\n'],
+    ['under a parenthesized metaclass that defines mro', 'class Meta(type):\n    def mro(cls):\n        return [cls, object]\n\n\nclass Child(Base, metaclass=(Meta)):\n    def m(self):\n        return super().m()\n'],
+    ['under a metaclass of its own named ABCMeta', 'class ABCMeta(type):\n    def mro(cls):\n        return [cls, object]\n\n\nclass Child(Base, metaclass=ABCMeta):\n    def m(self):\n        return super().m()\n'],
+    ['under keywords that may pass a metaclass', 'opts = {}\n\n\nclass Child(Base, **opts):\n    def m(self):\n        return super().m()\n'],
+    ['past a multi-line class-body import that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    from builtins import (\n        len as m,\n    )')],
+    ['past a multi-line tuple assignment that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    (m,\n     other) = (lambda self: "mid"), None')],
     ['to a property', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    @property\n    def m(self):\n        return "mid"')],
   ])('super() links nothing %s', async (_, child, midFile = mid('    def other(self):\n        return 1')) => {
     const calls = await callsIn({
@@ -525,7 +532,7 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     });
     expect(calls.filter((c) => /^Child\S* -> (Base|Mid)::m /.test(c))).toEqual([]);
   });
-  it('super() still links in a classmethod, a one-line method, a nested block or function, under a plain metaclass', async () => {
+  it('super() still links in a classmethod, a one-line method, a nested block or function, a conditional method, a comprehension, under a plain metaclass', async () => {
     const calls = await callsIn({
       'pkg/__init__.py': '',
       'pkg/base.py': [
@@ -535,14 +542,37 @@ describe('Python self-calls do not resolve through a same-named import', () => {
         '',
         '    m.alters_data = True',
         '',
+        '    class Inner:',
+        '        m = 1',
+        '',
         '    @classmethod',
         '    def make(cls):',
         '        return cls()',
         '',
       ].join('\n'),
       'pkg/child.py': [
+        'import abc',
         'from abc import ABCMeta',
         'from pkg.base import Base',
+        '',
+        'FLAG = True',
+        '',
+        '',
+        'def consume(**kw):',
+        '    return kw',
+        '',
+        '',
+        'consume(super=1)',
+        '',
+        '',
+        'def nest(ob, super=None):',
+        '    from builtins import super',
+        '    return ob',
+        '',
+        '',
+        'class Block:',
+        '    def super(self):',
+        '        return 1',
         '',
         '',
         'class Meta(type):',
@@ -569,8 +599,23 @@ describe('Python self-calls do not resolve through a same-named import', () => {
         '            return super().m()',
         '        return inner(self)',
         '',
+        '    if FLAG:',
+        '        def cond(self):',
+        '            return super().m()',
+        '',
+        '    def listed(self):',
+        '        return [super().m() for _ in range(1)]',
+        '',
+        '    def first(self):',
+        '        return list(x for x in super().make())',
+        '',
         '',
         'class Abstract(Base, metaclass=ABCMeta):',
+        '    def m(self):',
+        '        return super().m()',
+        '',
+        '',
+        'class Dotted(Base, metaclass=abc.ABCMeta):',
         '    def m(self):',
         '        return super().m()',
         '',
@@ -578,10 +623,14 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     });
     expect(calls.filter((c) => / -> Base::/.test(c))).toEqual([
       'Abstract::m -> Base::m (pkg/base.py)',
+      'Child::cond -> Base::m (pkg/base.py)',
+      'Child::first -> Base::make (pkg/base.py)',
+      'Child::listed -> Base::m (pkg/base.py)',
       'Child::m -> Base::m (pkg/base.py)',
       'Child::make -> Base::make (pkg/base.py)',
       'Child::run -> Base::m (pkg/base.py)',
       'Child::wrapped::inner -> Base::m (pkg/base.py)',
+      'Dotted::m -> Base::m (pkg/base.py)',
     ]);
   });
   it('super() starts at its own class when a base shares its name', async () => {

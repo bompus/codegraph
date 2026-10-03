@@ -330,6 +330,7 @@ pub(super) struct SourceFile {
     java_static_imports: OnceCell<name_scope::JavaStaticImports>,
     php_file_scope: OnceCell<php_scope::PhpFileScope>,
     rust_code_lines: OnceCell<Vec<String>>,
+    python_file: OnceCell<bound::PyFile>,
     cpp_field_tree: OnceCell<Option<Rc<tree_sitter::Tree>>>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
@@ -345,6 +346,7 @@ impl SourceFile {
             java_static_imports: OnceCell::new(),
             php_file_scope: OnceCell::new(),
             rust_code_lines: OnceCell::new(),
+            python_file: OnceCell::new(),
             cpp_field_tree: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
@@ -390,6 +392,12 @@ impl SourceFile {
     pub(super) fn rust_code_lines(&self) -> &Vec<String> {
         self.rust_code_lines
             .get_or_init(|| fields::mask_rust_code(self.text()).split('\n').map(str::to_string).collect())
+    }
+
+    /// The file's Python statements and the scopes they run in
+    /// (bound::PyFile).
+    pub(super) fn python_file(&self) -> &bound::PyFile {
+        self.python_file.get_or_init(|| bound::PyFile::new(&self.lines))
     }
 
     /// The file's PHP `namespace` and header `use` imports (phpFileScope).
