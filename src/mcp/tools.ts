@@ -4911,7 +4911,7 @@ export class ToolHandler {
         // type-token bias below couldn't pick the harness.rs one. (Same fix as
         // codegraph_node's findSymbolMatches.) Qualified tokens keep findAllSymbols.
         const isQual = /[.\/]|::/.test(t);
-        let raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
+        let raw = isQual ? this.findAllSymbols(cg, t, { suggest: false }).nodes : cg.getNodesByName(t);
         // Go export capitalization often disappears in prose ("Context JSON
         // render"). Recover only methods owned by an explicitly named type.
         if (raw.length === 0 && /^[a-z]+$/.test(t) && typeTokens.length > 0) {
@@ -9362,8 +9362,12 @@ export class ToolHandler {
    * The resolution itself lives in `../graph/named-symbol-flow`, so the Flow
    * strip and `codegraph_explore` resolve a written name to the same nodes.
    */
-  private findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; note: string } {
-    return findAllSymbols(cg, symbol);
+  private findAllSymbols(
+    cg: CodeGraph,
+    symbol: string,
+    opts?: { suggest?: boolean }
+  ): { nodes: Node[]; note: string } {
+    return findAllSymbols(cg, symbol, opts);
   }
 
   /**

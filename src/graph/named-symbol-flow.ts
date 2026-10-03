@@ -48,8 +48,15 @@ export { RUST_PATH_PREFIXES, lastQualifierPart, matchesSymbol } from './symbol-l
  * Exact matches only (#1473): a missing / mistyped name must NOT silently
  * resolve to the top fuzzy FTS hit under the caller's typed label. Closest
  * hits may appear in `note` as a did-you-mean hint when `nodes` is empty.
+ * Callers that only read `nodes` pass `suggest: false`: the hint costs an FTS
+ * search, and a LIKE scan of every node when that misses, for each word that
+ * names nothing ("the", "and" in a free-text explore query).
  */
-export function findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; note: string } {
+export function findAllSymbols(
+  cg: CodeGraph,
+  symbol: string,
+  opts: { suggest?: boolean } = {}
+): { nodes: Node[]; note: string } {
   // Nix option paths: the declaration is stored as `options.<path>` and
   // config writes carry longer/quoted tails (`<path>."git/config".text`),
   // so a dotted option token (`xdg.configFile`, `launchd.user.agents`) has
@@ -91,6 +98,7 @@ export function findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; 
   }
 
   if (exactNodes.length === 0) {
+    if (opts.suggest === false) return { nodes: [], note: '' };
     const fuzzy = cg.searchNodes(symbol, { limit: 5 });
     const suggestions = [
       ...new Set(fuzzy.map((r) => r.node.name).filter((n) => n !== symbol)),
@@ -315,7 +323,7 @@ export function resolveNamedTokens(
     );
 
   for (const t of tokens) {
-    const hits = findAllSymbols(cg, t).nodes;
+    const hits = findAllSymbols(cg, t, { suggest: false }).nodes;
     const cands = hits.filter((n) => FLOW_CALLABLE_KINDS.has(n.kind));
     out.tokenFamily.set(t, cands);
     // A qualified or otherwise-specific name (<=3 hits) keeps all of them.
