@@ -175,7 +175,7 @@ function resolveBinding(name: string, from: ts.Node): ts.VariableDeclaration | t
 
 /**
  * The argument every call of the function that declares `param` passes for it
- * (undefined where a call omits it), found by name in the same file. Null when
+ * (its default, or undefined, where a call omits it), found by name in the same file. Null when
  * the callers can't all be seen: the function is unnamed, exported (callers in
  * other files), or used as a value (a callback receives whatever its caller
  * passes).
@@ -195,7 +195,8 @@ function callSitesOf(param: ts.ParameterDeclaration, sf: ts.SourceFile): (ts.Exp
         const call = node.parent as ts.CallExpression;
         // A spread before the parameter's slot hides which value lands in it.
         if (call.arguments.slice(0, index + 1).some(ts.isSpreadElement)) usedAsValue = true;
-        else args.push(call.arguments[index]);
+        // An omitted argument takes the parameter's default.
+        else args.push(call.arguments[index] ?? param.initializer);
       }
     }
     ts.forEachChild(node, visit);
@@ -391,6 +392,12 @@ describe('the windowsHide guard fails closed', () => {
        git({ windowsHide: true }); git();`,
     ],
     [
+      'a wrapper default that unhides when a call omits it',
+      `import { spawn } from 'child_process';
+       function git(opts = { windowsHide: false }) { return spawn('git', [], { windowsHide: true, ...opts }); }
+       git();`,
+    ],
+    [
       'a loop variable shadowing hidden options',
       `import { spawn } from 'child_process';
        const opts = { windowsHide: true }; for (const opts of [{ windowsHide: false }]) spawn('git', [], opts);`,
@@ -416,6 +423,12 @@ describe('the windowsHide guard fails closed', () => {
     ],
     ['the same const spread twice', `import { spawn } from 'child_process'; const base = { windowsHide: true }; spawn('git', [], { ...base, ...base });`],
     ['a spread literal that hides it', `import { spawn } from 'child_process'; spawn('git', [], { ...{ windowsHide: true } });`],
+    [
+      'a wrapper default that hides it when a call omits it',
+      `import { spawn } from 'child_process';
+       function git(opts = { windowsHide: true }) { return spawn('git', [], opts); }
+       git(); git({ windowsHide: true });`,
+    ],
     ['types only', `import type { ChildProcess } from 'child_process'; let c: ChildProcess | undefined;`],
   ])('passes %s', (_label, text) => {
     expect(scan(text).offenders).toEqual([]);
