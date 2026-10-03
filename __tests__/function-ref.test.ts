@@ -1736,6 +1736,12 @@ def init():
         'c.py': consumer }, ['cb -> Store::fetch']],
       keyword_in_continued_field: [{ 'm.py': 'from store import Store\nfrom decoy import Decoy\n\ndef log(**kw):\n    return kw\n\n' +
         'def cb(obj: Store, pool):\n    return f"{log(\\\n        obj=Decoy(),\\\n        job=pool.submit(obj.fetch)\\\n    )}"\n' }, ['cb -> Store::fetch']],
+      // Past the lookahead budget, a backslash still continues a field or string.
+      long_field_in_window: [{ 'm.py': 'from store import Store\nfrom decoy import Decoy\n\ndef log(**kw):\n    return kw\n\n' +
+        'def cb(obj: Store, pool):\n    return f"{log(\\\n        obj=Decoy(), job=pool.submit(obj.fetch)\\\n' + '\n'.repeat(1005) + '    )}"\n' }, ['cb -> Store::fetch']],
+      long_string_after_unfinished_fields: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\n' + 'bad = f"{(\n'.repeat(3) + 'label = "\\\nsettings.conn = Decoy()\\\n' + 'x\\\n'.repeat(1500) + '"\nafter = 1\n',
+        'c.py': consumer }, ['cb -> Store::fetch']],
       // A field that never closes (a syntax error) leaves later lines code.
       unfinished_field: [{ 'settings.py': header,
         'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{(\n    settings.conn = Decoy()\n', 'c.py': consumer }, []],

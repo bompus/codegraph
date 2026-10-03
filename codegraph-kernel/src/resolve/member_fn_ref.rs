@@ -753,8 +753,11 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
         if k >= checked_to {
             if let Some(first) = open.iter().position(|o| matches!(o, PyOpen::Str { triple: false, .. })) {
                 match python_closes_within(&lines[k + 1..], &open, first, &mut budget) {
-                    Some(m) => checked_to = k + 1 + m,
-                    None => {
+                    Ok(Some(m)) => checked_to = k + 1 + m,
+                    // Out of lookahead, a line ending in a backslash still
+                    // continues the string, as Python reads a plain one.
+                    Err(()) if escaped_eol => {}
+                    _ => {
                         open.truncate(first);
                         python_pop_fields(&mut open);
                     }
@@ -776,7 +779,7 @@ const PY_LOOKAHEAD_LINES: usize = 1000;
 /// string contents in `code` (opening and closing quotes of the outermost
 /// string kept), cuts a comment off, and tracks bracket `depth` outside
 /// strings. Returns whether the line ends in a backslash inside a string or
-/// format spec, and the fewest levels left open at any point.
+/// field, and the fewest levels left open at any point.
 fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut Vec<PyOpen>) -> (bool, usize) {
     let mut low = open.len();
     let mut escaped_eol = false;
@@ -853,6 +856,10 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
                     break;
                 }
                 q @ (b'"' | b'\'') => python_open_string(b, i, q, open),
+                b'\\' => {
+                    escaped_eol = i + 1 == b.len();
+                    1
+                }
                 c => {
                     open[k] = match c {
                         b'(' | b'[' | b'{' => PyOpen::Field { depth: d + 1, spec: false },
@@ -907,24 +914,24 @@ fn python_pop_fields(open: &mut Vec<PyOpen>) {
 
 /// Within how many of `rest`'s lines the string `open[first]` closes,
 /// scanning on from `open` and spending `budget` a line; None when a line's
-/// end breaks it first, or it is still open at the end of `rest` or of the
-/// budget.
-fn python_closes_within(rest: &[String], open: &[PyOpen], first: usize, budget: &mut usize) -> Option<usize> {
+/// end breaks it first or it is still open at the end of `rest`, and an error
+/// when the budget runs out first.
+fn python_closes_within(rest: &[String], open: &[PyOpen], first: usize, budget: &mut usize) -> std::result::Result<Option<usize>, ()> {
     let mut open = open.to_vec();
     let mut depth = 0;
     for (j, line) in rest.iter().enumerate() {
-        *budget = budget.checked_sub(1)?;
+        *budget = budget.checked_sub(1).ok_or(())?;
         let mut code = line.as_bytes().to_vec();
         let (escaped_eol, low) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
         if low <= first {
-            return Some(j);
+            return Ok(Some(j));
         }
         python_drop_broken(&mut open, escaped_eol);
         if open.len() <= first {
-            return None;
+            return Ok(None);
         }
     }
-    None
+    Ok(None)
 }
 
 /// One level of Python string syntax open across `python_code_lines`.
@@ -1074,6 +1081,11 @@ mod tests {
         let long = format!("a = \"\\\n{}\"\nb = 1", "x\\\n".repeat(150));
         let s = starts(&long);
         assert_eq!((s[0], s[1..152].iter().any(|s| *s), s[152]), (true, false, true));
+        // Past the lookahead budget, a backslash still continues a string.
+        let mut lines: Vec<String> = ["def cb(obj):", "    return f\"{log(\\", "        obj=Decoy(),\\"].map(String::from).into();
+        lines.extend(std::iter::repeat_n(String::new(), 1005));
+        lines.push("    )}\"".to_string());
+        assert_eq!(python_code_lines(&lines, 0, 3).iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, true, false]);
         // A comment in a field is cut, and multibyte text stays aligned.
         let lines: Vec<String> = ["a = f\"{(", "    1  # setattr(s, \"c\", 1)", ")}\" + \"\u{fc}\"  # \u{e9}"].map(String::from).into();
         let code = python_code_lines(&lines, 0, 3);
