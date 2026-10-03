@@ -788,8 +788,9 @@ const PY_LOOKAHEAD_LINES: usize = 1000;
 /// Scans one line from the strings and fields `open` at its start: blanks
 /// string contents in `code` (opening and closing quotes of the outermost
 /// string kept), cuts a comment off, and tracks bracket `depth` outside
-/// strings. With `field_code`, a field's expression stays (its closing `}`
-/// and the `:` before its format spec still blanked). Returns whether the
+/// strings. With `field_code`, a field's expression stays, its braces
+/// written as parentheses so its commas and keywords stay grouped, and the
+/// `:` before its format spec blanked. Returns whether the
 /// line ends in a backslash inside a string or field, and the fewest levels
 /// left open at any point.
 fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut Vec<PyOpen>, field_code: bool) -> (bool, usize) {
@@ -817,6 +818,8 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
         };
         let k = open.len() - 1;
         let mut keep = false;
+        // With `field_code`, the parenthesis a field's brace becomes.
+        let mut mark = None;
         // The bytes this step reads, blanked unless kept.
         let n = match top {
             PyOpen::Str { quote, triple, fields } => {
@@ -839,6 +842,7 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
                 } else {
                     if fields && b[i] == b'{' {
                         open.push(PyOpen::Field { depth: 0, spec: false });
+                        mark = Some(b'(');
                     }
                     1
                 }
@@ -853,11 +857,13 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
                 }
                 b'{' => {
                     open.push(PyOpen::Field { depth: 0, spec: false });
+                    mark = Some(b'(');
                     1
                 }
                 b'}' => {
                     open.pop();
                     low = low.min(open.len());
+                    mark = Some(b')');
                     1
                 }
                 _ => 1,
@@ -884,6 +890,7 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
                     if c == b'}' && d == 0 {
                         open.pop();
                         low = low.min(open.len());
+                        mark = Some(b')');
                     }
                     keep = field_code && !(d == 0 && matches!(c, b'}' | b':'));
                     1
@@ -894,6 +901,9 @@ fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut 
             for c in code.iter_mut().skip(i).take(n) {
                 *c = b' ';
             }
+        }
+        if let (true, Some(m)) = (field_code, mark) {
+            code[i] = m;
         }
         i += n;
     }
@@ -1111,7 +1121,9 @@ mod tests {
         let lines = vec!["x = f\"{d[\"k\"]}\"  # c".to_string()];
         assert_eq!(python_code_lines(&lines, 0, 1)[0].1, "x = f\"        \"  ");
         // Field code can stay, with the same statement starts.
-        assert_eq!(super::python_field_code_lines(&lines, 0, 1)[0].1, "x = f\" d[   ] \"  ");
+        assert_eq!(super::python_field_code_lines(&lines, 0, 1)[0].1, "x = f\"(d[   ])\"  ");
+        let lines = vec!["x = f\"{a, b:>{w}} {c if d else e!r}\"".to_string()];
+        assert_eq!(super::python_field_code_lines(&lines, 0, 1)[0].1, "x = f\"(a, b  (w)) (c if d else e!r)\"");
         let lines: Vec<String> = ["    return f\"{(", "        super().render()", "    )}\"", "x = 1"].map(String::from).into();
         let code = super::python_field_code_lines(&lines, 0, 4);
         assert_eq!(code.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, false, false, true]);
