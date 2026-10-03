@@ -1724,6 +1724,20 @@ def init():
       multiline_field: [{ 'settings.py': header,
         'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{", ".join([\n        "a",  # a "quoted" comment\n    ])}"\n    settings.conn = Decoy()\n',
         'c.py': consumer }, []],
+      spec_backslash_continued: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{1:>\\\n10}"; settings.conn = Decoy()\n', 'c.py': consumer }, []],
+      field_newline: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{1\n    }"; settings.conn = Decoy()\n', 'c.py': consumer }, []],
+      // A field that never closes (a syntax error) leaves later lines code.
+      unfinished_field: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{(\n    settings.conn = Decoy()\n', 'c.py': consumer }, []],
+      // A comment in a field runs nothing, and its quotes and braces hide nothing.
+      field_comment_shows_write: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{(\n        1  # setattr(settings, "conn", Decoy())\n    )}"\n',
+        'c.py': consumer }, ['cb -> Store::fetch']],
+      field_comment_hides_nothing: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{(\n        1  # } "\n        , setattr(settings, "conn", Decoy())\n    )}"\n',
+        'c.py': consumer }, []],
       // Doubled braces and a nested format spec close where Python closes
       // them; a t-string nests quotes the same way.
       fstring_spec_and_tstring: [{ 'settings.py': header,

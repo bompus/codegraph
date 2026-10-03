@@ -729,108 +729,33 @@ fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> 
 /// spaces, byte for byte, and any comment cut off, so prose never reads as a
 /// binding and byte columns still line up.
 pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(bool, String)> {
-    let hi = hi.min(lines.len());
-    let mut out = Vec::with_capacity(hi.saturating_sub(lo));
+    let lines = lines.get(lo..hi.min(lines.len())).unwrap_or(&[]);
+    let mut out = Vec::with_capacity(lines.len());
     let mut depth = 0usize;
     // The strings and f-string fields open here, innermost last.
     let mut open: Vec<PyOpen> = Vec::new();
     let mut continued = false;
-    for line in lines.get(lo..hi).unwrap_or(&[]) {
+    // Lines before this one are known to close the single-quoted string open
+    // across them.
+    let mut checked_to = 0;
+    for (k, line) in lines.iter().enumerate() {
         let start = depth == 0 && open.is_empty() && !continued;
-        let b = line.as_bytes();
-        let mut code = b.to_vec();
-        let mut i = 0;
-        // Whether the line ends in a backslash inside a string.
-        let mut escaped_eol = false;
-        while i < b.len() {
-            let Some(&top) = open.last() else {
-                match b[i] {
-                    b'#' => {
-                        code.truncate(i);
-                        break;
-                    }
-                    // The opening quote stays.
-                    q @ (b'"' | b'\'') => {
-                        i += python_open_string(b, i, q, &mut open);
-                        continue;
-                    }
-                    b'(' | b'[' | b'{' => depth += 1,
-                    b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-                    _ => {}
-                }
-                i += 1;
-                continue;
-            };
-            let k = open.len() - 1;
-            // The bytes this step reads, all blanked.
-            let n = match top {
-                PyOpen::Str { quote, triple, fields } => {
-                    if b[i] == quote && (!triple || b[i..].starts_with(&[quote; 3])) {
-                        open.pop();
-                        let n = if triple { 3 } else { 1 };
-                        // The outermost string's closing quote stays.
-                        if open.is_empty() {
-                            i += n;
-                            continue;
-                        }
-                        n
-                    } else if b[i] == b'\\' {
-                        escaped_eol = i + 1 == b.len();
-                        // `\{` keeps the backslash and still opens a field.
-                        if fields && b.get(i + 1) == Some(&b'{') { 1 } else { 2 }
-                    } else if fields && matches!(b[i], b'{' | b'}') && b.get(i + 1) == Some(&b[i]) {
-                        2
-                    } else {
-                        if fields && b[i] == b'{' {
-                            open.push(PyOpen::Field { depth: 0, spec: false });
-                        }
-                        1
+        let mut code = line.as_bytes().to_vec();
+        let (escaped_eol, _) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
+        python_drop_broken(&mut open, escaped_eol);
+        // A field of a single-quoted f-string may run on to later lines
+        // (Python 3.12); one that never closes is cut here, as Python would
+        // reject it, so it can't swallow the rest of the file.
+        if k >= checked_to {
+            if let Some(first) = open.iter().position(|o| matches!(o, PyOpen::Str { triple: false, .. })) {
+                match python_closes_within(&lines[k + 1..], &open, first) {
+                    Some(m) => checked_to = k + 1 + m,
+                    None => {
+                        open.truncate(first);
+                        python_pop_fields(&mut open);
                     }
                 }
-                // The format spec is literal text, but for its own fields.
-                PyOpen::Field { spec: true, .. } => {
-                    match b[i] {
-                        b'{' => open.push(PyOpen::Field { depth: 0, spec: false }),
-                        b'}' => drop(open.pop()),
-                        _ => {}
-                    }
-                    1
-                }
-                PyOpen::Field { depth: d, spec: false } => match b[i] {
-                    b'#' => b.len() - i,
-                    q @ (b'"' | b'\'') => python_open_string(b, i, q, &mut open),
-                    c => {
-                        open[k] = match c {
-                            b'(' | b'[' | b'{' => PyOpen::Field { depth: d + 1, spec: false },
-                            b')' | b']' => PyOpen::Field { depth: d.saturating_sub(1), spec: false },
-                            b'}' if d > 0 => PyOpen::Field { depth: d - 1, spec: false },
-                            b':' if d == 0 => PyOpen::Field { depth: 0, spec: true },
-                            _ => top,
-                        };
-                        if c == b'}' && d == 0 {
-                            open.pop();
-                        }
-                        1
-                    }
-                },
-            };
-            for c in code.iter_mut().skip(i).take(n) {
-                *c = b' ';
             }
-            i += n;
-        }
-        // A single-quoted string never spans lines without a backslash, nor
-        // does a field of one outside brackets.
-        let broken = match open.last() {
-            Some(PyOpen::Str { triple: false, .. }) => !escaped_eol,
-            Some(&PyOpen::Field { depth, spec }) => {
-                (depth == 0 || spec)
-                    && matches!(open.iter().rev().find(|o| matches!(o, PyOpen::Str { .. })), Some(PyOpen::Str { triple: false, .. }))
-            }
-            _ => false,
-        };
-        if broken {
-            open.clear();
         }
         // A backslash in a comment continues nothing.
         continued = open.is_empty() && code.trim_ascii_end().ends_with(b"\\");
@@ -838,6 +763,160 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
         out.push((start, String::from_utf8(code).unwrap_or_default()));
     }
     out
+}
+
+/// How many lines a field of a single-quoted f-string may run on.
+const PY_FIELD_LINES: usize = 100;
+
+/// Scans one line from the strings and fields `open` at its start: blanks
+/// string contents in `code` (opening and closing quotes of the outermost
+/// string kept), cuts a comment off, and tracks bracket `depth` outside
+/// strings. Returns whether the line ends in a backslash inside a string or
+/// format spec, and the fewest levels left open at any point.
+fn python_scan_line(b: &[u8], code: &mut Vec<u8>, depth: &mut usize, open: &mut Vec<PyOpen>) -> (bool, usize) {
+    let mut low = open.len();
+    let mut escaped_eol = false;
+    let mut i = 0;
+    while i < b.len() {
+        let Some(&top) = open.last() else {
+            match b[i] {
+                b'#' => {
+                    code.truncate(i);
+                    break;
+                }
+                // The opening quote stays.
+                q @ (b'"' | b'\'') => {
+                    i += python_open_string(b, i, q, open);
+                    continue;
+                }
+                b'(' | b'[' | b'{' => *depth += 1,
+                b')' | b']' | b'}' => *depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            i += 1;
+            continue;
+        };
+        let k = open.len() - 1;
+        // The bytes this step reads, all blanked.
+        let n = match top {
+            PyOpen::Str { quote, triple, fields } => {
+                if b[i] == quote && (!triple || b[i..].starts_with(&[quote; 3])) {
+                    open.pop();
+                    low = low.min(open.len());
+                    let n = if triple { 3 } else { 1 };
+                    // The outermost string's closing quote stays.
+                    if open.is_empty() {
+                        i += n;
+                        continue;
+                    }
+                    n
+                } else if b[i] == b'\\' {
+                    escaped_eol = i + 1 == b.len();
+                    // `\{` keeps the backslash and still opens a field.
+                    if fields && b.get(i + 1) == Some(&b'{') { 1 } else { 2 }
+                } else if fields && matches!(b[i], b'{' | b'}') && b.get(i + 1) == Some(&b[i]) {
+                    2
+                } else {
+                    if fields && b[i] == b'{' {
+                        open.push(PyOpen::Field { depth: 0, spec: false });
+                    }
+                    1
+                }
+            }
+            // The format spec is literal text, but for its own fields.
+            PyOpen::Field { spec: true, .. } => match b[i] {
+                b'\\' => {
+                    escaped_eol = i + 1 == b.len();
+                    2
+                }
+                b'{' => {
+                    open.push(PyOpen::Field { depth: 0, spec: false });
+                    1
+                }
+                b'}' => {
+                    open.pop();
+                    low = low.min(open.len());
+                    1
+                }
+                _ => 1,
+            },
+            PyOpen::Field { depth: d, spec: false } => match b[i] {
+                // A comment in a field is cut like any other; the field stays open.
+                b'#' => {
+                    code.truncate(i);
+                    break;
+                }
+                q @ (b'"' | b'\'') => python_open_string(b, i, q, open),
+                c => {
+                    open[k] = match c {
+                        b'(' | b'[' | b'{' => PyOpen::Field { depth: d + 1, spec: false },
+                        b')' | b']' => PyOpen::Field { depth: d.saturating_sub(1), spec: false },
+                        b'}' if d > 0 => PyOpen::Field { depth: d - 1, spec: false },
+                        b':' if d == 0 => PyOpen::Field { depth: 0, spec: true },
+                        _ => top,
+                    };
+                    if c == b'}' && d == 0 {
+                        open.pop();
+                        low = low.min(open.len());
+                    }
+                    1
+                }
+            },
+        };
+        for c in code.iter_mut().skip(i).take(n) {
+            *c = b' ';
+        }
+        i += n;
+    }
+    (escaped_eol, low)
+}
+
+/// Drops what a line's end breaks: a single-quoted string the line doesn't
+/// continue with a backslash, with the fields it sits in, and the format
+/// spec of a single-quoted f-string, with its string.
+fn python_drop_broken(open: &mut Vec<PyOpen>, mut escaped_eol: bool) {
+    loop {
+        match open.last() {
+            Some(PyOpen::Str { triple: false, .. }) if !escaped_eol => {
+                open.pop();
+                python_pop_fields(open);
+            }
+            Some(PyOpen::Field { spec: true, .. })
+                if !escaped_eol && matches!(open.iter().rev().find(|o| matches!(o, PyOpen::Str { .. })), Some(PyOpen::Str { triple: false, .. })) =>
+            {
+                python_pop_fields(open);
+            }
+            _ => return,
+        }
+        escaped_eol = false;
+    }
+}
+
+/// Pops the fields on top of `open`, back to the string that holds them.
+fn python_pop_fields(open: &mut Vec<PyOpen>) {
+    while matches!(open.last(), Some(PyOpen::Field { .. })) {
+        open.pop();
+    }
+}
+
+/// Within how many of `rest`'s lines (`PY_FIELD_LINES` at most) the string
+/// `open[first]` closes, scanning on from `open`; None when a line's end
+/// breaks it first or it runs past them.
+fn python_closes_within(rest: &[String], open: &[PyOpen], first: usize) -> Option<usize> {
+    let mut open = open.to_vec();
+    let mut depth = 0;
+    for (j, line) in rest.iter().take(PY_FIELD_LINES).enumerate() {
+        let mut code = line.as_bytes().to_vec();
+        let (escaped_eol, low) = python_scan_line(line.as_bytes(), &mut code, &mut depth, &mut open);
+        if low <= first {
+            return Some(j);
+        }
+        python_drop_broken(&mut open, escaped_eol);
+        if open.len() <= first {
+            return None;
+        }
+    }
+    None
 }
 
 /// One level of Python string syntax open across `python_code_lines`.
@@ -970,8 +1049,19 @@ mod tests {
         assert_eq!(starts("a = f\"{\", \".join([\n  'x',  # \"}\n])}\"\nb = 1"), [true, false, false, true]);
         // Doubled braces, a format spec with a field, `\{`, t- and raw f-strings.
         assert_eq!(starts("a = f\"{{x}} {d[\"k\"]:>{w}} \\{y}\"\nb = rf'{z['(']}' + t\"{d[\"[\"]}\"\nc = 1"), [true, true, true]);
-        // An unclosed single-quoted f-string ends with its line, as before.
+        // A field or a backslash-continued format spec runs on to later lines.
+        assert_eq!(starts("a = f\"{1:>\\\n10}\"; b = 1\nc = 1"), [true, false, true]);
+        assert_eq!(starts("a = f\"{1\n}\"; b = 1\nc = 1"), [true, false, true]);
+        // A field that never closes ends with its line, so later code stays code.
         assert_eq!(starts("a = f\"{x\nb = 1"), [true, true]);
+        assert_eq!(starts("a = f\"{(\nb = 1\ndef later():\n    return 1"), [true, true, true, true]);
+        assert_eq!(starts("a = f\"\"\"{\"abc\nx\"\"\"\ny = 1"), [true, false, true]);
+        // A comment in a field is cut, and multibyte text stays aligned.
+        let lines: Vec<String> = ["a = f\"{(", "    1  # setattr(s, \"c\", 1)", ")}\" + \"\u{fc}\"  # \u{e9}"].map(String::from).into();
+        let code = python_code_lines(&lines, 0, 3);
+        assert_eq!(code.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(code[1].1, "       ");
+        assert_eq!(code[2].1, "  \" + \"  \"  ");
         let lines = vec!["x = f\"{d[\"k\"]}\"  # c".to_string()];
         assert_eq!(python_code_lines(&lines, 0, 1)[0].1, "x = f\"        \"  ");
     }
