@@ -533,6 +533,8 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     ['under a metaclass imported under another name', 'from pkg.mid import Reorder as Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n', 'class Meta(type):\n    pass\n\n\nclass Reorder(type):\n    def mro(cls):\n        return [cls, object]\n'],
     ['under a metaclass with a fallback definition', 'try:\n    from vendor.fast import Meta\nexcept ImportError:\n    class Meta(type):\n        pass\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
     ['under an imported metaclass the index holds only under that name elsewhere', 'from vendor.meta import Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n', 'class Meta(type):\n    pass\n'],
+    ['under a dotted metaclass from a module the index does not hold', 'import vendor_meta\n\n\nclass Child(Base, metaclass=vendor_meta.Meta):\n    def m(self):\n        return super().m()\n', 'class Meta(type):\n    pass\n'],
+    ['under a dotted metaclass from a subpackage the index does not hold', 'from pkg import vendor_meta\n\n\nclass Child(Base, metaclass=vendor_meta.Meta):\n    def m(self):\n        return super().m()\n', 'class Meta(type):\n    pass\n'],
     ['in a lambda whose parameter shadows the named class', 'class Child(Base):\n    def run(self):\n        f = lambda Child=Base: super(Child, self).m()\n        return f()\n'],
     ['to a property', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    @property\n    def m(self):\n        return "mid"')],
   ])('super() links nothing %s', async (_, child, midFile = mid('    def other(self):\n        return 1')) => {
@@ -645,14 +647,25 @@ describe('Python self-calls do not resolve through a same-named import', () => {
       'Dotted::m -> Base::m (pkg/base.py)',
     ]);
   });
-  it('super() still links under a metaclass whose fallback import the index holds', async () => {
+  it('super() still links under a fallback, dotted or re-exported metaclass import the index holds', async () => {
     const calls = await callsIn({
       'pkg/__init__.py': '',
       'pkg/base.py': 'class Base:\n    def m(self):\n        return "base"\n',
       'pkg/fastmeta.py': 'class Meta(type):\n    pass\n',
+      'pkg/meta.py': 'class Plain(type):\n    pass\n',
+      'pkg/dotted.py': 'from pkg import meta\nfrom pkg.base import Base\n\n\nclass FromImport(Base, metaclass=meta.Plain):\n    def m(self):\n        return super().m()\n',
+      'pkg/metas/__init__.py': 'from pkg.metas.plain import Plain\n',
+      'pkg/metas/plain.py': 'class Plain(type):\n    pass\n',
+      'pkg/reexported.py': 'from pkg import metas\nfrom pkg.base import Base\n\n\nclass Reexported(Base, metaclass=metas.Plain):\n    def m(self):\n        return super().m()\n',
+      'pkg/qualified.py': 'import pkg.meta\nfrom pkg.base import Base\n\n\nclass Qualified(Base, metaclass=pkg.meta.Plain):\n    def m(self):\n        return super().m()\n',
       'pkg/child.py': 'from pkg.base import Base\n\ntry:\n    from pkg.fastmeta import Meta\nexcept ImportError:\n    class Meta(type):\n        pass\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n',
     });
-    expect(calls.filter((c) => / -> Base::m /.test(c))).toEqual(['Child::m -> Base::m (pkg/base.py)']);
+    expect(calls.filter((c) => / -> Base::m /.test(c))).toEqual([
+      'Child::m -> Base::m (pkg/base.py)',
+      'FromImport::m -> Base::m (pkg/base.py)',
+      'Qualified::m -> Base::m (pkg/base.py)',
+      'Reexported::m -> Base::m (pkg/base.py)',
+    ]);
   });
   it('super() still links past code that only looks like a rebinding or another frame', async () => {
     const calls = await callsIn({

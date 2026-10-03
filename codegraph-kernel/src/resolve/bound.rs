@@ -575,7 +575,9 @@ impl KernelResolver {
         // runs only by class statements and imports under its own name, each
         // import from a module the index holds the class in, for the indexed
         // classes of that name to be the metaclass. A dotted name's root must
-        // have that one import.
+        // have that one import, and the module is the import's followed by
+        // the name's own path: `from pkg import meta` with `meta.Meta` is
+        // `pkg/meta`, `import pkg.meta` with `pkg.meta.Meta` is `pkg/meta`.
         let dotted = m[1].contains('.');
         let root = m[1].split('.').next().unwrap_or("");
         let alias = Self::cached_regex(&format!(r"\bas\s+{}\b", regex::escape(root)))?;
@@ -592,10 +594,14 @@ impl KernelResolver {
             if !re!(r"^\s*(?:from\s+\S+\s+)?import\b").is_match(s) || alias.is_match(s) {
                 return Ok(false);
             }
-            if !dotted {
-                let Some(from) = re!(r"^\s*from\s+(\S+)\s+import\b").captures(s) else { return Ok(false) };
-                modules.push(from[1].trim_start_matches('.').replace('.', "/"));
-            }
+            let path = m[1].rsplit_once('.').map(|(path, _)| path);
+            let module = match (re!(r"^\s*from\s+(\S+)\s+import\b").captures(s), path) {
+                (Some(from), None) => from[1].to_string(),
+                (Some(from), Some(path)) => format!("{}.{path}", &from[1]),
+                (None, Some(path)) => path.to_string(),
+                (None, None) => return Ok(false),
+            };
+            modules.push(module.trim_start_matches('.').replace('.', "/"));
         }
         let meta = m[1].rsplit('.').next().unwrap_or("").to_string();
         let metas: Vec<Arc<KNode>> =
@@ -603,11 +609,16 @@ impl KernelResolver {
         if metas.is_empty() {
             return Ok(false);
         }
+        // The module's file, or a file in its package, which `__init__.py`
+        // may re-export (`forms.MediaDefiningClass` from `forms/widgets.py`).
         let holds = |module: &str, path: &str| {
+            let file = format!("{module}.py");
+            let package = format!("{module}/");
             !module.is_empty()
-                && [format!("{module}.py"), format!("{module}/__init__.py")]
-                    .iter()
-                    .any(|f| path == f || path.ends_with(&format!("/{f}")))
+                && (path == file
+                    || path.ends_with(&format!("/{file}"))
+                    || path.starts_with(&package)
+                    || path.contains(&format!("/{package}")))
         };
         if !modules.iter().all(|module| metas.iter().any(|n| holds(module, &n.file_path))) {
             return Ok(false);
