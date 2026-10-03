@@ -10,7 +10,7 @@
  * is what the app-root gate has to get right. Mirrors `nextjs.test.ts`.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -493,5 +493,202 @@ describe('react-router: the shapes proshop is written in', () => {
       expect(screens.links.some((l) => l.from === s.id)).toBe(true);
     }
     expect(screens.dropped).toBe(0);
+  });
+});
+
+
+describe('react-router: route declaration boundaries (#1348)', () => {
+  let tmpDir: string;
+  let cg: CodeGraph | undefined;
+
+  afterEach(() => {
+    cg?.close();
+    cg = undefined;
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function index(source: string, extension: string) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rr-boundaries-'));
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ dependencies: { react: '18' } }));
+    fs.writeFileSync(path.join(tmpDir, `App.${extension}`), source);
+    cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const routes = cg.getNodesByKind('route');
+    return {
+      paths: routes.map((route) => route.name).sort(),
+      bindings: routes.flatMap((route) => cg!.getOutgoingEdges(route.id)
+        .filter((edge) => edge.kind === 'references')
+        .map((edge) => `${route.name}->${cg!.getNode(edge.target)?.name}`)).sort(),
+    };
+  }
+
+  it.each(['tsx', 'jsx', 'js'])('keeps nested/index JSX routes and long attributes local in %s', async (extension) => {
+    const result = await index(`
+      import { Routes, Route } from 'react-router-dom';
+      function DashboardHome() { return null; }
+      function Settings() { return null; }
+      function Shell() { return null; }
+      const comparison = count<limit;
+      const fake = '<Route path="/fake" element={<DashboardHome/>}/>';
+      export function App() {
+        return <Routes>
+          <Route path="/dashboard">
+            <Route index element={<DashboardHome/>}/>
+            <Route path="settings" element={<Settings/>}/>
+          </Route>
+          <Route path="/empty"></Route>
+          <Route element={<Settings/>} path="/sibling"/>
+          <Route element={<Shell title="a > b"><Settings path="/nested"/></Shell>}
+            check={/}/.test('}')}
+            handle={{ text: 'path="/borrowed"', nested: { element: <DashboardHome/> } }}
+            title="${'x'.repeat(600)}" path="/long"/>
+          <Route path="/no-element" handle={{ element: <DashboardHome/> }}/>
+          <Route component={Settings} path="/legacy"/>
+        </Routes>;
+      }
+    `, extension);
+    expect(result).toEqual({
+      // A nested route's path is relative to its parent's (`settings` under `/dashboard`).
+      paths: ['/dashboard', '/dashboard/settings', '/empty', '/legacy', '/long', '/no-element', '/sibling'],
+      bindings: ['/dashboard/settings->Settings', '/legacy->Settings', '/long->Shell', '/sibling->Settings'],
+    });
+  });
+
+  it.each(['tsx', 'jsx', 'ts', 'js'])('pairs only direct data-router properties in either order in %s', async (extension) => {
+    const result = await index(`
+      import { createBrowserRouter } from 'react-router-dom';
+      function DataIndex() { return null; }
+      function DataSettings() { return null; }
+      const routes = createBrowserRouter([
+        { path: '/data', children: [
+          { index: true, Component: DataIndex },
+          { Component: DataSettings, path: 'prefs' }
+        ] },
+        { path: '/empty' },
+        { Component: DataSettings, path: '/sibling' },
+        { path: '/metadata', handle: { Component: DataIndex } },
+        { Component: DataSettings, handle: { path: '/not-own' } },
+        { path: '/long', handle: { text: '${'x'.repeat(600)}' }, Component: DataSettings },
+        { 'Component': DataSettings, /* path: '/fake' */ 'path': '/quoted' /* trailing comment */ },
+        { path: '', Component: DataSettings }
+      ]);
+    `, extension);
+    expect(result).toEqual({
+      paths: ['/', '/data/prefs', '/long', '/quoted', '/sibling'],
+      bindings: ['/->DataSettings', '/data/prefs->DataSettings', '/long->DataSettings', '/quoted->DataSettings', '/sibling->DataSettings'],
+    });
+  });
+
+  it('keeps nested JSX and comma-containing expressions inside their data-router property', async () => {
+    const result = await index(`
+      import { createMemoryRouter } from 'react-router-dom';
+      function Shell() { return null; }
+      function Child() { return null; }
+      const router = createMemoryRouter([
+        { element: <Shell title="a > b"><Child path="/fake"/>hello, world</Shell>,
+          handle: { text: "}, path: '/fake'", callback: () => ({ path: '/also-fake' }) }, path: '/shell' },
+        { path: '/none', handle: { element: <Child/> } },
+        { path: '/child', element: <Child/> }
+      ]);
+    `, 'tsx');
+    expect(result).toEqual({ paths: ['/child', '/shell'], bindings: ['/child->Child', '/shell->Shell'] });
+  });
+});
+
+describe('react-router: v5 redirects and styled link wrappers', () => {
+  let root: string;
+  let cg: CodeGraph;
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rr-wrappers-'));
+    const files: Record<string, string> = {
+      'package.json': JSON.stringify({ name: 'app', dependencies: { react: '*', 'react-router-dom': '^5.0.0', 'styled-components': '*' } }),
+      // react-boilerplate: the header's links are a styled Link, default-exported.
+      'app/components/Header/HeaderLink.js': `import { Link } from 'react-router-dom';
+import styled from 'styled-components';
+
+export default styled(Link)\`
+  color: #41addd;
+\`;
+`,
+      'app/components/Header/index.js': `import React from 'react';
+import HeaderLink from './HeaderLink';
+
+export default function Header() {
+  return (
+    <nav>
+      <HeaderLink to="/">Home</HeaderLink>
+      <HeaderLink to="/features">Features</HeaderLink>
+    </nav>
+  );
+}
+`,
+      'app/components/Nav.js': `import React from 'react';
+import { NavLink } from 'react-router-dom';
+import styled from 'styled-components';
+
+const MenuLink = styled(NavLink)\`
+  padding: 4px;
+\`;
+
+export default function Nav() {
+  return <MenuLink to="/features">Features</MenuLink>;
+}
+`,
+      // takenote: a guard renders v5's <Redirect to>.
+      'app/router/PrivateRoute.js': `import React from 'react';
+import { Route, Redirect } from 'react-router-dom';
+
+export default function PrivateRoute({ component: Component, ...rest }) {
+  return <Route {...rest} render={(props) => (rest.isAuthenticated ? <Component {...props} /> : <Redirect to="/" />)} />;
+}
+`,
+      'app/containers/App.js': `import React from 'react';
+import { Switch, Route } from 'react-router-dom';
+import HomePage from './HomePage';
+import FeaturePage from './FeaturePage';
+
+export default function App() {
+  return (
+    <Switch>
+      <Route exact path="/" component={HomePage} />
+      <Route path="/features" component={FeaturePage} />
+    </Switch>
+  );
+}
+`,
+      'app/containers/HomePage.js': `import React from 'react';
+export default function HomePage() { return <h1>Home</h1>; }
+`,
+      'app/containers/FeaturePage.js': `import React from 'react';
+export default function FeaturePage() { return <h1>Features</h1>; }
+`,
+    };
+    for (const [rel, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), content);
+    }
+    cg = await CodeGraph.init(root, { index: true });
+  });
+  afterAll(() => {
+    cg?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const navsFrom = (name: string) => {
+    const from = cg.getNodesByName(name).find((n) => n.kind === 'function' || n.kind === 'component')!;
+    return cg
+      .getOutgoingEdges(from.id)
+      .filter((e) => e.kind === 'navigates')
+      .map((e) => `${(e.metadata as Record<string, unknown>).navMethod} ${cg.getNode(e.target)!.name}`)
+      .sort();
+  };
+
+  it('a styled(Link) wrapper, imported or local, is a link', () => {
+    expect(navsFrom('Header')).toEqual(['link /', 'link /features']);
+    expect(navsFrom('Nav')).toEqual(['link /features']);
+  });
+
+  it('v5’s <Redirect to> navigates', () => {
+    expect(navsFrom('PrivateRoute')).toEqual(['redirect /']);
   });
 });
