@@ -1225,15 +1225,7 @@ fn python_executed(raw: &str) -> String {
 /// The index after the string whose opening quote is at `q`, blanking its
 /// text in `out` (fields kept) when given.
 fn python_string_end(b: &[u8], q: usize, mut out: Option<&mut Vec<u8>>) -> usize {
-    let mut p = q;
-    while p > 0 && b[p - 1].is_ascii_alphabetic() {
-        p -= 1;
-    }
-    let prefix = &b[p..q];
-    let fields = prefix.len() <= 2
-        && !(p > 0 && (b[p - 1] == b'_' || b[p - 1].is_ascii_digit() || b[p - 1] >= 0x80))
-        && prefix.iter().all(|c| b"rRbBuUfFtT".contains(c))
-        && prefix.iter().any(|c| b"fFtT".contains(c));
+    let fields = super::member_fn_ref::python_interpolates(b, q);
     let quote = b[q];
     let triple = b.get(q + 1) == Some(&quote) && b.get(q + 2) == Some(&quote);
     let mut i = q + if triple { 3 } else { 1 };

@@ -1714,6 +1714,21 @@ def init():
       backslash_field_setattr: [{ 'settings.py': header,
         'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    print(rf"\\{setattr(settings, \'conn\', Decoy())}")\n', 'c.py': consumer }, []],
       field_string_globals: [{ 'settings.py': header + 'def describe():\n    return f"{\'globals()\':>12}"\n', 'c.py': consumer }, ['cb -> Store::fetch']],
+      // Quoted brackets, a quoted `#` and a field across lines in a
+      // same-quote f-string leave the next statement its own.
+      same_quote_field_brackets: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset(text):\n    label = f"{text.replace("(", "[")}"\n    settings.conn = Decoy()\n',
+        'c.py': consumer }, []],
+      same_quote_field_hash: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset(d):\n    label = f"{d["#"]}"; settings.conn = Decoy()\n', 'c.py': consumer }, []],
+      multiline_field: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    label = f"{", ".join([\n        "a",  # a "quoted" comment\n    ])}"\n    settings.conn = Decoy()\n',
+        'c.py': consumer }, []],
+      // Doubled braces and a nested format spec close where Python closes
+      // them; a t-string nests quotes the same way.
+      fstring_spec_and_tstring: [{ 'settings.py': header,
+        'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset(d, w):\n    label = f"{{conn}} {d["k"]:>{w}}"\n    tpl = t"{d["("]}"\n    settings.conn = Decoy()\n',
+        'c.py': consumer }, []],
       // `conn` with a combining accent is another name.
       combining_mark_local: [{ 'm.py': header + 'def cb(pool):\n    conń = Decoy()\n    pool.submit(conn.fetch)\n' }, ['cb -> Store::fetch']],
     };
