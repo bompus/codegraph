@@ -256,6 +256,52 @@ describe('changelog-reconcile', () => {
     expect(edited.text).toContain('- Old fix, as upstream wrote it.');
   });
 
+  it('drops only as many carried copies as the base had, under its heading first', () => {
+    const base = log('\n### Fixes\n\n#### Go\n\n- Calls now resolve correctly.\n', OLD);
+    const fork = log('\n### Fixes\n\n#### Go\n\n- Calls now resolve correctly.\n\n#### Rust\n\n- Calls now resolve correctly.\n', OLD);
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Go calls now resolve correctly.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream, base }).text)).toBe(
+      '\n### Fixes\n\n#### Rust\n\n- Calls now resolve correctly.\n',
+    );
+  });
+
+  it('keeps an entry whose unindented continuation makes it differ from a released one', () => {
+    const fork = log('\n### Fixes\n\n- Handles missing files\nand keeps fork-only symlinks.\n', OLD);
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Handles missing files\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe(
+      '\n### Fixes\n\n- Handles missing files\nand keeps fork-only symlinks.\n',
+    );
+  });
+
+  it('treats a whitespace-only line as blank and never widens the gap a removal leaves', () => {
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Released fix.\n', OLD);
+    const spaced = reconcileChangelog({ fork: log('\n### Fixes\n\n- Released fix.\n  \n- Fork fix.\n', OLD), upstream });
+    expect(unreleasedOf(spaced.text)).toBe('\n### Fixes\n\n- Fork fix.\n');
+    const wide = reconcileChangelog({ fork: log('\n### Fixes\n\n- A.\n\n\n- Released fix.\n\n\n- B.\n', OLD), upstream });
+    expect(unreleasedOf(wide.text)).toBe('\n### Fixes\n\n- A.\n\n\n- B.\n');
+  });
+
+  it("files upstream's entries under their own sub-heading, filling an empty one", () => {
+    const fork = log('\n### Fixes\n\n#### Parsing\n\n- Fork parser.\n\n#### Indexing\n\n- Fork index.\n\n### Features\n', OLD);
+    const upstream = log(
+      '\n### Fixes\n\n#### Parsing\n\n- Upstream parser.\n\n#### Watching\n\n- Upstream watcher.\n\n### Features\n\n- Upstream feature.\n',
+      OLD,
+    );
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe(
+      '\n### Fixes\n\n#### Parsing\n\n- Fork parser.\n- Upstream parser.\n\n#### Indexing\n\n- Fork index.\n\n#### Watching\n\n- Upstream watcher.\n\n### Features\n\n- Upstream feature.\n',
+    );
+  });
+
+  it('keeps an empty sub-heading by position, not by its title', () => {
+    const fork = log('\n### Features\n\n#### Other\n\n### Fixes\n\n#### Other\n\n- Released fix.\n\n- Fork fix.\n', OLD);
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Released fix.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe(
+      '\n### Features\n\n#### Other\n\n### Fixes\n\n#### Other\n\n- Fork fix.\n',
+    );
+    const emptied = log('\n### Features\n\n#### Other\n\n### Fixes\n\n#### Other\n\n- Released fix.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork: emptied, upstream }).text)).toBe('\n### Features\n\n#### Other\n');
+  });
+
   it('rebuilds the file a union merge of an upstream release got wrong', () => {
     const repo = scratch();
     const run = (...args: string[]) => {
@@ -263,8 +309,9 @@ describe('changelog-reconcile', () => {
       if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
       return r.stdout;
     };
+    // A trailing blank line shows the release sections are copied byte for byte.
     const commit = (text: string, message: string) => {
-      writeFileSync(join(repo, 'CHANGELOG.md'), text);
+      writeFileSync(join(repo, 'CHANGELOG.md'), `${text}\n`);
       run('add', '.');
       run('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', message);
     };
@@ -284,7 +331,13 @@ describe('changelog-reconcile', () => {
     const write = spawnSync(process.execPath, [script], { cwd: repo, encoding: 'utf8' });
     expect(write.status, write.stderr).toBe(0);
     expect(readFileSync(join(repo, 'CHANGELOG.md'), 'utf8')).toBe(
-      log('\n### Fixes\n\n- Fork fix.\n', '## [1.1.0] - 2026-02-01\n\n### Fixes\n\n- Upstream fix, as released.\n', OLD),
+      `${log('\n### Fixes\n\n- Fork fix.\n', '## [1.1.0] - 2026-02-01\n\n### Fixes\n\n- Upstream fix, as released.\n', OLD)}\n`,
     );
+    expect(spawnSync(process.execPath, [script, '--check'], { cwd: repo }).status).toBe(0);
+    // The fork's entry has no released look-alike, so --strict passes too.
+    expect(spawnSync(process.execPath, [script, '--check', '--strict'], { cwd: repo }).status).toBe(0);
+    const half = spawnSync(process.execPath, [script, '--fork', 'HEAD'], { cwd: repo, encoding: 'utf8' });
+    expect(half.status).toBe(2);
+    expect(half.stderr).toContain('pass both --fork and --upstream');
   });
 });
