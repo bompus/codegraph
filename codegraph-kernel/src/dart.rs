@@ -126,6 +126,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     node_ids: Vec<String>,
@@ -156,6 +157,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
         node_ids: Vec::new(),
@@ -265,7 +267,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
 
         let qualified = {
             let mut parts: Vec<&str> = Vec::new();
@@ -398,7 +401,7 @@ impl<'t> Walker<'t> {
         while let Some(parent) = p {
             if matches!(
                 parent.kind(),
-                "class_definition" | "mixin_declaration" | "extension_declaration" | "enum_declaration"
+                "class_definition" | "mixin_declaration" | "extension_declaration" | "extension_type_declaration" | "enum_declaration"
             ) {
                 return parent.child_by_field_name("name").map(|n| self.text(n));
             }
@@ -564,6 +567,18 @@ impl<'t> Walker<'t> {
                 return ctor_name;
             }
         }
+        // `class A = B with C;` — the mixin application's own identifier.
+        if node.kind() == "class_definition" {
+            let mut cursor = node.walk();
+            let application = node.named_children(&mut cursor).find(|c| c.kind() == "mixin_application_class");
+            if let Some(application) = application {
+                let mut ac = application.walk();
+                let id = application.named_children(&mut ac).find(|c| c.kind() == "identifier");
+                if let Some(id) = id {
+                    return self.text(id).to_string();
+                }
+            }
+        }
         if let Some(name_node) = node.child_by_field_name("name") {
             return self.text(name_node).to_string();
         }
@@ -630,7 +645,11 @@ impl<'t> Walker<'t> {
                 self.extract_function(node);
                 return;
             }
-            "class_definition" | "mixin_declaration" | "extension_declaration" => {
+            // `extension_type_declaration` is Dart 3.3's extension type. It is a
+            // different node from `extension_declaration` above, which is the
+            // older `extension` — the names are near neighbours and only one of
+            // them was listed.
+            "class_definition" | "mixin_declaration" | "extension_declaration" | "extension_type_declaration" => {
                 self.extract_class(node);
                 return;
             }
@@ -1174,7 +1193,34 @@ impl<'t> Walker<'t> {
         let mut cursor = node.walk();
         let kids: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
         for child in kids {
-            if child.kind() == "superclass" {
+            if child.kind() == "mixin_application_class" {
+                // `class A = B with M implements I;` — extends B, implements
+                // each mixin and interface, in source order.
+                let mut cc = child.walk();
+                let application = child.named_children(&mut cc).find(|c| c.kind() == "mixin_application");
+                let Some(application) = application else { continue };
+                let mut ac = application.walk();
+                let parts: Vec<Node<'t>> = application.named_children(&mut ac).collect();
+                for t in parts {
+                    match t.kind() {
+                        "type_identifier" => {
+                            let name = self.text(t).to_string();
+                            self.push_ref_at(class_row, &name, "extends", t);
+                        }
+                        "mixins" | "interfaces" => {
+                            let mut mc = t.walk();
+                            let targets: Vec<Node<'t>> = t.named_children(&mut mc).collect();
+                            for m in targets {
+                                if t.kind() == "interfaces" || m.kind() == "type_identifier" {
+                                    let name = self.text(m).to_string();
+                                    self.push_ref_at(class_row, &name, "implements", m);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if child.kind() == "superclass" {
                 // extends type + `with` mixins (implements) — dart branch.
                 let mut cc = child.walk();
                 let targets: Vec<Node<'t>> = child.named_children(&mut cc).collect();

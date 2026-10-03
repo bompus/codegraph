@@ -130,6 +130,7 @@ pub struct Walker<'t> {
     file_path: &'t str,
     line_starts: Vec<usize>,
     arena: Arena,
+    node_id_allocator: ids::NodeIdAllocator,
     tables: Tables,
     stack: Vec<Scope>,
     /// Node id string per row — ids COLLIDE for same-(kind, name, line) nodes
@@ -162,6 +163,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
         file_path,
         line_starts: util::line_starts(source),
         arena: Arena::default(),
+        node_id_allocator: ids::NodeIdAllocator::default(),
         tables: Tables::default(),
         stack: Vec::new(),
         node_ids: Vec::new(),
@@ -203,34 +205,21 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
-    // extractFilePackage: the FIRST top-level namespace declaration mints ONE
-    // `namespace` node that stays pushed for the ENTIRE file — a second
-    // top-level namespace's types nest under the first's node/QN, nested
-    // namespaces leave no trace, and every import ref in a namespaced file
-    // hangs off this node (checklist §namespace).
+    // extractFilePackage: a top-level file-scoped `namespace X;` mints ONE
+    // `namespace` node that stays pushed for the ENTIRE file, so every import
+    // ref in the file hangs off it (checklist §namespace). A block namespace
+    // scopes only its own body — visit_node.
     let root = tree.root_node();
     let mut pkg_pushed = false;
     for i in 0..root.named_child_count() {
         let Some(child) = root.named_child(i) else { continue };
-        if child.kind() != "namespace_declaration"
-            && child.kind() != "file_scoped_namespace_declaration"
-        {
+        if child.kind() != "file_scoped_namespace_declaration" {
             continue;
         }
-        // csharpExtractor.extractPackage: `name` field ?? first
-        // qualified_name/identifier named child. No trim.
-        let name_node = child.child_by_field_name("name").or_else(|| {
-            (0..child.named_child_count())
-                .filter_map(|j| child.named_child(j))
-                .find(|c| matches!(c.kind(), "qualified_name" | "identifier"))
-        });
-        if let Some(name_node) = name_node {
-            let pkg = w.text(name_node).to_string();
-            if !pkg.is_empty() {
-                if let Some(row) = w.create_node("namespace", &pkg, child, Extra::default()) {
-                    w.stack.push(Scope { row, kind: "namespace", name: pkg });
-                    pkg_pushed = true;
-                }
+        if let Some(pkg) = namespace_name(&w, child) {
+            if let Some(row) = w.create_node("namespace", &pkg, child, Extra::default()) {
+                w.stack.push(Scope { row, kind: "namespace", name: pkg });
+                pkg_pushed = true;
             }
         }
         break;
@@ -261,6 +250,18 @@ fn record_is_struct(node: Node) -> bool {
     (0..node.child_count())
         .filter_map(|i| node.child(i))
         .any(|c| c.kind() == "struct")
+}
+
+/// csharpExtractor.extractPackage: `name` field ?? first qualified_name /
+/// identifier named child. No trim; None when empty.
+fn namespace_name(w: &Walker, node: Node) -> Option<String> {
+    let name_node = node.child_by_field_name("name").or_else(|| {
+        (0..node.named_child_count())
+            .filter_map(|j| node.named_child(j))
+            .find(|c| matches!(c.kind(), "qualified_name" | "identifier"))
+    })?;
+    let name = w.text(name_node);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 impl<'t> Walker<'t> {
@@ -317,7 +318,8 @@ impl<'t> Walker<'t> {
             return None;
         }
         let start_line = self.line_of(node);
-        let id = ids::node_id(self.file_path, kind, name, start_line);
+        let column = self.col_of(node);
+        let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
         let end_line = node.end_position().row as u32 + 1; // no resolveBody for csharp
 
         let qualified = {
@@ -415,7 +417,8 @@ impl<'t> Walker<'t> {
     // Java-style `modifiers` wrapper (probed).
 
     /// getVisibility: FIRST `modifier` child whose text is one of the four
-    /// levels wins; none → private (the C# default).
+    /// levels wins; none → public in an interface, internal in a namespace
+    /// or the file, private in a class or struct (the C# defaults).
     fn visibility_of(&self, node: Node) -> u8 {
         for i in 0..node.child_count() {
             let Some(child) = node.child(i) else { continue };
@@ -429,7 +432,17 @@ impl<'t> Walker<'t> {
                 }
             }
         }
-        2 // C# defaults to private
+        let parent = node.parent();
+        let container = match parent {
+            Some(p) if p.kind() == "declaration_list" => p.parent(),
+            other => other,
+        };
+        match container.map(|c| c.kind()) {
+            Some("interface_declaration") => 1,
+            None | Some("compilation_unit") | Some("namespace_declaration")
+            | Some("file_scoped_namespace_declaration") => 4,
+            _ => 2,
+        }
     }
 
     fn is_static(&self, node: Node) -> bool {
@@ -503,6 +516,38 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let kind = node.kind();
         let mut skip_children = false;
+
+        // A block namespace scopes only its body (tree-sitter.ts visitNode):
+        // one written inside another is `Outer.Inner`, taking the outer's
+        // place on the stack while its body is walked.
+        if kind == "namespace_declaration" {
+            if let Some(ns_name) = namespace_name(self, node) {
+                let outer = match self.stack.last() {
+                    Some(top) if top.kind == "namespace" => self.stack.pop(),
+                    _ => None,
+                };
+                let full = match &outer {
+                    Some(o) => format!("{}.{}", o.name, ns_name),
+                    None => ns_name,
+                };
+                let row = self.create_node("namespace", &full, node, Extra::default());
+                if let Some(row) = row {
+                    self.stack.push(Scope { row, kind: "namespace", name: full });
+                }
+                for i in 0..node.named_child_count() {
+                    if let Some(c) = node.named_child(i) {
+                        self.visit_node(c);
+                    }
+                }
+                if row.is_some() {
+                    self.stack.pop();
+                }
+                if let Some(o) = outer {
+                    self.stack.push(o);
+                }
+                return;
+            }
+        }
 
         self.maybe_capture_fn_refs(node);
 
