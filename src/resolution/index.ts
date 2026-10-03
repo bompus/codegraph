@@ -21,11 +21,13 @@ import {
   isImportableKind,
   CPP_DEFINE_SIGNATURE,
 } from './types';
-import { matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesCodeBoundary, gateLanguageMatch, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
+import { isPythonSelfCall, matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesCodeBoundary, gateLanguageMatch, dumpNameMatcherProfile, clearNameMatcherMemos, isRustNameInScope, CASE_INSENSITIVE_LANGUAGES } from './name-matcher';
 import { isVisibleCppMacro, clearCppMacroVisibility } from './cpp-macro-visibility';
 import { isCppConstructorRef, matchCppConstructor } from './cpp-constructor';
-import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
-import { ResolverPool, minRefsForPool } from './resolver-pool';
+import { gateSwiftTypeTarget, clearSwiftTypeVisibility, swiftExtendedConformances } from './swift-type-visibility';
+import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
+import { resolveViaImport, resolvePhpImportedStaticCall, resolvePhpQualifiedClassRef, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isJsPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath, isExternalImport } from './import-resolver';
+import { ResolverPool, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -39,6 +41,10 @@ import { lexicalPathWithinRoot } from '../utils';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { JS_BUILT_INS } from './js-builtins';
+import { builtinModules } from 'module';
+import { parse as parseJsonc } from 'jsonc-parser';
+
+const NODE_BUILTINS = new Set(builtinModules);
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -301,6 +307,8 @@ export class ReferenceResolver {
   // `null` = computed and absent. Treated as immutable for the
   // resolver's lifetime; callers re-create the resolver if config changes.
   private projectAliases: AliasMap | null | undefined = undefined;
+  // Per directory: the aliases of the nearest non-root tsconfig declaring `paths`.
+  private dirAliases = new Map<string, AliasMap | null>();
   // go.mod module path. Same lazy/immutable convention as projectAliases.
   private goModule: GoModule | null | undefined = undefined;
   // Monorepo workspace member packages. Same lazy/immutable convention.
@@ -437,7 +445,9 @@ export class ReferenceResolver {
     this.supertypeGen++;
     this.nodesByKindCache.clear();
     this.fileExistsMemo.clear();
+    this.manifestScopes.clear();
     this.knownNames = null;
+    this.knownLowerNames = null;
     this.knownFiles = null;
     this.cachesWarmed = false;
     // The import-resolver's and name-matcher's per-context memos assume the
@@ -446,6 +456,8 @@ export class ReferenceResolver {
       clearImportResolverMemos(this.context);
       clearNameMatcherMemos(this.context);
       clearCppMacroVisibility(this.context);
+      clearSwiftTypeVisibility(this.context);
+      clearTypeParameterMemos(this.context);
     }
   }
 
@@ -497,6 +509,10 @@ export class ReferenceResolver {
   private createContext(): ResolutionContext {
     return {
       resolveImport: (ref) => resolveViaImport(ref, this.context),
+      isOutOfRepoImport: (source, fromFile, language) =>
+        isExternalImport(source, language, this.context) &&
+        resolveImportPath(source, fromFile, language, this.context) === null &&
+        this.isDeclaredOutsidePackage(source, fromFile),
       getNodesInFile: (filePath: string) => {
         if (!this.nodeCache.has(filePath)) {
           this.nodeCache.set(filePath, this.queries.getNodesByFile(filePath));
@@ -724,6 +740,14 @@ export class ReferenceResolver {
               const target = this.nodeById(edge.target);
               if (target?.name && target.name !== typeName) supertypes.add(target.name);
             }
+            // A Swift conformance to a type the project only extends (SwiftUI's
+            // `View`) resolves to nothing — the extension is not the type — yet
+            // the members its extensions add are still the conformer's.
+            if (language === 'swift') {
+              for (const name of swiftExtendedConformances(tn, this.context)) {
+                if (name !== typeName) supertypes.add(name);
+              }
+            }
           }
           supers = [...supertypes];
         }
@@ -752,6 +776,31 @@ export class ReferenceResolver {
           this.projectAliases = loadProjectAliases(this.projectRoot);
         }
         return this.projectAliases;
+      },
+
+      getNearestAliases: (fromFile: string) => {
+        let dir = path.posix.dirname(fromFile.replace(/\\/g, '/'));
+        const walked: string[] = [];
+        let found: AliasMap | null = null;
+        while (dir && dir !== '.' && dir !== '/') {
+          const hit = this.dirAliases.get(dir);
+          if (hit !== undefined) {
+            found = hit;
+            break;
+          }
+          walked.push(dir);
+          const abs = path.join(this.projectRoot, dir);
+          if (['tsconfig.json', 'jsconfig.json'].some((name) => fs.existsSync(path.join(abs, name)))) {
+            const aliases = loadProjectAliases(abs);
+            if (aliases) {
+              found = aliases;
+              break;
+            }
+          }
+          dir = path.posix.dirname(dir);
+        }
+        for (const d of walked) this.dirAliases.set(d, found);
+        return found;
       },
 
       getGoModule: () => {
@@ -863,6 +912,21 @@ export class ReferenceResolver {
     };
   }
 
+  /** Lowercased `knownNames`, built the first time a case-insensitive language asks. */
+  private knownLowerNames: Set<string> | null = null;
+
+  /** `hasAnyPossibleMatch` for a language whose names ignore case: the name, or any `.`/`::`/`->` part of it. */
+  private hasAnyPossibleMatchIgnoringCase(name: string): boolean {
+    if (!this.knownNames) return true;
+    if (!this.knownLowerNames || this.knownLowerNames.size === 0) {
+      this.knownLowerNames = new Set();
+      for (const known of this.knownNames) this.knownLowerNames.add(known.toLowerCase());
+    }
+    const lower = name.toLowerCase();
+    if (this.knownLowerNames.has(lower)) return true;
+    return lower.split(/::|->|\./).some((part) => part.length > 0 && this.knownLowerNames!.has(part));
+  }
+
   /**
    * Check if a reference name has any possible match in the codebase.
    * Uses the pre-built knownNames set to skip expensive resolution
@@ -969,10 +1033,20 @@ export class ReferenceResolver {
     // translation unit is a macro expansion, not a call — it must never bind
     // to a same-named function in another file (#1838).
     if (isVisibleCppMacro(ref, this.context)) return null;
-    const candidate = this.gateTargetKind(this.resolveOneInner(ref), ref);
-    const resolved = candidate?.resolvedBy === 'framework'
-      ? this.gateFrameworkLanguage(candidate, ref)
-      : this.gateLanguage(candidate, ref);
+    // A Swift type reference never lands on an `extension X {}` node, nor on a
+    // nested type it cannot name bare (see ./swift-type-visibility).
+    // A name a declaration around the reference declares as a type parameter
+    // (`def f[A]`, `class Foo<T>`) is that parameter (see ./type-parameters).
+    const candidate = gateTypeParameter(
+      gateSwiftTypeTarget(this.gateTargetKind(this.resolveOneInner(ref), ref), ref, this.context),
+      ref,
+      this.context,
+    );
+    const scoped = this.gateRustScope(candidate, ref);
+    const resolved = this.gateSuperSelfCall(
+      scoped?.resolvedBy === 'framework' ? this.gateFrameworkLanguage(scoped, ref) : this.gateLanguage(scoped, ref),
+      ref,
+    );
     if (!resolved || ref.referenceKind !== 'calls') return resolved;
 
     const target = this.nodeById(resolved.targetNodeId);
@@ -1017,6 +1091,13 @@ export class ReferenceResolver {
       return this.resolveCfmlComponentPath(ref);
     }
 
+    // A PHP class written with a namespace in it — `new Alias\X()` through a
+    // `use Ns as Alias;` namespace alias, `extends Sub\Base`, `\Ns\X::make()`
+    // (#2256). The pre-filter below would drop most of these before any import
+    // strategy ran, and PHP gives each one exactly one meaning; resolve it first.
+    const phpQualified = resolvePhpQualifiedClassRef(ref, this.context);
+    if (phpQualified !== undefined) return this.gateLanguage(phpQualified, ref);
+
     // Fast pre-filter: skip if no symbol with this name exists anywhere
     // AND the name doesn't match a local import. The import escape is
     // necessary because re-export rename chains (`import { login }
@@ -1026,8 +1107,9 @@ export class ReferenceResolver {
     // ArkTS chained-attribute refs carry a leading dot (`.titleStyle`) that
     // routes them to the decorator-gated matcher; the symbol itself is
     // indexed under the bare name, so the existence check strips the dot.
-    // Nix static path imports (`import ./x.nix`) name a FILE, not a symbol —
-    // they bypass the symbol-existence check and resolve via resolveViaImport.
+    // Nix static path imports (`import ./x.nix`) and JS/TS module paths
+    // (`require('./x')`) name a FILE, not a symbol — they bypass the
+    // symbol-existence check and resolve via resolveViaImport.
     let existenceName =
       ref.language === 'arkts' && ref.referenceName.startsWith('.')
         ? ref.referenceName.slice(1)
@@ -1038,7 +1120,11 @@ export class ReferenceResolver {
     const tPre = this.profileStages ? process.hrtime.bigint() : 0n;
     const preFilterPass =
       isNixPathImportRef(ref) ||
+      isJsPathImportRef(ref) ||
       this.hasAnyPossibleMatch(existenceName) ||
+      // PHP, Pascal, CFML, COBOL and VB.NET names ignore case: `formatprice()`
+      // calls `FormatPrice`, which the exact-name set never lists.
+      (CASE_INSENSITIVE_LANGUAGES.has(ref.language) && this.hasAnyPossibleMatchIgnoringCase(existenceName)) ||
       this.matchesAnyImport(ref) ||
       this.frameworks.some((f) => f.claimsReference?.(ref.referenceName));
     if (this.profileStages) this.stageAdd('preFilter', ref, preFilterPass, tPre);
@@ -1110,7 +1196,11 @@ export class ReferenceResolver {
     const tFw = this.profileStages ? process.hrtime.bigint() : 0n;
     let fwEarly: ResolvedRef | null = null;
     for (const framework of this.frameworks) {
-      const result = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
+      const resolved = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
+      // Name the resolver on the edge (`metadata.framework`): a Swift→ObjC or
+      // React Native bridge hop says how it got into the graph, as a
+      // synthesized edge's `synthesizedBy` does.
+      const result = resolved ? { ...resolved, metadata: { ...resolved.metadata, framework: framework.name } } : null;
       if (result) {
         if (result.confidence >= 0.9) {
           fwEarly = result; // High confidence, return immediately (below)
@@ -1123,7 +1213,17 @@ export class ReferenceResolver {
     if (fwEarly) return fwEarly;
     // A retained untyped chain supplies effect/call-site evidence only. In
     // particular, importing its root does not make the root its call target.
-    if (isUnresolvedJsMemberCall(ref)) return null;
+    // A path through module namespaces is not untyped: `z.coerce.number()`
+    // after `import * as z`, where the barrel has `export * as coerce`.
+    if (isUnresolvedJsMemberCall(ref)) {
+      const root = ref.referenceName.slice(0, ref.referenceName.indexOf('.'));
+      const namespace = this.context.getImportMappings(ref.filePath, ref.language).some((m) => m.isNamespace && m.localName === root);
+      if (!namespace) return null;
+      const viaNamespace = this.gateLanguage(resolveViaImport(ref, this.context), ref);
+      const target = viaNamespace ? this.nodeById(viaNamespace.targetNodeId) : null;
+      return target && (target.kind === 'function' || target.kind === 'method' || target.kind === 'class' || target.kind === 'constant' || target.kind === 'variable')
+        ? viaNamespace : null;
+    }
 
     // Strategy 2: Try import-based resolution
     // A TS/JS/Python call-receiver chain (`useStore.getState().reset`, #1683)
@@ -1140,7 +1240,12 @@ export class ReferenceResolver {
     }
 
     const tImp = this.profileStages ? process.hrtime.bigint() : 0n;
-    const importResult = this.gateLanguage(resolveViaImport(ref, this.context), ref);
+    // `self.get_ip()` is a method call on the instance even when the file
+    // also imports a function named `get_ip`: the import never names it.
+    const selfCall = ref.language === 'python' && ref.referenceKind === 'calls' &&
+      this.context.getImportMappings(ref.filePath, ref.language).some((m) => m.localName === ref.referenceName) &&
+      isPythonSelfCall(ref, this.context);
+    const importResult = selfCall ? null : this.gateLanguage(resolveViaImport(ref, this.context), ref);
     if (this.profileStages) this.stageAdd('viaImport', ref, !!importResult, tImp);
     if (importResult) {
       if (importResult.confidence >= 0.9) return importResult;
@@ -2004,7 +2109,7 @@ export class ReferenceResolver {
         adaptiveSeqRefs += batch.length;
         const remaining = total - processed - batch.length;
         const projectedMs = (adaptiveSeqMs / Math.max(1, adaptiveSeqRefs)) * Math.max(0, remaining);
-        if (projectedMs >= ADAPTIVE_ENGAGE_SETTLE_MS) {
+        if (shouldEngageAdaptively(projectedMs, remaining, ADAPTIVE_ENGAGE_SETTLE_MS)) {
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
             console.error(`[pool-timing] adaptive engage: projected ${Math.round(projectedMs)}ms sequential settle over ${remaining} remaining refs`);
           }
@@ -2318,10 +2423,13 @@ export class ReferenceResolver {
   private isBuiltInOrExternal(ref: UnresolvedRef): boolean {
     const name = ref.referenceName;
     const isJsTs = ref.language === 'typescript' || ref.language === 'javascript'
-      || ref.language === 'tsx' || ref.language === 'jsx' || ref.language === 'arkts';
+      || ref.language === 'tsx' || ref.language === 'jsx' || ref.language === 'arkts'
+      || ref.language === 'vue' || ref.language === 'svelte' || ref.language === 'astro';
 
-    // JavaScript/TypeScript built-ins
-    if (isJsTs && JS_BUILT_INS.has(name)) {
+    // JavaScript/TypeScript built-ins — unless the file imports its own
+    // binding of that name (`import Map from './Map.svelte'`).
+    if (isJsTs && JS_BUILT_INS.has(name) &&
+        !this.context.getImportMappings(ref.filePath, ref.language).some((m) => m.localName === name)) {
       return true;
     }
 
@@ -2834,6 +2942,105 @@ export class ReferenceResolver {
     }
     if (isBoundToOutOfRepoImport(ref, this.context)) return null;
     return result;
+  }
+
+  /**
+   * `super.didMoveToWindow()` inside an override of `didMoveToWindow` calls
+   * the PARENT's implementation, never the method making the call. Extraction
+   * keeps a `super` call under the bare method name, so every strategy found
+   * the enclosing method itself: one expo-camera view had eleven of its
+   * overrides "calling" themselves. The parent's method is usually a
+   * framework's (UIKit, Android, React); a self-edge is never it. Real
+   * recursion keeps its edge — only a call written through `super` / `base`
+   * (C#) / `[super …]` (Objective-C) / `parent::` (PHP) / `super().` (Python)
+   * is declined.
+   */
+  private gateSuperSelfCall(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
+    if (!result || ref.referenceKind !== 'calls' || result.targetNodeId !== ref.fromNodeId) return result;
+    const name = ref.referenceName.slice(Math.max(ref.referenceName.lastIndexOf('.'), ref.referenceName.lastIndexOf(':')) + 1);
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return result;
+    const line = (this.context.getFileLines?.(ref.filePath) ?? this.context.readFile(ref.filePath)?.split(/\r?\n/))?.[ref.line - 1];
+    if (!line) return result;
+    const escaped = name.replace(/\$/g, '\\$');
+    const viaSuper = new RegExp(
+      String.raw`(?:\b(?:super|base)\s*(?:\(\s*(?:[\w.]+\s*,\s*\w+)?\s*\))?\s*\??\.\s*|\[\s*super\s+|\bparent\s*::\s*)` + escaped + String.raw`\b`,
+    );
+    return viaSuper.test(line) ? null : result;
+  }
+
+  /**
+   * A bare Rust name reaches only what is in scope — every strategy's result,
+   * a framework resolver's `Ok(x)` → `struct Ok` construction included (see
+   * isRustNameInScope).
+   */
+  private gateRustScope(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
+    if (!result || ref.language !== 'rust' || !/^[A-Za-z_]\w*$/.test(ref.referenceName)) return result;
+    const target = this.nodeById(result.targetNodeId);
+    return target && !isRustNameInScope(target, ref, this.context) ? null : result;
+  }
+
+  /** The repository's own package name, from its root package.json; null without one. */
+  /** Per directory: the package names its package.json and every enclosing one own and depend on. */
+  private manifestScopes = new Map<string, { own: Set<string>; deps: Set<string> }>();
+
+  /**
+   * Is `source` a package from outside the repository? Only when the importing
+   * file's package.json (or an enclosing one) declares it, or it is a Node
+   * built-in or a runtime's virtual module. A specifier nothing declares is
+   * an alias this resolver does not know — SvelteKit's `$lib/…`, Nuxt's
+   * `~/…`, a nested app's own `@/…` — and stays the project's.
+   */
+  private isDeclaredOutsidePackage(source: string, fromFile: string): boolean {
+    // Deno's standard library is `@std/…` from JSR.
+    if (/^(?:node|bun|jsr|npm|https?):/.test(source) || source.startsWith('@std/') || NODE_BUILTINS.has(source)) return true;
+    const name = source.startsWith('@') ? source.split('/').slice(0, 2).join('/') : source.split('/')[0]!;
+    const normalized = fromFile.replace(/\\/g, '/');
+    const scope = this.manifestScope(normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '');
+    if (scope.own.has(name)) return false;
+    if (scope.deps.has(name)) return true;
+    // SvelteKit's `$app/…` and Astro's `astro:…` belong to the framework —
+    // unless this repository is that framework.
+    const provider = source.startsWith('astro:') ? 'astro' : /^\$(?:app|env|service-worker)(?:\/|$)/.test(source) ? '@sveltejs/kit' : null;
+    return provider !== null && !scope.own.has(provider) && !this.context.getWorkspacePackages?.()?.byName.has(provider);
+  }
+
+  private manifestScope(dir: string): { own: Set<string>; deps: Set<string> } {
+    const memo = this.manifestScopes.get(dir);
+    if (memo) return memo;
+    const parent = dir === '' ? null : this.manifestScope(dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '');
+    let scope = parent ?? { own: new Set<string>(), deps: new Set<string>() };
+    try {
+      const json = JSON.parse(this.context.readFile(dir ? `${dir}/package.json` : 'package.json') ?? 'null') as Record<string, unknown> | null;
+      if (json && typeof json === 'object') {
+        scope = { own: new Set(scope.own), deps: new Set(scope.deps) };
+        if (typeof json.name === 'string' && json.name.length > 0) scope.own.add(json.name);
+        for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+          const deps = json[field];
+          if (!deps || typeof deps !== 'object') continue;
+          for (const [dep, version] of Object.entries(deps)) {
+            // `workspace:*`, `file:../shared`, `link:…`: a package in this repository.
+            if (typeof version === 'string' && /^(?:workspace|file|link|portal):/.test(version)) scope.own.add(dep);
+            else scope.deps.add(dep);
+          }
+        }
+      }
+    } catch { /* no or unreadable package.json */ }
+    // A Deno import map names packages the same way — an entry that maps to a
+    // registry or a URL, not one that maps to a path in the repository.
+    for (const file of ['deno.json', 'deno.jsonc']) {
+      const raw = this.context.readFile(dir ? `${dir}/${file}` : file);
+      if (!raw) continue;
+      const json = parseJsonc(raw) as { imports?: Record<string, unknown> } | undefined;
+      const imports = json && typeof json === 'object' ? json.imports : undefined;
+      if (!imports || typeof imports !== 'object') continue;
+      for (const [key, target] of Object.entries(imports)) {
+        if (typeof target !== 'string' || !/^(?:jsr|npm|https?):/.test(target)) continue;
+        if (scope === parent) scope = { own: new Set(scope.own), deps: new Set(scope.deps) };
+        scope.deps.add(key.replace(/\/$/, ''));
+      }
+    }
+    this.manifestScopes.set(dir, scope);
+    return scope;
   }
 
   /** The one supertype-kind node a TypeScript value shares its name and file with. */

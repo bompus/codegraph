@@ -20,7 +20,7 @@
  *   codegraph callees <symbol>   Find what a function/method calls
  *   codegraph impact <symbol>    Analyze what code is affected by changing a symbol
  *   codegraph affected [files]   Find test files affected by changes
- *   codegraph ui [path]          Open the browser viewer for an indexed project (alias: web)
+ *   codegraph ui [path]          Open the browser viewer (alias: web; not released yet — needs CODEGRAPH_UI=1)
  *   codegraph upgrade [version]  Update CodeGraph to the latest release
  */
 
@@ -28,6 +28,18 @@
 // launcher is (almost certainly) still alive. A launcher killed mid-startup
 // otherwise blinds the PPID watchdog forever (#1185) — see early-ppid.ts.
 import '../mcp/early-ppid';
+
+// The browser viewer is not part of a release yet (see viewer-gate). Refuse
+// `ui` / `web` — also as `help ui` or `ui --help` — before any startup work,
+// unless CODEGRAPH_UI=1 opts in.
+import { requestedViewerCommand, viewerEnabled } from './viewer-gate';
+{
+  const viewerCommand = requestedViewerCommand(process.argv.slice(2));
+  if (viewerCommand && !viewerEnabled()) {
+    process.stderr.write(`error: 'codegraph ${viewerCommand}' is not in this release yet. The browser viewer is coming in an upcoming release.\n`);
+    process.exit(1);
+  }
+}
 
 // Persist V8 compile artifacts across runs (Node ≥22.8). Every invocation —
 // and every worker thread, which re-requires the whole extraction module
@@ -41,7 +53,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, isTaskNotification, hasStructuralKeyword, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
+import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, isTaskNotification, isAgentMessage, hasStructuralKeyword, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
@@ -51,7 +63,7 @@ import { ansiColorsEnabled } from '../ui/color';
 import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
 import { installFatalHandlers } from './fatal-handler';
 import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime-flags';
-import { installCommandSupervision } from './command-supervision';
+import { installCommandSupervision, watchParent } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
 // Value import, but dependency-free by design so `--help` text can name the
@@ -1461,9 +1473,10 @@ program
       let input: { prompt?: string; cwd?: string } = {};
       try { input = JSON.parse(raw); } catch { return; }
       const prompt = String(input.prompt || '');
-      // System-injected task notifications are not user prompts: exit before
-      // any project lookup or explore work (#1832).
-      if (isTaskNotification(prompt)) return;
+      // System-injected task notifications and subagent hand-backs are not
+      // user prompts: exit before any project lookup or explore work (#1832,
+      // #2184).
+      if (isTaskNotification(prompt) || isAgentMessage(prompt)) return;
 
       // Gate telemetry: how often each tier fires vs. no-ops — counter names
       // only, NEVER prompt content (see TELEMETRY.md). This is the data that
@@ -1984,7 +1997,7 @@ function printNoIndexGuidance(projectPath: string): void {
  * like every other quick command.
  */
 program
-  .command('ui [path]')
+  .command('ui [path]', { hidden: !viewerEnabled() })
   .alias('web')
   .description('Open the CodeGraph viewer in your browser — read your indexed project as a graph')
   .option('--port <number>', `Port to listen on (default: ${DEFAULT_UI_PORT}, or the next free one)`)
@@ -2128,6 +2141,10 @@ ${BROWSER_ENV}=none to never open one.
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
+    // Killing the command the user started (its pid, not Ctrl+C's process
+    // group) leaves this re-exec'd server with no parent to forward the
+    // signal: shut down the same way instead of serving the port forever.
+    watchParent(shutdown);
   });
 
 /**
@@ -2842,6 +2859,7 @@ program
         run: up.defaultRun,
         capture: up.defaultCapture,
         hasCommand: up.hasCommand,
+        wirePromptHook: up.defaultWirePromptHook,
         log: (m: string) => console.log(m),
         warn: (m: string) => warn(m),
         error: (m: string) => error(m),

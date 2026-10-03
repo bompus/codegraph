@@ -32,6 +32,7 @@ import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { CfmlExtractor } from './cfml-extractor';
 import { tryKernelExtract, takeDeferredPreParse } from './kernel';
+import { commonJsRequireRefs } from './commonjs-requires';
 import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
@@ -411,6 +412,8 @@ const TS_JS_CHAIN_LANGUAGES = new Set(['typescript', 'tsx', 'javascript', 'jsx']
 const TS_JS_CHAIN_RECEIVER_TYPES = new Set(['member_expression', 'subscript_expression']);
 /** The field of a `this.<field>.<method>()` receiver: public or ES private (#1496, #1987). */
 const THIS_FIELD_PROPERTY_TYPES = new Set(['property_identifier', 'private_property_identifier']);
+/** A Swift receiver that is a path of types, `API.PackageController.GetRoute` — two segments or more, each capitalized. */
+const SWIFT_TYPE_PATH_RECEIVER = /^(?!Self\.)[A-Z]\w*(?:\.[A-Z]\w*)+$/;
 
 /**
  * Identifier-rooted member chains have no inferred property type (#1566),
@@ -654,6 +657,10 @@ export class TreeSitterExtractor {
 
       if (packageNodeId) this.nodeStack.pop();
       this.nodeStack.pop();
+
+      // A CommonJS `require('./x')` is a file import, like ESM's `import`. The
+      // kernel reads the same (kernel/index.ts and the parse worker's transport).
+      this.unresolvedReferences.push(...commonJsRequireRefs(this.filePath, this.source, this.language));
 
       // hasError is routine for several grammars; warn only when no symbols survived.
       const symbolCount = this.nodes.filter((n) => n.kind !== 'file').length;
@@ -1138,6 +1145,32 @@ export class TreeSitterExtractor {
       }
     }
 
+    // C# block namespaces scope only their own body: serilog's Guard.cs opens
+    // `namespace JetBrains.Annotations { … }` and then declares `static class
+    // Guard` at the top level, and a file's second namespace is its own. A
+    // namespace written inside another is `Outer.Inner` — the dotted name a
+    // type's qualifiedName leads with — so it takes the outer's place on the
+    // scope while its body is walked. (A file-scoped `namespace X;` covers
+    // the whole file: extractFilePackage.) Mirrored in the kernel (csharp.rs).
+    if (this.language === 'csharp' && nodeType === 'namespace_declaration') {
+      const nsName = this.extractor.extractPackage?.(node, this.source);
+      if (nsName) {
+        const topId = this.nodeStack[this.nodeStack.length - 1];
+        const top = this.nodes.find((n) => n.id === topId);
+        const outer = top?.kind === 'namespace' ? top : null;
+        if (outer) this.nodeStack.pop();
+        const ns = this.createNode('namespace', outer ? `${outer.name}.${nsName}` : nsName, node);
+        if (ns) this.nodeStack.push(ns.id);
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const child = node.namedChild(i);
+          if (child) this.visitNode(child);
+        }
+        if (ns) this.nodeStack.pop();
+        if (outer) this.nodeStack.push(outer.id);
+        return;
+      }
+    }
+
     // Function-as-value capture (#756) — independent of the dispatch ladder
     // below (the captured container types have no other handler there), so it
     // can never shadow or be shadowed by an extraction branch.
@@ -1421,6 +1454,9 @@ export class TreeSitterExtractor {
     else if (this.extractor.callTypes.includes(nodeType)) {
       this.extractCall(node);
     }
+    else if (this.language === 'kotlin' && nodeType === 'infix_expression') {
+      this.extractKotlinInfixCall(node);
+    }
     // `new Foo(...)` / `Foo::new(...)` / object_creation_expression —
     // produce an `instantiates` reference. Children still walked so
     // nested calls inside the constructor args (`new Foo(bar())`) get
@@ -1663,7 +1699,9 @@ export class TreeSitterExtractor {
       parentNode.kind === 'interface' ||
       parentNode.kind === 'trait' ||
       parentNode.kind === 'enum' ||
-      parentNode.kind === 'module'
+      parentNode.kind === 'module' ||
+      // A Java / Kotlin enum constant with a body of its own (see extractEnum).
+      parentNode.kind === 'enum_member'
     );
   }
 
@@ -2147,7 +2185,18 @@ export class TreeSitterExtractor {
       if (!child) continue;
 
       if (memberTypes?.includes(child.type)) {
-        this.extractEnumMembers(child);
+        const member = this.extractEnumMembers(child);
+        // Java's `PLUS { int apply(…) { … } }`, Kotlin's `NewBuffer { override
+        // fun pipe() … }`: the constant's own body declares members of its own.
+        const entryBody = member ? child.namedChildren.find((c) => c.type === 'class_body') : undefined;
+        if (member && entryBody) {
+          this.nodeStack.push(member.id);
+          for (let j = 0; j < entryBody.namedChildCount; j++) {
+            const inner = entryBody.namedChild(j);
+            if (inner) this.visitNode(inner);
+          }
+          this.nodeStack.pop();
+        }
       } else {
         this.visitNode(child);
       }
@@ -2159,28 +2208,30 @@ export class TreeSitterExtractor {
    * Extract enum member names from an enum member node.
    * Handles multi-case declarations (Swift: `case put, delete`) and single-case patterns.
    */
-  private extractEnumMembers(node: SyntaxNode): void {
+  private extractEnumMembers(node: SyntaxNode): Node | null {
     // Try field-based name first (e.g. Rust enum_variant has a 'name' field)
     const nameNode = getChildByField(node, 'name');
     if (nameNode) {
-      this.createNode('enum_member', getNodeText(nameNode, this.source), node);
-      return;
+      return this.createNode('enum_member', getNodeText(nameNode, this.source), node);
     }
 
     // Check for identifier-like children (Swift: simple_identifier, TS: property_identifier)
+    let first: Node | null = null;
     let found = false;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child && (child.type === 'simple_identifier' || child.type === 'identifier' || child.type === 'property_identifier')) {
-        this.createNode('enum_member', getNodeText(child, this.source), child);
+        const created = this.createNode('enum_member', getNodeText(child, this.source), child);
+        first ??= created;
         found = true;
       }
     }
 
     // If the node itself IS the identifier (e.g. TS property_identifier directly in enum body)
     if (!found && node.namedChildCount === 0) {
-      this.createNode('enum_member', getNodeText(node, this.source), node);
+      return this.createNode('enum_member', getNodeText(node, this.source), node);
     }
+    return first;
   }
 
   /**
@@ -4062,6 +4113,31 @@ export class TreeSitterExtractor {
     return this.erlangAtomMacros.get(macroName) ?? null;
   }
 
+  /**
+   * A Kotlin infix call — `Users.id eq id1`, `a to b`, `x shouldBe y` — is a
+   * call of the infix function in the middle: `receiver.fn` when the left
+   * operand is a plain name (as `receiver.fn(arg)` would be), else the bare
+   * name. Nothing records it otherwise, so a project's infix DSL had no
+   * callers. Mirrored in the kernel's extract_infix_call (kotlin.rs).
+   */
+  private extractKotlinInfixCall(node: SyntaxNode): void {
+    if (this.nodeStack.length === 0 || node.namedChildCount !== 3) return;
+    const lhs = node.namedChild(0);
+    const fn = node.namedChild(1);
+    if (!lhs || !fn || fn.type !== 'simple_identifier' || LITERAL_RECEIVER_TYPES.has(lhs.type)) return;
+    const callerId = this.nodeStack[this.nodeStack.length - 1];
+    if (!callerId) return;
+    const name = getNodeText(fn, this.source);
+    const receiver = lhs.type === 'simple_identifier' ? getNodeText(lhs, this.source) : '';
+    this.unresolvedReferences.push({
+      fromNodeId: callerId,
+      referenceName: receiver && receiver !== 'this' && receiver !== 'super' ? `${receiver}.${name}` : name,
+      referenceKind: 'calls',
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    });
+  }
+
   private extractCall(node: SyntaxNode): void {
     if (this.nodeStack.length === 0) return;
 
@@ -4902,6 +4978,21 @@ export class TreeSitterExtractor {
                 else reencode = !!innerCallee;
               }
               calleeName = reencode ? `${innerCallee}().${methodName}` : methodName;
+            } else if (
+              this.language === 'swift' &&
+              receiver &&
+              receiver.type === 'navigation_expression' &&
+              SWIFT_TYPE_PATH_RECEIVER.test(getNodeText(receiver, this.source).replace(/\s+/g, ''))
+            ) {
+              // Swift call through a type path — `API.PackageController.GetRoute.query(on:)`,
+              // on one line or split before the `.query`. Keep the path: the
+              // bare method name this used to emit exact-matched whichever
+              // type's `query` came first (every route in a Vapor app has one).
+              // The resolver finds the member on the type the path names, or
+              // leaves the call unresolved. An instance chain (`self.store.load()`,
+              // `viewModel.state.reset()`) is not a type path and stays bare.
+              // Mirrored in the kernel's extract_call (swift.rs).
+              calleeName = `${getNodeText(receiver, this.source).replace(/\s+/g, '')}.${methodName}`;
             } else if (
               this.language === 'cfscript' &&
               receiver &&
@@ -5887,6 +5978,8 @@ export class TreeSitterExtractor {
           this.extractAnonymousClass(node, anonBody);
           return;
         }
+      } else if (this.language === 'kotlin' && nodeType === 'infix_expression') {
+        this.extractKotlinInfixCall(node);
       } else if (this.extractor!.extractBareCall) {
         const calleeName = this.extractor!.extractBareCall(node, this.source);
         if (calleeName && this.nodeStack.length > 0) {
@@ -6123,6 +6216,25 @@ export class TreeSitterExtractor {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (!child) continue;
+
+      // Dart: `class A = B with M implements I;` keeps its supertypes in a
+      // `mixin_application` — the same shapes as a class body's clauses.
+      if (this.language === 'dart' && child.type === 'mixin_application_class') {
+        const application = child.namedChildren.find((c: SyntaxNode) => c.type === 'mixin_application');
+        for (const t of application?.namedChildren ?? []) {
+          const targets = t.type === 'type_identifier' ? [t] : t.type === 'mixins' ? t.namedChildren.filter((m: SyntaxNode) => m.type === 'type_identifier') : t.type === 'interfaces' ? t.namedChildren : [];
+          for (const target of targets) {
+            this.unresolvedReferences.push({
+              fromNodeId: classId,
+              referenceName: getNodeText(target, this.source),
+              referenceKind: t.type === 'type_identifier' ? 'extends' : 'implements',
+              line: target.startPosition.row + 1,
+              column: target.startPosition.column,
+            });
+          }
+        }
+        continue;
+      }
 
       if (
         child.type === 'extends_clause' ||
