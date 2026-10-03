@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Additions to the CodeRabbit organization settings. With inheritance on, every
+# key this file leaves out keeps its organization value instead of resetting
+# to CodeRabbit's default.
+inheritance: true
+
+reviews:
+  estimate_code_review_effort: false
+  sequence_diagrams: false
+  suggested_reviewers: false
+  suggested_labels: false
+  in_progress_fortune: false
+  poem: false
+  auto_review:
+    ignore_title_keywords: ["WIP", "DO NOT MERGE"]
+  path_instructions:
+    - path: "**/*"
+      instructions: >-
+        Flag only problems this pull request introduces. Lines that were moved
+        or re-indented are not new. Before posting a finding, check it against
+        the code in the repository.
+    - path: "__tests__/fixtures/golden/*.dump"
+      instructions: >-
+        Golden dumps of the kernel's output. Check that every changed line
+        follows from the extraction, resolution or synthesis change in this
+        pull request, and flag changes that do not.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    custom_checks:
+      - name: Suppressions explained
+        mode: warning
+        instructions: >-
+          FAIL if a changed line adds or broadens a directive that silences a
+          lint, type-check or compiler diagnostic (for example
+          `eslint-disable`, `@ts-expect-error`, `@ts-ignore`, `#[allow(...)]`
+          in Rust, or a new ignore entry in `tsconfig.json` or a lint config)
+          without a comment on the same or the preceding line that says why.
+          PASS otherwise, including when the pull request adds no such
+          directive.
+      - name: User-visible changes documented
+        mode: warning
+        instructions: >-
+          FAIL if the diff adds, removes or renames a CLI command or flag, an
+          MCP tool or one of its arguments, a supported language or framework,
+          an agent target or a config key, and does not update `README.md` and
+          the matching page under `site/src/content/docs/`. PASS otherwise.
+
+knowledge_base:
+  learnings:
+    approval_delay: 7
