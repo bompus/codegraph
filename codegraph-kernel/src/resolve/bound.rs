@@ -410,9 +410,9 @@ impl KernelResolver {
     /// the method the class around the call inherits, the first one along
     /// its C3 linearization after the class itself, or after the class
     /// `super(Cls, self)` names (written on one line). None unless the call
-    /// runs directly in a method of that class, the explicit form passing the
-    /// method's first parameter (Python raises in a nested function, a lambda,
-    /// a `@staticmethod` or the class body); when the file rebinds `super` or
+    /// runs in a function of that class with a first parameter, which the
+    /// explicit form must pass (Python raises in the class body, a lambda, a
+    /// `@staticmethod`, or a function without one); when the file rebinds `super` or
     /// the class the call names; when a class in the order has a metaclass
     /// that may reorder it; when a class up to the one that declares the
     /// method lists a base the index does not hold, which may come first at
@@ -446,7 +446,7 @@ impl KernelResolver {
             return Ok(None);
         };
         let code = super::member_fn_ref::python_code_lines(&lines, 0, lines.len());
-        let Some((receiver, params)) = python_method_frame(&code, lo, at, col, &cls.name) else {
+        let Some((receiver, params)) = python_method_frame(&code, lo, at, col) else {
             return Ok(None);
         };
         if call.get(2).is_some_and(|m| m.as_str() != receiver) {
@@ -1405,23 +1405,23 @@ fn same_declared_type(n: &KNode, owner: &KNode) -> bool {
         }
 }
 
-/// matchBoundTypeMember's verdict for a member it proved.
-/// The method a Python `super(...)` call at byte `col` of line `at` runs
-/// in, when it sits directly in the body of `class` (which starts at line
-/// `lo`), is not a `@staticmethod`, and the call is not inside a lambda or a
-/// nested function: its first parameter and its parameter list.
-fn python_method_frame(code: &[(bool, String)], lo: usize, at: usize, col: usize, class: &str) -> Option<(String, String)> {
+/// The function a Python `super(...)` call at byte `col` of line `at` runs
+/// in, inside the class that starts at line `lo`: its first parameter and
+/// its parameter list. None in the class body itself, in a lambda, under
+/// `@staticmethod`, or without a first parameter, where Python raises.
+fn python_method_frame(code: &[(bool, String)], lo: usize, at: usize, col: usize) -> Option<(String, String)> {
     let indent = |c: &str| c.len() - c.trim_start().len();
     let def = re!(r"^\s*(?:async\s+)?def\b");
     let class_line = re!(r"^\s*class\b");
-    // The nearest line above `from` that opens a block around it.
-    let enclosing = |from: usize, mut ind: usize, through: bool| -> Option<usize> {
+    // The nearest `def` or `class` line above `from` that opens a block
+    // around it, through any `if`/`for`/`with` blocks between.
+    let enclosing = |from: usize, mut ind: usize| -> Option<usize> {
         for i in (lo..from).rev() {
             let (start, c) = &code[i];
             if !*start || c.trim().is_empty() || indent(c) >= ind {
                 continue;
             }
-            if !through || def.is_match(c) || class_line.is_match(c) {
+            if def.is_match(c) || class_line.is_match(c) {
                 return Some(i);
             }
             ind = indent(c);
@@ -1441,15 +1441,9 @@ fn python_method_frame(code: &[(bool, String)], lo: usize, at: usize, col: usize
     if re!(r"\blambda\b").is_match(&before) || class_line.is_match(&code[s].1) {
         return None;
     }
-    // A one-line `def` holds the call itself; otherwise walk out through
-    // `if`/`for`/`with` blocks to the first `def` or `class`.
-    let d = if def.is_match(&code[s].1) { s } else { enclosing(s, indent(&code[s].1), true)? };
+    // A one-line `def` holds the call itself.
+    let d = if def.is_match(&code[s].1) { s } else { enclosing(s, indent(&code[s].1))? };
     if !def.is_match(&code[d].1) {
-        return None;
-    }
-    let parent = enclosing(d, indent(&code[d].1), false)?;
-    let owner = re!(r"^\s*class\s+([A-Za-z_]\w*)").captures(&code[parent].1)?;
-    if &owner[1] != class {
         return None;
     }
     for (start, c) in code[lo..d].iter().rev() {
@@ -1541,6 +1535,7 @@ fn python_assignment_target(code: &str) -> Option<&str> {
     None
 }
 
+/// matchBoundTypeMember's verdict for a member it proved.
 fn bound_member_cand(m: Arc<KNode>) -> KCand {
     KCand {
         resolved_by: if m.kind == "field" { "field-call" } else { "instance-method" },

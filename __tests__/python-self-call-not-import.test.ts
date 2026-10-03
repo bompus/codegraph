@@ -506,8 +506,10 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     ['in a staticmethod', 'class Child(Base):\n    @staticmethod\n    def run(obj):\n        return super().m()\n'],
     ['in the class body', 'class Child(Base):\n    value = super().m()\n'],
     ['with `super` a parameter', 'class Child(Base):\n    def run(self, super):\n        return super().m()\n'],
+    ['with `super` a parameter on a later line', 'class Child(Base):\n    def run(\n        self,\n        super,\n    ):\n        return super().m()\n'],
     ['with `super` rebound in the file', 'super = print\n\n\nclass Child(Base):\n    def run(self):\n        return super().m()\n'],
     ['with a receiver other than the first parameter', 'class Child(Base):\n    def run(self):\n        return super(Child, object()).m()\n'],
+    ['with a receiver named other than the first parameter', 'class Child(Base):\n    def run(self, other):\n        return super(Child, other).m()\n'],
     ['with the named class shadowed by a parameter', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self, Child=Mid):\n        return super(Child, self).m()\n', mid('    def m(self):\n        return "mid"')],
     ['under a metaclass that defines mro', 'class Meta(type):\n    def mro(cls):\n        return [cls, object]\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
     ['under a metaclass the index does not hold', 'from vendor.meta import Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
@@ -523,7 +525,7 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     });
     expect(calls.filter((c) => /^Child\S* -> (Base|Mid)::m /.test(c))).toEqual([]);
   });
-  it('super() still links in a classmethod, a one-line method, a nested block, under a plain metaclass', async () => {
+  it('super() still links in a classmethod, a one-line method, a nested block or function, under a plain metaclass', async () => {
     const calls = await callsIn({
       'pkg/__init__.py': '',
       'pkg/base.py': [
@@ -562,6 +564,11 @@ describe('Python self-calls do not resolve through a same-named import', () => {
         '            for _ in range(2):',
         '                return super(Child, self).m()',
         '',
+        '    def wrapped(self):',
+        '        def inner(item):',
+        '            return super().m()',
+        '        return inner(self)',
+        '',
         '',
         'class Abstract(Base, metaclass=ABCMeta):',
         '    def m(self):',
@@ -574,6 +581,7 @@ describe('Python self-calls do not resolve through a same-named import', () => {
       'Child::m -> Base::m (pkg/base.py)',
       'Child::make -> Base::make (pkg/base.py)',
       'Child::run -> Base::m (pkg/base.py)',
+      'Child::wrapped::inner -> Base::m (pkg/base.py)',
     ]);
   });
   it('super() starts at its own class when a base shares its name', async () => {
