@@ -16,6 +16,15 @@ Every run needs a quiet host. Each runner waits before a corpus until no
 `capped-*` scope runs and the 1-minute load is under 2, and each arm runs twice
 per corpus, forward and then reversed.
 
+## Run time
+
+The 2026-09-28 run behind the README took 1 h 26 min: `run-index-sync.sh` on
+the seven corpora in the benchmark doc, then `run-mcp.sh` on gin and n8n, then
+`run-cli.sh` on gin, with four arms (upstream and fork, each on Node and Bun).
+That figure includes the idle-host waits. Creating the two build worktrees and
+building both took 9 minutes before it. Start a re-run estimate from these
+numbers, and update them here after a run that takes much longer or shorter.
+
 ## Arms
 
 ```bash
