@@ -527,6 +527,7 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     ['in a comprehension that rebinds the first parameter', 'class Child(Base):\n    def run(self):\n        return [super().m() for self in [object()]]\n'],
     ['in a generator expression inside an f-string', 'class Child(Base):\n    def run(self):\n        return f"{next(super().m() for _ in range(1))}"\n'],
     ['in a lambda inside an f-string', 'class Child(Base):\n    def run(self):\n        return f"{(lambda: super().m())()}"\n'],
+    ['in a lambda past an f-string field holding a comma', 'class Child(Base):\n    def run(self):\n        return (lambda: f"{1, 2}" + super().m())()\n'],
     ['with `super` annotated as a local', 'class Child(Base):\n    def run(self):\n        super: object\n        return super().m()\n'],
     ['with `super` a match capture', 'class Child(Base):\n    def run(self, factory):\n        match factory:\n            case super:\n                return super().m()\n'],
     ['past a one-line class body that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', 'from pkg.base import Base\n\n\nclass Mid(Base): m = lambda self: "mid"\n'],
@@ -545,6 +546,40 @@ describe('Python self-calls do not resolve through a same-named import', () => {
       'pkg/child.py': `from pkg.base import Base\n${child}`,
     });
     expect(calls.filter((c) => /^Child\S* -> (Base|Mid)::m /.test(c))).toEqual([]);
+  });
+  it('super() links from an f-string field, on one line or several (Python 3.12)', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': ['m', 'n', 'p', 'q'].map((m) => `    def ${m}(self):\n        return "base"\n`).join('\n').replace(/^/, 'class Base:\n'),
+      'pkg/child.py': [
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Child(Base):',
+        '    def m(self):',
+        '        return f"{(',
+        '            super().m()',
+        '        )}"',
+        '',
+        '    def n(self):',
+        '        return f"{super().n()!r:>{10}}"',
+        '',
+        '    def p(self):',
+        '        return (lambda x=f"{1, self}": super(Child, self).p())()',
+        '',
+        '    def q(self):',
+        '        return (x for x in f"{0 if True else 1}" + super().q())',
+        '',
+      ].join('\n'),
+    });
+    // A field's comma or conditional stays inside the field, so the lambda
+    // keeps one parameter and the generator's first iterable runs on.
+    expect(calls.filter((c) => c.startsWith('Child::'))).toEqual([
+      'Child::m -> Base::m (pkg/base.py)',
+      'Child::n -> Base::n (pkg/base.py)',
+      'Child::p -> Base::p (pkg/base.py)',
+      'Child::q -> Base::q (pkg/base.py)',
+    ]);
   });
   it('super() still links in a classmethod, a one-line method, a nested block or function, a conditional method, a comprehension, under a plain metaclass', async () => {
     const calls = await callsIn({
