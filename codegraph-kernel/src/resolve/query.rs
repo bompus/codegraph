@@ -191,6 +191,16 @@ impl KernelResolver {
         v
     }
 
+    /// `read_file` for a sweep over many files: a cached file is shared, an
+    /// uncached one is read without entering the cache, so the sweep doesn't
+    /// evict the files other strategies keep there.
+    pub(super) fn read_file_uncached(&self, rel: &str) -> Option<Rc<SourceFile>> {
+        if let Some(v) = self.file_cache.get(rel) {
+            return v.clone();
+        }
+        read_source(pos_resolve(&self.root_abs, rel)).map(|s| Rc::new(SourceFile::new(s.replace("\r\n", "\n").split('\n').map(str::to_string).collect())))
+    }
+
     // -----------------------------------------------------------------------
     // Bindings → import mappings / re-exports (import-resolver.ts)
     // -----------------------------------------------------------------------
