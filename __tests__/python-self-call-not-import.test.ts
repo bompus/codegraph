@@ -495,4 +495,101 @@ describe('Python self-calls do not resolve through a same-named import', () => {
       'Adapter::clean -> Base::clean (pkg/base.py)',
     ]);
   });
+
+  // Each runs where Python's super() would raise, call something else, or
+  // reach a method the index can't see first; none may link to Base.m/Mid.m.
+  const base = 'class Base:\n    def m(self):\n        return "base"\n';
+  const mid = (body: string) => `from pkg.base import Base\n\n\nclass Mid(Base):\n${body}\n`;
+  it.each([
+    ['in a nested function', 'class Child(Base):\n    def run(self):\n        def inner():\n            return super().m()\n        return inner()\n'],
+    ['in a lambda', 'class Child(Base):\n    def run(self):\n        f = lambda: super().m()\n        return f()\n'],
+    ['in a staticmethod', 'class Child(Base):\n    @staticmethod\n    def run():\n        return super().m()\n'],
+    ['in the class body', 'class Child(Base):\n    value = super().m()\n'],
+    ['with `super` a parameter', 'class Child(Base):\n    def run(self, super):\n        return super().m()\n'],
+    ['with `super` rebound in the file', 'super = print\n\n\nclass Child(Base):\n    def run(self):\n        return super().m()\n'],
+    ['with a receiver other than the first parameter', 'class Child(Base):\n    def run(self):\n        return super(Child, object()).m()\n'],
+    ['with the named class shadowed by a parameter', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self, Child=Mid):\n        return super(Child, self).m()\n', mid('    def m(self):\n        return "mid"')],
+    ['under a metaclass that defines mro', 'class Meta(type):\n    def mro(cls):\n        return [cls, object]\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
+    ['under a metaclass the index does not hold', 'from vendor.meta import Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
+    ['past a tuple assignment that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    m, other = (lambda self: "mid"), None')],
+    ['past a class-body import that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    from builtins import len as m')],
+    ['to a property', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    @property\n    def m(self):\n        return "mid"')],
+  ])('super() links nothing %s', async (_, child, midFile = mid('    def other(self):\n        return 1')) => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': base,
+      'pkg/mid.py': midFile,
+      'pkg/child.py': `from pkg.base import Base\n${child}`,
+    });
+    expect(calls.filter((c) => /^Child\S* -> (Base|Mid)::m /.test(c))).toEqual([]);
+  });
+  it('super() still links in a classmethod, a one-line method, a nested block, under a plain metaclass', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': [
+        'class Base:',
+        '    def m(self):',
+        '        return "base"',
+        '',
+        '    m.alters_data = True',
+        '',
+        '    @classmethod',
+        '    def make(cls):',
+        '        return cls()',
+        '',
+      ].join('\n'),
+      'pkg/child.py': [
+        'from abc import ABCMeta',
+        'from pkg.base import Base',
+        '',
+        '',
+        'class Meta(type):',
+        '    def __call__(cls, *args):',
+        '        return type.__call__(cls, *args)',
+        '',
+        '',
+        'class Child(Base, metaclass=Meta):',
+        '    """Calls super().m() in a docstring; super = nothing here."""',
+        '',
+        '    def m(self): return super().m()',
+        '',
+        '    @classmethod',
+        '    def make(cls):',
+        '        return super().make()',
+        '',
+        '    def run(self, flag):',
+        '        if flag:',
+        '            for _ in range(2):',
+        '                return super(Child, self).m()',
+        '',
+        '',
+        'class Abstract(Base, metaclass=ABCMeta):',
+        '    def m(self):',
+        '        return super().m()',
+        '',
+      ].join('\n'),
+    });
+    expect(calls.filter((c) => / -> Base::/.test(c))).toEqual([
+      'Abstract::m -> Base::m (pkg/base.py)',
+      'Child::m -> Base::m (pkg/base.py)',
+      'Child::make -> Base::make (pkg/base.py)',
+      'Child::run -> Base::m (pkg/base.py)',
+    ]);
+  });
+  it('super() starts at its own class when a base shares its name', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Adapter:\n    def m(self):\n        return "base"\n',
+      'pkg/child.py': [
+        'from pkg.base import Adapter as Parent',
+        '',
+        '',
+        'class Adapter(Parent):',
+        '    def m(self):',
+        '        return super().m()',
+        '',
+      ].join('\n'),
+    });
+    expect(calls).toContain('Adapter::m -> Adapter::m (pkg/base.py)');
+  });
 });

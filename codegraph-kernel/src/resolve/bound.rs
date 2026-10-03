@@ -409,10 +409,15 @@ impl KernelResolver {
     /// `super().<name>()`, which the extractor records as `super().<name>`:
     /// the method the class around the call inherits, the first one along
     /// its C3 linearization after the class itself, or after the class
-    /// `super(Cls, self)` names (written on one line). None when a class up to
-    /// the one that declares the method lists a base the index does not hold,
-    /// which may come first at runtime, or a class on the way binds the name
-    /// in its body, where only runtime could tell.
+    /// `super(Cls, self)` names (written on one line). None unless the call
+    /// runs directly in a method of that class, the explicit form passing the
+    /// method's first parameter (Python raises in a nested function, a lambda,
+    /// a `@staticmethod` or the class body); when the file rebinds `super` or
+    /// the class the call names; when a class in the order has a metaclass
+    /// that may reorder it; when a class up to the one that declares the
+    /// method lists a base the index does not hold, which may come first at
+    /// runtime; or when a class on the way binds the name in its body other
+    /// than by its `def`, or makes it a property, where only runtime could tell.
     pub(super) fn python_super_method(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
         let Some(name) = r.reference_name.strip_prefix("super().").filter(|n| re!(r"^[A-Za-z_]\w*$").is_match(n)) else {
             return Ok(None);
@@ -432,41 +437,71 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let line = lines.get((r.line - 1).max(0) as usize).map(|l| l.as_str()).unwrap_or("");
+        let (lo, at) = ((cls.start_line - 1).max(0) as usize, (r.line - 1).max(0) as usize);
+        let Some(line) = lines.get(at).filter(|_| at >= lo) else {
+            return Ok(None);
+        };
         let col = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
-        let Some(call) = re!(r"^super\s*\(\s*(?:\)|([A-Za-z_]\w*)\s*,)").captures(&line[col..]) else {
+        let Some(call) = re!(r"^super\s*\(\s*(?:\)|([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\))").captures(&line[col..]) else {
             return Ok(None);
         };
+        let code = super::member_fn_ref::python_code_lines(&lines, 0, lines.len());
+        let Some((receiver, params)) = python_method_frame(&code, lo, at, col, &cls.name) else {
+            return Ok(None);
+        };
+        if call.get(2).is_some_and(|m| m.as_str() != receiver) {
+            return Ok(None);
+        }
+        let named = call.get(1).map(|m| m.as_str());
+        for bound in std::iter::once("super").chain(named) {
+            let word = Self::cached_regex(&format!(r"\b{}\b", regex::escape(bound)))?;
+            if word.is_match(&params) || python_binds(&code, bound, bound == "super")? {
+                return Ok(None);
+            }
+        }
         let Some(mro) = self.python_mro(&cls, 0)? else { return Ok(None) };
-        let named = call.get(1).map_or(cls.name.as_str(), |m| m.as_str());
-        let mut at = mro.iter().enumerate().filter(|(_, c)| c.name == named).map(|(i, _)| i);
-        let (Some(start), None) = (at.next(), at.next()) else {
-            return Ok(None);
+        let start = match named {
+            Some(n) if n != cls.name => {
+                let mut at = mro.iter().enumerate().filter(|(_, c)| c.name == n).map(|(i, _)| i);
+                let (Some(start), None) = (at.next(), at.next()) else {
+                    return Ok(None);
+                };
+                start
+            }
+            _ => 0,
         };
+        for class in &mro {
+            if !self.python_metaclass_keeps_order(class)? {
+                return Ok(None);
+            }
+        }
         // C3 puts a class's bases after it, so only the bases of classes up
         // to the hit can come before the hit.
         for class in &mro[..=start] {
-            if !self.python_bases_indexed(class)? {
+            if !self.python_bases_indexed(class, &["object"])? {
                 return Ok(None);
             }
         }
         for class in mro.iter().skip(start + 1) {
-            if self.python_type_assigns(class, name)? {
+            if self.python_class_body_binds(class, name)? {
                 return Ok(None);
             }
             if let Some(m) = self.own_bound_member(class, name, r)? {
+                if self.python_property(&m)? {
+                    return Ok(None);
+                }
                 return Ok(Some(bound_member_cand(m)));
             }
-            if !self.python_bases_indexed(class)? {
+            if !self.python_bases_indexed(class, &["object"])? {
                 return Ok(None);
             }
         }
         Ok(None)
     }
 
-    /// Whether every base a Python class header lists, `object` aside, is
-    /// one of its indexed `extends` targets.
-    fn python_bases_indexed(&mut self, class: &KNode) -> Res<bool> {
+    /// Whether every base a Python class header lists, `known` external
+    /// bases aside, is one of its indexed `extends` targets.
+    fn python_bases_indexed(&mut self, class: &KNode, known: &[&str]) -> Res<bool> {
         let Some(lines) = self.read_file(&class.file_path) else {
             return Ok(false);
         };
@@ -481,7 +516,107 @@ impl KernelResolver {
                 indexed.push(t);
             }
         }
-        Ok(bases.iter().filter(|b| b.as_str() != "object").count() == indexed.len())
+        let listed = bases.iter().filter(|b| !known.contains(&b.rsplit('.').next().unwrap_or(b))).count();
+        Ok(listed == indexed.len())
+    }
+
+    /// Whether a Python class's metaclass leaves its C3 order alone: none
+    /// declared, `type` or `ABCMeta`, or indexed metaclasses none of which,
+    /// nor any of their bases, defines `mro`.
+    fn python_metaclass_keeps_order(&mut self, class: &KNode) -> Res<bool> {
+        let Some(lines) = self.read_file(&class.file_path) else {
+            return Ok(false);
+        };
+        let lo = (class.start_line - 1).max(0) as usize;
+        let code = super::member_fn_ref::python_code_lines(&lines, lo, (lo + 64).min(lines.len()));
+        let Some(h) = code.iter().position(|(_, c)| re!(r"^\s*class\b").is_match(c)) else {
+            return Ok(false);
+        };
+        let header = std::iter::once(&code[h])
+            .chain(code[h + 1..].iter().take_while(|(start, _)| !*start))
+            .map(|(_, c)| c.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(m) = re!(r"\bmetaclass\s*=\s*([A-Za-z_][\w.]*)").captures(&header) else {
+            return Ok(true);
+        };
+        let meta = m[1].rsplit('.').next().unwrap_or("").to_string();
+        if meta == "type" || meta == "ABCMeta" {
+            return Ok(true);
+        }
+        let metas: Vec<Arc<KNode>> =
+            self.nodes_by_name(&meta)?.iter().filter(|n| n.kind == "class" && n.language == "python").cloned().collect();
+        if metas.is_empty() {
+            return Ok(false);
+        }
+        for meta in &metas {
+            let Some(order) = self.python_mro(meta, 0)? else { return Ok(false) };
+            for c in &order {
+                if !self.nodes_by_qualified_name(&format!("{}::mro", c.qualified_name))?.is_empty()
+                    || !self.python_bases_indexed(c, &["object", "type", "ABCMeta"])?
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whether a Python class body binds `name` other than by a `def`: an
+    /// assignment (tuple targets included), an import, a loop or `with`
+    /// target, a nested class. Method bodies and `def` lines don't count.
+    fn python_class_body_binds(&mut self, class: &KNode, name: &str) -> Res<bool> {
+        let Some(lines) = self.read_file(&class.file_path) else {
+            return Ok(true);
+        };
+        let bodies: Vec<(i64, i64)> = self
+            .nodes_in_file(&class.file_path)?
+            .iter()
+            .filter(|n| {
+                (n.kind == "method" || n.kind == "function") && n.start_line > class.start_line && n.end_line <= class.end_line
+            })
+            .map(|n| (n.start_line, n.end_line))
+            .collect();
+        let lo = (class.start_line - 1).max(0) as usize;
+        let hi = (class.end_line.max(class.start_line) as usize).min(lines.len());
+        let code: Vec<(bool, String)> = super::member_fn_ref::python_code_lines(&lines, lo, hi)
+            .into_iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(i, (_, c))| {
+                let line_no = (lo + i + 1) as i64;
+                !re!(r"^\s*(?:async\s+)?def\b").is_match(c) && !bodies.iter().any(|&(s, e)| s < line_no && line_no <= e)
+            })
+            .map(|(_, l)| l)
+            .collect();
+        python_binds(&code, name, true)
+    }
+
+    /// Whether a Python method is a property (`@property`, `@cached_property`,
+    /// `@<name>.setter`), an attribute read rather than the method called.
+    fn python_property(&mut self, method: &KNode) -> Res<bool> {
+        let Some(lines) = self.read_file(&method.file_path) else {
+            return Ok(true);
+        };
+        let def = Self::cached_regex(&format!(r"^\s*(?:async\s+)?def\s+{}\b", regex::escape(&method.name)))?;
+        let from = (method.start_line - 1).max(0) as usize;
+        let Some(d) = (from..(from + 32).min(lines.len())).find(|&i| def.is_match(&lines[i])) else {
+            return Ok(true);
+        };
+        let code = super::member_fn_ref::python_code_lines(&lines, d.saturating_sub(32), d);
+        for (start, c) in code.iter().rev() {
+            let c = c.trim();
+            if c.is_empty() || !*start {
+                continue;
+            }
+            if !c.starts_with('@') {
+                break;
+            }
+            if re!(r"^@\s*(?:[\w.]*\.)?(?:property|cached_property)\b|^@\s*\w+\.(?:setter|getter|deleter)\b").is_match(c) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// matchBoundTypeMember's per-type member rule: `Owner::method`, a
@@ -1271,6 +1406,141 @@ fn same_declared_type(n: &KNode, owner: &KNode) -> bool {
 }
 
 /// matchBoundTypeMember's verdict for a member it proved.
+/// The method a Python `super(...)` call at byte `col` of line `at` runs
+/// in, when it sits directly in the body of `class` (which starts at line
+/// `lo`), is not a `@staticmethod`, and the call is not inside a lambda or a
+/// nested function: its first parameter and its parameter list.
+fn python_method_frame(code: &[(bool, String)], lo: usize, at: usize, col: usize, class: &str) -> Option<(String, String)> {
+    let indent = |c: &str| c.len() - c.trim_start().len();
+    let def = re!(r"^\s*(?:async\s+)?def\b");
+    let class_line = re!(r"^\s*class\b");
+    // The nearest line above `from` that opens a block around it.
+    let enclosing = |from: usize, mut ind: usize, through: bool| -> Option<usize> {
+        for i in (lo..from).rev() {
+            let (start, c) = &code[i];
+            if !*start || c.trim().is_empty() || indent(c) >= ind {
+                continue;
+            }
+            if !through || def.is_match(c) || class_line.is_match(c) {
+                return Some(i);
+            }
+            ind = indent(c);
+        }
+        None
+    };
+    let mut s = at;
+    while s > lo && !code[s].0 {
+        s -= 1;
+    }
+    let before = code[s..at]
+        .iter()
+        .map(|(_, c)| c.as_str())
+        .chain(std::iter::once(code[at].1.get(..col).unwrap_or("")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if re!(r"\blambda\b").is_match(&before) || class_line.is_match(&code[s].1) {
+        return None;
+    }
+    // A one-line `def` holds the call itself; otherwise walk out through
+    // `if`/`for`/`with` blocks to the first `def` or `class`.
+    let d = if def.is_match(&code[s].1) { s } else { enclosing(s, indent(&code[s].1), true)? };
+    if !def.is_match(&code[d].1) {
+        return None;
+    }
+    let parent = enclosing(d, indent(&code[d].1), false)?;
+    let owner = re!(r"^\s*class\s+([A-Za-z_]\w*)").captures(&code[parent].1)?;
+    if &owner[1] != class {
+        return None;
+    }
+    for (start, c) in code[lo..d].iter().rev() {
+        let c = c.trim();
+        if c.is_empty() || !*start {
+            continue;
+        }
+        if !c.starts_with('@') {
+            break;
+        }
+        if re!(r"^@\s*(?:[\w.]*\.)?staticmethod\b").is_match(c) {
+            return None;
+        }
+    }
+    let sig = std::iter::once(&code[d])
+        .chain(code[d + 1..].iter().take_while(|(start, _)| !*start).take(64))
+        .map(|(_, c)| c.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let open = sig.find('(')?;
+    let mut depth = 0usize;
+    let mut close = None;
+    for (i, ch) in sig[open..].char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let params = &sig[open + 1..close?];
+    let receiver = re!(r"^\s*([A-Za-z_]\w*)\s*(?:[,:=]|$)").captures(params)?;
+    Some((receiver[1].to_string(), params.to_string()))
+}
+
+/// Whether Python code (from `python_code_lines`) binds `name`: assigns it
+/// (tuple, annotated, augmented and keyword forms included), imports it,
+/// makes it a loop, `with`/`except` or lambda target, a parameter or
+/// `global`, or, with `defs`, defines a function or class of that name.
+fn python_binds(code: &[(bool, String)], name: &str, defs: bool) -> Res<bool> {
+    let n = regex::escape(name);
+    let mut forms = vec![
+        format!(r"(?:^|[^.\w]){n}\s*(?:[-+*/%&|^@]|//|\*\*|<<|>>)?=(?:[^=]|$)"),
+        format!(r"\b{n}\s*:="),
+        format!(r"\bas\s+{n}\b"),
+        format!(r"^\s*(?:from\s+\S+\s+)?import\b.*\b{n}\b"),
+        format!(r"^\s*(?:async\s+)?for\b[^:]*\b{n}\b[^:]*\bin\b"),
+        format!(r"^\s*(?:global|nonlocal|del)\b.*\b{n}\b"),
+        format!(r"\blambda\b[^:]*\b{n}\b"),
+        format!(r"\bdef\s+\w+\s*\([^)]*\b{n}\b"),
+    ];
+    if defs {
+        forms.push(format!(r"^\s*(?:async\s+)?(?:def|class)\s+{n}\b"));
+    }
+    let binds = KernelResolver::cached_regex(&forms.iter().map(|f| format!("(?:{f})")).collect::<Vec<_>>().join("|"))?;
+    let word = KernelResolver::cached_regex(&format!(r"\b{n}\b"))?;
+    // A target of `a, name = …` or `name: T = …`, not `x.name = …` or `name.x = …`.
+    let targets = |t: &str| {
+        word.find_iter(t).any(|m| {
+            !t[..m.start()].ends_with('.') && !matches!(t[m.end()..].trim_start().chars().next(), Some('.' | '(' | '['))
+        })
+    };
+    Ok(code.iter().any(|(start, c)| binds.is_match(c) || (*start && python_assignment_target(c).is_some_and(targets))))
+}
+
+/// The target side of a Python assignment statement: the code before its
+/// first `=` outside brackets that is not part of a comparison.
+fn python_assignment_target(code: &str) -> Option<&str> {
+    let b = code.as_bytes();
+    let mut depth = 0usize;
+    for i in 0..b.len() {
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0 => {
+                let prev = if i > 0 { b[i - 1] } else { b' ' };
+                if b.get(i + 1) != Some(&b'=') && !matches!(prev, b'=' | b'!' | b'<' | b'>' | b':') {
+                    return Some(&code[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn bound_member_cand(m: Arc<KNode>) -> KCand {
     KCand {
         resolved_by: if m.kind == "field" { "field-call" } else { "instance-method" },

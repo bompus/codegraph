@@ -575,10 +575,36 @@ function declaredOnSubtype(cg: CodeGraph, from: Node, to: Node): boolean {
   return false;
 }
 
-/** Whether one query token resolved to both `a` and `b`, which share its name. */
-function sharesToken(tokenNodes: ReadonlyMap<string, string[]>, a: string, b: string): boolean {
-  for (const ids of tokenNodes.values()) if (ids.includes(a) && ids.includes(b)) return true;
-  return false;
+/**
+ * Whether the query named `a` only through a token that also named `b`: a bare
+ * `save` names every definition, `AuditedStore.save` names the override alone.
+ */
+function namedOnlyAlongside(tokenNodes: ReadonlyMap<string, string[]>, a: string, b: string): boolean {
+  let named = false;
+  for (const ids of tokenNodes.values()) {
+    if (!ids.includes(a)) continue;
+    if (!ids.includes(b)) return false;
+    named = true;
+  }
+  return named;
+}
+
+/**
+ * A chain without the overrides that lead it into the method they override.
+ * Such a hand-off adds a step without adding a mechanism, and the extra step
+ * would otherwise let it outrank the flow the agent asked about. Only a step
+ * the agent named through the same token as the base goes; an override it
+ * named on its own keeps its step.
+ */
+function dropOverrideHandoffs(cg: CodeGraph, tokenNodes: ReadonlyMap<string, string[]>, steps: FlowStep[]): FlowStep[] {
+  while (
+    steps.length > 2
+    && namedOnlyAlongside(tokenNodes, steps[0]!.node.id, steps[1]!.node.id)
+    && declaredOnSubtype(cg, steps[0]!.node, steps[1]!.node)
+  ) {
+    steps = [{ node: steps[1]!.node, edge: null }, ...steps.slice(2)];
+  }
+  return steps;
 }
 
 function chainTo(
@@ -634,23 +660,12 @@ export function resolveNamedSymbolFlow(
     } else {
       for (const seed of [...flow.named.values()].slice(0, MAX_SEEDS)) {
         const { parent, reached } = walkCalls(cg, seed, namedIds, maxHops, maxBridge);
-        // Explore's rule: the DEEPEST named sink this seed can reach.
+        // Explore's rule: the DEEPEST named sink this seed can reach, measured
+        // once override hand-offs are dropped so a hand-off can't win on length.
         let deepest: FlowStep[] | null = null;
         for (const id of reached) {
-          const steps = chainTo(parent, id);
+          const steps = dropOverrideHandoffs(cg, flow.tokenNodes, chainTo(parent, id));
           if (!deepest || steps.length > deepest.length) deepest = steps;
-        }
-        // An override that hands off to the method it overrides adds a step
-        // without adding a mechanism, and that extra step would otherwise let
-        // it outrank the flow the agent asked about. When one token named both
-        // (a bare `pre_sql_setup` keeps every definition), start at the base;
-        // an override the agent named on its own keeps its step.
-        while (
-          deepest && deepest.length > 2
-          && sharesToken(flow.tokenNodes, deepest[0]!.node.id, deepest[1]!.node.id)
-          && declaredOnSubtype(cg, deepest[0]!.node, deepest[1]!.node)
-        ) {
-          deepest = [{ node: deepest[1]!.node, edge: null }, ...deepest.slice(2)];
         }
         if (deepest) found.push(deepest);
       }

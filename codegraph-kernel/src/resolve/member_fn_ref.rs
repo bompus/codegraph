@@ -712,6 +712,14 @@ fn python_annotation_re() -> Rc<Regex> {
 /// assignment) or a backslash continuation. `lo` must itself begin a
 /// statement, as a `def` or `class` line does.
 fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> {
+    python_code_lines(lines, lo, hi).into_iter().map(|(start, _)| start).collect()
+}
+
+/// For each line in `lines[lo..hi]`, whether it begins a statement (see
+/// [`python_statement_starts`]) and its code: string contents blanked to
+/// spaces, byte for byte, and any comment cut off, so prose never reads as a
+/// binding and byte columns still line up.
+pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(bool, String)> {
     let hi = hi.min(lines.len());
     let mut out = Vec::with_capacity(hi.saturating_sub(lo));
     let mut depth = 0usize;
@@ -719,24 +727,30 @@ fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> 
     let mut string: Option<(u8, bool)> = None;
     let mut continued = false;
     for line in lines.get(lo..hi).unwrap_or(&[]) {
-        out.push(depth == 0 && string.is_none() && !continued);
+        let start = depth == 0 && string.is_none() && !continued;
         let b = line.as_bytes();
+        let mut code = b.to_vec();
         let mut i = 0;
         while i < b.len() {
             match string {
                 Some((q, triple)) => {
-                    if b[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
                     if b[i] == q && (!triple || b[i..].starts_with(&[q, q, q])) {
                         string = None;
                         i += if triple { 3 } else { 1 };
                         continue;
                     }
+                    let n = if b[i] == b'\\' { 2 } else { 1 };
+                    for c in code.iter_mut().skip(i).take(n) {
+                        *c = b' ';
+                    }
+                    i += n;
+                    continue;
                 }
                 None => match b[i] {
-                    b'#' => break,
+                    b'#' => {
+                        code.truncate(i);
+                        break;
+                    }
                     q @ (b'"' | b'\'') => {
                         let triple = b[i..].starts_with(&[q, q, q]);
                         string = Some((q, triple));
@@ -755,6 +769,8 @@ fn python_statement_starts(lines: &[String], lo: usize, hi: usize) -> Vec<bool> 
             string = None;
         }
         continued = string.is_none() && line.trim_end().ends_with('\\');
+        // Every blanked byte belonged to a whole character, so this is UTF-8.
+        out.push((start, String::from_utf8(code).unwrap_or_default()));
     }
     out
 }
