@@ -2,6 +2,8 @@ import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Lan
 import { generateNodeId } from './tree-sitter-helpers';
 import { TreeSitterExtractor } from './tree-sitter';
 import { isLanguageSupported } from './grammars';
+import { foldScriptResult, sfcFileNode } from './sfc-script';
+import { vueOptionsMembers } from './vue-options-api';
 
 /**
  * Vue built-in components — skipped so a `<Transition>` / `<KeepAlive>` in the
@@ -55,8 +57,10 @@ export class VueExtractor {
     const startTime = Date.now();
 
     try {
-      // Create component node for the .vue file itself
+      // The file, holding the component the .vue file is
+      this.nodes.push(sfcFileNode(this.filePath, this.source, 'vue'));
       const componentNode = this.createComponentNode();
+      this.edges.push({ source: `file:${this.filePath}`, target: componentNode.id, kind: 'contains' });
 
       // Extract and process script blocks
       const scriptBlocks = this.extractScriptBlocks();
@@ -112,6 +116,67 @@ export class VueExtractor {
 
     this.nodes.push(node);
     return node;
+  }
+
+  /**
+   * Method nodes for an Options API component's members (see
+   * ./vue-options-api), and the references and edges written inside each —
+   * which the TS extractor attributed to the file — re-attributed to it.
+   * Lines are block-relative here; the caller offsets them with the rest.
+   */
+  private addOptionsMembers(
+    block: { content: string; startLine: number },
+    result: ExtractionResult,
+    componentNodeId: string
+  ): void {
+    const members = vueOptionsMembers(block.content);
+    if (members.length === 0) return;
+    const component = this.nodes.find((n) => n.id === componentNodeId);
+    const owner = component?.name ?? 'component';
+    const lineAt = (offset: number) => block.content.slice(0, offset).split('\n').length;
+    const colAt = (offset: number) => offset - block.content.lastIndexOf('\n', offset - 1) - 1;
+    const now = Date.now();
+    const created: Node[] = [];
+    for (const m of members) {
+      const startLine = lineAt(m.start);
+      const endLine = lineAt(m.end);
+      created.push({
+        id: generateNodeId(this.filePath, 'method', `${owner}.${m.name}`, startLine + block.startLine),
+        kind: 'method',
+        name: m.name,
+        qualifiedName: `${owner}::${m.name}`,
+        filePath: this.filePath,
+        language: 'vue',
+        startLine,
+        endLine,
+        startColumn: colAt(m.start),
+        endColumn: colAt(m.end),
+        updatedAt: now,
+      });
+    }
+    // Innermost member for a line: `computed: { x: { get() {…} } }` is one member.
+    const memberAt = (line: number): Node | undefined => {
+      let best: Node | undefined;
+      for (const n of created) {
+        if (n.startLine <= line && n.endLine >= line && (!best || n.startLine >= best.startLine)) best = n;
+      }
+      return best;
+    };
+    // What the TS extractor attributed to the file (or to nothing narrower).
+    const fileNode = result.nodes.find((n) => n.kind === 'file');
+    const narrower = new Set(result.nodes.filter((n) => n.kind !== 'file').map((n) => n.id));
+    const isFileLevel = (id: string) => (fileNode ? id === fileNode.id : !narrower.has(id));
+    for (const ref of result.unresolvedReferences) {
+      if (!isFileLevel(ref.fromNodeId)) continue;
+      const member = memberAt(ref.line);
+      if (member) ref.fromNodeId = member.id;
+    }
+    for (const edge of result.edges) {
+      if (edge.kind === 'contains' || !edge.line || !isFileLevel(edge.source)) continue;
+      const member = memberAt(edge.line);
+      if (member) edge.source = member.id;
+    }
+    result.nodes.push(...created);
   }
 
   /**
@@ -187,45 +252,16 @@ export class VueExtractor {
     const extractor = new TreeSitterExtractor(this.filePath, block.content, scriptLanguage);
     const result = extractor.extract();
 
-    // Offset line numbers from script block back to .vue file positions
-    for (const node of result.nodes) {
-      node.startLine += block.startLine;
-      node.endLine += block.startLine;
-      node.language = 'vue'; // Mark as vue, not TS/JS
+    // An Options API component's functions — `methods`, `computed`, `watch`,
+    // lifecycle hooks — are object-literal members the TS extractor leaves as
+    // part of the file. Name each one, and hand it the calls written inside it.
+    if (!block.isSetup) this.addOptionsMembers(block, result, componentNodeId);
 
-      this.nodes.push(node);
-
-      // Add containment edge from component to this node
-      this.edges.push({
-        source: componentNodeId,
-        target: node.id,
-        kind: 'contains',
-      });
-    }
-
-    // Offset edges (they reference line numbers)
-    for (const edge of result.edges) {
-      if (edge.line) {
-        edge.line += block.startLine;
-      }
-      this.edges.push(edge);
-    }
-
-    // Offset unresolved references
-    for (const ref of result.unresolvedReferences) {
-      ref.line += block.startLine;
-      ref.filePath = this.filePath;
-      ref.language = 'vue';
-      this.unresolvedReferences.push(ref);
-    }
-
-    // Carry over errors
-    for (const error of result.errors) {
-      if (error.line) {
-        error.line += block.startLine;
-      }
-      this.errors.push(error);
-    }
+    foldScriptResult(
+      result,
+      { filePath: this.filePath, componentNodeId, lineOffset: block.startLine, language: 'vue', perInstance: block.isSetup },
+      { nodes: this.nodes, edges: this.edges, unresolvedReferences: this.unresolvedReferences, errors: this.errors }
+    );
   }
 
   /**

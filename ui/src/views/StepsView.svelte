@@ -17,6 +17,7 @@
   import { SvelteFlow, Controls, type Node, type Edge, type Viewport } from '@xyflow/svelte';
   import '@xyflow/svelte/dist/style.css';
   import StepNode from '../components/steps/StepNode.svelte';
+  import StepStubs from '../components/steps/StepStubs.svelte';
   import ForkPoint from '../components/steps/ForkPoint.svelte';
   import DecisionCaption from '../components/steps/DecisionCaption.svelte';
   import RegionCaption from '../components/steps/RegionCaption.svelte';
@@ -120,7 +121,7 @@
     }
   });
 
-  const nodeTypes = { step: StepNode, region: RegionCaption, fork: ForkPoint, decision: DecisionCaption };
+  const nodeTypes = { step: StepNode, region: RegionCaption, fork: ForkPoint, decision: DecisionCaption, stubs: StepStubs };
 
   /** Two clicks on one box closer than this are a double-click. */
   const DOUBLE_CLICK_MS = 400;
@@ -283,6 +284,26 @@
         selectable: false,
         connectable: false,
         data: { label: d.label, width: d.width, dimmed: neighbours !== null && !neighbours.has(owner) },
+      });
+    }
+    // A box's far links, said in words in the gap under it. Not while it is
+    // selected: then every one of its real lines is drawn, and the words would
+    // be saying a second time what the reader can now see.
+    for (const node of model.layout.nodes) {
+      const list = model.stubs.get(node.id);
+      if (list === undefined || list.length === 0 || selected === node.id) continue;
+      captions.push({
+        id: `stubs:${node.id}`,
+        type: 'stubs',
+        position: { x: node.x, y: node.y + node.height },
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        data: {
+          stubs: list,
+          width: node.width,
+          dimmed: neighbours !== null && !neighbours.has(node.id),
+        },
       });
     }
     return captions.concat(model.layout.nodes.map((node) => {
@@ -822,6 +843,15 @@
             {/if}
           {/each}
         </p>
+        {#if payload.steps.length === 1 && payload.truncated.steps === 0 && payload.truncated.hubs === 0}
+          <!-- A lone anchor is an answer, not an empty canvas: say what the walk looked for. -->
+          <p>
+            Nothing this sets in motion is a step the picture draws — no reply, database, queue, network or
+            other {kindWord('screen', payload.project)} within {payload.depth} calls. Calls between plain functions
+            fold into the lines between steps, so a helper that only computes is drawn alone.
+            {#if payload.anchor}<a href={symbolHref(payload.anchor.id)}>Its callers and callees →</a>{/if}
+          </p>
+        {/if}
         {#if readAs === 'order'}
           <p class="dim">
             <span class="mark">●</span> The anchor is at the top, and each row down is what happens next: a line

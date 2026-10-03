@@ -377,6 +377,8 @@ export interface WireRoute {
   routeFile: string;
   routeLine: number;
   routeId: string;
+  /** The handler is written inline at the registration: the route stands in for it. */
+  inline: boolean;
 }
 
 export interface WireRoutes {
@@ -410,6 +412,8 @@ export interface WireEntryRoute {
   routeFile: string;
   routeLine: number;
   routeId: string;
+  /** The handler is written inline at the registration: the route stands in for it. */
+  inline: boolean;
 }
 
 export interface WireEntryFile extends WireNodeRef {
@@ -596,6 +600,7 @@ export interface WireFlowPayload {
 export interface WireMapModule {
   /** Directory path, the `(root files)` bucket, or a façade file's own path. */
   id: string;
+  /** What the box says: the id, a folder chain nothing forks in written `first/…/last`. */
   label: string;
   files: number;
   symbols: number;
@@ -610,6 +615,12 @@ export interface WireMapModule {
   facade: boolean;
   /** Its files, capped — the side panel's list when the module is selected. */
   fileList: { total: number; shown: number; truncated: boolean; items: string[] };
+  /**
+   * Files OUTSIDE this module with a direct reference into it, and how many
+   * modules they span — what a change in here reaches. Direct, not transitive:
+   * a cycle saturates the transitive count and it stops discriminating.
+   */
+  dependents: { files: number; modules: number };
 }
 
 export interface WireMapLink {

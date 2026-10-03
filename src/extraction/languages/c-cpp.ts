@@ -28,6 +28,55 @@ function findDeclaratorQualifiedId(declarator: SyntaxNode): SyntaxNode | undefin
 }
 
 /**
+ * Single-argument macros are ambiguous without their definition (#1373).
+ * Require a preceding local #define whose replacement uses its sole parameter
+ * as the function declarator; registration, token-pasting, and K&R forms stay
+ * untouched. Walk enclosing scopes, but never guess across conditional macros.
+ */
+function recoverSingleArgMacroDefinedName(node: SyntaxNode, source: string): string | undefined {
+  if (node.type !== 'function_definition') return undefined;
+  const declarator = getChildByField(node, 'declarator');
+  let macro: SyntaxNode | null = null;
+  let argument: SyntaxNode | null = null;
+  if (declarator?.type === 'parenthesized_declarator' && declarator.namedChildCount === 1) {
+    // C: NATIVE_FN is parsed as the return type, (name) as the declarator.
+    macro = getChildByField(node, 'type');
+    argument = declarator.namedChild(0);
+    if (macro?.type !== 'type_identifier' || argument?.type !== 'identifier') return undefined;
+  } else if (declarator?.type === 'function_declarator' && !getChildByField(node, 'type')) {
+    // C++: NATIVE_FN(name) is parsed as an implicit-return-type function.
+    macro = getChildByField(declarator, 'declarator');
+    const params = getChildByField(declarator, 'parameters');
+    const param = params?.namedChild(0);
+    if (macro?.type !== 'identifier' || params?.namedChildCount !== 1 ||
+        param?.type !== 'parameter_declaration' || param.namedChildCount !== 1) return undefined;
+    argument = param.namedChild(0);
+    if (argument?.type !== 'type_identifier') return undefined;
+  }
+  if (!macro || !argument) return undefined;
+  const macroName = getNodeText(macro, source);
+  for (let scope: SyntaxNode | null = node; scope; scope = scope.parent) {
+    if (scope.type === 'preproc_else' || scope.type.startsWith('preproc_elif')) return undefined;
+    for (let prev = scope.previousNamedSibling; prev; prev = prev.previousNamedSibling) {
+      if (prev.type.startsWith('preproc_if')) return undefined;
+      if (prev.type === 'preproc_call' && getChildByField(prev, 'directive')?.text === '#undef' &&
+          getChildByField(prev, 'argument')?.text.trim() === macroName) return undefined;
+      if (prev.type !== 'preproc_function_def' && prev.type !== 'preproc_def') continue;
+      if (getChildByField(prev, 'name')?.text !== macroName) continue;
+      const params = getChildByField(prev, 'parameters');
+      const param = params?.namedChild(0);
+      const value = getChildByField(prev, 'value');
+      if (params?.namedChildCount !== 1 || param?.type !== 'identifier' || !value) return undefined;
+      const replacement = getNodeText(value, source).replace(/\\\r?\n/g, ' ').trim();
+      const match = replacement.match(/^(?:[A-Za-z_][A-Za-z0-9_:]*\s+)+[*&\s]*([A-Za-z_]\w*)\s*\([^(){};#]*\)\s*$/);
+      if (!match || /\btypedef\b/.test(replacement) || match[1] !== param.text) return undefined;
+      return getNodeText(argument, source);
+    }
+  }
+  return undefined;
+}
+
+/**
  * Recover the real function name from the macro-definition idiom
  * `MACRO_NAME(real_name, typed args…) { body }` — flash-attention's
  * `DEFINE_FLASH_FORWARD_KERNEL(flash_fwd_kernel, bool Is_dropout, …) { … }`
@@ -73,7 +122,7 @@ function recoverCppMacroDefinedName(node: SyntaxNode, source: string): string | 
 }
 
 function extractCppQualifiedMethodName(node: SyntaxNode, source: string): string | undefined {
-  const macroDefined = recoverCppMacroDefinedName(node, source);
+  const macroDefined = recoverSingleArgMacroDefinedName(node, source) ?? recoverCppMacroDefinedName(node, source);
   if (macroDefined) return macroDefined;
   const declarator = getChildByField(node, 'declarator');
   if (!declarator) return undefined;
@@ -207,6 +256,7 @@ function extractCppReturnType(node: SyntaxNode, source: string): string | undefi
 }
 
 export const cExtractor: LanguageExtractor = {
+  resolveName: recoverSingleArgMacroDefinedName,
   // CUDA in C-detected headers (content-gated blank; see preParseCSource).
   preParse: preParseCSource,
   // Universal net: recover a real name from any macro-mangled function name.
@@ -481,6 +531,54 @@ export function blankMetalAttributes(source: string): string {
 }
 
 /**
+ * Hide C++ raw literals from the offset-preserving preParse scans (#1505).
+ * Neither macro-shaped text in a raw body nor its `)delim"` closer is code.
+ * Mask the whole literal with non-whitespace, non-paren tokens, keeping line
+ * endings, so even line-based scanners treat a multiline raw argument as opaque.
+ * Restore untouched bytes afterward; a real enclosing annotation can still be
+ * removed in full. The pipeline masks once, and individual paren blankers also
+ * use this helper so they are safe when called directly.
+ */
+export function maskCppRawStrings(source: string): { source: string; restore: (blanked: string) => string } {
+  const unchanged = { source, restore: (blanked: string): string => blanked };
+  if (source.indexOf('R"') === -1) return unchanged;
+  // Skip comments and ordinary literals before looking for a raw opener. The
+  // char-literal boundary leaves numeric digit separators (1'000) alone.
+  const re = /\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$)|\b(?:u8|[LuU])?R"([^ \t\v\f\r\n()\\]{0,16})\(|"(?:\\[\s\S]|[^"\\])*(?:"|$)|(?<!\w)(?:u8|[LuU])?'(?:\\[\s\S]|[^'\\])*(?:'|$)/g;
+  const spans: Array<{ start: number; end: number }> = [];
+  const parts: string[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    if (m[1] === undefined) continue;
+    const closer = `)${m[1]}"`;
+    const close = source.indexOf(closer, re.lastIndex);
+    // An unterminated raw literal owns the rest of the file too.
+    const end = close < 0 ? source.length : close + closer.length;
+    spans.push({ start: m.index, end });
+    parts.push(source.slice(last, m.index), source.slice(m.index, end).replace(/[^\r\n]/g, '\0'));
+    last = re.lastIndex = end;
+  }
+  if (spans.length === 0) return unchanged;
+  parts.push(source.slice(last));
+  const masked = parts.join('');
+  return {
+    source: masked,
+    restore(blanked): string {
+      // A length-changing rewrite cannot be restored at the original offsets.
+      if (blanked === masked || blanked.length !== source.length) return source;
+      const chars = blanked.split('');
+      for (const { start, end } of spans) {
+        for (let i = start; i < end; i++) {
+          if (chars[i] === '\0') chars[i] = source[i] as string;
+        }
+      }
+      return chars.join('');
+    },
+  };
+}
+
+/**
  * Blank annotation-style macro invocations that decorate a declaration but carry
  * NO terminating semicolon — the pervasive Unreal-Engine reflection markup
  * (`UPROPERTY(...)`, `UFUNCTION(...)`, `UCLASS(...)`, `GENERATED_BODY()`,
@@ -519,6 +617,8 @@ export function blankMetalAttributes(source: string): string {
  */
 export function blankCppAnnotationMacroCalls(source: string): string {
   if (!/^[ \t]*[A-Z][A-Z0-9_]{2,}\s*\(/m.test(source)) return source;
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   const chars = source.split('');
   const re = /^([ \t]*)([A-Z][A-Z0-9_]{2,})(\s*)\(/gm;
   let m: RegExpExecArray | null;
@@ -556,7 +656,7 @@ export function blankCppAnnotationMacroCalls(source: string): string {
     }
     re.lastIndex = end;
   }
-  return chars.join('');
+  return rawStrings.restore(chars.join(''));
 }
 
 /**
@@ -601,7 +701,14 @@ export function blankLoneMacroLines(source: string): string {
     if (!(m[1] as string).includes('_')) continue;
     let prev = i - 1;
     while (prev >= 0 && content(lines[prev] as string) === '') prev--;
-    if (prev >= 0 && LONE_MACRO_CONTINUATION_END_RE.test(content(lines[prev] as string))) continue;
+    // Judged on the line's code: a comment — `/// @sa https://…/meta/`, a
+    // block comment's `*/` — ends in whatever it likes but continues nothing,
+    // while `CURLE_TOO_LARGE, /* 100 */` continues with its comma. A template
+    // head (`template<typename T, typename... Args>`) before a declaration
+    // continues nothing either.
+    const prevText = prev >= 0 ? content(lines[prev] as string) : '';
+    const prevCode = /^(?:\/\/|\/\*|\*)/.test(prevText) ? '' : prevText.replace(/\/\*.*?\*\/|\/\/.*$/g, '').trim();
+    if (prevCode !== '' && !/^template\s*</.test(prevCode) && LONE_MACRO_CONTINUATION_END_RE.test(prevCode)) continue;
     let next = i + 1;
     while (next < lines.length && content(lines[next] as string) === '') next++;
     if (next < lines.length) {
@@ -670,6 +777,8 @@ export function blankCppApiPrefixMacros(source: string): string {
 const CPP_INLINE_ANNOTATION_RE = /\b(?:UMETA|UPARAM|UE_DEPRECATED\w*)\s*\(/g;
 export function blankCppInlineAnnotationMacros(source: string): string {
   if (!/\b(?:UMETA|UPARAM|UE_DEPRECATED)/.test(source)) return source;
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   const chars = source.split('');
   const re = new RegExp(CPP_INLINE_ANNOTATION_RE.source, 'g');
   let m: RegExpExecArray | null;
@@ -700,7 +809,7 @@ export function blankCppInlineAnnotationMacros(source: string): string {
     }
     re.lastIndex = end;
   }
-  return chars.join('');
+  return rawStrings.restore(chars.join(''));
 }
 
 /**
@@ -816,6 +925,34 @@ function restoreDirectiveLines(original: string, blanked: string): string {
   return changed ? b.join('\n') : blanked;
 }
 
+/** Recover MSVC's COM alias only at type-definition sites. Match on a lexical
+ * mask so comments, literals and directives cannot supply declaration evidence;
+ * replace just the keyword, preserving source offsets on both parser arms. */
+function normalizeCppComInterfaces(source: string): string {
+  if (!source.includes('interface')) return source;
+  // Raw strings have already been masked by preParseCppSource.
+  let code = source.replace(
+    /\/\/(?:\\\r?\n|[^\r\n])*|\/\*[\s\S]*?(?:\*\/|$)|"(?:\\[\s\S]|[^"\\])*(?:"|$)|(?<!\w)(?:u8|[LuU])?'(?:\\[\s\S]|[^'\\])*(?:'|$)/g,
+    (m) => m.replace(/[^\r\n]/g, ' ')
+  );
+  const hasAlias = /^[ \t]*#[ \t]*define[ \t]+interface[ \t]+struct\b/m.test(code);
+  code = code.replace(/^[ \t]*#(?:\\\r?\n|[^\r\n])*/gm, (m) => m.replace(/[^\r\n]/g, '\0'));
+  const declaration = /(^|[;{}])\s*\binterface\s+[A-Za-z_]\w*\s*(:[^;{}]+)?\{/gm;
+  const offsets: number[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = declaration.exec(code)) !== null) {
+    const bodyEnd = code.indexOf('}', declaration.lastIndex);
+    const hasVirtual = /\bvirtual\b/.test(code.slice(declaration.lastIndex, bodyEnd < 0 ? code.length : bodyEnd));
+    if (!hasAlias && !match[2] && !hasVirtual) continue;
+    offsets.push(match.index + match[0].indexOf('interface'));
+    declaration.lastIndex--; // allow the opening brace to start a nested declaration
+  }
+  for (const offset of offsets) {
+    source = source.slice(0, offset) + 'struct   ' + source.slice(offset + 9);
+  }
+  return source;
+}
+
 /** C/C++ source pre-processing before tree-sitter: recover macro-annotated class
  * definitions, macro-prefixed function definitions, macro-prefixed members, and
  * macro-decorated members (Unreal-Engine reflection markup) — plus the non-C++
@@ -823,7 +960,109 @@ function restoreDirectiveLines(original: string, blanked: string): string {
  * annotations, and CUDA specifiers + launch syntax (by `.cu`/`.cuh` extension
  * or by content, for CUDA living in `.h`/`.hpp` headers). Offset-preserving;
  * directive lines are restored at the end (see restoreDirectiveLines). */
+/**
+ * An access specifier spelled as a macro — nlohmann/json's
+ * `JSON_PRIVATE_UNLESS_TESTED:` (private, or public under test), Qt's
+ * `Q_SIGNALS:` — is rewritten to the keyword it stands for, padded to the
+ * same length. tree-sitter-cpp reads `NAME:` inside a class as an error, and
+ * json.hpp's recovery lost members around each one.
+ */
+const ACCESS_MACRO_LINE = /^([ \t]*)([A-Z][A-Z0-9]*_[A-Z0-9_]*)([ \t]*):(?!:)(?=[ \t]*(?:\/\/[^\n]*)?\r?$)/gm;
+export function rewriteCppAccessMacros(source: string): string {
+  if (!/_[A-Z0-9_]*[ \t]*:(?!:)/.test(source)) return source;
+  return source.replace(ACCESS_MACRO_LINE, (m, indent: string, name: string, gap: string) => {
+    const keyword = /PRIVATE/.test(name) ? 'private' : /PROTECTED/.test(name) ? 'protected'
+      : /PUBLIC|^Q_SIGNALS$|^Q_SLOTS$/.test(name) ? 'public' : null;
+    if (!keyword || keyword.length > name.length + gap.length) return m;
+    return `${indent}${keyword}${' '.repeat(name.length + gap.length - keyword.length)}:`;
+  });
+}
+
+/**
+ * A preprocessor conditional in the middle of a declaration or expression —
+ * inside a constructor's member-initializer list (nlohmann/json's
+ * `noexcept\n#ifdef JSON_NO_THREAD_LOCAL\n : m_okay(false)\n#else\n :
+ * m_okay(…)\n#endif`), between a template head and its function
+ * (`template <…>\n#if defined(JSON_HAS_CPP_14)\n constexpr\n#endif\n auto
+ * get()`), inside an argument list — is an error to tree-sitter-cpp, and
+ * json.hpp's recovery took the whole `basic_json` class with it. Where the
+ * code before the `#if` has not ended a statement or declaration (`;`, `{`,
+ * `}`, a label's `:`), its directives are blanked and so is every branch
+ * after the first: one consistent configuration, every newline and offset
+ * kept. A conditional between whole declarations is left alone.
+ */
+export function flattenMidStatementConditionals(source: string): string {
+  if (!source.includes('#')) return source;
+  const lines = source.split('\n');
+  const directive = (i: number) => /^[ \t]*#[ \t]*(\w+)/.exec(lines[i] ?? '')?.[1] ?? null;
+  const code = (i: number) => (lines[i] ?? '').replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '').trim();
+  let changed = false;
+  const blank = (i: number) => {
+    lines[i] = (lines[i] ?? '').replace(/[^\r]/g, ' ');
+    changed = true;
+  };
+  let lastCode = '';          // the last non-directive code line, trimmed
+  let inBlockComment = false;
+  let region = 0;             // #if depth inside a flattened conditional (0 = none)
+  let skipFrom = 0;           // the depth whose later branches are blanked (0 = none)
+  let continued = false;      // inside a `\`-continued directive (a multi-line #define)
+  for (let i = 0; i < lines.length; i++) {
+    if (continued) {
+      continued = /\\\s*$/.test(lines[i] ?? '');
+      continue;
+    }
+    const d = directive(i);
+    if (d !== null && !inBlockComment) {
+      // A directive continued with `\` spans lines; its body is not code.
+      if (/\\\s*$/.test(lines[i]!)) {
+        continued = true;
+        if (region === 0) continue;
+      }
+      const opens = /^if/.test(d);
+      if (region === 0) {
+        // Not after a statement macro written without its `;`
+        // (`RAPIDJSON_DIAG_OFF(padded)`), either.
+        const mid = opens && lastCode !== '' && !/[;{}]$|^[\w\s]*:$|\*\/$/.test(lastCode) &&
+          !/^(?:public|private|protected)\s*:$/.test(lastCode) && !/^[A-Z][A-Z0-9_]*(?:\s*\(.*\))?$/.test(lastCode);
+        if (!mid) continue;
+        region = 1;
+        blank(i);
+        continue;
+      }
+      if (opens) region++;
+      else if ((d === 'else' || d === 'elif') && skipFrom === 0) skipFrom = region;
+      else if (d === 'endif') {
+        if (skipFrom === region) skipFrom = 0;
+        region--;
+      }
+      if (/^(?:if|ifdef|ifndef|else|elif|elifdef|elifndef|endif)$/.test(d)) blank(i);
+      continue;
+    }
+    const text = lines[i] ?? '';
+    if (region > 0 && skipFrom > 0) {
+      if (text.trim() !== '') blank(i);
+      continue;
+    }
+    // Track block comments so a `#` or `;` inside one is not read as code.
+    const trimmed = code(i);
+    if (inBlockComment) {
+      if (text.includes('*/')) inBlockComment = false;
+      continue;
+    }
+    if (/\/\*(?!.*\*\/)/.test(text.replace(/\/\/.*$/, ''))) {
+      inBlockComment = true;
+      const before = trimmed.split('/*')[0]!.trim();
+      if (before !== '') lastCode = before;
+      continue;
+    }
+    if (trimmed !== '') lastCode = trimmed;
+  }
+  return changed ? lines.join('\n') : source;
+}
+
 function preParseCppSource(source: string, filePath?: string): string {
+  const rawStrings = maskCppRawStrings(source);
+  source = flattenMidStatementConditionals(rewriteCppAccessMacros(rawStrings.source));
   // blankCLeadingAttrMacros runs AFTER the api-prefix blank so a stacked
   // `FMT_NORETURN FMT_API void f(…)` reduces to the `MACRO Ret name(` shape
   // it matches (the _API token is already spaces by then).
@@ -831,7 +1070,7 @@ function preParseCppSource(source: string, filePath?: string): string {
     blankCLeadingAttrMacros(
       blankCppAnnotationMacroCalls(
         blankCppInlineAnnotationMacros(
-          blankCppApiPrefixMacros(blankCppInlineMacros(blankCppExportMacros(source)))
+          blankCppApiPrefixMacros(blankCppInlineMacros(blankCppExportMacros(normalizeCppComInterfaces(source))))
         )
       )
     )
@@ -842,7 +1081,7 @@ function preParseCppSource(source: string, filePath?: string): string {
   } else if (lower.endsWith('.cu') || lower.endsWith('.cuh') || looksLikeCudaSource(source)) {
     blanked = blankCudaConstructs(blanked);
   }
-  return restoreDirectiveLines(source, blanked);
+  return rawStrings.restore(restoreDirectiveLines(source, blanked));
 }
 
 /**
@@ -970,6 +1209,8 @@ const C_STMT_MACRO_KEYWORDS = new Set([
   'if', 'while', 'for', 'switch', 'return', 'do', 'else', 'sizeof',
 ]);
 export function blankCStatementMacroCalls(source: string): string {
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   const lines = source.split('\n');
   let changed = false;
   const content = (l: string): string => l.replace(/\r$/, '').trim();
@@ -1073,7 +1314,7 @@ export function blankCStatementMacroCalls(source: string): string {
     }
     changed = true;
   }
-  return changed ? lines.join('\n') : source;
+  return rawStrings.restore(changed ? lines.join('\n') : source);
 }
 
 /**
@@ -1244,8 +1485,8 @@ const C_PARAM_ANNOTATION_RE = new RegExp(
 );
 export function blankCParameterizedAnnotationMacros(source: string): string {
   if (source.indexOf('__') === -1) return source;
-  C_PARAM_ANNOTATION_RE.lastIndex = 0;
-  if (!C_PARAM_ANNOTATION_RE.test(source)) return source;
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   C_PARAM_ANNOTATION_RE.lastIndex = 0;
   let result = '';
   let last = 0;
@@ -1265,7 +1506,7 @@ export function blankCParameterizedAnnotationMacros(source: string): string {
     result += source.slice(last, start) + source.slice(start, end).replace(/[^\n\r]/g, ' ');
     last = end;
   }
-  return result + source.slice(last);
+  return rawStrings.restore(result + source.slice(last));
 }
 
 /**
@@ -1308,6 +1549,8 @@ const C_TYPE_ARG_OPENER_RE = /^(struct|union|enum)([ \t\r\n]+)([A-Za-z_]\w*)([ \
 const C_TYPE_ARG_SCAN_CAP = 600;
 export function blankCTypeKeywordArgs(source: string): string {
   if (!/\b(?:struct|union|enum)[ \t\r\n]/.test(source)) return source;
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   let chars: string[] | null = null;
   C_TYPE_ARG_HEAD_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -1375,7 +1618,7 @@ export function blankCTypeKeywordArgs(source: string): string {
       atArgStart = false;
     }
   }
-  return chars ? chars.join('') : source;
+  return rawStrings.restore(chars ? chars.join('') : source);
 }
 
 /**
@@ -1403,6 +1646,8 @@ export function blankCTypeKeywordArgs(source: string): string {
 const C_PREFIXED_DECL_MACRO_RE = /^[ \t]*(?:static|extern)[ \t]+[A-Z][A-Z0-9_]{2,}[ \t]*\(/;
 export function blankCFileScopePrefixedDeclMacros(source: string): string {
   if (!/^[ \t]*(?:static|extern)[ \t]+[A-Z]/m.test(source)) return source;
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   const lines = source.split('\n');
   let changed = false;
   for (let i = 0; i < lines.length; i++) {
@@ -1437,7 +1682,7 @@ export function blankCFileScopePrefixedDeclMacros(source: string): string {
     lines[i] = line.replace(/[^\n\r]/g, ' ');
     changed = true;
   }
-  return changed ? lines.join('\n') : source;
+  return rawStrings.restore(changed ? lines.join('\n') : source);
 }
 
 /**
@@ -1568,6 +1813,8 @@ export function blankCNamedVariadicDefineDots(source: string): string {
  */
 export function blankCDesignatedMacroArgs(source: string): string {
   if (source.indexOf('=') === -1) return source;
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   const out = source.split('');
   const re = /^[ \t]*([A-Z_][A-Z0-9_]*)\s*\(/gm;
   let m: RegExpExecArray | null;
@@ -1589,10 +1836,12 @@ export function blankCDesignatedMacroArgs(source: string): string {
     for (let k = open + 1; k < close; k++) if (out[k] !== '\n') out[k] = ' ';
     re.lastIndex = close;
   }
-  return out.join('');
+  return rawStrings.restore(out.join(''));
 }
 
 function preParseCSource(source: string): string {
+  const rawStrings = maskCppRawStrings(source);
+  source = rawStrings.source;
   const inner = blankCDesignatedMacroArgs(blankCKernelAnnotations(blankCCplusplusGuardBodies(source)));
   let blanked = blankCLeadingAttrMacros(
     blankLoneMacroLines(
@@ -1618,7 +1867,17 @@ function preParseCSource(source: string): string {
   if (looksLikeCudaSource(blanked)) blanked = blankCudaConstructs(blanked);
   // The named-variadic `#define` pass runs AFTER the directive restore — it
   // deliberately edits directive lines (see its doc comment).
-  return blankCNamedVariadicDefineDots(restoreDirectiveLines(source, blanked));
+  return rawStrings.restore(blankCNamedVariadicDefineDots(restoreDirectiveLines(source, blanked)));
+}
+
+/** A constructor prototype carries defaults even when its body is in another file. */
+export function isCppConstructorDeclaration(node: SyntaxNode): boolean {
+  if (node.type !== 'declaration' || getChildByField(node, 'type')) return false;
+  const owner = node.parent?.parent;
+  if (!owner || !['class_specifier', 'struct_specifier', 'union_specifier'].includes(owner.type)) return false;
+  const declarator = getChildByField(node, 'declarator');
+  return declarator?.type === 'function_declarator'
+    && getChildByField(declarator, 'declarator')?.text === getChildByField(owner, 'name')?.text;
 }
 
 export const cppExtractor: LanguageExtractor = {
@@ -1664,6 +1923,18 @@ export const cppExtractor: LanguageExtractor = {
   resolveName: extractCppQualifiedMethodName,
   getReceiverType: extractCppReceiverType,
   getReturnType: extractCppReturnType,
+  // Constructors (definitions and class-body declarations) carry their
+  // parameter list as the signature; a trailing semicolon marks a prototype, so a local `T obj(args)` can be matched
+  // to the one overload with a compatible arity (#1839). Macro-shaped
+  // definitions whose real name was recovered from an argument are excluded:
+  // their "parameters" are macro arguments. Mirrored in the kernel.
+  getSignature: (node, source) => {
+    if ((node.type !== 'function_definition' && !isCppConstructorDeclaration(node)) || getChildByField(node, 'type')) return undefined;
+    if (recoverCppMacroDefinedName(node, source)) return undefined;
+    const declarator = getChildByField(node, 'declarator');
+    const parameters = declarator && getChildByField(declarator, 'parameters');
+    return parameters ? getNodeText(parameters, source) + (node.type === 'declaration' ? ';' : '') : undefined;
+  },
   getVisibility: (node) => {
     // Check for access specifier in parent
     const parent = node.parent;
