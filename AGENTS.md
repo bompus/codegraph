@@ -14,6 +14,8 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 - Do not run `npm publish` without explicit authorization.
 - Fork GitHub release policy is defined under Releases below.
 
+**Personal rules:** this file adds to the always-on rules your agent already loads and wins for this repository's commands, branches and checks. The maintainer's own rules are [house-rules](https://github.com/bompus/house-rules).
+
 **Public repository:** never name private projects, their repositories, source paths or home directories in commits, docs, tests or fixtures; write "a private downstream project" instead.
 
 **Branch roles:** `origin/main` is an exact mirror of `upstream/main`; never commit or merge fork work into it. `.github/workflows/sync-upstream-main.yml` maintains that mirror. Merge upstream updates into `fork/consolidated`, which is this fork's canonical/default development branch. Base focused upstream contributions on `upstream/main` so they do not include the consolidated branch's experimental history.
