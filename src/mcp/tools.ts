@@ -35,6 +35,7 @@ import {
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '../types';
+import type { NodeSpan } from '../db/queries';
 import { isDistinctiveIdentifier, isTestFile, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
 import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
 import {
@@ -4020,7 +4021,7 @@ export class ToolHandler {
     const MAX_NOTES = 3;
     const rel = (p: string) => p.replace(/\\/g, '/');
     const containerOf = (m: Node): Node | null => {
-      try { const ce = cg.getIncomingEdges(m.id).find((e) => e.kind === 'contains'); return ce ? cg.getNode(ce.source) : null; }
+      try { const ce = cg.getIncomingEdges(m.id, ['contains'])[0]; return ce ? cg.getNode(ce.source) : null; }
       catch { return null; }
     };
     // A supertype dispatches only a member it (or an ancestor) declares. Without
@@ -4538,7 +4539,7 @@ export class ToolHandler {
       try {
         const extraction = extractQueryPaths(
           rawMatch,
-          cg.getFiles().map((f) => f.path),
+          cg.getFilePaths(),
           {
             maxPins: maxFiles,
             existsOnDisk: (rel) => pathIsProjectFile(projectRoot, rel),
@@ -4797,8 +4798,8 @@ export class ToolHandler {
       if (cached !== undefined) return cached;
       let owned = false;
       try {
-        owned = cg.getIncomingEdges(node.id).some(
-          (e) => e.kind === 'contains' && cg.getNode(e.source)?.kind === 'interface',
+        owned = cg.getIncomingEdges(node.id, ['contains']).some(
+          (e) => cg.getNode(e.source)?.kind === 'interface',
         );
       } catch {
         owned = false; // a probe failure must not manufacture a penalty
@@ -4891,9 +4892,9 @@ export class ToolHandler {
             // an options interface corroborate the English word "main" into
             // seeding the same file's `main()`, which then took the named-first
             // tier from the answer files (vscode "extension host … main process").
-            const fileNodes = cg.getNodesInFile(fp);
+            const fileNodes = cg.getNodeSpansInFile(fp);
             const interfaces = fileNodes.filter((n) => n.kind === 'interface');
-            const declaresShape = (n: Node) =>
+            const declaresShape = (n: NodeSpan) =>
               (n.kind === 'property' || n.kind === 'method') &&
               interfaces.some((i) => n.startLine >= i.startLine && n.endLine <= i.endLine);
             for (const n of fileNodes) if (!declaresShape(n)) names.add(n.name.toLowerCase());
@@ -5060,7 +5061,7 @@ export class ToolHandler {
           // instead of a split of every path.
           const generatedPaths = new Set<string>();
           const filesByDirSegment = new Map<string, string[]>();
-          for (const f of cg.getFiles()) {
+          for (const f of cg.getFilePathsWithGenerated()) {
             if (f.generated) { generatedPaths.add(f.path); continue; }
             if (isTestPath(f.path)) continue;
             const segs = f.path.toLowerCase().split('/');
@@ -6100,8 +6101,7 @@ export class ToolHandler {
           if (e.kind !== 'implements' && e.kind !== 'extends') continue;
           let many = siblingSuper.get(e.target);
           if (many === undefined) {
-            many = cg.getIncomingEdges(e.target)
-              .filter((x) => x.kind === 'implements' || x.kind === 'extends').length >= MIN_SIBLINGS;
+            many = cg.getIncomingEdges(e.target, ['implements', 'extends']).length >= MIN_SIBLINGS;
             siblingSuper.set(e.target, many);
           }
           if (many) return true;
@@ -6127,8 +6127,7 @@ export class ToolHandler {
             && n.kind !== 'trait' && n.kind !== 'protocol' && n.kind !== 'type_alias') continue;
         let many = superMany.get(n.id);
         if (many === undefined) {
-          many = cg.getIncomingEdges(n.id)
-            .filter((x) => x.kind === 'implements' || x.kind === 'extends').length >= MIN_SIBLINGS;
+          many = cg.getIncomingEdges(n.id, ['implements', 'extends']).length >= MIN_SIBLINGS;
           superMany.set(n.id, many);
         }
         if (many) return true;

@@ -128,6 +128,9 @@ interface NodeRow {
   updated_at: number;
 }
 
+/** The fields of a node that {@link QueryBuilder.getNodeSpansByFile} reads. */
+export type NodeSpan = Pick<Node, 'name' | 'kind' | 'startLine' | 'endLine'>;
+
 interface EdgeRow {
   id: number;
   source: string;
@@ -310,6 +313,8 @@ export class QueryBuilder {
 
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache: Map<string, Node> = new Map();
+  /** {@link getAllNodeNames}'s result, valid while the change stamp holds. */
+  private allNodeNames: { stamp: string; names: string[] } | undefined;
   private readonly maxCacheSize = 1000;
 
   // getDominantFile()'s answer, tagged with the database change stamp it was
@@ -364,6 +369,8 @@ export class QueryBuilder {
     getDatabasePath?: SqliteStatement;
     deleteRefsByRowIdsFull?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
+    getAllFilePathsWithGenerated?: SqliteStatement;
+    getNodeSpansByFile?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
     getDominantFile?: SqliteStatement;
     getChangeStamp?: SqliteStatement;
@@ -456,6 +463,7 @@ export class QueryBuilder {
     // different databases report the same one — the memo goes with the old
     // connection, or a worker following a rebuilt index keeps its answer (#1864).
     this.dominantFileMemo = undefined;
+    this.allNodeNames = undefined;
   }
 
   private edgeKindStmt(sql: string): SqliteStatement {
@@ -1192,6 +1200,20 @@ export class QueryBuilder {
   /**
    * Get all nodes in a file
    */
+  /**
+   * The name, kind and line span of every node in a file, in
+   * {@link getNodesByFile}'s order, for callers that need nothing else.
+   */
+  getNodeSpansByFile(filePath: string): NodeSpan[] {
+    if (!this.stmts.getNodeSpansByFile) {
+      this.stmts.getNodeSpansByFile = this.db.prepare(
+        'SELECT name, kind, start_line, end_line FROM nodes WHERE file_path = ? ORDER BY start_line, id'
+      );
+    }
+    const rows = this.stmts.getNodeSpansByFile.all(filePath) as Array<{ name: string; kind: string; start_line: number; end_line: number }>;
+    return rows.map((r) => ({ name: r.name, kind: r.kind as NodeKind, startLine: r.start_line, endLine: r.end_line }));
+  }
+
   getNodesByFile(filePath: string): Node[] {
     if (!this.stmts.getNodesByFile) {
       this.stmts.getNodesByFile = this.db.prepare(
@@ -1814,8 +1836,8 @@ export class QueryBuilder {
     const lowered = text.toLowerCase();
     const maxDist = lowered.length <= 4 ? 1 : 2;
 
-    // Pull the distinct name list once. The set is cached on QueryBuilder
-    // by getAllNodeNames(); even on a 200k-node project the distinct
+    // Pull the distinct name list once. getAllNodeNames() caches it until the
+    // database changes; even on a 200k-node project the distinct
     // name set is typically O(10k) because most names repeat. The
     // candidate-cap below bounds memory regardless.
     const allNames = this.getAllNodeNames();
@@ -3686,15 +3708,32 @@ export class QueryBuilder {
     return rows.map((r) => r.path);
   }
 
+  /** Every tracked file path with its generated flag, sorted by path. */
+  getAllFilePathsWithGenerated(): Array<{ path: string; generated: boolean }> {
+    if (!this.stmts.getAllFilePathsWithGenerated) {
+      this.stmts.getAllFilePathsWithGenerated = this.db.prepare('SELECT path, generated FROM files ORDER BY path');
+    }
+    const rows = this.stmts.getAllFilePathsWithGenerated.all() as Array<{ path: string; generated: number }>;
+    return rows.map((r) => ({ path: r.path, generated: r.generated === 1 }));
+  }
+
   /**
-   * Get all distinct node names (lightweight — just name strings for pre-filtering)
+   * Get all distinct node names, sorted (lightweight — just name strings for
+   * pre-filtering). Kept until the change stamp moves; like
+   * {@link getDominantFile}, a list read inside a transaction is never kept,
+   * since a ROLLBACK leaves the stamp where the read saw it.
    */
   getAllNodeNames(): string[] {
+    const inTransaction = this.db.inTransaction !== false;
+    const stamp = inTransaction ? undefined : this.getChangeStamp();
+    if (stamp !== undefined && this.allNodeNames?.stamp === stamp) return this.allNodeNames.names;
     if (!this.stmts.getAllNodeNames) {
-      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
+      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes ORDER BY name');
     }
     const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
-    return rows.map((r) => r.name);
+    const names = rows.map((r) => r.name);
+    this.allNodeNames = stamp === undefined ? undefined : { stamp, names };
+    return names;
   }
 
   /**
