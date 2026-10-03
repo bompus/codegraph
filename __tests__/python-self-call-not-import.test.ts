@@ -503,7 +503,7 @@ describe('Python self-calls do not resolve through a same-named import', () => {
   it.each([
     ['in a nested function', 'class Child(Base):\n    def run(self):\n        def inner():\n            return super().m()\n        return inner()\n'],
     ['in a lambda', 'class Child(Base):\n    def run(self):\n        f = lambda: super().m()\n        return f()\n'],
-    ['in a staticmethod', 'class Child(Base):\n    @staticmethod\n    def run():\n        return super().m()\n'],
+    ['in a staticmethod', 'class Child(Base):\n    @staticmethod\n    def run(obj):\n        return super().m()\n'],
     ['in the class body', 'class Child(Base):\n    value = super().m()\n'],
     ['with `super` a parameter', 'class Child(Base):\n    def run(self, super):\n        return super().m()\n'],
     ['with `super` rebound in the file', 'super = print\n\n\nclass Child(Base):\n    def run(self):\n        return super().m()\n'],
