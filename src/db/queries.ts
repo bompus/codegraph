@@ -463,6 +463,7 @@ export class QueryBuilder {
     // different databases report the same one — the memo goes with the old
     // connection, or a worker following a rebuilt index keeps its answer (#1864).
     this.dominantFileMemo = undefined;
+    this.allNodeNames = undefined;
   }
 
   private edgeKindStmt(sql: string): SqliteStatement {

@@ -60,4 +60,19 @@ describe('distinct node-name cache', () => {
     expect(reader.getAllNodeNames().sort()).toEqual(['getUser', 'loadAccount']);
     expect(reader.searchNodes('loadAcount').map((r) => r.node.name)).toEqual(['loadAccount']);
   });
+
+  it('drops the list when rebound to another database', () => {
+    // Fresh connections to two databases report the same change stamp.
+    for (const [file, name] of [['a.db', 'getUser'], ['b.db', 'loadAccount']]) {
+      const writer = DatabaseConnection.initialize(path.join(dir, file));
+      new QueryBuilder(writer.getDb()).insertNode(makeNode(name));
+      writer.close();
+    }
+    const reader = track(DatabaseConnection.open(path.join(dir, 'a.db')));
+    expect(reader.getAllNodeNames()).toEqual(['getUser']);
+    const other = DatabaseConnection.open(path.join(dir, 'b.db'));
+    connections.push(other);
+    reader.rebind(other.getDb());
+    expect(reader.getAllNodeNames()).toEqual(['loadAccount']);
+  });
 });
