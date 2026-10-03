@@ -731,6 +731,8 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
         let b = line.as_bytes();
         let mut code = b.to_vec();
         let mut i = 0;
+        // Whether the line ends in a backslash inside a string.
+        let mut escaped_eol = false;
         while i < b.len() {
             match string {
                 Some((q, triple)) => {
@@ -739,6 +741,7 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
                         i += if triple { 3 } else { 1 };
                         continue;
                     }
+                    escaped_eol = b[i] == b'\\' && i + 1 == b.len();
                     let n = if b[i] == b'\\' { 2 } else { 1 };
                     for c in code.iter_mut().skip(i).take(n) {
                         *c = b' ';
@@ -765,10 +768,11 @@ pub(super) fn python_code_lines(lines: &[String], lo: usize, hi: usize) -> Vec<(
             i += 1;
         }
         // A single-quoted string never spans lines without a backslash.
-        if matches!(string, Some((_, false))) {
+        if matches!(string, Some((_, false))) && !escaped_eol {
             string = None;
         }
-        continued = string.is_none() && line.trim_end().ends_with('\\');
+        // A backslash in a comment continues nothing.
+        continued = string.is_none() && code.trim_ascii_end().ends_with(b"\\");
         // Every blanked byte belonged to a whole character, so this is UTF-8.
         out.push((start, String::from_utf8(code).unwrap_or_default()));
     }

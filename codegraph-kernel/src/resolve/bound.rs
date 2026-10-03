@@ -421,7 +421,7 @@ impl KernelResolver {
     /// binds the name in its body other than by its `def`, or makes it a
     /// property, where only runtime could tell.
     pub(super) fn python_super_method(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
-        let Some(name) = r.reference_name.strip_prefix("super().").filter(|n| re!(r"^[A-Za-z_]\w*$").is_match(n)) else {
+        let Some(name) = r.reference_name.strip_prefix("super().").filter(|n| re!(r"^[^\W\d]\w*$").is_match(n)) else {
             return Ok(None);
         };
         if !self.supertypes_complete {
@@ -444,12 +444,12 @@ impl KernelResolver {
             return Ok(None);
         };
         let col = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
-        let Some(call) = re!(r"^super\s*\(\s*(?:\)|([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\))").captures(&line[col..]) else {
+        let Some(call) = re!(r"^super\s*\(\s*(?:\)|([^\W\d]\w*)\s*,\s*([^\W\d]\w*)\s*\))").captures(&line[col..]) else {
             return Ok(None);
         };
         let named = call.get(1).map(|m| m.as_str());
         let file = source.python_file();
-        let Some((def, receiver)) = python_method_frame(file, at, col, named.is_none()) else {
+        let Some((def, receiver)) = python_method_frame(file, at, col, named) else {
             return Ok(None);
         };
         if call.get(2).is_some_and(|m| m.as_str() != receiver) {
@@ -533,8 +533,9 @@ impl KernelResolver {
 
     /// Whether a Python class's metaclass leaves its C3 order alone: none
     /// declared; `type`, or `ABCMeta` imported from `abc`, where the class
-    /// statement sees no other binding of the name; or indexed metaclasses
-    /// none of which, nor any of their bases, defines `mro`. A metaclass
+    /// statement sees no other binding of the name; or a name bound only by
+    /// class statements and imports to indexed metaclasses none of which,
+    /// nor any of their bases, defines `mro`. A metaclass
     /// written as any other expression, or passed in `**` keywords, may.
     fn python_metaclass_keeps_order(&mut self, class: &KNode) -> Res<bool> {
         let Some(source) = self.read_file(&class.file_path) else {
@@ -550,7 +551,7 @@ impl KernelResolver {
         let Some(kw) = re!(r"\bmetaclass\s*=").find(header) else {
             return Ok(true);
         };
-        let Some(m) = re!(r"^\s*([A-Za-z_][\w.]*)\s*[,)]").captures(&header[kw.end()..]) else {
+        let Some(m) = re!(r"^\s*([^\W\d][\w.]*)\s*[,)]").captures(&header[kw.end()..]) else {
             return Ok(false);
         };
         let fns = file.functions_around(file.scope[*h]);
@@ -569,6 +570,16 @@ impl KernelResolver {
         };
         if keeps {
             return Ok(true);
+        }
+        // The name the header passes must be a class statement or an import
+        // where the class statement runs, never rebound, for the indexed
+        // classes of that name to be the metaclass.
+        let dotted = m[1].contains('.');
+        let root = m[1].split('.').next().unwrap_or("");
+        if !only(root, &|s| {
+            re!(r"^\s*(?:from\s+\S+\s+)?import\b").is_match(s) || (!dotted && re!(r"^\s*class\b").is_match(s))
+        })? {
+            return Ok(false);
         }
         let meta = m[1].rsplit('.').next().unwrap_or("").to_string();
         let metas: Vec<Arc<KNode>> =
@@ -602,6 +613,9 @@ impl KernelResolver {
             return Ok(true);
         };
         let binds = python_binder(name, true)?;
+        if file.stmt(h).is_some_and(|(_, header)| binds(python_suite(header))) {
+            return Ok(true);
+        }
         Ok(file.stmts.iter().any(|(i, s)| file.scope[*i] == Some(h) && !re!(r"^\s*(?:async\s+)?def\b").is_match(s) && binds(s)))
     }
 
@@ -1438,6 +1452,11 @@ impl PyFile {
         for (i, (start, c)) in code.iter().enumerate() {
             match stmts.last_mut() {
                 Some((_, s)) if !*start => {
+                    // The continuation backslash, kept as a space so offsets hold.
+                    if s.ends_with('\\') {
+                        s.pop();
+                        s.push(' ');
+                    }
                     s.push(' ');
                     s.push_str(c);
                 }
@@ -1496,7 +1515,6 @@ impl PyFile {
     /// as a parameter of one of `fns`, or by a `global` statement anywhere.
     fn bindings(&self, fns: &[usize], name: &str, defs: bool) -> Res<Vec<usize>> {
         let binds = python_binder(name, defs)?;
-        let word = KernelResolver::cached_regex(&format!(r"\b{}\b", regex::escape(name)))?;
         let global = KernelResolver::cached_regex(&format!(r"^\s*global\b.*\b{}\b", regex::escape(name)))?;
         Ok(self
             .stmts
@@ -1504,7 +1522,7 @@ impl PyFile {
             .filter(|(i, s)| {
                 (self.scope[*i].is_none_or(|h| fns.contains(&h)) && binds(s))
                     || global.is_match(s)
-                    || (fns.contains(i) && python_def_params(s).is_some_and(|p| word.is_match(&s[p])))
+                    || (fns.contains(i) && python_def_params(s).is_some_and(|p| python_param_names(&s[p]).contains(&name)))
             })
             .map(|(i, _)| *i)
             .collect())
@@ -1513,15 +1531,16 @@ impl PyFile {
 
 /// The function a Python `super(...)` call at byte `col` of line `at` runs
 /// in: the first line of its `def` statement and its first parameter. None
-/// in a class body or a parameter default, in a lambda, in a generator
+/// in a class body or a parameter default, in a string (an f-string
+/// interpolation), in a lambda body, in a comprehension whose loop rebinds
+/// `super`, the first parameter or the class `named`, in a generator
 /// expression for the zero-argument form, under `@staticmethod`, or without
-/// a first parameter, where Python raises.
-fn python_method_frame(file: &PyFile, at: usize, col: usize, zero_arg: bool) -> Option<(usize, String)> {
+/// a first parameter, where Python raises or runs something else.
+fn python_method_frame(file: &PyFile, at: usize, col: usize, named: Option<&str>) -> Option<(usize, String)> {
     let def = re!(r"^\s*(?:async\s+)?def\b");
     let (s, stmt) = file.stmt(at)?;
     let off = file.code.get(*s..at)?.iter().map(|(_, c)| c.len() + 1).sum::<usize>() + col;
-    let before = stmt.get(..off)?;
-    if re!(r"\blambda\b").is_match(before) || re!(r"^\s*class\b").is_match(stmt) || (zero_arg && python_in_generator(stmt, off)) {
+    if !stmt.get(off..)?.starts_with("super") || re!(r"^\s*class\b").is_match(stmt) || python_in_lambda(stmt, off) {
         return None;
     }
     // A one-line `def` holds the call itself, past its parameters.
@@ -1550,17 +1569,59 @@ fn python_method_frame(file: &PyFile, at: usize, col: usize, zero_arg: bool) -> 
             return None;
         }
     }
-    let receiver = re!(r"^\s*([A-Za-z_]\w*)\s*(?:[,:=]|$)").captures(&header[python_def_params(header)?])?;
-    Some((d, receiver[1].to_string()))
+    let receiver = re!(r"^\s*([^\W\d]\w*)\s*(?:[,:=]|$)").captures(&header[python_def_params(header)?])?[1].to_string();
+    let rebinds = |w: &str| w == "super" || w == receiver || Some(w) == named;
+    for (bracket, targets) in python_comprehensions(stmt, off) {
+        if (named.is_none() && bracket == b'(') || re!(r"[^\W\d]\w*").find_iter(&targets).any(|w| rebinds(w.as_str())) {
+            return None;
+        }
+    }
+    Some((d, receiver))
 }
 
-/// Whether byte `at` of a Python statement sits in a generator expression,
-/// past its first iterable (which runs in the enclosing frame). A list, set
-/// or dict comprehension runs in the enclosing frame from Python 3.12 on.
-fn python_in_generator(stmt: &str, at: usize) -> bool {
+/// Whether the Python keyword `k` starts at byte `i` of `b`, not inside a
+/// longer name.
+fn python_keyword(b: &[u8], i: usize, k: &str) -> bool {
+    let word = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c >= 0x80);
+    b[i..].starts_with(k.as_bytes()) && (i == 0 || !word(i - 1)) && !word(i + k.len())
+}
+
+/// Whether byte `at` of a Python statement sits in a lambda's body, which
+/// runs in a frame of its own; a lambda's defaults and the code beside it
+/// run in the enclosing one.
+fn python_in_lambda(stmt: &str, at: usize) -> bool {
     let b = stmt.as_bytes();
-    let word = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
-    let keyword = |i: usize, k: &str| b[i..].starts_with(k.as_bytes()) && (i == 0 || !word(i - 1)) && !word(i + k.len());
+    // Each open lambda: its bracket depth and whether its body has begun.
+    let mut lambdas: Vec<(usize, bool)> = Vec::new();
+    let mut depth = 0usize;
+    for (i, &c) in b.iter().enumerate().take(at) {
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                lambdas.retain(|&(d, _)| d <= depth);
+            }
+            b',' => lambdas.retain(|&(d, body)| d != depth || !body),
+            b';' => lambdas.clear(),
+            b':' => {
+                if let Some(l) = lambdas.iter_mut().rev().find(|(d, body)| *d == depth && !*body) {
+                    l.1 = true;
+                }
+            }
+            _ if python_keyword(b, i, "lambda") => lambdas.push((depth, false)),
+            _ => {}
+        }
+    }
+    lambdas.iter().any(|&(_, body)| body)
+}
+
+/// The comprehensions and generator expressions around byte `at` of a
+/// Python statement that run it in their own scope, past their first
+/// iterable (which runs in the enclosing one): each one's opening bracket
+/// and the text of its loop targets. A list, set or dict comprehension runs
+/// in the enclosing frame from Python 3.12 on, a generator never does.
+fn python_comprehensions(stmt: &str, at: usize) -> Vec<(u8, String)> {
+    let b = stmt.as_bytes();
     let mut open = Vec::new();
     for (i, c) in b.iter().enumerate().take(at) {
         match c {
@@ -1571,27 +1632,79 @@ fn python_in_generator(stmt: &str, at: usize) -> bool {
             _ => {}
         }
     }
-    open.into_iter().filter(|&o| b[o] == b'(').any(|o| {
-        // The bracket's own `for`, its first iterable's `in`, and the end of
-        // that iterable.
-        let (mut depth, mut for_at, mut in_at, mut end) = (0usize, None, None, b.len());
-        for (j, &c) in b.iter().enumerate().skip(o + 1) {
-            match c {
-                b'(' | b'[' | b'{' => depth += 1,
-                b')' | b']' | b'}' if depth == 0 => {
-                    end = end.min(j);
-                    break;
+    open.into_iter()
+        .filter_map(|o| {
+            // Where the current loop target starts, the first loop's `in`, and
+            // where the first iterable ends.
+            let (mut depth, mut targets, mut target) = (0usize, String::new(), None);
+            let (mut first_in, mut first_end) = (None, b.len());
+            for (j, &c) in b.iter().enumerate().skip(o + 1) {
+                match c {
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' if depth == 0 => {
+                        first_end = first_end.min(j);
+                        break;
+                    }
+                    b')' | b']' | b'}' => depth -= 1,
+                    _ if depth > 0 => {}
+                    _ if python_keyword(b, j, "for") => {
+                        if first_in.is_some() {
+                            first_end = first_end.min(j);
+                        }
+                        target = Some(j + 3);
+                    }
+                    _ if python_keyword(b, j, "in") => {
+                        if let Some(t) = target.take() {
+                            targets.push_str(&stmt[t..j]);
+                            targets.push(' ');
+                            first_in.get_or_insert(j);
+                        }
+                    }
+                    _ if python_keyword(b, j, "if") && first_in.is_some() => first_end = first_end.min(j),
+                    _ => {}
                 }
-                b')' | b']' | b'}' => depth -= 1,
-                _ if depth > 0 => {}
-                _ if for_at.is_none() => for_at = keyword(j, "for").then_some(j),
-                _ if in_at.is_none() => in_at = keyword(j, "in").then_some(j),
-                _ if keyword(j, "for") || keyword(j, "if") => end = end.min(j),
-                _ => {}
             }
+            let first_in = first_in?;
+            (!(first_in < at && at < first_end)).then_some((b[o], targets))
+        })
+        .collect()
+}
+
+/// The one-line suite after a Python compound statement's header colon, or
+/// an empty string.
+fn python_suite(stmt: &str) -> &str {
+    let mut depth = 0usize;
+    for (i, c) in stmt.bytes().enumerate() {
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 => return &stmt[i + 1..],
+            _ => {}
         }
-        for_at.is_some() && !in_at.is_some_and(|i| i < at && at < end)
-    })
+    }
+    ""
+}
+
+/// The names a Python parameter list binds, `*args` and `**kwargs`
+/// included; defaults and annotations bind nothing.
+fn python_param_names(params: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (i, ch) in params.char_indices().chain(std::iter::once((params.len(), ','))) {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let p = params[start..i].trim_start().trim_start_matches('*').trim_start();
+                if let Some(m) = re!(r"^[^\W\d]\w*").find(p) {
+                    out.push(&p[..m.end()]);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The byte range of a Python `def` statement's parameter list.
@@ -1615,8 +1728,8 @@ fn python_def_params(stmt: &str) -> Option<std::ops::Range<usize>> {
 
 /// Whether a Python statement (from `PyFile`) binds `name`: assigns it
 /// (tuple, annotated, augmented and `:=` forms included), imports it, makes
-/// it a loop, `with` or `except` target, or names it in `global`,
-/// `nonlocal` or `del`; with `defs`, defines a function or class of that
+/// it a loop, `with` or `except` target, annotates it, captures it in a
+/// `case` pattern, or names it in `global`, `nonlocal` or `del`; with `defs`, defines a function or class of that
 /// name. A keyword argument or a parameter is no binding here.
 fn python_binder(name: &str, defs: bool) -> Res<impl Fn(&str) -> bool> {
     let n = regex::escape(name);
@@ -1627,6 +1740,8 @@ fn python_binder(name: &str, defs: bool) -> Res<impl Fn(&str) -> bool> {
         format!(r"^\s*(?:from\s+\S+\s+)?import\b.*\b{n}\b"),
         format!(r"^\s*(?:async\s+)?for\b[^:]*\b{n}\b[^:]*\bin\b"),
         format!(r"^\s*(?:global|nonlocal|del)\b.*\b{n}\b"),
+        format!(r"^\s*{n}\s*:(?:[^=]|$)"),
+        format!(r"^\s*case\b.*\b{n}\b"),
     ];
     if defs {
         forms.push(format!(r"^\s*(?:async\s+)?(?:def|class)\s+{n}\b"));
