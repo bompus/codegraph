@@ -23,6 +23,7 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { CodeGraph } from '../src';
 import type { Edge } from '../src/types';
 import { ToolHandler } from '../src/mcp/tools';
@@ -1734,6 +1735,53 @@ def init():
       } finally { cg.close(); fs.rmSync(tmpDir, { recursive: true, force: true }); tmpDir = undefined; }
     }
     expect(got).toEqual(Object.fromEntries(Object.entries(cases).map(([name, [, want]]) => [name, want])));
+  }, 60_000);
+
+  // The attribute-write index is built once per run: a writer added before a sync counts.
+  it('#1820: a module global sees a writer added since the last index', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-fnref-global-sync-'));
+    const write = (file: string, content: string) => fs.writeFileSync(path.join(tmpDir!, file), content);
+    write('store.py', 'class Store:\n    def fetch(self, ids):\n        return ids\n');
+    write('decoy.py', 'class Decoy:\n    def fetch(self, ids):\n        return []\n');
+    write('settings.py', 'from store import Store\nconn = None\n\ndef init():\n    global conn\n    conn = Store()\n');
+    const consumer = 'import settings\n\ndef cb(pool):\n    pool.submit(settings.conn.fetch)\n';
+    write('c.py', consumer);
+    const cg = CodeGraph.initSync(tmpDir);
+    const links = () => cg.getNodesByName('fetch').flatMap(t => cg.getIncomingEdges(t.id)
+      .filter(e => e.kind === 'references' && e.metadata?.fnRef === true)
+      .map(e => `${cg.getNode(e.source)?.name} -> ${t.qualifiedName}`)).sort();
+    try {
+      await cg.indexAll();
+      expect(links()).toEqual(['cb -> Store::fetch']);
+      write('reset.py', 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    settings.conn = Decoy()\n');
+      write('c.py', consumer + '\n# touched\n');
+      await cg.sync();
+      expect(links()).toEqual([]);
+    } finally { cg.close(); fs.rmSync(tmpDir, { recursive: true, force: true }); tmpDir = undefined; }
+  });
+
+  // Pool workers share one attribute-write index per run; a second run in the same process
+  // builds its own and sees the writer only it has.
+  it('#1820: each pooled run builds its own attribute-write index', () => {
+    const files = { 'store.py': 'class Store:\n    def fetch(self, ids):\n        return ids\n',
+      'decoy.py': 'class Decoy:\n    def fetch(self, ids):\n        return []\n',
+      'settings.py': 'from store import Store\nconn = None\n\ndef init():\n    global conn\n    conn = Store()\n',
+      'c.py': 'import settings\n\ndef cb(pool):\n    pool.submit(settings.conn.fetch)\n' };
+    const writer = { 'reset.py': 'import settings\nfrom decoy import Decoy\n\ndef reset():\n    settings.conn = Decoy()\n' };
+    const dirs = [files, { ...files, ...writer }].map((all, i) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `cg-fnref-global-pool-${i}-`));
+      for (const [file, content] of Object.entries(all)) fs.writeFileSync(path.join(dir, file), content);
+      return dir;
+    });
+    const script = `const {CodeGraph}=require(${JSON.stringify(path.resolve('dist/index.js'))});(async()=>{const out=[];for(const dir of ${JSON.stringify(dirs)}){const cg=await CodeGraph.init(dir,{index:true});out.push(cg.getNodesByName('fetch').flatMap(t=>cg.getIncomingEdges(t.id).filter(e=>e.kind==='references'&&e.metadata?.fnRef===true).map(e=>cg.getNode(e.source)?.name+' -> '+t.qualifiedName)).sort());cg.close();}console.log(JSON.stringify(out));})().catch(e=>{console.error(e);process.exit(1)});`;
+    try {
+      const output = execFileSync(process.execPath, ['-e', script], {
+        encoding: 'utf8',
+        timeout: 60000,
+        env: { ...process.env, CODEGRAPH_PARALLEL_RESOLVE_MIN: '1', CODEGRAPH_RESOLVE_WORKERS: '2', CODEGRAPH_PARSE_WORKERS: '2' },
+      });
+      expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual([['cb -> Store::fetch'], []]);
+    } finally { for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true }); }
   }, 60_000);
 
   // `import alpha.foo` binds `alpha`, so `alpha.foo.Client` names alpha's class even

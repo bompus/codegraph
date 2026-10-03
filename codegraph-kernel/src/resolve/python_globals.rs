@@ -27,6 +27,14 @@ const COMPUTED_WRITE: &str = "*";
 /// text with strings kept).
 const COMPUTED_KEY: &str = r#"\b(?:[\w.]+\.)?(?:setattr|patch\.object)\s*\(\s*[^\s,()'"]+\s*,\s*(?:[^'"\s]|['"][^'"]*\\|['"][^'"]*['"]\s*[^,)\s])|\S+?\.__dict__\s*(?:\[\s*(?:[^'"\s]|['"][^'"]*\\|['"][^'"]*['"]\s*[^\]\s])|\.\s*update\s*\()"#;
 
+/// Every attribute name the indexed Python files may write through
+/// `x.name = …`, `setattr`, `patch.object` or `__dict__`: the files that
+/// do, by name, numbered by their place in `files`.
+pub(super) struct PyAttrWriters {
+    files: Arc<Vec<String>>,
+    by_name: HashMap<String, Vec<u32>>,
+}
+
 /// Per-run memos for module-global typing.
 #[derive(Default)]
 pub(super) struct PyGlobalsMemo {
@@ -41,11 +49,8 @@ pub(super) struct PyGlobalsMemo {
     /// The files a dotted module path names, by (dotted path, the importing
     /// file's directory for a relative path, else empty).
     module_files: HashMap<(String, String), Rc<Vec<String>>>,
-    /// Every attribute name a Python file may write through `x.name = …`,
-    /// `setattr`, `patch.object` or `__dict__`: the files that do, by name.
-    attr_writers: Option<Rc<HashMap<String, Vec<u32>>>>,
-    /// The indexed files `attr_writers` numbers.
-    files: Option<Arc<Vec<String>>>,
+    /// This resolver's handle on `PyAttrWriters`.
+    attr_writers: Option<Arc<PyAttrWriters>>,
     /// `python_explicit_alias`, by (file, module, local name).
     explicit: HashMap<(String, String, String), bool>,
     /// `python_test_writer`, by (global id, file).
@@ -452,10 +457,10 @@ impl KernelResolver {
             return Ok(hit.clone());
         }
         let index = self.python_attr_writers()?;
-        let files = self.py_globals.files.clone().unwrap_or_default();
+        let files = &index.files;
         let mut out = ExternalWrites::default();
         let mut candidates: Vec<u32> =
-            [global.name.as_str(), COMPUTED_WRITE].iter().flat_map(|k| index.get(*k).into_iter().flatten().copied()).collect();
+            [global.name.as_str(), COMPUTED_WRITE].iter().flat_map(|k| index.by_name.get(*k).into_iter().flatten().copied()).collect();
         candidates.sort_unstable();
         candidates.dedup();
         for f in candidates {
@@ -489,9 +494,8 @@ impl KernelResolver {
             return Ok(*hit);
         }
         let index = self.python_attr_writers()?;
-        let files = self.py_globals.files.clone().unwrap_or_default();
-        let listed = files.binary_search_by(|f| f.as_str().cmp(file_path)).is_ok_and(|f| {
-            [global.name.as_str(), COMPUTED_WRITE].iter().any(|k| index.get(*k).is_some_and(|fs| fs.binary_search(&(f as u32)).is_ok()))
+        let listed = index.files.binary_search_by(|f| f.as_str().cmp(file_path)).is_ok_and(|f| {
+            [global.name.as_str(), COMPUTED_WRITE].iter().any(|k| index.by_name.get(*k).is_some_and(|fs| fs.binary_search(&(f as u32)).is_ok()))
         });
         let writer = listed && self.python_file_writes(global, file_path, true)?.writer;
         self.py_globals.test_writers.insert(key, writer);
@@ -610,39 +614,57 @@ impl KernelResolver {
         Ok(set)
     }
 
-    /// The attribute names each indexed Python file may write (see
-    /// `PyGlobalsMemo::attr_writers`), read once per run: the external-write
-    /// scan then reads only the files that may write a given global.
-    fn python_attr_writers(&mut self) -> Res<Rc<HashMap<String, Vec<u32>>>> {
+    /// `PyAttrWriters` for the indexed files, built once per node table: the
+    /// run's workers share it, and the first to ask builds it while the
+    /// others wait. A resolver without a node table builds its own.
+    fn python_attr_writers(&mut self) -> Res<Arc<PyAttrWriters>> {
         if let Some(hit) = &self.py_globals.attr_writers {
             return Ok(hit.clone());
         }
-        let files = match self.sorted_files() {
-            Some(files) => files,
+        let index = match self.sorted_files() {
+            Some(files) => Arc::new(self.python_attr_index(files)?),
             None => {
-                let mut files: Vec<String> = self.table()?.files.iter().cloned().collect();
-                files.sort();
-                Arc::new(files)
+                let table = self.table()?;
+                let mut slot = table.python_attr_writers.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                match &*slot {
+                    Some(hit) => hit.clone(),
+                    None => {
+                        let mut files: Vec<String> = table.files.iter().cloned().collect();
+                        files.sort();
+                        let built = Arc::new(self.python_attr_index(Arc::new(files))?);
+                        *slot = Some(built.clone());
+                        built
+                    }
+                }
             }
         };
+        self.py_globals.attr_writers = Some(index.clone());
+        Ok(index)
+    }
+
+    /// Reads `files` for `PyAttrWriters`.
+    fn python_attr_index(&self, files: Arc<Vec<String>>) -> Res<PyAttrWriters> {
         let mut index: HashMap<String, Vec<u32>> = HashMap::new();
+        let attrs = re!(r"\.\s*([^\W\d]\w*)");
         for (f, path) in files.iter().enumerate() {
             if !(path.ends_with(".py") || path.ends_with(".pyi")) {
                 continue;
             }
-            let Some(src) = self.read_file(path) else { continue };
+            let Some(src) = self.read_file_uncached(path) else { continue };
             let file = src.python_file();
             let mut names: HashSet<&str> = HashSet::new();
             let mut dynamic: Vec<String> = Vec::new();
             for (k, (_, code)) in file.stmts.iter().enumerate() {
-                let attrs = re!(r"\.\s*([^\W\d]\w*)");
-                if let Some(a) = python_assignment_split(code) {
-                    for t in &a.targets {
-                        names.extend(attrs.captures_iter(&code[t.clone()]).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+                // `x.name = …` and the other attribute targets need a `.`.
+                if code.contains('.') {
+                    if let Some(a) = python_assignment_split(code) {
+                        for t in &a.targets {
+                            names.extend(attrs.captures_iter(&code[t.clone()]).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+                        }
                     }
-                }
-                for t in python_other_targets(code) {
-                    names.extend(attrs.captures_iter(t).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+                    for t in python_other_targets(code) {
+                        names.extend(attrs.captures_iter(t).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+                    }
                 }
                 if python_dynamic_stmt(file, &src, k, code) {
                     let raw = python_raw_stmt(file, &src, k);
@@ -658,10 +680,7 @@ impl KernelResolver {
                 index.entry(name).or_default().push(f as u32);
             }
         }
-        let index = Rc::new(index);
-        self.py_globals.attr_writers = Some(index.clone());
-        self.py_globals.files = Some(files);
-        Ok(index)
+        Ok(PyAttrWriters { files, by_name: index })
     }
 
     /// How `file_path` spells the module file `module_file`: `aliases` name
@@ -1050,9 +1069,16 @@ fn python_stmt_bindings(code: &str, raw: &str, name: &str, line: usize) -> Res<V
 /// The targets a statement binds other than by `=`: `for … in`, `as …`
 /// and `del …` (code with strings blanked).
 fn python_other_targets(code: &str) -> Vec<&str> {
-    let mut out: Vec<&str> = re!(r"\bfor\s+([^:]+?)\s+in\b").captures_iter(code).filter_map(|c| c.get(1)).map(|m| m.as_str()).collect();
-    out.extend(as_targets(code));
-    out.extend(re!(r"^\s*del\s+(.+)$").captures_iter(code).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+    let mut out = Vec::new();
+    if code.contains("for") {
+        out.extend(re!(r"\bfor\s+([^:]+?)\s+in\b").captures_iter(code).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+    }
+    if code.contains("as") {
+        out.extend(as_targets(code));
+    }
+    if code.contains("del") {
+        out.extend(re!(r"^\s*del\s+(.+)$").captures_iter(code).filter_map(|c| c.get(1)).map(|m| m.as_str()));
+    }
     out
 }
 

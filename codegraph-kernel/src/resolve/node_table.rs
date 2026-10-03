@@ -131,6 +131,8 @@ pub(super) struct NodeTable {
     lua_basenames: std::sync::OnceLock<HashMap<String, Arc<Vec<String>>>>,
     /// `.rs` files by exact parent directory, sorted. Built on first use.
     rust_rs_dirs: std::sync::OnceLock<HashMap<String, Arc<Vec<String>>>>,
+    /// The Python attribute-write index, built on first use.
+    pub(super) python_attr_writers: std::sync::Mutex<Option<Arc<super::python_globals::PyAttrWriters>>>,
     /// Every node in rowid order — the source for the lazy indexes.
     pub(super) nodes: Vec<Arc<KNode>>,
     /// getNodesByQualifiedName — rowid order.
@@ -213,6 +215,7 @@ impl NodeTable {
             by_lower: std::sync::OnceLock::new(),
             lua_basenames: std::sync::OnceLock::new(),
             rust_rs_dirs: std::sync::OnceLock::new(),
+            python_attr_writers: std::sync::Mutex::new(None),
             nodes,
             by_qname: freeze(by_qname),
             by_file: freeze(by_file),
