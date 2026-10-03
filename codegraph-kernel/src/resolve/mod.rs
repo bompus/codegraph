@@ -518,6 +518,7 @@ mod iteration;
 mod kotlin_receiver;
 mod this_member;
 mod member_fn_ref;
+mod python_globals;
 mod object_literal;
 mod cpp;
 mod cpp_types;
@@ -605,6 +606,8 @@ pub struct KernelResolver {
     /// Assignments and annotations typing a Python class's `self.<field>`,
     /// by (class id, field).
     py_field_facts_memo: HashMap<(String, String), Rc<Vec<member_fn_ref::PyFieldFact>>>,
+    /// Python module-global typing (python_globals.rs).
+    py_globals: python_globals::PyGlobalsMemo,
     /// rubyAncestry, by class qualified name.
     ruby_ancestry_memo: HashMap<String, Rc<HashSet<String>>>,
     /// cfmlChain, by component file.
@@ -791,6 +794,7 @@ impl KernelResolver {
             kotlin_supers_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),
             py_field_facts_memo: HashMap::new(),
+            py_globals: Default::default(),
             ruby_ancestry_memo: HashMap::new(),
             cfml_chain_memo: HashMap::new(),
             csharp_supers_memo: HashMap::new(),

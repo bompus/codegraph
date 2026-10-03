@@ -1472,13 +1472,13 @@ fn same_declared_type(n: &KNode, owner: &KNode) -> bool {
 /// `python_code_lines`), its logical statements, and the `def` or `class`
 /// statement whose block holds each line.
 pub(crate) struct PyFile {
-    code: Vec<(bool, String)>,
+    pub(super) code: Vec<(bool, String)>,
     /// The statements: first line, and code with continuation lines joined
     /// by a space.
-    stmts: Vec<(usize, String)>,
+    pub(super) stmts: Vec<(usize, String)>,
     /// By line: the first line of the innermost `def` or `class` statement
     /// whose block holds it; `if`, `for`, `with` and `try` open no scope.
-    scope: Vec<Option<usize>>,
+    pub(super) scope: Vec<Option<usize>>,
 }
 
 impl PyFile {
@@ -1519,7 +1519,7 @@ impl PyFile {
     }
 
     /// The statement line `at` belongs to: its first line and code.
-    fn stmt(&self, at: usize) -> Option<&(usize, String)> {
+    pub(super) fn stmt(&self, at: usize) -> Option<&(usize, String)> {
         self.stmts.get(self.stmts.partition_point(|(i, _)| *i <= at).checked_sub(1)?)
     }
 
@@ -1534,7 +1534,7 @@ impl PyFile {
     /// The `def` statements, innermost first, whose names code in the block
     /// of the statement at line `at` (and the statement itself, given its
     /// own line) looks up: class bodies between are skipped, as in Python.
-    fn functions_around(&self, mut at: Option<usize>) -> Vec<usize> {
+    pub(super) fn functions_around(&self, mut at: Option<usize>) -> Vec<usize> {
         let mut out = Vec::new();
         while let Some(h) = at {
             if self.stmt(h).is_some_and(|(_, s)| re!(r"^\s*(?:async\s+)?def\b").is_match(s)) {
@@ -1737,7 +1737,7 @@ fn python_suite(stmt: &str) -> &str {
 
 /// The names a Python parameter list binds, `*args` and `**kwargs`
 /// included; defaults and annotations bind nothing.
-fn python_param_names(params: &str) -> Vec<&str> {
+pub(super) fn python_param_names(params: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let (mut depth, mut start) = (0usize, 0);
     for (i, ch) in params.char_indices().chain(std::iter::once((params.len(), ','))) {
@@ -1758,7 +1758,7 @@ fn python_param_names(params: &str) -> Vec<&str> {
 }
 
 /// The byte range of a Python `def` statement's parameter list.
-fn python_def_params(stmt: &str) -> Option<std::ops::Range<usize>> {
+pub(super) fn python_def_params(stmt: &str) -> Option<std::ops::Range<usize>> {
     let open = re!(r"^\s*(?:async\s+)?def\s+\w+\s*(?:\[[^\]]*\])?\s*\(").find(stmt)?.end();
     let mut depth = 1usize;
     for (i, ch) in stmt[open..].char_indices() {

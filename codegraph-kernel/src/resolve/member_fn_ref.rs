@@ -30,6 +30,9 @@ impl KernelResolver {
                     let members = self.python_members(&cls, member, r, &mut HashSet::new())?;
                     return self.unique_member(members, r, 0.9);
                 }
+                if let Some(hit) = self.python_imported_global(receiver, member, r)? {
+                    return Ok(hit);
+                }
             }
             let Some(hit) = self.resolve_via_import(r)? else {
                 return Ok(None);
@@ -203,6 +206,12 @@ impl KernelResolver {
             }
             _ => self.python_local_type(receiver, r)?,
         };
+        // An untyped module global (`conn = None`, rebound elsewhere).
+        if ty.is_none() && field.is_none() && is_word(receiver) {
+            if let Some(hit) = self.python_same_file_global(receiver, member, r)? {
+                return Ok(Some(hit));
+            }
+        }
         // A type name used directly (`Store.fetch`) scopes like an annotation.
         if ty.is_none() && is_word(receiver) && receiver.starts_with(|c: char| c.is_ascii_uppercase()) {
             ty = Some(receiver.to_string());
@@ -256,7 +265,7 @@ impl KernelResolver {
 
     /// The single same-family candidate, when it is a callable other than
     /// the referencing node and not a Python property.
-    fn unique_member(&mut self, nodes: Vec<Arc<KNode>>, r: &ResolveRefIn, confidence: f64) -> Res<Option<KCand>> {
+    pub(super) fn unique_member(&mut self, nodes: Vec<Arc<KNode>>, r: &ResolveRefIn, confidence: f64) -> Res<Option<KCand>> {
         let mut pool = nodes.into_iter().filter(|n| same_language_family(&n.language, &r.language));
         let (Some(target), None) = (pool.next(), pool.next()) else {
             return Ok(None);
@@ -272,7 +281,7 @@ impl KernelResolver {
 
     /// A class named from `r`'s file: through its import, else the file's
     /// own unique class of that name.
-    fn python_ref_class(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+    pub(super) fn python_ref_class(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         let root = name.split('.').next().unwrap_or(name);
         if self.import_mappings(&r.file_path)?.iter().any(|i| i.local_name == root) {
             let Some(hit) = self.resolve_via_import(&r.clone().naming(name, "references"))? else {
@@ -304,7 +313,7 @@ impl KernelResolver {
 
     /// The classes a Python class header names as bases, each resolved from
     /// the class's own file.
-    fn python_bases(&mut self, cls: &KNode, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+    pub(super) fn python_bases(&mut self, cls: &KNode, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
         let Some(lines) = self.read_file(&cls.file_path) else {
             return Ok(Vec::new());
         };
@@ -318,7 +327,7 @@ impl KernelResolver {
         Ok(out)
     }
 
-    fn python_derives_from(&mut self, cls: &KNode, base: &KNode, r: &ResolveRefIn, seen: &mut HashSet<String>) -> Res<bool> {
+    pub(super) fn python_derives_from(&mut self, cls: &KNode, base: &KNode, r: &ResolveRefIn, seen: &mut HashSet<String>) -> Res<bool> {
         if seen.len() >= CLASS_WALK_LIMIT || !seen.insert(cls.id.clone()) {
             return Ok(false);
         }
@@ -333,7 +342,7 @@ impl KernelResolver {
     /// What `member` names on `cls`: an assignment in the class body shadows
     /// any method (the class itself stands in, so it never resolves), else
     /// the class's own member, else its bases' (deduplicated).
-    fn python_members(
+    pub(super) fn python_members(
         &mut self,
         cls: &Arc<KNode>,
         member: &str,
@@ -437,7 +446,7 @@ impl KernelResolver {
 
     /// `@property` / `@cached_property` methods are attribute reads, not
     /// callables passed by value.
-    fn is_python_property(&mut self, node: &KNode) -> bool {
+    pub(super) fn is_python_property(&mut self, node: &KNode) -> bool {
         if node.language != "python" || node.kind != "method" {
             return false;
         }
