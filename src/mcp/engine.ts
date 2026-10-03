@@ -18,6 +18,7 @@ import { ToolHandler } from './tools';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
 import { assertNoRebuild, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 import { QueryPool, resolvePoolSize } from './query-pool';
+import { endFreshnessMeasurements } from './index-freshness';
 import { acquireProject, ProjectLease } from './project-lifecycle';
 
 // Lazy-load the heavy CodeGraph chain (sqlite + query/graph/context layers) OFF
@@ -271,13 +272,18 @@ export class MCPEngine {
 
     // Detach + terminate the worker pool first so no tool call routes to a
     // worker mid-teardown; outstanding pool calls resolve with graceful guidance.
-    // Stopping waits for the workers to end: the daemon exits right after, and
-    // exiting while a worker is still starting up can crash the process.
+    // Stopping waits for the workers to end — the pool's, and any
+    // `codegraph_status` change count still measuring: the daemon exits right
+    // after, and exiting while a worker is still starting up can crash the
+    // process.
     this.toolHandler.setQueryPool(null);
     const poolDown = this.queryPool ? this.queryPool.destroy() : Promise.resolve();
     this.queryPool = null;
+    // Closing first: a status call still in flight then starts no measurement
+    // after the sweep.
     const drained = this.toolHandler.closeAll();
-    this.stopPromise = Promise.all([drained, poolDown]).then(async () => {
+    const measurementsDown = endFreshnessMeasurements();
+    this.stopPromise = Promise.all([drained, poolDown, measurementsDown]).then(async () => {
       if (this.initPromise) await this.initPromise;
       if (this.defaultLease) {
         await this.defaultLease.release();

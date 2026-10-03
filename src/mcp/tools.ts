@@ -8983,8 +8983,10 @@ export class ToolHandler {
     // Exact CLI-parity change counts are measured on a worker: Git or the
     // filesystem fallback can stall on a large/busy checkout, but status must
     // not block the shared daemon's transport (#1959). Unknown is never zero.
+    // A closing server has already ended its measurements; one started now
+    // could still be loading when the process exits.
     const lastIndexedAt = cg.getLastIndexedAt();
-    const changes = await measurePendingChanges(cg.getProjectRoot());
+    const changes = this.closing ? null : await measurePendingChanges(cg.getProjectRoot());
     lines.push(
       `**Latest file indexed:** ${lastIndexedAt == null ? 'never' : new Date(lastIndexedAt).toISOString()}`,
       changes

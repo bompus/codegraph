@@ -16,6 +16,7 @@ import * as os from 'os';
 import type { Edge, UnresolvedReference } from '../types';
 import type { KernelResolveStats, ResolvedRef, UnresolvedRef } from './types';
 import { memoryBudgetBytes } from './memory-budget';
+import { terminateOnceStarted, workerStarted } from '../worker-teardown';
 
 /** One synthesis pass's output: its edge list + worker-measured wall clock. */
 export interface SynthPassResult {
@@ -37,8 +38,13 @@ export interface ChunkResult {
 interface PoolWorker {
   worker: Worker;
   ready: Promise<void>;
+  /** Settles on the worker's first message or its end — see worker-teardown.ts. */
+  started: Promise<void>;
   busy: number;
 }
+
+/** How long destroy() waits for a worker to exit on 'close' before terminating it. */
+const CLOSE_TIMEOUT_MS = 5000;
 
 const CHUNK_SIZE = 500;
 
@@ -180,13 +186,14 @@ export class ResolverPool {
     const kernelGeneration = kernelDbPath ? `${process.pid}-${Date.now().toString(36)}-${++ResolverPool.poolSeq}` : undefined;
     for (let i = 0; i < size; i++) {
       const worker = new Worker(workerScript);
+      const started = workerStarted(worker);
       let readyResolve!: () => void;
       let readyReject!: (e: Error) => void;
       const ready = new Promise<void>((resolve, reject) => {
         readyResolve = resolve;
         readyReject = reject;
       });
-      const pw: PoolWorker = { worker, ready, busy: 0 };
+      const pw: PoolWorker = { worker, ready, started, busy: 0 };
       worker.on('message', (msg: { type: string; id?: number; message?: string; edges?: Edge[]; ms?: number; skips?: Array<[string, string, string]> } & Partial<ChunkResult>) => {
         if (msg.type === 'ready') {
           readyResolve();
@@ -363,14 +370,20 @@ export class ResolverPool {
     );
   }
 
-  async destroy(): Promise<void> {
+  /**
+   * Ask every worker to close; each collects garbage and exits by itself (see
+   * worker-teardown.ts). One that hasn't by `closeTimeoutMs` is terminated —
+   * but never while it is still starting up: a pool torn down soon after it
+   * booted, on a busy machine, can have a worker still loading its modules.
+   */
+  async destroy(closeTimeoutMs = CLOSE_TIMEOUT_MS): Promise<void> {
     await Promise.all(
       this.workers.map(
         (pw) =>
           new Promise<void>((resolve) => {
             const t = setTimeout(() => {
-              void pw.worker.terminate().then(() => resolve());
-            }, 5000);
+              void terminateOnceStarted(pw.worker, pw.started).then(() => resolve());
+            }, closeTimeoutMs);
             pw.worker.once('exit', () => {
               clearTimeout(t);
               resolve();
