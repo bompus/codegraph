@@ -530,6 +530,10 @@ describe('Python self-calls do not resolve through a same-named import', () => {
     ['with `super` annotated as a local', 'class Child(Base):\n    def run(self):\n        super: object\n        return super().m()\n'],
     ['with `super` a match capture', 'class Child(Base):\n    def run(self, factory):\n        match factory:\n            case super:\n                return super().m()\n'],
     ['past a one-line class body that rebinds the name', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', 'from pkg.base import Base\n\n\nclass Mid(Base): m = lambda self: "mid"\n'],
+    ['under a metaclass imported under another name', 'from pkg.mid import Reorder as Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n', 'class Meta(type):\n    pass\n\n\nclass Reorder(type):\n    def mro(cls):\n        return [cls, object]\n'],
+    ['under a metaclass with a fallback definition', 'try:\n    from vendor.fast import Meta\nexcept ImportError:\n    class Meta(type):\n        pass\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n'],
+    ['under an imported metaclass the index holds only under that name elsewhere', 'from vendor.meta import Meta\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n', 'class Meta(type):\n    pass\n'],
+    ['in a lambda whose parameter shadows the named class', 'class Child(Base):\n    def run(self):\n        f = lambda Child=Base: super(Child, self).m()\n        return f()\n'],
     ['to a property', 'from pkg.mid import Mid\n\n\nclass Child(Mid):\n    def m(self):\n        return super().m()\n', mid('    @property\n    def m(self):\n        return "mid"')],
   ])('super() links nothing %s', async (_, child, midFile = mid('    def other(self):\n        return 1')) => {
     const calls = await callsIn({
@@ -641,6 +645,15 @@ describe('Python self-calls do not resolve through a same-named import', () => {
       'Dotted::m -> Base::m (pkg/base.py)',
     ]);
   });
+  it('super() still links under a metaclass whose fallback import the index holds', async () => {
+    const calls = await callsIn({
+      'pkg/__init__.py': '',
+      'pkg/base.py': 'class Base:\n    def m(self):\n        return "base"\n',
+      'pkg/fastmeta.py': 'class Meta(type):\n    pass\n',
+      'pkg/child.py': 'from pkg.base import Base\n\ntry:\n    from pkg.fastmeta import Meta\nexcept ImportError:\n    class Meta(type):\n        pass\n\n\nclass Child(Base, metaclass=Meta):\n    def m(self):\n        return super().m()\n',
+    });
+    expect(calls.filter((c) => / -> Base::m /.test(c))).toEqual(['Child::m -> Base::m (pkg/base.py)']);
+  });
   it('super() still links past code that only looks like a rebinding or another frame', async () => {
     const calls = await callsIn({
       'pkg/__init__.py': '',
@@ -651,6 +664,16 @@ describe('Python self-calls do not resolve through a same-named import', () => {
         'from pkg.base import Base',
         '',
         'forêt = 1',
+        'super: object',
+        '',
+        '',
+        'class Typed(Base):',
+        '    m: object',
+        '',
+        '',
+        'class Annotated(Typed):',
+        '    def run(self):',
+        '        return super().m()',
         '',
         '',
         'class Child(Base):',
@@ -683,16 +706,38 @@ describe('Python self-calls do not resolve through a same-named import', () => {
         '        return super().m()',
         '',
         '    def forest(self):',
-        '        return (super().m(), forêt)[0]',
+        '        return (super().m(), forêt in [1])[0]',
+        '',
+        '    def guarded(self, value):',
+        '        match value:',
+        '            case _ if super is not None:',
+        '                return super().m()',
+        '        return 0',
+        '',
+        '    def matched(self, value):',
+        '        match value:',
+        '            case Child():',
+        '                return super(Child, self).m()',
+        '',
+        '    def callback(self):',
+        '        return (lambda: super(Child, self).m())()',
+        '',
+        '    def listed(self):',
+        '        return [lambda item=item: item for item in super().m()]',
         '',
       ].join('\n'),
     });
     expect(calls.filter((c) => / -> Base::m /.test(c))).toEqual([
+      'Annotated::run -> Base::m (pkg/base.py)',
       'Child::annotated -> Base::m (pkg/base.py)',
       'Child::beside -> Base::m (pkg/base.py)',
+      'Child::callback -> Base::m (pkg/base.py)',
       'Child::default -> Base::m (pkg/base.py)',
       'Child::defaulted -> Base::m (pkg/base.py)',
       'Child::forest -> Base::m (pkg/base.py)',
+      'Child::guarded -> Base::m (pkg/base.py)',
+      'Child::listed -> Base::m (pkg/base.py)',
+      'Child::matched -> Base::m (pkg/base.py)',
       'Child::note -> Base::m (pkg/base.py)',
       'Child::run -> Base::m (pkg/base.py)',
       'Child::split -> Base::m (pkg/base.py)',
