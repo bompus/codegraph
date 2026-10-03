@@ -154,6 +154,17 @@ describe.skipIf(!HAS_SQLITE)('no silent fuzzy substitution (#1473) — MCP', () 
     expect(flow.tokenNodes.get('the')).toEqual([]);
     expect(searchNodes).not.toHaveBeenCalled();
   });
+
+  it('explore skips the did-you-mean search for an unknown qualified token', async () => {
+    const token = 'a.b.c.Calls';
+    const searchNodes = vi.spyOn(cg, 'searchNodes');
+    await text('codegraph_explore', { query: token });
+    // Other explore steps search the same token without the suggestion's limit.
+    const suggestions = searchNodes.mock.calls.filter(
+      ([query, options]) => query === token && (options as { limit?: number } | undefined)?.limit === 5
+    );
+    expect(suggestions).toHaveLength(0);
+  });
 });
 
 describe.skipIf(!HAS_SQLITE || !fs.existsSync(BIN))('no silent fuzzy substitution (#1473) — CLI', () => {
