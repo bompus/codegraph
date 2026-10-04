@@ -1,5 +1,10 @@
 # Fork vs upstream on Node and Bun (2026-09-28)
 
+> Superseded for the README by
+> [`fork-vs-upstream-node-bun-2026-10-03.md`](fork-vs-upstream-node-bun-2026-10-03.md),
+> which measures upstream `6560052a` and the fork at `34cc55e2` with the same
+> method and corpora.
+
 The measurements behind the README's "Measured results" and "What it costs"
 sections. Each build runs on Node.js 24 and on Bun, so a single table covers
 both the fork-versus-upstream comparison and the runtime comparison. This
