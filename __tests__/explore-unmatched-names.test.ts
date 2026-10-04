@@ -38,6 +38,8 @@ const FILES: Record<string, string> = {
     '}',
     '',
   ].join('\n'),
+  // A stem whose extension the explore token cleanup does not strip.
+  'config/draft_rules.yaml': 'a: 1\n',
   // Prose that names the guess: docs are not code, so this must not hide it.
   'docs/notes.md': '# Notes\n\nWe planned `finalHistoryReconciled` but never wrote it.\n',
   'src/pickLedger.ts': [
@@ -99,8 +101,22 @@ describe('unmatched names in the explore summary', () => {
       'runDraft DRAFT_STATE_UPDATED maxBuffer',
       'runDraft process.exitCode',
       'runDraft v1.0.352',
+      'verifySnapshot draft_rules',
+      'verifySnapshot "some finalHistoryReconciled phrase"',
     ]) {
       expect(await explore(query), query).not.toContain('Not found in the index');
+    }
+  });
+
+  // A file that cannot be read leaves the absence unproven: the guess may be
+  // an object key in exactly that file.
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)('lists nothing when a source file cannot be read', async () => {
+    const file = path.join(dir, 'src/draftStoreState.ts');
+    fs.chmodSync(file, 0o000);
+    try {
+      expect(await explore('verifySnapshot finalHistoryReconciled')).not.toContain('Not found in the index');
+    } finally {
+      fs.chmodSync(file, 0o644);
     }
   });
 });

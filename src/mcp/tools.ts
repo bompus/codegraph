@@ -52,7 +52,7 @@ import {
   statSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { scanFits, scanIndexedSource } from './source-scan';
+import { MAX_SCAN_TOTAL_BYTES, scanFits, scanIndexedSource } from './source-scan';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
@@ -253,15 +253,21 @@ const UNMATCHED_SCAN_BUDGET_MS = 300;
  * that appear nowhere in the project: not as an import, parameter or local
  * (`bindings`), not as a file stem and not as a word in any hand-written
  * source file. An object key or a `process.exitCode` member is real code the
- * node table does not hold, so listing it as missing would be wrong. When the
- * text cannot be read in time (a large project, or a scan that runs out of
- * budget), nothing is listed. At most four names.
+ * node table does not hold, so listing it as missing would be wrong. Unless
+ * every such file was read in time, nothing is listed: a large project, a
+ * scan that runs out of budget, or one file that could not be read leaves the
+ * absence unproven. At most four names.
  */
-function confirmUnmatchedNames(cg: CodeGraph, candidates: readonly string[], fileExt: RegExp): string[] {
+function confirmUnmatchedNames(cg: CodeGraph, candidates: readonly string[]): string[] {
   if (candidates.length === 0) return [];
   const files = cg.getTextScanFiles();
   if (!scanFits(files)) return [];
-  const stems = new Set(cg.getFilePaths().map((p) => p.slice(p.lastIndexOf('/') + 1).replace(fileExt, '')));
+  const stems = new Set<string>();
+  for (const p of cg.getFilePaths()) {
+    const base = p.slice(p.lastIndexOf('/') + 1);
+    stems.add(base.replace(/\.[^.]*$/, ''));
+    stems.add(base.replace(/\..*$/, ''));
+  }
   const words = new Map<string, string>(); // candidate → the word the scan looks for
   for (const name of candidates) {
     const word = isQualifiedSymbol(name) ? lastQualifierPart(name) : name;
@@ -273,11 +279,15 @@ function confirmUnmatchedNames(cg: CodeGraph, candidates: readonly string[], fil
   const escaped = [...wanted].map((w) => w.replace(/[$]/g, '\\$'));
   const pattern = new RegExp(`(?<![\\w$])(?:${escaped.join('|')})(?![\\w$])`, 'g');
   const seen = new Set<string>();
-  const complete = scanIndexedSource(cg.getProjectRoot(), files, pattern, UNMATCHED_SCAN_BUDGET_MS, (_path, _offset, text) => {
+  const scan = scanIndexedSource(cg.getProjectRoot(), files, pattern, {
+    budgetMs: UNMATCHED_SCAN_BUDGET_MS,
+    maxFileBytes: MAX_SCAN_TOTAL_BYTES,
+    maxTotalBytes: MAX_SCAN_TOTAL_BYTES,
+  }, (_path, _offset, text) => {
     seen.add(text);
     return seen.size === wanted.size;
   });
-  if (!complete) return [];
+  if (seen.size === wanted.size || !scan.complete || scan.skipped > 0) return [];
   return [...words].filter(([, word]) => !seen.has(word)).map(([name]) => name).slice(0, 4);
 }
 
@@ -4876,6 +4886,12 @@ export class ToolHandler {
       // Misses the node table alone reports; filtered against bindings, file
       // stems and source text after the loop before any reaches the summary.
       const missCandidates: string[] = [];
+      // Words inside a quoted phrase are text the agent copied, not names it
+      // guessed. A quoted single word stays a candidate: agents quote names.
+      const phraseWords = new Set<string>();
+      for (const m of matchQuery.matchAll(/(["'])([^"'\n]*\s[^"'\n]*)\1/g)) {
+        for (const w of (m[2] ?? '').match(/[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g) ?? []) phraseWords.add(w);
+      }
       const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
       // Variables/constants seed too: in Svelte/React a `$state` variable
@@ -5027,7 +5043,7 @@ export class ToolHandler {
         // A digit after a qualifier is a version (`v1.0.352`), not a member.
         if (raw.length === 0 && cands.length === 0 && missCandidates.length < 8
             && (/[a-z][A-Z]|[_$]|::/.test(t) || (isQual && /\./.test(t)))
-            && !/(?:\.|::)\d/.test(t)
+            && !/(?:\.|::)\d/.test(t) && !phraseWords.has(t)
             && !pinnedFiles.some((p) => p.slice(p.lastIndexOf('/') + 1).replace(FILE_EXT, '') === t)
             && cg.findLiteralSeedIds(`"${t}"`).length === 0) {
           missCandidates.push(t);
@@ -5093,7 +5109,7 @@ export class ToolHandler {
           if (!isInterfaceOwnedMethod(n)) tierSeedIds.add(n.id);
         }
       }
-      unmatchedNames.push(...confirmUnmatchedNames(cg, missCandidates, FILE_EXT));
+      unmatchedNames.push(...confirmUnmatchedNames(cg, missCandidates));
       // Path-vocabulary seeds: a bare query token that names a DIRECTORY
       // segment ("command" → `commands/`, "handler" → `handlers/`) is
       // location evidence the name/FTS channels can't express: the answer

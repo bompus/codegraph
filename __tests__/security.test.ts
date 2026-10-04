@@ -264,6 +264,14 @@ describe('Symlink escape prevention (#527)', () => {
     expect(check('src/inlink.ts')).toBe(path.join(root, 'src', 'in.ts'));
   });
 
+  it('rootContainmentCheck re-resolves a cached directory replaced by a symlink out of the root', () => {
+    const check = rootContainmentCheck(root);
+    expect(check('src/in.ts')).not.toBeNull();
+    fs.renameSync(path.join(root, 'src'), path.join(root, 'src-old'));
+    if (!link(path.join(root, 'src'), path.join(outside, 'pkg'))) return;
+    expect(check('src/secret.txt')).toBeNull();
+  });
+
   // The INDEXING read path opts into following in-root symlinks the directory
   // walk already descended into — discovery and the reader must agree, or files
   // reached via an in-root symlink-to-outside fail to index (#935). The lexical
