@@ -62,6 +62,8 @@ against dozens of greps and reads.
 
 ## Reading results
 
+- Questions about tests include source from the nearest test callers of named symbols, within three caller hops and the file/output budgets. These are static caller links, not measured runtime coverage. Naming a JavaScript or TypeScript test file prioritizes matching \`it\`/\`test\` callbacks.
+
 - **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
 - **Read/Grep are for what the index lacks**: a detail a codegraph answer didn't cover, or files codegraph doesn't index (such as configs). Markdown is indexed — every \`.md\` file's headings, sections, tables and links — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` too; it returns the section body, not just its heading.
 - **A question about the working changes** ("what do my changes affect", "this branch", \`main..HEAD\`) goes to \`codegraph_explore\` as asked: it reads the diff itself (merge base with the default branch plus uncommitted edits, or the named range) and leads with the changed symbols, their callers and their tests.

@@ -36,7 +36,7 @@ import {
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind, GraphStats } from '../types';
 import type { NodeSpan } from '../db/queries';
-import { isDistinctiveIdentifier, isTestFile, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
+import { isDistinctiveIdentifier, isTestFile, isTestPath, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
 import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
 import {
   extractQueryPaths,
@@ -802,6 +802,8 @@ export interface ExploreAllocationCandidate {
    * but not weighted up: injection is survival, not promotion.
    */
   injected?: boolean;
+  /** Caller-backed test source explicitly requested by a coverage question. */
+  requested?: boolean;
   /**
    * The query named this file by PATH (see query-paths.ts). Pinned files are
    * never cliffed or trimmed, and weigh at least as much as the strongest
@@ -886,7 +888,7 @@ export function allocateExploreBudget(
   const cliffed: string[] = [];
   let admitted: ExploreAllocationCandidate[] = [];
   for (const c of candidates) {
-    if (!c.spine && !c.pinned && !c.injected && (weights.get(c.path) ?? 0) < cliffAt) cliffed.push(c.path);
+    if (!c.spine && !c.pinned && !c.injected && !c.requested && (weights.get(c.path) ?? 0) < cliffAt) cliffed.push(c.path);
     else admitted.push(c);
   }
   // Never cliff every candidate: an empty response costs a whole round-trip.
@@ -905,7 +907,7 @@ export function allocateExploreBudget(
   if (admitted.length > affordable) {
     const byWeight = [...admitted].sort((a, b) => (weights.get(b.path) ?? 0) - (weights.get(a.path) ?? 0));
     const keep = new Set(byWeight.slice(0, affordable).map((c) => c.path));
-    for (const c of admitted) if (c.spine || c.pinned || c.injected) keep.add(c.path);
+    for (const c of admitted) if (c.spine || c.pinned || c.injected || c.requested) keep.add(c.path);
     for (const c of admitted) if (!keep.has(c.path)) cliffed.push(c.path);
     admitted = admitted.filter((c) => keep.has(c.path));
   }
@@ -4289,8 +4291,8 @@ export class ToolHandler {
     for (const root of roots) {
       const dups = this.nearDuplicateNote(cg, root);
       const dupNote = dups ? `; near-duplicates (update together): ${dups}` : '';
-      let callers: Array<{ node: Node }> = [];
-      try { callers = cg.getCallers(root.id) as Array<{ node: Node }>; } catch { /* skip this root */ }
+      let callers: Array<{ node: Node; edge: Edge }> = [];
+      try { callers = cg.getCallers(root.id); } catch { /* skip this root */ }
 
       const seen = new Set<string>();
       const uniq: Node[] = [];
@@ -4312,7 +4314,7 @@ export class ToolHandler {
       const where = nonTest.length > 0 ? ` in ${shown}${more}` : '';
       const tests = testFiles.length > 0
         ? `; tests: ${testFiles.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ')}${testFiles.length > FILE_CAP ? ` +${testFiles.length - FILE_CAP}` : ''}`
-        : this.indirectTestNote(cg, uniq, rel);
+        : this.indirectTestNote(cg, callers, rel);
 
       entries.push(
         `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} caller${uniq.length === 1 ? '' : 's'}${where}${tests}${dupNote}`,
@@ -4381,47 +4383,53 @@ export class ToolHandler {
   }
 
   /**
-   * Test-coverage note for a blast-radius entry whose DIRECT callers include no
-   * test file. A helper called only by production code can still be exercised
-   * by tests further up the caller chain (#1475: 40% of directly-unflagged
-   * symbols had a test within 2-3 hops), so walk up to 2 more hops before
-   * claiming anything — and even then claim only what was measured.
+   * Find the nearest test callers for source selection and blast-radius notes.
+   * A production helper can reach a test through another caller, so search
+   * up to three hops. Report exhaustion separately to keep absence claims honest.
    */
-  private indirectTestNote(cg: CodeGraph, directCallers: Node[], rel: (p: string) => string): string {
+  private callerTests(cg: CodeGraph, directCallers: Array<{ node: Node; edge: Edge }>): {
+    callers: Array<{ node: Node; edge: Edge }>; exhausted: boolean;
+  } {
     const MAX_HOPS = 3; // direct callers are hop 1
     const BUDGET = 64;  // getCallers lookups per entry — bounds god-fan-in symbols
-    const FILE_CAP = 2;
     let budget = BUDGET;
-    const visited = new Set(directCallers.map((n) => n.id));
+    const direct = directCallers.filter(c => isTestPath(c.node.filePath));
+    if (direct.length > 0) return { callers: direct, exhausted: false };
+    const visited = new Set(directCallers.map(c => c.node.id));
     let frontier = directCallers;
     for (let hop = 2; hop <= MAX_HOPS && frontier.length > 0 && budget > 0; hop++) {
-      const next: Node[] = [];
-      const found = new Set<string>();
-      for (const node of frontier) {
+      const next: Array<{ node: Node; edge: Edge }> = [];
+      const found: Array<{ node: Node; edge: Edge }> = [];
+      for (const { node } of frontier) {
         if (budget-- <= 0) break;
-        let callers: Array<{ node: Node }> = [];
-        try { callers = cg.getCallers(node.id) as Array<{ node: Node }>; } catch { continue; }
+        let callers: Array<{ node: Node; edge: Edge }> = [];
+        try { callers = cg.getCallers(node.id); } catch { continue; }
         for (const c of callers) {
           const n = c?.node;
           if (!n || visited.has(n.id)) continue;
           visited.add(n.id);
-          const f = rel(n.filePath);
-          if (isTestFile(f)) found.add(f);
-          else next.push(n);
+          if (isTestPath(n.filePath)) found.push(c);
+          else next.push(c);
         }
       }
-      if (found.size > 0) {
-        const files = [...found];
-        const shown = files.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ');
-        const more = files.length > FILE_CAP ? ` +${files.length - FILE_CAP}` : '';
-        return `; tested via callers: ${shown}${more}`;
-      }
+      if (found.length > 0) return { callers: found, exhausted: budget <= 0 };
       frontier = next;
+    }
+    return { callers: [], exhausted: budget <= 0 };
+  }
+
+  private indirectTestNote(cg: CodeGraph, directCallers: Array<{ node: Node; edge: Edge }>, rel: (p: string) => string): string {
+    const found = this.callerTests(cg, directCallers);
+    const files = [...new Set(found.callers.map(c => rel(c.node.filePath)))];
+    if (files.length > 0) {
+      const shown = files.slice(0, 2).map(f => `\`${f}\``).join(', ');
+      const more = files.length > 2 ? ` +${files.length - 2}` : '';
+      return `; tested via callers: ${shown}${more}`;
     }
     // Budget exhaustion means hops 2-3 weren't fully searched — fall back to
     // the weaker claim that IS established by the direct-caller check.
-    return budget > 0
-      ? `; no tests found within ${MAX_HOPS} caller hops`
+    return !found.exhausted
+      ? '; no tests found within 3 caller hops'
       : '; no test calls this directly';
   }
 
@@ -5347,6 +5355,44 @@ export class ToolHandler {
       }
     }
 
+    const queryMentionsTests = /\b(test|tests|testing|spec|verify|verifies)\b/i.test(matchQuery);
+    const coveringTestLines = new Map<string, Set<number>>();
+    if (queryMentionsTests) {
+      for (const id of [...codeNamedIds].slice(0, 16)) {
+        const root = subgraph.nodes.get(id);
+        if (!root || isTestFile(root.filePath)) continue;
+        const found = this.callerTests(cg, cg.getCallers(id));
+        let frontier = found.callers;
+        const visited = new Set(frontier.map(c => JSON.stringify([c.node.id, c.edge.target])));
+        let budget = 64;
+        for (let hop = 0; hop < 3 && frontier.length > 0; hop++) {
+          const next: Array<{ node: Node; edge: Edge }> = [];
+          for (const { node, edge } of frontier) {
+            if (!subgraph.nodes.has(node.id)) subgraph.nodes.set(node.id, node);
+            const lines = coveringTestLines.get(node.filePath) ?? new Set<number>();
+            // getCallers deduplicates by caller, so its first edge may be an
+            // import. Select every actual use of that callee in the caller.
+            for (const use of cg.getOutgoingEdges(node.id)) {
+              if (use.target === edge.target && use.line && use.kind !== 'imports') lines.add(use.line);
+            }
+            coveringTestLines.set(node.filePath, lines);
+            // A test-local helper is a symbol, but its anonymous test callback
+            // may be represented by a file caller. Recover that call site too.
+            if (hop >= 2 || budget <= 0 || !['function', 'method'].includes(node.kind)
+                || !['javascript', 'typescript', 'jsx', 'tsx'].includes(node.language)) continue;
+            budget--;
+            for (const caller of cg.getCallers(node.id)) {
+              const key = JSON.stringify([caller.node.id, caller.edge.target]);
+              if (caller.node.filePath !== node.filePath || visited.has(key)) continue;
+              visited.add(key);
+              next.push(caller);
+            }
+          }
+          frontier = next;
+        }
+      }
+    }
+
     // Step 2: Group nodes by file, score by relevance
     // `peripheral` accumulates separately so it can be capped — see
     // PERIPHERAL_SCORE_CAP; it is folded into `score` once the loop is done.
@@ -5617,7 +5663,6 @@ export class ToolHandler {
     // keep-minimum then pulled two test files back in as the "spread".
     let candidateFiles = [...fileGroups.entries()];
     {
-      const queryMentionsTests = /\b(test|tests|testing|spec|verify|verifies)\b/i.test(matchQuery);
       if (!queryMentionsTests) {
         // A pinned file is exempt: naming a test file by path IS asking for it.
         const nonLow = candidateFiles.filter(([p]) => !isLowValue(p) || pinnedSet.has(p));
@@ -5636,7 +5681,7 @@ export class ToolHandler {
       Math.min(SCORE_FLOOR_MAX, topScore * SCORE_FLOOR_FRACTION_OF_TOP),
     );
     let relevantFiles = candidateFiles.filter(
-      ([fp, group]) => group.score >= scoreFloor || pinnedSet.has(fp) || injectedFiles.has(fp),
+      ([fp, group]) => group.score >= scoreFloor || pinnedSet.has(fp) || injectedFiles.has(fp) || coveringTestLines.has(fp),
     );
     if (relevantFiles.length < SCORE_FLOOR_KEEP_MIN) {
       // Backfill from what the RELATIVE floor cut, best first, at two strengths:
@@ -5652,9 +5697,10 @@ export class ToolHandler {
       //    worst outcome on the board — the agent falls straight back to grep.
       const minEvidence = relevantFiles.length === 0 ? Number.EPSILON : SCORE_FLOOR_ABSOLUTE;
       relevantFiles = candidateFiles
-        .filter(([fp, group]) => group.score >= minEvidence || pinnedSet.has(fp))
+        .filter(([fp, group]) => group.score >= minEvidence || pinnedSet.has(fp) || coveringTestLines.has(fp))
         .sort((a, b) =>
           (pinnedSet.has(b[0]) ? 1 : 0) - (pinnedSet.has(a[0]) ? 1 : 0)
+          || Number(coveringTestLines.has(b[0])) - Number(coveringTestLines.has(a[0]))
           || b[1].score - a[1].score
           || b[1].nodes.length - a[1].nodes.length)
         .slice(0, Math.max(SCORE_FLOOR_KEEP_MIN, relevantFiles.length));
@@ -5791,6 +5837,7 @@ export class ToolHandler {
         || entryFiles.has(fp)
         || changeSurfaceFiles.has(fp)
         || injectedFiles.has(fp)
+        || coveringTestLines.has(fp)
         || (fileTermHits.get(fp) ?? 0) >= 2,
       );
       if (gated.length >= 2) relevantFiles = gated;
@@ -5893,6 +5940,8 @@ export class ToolHandler {
       const aNamed = namedSeedFiles.has(a[0]) ? 1 : 0;
       const bNamed = namedSeedFiles.has(b[0]) ? 1 : 0;
       if (aNamed !== bNamed) return bNamed - aNamed;
+      const testOrder = Number(coveringTestLines.has(b[0])) - Number(coveringTestLines.has(a[0]));
+      if (testOrder) return testOrder;
       const callerOrder = Number(directCallerFiles.has(b[0])) - Number(directCallerFiles.has(a[0]));
       if (callerOrder) return callerOrder;
 
@@ -6121,14 +6170,16 @@ export class ToolHandler {
       }
       const hasNamedBody = group.nodes.some(n => namedSeedIds.has(n.id)
         && exactQueryNames.has(n.name.toLowerCase()) && ['function', 'method'].includes(n.kind));
-      if (!fileNamed && !hasNamedBody && localCallers.size === 0) continue;
+      const testLines = [...(coveringTestLines.get(fp) ?? [])];
+      if (!fileNamed && !hasNamedBody && localCallers.size === 0 && !coveringTestLines.has(fp)) continue;
       try {
         const absolute = validatePathWithinRoot(projectRoot, fp);
         if (!absolute) continue;
         const source = readFileSync(absolute, 'utf8');
         const sourceLines = source.split('\n');
         const nodes = cg.getNodesInFile(fp);
-        const requested = fileNamed ? await requestedSourceRanges(fp, source, group.nodes[0]?.language || 'unknown', matchQuery, nodes) : [];
+        const requested = fileNamed || coveringTestLines.has(fp)
+          ? await requestedSourceRanges(fp, source, group.nodes[0]?.language || 'unknown', matchQuery, nodes, testLines) : [];
         const supporting = requested.find(r => r.nodeId && !namedSeedIds.has(r.nodeId));
         const region = requested.find(r => !r.nodeId);
         if (!supporting && !region && !hasNamedBody && localCallers.size === 0) continue;
@@ -6164,6 +6215,7 @@ export class ToolHandler {
         spine: group.nodes.some((n) => flow.pathNodeIds.has(n.id) || exactNodeIds.has(n.id))
           || anchorSpans.has(fp),
         injected: injectedFiles.has(fp),
+        requested: coveringTestLines.has(fp),
         pinned: pinnedSet.has(fp),
         minChars: sourceMinimums.get(fp),
         named: namedSeedFiles.has(fp),
@@ -7516,9 +7568,10 @@ export class ToolHandler {
       // same cluster budget as indexed source. This never synthesizes an edge.
       const stem = filePath.split('/').pop()!.replace(/\.[^.]+$/, '');
       const fileNamed = pinnedSet.has(filePath) || matchQuery.split(/[^\w$]+/).includes(stem);
-      if (fileNamed || group.nodes.some(n => namedSeedIds.has(n.id))) {
+      if (fileNamed || coveringTestLines.has(filePath) || group.nodes.some(n => namedSeedIds.has(n.id))) {
         try {
-          const requested = await requestedSourceRanges(filePath, fileContent, lang || 'unknown', matchQuery, fileNamed ? fileIndexNodes : []);
+          const requested = await requestedSourceRanges(filePath, fileContent, lang || 'unknown', matchQuery,
+            fileNamed ? fileIndexNodes : [], [...(coveringTestLines.get(filePath) ?? [])]);
           const declarationScore = Math.max(0, ...requested.filter(r => r.nodeId).map(r => r.score));
           if (declarationScore > 0) {
             for (const r of ranges) {
