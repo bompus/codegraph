@@ -11,7 +11,63 @@ let cg: CodeGraph;
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-requested-source-'));
   fs.mkdirSync(path.join(dir, 'test'));
+  fs.mkdirSync(path.join(dir, 'examples'));
   fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"requested-source-fixture"}');
+  fs.writeFileSync(path.join(dir, 'catalog.ts'), [
+    'export function updateCatalogCache(value: number) { return value + 1; }',
+    'export function readCatalogRecord(value: number) { return value * 2; }',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'catalog-reader.ts'), [
+    'import { readCatalogRecord } from "./catalog";',
+    'export function loadRecord(value: number) { return readCatalogRecord(value); }',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'examples', 'reader.ts'), [
+    'import { readCatalogRecord } from "../catalog";',
+    'export function demonstrateReader() { return readCatalogRecord(1); }',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'test', 'catalog-cases.test.ts'), [
+    'import { updateCatalogCache } from "../catalog";',
+    ...Array.from({ length: 160 }, (_, i) => `function fixture${i}() { return "${'fixture padding '.repeat(12)}"; }`),
+    'it("preserves the catalog record", () => {',
+    '  const record = updateCatalogCache(10);',
+    '  expect(record).toBe(11);',
+    '});',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'test', 'reader-cases.test.ts'), [
+    'import { loadRecord as fetchRow } from "../catalog-reader";',
+    ...Array.from({ length: 160 }, (_, i) => `function fixture${i}() { return "${'fixture padding '.repeat(12)}"; }`),
+    'test("loads a record through the public reader", () => {',
+    ...Array.from({ length: 180 }, (_, i) => `  const setup${i} = "${'unrelated setup '.repeat(12)}";`),
+    '  const result = fetchRow(7);',
+    '  expect(result).toBe(14);',
+    '});',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'adapter.ts'), 'export function commitValue(value: number) { return value; }');
+  fs.writeFileSync(path.join(dir, 'test', 'adapter-cases.test.ts'), [
+    'import { commitValue } from "../adapter";',
+    'function makeRow() { return commitValue(42); }',
+    ...Array.from({ length: 16 }, (_, i) => [
+      `it("unrelated case ${i}", () => {`,
+      ...Array.from({ length: 50 }, (_, j) => `  const context${j} = "${'irrelevant context '.repeat(8)}";`),
+      `  expect(${i}).toBe(${i});`,
+      '});',
+    ].join('\n')),
+    'it("keeps stable identity", () => {',
+    '  expect(makeRow()).toBe(42);',
+    '});',
+    ...Array.from({ length: 160 }, (_, i) => `function filler${i}() { return "${'fixture padding '.repeat(12)}"; }`),
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'test', 'reconciliation.test.ts'), [
+    'function summarizeFixture() { return "helper boilerplate"; }',
+    ...Array.from({ length: 160 }, (_, i) => `function prepare${i}() { return "${'preparation padding '.repeat(12)}"; }`),
+    'test("restores the cache", () => {',
+    '  expect("cache restored").toBe("cache restored");',
+    '});',
+    ...Array.from({ length: 30 }, (_, i) => `function between${i}() { return "${'preparation padding '.repeat(12)}"; }`),
+    'it("clears the queue", () => {',
+    '  expect("queue cleared").toBe("queue cleared");',
+    '});',
+  ].join('\n'));
   fs.writeFileSync(path.join(dir, 'snapshot.ts'), [
     ...Array.from({ length: 150 }, (_, i) => `export function helper${i}() { return ${i}; }`),
     'export function recommendedPickSnapshot(picks: unknown[]) {',
@@ -132,6 +188,51 @@ function sourceIn(text: string, file: string): string {
 }
 
 describe('requested evidence in large selected files', () => {
+  it.each(['test/reconciliation.test.ts', 'Summarize test/reconciliation.test.ts', 'Show tests in test/reconciliation.test.ts'])('returns callback source for %s', async query => {
+    const out = await explore(query);
+    const source = sourceIn(out, 'test/reconciliation.test.ts');
+    expect(source).toContain('expect("cache restored").toBe("cache restored")');
+    expect(source).toContain('expect("queue cleared").toBe("queue cleared")');
+  });
+
+  it('keeps a specifically requested test ahead of unrelated callbacks', async () => {
+    const out = await explore('test/reconciliation.test.ts "restores the cache"');
+    const source = sourceIn(out, 'test/reconciliation.test.ts');
+    expect(source).toContain('expect("cache restored").toBe("cache restored")');
+    expect(source).not.toContain('expect("queue cleared")');
+  });
+
+  it('preserves an explicitly named test helper', async () => {
+    const source = sourceIn(await explore('test/reconciliation.test.ts summarizeFixture'), 'test/reconciliation.test.ts');
+    expect(source).toContain('helper boilerplate');
+  });
+
+  it.each([
+    ['updateCatalogCache', 'test/catalog-cases.test.ts', 'expect(record).toBe(11)'],
+    ['readCatalogRecord', 'test/reader-cases.test.ts', 'expect(result).toBe(14)'],
+    ['commitValue', 'test/adapter-cases.test.ts', 'expect(makeRow()).toBe(42)'],
+  ])('returns covering test source when asked which tests cover %s', async (symbol, file, assertion) => {
+    const out = await explore(`Which tests cover ${symbol}?`);
+    expect(sourceIn(out, file)).toContain(assertion);
+    expect(out.length).toBeLessThanOrEqual(25_000);
+  });
+
+  it('respects an explicit file cap when covering tests are found', async () => {
+    const result = await new ToolHandler(cg).execute('codegraph_explore', {
+      query: 'Which tests cover updateCatalogCache?', maxFiles: 1,
+    });
+    const out = result.content?.[0]?.text ?? '';
+    expect(sourceIn(out, 'catalog.ts')).toContain('function updateCatalogCache');
+    expect(out).not.toContain('**`test/catalog-cases.test.ts`**');
+  });
+
+  it('keeps test source out of an architecture question', async () => {
+    const out = await explore('How does readCatalogRecord connect to loadRecord and updateCatalogCache?');
+    expect(out).not.toContain('**`test/catalog-cases.test.ts`**');
+    expect(out).not.toContain('**`test/reader-cases.test.ts`**');
+    expect(sourceIn(out, 'catalog.ts')).toContain('function readCatalogRecord');
+    expect(sourceIn(out, 'catalog-reader.ts')).toContain('function loadRecord');
+  });
   it('prioritizes direct callers over a dense callee for a single named function', async () => {
     const result = await new ToolHandler(cg).execute('codegraph_explore', { query: 'playerIdentity', maxFiles: 2 });
     const out = result.content?.[0]?.text ?? '';

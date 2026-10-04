@@ -85,6 +85,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph_explore` now returns matching callbacks from pinned JavaScript and TypeScript test files and includes caller-linked test source when asked which tests cover named symbols.
 - The time `codegraph init`, `codegraph index` and `codegraph sync` print now covers the whole run. It used to cover only file parsing, so a slow linking step never showed in the reported time.
 - Laravel string handlers retain namespace paths and resolve controller names without a `Controller` suffix, including resource routes with options.
 - Vapor routes with trailing closure handlers now link to the calls in that handler body.

@@ -21,6 +21,8 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
+When you ask about tests, `codegraph_explore` includes source from the nearest test callers within three caller hops. These links describe static callers, not measured runtime coverage. Pinned JavaScript and TypeScript test files prioritize matching `it`/`test` callbacks. File and output budgets still apply.
+
 ## The other tools
 
 Seven more tools exist and stay fully functional, but are **unlisted by default** — everything they return already arrives inline on a `codegraph_explore` response (its blast-radius section, the relationship map, a symbol's body and its callee list):

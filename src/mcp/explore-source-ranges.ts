@@ -14,6 +14,7 @@ export interface RequestedSourceRange {
 /** Source evidence inside an already selected file; never adds graph nodes or edges. */
 export async function requestedSourceRanges(
   filePath: string, source: string, language: Language, query: string, nodes: readonly Node[] = [],
+  callLines: readonly number[] = [],
 ): Promise<RequestedSourceRange[]> {
   const test = isTestPath(filePath) && ['javascript', 'typescript', 'jsx', 'tsx'].includes(language);
   const vue = language === 'vue';
@@ -23,11 +24,12 @@ export async function requestedSourceRanges(
   const basename = filePath.split('/').pop()!.replace(/\.[^.]+$/, '');
   const escapedBasename = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const question = query.replace(new RegExp(`\\b${escapedBasename}\\b`, 'gi'), '');
-  const terms = extractSearchTerms(question);
+  const terms = extractSearchTerms(question).filter(term => !test
+    || !['test', 'tests', 'testing', 'spec', 'specs', 'verify', 'verifies', 'verifi'].includes(term));
   const literals = seedLiteralsInQuery(question);
   const identifiers = [...new Set((question.match(/[A-Za-z_$][\w$]*/g) ?? [])
     .filter(word => /[a-z][A-Z]|_/.test(word)).map(word => word.toLowerCase()))];
-  if (terms.length === 0 && literals.length === 0) return [];
+  if (terms.length === 0 && literals.length === 0 && !test) return [];
   const scoreCeiling = terms.length + (identifiers.length + literals.length) * (terms.length + 1) + 1;
   const score = (text: string): number => {
     const words = new Set(extractSearchTerms(text, { stems: false }));
@@ -74,6 +76,7 @@ export async function requestedSourceRanges(
       if (hit > 0 && end - start < 200) ranges.push({ start, end, name: 'style', score: hit });
     }
   } else if (test) {
+    const fallbackTests: RequestedSourceRange[] = [];
     const tree = await parseSourceTree(source, language);
     if (!tree) return [];
     try {
@@ -83,20 +86,18 @@ export async function requestedSourceRanges(
           const args = node.childForFieldName('arguments')?.namedChildren ?? [];
           if (/^(?:it|test)(?:\.(?:only|skip|concurrent|serial|failing))*$/.test(callee)
               && args.some(a => ['arrow_function', 'function_expression'].includes(a.type))) {
-            const hit = score(node.text) + score(args[0]?.text ?? '');
+            const callHit = callLines.some(line => line >= node.startPosition.row + 1 && line <= node.endPosition.row + 1);
+            const hit = score(node.text) + score(args[0]?.text ?? '') + (callHit ? scoreCeiling : 0);
             if (hit > 0) {
               ranges.push({
                 start: node.startPosition.row + 1, end: node.endPosition.row + 1, name: 'test', score: hit + 1,
               });
               // A long test may not fit whole. Its matching setup/assertion
               // statements remain complete units, including multiline arrays.
+              const testStatements: SyntaxNode[] = [];
               const statements = (child: SyntaxNode): void => {
                 if (['expression_statement', 'lexical_declaration', 'variable_declaration'].includes(child.type)) {
-                  const match = score(child.text);
-                  if (match > 0) ranges.push({
-                    start: child.startPosition.row + 1, end: child.endPosition.row + 1,
-                    name: 'test statement', score: hit + match / scoreCeiling,
-                  });
+                  testStatements.push(child);
                   return;
                 }
                 for (const nested of child.namedChildren) statements(nested);
@@ -104,13 +105,35 @@ export async function requestedSourceRanges(
               for (const arg of args) {
                 if (['arrow_function', 'function_expression'].includes(arg.type)) statements(arg);
               }
-            }
+              const containsCall = (statement: SyntaxNode): boolean => callLines.some(line =>
+                line >= statement.startPosition.row + 1 && line <= statement.endPosition.row + 1);
+              for (let i = 0; i < testStatements.length; i++) {
+                const statement = testStatements[i]!;
+                // Keep the caller statement and the next complete statement,
+                // which can assert its result even when the import is aliased.
+                const callScore = containsCall(statement) ? scoreCeiling
+                  : i > 0 && containsCall(testStatements[i - 1]!) ? scoreCeiling / 2 : 0;
+                const match = score(statement.text) + callScore;
+                if (match > 0) ranges.push({
+                  start: statement.startPosition.row + 1, end: statement.endPosition.row + 1,
+                  name: 'test statement', score: hit + match / scoreCeiling,
+                });
+              }
+            } else fallbackTests.push({
+              start: node.startPosition.row + 1, end: node.endPosition.row + 1, name: 'test', score: 1,
+            });
             return;
           }
         }
         for (const child of node.namedChildren) visit(child);
       };
       visit(tree.rootNode);
+      // A file-only request has no callback terms. Keep its tests ahead of
+      // helper boilerplate, unless the question names a helper definition.
+      const queryNames = new Set((question.match(/[A-Za-z_$][\w$]*/g) ?? []).map(name => name.toLowerCase()));
+      if (ranges.length === 0 && !nodes.some(n => ['function', 'method'].includes(n.kind) && queryNames.has(n.name.toLowerCase()))) {
+        ranges.push(...fallbackTests);
+      }
     } finally {
       tree.delete();
     }
