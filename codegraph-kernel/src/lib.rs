@@ -15,6 +15,10 @@
 //! parity — checked by kernel-generic-extractor-tree.test.ts and golden dumps.
 
 #![deny(clippy::all)]
+// napi-derive registers `#[napi]` exports only outside `cfg(test)`, so a test
+// build sees every export, and all it alone reaches, as unused. The release
+// build's `clippy --lib -D warnings` gate still reports real dead code.
+#![cfg_attr(test, allow(dead_code))]
 
 /// First statement of every recursive walker function (see stack.rs, #1581):
 /// once the stack pointer is inside the red zone, stop descending — the
