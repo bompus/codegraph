@@ -27,6 +27,9 @@ enum PyBinding {
 }
 
 impl PyBinding {
+    /// The binding as one regex for `name`. `holds` answers the same
+    /// question without compiling it; the tests check that they agree.
+    #[cfg(test)]
     fn pattern(self, name: &str) -> String {
         let name = regex::escape(name);
         match self {
@@ -36,6 +39,43 @@ impl PyBinding {
             PyBinding::Target => format!(r"\bfor\s+[\w\s,()]*\b{name}\b[\w\s,()]*\s+in\b|\bas\s+{name}\b"),
             PyBinding::Params => format!(r"[(,]\s*\*{{0,2}}{name}\s*(?:[:=,)]|$)"),
             PyBinding::Top => format!(r"^(?:[\w,\s]*,\s*)?{name}\s*(?:,[\w\s,]*)?(?::[^=]+)?=(?:[^=]|$)"),
+        }
+    }
+
+    /// Whether `pattern(name)` matches `line`. Each pattern is a part before
+    /// the name, the name, and a part after it, so it matches exactly when
+    /// some occurrence of the name has the part before ending at it and the
+    /// part after starting where it ends. The two parts don't depend on the
+    /// name, so they compile once instead of once per name. A `\b` beside
+    /// the name looks at both sides of the cut, so it is checked by hand.
+    fn holds(self, line: &str, name: &str) -> bool {
+        match self {
+            PyBinding::Assign => name_between(
+                line,
+                name,
+                (re!(r"^\s*(?:[\w\s,*()\[\]]*,\s*)?\(?\*?$"), false),
+                (Some(re!(r"^\)?\s*(?:,[\w\s,*()\[\]]*)?(?::[^=]+)?=(?:[^=]|$)")), false),
+            ),
+            PyBinding::Target => {
+                name_between(
+                    line,
+                    name,
+                    (re!(r"\bfor\s+[\w\s,()]*$"), true),
+                    (Some(re!(r"^[\w\s,()]*\s+in\b")), true),
+                ) || name_between(line, name, (re!(r"\bas\s+$"), false), (None, true))
+            }
+            PyBinding::Params => name_between(
+                line,
+                name,
+                (re!(r"[(,]\s*\*{0,2}$"), false),
+                (Some(re!(r"^\s*(?:[:=,)]|$)")), false),
+            ),
+            PyBinding::Top => name_between(
+                line,
+                name,
+                (re!(r"^(?:[\w,\s]*,\s*)?$"), false),
+                (Some(re!(r"^\s*(?:,[\w\s,]*)?(?::[^=]+)?=(?:[^=]|$)")), false),
+            ),
         }
     }
 
@@ -49,6 +89,39 @@ impl PyBinding {
             PyBinding::Top => name_then(line, name, false, &[',', ':', '='], false),
         }
     }
+}
+
+/// Every byte offset where `name` occurs in `text`, overlapping ones included.
+pub(super) fn name_offsets<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let finder = memchr::memmem::Finder::new(name);
+    let mut from = 0;
+    std::iter::from_fn(move || {
+        let at = from + finder.find(text.as_bytes().get(from..)?)?;
+        from = at + 1;
+        Some(at)
+    })
+}
+
+/// Whether a `\b` holds between `before` and `after` (`None` is an end of
+/// the text), with regex's Unicode `\w`.
+fn word_boundary(before: Option<char>, after: Option<char>) -> bool {
+    let word = |c: Option<char>| c.is_some_and(regex_syntax::is_word_character);
+    word(before) != word(after)
+}
+
+/// Whether `name` occurs in `line` with the text before it matching `before`
+/// and the text after it matching `after` (each anchored at the name by
+/// the pattern itself), and with a `\b` on each side when its flag is set.
+fn name_between(line: &str, name: &str, before: (Rc<Regex>, bool), after: (Option<Rc<Regex>>, bool)) -> bool {
+    name_offsets(line, name).any(|at| {
+        let (Some(head), Some(tail)) = (line.get(..at), line.get(at + name.len()..)) else {
+            return false;
+        };
+        (!before.1 || word_boundary(head.chars().next_back(), name.chars().next().or(tail.chars().next())))
+            && (!after.1 || word_boundary(name.chars().next_back().or(head.chars().next_back()), tail.chars().next()))
+            && before.0.is_match(head)
+            && after.0.as_ref().is_none_or(|re| re.is_match(tail))
+    })
 }
 
 /// Whether `name` occurs in `line` followed by optional whitespace (after one
@@ -342,10 +415,10 @@ impl KernelResolver {
         Ok(bound)
     }
 
-    /// Whether `line` holds `kind`'s binding of `name`. The pattern is
-    /// compiled and run only for a line that passes `may_match`.
+    /// Whether `line` holds `kind`'s binding of `name`, checked only for a
+    /// line that passes `may_match`.
     fn py_binding_in(kind: PyBinding, line: &str, name: &str) -> Res<bool> {
-        Ok(kind.may_match(line, name) && Self::cached_regex(&kind.pattern(name))?.is_match(line))
+        Ok(kind.may_match(line, name) && kind.holds(line, name))
     }
 
     pub(super) fn python_module_symbol(
@@ -839,6 +912,140 @@ impl KernelResolver {
 mod tests {
     use super::PyBinding;
     use regex::Regex;
+    use std::collections::HashMap;
+
+    const KINDS: [PyBinding; 4] = [PyBinding::Assign, PyBinding::Target, PyBinding::Params, PyBinding::Top];
+
+    /// The per-name pattern `bare_call_at` replaces.
+    fn bare_call_pattern(name: &str) -> Regex {
+        Regex::new(&format!(r"(?:^|[^\w$])({})\s*(?:<[^<>()]*>|\[[^\[\]]*\])?\s*[({{]", regex::escape(name))).unwrap()
+    }
+
+    /// Where that pattern's leftmost match puts the name.
+    fn bare_call_oracle(re: &Regex, text: &str) -> Option<usize> {
+        re.captures(text).and_then(|m| m.get(1)).map(|m| m.start())
+    }
+
+    /// Lines built around each name from fragments that sit on both sides of
+    /// every cut the split patterns make: commas, parentheses, stars, `for`,
+    /// `in`, `as`, annotations, `=` and `==`, word and non-ASCII neighbours,
+    /// overlapping copies of the name, and line ends.
+    fn edge_lines(name: &str) -> Vec<String> {
+        let before = [
+            "", " ", "\t", "a", "a ", "a,", "a, ", "(", "*", "**", "(*", "((", "[a, ", "x.", "ñ", "\u{3000}",
+            "for ", "for a, ", "for (a, ", "for(", "forx ", "a for ", "as ", "with f as ", "f as  ", "has ",
+            "def f(", "def f(a, ", "def f(**", "def f(self,\t", "y = ", "y = f(", "aa", "a\n", "a.\n ",
+        ];
+        let after = [
+            "", " ", "\t", " = 1", "=1", "==1", "= =", " : int = 2", ": int", ":=1", ",", ", b = t", ",b=t", ")",
+            ") = g()", ")=1", " in xs:", ", y in z:", ") in z", " in", "in x", "\tin\tx", " in_x", "a", "ñ", "(",
+            "(x)", " (x)", "<T>(", "<A<B>>(", "[i](", "[]{", " {", ".m(", "$", "$(", "\u{3000}= 1", "\n(", "x = 1",
+        ];
+        let mut lines = Vec::new();
+        for b in before {
+            for a in after {
+                lines.push(format!("{b}{name}{a}"));
+                lines.push(format!("{b}{name}{a}{b}{name}{a}"));
+            }
+        }
+        lines
+    }
+
+    /// `holds` and `bare_call_at` agree with the per-name patterns they
+    /// replace on every generated line.
+    #[test]
+    fn split_matchers_agree_with_per_name_patterns() {
+        let mut matched = [0; 5];
+        for name in ["x", "foo", "aa", "_", "a1", "über", "aü", ""] {
+            let lines = edge_lines(name);
+            for (k, kind) in KINDS.into_iter().enumerate() {
+                let re = Regex::new(&kind.pattern(name)).unwrap();
+                for line in &lines {
+                    let want = re.is_match(line);
+                    assert_eq!(kind.holds(line, name), want, "{} on {line:?}", kind.pattern(name));
+                    matched[k] += usize::from(want);
+                }
+            }
+        }
+        for name in ["x", "foo", "aa", "_", "x$", "$", "$el", "a1"] {
+            let re = bare_call_pattern(name);
+            for text in edge_lines(name) {
+                let want = bare_call_oracle(&re, &text);
+                assert_eq!(super::super::overloads_upstream::bare_call_at(&text, name), want, "{name:?} in {text:?}");
+                matched[4] += usize::from(want.is_some());
+            }
+        }
+        assert!(matched.iter().all(|&n| n > 50), "each matcher saw matches: {matched:?}");
+    }
+
+    /// The same agreement over real source: every identifier on every line of
+    /// the files under the directories in `CODEGRAPH_ORACLE_CORPUS`
+    /// (colon-separated), and for the call search the eight lines from each
+    /// line on, as `bare_call_receiver` reads them. Run with
+    /// `CODEGRAPH_ORACLE_CORPUS=<dirs> cargo test --release -- --ignored split_matchers_agree_on_corpus`.
+    #[test]
+    #[ignore]
+    fn split_matchers_agree_on_corpus() {
+        let dirs = std::env::var("CODEGRAPH_ORACLE_CORPUS").expect("CODEGRAPH_ORACLE_CORPUS");
+        let ident = Regex::new(r"[A-Za-z_$][\w$]*").unwrap();
+        let mut files = Vec::new();
+        let mut stack: Vec<std::path::PathBuf> = dirs.split(':').map(Into::into).collect();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| matches!(e.to_str(), Some("py" | "js" | "ts" | "tsx" | "jsx" | "mjs"))) {
+                    files.push(path);
+                }
+            }
+        }
+        // Group the cases by name so each name's patterns compile once.
+        let mut by_name: HashMap<String, Vec<(bool, String)>> = HashMap::new();
+        for path in &files {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let lines: Vec<&str> = text.lines().collect();
+            let python = path.extension().is_some_and(|e| e == "py");
+            for (i, line) in lines.iter().enumerate() {
+                if line.len() > 400 {
+                    continue;
+                }
+                let window = lines[i..lines.len().min(i + 8)].join("\n");
+                for m in ident.find_iter(line) {
+                    let cases = by_name.entry(m.as_str().to_string()).or_default();
+                    if cases.len() >= 400 {
+                        continue;
+                    }
+                    if python && !m.as_str().contains('$') {
+                        cases.push((true, line.to_string()));
+                    }
+                    cases.push((false, window.clone()));
+                }
+            }
+        }
+        let (mut cases, mut hits) = (0usize, 0usize);
+        for (name, texts) in by_name {
+            let patterns: Vec<Regex> = KINDS.iter().map(|k| Regex::new(&k.pattern(&name)).unwrap()).collect();
+            let call = bare_call_pattern(&name);
+            for (python, text) in &texts {
+                if *python {
+                    for (kind, re) in KINDS.iter().zip(&patterns) {
+                        let want = re.is_match(text);
+                        assert_eq!(kind.holds(text, &name), want, "{} on {text:?}", kind.pattern(&name));
+                        cases += 1;
+                        hits += usize::from(want);
+                    }
+                } else {
+                    let want = bare_call_oracle(&call, text);
+                    assert_eq!(super::super::overloads_upstream::bare_call_at(text, &name), want, "{name:?} in {text:?}");
+                    cases += 1;
+                    hits += usize::from(want.is_some());
+                }
+            }
+        }
+        eprintln!("split matchers: {} files, {cases} cases, {hits} matches, all agree", files.len());
+        assert!(cases > 0);
+    }
 
     /// `python_binds_name` runs a binding pattern only on lines that pass its
     /// `may_match` filter, so every line a pattern matches must pass it.
