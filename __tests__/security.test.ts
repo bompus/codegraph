@@ -14,6 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { FileLock, validateProjectPath, validatePathWithinRoot } from '../src/utils';
 import CodeGraph from '../src/index';
+import { requireKernel } from '../src/extraction/kernel/loader';
 import { ToolHandler, tools } from '../src/mcp/tools';
 import { scanDirectory, isSourceFile } from '../src/extraction';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
@@ -217,9 +218,13 @@ describe('Symlink escape prevention (#527)', () => {
     fs.rmSync(outside, { recursive: true, force: true });
   });
 
-  // Symlink creation needs privileges on Windows; skip gracefully if it fails.
+  // Legacy checks allow missing Windows symlink privileges. Native reader
+  // checks require link creation, so platform CI cannot skip their assertions.
   const link = (linkPath: string, target: string): boolean => {
-    try { fs.symlinkSync(target, linkPath); return true; } catch { return false; }
+    try {
+      fs.symlinkSync(target, linkPath, fs.statSync(target).isDirectory() ? 'dir' : 'file');
+      return true;
+    } catch { return false; }
   };
 
   it('allows a real file inside the root (and realpaths consistently)', () => {
@@ -247,6 +252,37 @@ describe('Symlink escape prevention (#527)', () => {
   it('still allows an in-repo symlink that stays WITHIN the root (no over-blocking)', () => {
     if (!link(path.join(root, 'src', 'inlink.ts'), path.join(root, 'src', 'in.ts'))) return;
     expect(validatePathWithinRoot(root, 'src/inlink.ts')).not.toBeNull();
+  });
+
+  // The batch form a source scan uses checks the file it opened, so each
+  // escape route must be caught there too, including a swap after a first read.
+  function containedReader(rootPath: string): (relative: string) => boolean {
+    const Reader = requireKernel().ContainedSourceReader;
+    expect(Reader).toBeTypeOf('function');
+    const reader = new Reader!(rootPath);
+    return (relative) => reader.read(relative, 4096, 4096).content != null;
+  }
+
+  it('native source reader agrees: in-root files read, every escape is refused', () => {
+    const read = containedReader(root);
+    expect(read('src/in.ts')).toBe(true);
+    expect(read(`../${path.basename(outside)}/pkg/secret.txt`)).toBe(false);
+    expect(read('src/missing.ts')).toBe(false);
+    expect(link(path.join(root, 'escape'), path.join(outside, 'pkg', 'secret.txt'))).toBe(true);
+    expect(read('escape')).toBe(false);
+    expect(link(path.join(root, 'escapedir'), path.join(outside, 'pkg'))).toBe(true);
+    expect(read('escapedir/secret.txt')).toBe(false);
+    expect(link(path.join(root, 'src', 'inlink.ts'), path.join(root, 'src', 'in.ts'))).toBe(true);
+    expect(read('src/inlink.ts')).toBe(true);
+  });
+
+  it('native source reader refuses a directory moved out of the root and linked back in', () => {
+    const read = containedReader(root);
+    expect(read('src/in.ts')).toBe(true);
+    // The same directory, same inode, now reached through a symlink.
+    fs.renameSync(path.join(root, 'src'), path.join(outside, 'moved-src'));
+    expect(link(path.join(root, 'src'), path.join(outside, 'moved-src'))).toBe(true);
+    expect(read('src/in.ts')).toBe(false);
   });
 
   // The INDEXING read path opts into following in-root symlinks the directory

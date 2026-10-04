@@ -1,0 +1,52 @@
+name: Contained source reads
+on:
+  pull_request:
+    branches: [fork/consolidated]
+    paths:
+      - 'codegraph-kernel/src/contained_source.rs'
+      - 'codegraph-kernel/src/lib.rs'
+      - 'src/extraction/kernel/loader.ts'
+      - 'src/mcp/source-scan.ts'
+      - '__tests__/source-scan.test.ts'
+      - '__tests__/security.test.ts'
+      - '__tests__/explore-unmatched-names.test.ts'
+      - '.github/workflows/contained-source.yml'
+permissions:
+  contents: read
+jobs:
+  source-reads:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+    steps:
+      - name: Check out the tested commit
+        shell: bash
+        run: |
+          git init .
+          git config core.autocrlf false
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Use the runner's Node 24 installation
+        shell: pwsh
+        run: |
+          $versions = Get-ChildItem "$env:RUNNER_TOOL_CACHE/node" -Directory
+          $version = $versions | Where-Object Name -like '24.*' | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (!$version) { throw 'Node 24 is missing from the runner tool cache' }
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+          $nodeDir = Join-Path $version.FullName $arch
+          if (!$IsWindows) { $nodeDir = Join-Path $nodeDir 'bin' }
+          $nodeExe = if ($IsWindows) { 'node.exe' } else { 'node' }
+          if (!(Test-Path (Join-Path $nodeDir $nodeExe))) { throw 'Node 24 executable is missing' }
+          Add-Content $env:GITHUB_PATH $nodeDir
+      - run: node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)"
+      - run: npm ci --ignore-scripts
+      - run: npm run build:kernel
+      - run: cargo test --manifest-path codegraph-kernel/Cargo.toml --release contained_source::tests -- --test-threads=1
+      - run: npx vitest run __tests__/source-scan.test.ts __tests__/security.test.ts __tests__/explore-unmatched-names.test.ts -t "scanIndexedSource|native source reader|unmatched names" --maxWorkers=2 --minWorkers=1

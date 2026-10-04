@@ -279,7 +279,20 @@ export interface KernelResolverLike {
   close(): void;
 }
 
+export interface ContainedSourceRead {
+  content?: Buffer | null;
+  bytesRead: number;
+  limitReached: boolean;
+}
+
+export interface ContainedSourceReaderLike {
+  read(relative: string, maxFileBytes: number, remainingBytes: number): ContainedSourceRead;
+}
+
 export interface KernelModule {
+  /** Descriptor-verified source reads. Older released kernels omit this API;
+   * scans then leave absence unproven. */
+  ContainedSourceReader?: new (root: string) => ContainedSourceReaderLike;
   extractFile(filePath: string, content: string, language: string): KernelBuffers;
   /** Binding rows only, from the AST, for a TS/JS-family or ArkTS file the
    *  generic extractor extracts (resolution-binding-model-plan.md §2.4).

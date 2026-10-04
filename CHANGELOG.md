@@ -30,6 +30,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- After a complete scan of indexed source without skipped files, `codegraph_explore` lists query names it cannot find, so an agent can catch a guessed name.
+
 - RedwoodSDK registered routes now link to their page or API handlers, preserving prefixes and method tables while excluding middleware from page roots.
 
 - Analog default file pages now link to their component classes, preserving its directory layouts, dotted paths and dynamic segments when the platform plugin and file router are registered.

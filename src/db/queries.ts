@@ -333,6 +333,8 @@ export class QueryBuilder {
     deleteLiteralsByFile?: SqliteStatement;
     deleteBindingsByFile?: SqliteStatement;
     getBindingsByFile?: SqliteStatement;
+    hasBindingNamed?: SqliteStatement;
+    getTextScanFiles?: SqliteStatement;
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
@@ -590,6 +592,24 @@ export class QueryBuilder {
   /** Rows for the `literals` side table (see schema.sql) — one per captured literal. */
   private collectLiteralRows(node: Node, rows: unknown[][]): void {
     for (const value of node.literals ?? []) rows.push([value, node.id, node.filePath]);
+  }
+
+  /** Hand-written, non-markdown files with their indexed sizes, sorted by path. */
+  getTextScanFiles(): Array<{ path: string; size: number }> {
+    if (!this.stmts.getTextScanFiles) {
+      this.stmts.getTextScanFiles = this.db.prepare(
+        "SELECT path, size FROM files WHERE generated = 0 AND language <> 'markdown' ORDER BY path",
+      );
+    }
+    return this.stmts.getTextScanFiles.all() as Array<{ path: string; size: number }>;
+  }
+
+  /** Whether any file binds `name` (an import, parameter, local or declaration). */
+  hasBindingNamed(name: string): boolean {
+    if (!this.stmts.hasBindingNamed) {
+      this.stmts.hasBindingNamed = this.db.prepare('SELECT 1 FROM bindings WHERE name = ? LIMIT 1');
+    }
+    return this.stmts.hasBindingNamed.get(name) !== undefined;
   }
 
   /** The file's `bindings` rows (see schema.sql), in emission order. */
