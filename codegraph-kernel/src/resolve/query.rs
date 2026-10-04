@@ -160,7 +160,7 @@ impl KernelResolver {
         }
         drop(stmt); // release the self.conn borrow before the cache write
         let v = Rc::new(v);
-        self.bindings_cache.insert(file_path.to_string(), v.clone());
+        self.bindings_cache.put(file_path.to_string(), v.clone());
         Ok(v)
     }
 
