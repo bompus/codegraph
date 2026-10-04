@@ -85,10 +85,10 @@ Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the d
 | Change questions | — | ✓ | "What did my changes touch?" or `main..HEAD` is answered from the diff: the changed functions, their callers and their tests. |
 | Name-only links marked | — | ✓ | Call links matched only by a function's name, with no import or receiver type behind them, are marked, so an agent knows which hop to check. |
 | Worktree seeding | — | ✓ | `codegraph init` in a new git worktree starts from a sibling worktree's index and re-reads only the files that differ. |
-| Inferred links kept current on sync | Reruns every pass | Reruns the affected passes | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after each sync, so a sync ends with the graph a full index would build. Upstream added a refresh in [#2033](https://github.com/colbymchenry/codegraph/pull/2033) that reruns every pass; the fork reruns only the passes the changed files can affect. |
+| Inferred links kept current on sync | Rebuilt inside the sync | Rebuilt once edits pause | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after a sync, so the graph ends where a full index would. Upstream's refresh ([#2033](https://github.com/colbymchenry/codegraph/pull/2033)) runs inside each sync that touches an inferred link. The fork runs the same full refresh after edits pause, so a save is indexed without waiting the 3–5 s synthesis takes on a large repository; until the refresh finishes, readers see fewer inferred links, never wrong ones. |
 | Devin | — | ✓ | `codegraph install` can wire up Devin (CLI and Desktop). |
 | Reloading MCP launcher | — | ✓ (opt-in) | A long-running MCP server picks up a new build without the agent reconnecting. |
-| Build revision in version output | — | ✓ | `codegraph --version` and `status --json` report the source revision the build came from. |
+| Build revision in version output | — | ✓ (stamped builds) | `codegraph --version` and `status --json` report the source revision when the build carries `dist/build-revision.json`. A deploy step writes that file; `npm run build` does not, so a plain source build reports the package version. |
 
 ### Parsing, resolution and languages
 
@@ -111,8 +111,8 @@ Dispatch and framework coverage the fork adds, by kind:
 | C function pointers | `x->f = fn;` assignments, alongside table initializers |
 | Drupal hooks | `invokeAll()` / `invoke()` / `alter()` call sites to hook implementations, including Drupal 11 `#[Hook]` attributes |
 | NgRx effects | Dispatched actions to the effects that handle them |
-| React Native `NativeModules[key]` | Computed native-module calls to the native method |
-| `window.postMessage` | Posted messages to their listeners |
+| React Native `NativeModules[key]` | Computed native-module calls to the native method, when the key is a literal or a same-file literal binding |
+| `window.postMessage` | Posted messages to the listeners that check the same payload `source` value |
 
 Call resolution the fork adds:
 
@@ -128,7 +128,7 @@ Call resolution the fork adds:
 
 | Addition | What it links |
 |---|---|
-| HTTP routes | Literal routes in Elysia, H3, Hyper-Express, Bun, Effect v4 and Vixeny (upstream reads literal `app`/`router` routes for Express, Fastify, Koa and Hono); Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/`, method suffixes and route groups (upstream reads `server/api/`) |
+| HTTP routes | Routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny, read from the router object a call is made on rather than the names `app` and `router`, with composed prefixes (Hono `basePath`, Koa `prefix`, Elysia `group`, Fastify `register`); Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/` and method suffixes. Upstream matches calls on `app` and `router` by name and reads Nuxt `server/api/` |
 | Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 
@@ -137,10 +137,12 @@ Call resolution the fork adds:
 | Addition | What it links |
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
-| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file one hop behind an NgModule's routing module sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
-| Astro routes | `<a href>` and `Astro.redirect` navigation between pages (upstream binds a page to its component and endpoint method exports to handlers) |
+| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file one hop behind an NgModule's routing module or behind an `export *` barrel sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
+| Astro routes | `<a href>` and `Astro.redirect` navigation between pages, endpoint method aliases such as `export { handler as GET }`, and browser scripts kept with the file rather than the component (upstream binds a page to its component and directly exported endpoint methods to handlers) |
+| Nuxt pages | `(group)` folders dropped from page route paths |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
+| React Router `getHref` | On top of upstream's reader: a shadowed binding, a factory-created config object, a spread override or a computed path fragment is left unlinked rather than linked to a guessed route |
 | RedwoodSDK routes | `defineApp` route trees (`route`, `index`, `render`, `layout`, `prefix`, method tables), linked to their handlers |
 | Remix / React Router file routes | The default `app/routes/` file convention (and `flatRoutes()`), linked to each page's default component |
 | Solid Router | `<Route>` JSX and route-config arrays, including arrays imported from another file, linked to their (possibly lazy) components |
