@@ -163,6 +163,46 @@ export function validatePathWithinRoot(
 }
 
 /**
+ * {@link validatePathWithinRoot} for reading many files under one root.
+ *
+ * The root is resolved once and each directory's real path is cached, so a
+ * file costs one `lstat` instead of two `realpath` calls: a file that is not a
+ * symlink has the real path of its directory plus its own name. A symlinked
+ * file still resolves in full. Unlike the single-path check, a missing file
+ * answers null, because the caller is about to read it.
+ */
+export function rootContainmentCheck(projectRoot: string): (filePath: string) => string | null {
+  const normalizedRoot = path.resolve(projectRoot);
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(normalizedRoot);
+  } catch {
+    return () => null;
+  }
+  const realDirs = new Map<string, string | null>();
+  return (filePath) => {
+    const resolved = lexicalPathWithinRoot(normalizedRoot, filePath);
+    if (resolved === null) return null;
+    try {
+      if (fs.lstatSync(resolved).isSymbolicLink()) {
+        const real = fs.realpathSync(resolved);
+        return isWithinDir(real, realRoot) ? real : null;
+      }
+      const dir = path.dirname(resolved);
+      let realDir = realDirs.get(dir);
+      if (realDir === undefined) {
+        const real = fs.realpathSync(dir);
+        realDir = isWithinDir(real, realRoot) ? real : null;
+        realDirs.set(dir, realDir);
+      }
+      return realDir === null ? null : path.join(realDir, path.basename(resolved));
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
  * Validate that a path is a safe project root directory.
  *
  * Rejects sensitive system directories and ensures the path is
