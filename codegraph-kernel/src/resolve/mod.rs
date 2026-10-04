@@ -452,6 +452,11 @@ impl<V> Lru<V> {
         self.order.push_back(k.clone());
         self.map.insert(k, v);
     }
+    /// Drops every entry and the table's allocation.
+    fn clear(&mut self) {
+        self.map = HashMap::new();
+        self.order = VecDeque::new();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -857,15 +862,18 @@ impl KernelResolver {
         })
     }
 
-    /// Deterministic teardown: releases the conn and the node table at a known
-    /// point instead of whenever V8 GCs the JS wrapper. A live-db conn is
-    /// parked, not closed (live_conn): closing it would drop this process's
-    /// POSIX locks on the db, node:sqlite's included. A snapshot conn closes.
+    /// Deterministic teardown: releases the conn, the node table and the
+    /// cached sources and trees at a known point instead of whenever V8 GCs
+    /// the JS wrapper. A live-db conn is parked, not closed (live_conn):
+    /// closing it would drop this process's POSIX locks on the db,
+    /// node:sqlite's included. A snapshot conn closes.
     #[napi]
     pub fn close(&mut self) {
         self.debug_stats("close");
         self.release_conn();
         self.table.take();
+        self.file_cache.clear();
+        self.tree_cache.clear();
     }
 
     /// Give the conn up: a live-db conn is parked for reuse, never closed —
