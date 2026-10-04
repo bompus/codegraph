@@ -2292,6 +2292,22 @@ export class CodeGraph {
     return this.queries.getAllFiles();
   }
 
+  /**
+   * The files whose text a source scan reads: neither generated nor markdown,
+   * with the size recorded at index time.
+   */
+  getTextScanFiles(): Array<{ path: string; size: number }> {
+    return this.queries.getTextScanFiles();
+  }
+
+  /**
+   * Whether any file binds `name` — an import, parameter, local or declaration
+   * the node table does not hold. False on a database without bindings.
+   */
+  hasBindingNamed(name: string): boolean {
+    try { return this.queries.hasBindingNamed(name); } catch { return false; }
+  }
+
   /** Every tracked file path, sorted; reads one column instead of whole file records. */
   getFilePaths(): string[] {
     return this.queries.getAllFilePaths();

@@ -80,6 +80,7 @@ Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the d
 |---|:-:|:-:|---|
 | Session search (`codegraph sessions`, `codegraph_sessions`) | — | ✓ | Searches this project's earlier Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin and Grok transcripts and its git commit messages, so an agent can find what a past session decided. `codegraph_explore` also names the sessions that mentioned the symbols it returns. `"sessions": false` in `codegraph.json` turns it off. |
 | Markdown indexing | — | ✓ | Headings, sections, tables and links become graph nodes; a documentation question gets the matching section. |
+| Missing names reported | — | ✓ | When a query names a function or variable that appears nowhere in the project, `codegraph_explore` lists it as not found, so an agent stops looking for a guessed name. |
 | Near-duplicate functions | — | ✓ | `codegraph_explore` and `codegraph_node` name the near-identical copies of a function, so a fix made in one copy is not forgotten in the others. |
 | External HTTP endpoints | — | ✓ | JavaScript and TypeScript calls through `fetch`, axios, ky, got and similar clients appear as endpoint nodes such as `GET https://api.github.com/…`. |
 | Change questions | — | ✓ | "What did my changes touch?" or `main..HEAD` is answered from the diff: the changed functions, their callers and their tests. |

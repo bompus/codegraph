@@ -52,6 +52,7 @@ import {
   statSync,
 } from 'fs';
 import { createHash } from 'crypto';
+import { scanFits, scanIndexedSource } from './source-scan';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
@@ -242,6 +243,42 @@ function filesDefiningSymbol(cg: CodeGraph, symbol: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** Time the not-found check may spend reading indexed source text. */
+const UNMATCHED_SCAN_BUDGET_MS = 300;
+
+/**
+ * The names from `candidates` (symbol-shaped query tokens no node matched)
+ * that appear nowhere in the project: not as an import, parameter or local
+ * (`bindings`), not as a file stem and not as a word in any hand-written
+ * source file. An object key or a `process.exitCode` member is real code the
+ * node table does not hold, so listing it as missing would be wrong. When the
+ * text cannot be read in time (a large project, or a scan that runs out of
+ * budget), nothing is listed. At most four names.
+ */
+function confirmUnmatchedNames(cg: CodeGraph, candidates: readonly string[], fileExt: RegExp): string[] {
+  if (candidates.length === 0) return [];
+  const files = cg.getTextScanFiles();
+  if (!scanFits(files)) return [];
+  const stems = new Set(cg.getFilePaths().map((p) => p.slice(p.lastIndexOf('/') + 1).replace(fileExt, '')));
+  const words = new Map<string, string>(); // candidate → the word the scan looks for
+  for (const name of candidates) {
+    const word = isQualifiedSymbol(name) ? lastQualifierPart(name) : name;
+    if (stems.has(name) || stems.has(word) || cg.hasBindingNamed(word)) continue;
+    words.set(name, word);
+  }
+  if (words.size === 0) return [];
+  const wanted = new Set(words.values());
+  const escaped = [...wanted].map((w) => w.replace(/[$]/g, '\\$'));
+  const pattern = new RegExp(`(?<![\\w$])(?:${escaped.join('|')})(?![\\w$])`, 'g');
+  const seen = new Set<string>();
+  const complete = scanIndexedSource(cg.getProjectRoot(), files, pattern, UNMATCHED_SCAN_BUDGET_MS, (_path, _offset, text) => {
+    seen.add(text);
+    return seen.size === wanted.size;
+  });
+  if (!complete) return [];
+  return [...words].filter(([, word]) => !seen.has(word)).map(([name]) => name).slice(0, 4);
 }
 
 /**
@@ -4830,7 +4867,15 @@ export class ToolHandler {
     // Files declaring a TYPE the query named by name — the counter-case guard
     // for the declaration-only penalty (CG-28). Populated in the token loop.
     const namedTypeFiles = new Set<string>();
+    // Symbol-shaped names the query gave that match nothing in the index — a
+    // guessed `finalHistoryReconciled` — listed in the summary so the agent
+    // learns the name is wrong instead of reading the other code returned as
+    // if it were the answer. Populated in the token loop.
+    const unmatchedNames: string[] = [];
     {
+      // Misses the node table alone reports; filtered against bindings, file
+      // stems and source text after the loop before any reaches the summary.
+      const missCandidates: string[] = [];
       const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
       // Variables/constants seed too: in Svelte/React a `$state` variable
@@ -4976,6 +5021,17 @@ export class ToolHandler {
         if (!isPreciseToken(t)) {
           cands = cands.filter((n) => coNamedCount(t, n.filePath) > 0);
         }
+        // Only shapes no English word takes (a hump, `_`, `$`, a qualifier):
+        // a sentence-initial `How` is precise to the seeding but names nothing.
+        // A quoted literal or a pinned file's stem is matched by its own channel.
+        // A digit after a qualifier is a version (`v1.0.352`), not a member.
+        if (raw.length === 0 && cands.length === 0 && missCandidates.length < 8
+            && (/[a-z][A-Z]|[_$]|::/.test(t) || (isQual && /\./.test(t)))
+            && !/(?:\.|::)\d/.test(t)
+            && !pinnedFiles.some((p) => p.slice(p.lastIndexOf('/') + 1).replace(FILE_EXT, '') === t)
+            && cg.findLiteralSeedIds(`"${t}"`).length === 0) {
+          missCandidates.push(t);
+        }
         // A specific name (<=3 defs) injects all its defs. An overloaded name
         // (`validate` = 10, `request` = 44) would flood the subgraph, so inject
         // only: the overloads whose file/class the query ALSO names (the agent
@@ -5037,6 +5093,7 @@ export class ToolHandler {
           if (!isInterfaceOwnedMethod(n)) tierSeedIds.add(n.id);
         }
       }
+      unmatchedNames.push(...confirmUnmatchedNames(cg, missCandidates, FILE_EXT));
       // Path-vocabulary seeds: a bare query token that names a DIRECTORY
       // segment ("command" → `commands/`, "handler" → `handlers/`) is
       // location evidence the name/FTS channels can't express: the answer
@@ -5851,13 +5908,16 @@ export class ToolHandler {
       return b[1].nodes.length - a[1].nodes.length;
     });
 
+    const unmatchedNamesNote = unmatchedNames.length > 0
+      ? ` Not found in the index: ${unmatchedNames.map((n) => `\`${n}\``).join(', ')}.`
+      : '';
     const formatSummary = (symbols: number, files: number, pins: number): string => {
       let text = `Found ${symbols} symbol${symbols === 1 ? '' : 's'} across ${files} file${files === 1 ? '' : 's'}.`;
       if (pins > 0) text += ` ${pins} file${pins === 1 ? '' : 's'} pinned from the query.`;
       if (unresolvedPathSpans.length > 0) {
         text += ` No indexed file uniquely matches ${unresolvedPathSpans.map(s => `\`${s}\``).join(', ')}.`;
       }
-      return text + setAsideNote;
+      return text + unmatchedNamesNote + setAsideNote;
     };
     // Reserve the summary's maximum actual size before spending the source
     // envelope. Replacing a short sentinel after fitting could exceed the cap.
@@ -6183,6 +6243,7 @@ export class ToolHandler {
       + (unresolvedPathSpans.length > 0
         ? ` No indexed file uniquely matches ${unresolvedPathSpans.map((sp) => `\`${sp}\``).join(', ')}.`.length
         : 0)
+      + unmatchedNamesNote.length
       + setAsideNote.length;
     const epilogueFloor = Math.max(
       EXPLORE_FALLBACK_NOTES.lost.complete.length, EXPLORE_FALLBACK_NOTES.lost.trimmed.length,

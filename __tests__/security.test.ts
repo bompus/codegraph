@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { FileLock, validateProjectPath, validatePathWithinRoot } from '../src/utils';
+import { FileLock, validateProjectPath, validatePathWithinRoot, rootContainmentCheck } from '../src/utils';
 import CodeGraph from '../src/index';
 import { ToolHandler, tools } from '../src/mcp/tools';
 import { scanDirectory, isSourceFile } from '../src/extraction';
@@ -247,6 +247,21 @@ describe('Symlink escape prevention (#527)', () => {
   it('still allows an in-repo symlink that stays WITHIN the root (no over-blocking)', () => {
     if (!link(path.join(root, 'src', 'inlink.ts'), path.join(root, 'src', 'in.ts'))) return;
     expect(validatePathWithinRoot(root, 'src/inlink.ts')).not.toBeNull();
+  });
+
+  // The batch form a source scan uses caches directory real paths, so each
+  // escape route must still be caught on that path too.
+  it('rootContainmentCheck agrees: in-root files pass, every escape is rejected', () => {
+    const check = rootContainmentCheck(root);
+    expect(check('src/in.ts')).toBe(path.join(root, 'src', 'in.ts'));
+    expect(check(`../${path.basename(outside)}/pkg/secret.txt`)).toBeNull();
+    expect(check('src/missing.ts')).toBeNull();
+    if (!link(path.join(root, 'escape'), path.join(outside, 'pkg', 'secret.txt'))) return;
+    expect(check('escape')).toBeNull();
+    if (!link(path.join(root, 'escapedir'), path.join(outside, 'pkg'))) return;
+    expect(check('escapedir/secret.txt')).toBeNull();
+    if (!link(path.join(root, 'src', 'inlink.ts'), path.join(root, 'src', 'in.ts'))) return;
+    expect(check('src/inlink.ts')).toBe(path.join(root, 'src', 'in.ts'));
   });
 
   // The INDEXING read path opts into following in-root symlinks the directory
