@@ -52,12 +52,14 @@ export function splitChangelog(text) {
 
 const blank = (line) => line.trim() === '';
 const headingLevel = (line) => /^(#{3,}) /.exec(line)?.[1].length ?? 0;
+// A list item, heading, block quote, fence, thematic break, table row or HTML block.
+const opensBlock = (line) => /^(?:[-*+] |\d+[.)] |#|>|```|~~~|\||<|(?:[-*_][ \t]*){3,}$)/.test(line);
 
 /**
  * The `- ` entries of a section body. An entry runs on through indented lines,
  * including ones after a blank line, and through unindented text lines that
- * follow it with no blank line between. Each entry records the `###`/`####`
- * headings it sits under.
+ * follow it with no blank line between, unless such a line opens a Markdown
+ * block of its own. Each entry records the `###`/`####` headings it sits under.
  */
 export function entries(lines) {
   const out = [];
@@ -70,7 +72,7 @@ export function entries(lines) {
     for (let j = i + 1; j < lines.length; j++) {
       const line = lines[j];
       if (blank(line)) continue;
-      const lazy = j === end && !line.startsWith('- ') && !line.startsWith('#');
+      const lazy = j === end && !opensBlock(line);
       if (!/^\s/.test(line) && !lazy) break;
       end = j + 1;
     }
@@ -194,7 +196,12 @@ function insertEntry(body, path, lines) {
   while (direct < hi && !headingLevel(body[direct])) direct++;
   const own = entries(body.slice(0, direct)).filter((e) => e.start >= lo);
   if (own.length === 0) {
-    body.splice(lo, 0, '', ...lines);
+    // After any text the heading opens with, kept apart from it by a blank line.
+    let at = direct;
+    while (at > lo && blank(body[at - 1])) at--;
+    const added = ['', ...lines];
+    if (at < body.length && !blank(body[at])) added.push('');
+    body.splice(at, 0, ...added);
     return;
   }
   const last = own.at(-1);
@@ -222,21 +229,32 @@ export function reconcileChangelog({ fork, upstream, base = null }) {
 
   // Entries the fork carried unchanged from upstream's Unreleased at the merge
   // base, counted, so a same-worded entry the fork added a second time stays.
-  // The fork may file them under its own headings; when it has more copies
-  // than the base, the ones under the base's headings go first.
+  // The fork may file them under its own headings: copies under the base's
+  // headings use up the base's count there first, then any copy counts.
   const upstreamUnreleased = new Set(entries(u.body).map((e) => e.key));
   const carried = new Map();
   if (base !== null) {
     for (const e of entries(splitChangelog(base).body)) {
-      if (!upstreamUnreleased.has(e.key)) carried.set(e.key, [...(carried.get(e.key) ?? []), e.path.join('\n')]);
+      if (upstreamUnreleased.has(e.key)) continue;
+      const byPath = carried.get(e.key) ?? new Map();
+      const path = e.path.join('\n');
+      byPath.set(path, (byPath.get(path) ?? 0) + 1);
+      carried.set(e.key, byPath);
     }
   }
   const forkEntries = entries(f.body);
   const carriedHere = new Set();
-  for (const [key, paths] of carried) {
-    const copies = forkEntries.filter((e) => e.key === key);
-    copies.sort((x, y) => paths.includes(y.path.join('\n')) - paths.includes(x.path.join('\n')));
-    for (const e of copies.slice(0, paths.length)) carriedHere.add(e);
+  for (const [key, byPath] of carried) {
+    const unmatched = [];
+    for (const e of forkEntries.filter((c) => c.key === key)) {
+      const path = e.path.join('\n');
+      if (byPath.get(path) > 0) {
+        byPath.set(path, byPath.get(path) - 1);
+        carriedHere.add(e);
+      } else unmatched.push(e);
+    }
+    const rest = [...byPath.values()].reduce((sum, n) => sum + n, 0);
+    for (const e of unmatched.slice(0, rest)) carriedHere.add(e);
   }
 
   const dropped = [];

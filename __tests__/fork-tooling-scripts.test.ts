@@ -302,6 +302,29 @@ describe('changelog-reconcile', () => {
     expect(unreleasedOf(reconcileChangelog({ fork: emptied, upstream }).text)).toBe('\n### Features\n\n#### Other\n');
   });
 
+  it("counts carried copies per heading before matching copies the fork moved", () => {
+    const base = log('\n### Fixes\n\n#### Go\n\n- Calls resolve.\n\n#### Rust\n\n- Calls resolve.\n', OLD);
+    const fork = log('\n### Fixes\n\n#### Go\n\n- Calls resolve.\n- Calls resolve.\n\n#### Rust\n\n- Calls resolve.\n', OLD);
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Go and Rust calls resolve.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream, base }).text)).toBe('\n### Fixes\n\n#### Go\n\n- Calls resolve.\n');
+  });
+
+  it('ends an entry at an unindented line that opens its own Markdown block', () => {
+    const fork = log('\n### Fixes\n\n- Shared.\n> Upgrade note.\n', OLD);
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Shared.\n> Upgrade note.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe('\n### Fixes\n\n> Upgrade note.\n');
+  });
+
+  it("adds upstream's entry after the text a heading opens with, and only once", () => {
+    const upstream = log('\n### Fixes\n\n- New.\n', OLD);
+    const fork = log('\n### Fixes\nUpgrade note.\n\n#### Go\n\n- Fork.\n', OLD);
+    const once = reconcileChangelog({ fork, upstream }).text;
+    expect(unreleasedOf(once)).toBe('\n### Fixes\nUpgrade note.\n\n- New.\n\n#### Go\n\n- Fork.\n');
+    expect(reconcileChangelog({ fork: once, upstream }).text).toBe(once);
+    const headingless = reconcileChangelog({ fork: log('\nUpgrade note.\n\n### Fixes\n\n- Fork.\n', OLD), upstream: log('\n- New.\n', OLD) });
+    expect(unreleasedOf(headingless.text)).toBe('\nUpgrade note.\n\n- New.\n\n### Fixes\n\n- Fork.\n');
+  });
+
   it('rebuilds the file a union merge of an upstream release got wrong', () => {
     const repo = scratch();
     const run = (...args: string[]) => {
