@@ -1117,23 +1117,56 @@ fn per_ref<T>(r: &ResolveRefIn, fallback: T, f: impl FnOnce() -> Res<T>) -> Res<
 impl KernelResolver {
     /// A name-parameterized regex with no Affix split form (a pattern that
     /// must match the name case-insensitively, say), compiled once per thread
-    /// and pattern. Bounded: the cache is dropped whole past 4,096 entries.
+    /// and pattern. The cache keeps the recently used patterns only (see
+    /// Generations): a searched regex holds 50-100 KB, and a worker meets
+    /// some 10,000 distinct patterns on a large Python and C repository but
+    /// reuses a few hundred at a time.
     fn cached_regex(pattern: &str) -> Res<Rc<Regex>> {
         thread_local! {
-            static CACHE: RefCell<HashMap<String, Rc<Regex>>> = RefCell::new(HashMap::new());
+            static CACHE: RefCell<Generations<Rc<Regex>>> = RefCell::new(Generations::new(REGEX_GENERATION));
         }
         CACHE.with(|cell| {
             let mut cache = cell.borrow_mut();
             if let Some(re) = cache.get(pattern) {
-                return Ok(re.clone());
+                return Ok(re);
             }
             let re = Rc::new(Regex::new(pattern).map_err(|e| Error::from_reason(e.to_string()))?);
-            if cache.len() >= 4096 {
-                cache.clear();
-            }
             cache.insert(pattern.to_string(), re.clone());
             Ok(re)
         })
+    }
+}
+
+/// Entries per generation of the cached_regex cache.
+const REGEX_GENERATION: usize = 256;
+
+/// A two-generation cache: an approximate LRU of between `cap` and `2 * cap`
+/// entries with O(1) operations. A hit in the older generation moves the entry
+/// to the newer one; a full newer generation replaces the older one, dropping
+/// every entry that was not used since the previous replacement.
+struct Generations<V> {
+    young: HashMap<String, V>,
+    old: HashMap<String, V>,
+    cap: usize,
+}
+
+impl<V: Clone> Generations<V> {
+    fn new(cap: usize) -> Self {
+        Generations { young: HashMap::new(), old: HashMap::new(), cap }
+    }
+    fn get(&mut self, k: &str) -> Option<V> {
+        if let Some(v) = self.young.get(k) {
+            return Some(v.clone());
+        }
+        let (k, v) = self.old.remove_entry(k)?;
+        self.insert(k, v.clone());
+        Some(v)
+    }
+    fn insert(&mut self, k: String, v: V) {
+        if self.young.len() >= self.cap {
+            self.old = std::mem::take(&mut self.young);
+        }
+        self.young.insert(k, v);
     }
 }
 
@@ -1166,6 +1199,22 @@ mod tests {
         }
         let wide = "€".repeat(4); // 12 bytes, 4 units
         assert!(!utf16_len_exceeds(&wide, 4) && utf16_len_exceeds(&wide, 3));
+    }
+
+    /// The cache stays within two generations however many distinct keys
+    /// pass through it, and a key used once per generation is never dropped.
+    #[test]
+    fn generations_bound_size_and_keep_reused_keys() {
+        let mut cache = Generations::new(4);
+        cache.insert("hot".into(), 0);
+        for i in 0..100 {
+            cache.insert(format!("k{i}"), i);
+            if i % 3 == 0 {
+                assert_eq!(cache.get("hot"), Some(0), "after k{i}");
+            }
+            assert!(cache.young.len() + cache.old.len() <= 8);
+        }
+        assert_eq!(cache.get("k0"), None);
     }
 
     #[test]
