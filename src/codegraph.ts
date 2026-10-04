@@ -567,6 +567,7 @@ export class CodeGraph {
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
+      const startedAt = Date.now();
       // Defer WAL auto-checkpointing for the whole bulk run (#1231): the
       // default 1000-page interval re-writes hot pages into the main DB file
       // over and over — ~95% of all disk I/O during a bulk index, and a
@@ -836,6 +837,9 @@ export class CodeGraph {
           }
         } catch { /* metadata is advisory — never fail an index over it */ }
 
+        // The orchestrator's duration covers extraction only; report the whole
+        // run, resolution and synthesis included.
+        result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
         // Restore the auto-checkpoint interval AFTER the fold-up above so the
@@ -899,6 +903,7 @@ export class CodeGraph {
           `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
         );
       }
+      const startedAt = Date.now();
       // A full rebuild in another process (`codegraph index` → recreate)
       // unlinks the database and creates a new file at the same path. A
       // long-lived instance — the MCP daemon's watcher — would otherwise keep
@@ -1263,6 +1268,7 @@ export class CodeGraph {
         this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
 
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
+        result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
         // Mirror indexAll's teardown: stop the valve, then restore the
