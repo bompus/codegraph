@@ -105,7 +105,9 @@ The method matches the [2026-09-28 run](fork-vs-upstream-node-bun-2026-09-28.md#
 `mcp-bench.mjs` speaks JSON-RPC to `codegraph serve --mcp --path <repo>` over
 stdio, with each build's index prebuilt by its own Node arm, two runs per arm
 in mirrored order. The query files and the client script are unchanged since
-then. Memory and CPU are summed over the stdio server, the detached daemon it
+then. Each run times 12 warm explores and records the 7th fastest as its
+median and the 11th as its p90; the tables show the median of the two runs.
+Memory and CPU are summed over the stdio server, the detached daemon it
 starts, and their children. Idle CPU is the percentage of one core.
 
 **n8n** (edited `packages/workflow/src/workflow.ts`):

@@ -39,4 +39,6 @@ if os.path.exists(mcp_path):
     print()
     print(' | '.join(['corpus', 'arm', 'runs'] + keys))
     for (c, a), rs in m.items():
-        print(' | '.join([c, a, str(len(rs))] + [f"{st.median(r[k] for r in rs):g}" for k in keys]))
+        # A watcher sync that times out is recorded as null.
+        vals = [[r[k] for r in rs if r[k] is not None] for k in keys]
+        print(' | '.join([c, a, str(len(rs))] + [f"{st.median(v):g}" if v else 'n/a' for v in vals]))
