@@ -25,13 +25,27 @@ jobs:
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_RELEASE_DEBUG: 0
     steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
-        with:
-          node-version: 24
-          cache: npm
+      - name: Check out the tested commit
+        shell: bash
+        run: |
+          git init .
+          git config core.autocrlf false
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Use the runner's Node 24 installation
+        shell: pwsh
+        run: |
+          $versions = Get-ChildItem "$env:RUNNER_TOOL_CACHE/node" -Directory
+          $version = $versions | Where-Object Name -like '24.*' | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (!$version) { throw 'Node 24 is missing from the runner tool cache' }
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+          $nodeDir = Join-Path $version.FullName $arch
+          if (!$IsWindows) { $nodeDir = Join-Path $nodeDir 'bin' }
+          $nodeExe = if ($IsWindows) { 'node.exe' } else { 'node' }
+          if (!(Test-Path (Join-Path $nodeDir $nodeExe))) { throw 'Node 24 executable is missing' }
+          Add-Content $env:GITHUB_PATH $nodeDir
+      - run: node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)"
       - run: npm ci --ignore-scripts
       - run: npm run build:kernel
       - run: cargo test --manifest-path codegraph-kernel/Cargo.toml --release contained_source::tests -- --test-threads=1
