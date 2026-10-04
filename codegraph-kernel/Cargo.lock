@@ -53,6 +53,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "regex",
+ "regex-syntax",
  "rusqlite",
  "sha2",
  "tree-sitter",

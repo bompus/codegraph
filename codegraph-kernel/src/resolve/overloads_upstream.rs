@@ -921,14 +921,10 @@ impl KernelResolver {
             .join("\n");
         let col = super::names::js_unit_to_byte(&whole, r.column.max(0) as usize).min(whole.len());
         let text = &whole[col..];
-        let pat = Self::cached_regex(&format!(
-            r"(?:^|[^\w$])({})\s*(?:<[^<>()]*>|\[[^\[\]]*\])?\s*[({{]",
-            regex::escape(&r.reference_name)
-        ))?;
-        let Some(found) = pat.captures(text).and_then(|m| m.get(1)) else {
+        let Some(at) = bare_call_at(text, &r.reference_name) else {
             return Ok(None);
         };
-        let before = text[..found.start()].trim_end();
+        let before = text[..at].trim_end();
         let head = before
             .strip_suffix('.')
             .map(|s| s.trim_end_matches('?').trim_end().to_string());
@@ -1716,4 +1712,19 @@ fn python_import_binds(stmt: &str, name: &str) -> bool {
 /// `this.m()` / `self.m()` / `super.m()` / `super().m()`: a call on the caller's own object.
 fn is_self_receiver(head: &str) -> bool {
     re!(r"(?:^|[^\w$.])(?:this|self|super|Self)$|(?:^|[^\w$.])super\s*\([^()]*\)$").is_match(head)
+}
+
+/// Where `bare_call_receiver` finds the call: the first occurrence of `name`
+/// at the start of `text` or after a character outside `[\w$]`, followed by
+/// optional type arguments and an opening `(` or `{`. That is the leftmost
+/// match of `(?:^|[^\w$])(name)\s*(?:<[^<>()]*>|\[[^\[\]]*\])?\s*[({]`,
+/// found without compiling that pattern for every name.
+pub(super) fn bare_call_at(text: &str, name: &str) -> Option<usize> {
+    let call = re!(r"^\s*(?:<[^<>()]*>|\[[^\[\]]*\])?\s*[({]");
+    super::resolver_upstream::name_offsets(text, name).find(|&at| {
+        let (Some(head), Some(tail)) = (text.get(..at), text.get(at + name.len()..)) else {
+            return false;
+        };
+        head.chars().next_back().is_none_or(|c| c != '$' && !regex_syntax::is_word_character(c)) && call.is_match(tail)
+    })
 }
