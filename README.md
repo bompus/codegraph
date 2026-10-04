@@ -122,7 +122,7 @@ Call resolution the fork adds:
 - Kotlin multi-dollar strings keep their interpolation threshold.
 - C++ visible class-scoped aliases and declared complex receivers keep their method owners; unsubstituted template parameters and ambiguous owners stay unresolved.
 - C++ namespace aliases and declarations in macro-opened namespaces are looked up only in the caller's include closure; upstream pools them across all files.
-- C# `using` directives and aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file.
+- C# namespace `using` directives and `using` aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file (`using static` is still file-wide, as upstream).
 - A Java field declared with a qualified type (`outside.Repository`) keeps its qualifier, so calls through it never resolve to an unrelated project class with the same simple name.
 - Python `super()` calls follow the class's full method resolution order across multiple bases, where upstream goes to the parent's version.
 - A `require` call creates no file dependency when a local binding shadows `require`.
@@ -141,7 +141,7 @@ Call resolution the fork adds:
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
 | Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file one hop behind an NgModule's routing module, including a routing module the NgModule imports through a local barrel, sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
-| Astro routes | `<a href>` and `Astro.redirect` navigation between pages, endpoint method aliases such as `export { handler as GET }`, and browser scripts kept with the file rather than the component (upstream binds a page to its component and directly exported endpoint methods to handlers) |
+| Astro routes | `<a href>` and `Astro.redirect` navigation between pages, endpoint method aliases such as `export { handler as GET }`, and top-level calls in browser scripts attributed to the file rather than the component (upstream binds a page to its component and directly exported endpoint methods to handlers) |
 | Nuxt pages | `(group)` folders dropped from page route paths |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
