@@ -36,7 +36,7 @@ Conditional procedures live in `.claude/skills/<name>/SKILL.md`. Read the matchi
 These stay here because breaking them is silent. The full procedures are in `codegraph-build-validation`.
 
 - Run build and test commands through `fnm exec --using codegraph` (Node 24) with a Rust toolchain on PATH; the system Node gives misleading failures.
-- Any extraction, resolution or synthesis change re-baselines the kernel golden dumps (`UPDATE_GOLDEN=1`, `__tests__/kernel-golden-dumps.test.ts`); the `.dump` diff is the review artifact. A resolution change is also gated by `npm run eval:precision -- <corpus>`.
+- Any extraction, resolution or synthesis change re-baselines the kernel golden dumps (`UPDATE_GOLDEN=1`, `__tests__/kernel-golden-dumps.test.ts`); the `.dump` diff is the review artifact. A resolution change is also gated by `EVAL_REPOS=~/cg-scratch/eval-repos npm run eval:precision -- <corpus>`.
 - Gate platform-dependent assertions with `it.runIf(process.platform === 'win32')` or `!== 'win32'`; never merge a Windows-gated test you haven't seen run.
 - A new SQL asset must be copied into `dist/` by `copy-assets`, or it won't ship.
 - Real corpora and `VACUUM INTO` snapshots never go on `/tmp` (shared tmpfs; it fills and OOMs the host). Use `~/cg-scratch/` or the corpus tree and delete them when done.

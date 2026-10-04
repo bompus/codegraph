@@ -2,18 +2,18 @@
  * Precision gate on a pinned real repository
  * (docs/design/resolution-binding-model-plan.md, Phase 0).
  *
- *   npm run eval:precision -- vite            # fetch + index + score
- *   EVAL_REPOS=/path/to/dir npm run eval:precision -- vite
+ *   EVAL_REPOS=/path/to/dir npm run eval:precision -- vite   # fetch + index + score
  *
  * Fetches PRECISION_CORPORA[<corpus>] at its pinned commit (shallow, into
- * $EVAL_REPOS or $TMPDIR/codegraph-precision/<corpus>), indexes it with the
+ * $EVAL_REPOS/<corpus>), indexes it with the
  * library, scores every edge case for the corpus, prints the resolved-edge
  * histogram by resolver (the LOST/GAINED methodology the PRs used), and
  * writes a JSON report next to the recall reports. Exit 1 when any `absent`
  * case is violated or any `present` control is missing.
+ *
+ * EVAL_REPOS is required: corpora and their indexes must stay off tmpfs.
  */
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { CodeGraph } from '../../src/index.js';
@@ -25,14 +25,17 @@ import { fetchPinned, scrubGitEnv, sh } from './pinned-corpus.js';
 const corpusKey = process.argv[2];
 const corpus = corpusKey ? PRECISION_CORPORA[corpusKey] : undefined;
 if (!corpus) {
-  console.error(`usage: npx tsx __tests__/evaluation/precision-runner.ts <${Object.keys(PRECISION_CORPORA).join('|')}>`);
+  console.error(`usage: EVAL_REPOS=<dir> npx tsx __tests__/evaluation/precision-runner.ts <${Object.keys(PRECISION_CORPORA).join('|')}>`);
+  process.exit(2);
+}
+if (!process.env.EVAL_REPOS) {
+  console.error('EVAL_REPOS must name a disk-backed directory for the corpus clone and its index');
   process.exit(2);
 }
 
 scrubGitEnv();
 
-const reposDir = process.env.EVAL_REPOS ?? path.join(os.tmpdir(), 'codegraph-precision');
-const repoDir = path.join(reposDir, corpus.key);
+const repoDir = path.join(process.env.EVAL_REPOS, corpus.key);
 
 function resolvedByHistogram(): { resolvedBy: Record<string, number>; edges: number } {
   const db = new DatabaseSync(path.join(repoDir, '.codegraph', 'codegraph.db'), { readOnly: true });

@@ -8,7 +8,7 @@
  * unchanged, so a change that silently kills resolution fails here rather
  * than looking like a precision win.
  *
- * Run with `npm run eval:precision -- <corpus>` (precision-runner.ts), which
+ * Run with `EVAL_REPOS=~/cg-scratch/eval-repos npm run eval:precision -- <corpus>` (precision-runner.ts), which
  * fetches the pinned commit, indexes it, scores every case, and records the
  * resolved-edge histogram for LOST/GAINED comparison across builds.
  */
