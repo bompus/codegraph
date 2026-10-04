@@ -1122,6 +1122,19 @@ pub(super) struct ExportWant {
     pub(super) member_name: Option<String>,
 }
 
+/// Test filenames and source sets, matching the shared query surface's test-path contract.
+pub(super) fn is_test_path(path: &str) -> bool {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let lower = path.to_ascii_lowercase();
+    let name = filename.to_ascii_lowercase();
+    name.starts_with("test_") || name.starts_with("test.")
+        || re!(r"[._-](?:test|tests|spec|specs)\.[a-z0-9]+$").is_match(&name)
+        || re!(r"(?:Test|Tests|TestCase|Tester|Spec|Specs)\.[A-Za-z0-9]+$").is_match(filename)
+        || re!(r"(?:^|/)(?:tests?|__tests__|specs?|testlib|testing|e2e)/").is_match(&lower)
+        || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
+        || re!(r"(?:^|/)(?:[\w.]+[-_]test(?:s|ing)?|testdata|testutils?|test[-_]utils?|fakes?|mocks?|__mocks__|stubs)/").is_match(&lower)
+}
+
 #[cfg(test)]
 mod tests {
     use super::collect_rust_use_bindings;
@@ -1152,17 +1165,4 @@ mod tests {
             .unwrap();
         assert_eq!(path, Some(format!("{}leaf", "m::".repeat(depth))));
     }
-}
-
-/// Test filenames and source sets, matching the shared query surface's test-path contract.
-pub(super) fn is_test_path(path: &str) -> bool {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    let lower = path.to_ascii_lowercase();
-    let name = filename.to_ascii_lowercase();
-    name.starts_with("test_") || name.starts_with("test.")
-        || re!(r"[._-](?:test|tests|spec|specs)\.[a-z0-9]+$").is_match(&name)
-        || re!(r"(?:Test|Tests|TestCase|Tester|Spec|Specs)\.[A-Za-z0-9]+$").is_match(filename)
-        || re!(r"(?:^|/)(?:tests?|__tests__|specs?|testlib|testing|e2e)/").is_match(&lower)
-        || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
-        || re!(r"(?:^|/)(?:[\w.]+[-_]test(?:s|ing)?|testdata|testutils?|test[-_]utils?|fakes?|mocks?|__mocks__|stubs)/").is_match(&lower)
 }

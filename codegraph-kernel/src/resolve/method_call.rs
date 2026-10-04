@@ -1653,26 +1653,6 @@ fn opens_function_body(prefix: &str) -> bool {
     !word.is_empty() && !matches!(word, "if" | "for" | "while" | "switch" | "catch" | "with")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn own(body: &str) -> Vec<usize> {
-        let mut v: Vec<usize> = own_return_lines(body).into_iter().collect();
-        v.sort();
-        v
-    }
-
-    #[test]
-    fn own_returns_skip_nested_function_bodies() {
-        assert_eq!(own("function f() {\n  onMount(() => {\n    return i;\n  });\n}"), Vec::<usize>::new());
-        assert_eq!(own("function f() {\n  if (x) {\n    return i;\n  }\n}"), vec![2]);
-        assert_eq!(own("function f() {\n  const o = { m() {\n    return 1;\n  } };\n  return i;\n}"), vec![4]);
-        assert_eq!(own("function f({ a }: { a: T }): R {\n  const g = function () {\n    return 1;\n  };\n  return i;\n}"), vec![4]);
-        assert_eq!(own("function f() {\n  const re = /\\}/;\n  return i;\n}"), vec![2]);
-    }
-}
-
 /// sharesReceiverWord (name-matcher.ts): whether a receiver is named after
 /// the owner of `method`, case aside — the receiver's last segment is the
 /// owner's name (`cbsecurity` → CBSecurity), or they share a word of three
@@ -1719,4 +1699,24 @@ fn is_lua_library_call(receiver: &str, method: &str, r: &ResolveRefIn, candidate
         return cand_root != root;
     }
     LUA_STRING_METHODS.contains(&method) && r.reference_name.ends_with(&format!(":{method}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn own(body: &str) -> Vec<usize> {
+        let mut v: Vec<usize> = own_return_lines(body).into_iter().collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn own_returns_skip_nested_function_bodies() {
+        assert_eq!(own("function f() {\n  onMount(() => {\n    return i;\n  });\n}"), Vec::<usize>::new());
+        assert_eq!(own("function f() {\n  if (x) {\n    return i;\n  }\n}"), vec![2]);
+        assert_eq!(own("function f() {\n  const o = { m() {\n    return 1;\n  } };\n  return i;\n}"), vec![4]);
+        assert_eq!(own("function f({ a }: { a: T }): R {\n  const g = function () {\n    return 1;\n  };\n  return i;\n}"), vec![4]);
+        assert_eq!(own("function f() {\n  const re = /\\}/;\n  return i;\n}"), vec![2]);
+    }
 }

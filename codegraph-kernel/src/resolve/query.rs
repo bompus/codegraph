@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(read_source(&at_limit).map(|s| s.len()), Some(MAX_SOURCE_FILE_SIZE_BYTES as usize));
         assert_eq!(read_source(&over), None);
         assert_eq!(read_source(&dir), None);
-        assert_eq!(read_source(&dir.join("missing.ts")), None);
+        assert_eq!(read_source(dir.join("missing.ts")), None);
         let latin1 = dir.join("latin1.ts");
         std::fs::write(&latin1, b"// caf\xe9\nfoo();\n").unwrap();
         assert_eq!(read_source(&latin1).as_deref(), Some("// caf\u{FFFD}\nfoo();\n"));
