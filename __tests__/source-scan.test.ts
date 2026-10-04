@@ -6,6 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { scanIndexedSource } from '../src/mcp/source-scan';
 
 let dir: string;
@@ -44,6 +45,26 @@ describe('scanIndexedSource', () => {
   it('stops incomplete when the bytes read would pass the total limit', () => {
     const limits = { ...LIMITS, maxFileBytes: 4096, maxTotalBytes: 1024 };
     expect(words(['a.ts', 'big.ts', 'b.ts'], limits)).toEqual({ complete: false, skipped: 0, seen: ['alpha'] });
+  });
+
+  // A FIFO with no writer would block a plain open forever.
+  it.runIf(process.platform !== 'win32')('skips a FIFO without waiting for a writer', () => {
+    execFileSync('mkfifo', [path.join(dir, 'pipe.ts')]);
+    // A child deadline makes a blocking-open regression fail without hanging
+    // the test runner's own event loop.
+    const script = `
+      const { scanIndexedSource } = require(${JSON.stringify(path.resolve(__dirname, '../dist/mcp/source-scan.js'))});
+      const seen = [];
+      const result = scanIndexedSource(${JSON.stringify(dir)},
+        ['a.ts', 'pipe.ts', 'b.ts'].map(path => ({ path, size: 1 })),
+        /alpha|beta/g, ${JSON.stringify(LIMITS)},
+        (_f, _o, word) => { seen.push(word); return false; });
+      console.log(JSON.stringify({ ...result, seen }));
+    `;
+    const result = execFileSync(process.execPath, ['-e', script], {
+      encoding: 'utf8', timeout: 3000, killSignal: 'SIGKILL',
+    });
+    expect(JSON.parse(result)).toEqual({ complete: true, skipped: 1, seen: ['alpha', 'beta'] });
   });
 
   it('counts a missing or escaping path as skipped', () => {

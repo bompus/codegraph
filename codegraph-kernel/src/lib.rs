@@ -394,6 +394,7 @@ mod rlang;
 mod ruby;
 mod rustlang;
 mod scala;
+mod contained_source;
 mod stack;
 mod swift;
 mod textutil;

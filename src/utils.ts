@@ -163,56 +163,6 @@ export function validatePathWithinRoot(
 }
 
 /**
- * {@link validatePathWithinRoot} for reading many files under one root.
- *
- * Returns an opener: it opens a file for reading and returns the descriptor
- * only when the opened file lies inside the root, or null (with the descriptor
- * closed) when it does not or cannot be opened. The check runs on the file
- * actually opened, so a directory swapped for a symlink between a check and
- * the open cannot slip through. On Linux the opened file's path comes from
- * `/proc/self/fd`, which costs one `readlink`. Elsewhere the file's real path
- * must name the same file as the descriptor (device and inode), which costs
- * a `realpath` and a `stat`.
- */
-export function rootContainedOpener(projectRoot: string): (filePath: string) => number | null {
-  const normalizedRoot = path.resolve(projectRoot);
-  let realRoot: string;
-  try {
-    realRoot = fs.realpathSync.native(normalizedRoot);
-  } catch {
-    return () => null;
-  }
-  const procFd = process.platform === 'linux' && fs.existsSync('/proc/self/fd');
-  return (filePath) => {
-    const resolved = lexicalPathWithinRoot(normalizedRoot, filePath);
-    if (resolved === null) return null;
-    let fd: number | undefined;
-    try {
-      fd = fs.openSync(resolved, 'r');
-      let inside: boolean;
-      if (procFd) {
-        inside = isWithinDir(fs.readlinkSync(`/proc/self/fd/${fd}`), realRoot);
-      } else {
-        const real = fs.realpathSync.native(resolved);
-        const opened = fs.fstatSync(fd, { bigint: true });
-        const named = fs.statSync(real, { bigint: true });
-        inside = opened.dev === named.dev && opened.ino === named.ino && isWithinDir(real, realRoot);
-      }
-      if (inside) {
-        const result = fd;
-        fd = undefined;
-        return result;
-      }
-      return null;
-    } catch {
-      return null;
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd);
-    }
-  };
-}
-
-/**
  * Validate that a path is a safe project root directory.
  *
  * Rejects sensitive system directories and ensures the path is

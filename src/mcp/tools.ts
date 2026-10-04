@@ -247,8 +247,13 @@ function filesDefiningSymbol(cg: CodeGraph, symbol: string): string[] {
 
 /** Time the not-found check may spend reading indexed source text. */
 const UNMATCHED_SCAN_BUDGET_MS = 300;
-/** A double- or single-quoted run of words; see the phrase words in handleExplore. */
-const QUOTED_PHRASE = /"([^"\n]*\s[^"\n]*)"|(?<![\w$])'((?:[^'\n]|(?<=\w)'(?=\w))*\s(?:[^'\n]|(?<=\w)'(?=\w))*)'(?![\w$])/g;
+/**
+ * One quoted span of a query: double quotes, backticks, or single quotes that
+ * sit away from a word, so the apostrophes in "don't" and "it's" are letters.
+ * Matched left to right, so each closing quote ends its own span.
+ */
+const QUOTED_SPAN = /"([^"\n]*)"|`([^`\n]*)`|(?<![\w$])'((?:[^'\n]|(?<=\w)'(?=\w))*)'(?![\w$])/g;
+const NAME_SHAPE = /[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g;
 
 /**
  * The names from `candidates` (symbol-shaped query tokens no node matched)
@@ -4889,13 +4894,24 @@ export class ToolHandler {
       // stems and source text after the loop before any reaches the summary.
       const missCandidates: string[] = [];
       // Words inside a quoted phrase are text the agent copied, not names it
-      // guessed. A quoted single word stays a candidate: agents quote names.
-      // A single quote opens or closes a phrase only away from a word, so the
-      // apostrophes in "don't" and "it's" neither start one nor end one.
+      // guessed, unless the query also names them outside every quote. A
+      // quoted single name stays a candidate: agents quote names.
       const phraseWords = new Set<string>();
-      for (const m of matchQuery.matchAll(QUOTED_PHRASE)) {
-        for (const w of (m[1] ?? m[2] ?? '').match(/[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g) ?? []) phraseWords.add(w);
+      const quotedNames: string[] = [];
+      for (const m of matchQuery.matchAll(QUOTED_SPAN)) {
+        const inner = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+        if (/\s/.test(inner)) {
+          for (const w of inner.match(NAME_SHAPE) ?? []) phraseWords.add(w);
+        } else if (inner.length >= 3 && inner.match(NAME_SHAPE)?.[0] === inner) {
+          quotedNames.push(inner);
+        }
       }
+      const unquotedWords = new Set(matchQuery.replace(QUOTED_SPAN, ' ').match(NAME_SHAPE) ?? []);
+      const copiedWord = (t: string) => phraseWords.has(t) && !unquotedWords.has(t) && !quotedNames.includes(t);
+      // Only shapes no English word takes (a hump, `_`, `$`, a qualifier); a
+      // digit after a qualifier is a version (`v1.0.352`), not a member.
+      const missShape = (t: string, isQual: boolean) =>
+        (/[a-z][A-Z]|[_$]|::/.test(t) || (isQual && /\./.test(t))) && !/(?:\.|::)\d/.test(t);
       const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
       // Variables/constants seed too: in Svelte/React a `$state` variable
@@ -4909,7 +4925,7 @@ export class ToolHandler {
       const bodyLines = (n: Node) => Math.max(0, (n.endLine ?? n.startLine) - n.startLine);
       const callerCount = (n: Node) => { try { return cg.getCallers(n.id).length; } catch { return 0; } };
       const tokens = [...new Set(
-        matchQuery.split(/[\s,()[\]]+/)
+        [...matchQuery.split(/[\s,()[\]]+/), ...quotedNames]
           .map((t) => t.replace(/(?<!:):$|[.!?;]+$/g, '').replace(FILE_EXT, '').trim())
           .filter((t) => t.length >= 3 && /^[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*$/.test(t))
       )].slice(0, 16);
@@ -5041,13 +5057,10 @@ export class ToolHandler {
         if (!isPreciseToken(t)) {
           cands = cands.filter((n) => coNamedCount(t, n.filePath) > 0);
         }
-        // Only shapes no English word takes (a hump, `_`, `$`, a qualifier):
-        // a sentence-initial `How` is precise to the seeding but names nothing.
+        // A sentence-initial `How` is precise to the seeding but names nothing.
         // A quoted literal or a pinned file's stem is matched by its own channel.
-        // A digit after a qualifier is a version (`v1.0.352`), not a member.
         if (raw.length === 0 && cands.length === 0 && missCandidates.length < 8
-            && (/[a-z][A-Z]|[_$]|::/.test(t) || (isQual && /\./.test(t)))
-            && !/(?:\.|::)\d/.test(t) && !phraseWords.has(t)
+            && missShape(t, isQual) && !copiedWord(t)
             && !pinnedFiles.some((p) => p.slice(p.lastIndexOf('/') + 1).replace(FILE_EXT, '') === t)
             && cg.findLiteralSeedIds(`"${t}"`).length === 0) {
           missCandidates.push(t);

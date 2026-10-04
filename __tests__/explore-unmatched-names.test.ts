@@ -95,6 +95,24 @@ describe('unmatched names in the explore summary', () => {
     }
   });
 
+  // Quotes pair left to right, and a word quoted once but also written bare
+  // is still the agent's own guess.
+  it('reads the words between and outside quoted spans as unquoted', async () => {
+    for (const query of [
+      'verifySnapshot "draft" finalHistoryReconciled "state"',
+      'verifySnapshot "we skip finalHistoryReconciled here" then finalHistoryReconciled',
+      'verifySnapshot "we skip finalHistoryReconciled here" then "finalHistoryReconciled"',
+    ]) {
+      expect(await explore(query), query).toContain('Not found in the index: `finalHistoryReconciled`.');
+    }
+  });
+
+  // A quoted lone name is a name the agent expects in code, unlike a quoted
+  // literal that some file holds.
+  it('lists a quoted name that neither the graph nor any literal holds', async () => {
+    expect(await explore('verifySnapshot "finalHistoryReconciled"')).toContain('Not found in the index: `finalHistoryReconciled`.');
+  });
+
   it('lists qualified and snake_case guesses too', async () => {
     const out = await explore('verifySnapshot Ledger.replayAll draft_state_guard');
     expect(out).toContain('`Ledger.replayAll`');
@@ -107,6 +125,7 @@ describe('unmatched names in the explore summary', () => {
       'verifySnapshot "draft.pick_state"',
       'pickLedger.ts recordPick',
       'verifySnapshot snapshotKey',
+      'verifySnapshot "snapshotKey"',
       // Real code the node table does not hold: an import, a parameter, a
       // module stem, object keys, a global member, a version string.
       'runDraft spawnSync projectPath',

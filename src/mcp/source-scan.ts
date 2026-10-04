@@ -2,10 +2,9 @@
  * A time-capped pass over the source text of indexed files, for the questions
  * the graph cannot answer: whether a name appears anywhere (an object key, a
  * template binding) and where a quoted phrase sits. Reads only files the index
- * tracks, under the same root containment as every other explore read.
+ * tracks. The native reader verifies the opened descriptor before reading content.
  */
-import { closeSync, fstatSync, readSync } from 'fs';
-import { rootContainedOpener } from '../utils';
+import { getKernel } from '../extraction/kernel/loader';
 
 /**
  * Limits on what a warm scan reads inside a 300 ms budget, with room to spare.
@@ -35,7 +34,11 @@ export interface ScanLimits {
   budgetMs: number;
   /** A file larger than this when opened is skipped. */
   maxFileBytes: number;
-  /** The scan stops, incomplete, once it has read this many bytes. */
+  /**
+   * The scan stops, incomplete, before a file that would take it past this
+   * many bytes. Every byte read counts, including a skipped file's. A read
+   * may use one extra byte to detect growth, then the scan stops.
+   */
   maxTotalBytes: number;
 }
 
@@ -65,33 +68,28 @@ export function scanIndexedSource(
 ): ScanResult {
   if (!pattern.global) throw new Error('scanIndexedSource needs a global pattern');
   const deadline = Date.now() + limits.budgetMs;
-  const open = rootContainedOpener(projectRoot);
+  const Reader = getKernel()?.ContainedSourceReader;
+  if (!Reader) return { complete: false, skipped: 0 };
+  let reader: InstanceType<NonNullable<typeof Reader>>;
+  try { reader = new Reader(projectRoot); }
+  catch { return { complete: false, skipped: files.length }; }
   let skipped = 0;
   let total = 0;
   for (const file of files) {
+    if (total > limits.maxTotalBytes) return { complete: false, skipped };
     if (Date.now() > deadline) return { complete: false, skipped };
-    const fd = open(file.path);
-    if (fd === null) { skipped++; continue; }
     let text: string;
     try {
-      const size = fstatSync(fd).size;
-      if (size > limits.maxFileBytes) { skipped++; continue; }
-      if (total + size > limits.maxTotalBytes) return { complete: false, skipped };
-      const buf = Buffer.allocUnsafe(size + 1);
-      let read = 0;
-      while (read < buf.length) {
-        const n = readSync(fd, buf, read, buf.length - read, null);
-        if (n === 0) break;
-        read += n;
-      }
-      if (read > size) { skipped++; continue; }
-      total += read;
-      text = buf.toString('utf8', 0, read);
+      const result = reader.read(file.path,
+        Math.min(limits.maxFileBytes, MAX_SCAN_TOTAL_BYTES),
+        Math.max(0, Math.min(limits.maxTotalBytes - total, MAX_SCAN_TOTAL_BYTES)));
+      total += result.bytesRead;
+      if (result.limitReached) return { complete: false, skipped };
+      if (result.content == null) { skipped++; continue; }
+      text = result.content.toString('utf8');
     } catch {
       skipped++;
       continue;
-    } finally {
-      closeSync(fd);
     }
     pattern.lastIndex = 0;
     for (const m of text.matchAll(pattern)) {
