@@ -74,7 +74,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `290e03f`. Each item was checked against upstream's tree at that commit; the table has not been rechecked against `6560052`.
+Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -102,8 +102,6 @@ Compared with upstream `main` at `290e03f`. Each item was checked against upstre
 
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
-Vue, Svelte and Astro files have one file node containing their component. The component contains top-level script members, while nested functions and methods keep their own parents. Vue `<script setup>`, Svelte instance scripts and Astro frontmatter assign top-level calls and references, including constant initializers, to the component. Imports, module-level execution and Astro browser scripts remain with the file. Svelte recognizes both `context="module"` and the `module` attribute.
-
 Dispatch and framework coverage the fork adds, by kind:
 
 **Dispatch links**
@@ -116,25 +114,21 @@ Dispatch and framework coverage the fork adds, by kind:
 | React Native `NativeModules[key]` | Computed native-module calls to the native method |
 | `window.postMessage` | Posted messages to their listeners |
 
-Kotlin infix expressions contribute call edges with parenthesized operands and comments, and same-line infix names beginning with `e` keep their enclosing class intact. Flow-annotated JavaScript is parsed through the TSX grammar. Java and C# calls through declared fields or properties use their declared types; unresolved external types remain unresolved. Rust, Go, Scala, Swift and Kotlin calls also use the receiver and lexical scope at the call site. Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls retain compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types. Kotlin chains use the callee position and declared return type, including nested and multiline calls; imported return-type hypotheses keep confidence at most 0.7 when the receiver type is unknown. Rust chain matches without a proved receiver type also keep confidence at most 0.7.
+Call resolution the fork adds:
 
-Kotlin `when` guards, open-ended ranges, multi-dollar strings and nullable function-type receivers retain their source offsets during normalization. Multi-dollar strings retain their interpolation threshold. C++ namespace-opening macros and aliases use the declarations visible to each caller; argument-compatible overloads resolve when the declaration and call supply enough evidence, and ambiguous owners remain unresolved. Objective-C `super` calls follow the superclass, Solidity bare calls follow contract inheritance, and Erlang bare calls honor explicit module imports.
-
-Lua local aliases follow members exported by a required project module, including renamed members and bounded re-exports. Standard-library and external-module aliases remain unresolved. CommonJS calls follow explicit default exports, module forwarding and `require('./module').member` bindings.
-
-Literal local `require` calls also create file dependencies, including side-effect calls and calls inside functions. Computed specifiers, external packages and a locally shadowed `require` do not create these dependencies.
-
-TypeScript namespace re-exports retain their namespace boundary and allow nested member calls. C++ access macros and mid-declaration conditionals preserve members, indexing the first branch of each normalized conditional. Visible class-scoped aliases and declared complex receivers retain their method owners; unsubstituted template parameters and ambiguous owners remain unresolved.
-
-Java and Kotlin enum constants retain their own methods and body calls. Explicit external imports own their names, while project imports follow nested types and aliases. Scala block locals and package objects, C# namespaces and nested types, and Java types follow their lexical and import scopes. Calls distinguish overloads by argument shape or Swift labels; receiver calls keep the owner supplied by construction, typed properties, Kotlin DSL lambdas or pytest fixtures. Python package imports follow bounded re-exports. Python `super()` calls follow the class's method resolution order. A Python method value read through a module-level variable (`settings.conn.fetch`) follows the classes constructed into that variable. Framework name heuristics start in the calling file and apply the native visibility checks. React and Express naming conventions require imports to reach another file. NestJS provider lookup also supports convention siblings in the same directory. Minified bundles, private component scripts and test suites do not supply unrelated production call targets.
-
-React Router links and `navigate` calls can use a route-config object's `getHref` helper. Literal destinations and whole-segment template parameters are supported; factory-created config objects, shadowed bindings, spread overrides and computed path fragments remain unresolved.
+- Kotlin infix calls keep their call edge when an operand is parenthesized or a comment sits inside the expression.
+- Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls keep compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types.
+- Kotlin chains use the declared return type in nested and multiline calls. An imported return-type guess for an unknown receiver keeps confidence at most 0.7, and so does a Rust chain match without a proved receiver type.
+- Kotlin multi-dollar strings keep their interpolation threshold.
+- C++ visible class-scoped aliases and declared complex receivers keep their method owners; unsubstituted template parameters and ambiguous owners stay unresolved.
+- Python `super()` calls follow the class's full method resolution order across multiple bases, where upstream goes to the parent's version.
+- A `require` call creates no file dependency when a local binding shadows `require`.
 
 **Server endpoints**
 
 | Addition | What it links |
 |---|---|
-| HTTP routes | Literal routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny; Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/`, method suffixes and route groups |
+| HTTP routes | Literal routes in Elysia, H3, Hyper-Express, Bun, Effect v4 and Vixeny (upstream reads literal `app`/`router` routes for Express, Fastify, Koa and Hono); Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/`, method suffixes and route groups (upstream reads `server/api/`) |
 | Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 
@@ -143,8 +137,8 @@ React Router links and `navigate` calls can use a route-config object's `getHref
 | Addition | What it links |
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
-| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file behind an NgModule's routing module or an `export *` barrel sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
-| Astro routes | Pages calling their own file's components, endpoint method exports to handlers, and `<a href>` / `Astro.redirect` navigation |
+| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file one hop behind an NgModule's routing module sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
+| Astro routes | `<a href>` and `Astro.redirect` navigation between pages (upstream binds a page to its component and endpoint method exports to handlers) |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
 | React Router framework mode | Pages declared in `app/routes.ts`, linked to each module's default component |
 | RedwoodSDK routes | `defineApp` route trees (`route`, `index`, `render`, `layout`, `prefix`, method tables), linked to their handlers |
