@@ -30,7 +30,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
-- `codegraph_explore` now lists the names in a query that exist nowhere in the project, so an agent that guessed a function name learns the guess is wrong instead of reading the other code returned as the answer.
+- After a complete scan of indexed source without skipped files, `codegraph_explore` lists query names it cannot find, so an agent can catch a guessed name.
 
 - RedwoodSDK registered routes now link to their page or API handlers, preserving prefixes and method tables while excluding middleware from page roots.
 
