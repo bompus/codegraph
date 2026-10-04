@@ -85,7 +85,7 @@ Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the d
 | Change questions | — | ✓ | "What did my changes touch?" or `main..HEAD` is answered from the diff: the changed functions, their callers and their tests. |
 | Name-only links marked | — | ✓ | Call links matched only by a function's name, with no import or receiver type behind them, are marked, so an agent knows which hop to check. |
 | Worktree seeding | — | ✓ | `codegraph init` in a new git worktree starts from a sibling worktree's index and re-reads only the files that differ. |
-| Inferred links kept current on sync | Rebuilt inside the sync | Rebuilt once edits pause | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after a sync, so the graph ends where a full index would. Upstream's refresh ([#2033](https://github.com/colbymchenry/codegraph/pull/2033)) runs inside each sync that touches an inferred link. The fork runs the same full refresh after edits pause, so a save is indexed without waiting the 3–5 s synthesis takes on a large repository; until the refresh finishes, readers see fewer inferred links, never wrong ones. |
+| Inferred links kept current on sync | Rebuilt inside the sync | Rebuilt once edits pause | Links inferred from events, callbacks, React re-renders, function pointers and similar dispatch are rebuilt after a sync, so the graph ends where a full index would. Upstream's refresh ([#2033](https://github.com/colbymchenry/codegraph/pull/2033)) runs inside each sync that touches an inferred link. The fork runs the same full refresh after edits pause, so a save is indexed without waiting the 3–5 s synthesis takes on a large repository; until the refresh runs, an inferred link can be missing, or stale when its registration moved to another file. |
 | Devin | — | ✓ | `codegraph install` can wire up Devin (CLI and Desktop). |
 | Reloading MCP launcher | — | ✓ (opt-in) | A long-running MCP server picks up a new build without the agent reconnecting. |
 | Build revision in version output | — | ✓ (stamped builds) | `codegraph --version` and `status --json` report the source revision when the build carries `dist/build-revision.json`. A deploy step writes that file; `npm run build` does not, so a plain source build reports the package version. |
@@ -112,15 +112,18 @@ Dispatch and framework coverage the fork adds, by kind:
 | Drupal hooks | `invokeAll()` / `invoke()` / `alter()` call sites to hook implementations, including Drupal 11 `#[Hook]` attributes |
 | NgRx effects | Dispatched actions to the effects that handle them |
 | React Native `NativeModules[key]` | Computed native-module calls to the native method, when the key is a literal or a same-file literal binding |
-| `window.postMessage` | Posted messages to the listeners that check the same payload `source` value |
+| `window.postMessage` | Posted messages to the listeners that check the same literal `source` string or member name |
 
 Call resolution the fork adds:
 
 - Kotlin infix calls keep their call edge when an operand is parenthesized or a comment sits inside the expression.
 - Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls keep compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types.
-- Kotlin chains use the declared return type in nested and multiline calls. An imported return-type guess for an unknown receiver keeps confidence at most 0.7, and so does a Rust chain match without a proved receiver type.
+- Kotlin chains on instance and extension receivers use the declared return type, including nested and multiline calls; upstream covers class and companion-factory chains. An imported return-type guess for an unknown receiver keeps confidence at most 0.7, and so does a Rust chain match without a proved receiver type.
 - Kotlin multi-dollar strings keep their interpolation threshold.
 - C++ visible class-scoped aliases and declared complex receivers keep their method owners; unsubstituted template parameters and ambiguous owners stay unresolved.
+- C++ namespace aliases and declarations in macro-opened namespaces are looked up only in the caller's include closure; upstream pools them across all files.
+- C# `using` directives and aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file.
+- A Java field declared with a qualified type (`outside.Repository`) keeps its qualifier, so calls through it never resolve to an unrelated project class with the same simple name.
 - Python `super()` calls follow the class's full method resolution order across multiple bases, where upstream goes to the parent's version.
 - A `require` call creates no file dependency when a local binding shadows `require`.
 
@@ -137,7 +140,7 @@ Call resolution the fork adds:
 | Addition | What it links |
 |---|---|
 | Analog | `src/app/pages/**/*.page.ts` file routes, linked to their page component classes |
-| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file one hop behind an NgModule's routing module or behind an `export *` barrel sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
+| Angular Router | On top of upstream's reader: `provideRouter` / `RouterModule` imported under an alias (a `$`-prefixed one included) still register routes, a routes file one hop behind an NgModule's routing module, including a routing module the NgModule imports through a local barrel, sits under its lazy path, and named-`outlet` or `...spread` entries name no screen |
 | Astro routes | `<a href>` and `Astro.redirect` navigation between pages, endpoint method aliases such as `export { handler as GET }`, and browser scripts kept with the file rather than the component (upstream binds a page to its component and directly exported endpoint methods to handlers) |
 | Nuxt pages | `(group)` folders dropped from page route paths |
 | Qwik City | `src/routes` index pages and `onGet`/`onPost`-style endpoint handlers, linked to their components and handlers |
