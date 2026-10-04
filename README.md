@@ -171,6 +171,8 @@ Upstream `main` at `6560052` (v1.6.2) against the fork at `34cc55e`, each run on
 
 Upstream at `6560052` takes 2.3 to 2.7 times as long to index Python as at `290e03f` (pretix 9.2 s to 21.1 s, CPython 35.6 s to 94.7 s). For pretix, [a same-host check](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md#since-2026-09-28) shows the cause is upstream's code, not the host.
 
+The table predates a fork fix to Python name checks. On the same host on 2026-10-04 (Node, two runs each), it cut CPython's full index from 48.8 s to 39.5 s and its peak memory from 6.45 GiB to 5.90 GiB; pretix stayed at 10.0 s. The table itself has not been re-run.
+
 **One-file sync** (edit one file, `codegraph sync`):
 
 | Corpus | Upstream, Node | Fork, Node | Fork, Bun |

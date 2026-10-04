@@ -605,6 +605,11 @@ pub struct KernelResolver {
     declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
     declared_member_walks: HashMap<(String, String), Option<String>>,
     member_shadow_memo: HashMap<(String, String, i64), bool>,
+    /// `python_locally_bound` answers by (file, line, name). Like the memos
+    /// above, it assumes sources do not change during one resolution run.
+    python_bound_memo: HashMap<(String, i64, String), bool>,
+    /// Whether a Python file binds a name at any line, by (file, name).
+    python_file_binds_memo: HashMap<(String, String), bool>,
     kotlin_frames_memo: HashMap<String, Rc<Vec<kotlin_calls::KotlinFrame>>>,
     kotlin_receiver_types_memo: Option<Rc<HashSet<String>>>,
     kotlin_scope_memo: HashMap<String, Rc<lang_scope::KotlinFileScope>>,
@@ -796,6 +801,8 @@ impl KernelResolver {
             declared_member_lines: HashMap::new(),
             declared_member_walks: HashMap::new(),
             member_shadow_memo: HashMap::new(),
+            python_bound_memo: HashMap::new(),
+            python_file_binds_memo: HashMap::new(),
             kotlin_frames_memo: HashMap::new(),
             kotlin_receiver_types_memo: None,
             kotlin_scope_memo: HashMap::new(),

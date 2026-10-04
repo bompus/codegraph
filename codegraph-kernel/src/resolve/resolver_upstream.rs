@@ -13,6 +13,60 @@ pub(super) fn test_suite_path(path: &str) -> bool {
         || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
 }
 
+/// The binding patterns `python_binds_name` tests for a name.
+#[derive(Clone, Copy)]
+enum PyBinding {
+    /// An assignment or annotation inside the enclosing function.
+    Assign,
+    /// A `for` or `as` target inside the enclosing function.
+    Target,
+    /// A parameter of the enclosing function.
+    Params,
+    /// An assignment or annotation anywhere in the file.
+    Top,
+}
+
+impl PyBinding {
+    fn pattern(self, name: &str) -> String {
+        let name = regex::escape(name);
+        match self {
+            PyBinding::Assign => format!(
+                r"^\s*(?:[\w\s,*()\[\]]*,\s*)?\(?\*?{name}\)?\s*(?:,[\w\s,*()\[\]]*)?(?::[^=]+)?=(?:[^=]|$)"
+            ),
+            PyBinding::Target => format!(r"\bfor\s+[\w\s,()]*\b{name}\b[\w\s,()]*\s+in\b|\bas\s+{name}\b"),
+            PyBinding::Params => format!(r"[(,]\s*\*{{0,2}}{name}\s*(?:[:=,)]|$)"),
+            PyBinding::Top => format!(r"^(?:[\w,\s]*,\s*)?{name}\s*(?:,[\w\s,]*)?(?::[^=]+)?=(?:[^=]|$)"),
+        }
+    }
+
+    /// A necessary condition for `pattern` to match `line`, checked without a
+    /// regex: the name followed by the characters the pattern requires next.
+    fn may_match(self, line: &str, name: &str) -> bool {
+        match self {
+            PyBinding::Assign => name_then(line, name, true, &[',', ':', '='], false),
+            PyBinding::Target => line.contains(name),
+            PyBinding::Params => name_then(line, name, false, &[':', '=', ',', ')'], true),
+            PyBinding::Top => name_then(line, name, false, &[',', ':', '='], false),
+        }
+    }
+}
+
+/// Whether `name` occurs in `line` followed by optional whitespace (after one
+/// optional `)` when `close_paren`) and then a character of `next`, or by the
+/// end of `line` when `at_end`.
+fn name_then(line: &str, name: &str, close_paren: bool, next: &[char], at_end: bool) -> bool {
+    line.match_indices(name).any(|(at, _)| {
+        let mut rest = &line[at + name.len()..];
+        if close_paren {
+            rest = rest.strip_prefix(')').unwrap_or(rest);
+        }
+        match rest.trim_start().chars().next() {
+            Some(c) => next.contains(&c),
+            None => at_end,
+        }
+    })
+}
+
 impl KernelResolver {
     pub(super) fn local_declaration_scope(&mut self, n: &KNode) -> Res<Option<(i64, i64)>> {
         if no_nested_functions(&n.language)
@@ -208,6 +262,23 @@ impl KernelResolver {
         if r.language != "python" || !re!(r"^[A-Za-z_]\w*$").is_match(name) {
             return Ok(false);
         }
+        // The answer depends only on the file, the line and the name; the
+        // name-match candidate filter asks it once per cross-file candidate.
+        let key = (r.file_path.clone(), r.line, name.to_string());
+        if let Some(&bound) = self.python_bound_memo.get(&key) {
+            return Ok(bound);
+        }
+        let bound = self.python_binds_name(name, r)?;
+        self.python_bound_memo.insert(key, bound);
+        Ok(bound)
+    }
+
+    /// `python_locally_bound` uncached. Every pattern here needs the name
+    /// followed by particular characters, so `name_then` rejects most lines
+    /// (a call such as `x = name(...)`) before a pattern is compiled or run;
+    /// on CPython a pattern per distinct name and a whole-file scan per
+    /// candidate had made this most of the resolve time.
+    fn python_binds_name(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
         if self
             .import_mappings(&r.file_path)?
             .iter()
@@ -228,14 +299,6 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(false);
         };
-        let name = regex::escape(name);
-        let assign = Self::cached_regex(&format!(
-            r"^\s*(?:[\w\s,*()\[\]]*,\s*)?\(?\*?{name}\)?\s*(?:,[\w\s,*()\[\]]*)?(?::[^=]+)?=(?:[^=]|$)"
-        ))?;
-        let target = Self::cached_regex(&format!(
-            r"\bfor\s+[\w\s,()]*\b{name}\b[\w\s,()]*\s+in\b|\bas\s+{name}\b"
-        ))?;
-        let params = Self::cached_regex(&format!(r"[(,]\s*\*{{0,2}}{name}\s*(?:[:=,)]|$)"))?;
         if let Some(f) = function {
             let lo = (f.start_line - 1).max(0) as usize;
             let mut i = lo;
@@ -247,25 +310,42 @@ impl KernelResolver {
                 }
                 i += 1;
             }
-            if params.is_match(
-                signature
-                    .split_once('(')
-                    .map(|(_, s)| format!("({s}"))
-                    .as_deref()
-                    .unwrap_or(""),
-            ) {
-                return Ok(true);
+            if let Some((_, rest)) = signature.split_once('(') {
+                if Self::py_binding_in(PyBinding::Params, &format!("({rest}"), name)? {
+                    return Ok(true);
+                }
             }
+            let finder = memchr::memmem::Finder::new(name);
             for line in lines.iter().take((r.line - 1).max(0) as usize).skip(i + 1) {
-                if assign.is_match(line) || target.is_match(line) {
+                if finder.find(line.as_bytes()).is_some()
+                    && (Self::py_binding_in(PyBinding::Assign, line, name)?
+                        || Self::py_binding_in(PyBinding::Target, line, name)?)
+                {
                     return Ok(true);
                 }
             }
         }
-        let top = Self::cached_regex(&format!(
-            r"^(?:[\w,\s]*,\s*)?{name}\s*(?:,[\w\s,]*)?(?::[^=]+)?=(?:[^=]|$)"
-        ))?;
-        Ok(lines.iter().any(|l| top.is_match(l)))
+        // A binding anywhere in the file: the same answer for every line.
+        let key = (r.file_path.clone(), name.to_string());
+        if let Some(&bound) = self.python_file_binds_memo.get(&key) {
+            return Ok(bound);
+        }
+        let finder = memchr::memmem::Finder::new(name);
+        let mut bound = false;
+        for line in lines.iter() {
+            if finder.find(line.as_bytes()).is_some() && Self::py_binding_in(PyBinding::Top, line, name)? {
+                bound = true;
+                break;
+            }
+        }
+        self.python_file_binds_memo.insert(key, bound);
+        Ok(bound)
+    }
+
+    /// Whether `line` holds `kind`'s binding of `name`. The pattern is
+    /// compiled and run only for a line that passes `may_match`.
+    fn py_binding_in(kind: PyBinding, line: &str, name: &str) -> Res<bool> {
+        Ok(kind.may_match(line, name) && Self::cached_regex(&kind.pattern(name))?.is_match(line))
     }
 
     pub(super) fn python_module_symbol(
@@ -752,5 +832,41 @@ impl KernelResolver {
         // Resolve the returned type where the fixture imports or declares it.
         let site = r.clone().at(fixture);
         Ok(Some(self.match_bound_type_member(&ty, member, &site)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PyBinding;
+    use regex::Regex;
+
+    /// `python_binds_name` runs a binding pattern only on lines that pass its
+    /// `may_match` filter, so every line a pattern matches must pass it.
+    #[test]
+    fn may_match_admits_every_binding_match() {
+        let lines = [
+            "{n} = 1", "a, {n} = f()", "{n}: int = 3", "{n} : int", "  ({n}) = g()", "*{n}, b = xs",
+            "a, *{n} = xs", "{n}, b = 1, 2", "(a, {n}) = t", "[a, {n}] = t", "{n} == 1", "{n}=1",
+            "{n}\u{3000}= 1", "{n}\t= 2", "f({n}=1)", "def f(self, {n}, y):", "def f({n}: int = 0)",
+            "def f(*{n})", "def f(**{n}", "def f({n}", "y = {n}(x)", "{n}.attr = 1", "x{n} = 1",
+            "{n}x = 1", "{n}x, {n} = t", "for {n} in xs:", "with open() as {n}:",
+        ];
+        let kinds = [PyBinding::Assign, PyBinding::Target, PyBinding::Params, PyBinding::Top];
+        for name in ["x", "foo", "über"] {
+            let mut matched = [0; 4];
+            for (k, kind) in kinds.into_iter().enumerate() {
+                let re = Regex::new(&kind.pattern(name)).unwrap();
+                for line in lines.map(|l| l.replace("{n}", name)) {
+                    if re.is_match(&line) {
+                        matched[k] += 1;
+                        assert!(kind.may_match(&line, name), "{} {line:?}", kind.pattern(name));
+                    }
+                }
+            }
+            assert!(matched.iter().all(|&n| n > 0), "every pattern matched some line for {name}: {matched:?}");
+            // The filter is what saves the work: a plain call compiles no pattern.
+            let call = format!("y = {name}(z)");
+            assert!(!kinds.into_iter().any(|k| !matches!(k, PyBinding::Target) && k.may_match(&call, name)));
+        }
     }
 }
