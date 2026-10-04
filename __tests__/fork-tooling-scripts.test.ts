@@ -309,10 +309,26 @@ describe('changelog-reconcile', () => {
     expect(unreleasedOf(reconcileChangelog({ fork, upstream, base }).text)).toBe('\n### Fixes\n\n#### Go\n\n- Calls resolve.\n');
   });
 
-  it('ends an entry at an unindented line that opens its own Markdown block', () => {
-    const fork = log('\n### Fixes\n\n- Shared.\n> Upgrade note.\n', OLD);
-    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Shared.\n> Upgrade note.\n', OLD);
-    expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe('\n### Fixes\n\n> Upgrade note.\n');
+  it('ends an entry only at an unindented line that can interrupt a paragraph', () => {
+    const upstream = log('', '## [1.1.0] - 2026-02-01\n\n- Shared.\n> Upgrade note.\n*\tStar note.\n', OLD);
+    for (const block of ['> Upgrade note.', '*\tStar note.']) {
+      const fork = log(`\n### Fixes\n\n- Shared.\n${block}\n`, OLD);
+      expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe(`\n### Fixes\n\n${block}\n`);
+    }
+    for (const text of ['<https://example.com/fork> is now supported.', '< 10 files remain.', '| is now supported.', '2. More details.']) {
+      const fork = log(`\n### Fixes\n\n- Shared.\n${text}\n`, OLD);
+      expect(unreleasedOf(reconcileChangelog({ fork, upstream }).text)).toBe(`\n### Fixes\n\n- Shared.\n${text}\n`);
+    }
+  });
+
+  it('reads bullets and headings inside a fenced code block as text', () => {
+    const fence = '```markdown\n- Shared.\n#### Go\n```';
+    const fork = log(`\n### Fixes\n\n- Keep.\n${fence}\n`, OLD);
+    const released = log('', '## [1.1.0] - 2026-02-01\n\n- Shared.\n', OLD);
+    expect(unreleasedOf(reconcileChangelog({ fork, upstream: released }).text)).toBe(`\n### Fixes\n\n- Keep.\n${fence}\n`);
+    const sample = log(`\n### Fixes\n${fence}\n`, OLD);
+    const added = reconcileChangelog({ fork: sample, upstream: log('\n### Fixes\n\n- New.\n', OLD) });
+    expect(unreleasedOf(added.text)).toBe(`\n### Fixes\n${fence}\n\n- New.\n`);
   });
 
   it("adds upstream's entry after the text a heading opens with, and only once", () => {

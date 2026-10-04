@@ -52,27 +52,75 @@ export function splitChangelog(text) {
 
 const blank = (line) => line.trim() === '';
 const headingLevel = (line) => /^(#{3,}) /.exec(line)?.[1].length ?? 0;
-// A list item, heading, block quote, fence, thematic break, table row or HTML block.
-const opensBlock = (line) => /^(?:[-*+] |\d+[.)] |#|>|```|~~~|\||<|(?:[-*_][ \t]*){3,}$)/.test(line);
+
+const FENCE_OPEN = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
+const HTML_BLOCK_TAGS =
+  'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|' +
+  'fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|' +
+  'menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul';
+// CommonMark's blocks that can interrupt a paragraph: an ATX heading, a fence,
+// a block quote, a thematic break, a non-empty bullet item, an ordered item
+// numbered 1, and HTML blocks of types 1 to 6.
+const INTERRUPTS = new RegExp(
+  [
+    '#{1,6}(?:[ \\t]|$)',
+    ' {0,3}(?:`{3,}(?=[^`]*$)|~{3,})',
+    ' {0,3}>',
+    ' {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})$',
+    ' {0,3}[-+*][ \\t]+\\S',
+    ' {0,3}0*1[.)][ \\t]+\\S',
+    '<(?:script|pre|style|textarea)(?:[ \\t>]|$)',
+    '<!--|<\\?|<![A-Za-z]|<!\\[CDATA\\[',
+    `</?(?:${HTML_BLOCK_TAGS})(?:[ \\t>]|/>|$)`,
+  ]
+    .map((alt) => `^(?:${alt})`)
+    .join('|'),
+  'i',
+);
+
+/**
+ * Per line, its `###`-or-deeper heading level (0 for other lines) and whether
+ * it belongs to a fenced code block, delimiters included. Headings inside a
+ * fence are text.
+ */
+function scan(lines) {
+  const level = [];
+  const fenced = [];
+  let close = null;
+  for (const line of lines) {
+    if (close) {
+      if (close.test(line)) close = null;
+      level.push(0);
+      fenced.push(true);
+      continue;
+    }
+    const open = FENCE_OPEN.exec(line);
+    if (open) close = new RegExp(`^ {0,3}${open[1][0]}{${open[1].length},}[ \\t]*$`);
+    level.push(open ? 0 : headingLevel(line));
+    fenced.push(Boolean(open));
+  }
+  return { level, fenced };
+}
 
 /**
  * The `- ` entries of a section body. An entry runs on through indented lines,
  * including ones after a blank line, and through unindented text lines that
- * follow it with no blank line between, unless such a line opens a Markdown
- * block of its own. Each entry records the `###`/`####` headings it sits under.
+ * follow it with no blank line between, unless such a line interrupts a
+ * paragraph in CommonMark. Bullets inside a fenced code block are not entries.
+ * Each entry records the `###`/`####` headings it sits under.
  */
 export function entries(lines) {
+  const { level, fenced } = scan(lines);
   const out = [];
   let path = [];
   for (let i = 0; i < lines.length; i++) {
-    const level = headingLevel(lines[i]);
-    if (level) path = [...path.filter((h) => headingLevel(h) < level), lines[i]];
-    if (!lines[i].startsWith('- ')) continue;
+    if (level[i]) path = [...path.filter((h) => headingLevel(h) < level[i]), lines[i]];
+    if (fenced[i] || !lines[i].startsWith('- ')) continue;
     let end = i + 1;
     for (let j = i + 1; j < lines.length; j++) {
       const line = lines[j];
       if (blank(line)) continue;
-      const lazy = j === end && !opensBlock(line);
+      const lazy = j === end && !INTERRUPTS.test(line);
       if (!/^\s/.test(line) && !lazy) break;
       end = j + 1;
     }
@@ -133,18 +181,17 @@ export function similar(a, b) {
   return shared / (sa.size + sb.size - shared) >= 0.6;
 }
 
-/** Where the section a heading at `i` opens ends: the next heading of its level or higher. */
-function sectionEnd(lines, i, limit = lines.length) {
-  const level = headingLevel(lines[i]);
+/** Where the section a heading at `i` opens ends: the next heading of its level or higher. `level` is from scan(). */
+function sectionEnd(level, i, limit = level.length) {
   let j = i + 1;
-  while (j < limit && !(headingLevel(lines[j]) && headingLevel(lines[j]) <= level)) j++;
+  while (j < limit && !(level[j] && level[j] <= level[i])) j++;
   return j;
 }
 
 /** Whether the heading at `i` has nothing but blank lines before the next heading of its level or higher. */
-function emptyHeadingAt(lines, i) {
-  if (!headingLevel(lines[i])) return false;
-  for (let j = i + 1; j < sectionEnd(lines, i); j++) if (!blank(lines[j])) return false;
+function emptyHeadingAt(lines, level, i) {
+  if (!level[i]) return false;
+  for (let j = i + 1; j < sectionEnd(level, i); j++) if (!blank(lines[j])) return false;
   return true;
 }
 
@@ -154,8 +201,9 @@ function emptyHeadingAt(lines, i) {
  * input line, stay.
  */
 function dropEmptiedHeadings(lines, origin, keep) {
+  let { level } = scan(lines);
   for (let i = 0; i < lines.length; ) {
-    if (!emptyHeadingAt(lines, i) || keep.has(origin[i])) {
+    if (!emptyHeadingAt(lines, level, i) || keep.has(origin[i])) {
       i++;
       continue;
     }
@@ -163,6 +211,7 @@ function dropEmptiedHeadings(lines, origin, keep) {
     while (j < lines.length && blank(lines[j])) j++;
     lines.splice(i, j - i);
     origin.splice(i, j - i);
+    level = scan(lines).level;
     // Removing a sub-heading can empty its parent, which sits above it.
     i = 0;
   }
@@ -174,13 +223,14 @@ function dropEmptiedHeadings(lines, origin, keep) {
  * are added at the end of the deepest one it has.
  */
 function insertEntry(body, path, lines) {
+  const { level } = scan(body);
   let lo = 0;
   let hi = body.length;
   let matched = 0;
   for (const heading of path) {
-    const at = body.findIndex((l, k) => k >= lo && k < hi && l === heading);
+    const at = body.findIndex((l, k) => k >= lo && k < hi && level[k] && l === heading);
     if (at < 0) break;
-    hi = sectionEnd(body, at, hi);
+    hi = sectionEnd(level, at, hi);
     lo = at + 1;
     matched++;
   }
@@ -193,7 +243,7 @@ function insertEntry(body, path, lines) {
     return;
   }
   let direct = lo;
-  while (direct < hi && !headingLevel(body[direct])) direct++;
+  while (direct < hi && !level[direct]) direct++;
   const own = entries(body.slice(0, direct)).filter((e) => e.start >= lo);
   if (own.length === 0) {
     // After any text the heading opens with, kept apart from it by a blank line.
@@ -279,7 +329,8 @@ export function reconcileChangelog({ fork, upstream, base = null }) {
     i = e.end;
     if (body.length > 0 && blank(body.at(-1))) while (i < f.body.length && blank(f.body[i])) i++;
   }
-  const emptyBefore = new Set(f.body.map((_, i) => i).filter((i) => emptyHeadingAt(f.body, i)));
+  const forkLevel = scan(f.body).level;
+  const emptyBefore = new Set(f.body.map((_, i) => i).filter((i) => emptyHeadingAt(f.body, forkLevel, i)));
   dropEmptiedHeadings(body, origin, emptyBefore);
 
   // Upstream's own Unreleased entries the fork lacks.
