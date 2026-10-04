@@ -918,6 +918,8 @@ mod tests {
 
     /// The per-name pattern `bare_call_at` replaces.
     fn bare_call_pattern(name: &str) -> Regex {
+        // The oracle is the per-name regex the split matcher replaced.
+        // ast-grep-ignore: kernel-no-adhoc-name-regex
         Regex::new(&format!(r"(?:^|[^\w$])({})\s*(?:<[^<>()]*>|\[[^\[\]]*\])?\s*[({{]", regex::escape(name))).unwrap()
     }
 
@@ -1003,6 +1005,8 @@ mod tests {
         // Group the cases by name so each name's patterns compile once.
         let mut by_name: HashMap<String, Vec<(bool, String)>> = HashMap::new();
         for path in &files {
+            // A corpus outside the index, read once; no resolver cache exists here.
+            // ast-grep-ignore: kernel-source-reads-via-cache
             let Ok(text) = std::fs::read_to_string(path) else { continue };
             let lines: Vec<&str> = text.lines().collect();
             let python = path.extension().is_some_and(|e| e == "py");
