@@ -82,6 +82,19 @@ describe('unmatched names in the explore summary', () => {
     expect(out).toContain('Not found in the index: `finalHistoryReconciled`.');
   });
 
+  // An apostrophe is not a quote: the guess in a plain sentence is still a
+  // guess, and a double-quoted phrase stays a phrase around one.
+  it('reads apostrophes as part of words, not as quotes', async () => {
+    const out = await explore("verifySnapshot don't call finalHistoryReconciled if it's gone");
+    expect(out).toContain('Not found in the index: `finalHistoryReconciled`.');
+    for (const query of [
+      'verifySnapshot "we don\'t call finalHistoryReconciled here"',
+      "verifySnapshot 'we don't call finalHistoryReconciled here'",
+    ]) {
+      expect(await explore(query), query).not.toContain('Not found in the index');
+    }
+  });
+
   it('lists qualified and snake_case guesses too', async () => {
     const out = await explore('verifySnapshot Ledger.replayAll draft_state_guard');
     expect(out).toContain('`Ledger.replayAll`');

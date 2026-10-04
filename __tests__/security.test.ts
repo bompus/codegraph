@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { FileLock, validateProjectPath, validatePathWithinRoot, rootContainmentCheck } from '../src/utils';
+import { FileLock, validateProjectPath, validatePathWithinRoot, rootContainedOpener } from '../src/utils';
 import CodeGraph from '../src/index';
 import { ToolHandler, tools } from '../src/mcp/tools';
 import { scanDirectory, isSourceFile } from '../src/extraction';
@@ -249,27 +249,35 @@ describe('Symlink escape prevention (#527)', () => {
     expect(validatePathWithinRoot(root, 'src/inlink.ts')).not.toBeNull();
   });
 
-  // The batch form a source scan uses caches directory real paths, so each
-  // escape route must still be caught on that path too.
-  it('rootContainmentCheck agrees: in-root files pass, every escape is rejected', () => {
-    const check = rootContainmentCheck(root);
-    expect(check('src/in.ts')).toBe(path.join(root, 'src', 'in.ts'));
-    expect(check(`../${path.basename(outside)}/pkg/secret.txt`)).toBeNull();
-    expect(check('src/missing.ts')).toBeNull();
+  // The batch form a source scan uses checks the file it opened, so each
+  // escape route must be caught there too, including a swap after a first read.
+  function opens(open: (p: string) => number | null, rel: string): boolean {
+    const fd = open(rel);
+    if (fd === null) return false;
+    fs.closeSync(fd);
+    return true;
+  }
+
+  it('rootContainedOpener agrees: in-root files open, every escape is refused', () => {
+    const open = rootContainedOpener(root);
+    expect(opens(open, 'src/in.ts')).toBe(true);
+    expect(opens(open, `../${path.basename(outside)}/pkg/secret.txt`)).toBe(false);
+    expect(opens(open, 'src/missing.ts')).toBe(false);
     if (!link(path.join(root, 'escape'), path.join(outside, 'pkg', 'secret.txt'))) return;
-    expect(check('escape')).toBeNull();
+    expect(opens(open, 'escape')).toBe(false);
     if (!link(path.join(root, 'escapedir'), path.join(outside, 'pkg'))) return;
-    expect(check('escapedir/secret.txt')).toBeNull();
+    expect(opens(open, 'escapedir/secret.txt')).toBe(false);
     if (!link(path.join(root, 'src', 'inlink.ts'), path.join(root, 'src', 'in.ts'))) return;
-    expect(check('src/inlink.ts')).toBe(path.join(root, 'src', 'in.ts'));
+    expect(opens(open, 'src/inlink.ts')).toBe(true);
   });
 
-  it('rootContainmentCheck re-resolves a cached directory replaced by a symlink out of the root', () => {
-    const check = rootContainmentCheck(root);
-    expect(check('src/in.ts')).not.toBeNull();
-    fs.renameSync(path.join(root, 'src'), path.join(root, 'src-old'));
-    if (!link(path.join(root, 'src'), path.join(outside, 'pkg'))) return;
-    expect(check('src/secret.txt')).toBeNull();
+  it('rootContainedOpener refuses a directory moved out of the root and linked back in', () => {
+    const open = rootContainedOpener(root);
+    expect(opens(open, 'src/in.ts')).toBe(true);
+    // The same directory, same inode, now reached through a symlink.
+    fs.renameSync(path.join(root, 'src'), path.join(outside, 'moved-src'));
+    if (!link(path.join(root, 'src'), path.join(outside, 'moved-src'))) return;
+    expect(opens(open, 'src/in.ts')).toBe(false);
   });
 
   // The INDEXING read path opts into following in-root symlinks the directory

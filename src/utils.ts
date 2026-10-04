@@ -165,44 +165,49 @@ export function validatePathWithinRoot(
 /**
  * {@link validatePathWithinRoot} for reading many files under one root.
  *
- * The root is resolved once and each directory's real path is cached, so a
- * file that is not a symlink costs a `stat` of its directory and an `lstat` of
- * itself instead of two `realpath` calls. A cached entry is used only while
- * the directory path still names the same directory (device and inode): if a
- * directory on the way is replaced by a symlink after it was cached, the path
- * names another directory and is resolved again. A symlinked file resolves in
- * full. Unlike the single-path check, a missing file answers null, because the
- * caller is about to read it.
+ * Returns an opener: it opens a file for reading and returns the descriptor
+ * only when the opened file lies inside the root, or null (with the descriptor
+ * closed) when it does not or cannot be opened. The check runs on the file
+ * actually opened, so a directory swapped for a symlink between a check and
+ * the open cannot slip through. On Linux the opened file's path comes from
+ * `/proc/self/fd`, which costs one `readlink`. Elsewhere the file's real path
+ * must name the same file as the descriptor (device and inode), which costs
+ * a `realpath` and a `stat`.
  */
-export function rootContainmentCheck(projectRoot: string): (filePath: string) => string | null {
+export function rootContainedOpener(projectRoot: string): (filePath: string) => number | null {
   const normalizedRoot = path.resolve(projectRoot);
   let realRoot: string;
   try {
-    realRoot = fs.realpathSync(normalizedRoot);
+    realRoot = fs.realpathSync.native(normalizedRoot);
   } catch {
     return () => null;
   }
-  const realDirs = new Map<string, { real: string | null; dev: bigint; ino: bigint }>();
+  const procFd = process.platform === 'linux' && fs.existsSync('/proc/self/fd');
   return (filePath) => {
     const resolved = lexicalPathWithinRoot(normalizedRoot, filePath);
     if (resolved === null) return null;
+    let fd: number | undefined;
     try {
-      const dir = path.dirname(resolved);
-      const now = fs.statSync(dir, { bigint: true });
-      let cached = realDirs.get(dir);
-      if (!cached || cached.dev !== now.dev || cached.ino !== now.ino) {
-        const real = fs.realpathSync(dir);
-        cached = { real: isWithinDir(real, realRoot) ? real : null, dev: now.dev, ino: now.ino };
-        realDirs.set(dir, cached);
+      fd = fs.openSync(resolved, 'r');
+      let inside: boolean;
+      if (procFd) {
+        inside = isWithinDir(fs.readlinkSync(`/proc/self/fd/${fd}`), realRoot);
+      } else {
+        const real = fs.realpathSync.native(resolved);
+        const opened = fs.fstatSync(fd, { bigint: true });
+        const named = fs.statSync(real, { bigint: true });
+        inside = opened.dev === named.dev && opened.ino === named.ino && isWithinDir(real, realRoot);
       }
-      if (cached.real === null) return null;
-      if (fs.lstatSync(resolved).isSymbolicLink()) {
-        const real = fs.realpathSync(resolved);
-        return isWithinDir(real, realRoot) ? real : null;
+      if (inside) {
+        const result = fd;
+        fd = undefined;
+        return result;
       }
-      return path.join(cached.real, path.basename(resolved));
+      return null;
     } catch {
       return null;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
     }
   };
 }

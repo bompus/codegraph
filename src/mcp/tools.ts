@@ -247,6 +247,8 @@ function filesDefiningSymbol(cg: CodeGraph, symbol: string): string[] {
 
 /** Time the not-found check may spend reading indexed source text. */
 const UNMATCHED_SCAN_BUDGET_MS = 300;
+/** A double- or single-quoted run of words; see the phrase words in handleExplore. */
+const QUOTED_PHRASE = /"([^"\n]*\s[^"\n]*)"|(?<![\w$])'((?:[^'\n]|(?<=\w)'(?=\w))*\s(?:[^'\n]|(?<=\w)'(?=\w))*)'(?![\w$])/g;
 
 /**
  * The names from `candidates` (symbol-shaped query tokens no node matched)
@@ -4888,9 +4890,11 @@ export class ToolHandler {
       const missCandidates: string[] = [];
       // Words inside a quoted phrase are text the agent copied, not names it
       // guessed. A quoted single word stays a candidate: agents quote names.
+      // A single quote opens or closes a phrase only away from a word, so the
+      // apostrophes in "don't" and "it's" neither start one nor end one.
       const phraseWords = new Set<string>();
-      for (const m of matchQuery.matchAll(/(["'])([^"'\n]*\s[^"'\n]*)\1/g)) {
-        for (const w of (m[2] ?? '').match(/[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g) ?? []) phraseWords.add(w);
+      for (const m of matchQuery.matchAll(QUOTED_PHRASE)) {
+        for (const w of (m[1] ?? m[2] ?? '').match(/[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g) ?? []) phraseWords.add(w);
       }
       const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
