@@ -1,7 +1,7 @@
 # Runtime benchmark
 
 These scripts produced the README's "Measured results" and the tables in
-[`docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-09-28.md).
+[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md).
 Each arm is a runtime (a `node` or `bun` executable) running a built checkout.
 The arms can differ in build, in runtime, or in both.
 
@@ -10,7 +10,7 @@ The arms can differ in build, in runtime, or in both.
 | `run-index-sync.sh <list>` | Full index, then two one-file syncs: wall time, peak RSS, CPU, database size, node and edge counts | `index-sync.tsv`, `logs/` |
 | `run-mcp.sh <list>` | MCP server: start to first explore answer, warm explore median and p90, 8 explores at once, watcher sync, idle memory and CPU | `mcp.jsonl` |
 | `run-cli.sh <corpus> <query>` | CLI start: `--version`, `status`, one `explore` (hyperfine, 20 runs) | `cli-*.json`, `cli.txt` |
-| `summarize.py $BENCH_OUT` | Medians per corpus and arm from `index-sync.tsv` | stdout |
+| `summarize.py $BENCH_OUT` | Medians per corpus and arm from `index-sync.tsv`, and from `mcp.jsonl` when present | stdout |
 
 Every run needs a quiet host. Each runner waits before a corpus until no
 `capped-*` scope runs and the 1-minute load is under 2, and each arm runs twice
@@ -18,12 +18,14 @@ per corpus, forward and then reversed.
 
 ## Run time
 
-The 2026-09-28 run behind the README took 1 h 26 min: `run-index-sync.sh` on
-the seven corpora in the benchmark doc, then `run-mcp.sh` on gin and n8n, then
-`run-cli.sh` on gin, with four arms (upstream and fork, each on Node and Bun).
-That figure includes the idle-host waits. Creating the two build worktrees and
-building both took 9 minutes before it. Start a re-run estimate from these
-numbers, and update them here after a run that takes much longer or shorter.
+The 2026-10-03 run behind the README took 1 h 47 min (17:09 to 18:56):
+`run-index-sync.sh` on the seven corpora in the benchmark doc took 59 min, then
+`run-mcp.sh` on gin and n8n and `run-cli.sh` on gin took 48 min, with four arms
+(upstream and fork, each on Node and Bun). That includes the idle-host waits.
+The n8n MCP runs took about 4 min each. Building the two worktrees took 4 min
+before it. The 2026-09-28 run of the same steps took 1 h 26 min. Start a re-run
+estimate from these numbers, and update them here after a run that takes much
+longer or shorter.
 
 ## Arms
 

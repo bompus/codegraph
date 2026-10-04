@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""usage: summarize.py <BENCH_OUT>. Medians per corpus and arm from index-sync.tsv."""
-import collections, csv, statistics as st, sys, os
+"""usage: summarize.py <BENCH_OUT>. Medians per corpus and arm from index-sync.tsv and, when present, mcp.jsonl."""
+import collections, csv, json, statistics as st, sys, os
 
 def sec(t):
     p = t.split(':')
@@ -27,3 +27,18 @@ for c in corpora:
         print(' | '.join([c, a, f"{st.median(sec(r[4]) for r in i):.2f}", mem(st.median(int(r[5]) for r in i)),
                           size(st.median(int(r[7]) for r in i)), i[0][8], i[0][9],
                           f"{st.median(sec(r[4]) for r in s):.2f}", mem(st.median(int(r[5]) for r in s))]))
+
+mcp_path = os.path.join(sys.argv[1], 'mcp.jsonl')
+if os.path.exists(mcp_path):
+    runs = [json.loads(l) for l in open(mcp_path) if l.strip()]
+    keys = ['initMs', 'coldToFirstAnswerMs', 'warmMedianMs', 'warmP90Ms', 'wave8Ms', 'busy_totalMB',
+            'watchSyncMs', 'idle_totalMB', 'idleCpuPct']
+    m = collections.defaultdict(list)
+    for r in runs:
+        m[(r['corpus'], r['arm'])].append(r)
+    print()
+    print(' | '.join(['corpus', 'arm', 'runs'] + keys))
+    for (c, a), rs in m.items():
+        # A watcher sync that times out is recorded as null.
+        vals = [[r[k] for r in rs if r[k] is not None] for k in keys]
+        print(' | '.join([c, a, str(len(rs))] + [f"{st.median(v):g}" if v else 'n/a' for v in vals]))
