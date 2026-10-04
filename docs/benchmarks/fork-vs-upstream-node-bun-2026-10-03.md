@@ -200,12 +200,12 @@ this way. The fork carries those commits, and its Python corpora slowed too
 (pretix 9.15 s to 10.8 s, CPython 26.9 s to 45.5 s); whether the same commits
 cause that was not tested.
 
-Profiling on 2026-10-04 traced most of the fork's CPython slowdown to one check
-that arrived with the upstream merge through #2248 (`1f209fe3`). To decide
+Profiling on 2026-10-04 traced 9.3 s of the fork's 22.3 s CPython slowdown to
+one check that arrived with the upstream merge through #2248 (`1f209fe3`). To decide
 whether a Python name is bound locally, it compiled four patterns for the name
 and scanned the whole file, once for every same-named definition in another
 file. With that check memoized and prefiltered, CPython indexes in 39.5 s
-instead of 48.8 s at `c62f88ee` (Node, two runs each, same graph). Fork
+instead of 48.8 s at `c62f88ee` (Node, two runs each; nodes and edges identical row for row). Fork
 `48903f51` took 26.5 s on the same host that day. The rest of the gap is spread
 across newer resolution work, with no single resolver step above 5% of the profile.
 pretix takes 10.0 s with or without the fix.

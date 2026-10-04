@@ -605,7 +605,8 @@ pub struct KernelResolver {
     declared_member_lines: HashMap<String, Rc<Vec<(String, usize)>>>,
     declared_member_walks: HashMap<(String, String), Option<String>>,
     member_shadow_memo: HashMap<(String, String, i64), bool>,
-    /// `python_locally_bound` answers by (file, line, name).
+    /// `python_locally_bound` answers by (file, line, name). Like the memos
+    /// above, it assumes sources do not change during one resolution run.
     python_bound_memo: HashMap<(String, i64, String), bool>,
     /// Whether a Python file binds a name at any line, by (file, name).
     python_file_binds_memo: HashMap<(String, String), bool>,
