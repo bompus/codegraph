@@ -4,11 +4,8 @@
  * template binding) and where a quoted phrase sits. Reads only files the index
  * tracks, under the same root containment as every other explore read.
  */
-import { readFileSync } from 'fs';
+import { closeSync, fstatSync, openSync, readFileSync } from 'fs';
 import { rootContainmentCheck } from '../utils';
-
-/** Larger files are generated or data; a phrase or name there is not an answer. */
-const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 
 /**
  * Limits on what a warm scan reads inside a 300 ms budget, with room to spare.
@@ -34,36 +31,61 @@ export interface ScanFile {
   size: number;
 }
 
+export interface ScanLimits {
+  budgetMs: number;
+  /** A file larger than this when opened is skipped. */
+  maxFileBytes: number;
+  /** The scan stops, incomplete, once it has read this many bytes. */
+  maxTotalBytes: number;
+}
+
+export interface ScanResult {
+  /** False when the budget or the byte total ran out before every file was read. */
+  complete: boolean;
+  /** Files not read: outside the root, unreadable, or over `maxFileBytes`. */
+  skipped: number;
+}
+
 /**
  * Calls `onMatch` for every match of the global `pattern` in `files`, in
- * order, until it returns true or `budgetMs` runs out. Returns false only when
- * the budget ran out first.
+ * order, until it returns true or a limit runs out. Sizes are checked on the
+ * opened file, so a file that grew since indexing cannot overrun them.
  */
 export function scanIndexedSource(
   projectRoot: string,
   files: readonly ScanFile[],
   pattern: RegExp,
-  budgetMs: number,
+  limits: ScanLimits,
   onMatch: (filePath: string, offset: number, text: string) => boolean,
-): boolean {
+): ScanResult {
   if (!pattern.global) throw new Error('scanIndexedSource needs a global pattern');
-  const deadline = Date.now() + budgetMs;
+  const deadline = Date.now() + limits.budgetMs;
   const contained = rootContainmentCheck(projectRoot);
+  let skipped = 0;
+  let total = 0;
   for (const file of files) {
-    if (Date.now() > deadline) return false;
-    if (file.size > MAX_SCAN_BYTES) continue;
+    if (Date.now() > deadline) return { complete: false, skipped };
     const absolute = contained(file.path);
-    if (!absolute) continue;
+    if (!absolute) { skipped++; continue; }
     let text: string;
+    let fd: number | undefined;
     try {
-      text = readFileSync(absolute, 'utf8');
+      fd = openSync(absolute, 'r');
+      const size = fstatSync(fd).size;
+      if (size > limits.maxFileBytes) { skipped++; continue; }
+      total += size;
+      if (total > limits.maxTotalBytes) return { complete: false, skipped };
+      text = readFileSync(fd, 'utf8');
     } catch {
+      skipped++;
       continue;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
     pattern.lastIndex = 0;
     for (const m of text.matchAll(pattern)) {
-      if (onMatch(file.path, m.index ?? 0, m[0])) return true;
+      if (onMatch(file.path, m.index ?? 0, m[0])) return { complete: true, skipped };
     }
   }
-  return true;
+  return { complete: true, skipped };
 }

@@ -166,10 +166,13 @@ export function validatePathWithinRoot(
  * {@link validatePathWithinRoot} for reading many files under one root.
  *
  * The root is resolved once and each directory's real path is cached, so a
- * file costs one `lstat` instead of two `realpath` calls: a file that is not a
- * symlink has the real path of its directory plus its own name. A symlinked
- * file still resolves in full. Unlike the single-path check, a missing file
- * answers null, because the caller is about to read it.
+ * file that is not a symlink costs a `stat` of its directory and an `lstat` of
+ * itself instead of two `realpath` calls. A cached entry is used only while
+ * the directory path still names the same directory (device and inode): if a
+ * directory on the way is replaced by a symlink after it was cached, the path
+ * names another directory and is resolved again. A symlinked file resolves in
+ * full. Unlike the single-path check, a missing file answers null, because the
+ * caller is about to read it.
  */
 export function rootContainmentCheck(projectRoot: string): (filePath: string) => string | null {
   const normalizedRoot = path.resolve(projectRoot);
@@ -179,23 +182,25 @@ export function rootContainmentCheck(projectRoot: string): (filePath: string) =>
   } catch {
     return () => null;
   }
-  const realDirs = new Map<string, string | null>();
+  const realDirs = new Map<string, { real: string | null; dev: bigint; ino: bigint }>();
   return (filePath) => {
     const resolved = lexicalPathWithinRoot(normalizedRoot, filePath);
     if (resolved === null) return null;
     try {
+      const dir = path.dirname(resolved);
+      const now = fs.statSync(dir, { bigint: true });
+      let cached = realDirs.get(dir);
+      if (!cached || cached.dev !== now.dev || cached.ino !== now.ino) {
+        const real = fs.realpathSync(dir);
+        cached = { real: isWithinDir(real, realRoot) ? real : null, dev: now.dev, ino: now.ino };
+        realDirs.set(dir, cached);
+      }
+      if (cached.real === null) return null;
       if (fs.lstatSync(resolved).isSymbolicLink()) {
         const real = fs.realpathSync(resolved);
         return isWithinDir(real, realRoot) ? real : null;
       }
-      const dir = path.dirname(resolved);
-      let realDir = realDirs.get(dir);
-      if (realDir === undefined) {
-        const real = fs.realpathSync(dir);
-        realDir = isWithinDir(real, realRoot) ? real : null;
-        realDirs.set(dir, realDir);
-      }
-      return realDir === null ? null : path.join(realDir, path.basename(resolved));
+      return path.join(cached.real, path.basename(resolved));
     } catch {
       return null;
     }
