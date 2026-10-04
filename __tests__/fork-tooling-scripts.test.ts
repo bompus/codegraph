@@ -331,6 +331,17 @@ describe('changelog-reconcile', () => {
     expect(unreleasedOf(added.text)).toBe(`\n### Fixes\n${fence}\n\n- New.\n`);
   });
 
+  it("keeps a fence inside an entry to the entry, and adds nothing inside a fence that never closes", () => {
+    const keep = '- Keep.\n  ```text\n  example\n    ```';
+    const upstream = log(`\n### Fixes\n\n${keep}\n\n- Shared.\n`, OLD);
+    const merged = reconcileChangelog({ fork: log('\n### Fixes\n\n- Fork.\n', OLD), upstream });
+    expect(merged.added).toEqual([keep, '- Shared.']);
+    const open = log('\n### Fixes\n```text\nsample\n', OLD);
+    const once = reconcileChangelog({ fork: open, upstream: log('\n### Fixes\n\n- New.\n', OLD) }).text;
+    expect(unreleasedOf(once)).toBe('\n### Fixes\n\n- New.\n\n```text\nsample\n');
+    expect(reconcileChangelog({ fork: once, upstream: log('\n### Fixes\n\n- New.\n', OLD) }).text).toBe(once);
+  });
+
   it("adds upstream's entry after the text a heading opens with, and only once", () => {
     const upstream = log('\n### Fixes\n\n- New.\n', OLD);
     const fork = log('\n### Fixes\nUpgrade note.\n\n#### Go\n\n- Fork.\n', OLD);

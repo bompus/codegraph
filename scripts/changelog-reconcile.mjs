@@ -24,6 +24,11 @@
  * fork parent's newest release, but not word for word, stays in place and is
  * reported for a person to decide.
  *
+ * Entries are `- ` list items at column 0 under `###` and `####` headings, as
+ * this repository writes them. A fenced code block is text when its opening
+ * fence starts at column 0 or sits inside an indented entry; other Markdown
+ * nesting is not modeled.
+ *
  * Usage, from the repository root:
  *   node scripts/changelog-reconcile.mjs [--fork <ref>] [--upstream <ref>] [--base <ref>] [--check] [--strict]
  *
@@ -53,7 +58,9 @@ export function splitChangelog(text) {
 const blank = (line) => line.trim() === '';
 const headingLevel = (line) => /^(#{3,}) /.exec(line)?.[1].length ?? 0;
 
-const FENCE_OPEN = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
+// A fence inside an entry is indented and belongs to the entry; only one
+// opened at column 0 is a block of the section.
+const FENCE_OPEN = /^(`{3,}(?=[^`]*$)|~{3,})/;
 const HTML_BLOCK_TAGS =
   'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|' +
   'fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|' +
@@ -80,14 +87,15 @@ const INTERRUPTS = new RegExp(
 
 /**
  * Per line, its `###`-or-deeper heading level (0 for other lines) and whether
- * it belongs to a fenced code block, delimiters included. Headings inside a
- * fence are text.
+ * it belongs to a fenced code block, delimiters included; `unclosed` is the
+ * line of a fence that runs to the end, or -1. Headings inside a fence are text.
  */
 function scan(lines) {
   const level = [];
   const fenced = [];
   let close = null;
-  for (const line of lines) {
+  let unclosed = -1;
+  for (const [i, line] of lines.entries()) {
     if (close) {
       if (close.test(line)) close = null;
       level.push(0);
@@ -95,11 +103,14 @@ function scan(lines) {
       continue;
     }
     const open = FENCE_OPEN.exec(line);
-    if (open) close = new RegExp(`^ {0,3}${open[1][0]}{${open[1].length},}[ \\t]*$`);
+    if (open) {
+      close = new RegExp(`^ {0,3}${open[1][0]}{${open[1].length},}[ \\t]*$`);
+      unclosed = i;
+    }
     level.push(open ? 0 : headingLevel(line));
     fenced.push(Boolean(open));
   }
-  return { level, fenced };
+  return { level, fenced, unclosed: close ? unclosed : -1 };
 }
 
 /**
@@ -223,7 +234,9 @@ function dropEmptiedHeadings(lines, origin, keep) {
  * are added at the end of the deepest one it has.
  */
 function insertEntry(body, path, lines) {
-  const { level } = scan(body);
+  const { level, unclosed } = scan(body);
+  // An insertion point past a fence that never closes moves to before it.
+  const outside = (at) => (unclosed >= lo && unclosed < at ? unclosed : at);
   let lo = 0;
   let hi = body.length;
   let matched = 0;
@@ -235,7 +248,7 @@ function insertEntry(body, path, lines) {
     matched++;
   }
   if (matched < path.length) {
-    let at = hi;
+    let at = outside(hi);
     while (at > lo && blank(body[at - 1])) at--;
     const added = [...path.slice(matched).flatMap((h) => ['', h]), '', ...lines];
     if (at < body.length && !blank(body[at])) added.push('');
@@ -247,7 +260,7 @@ function insertEntry(body, path, lines) {
   const own = entries(body.slice(0, direct)).filter((e) => e.start >= lo);
   if (own.length === 0) {
     // After any text the heading opens with, kept apart from it by a blank line.
-    let at = direct;
+    let at = outside(direct);
     while (at > lo && blank(body[at - 1])) at--;
     const added = ['', ...lines];
     if (at < body.length && !blank(body[at])) added.push('');
