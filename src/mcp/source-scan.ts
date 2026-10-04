@@ -4,8 +4,8 @@
  * template binding) and where a quoted phrase sits. Reads only files the index
  * tracks, under the same root containment as every other explore read.
  */
-import { closeSync, fstatSync, openSync, readFileSync } from 'fs';
-import { rootContainmentCheck } from '../utils';
+import { closeSync, fstatSync, readSync } from 'fs';
+import { rootContainedOpener } from '../utils';
 
 /**
  * Limits on what a warm scan reads inside a 300 ms budget, with room to spare.
@@ -40,16 +40,21 @@ export interface ScanLimits {
 }
 
 export interface ScanResult {
-  /** False when the budget or the byte total ran out before every file was read. */
+  /**
+   * True when every file was read, or `onMatch` stopped the scan. The budget
+   * is checked before each file, so the last read can end past it; its text
+   * is still matched, because the answer is complete and the time is spent.
+   */
   complete: boolean;
-  /** Files not read: outside the root, unreadable, or over `maxFileBytes`. */
+  /** Files not read: outside the root, unreadable, over `maxFileBytes`, or grown while read. */
   skipped: number;
 }
 
 /**
  * Calls `onMatch` for every match of the global `pattern` in `files`, in
  * order, until it returns true or a limit runs out. Sizes are checked on the
- * opened file, so a file that grew since indexing cannot overrun them.
+ * opened file, and the read stops one byte past that size, so a file that grew
+ * since indexing, or grows while it is read, cannot overrun them.
  */
 export function scanIndexedSource(
   projectRoot: string,
@@ -60,27 +65,33 @@ export function scanIndexedSource(
 ): ScanResult {
   if (!pattern.global) throw new Error('scanIndexedSource needs a global pattern');
   const deadline = Date.now() + limits.budgetMs;
-  const contained = rootContainmentCheck(projectRoot);
+  const open = rootContainedOpener(projectRoot);
   let skipped = 0;
   let total = 0;
   for (const file of files) {
     if (Date.now() > deadline) return { complete: false, skipped };
-    const absolute = contained(file.path);
-    if (!absolute) { skipped++; continue; }
+    const fd = open(file.path);
+    if (fd === null) { skipped++; continue; }
     let text: string;
-    let fd: number | undefined;
     try {
-      fd = openSync(absolute, 'r');
       const size = fstatSync(fd).size;
       if (size > limits.maxFileBytes) { skipped++; continue; }
-      total += size;
-      if (total > limits.maxTotalBytes) return { complete: false, skipped };
-      text = readFileSync(fd, 'utf8');
+      if (total + size > limits.maxTotalBytes) return { complete: false, skipped };
+      const buf = Buffer.allocUnsafe(size + 1);
+      let read = 0;
+      while (read < buf.length) {
+        const n = readSync(fd, buf, read, buf.length - read, null);
+        if (n === 0) break;
+        read += n;
+      }
+      if (read > size) { skipped++; continue; }
+      total += read;
+      text = buf.toString('utf8', 0, read);
     } catch {
       skipped++;
       continue;
     } finally {
-      if (fd !== undefined) closeSync(fd);
+      closeSync(fd);
     }
     pattern.lastIndex = 0;
     for (const m of text.matchAll(pattern)) {
