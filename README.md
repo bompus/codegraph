@@ -116,7 +116,7 @@ Dispatch and framework coverage the fork adds, by kind:
 
 Call resolution the fork adds:
 
-- Kotlin infix calls keep their call edge when an operand is parenthesized or a comment sits inside the expression.
+- Kotlin infix calls keep their call edge when a comment sits inside the expression.
 - Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls keep compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types.
 - Kotlin chains on instance and extension receivers use the declared return type, including nested and multiline calls; upstream covers class and companion-factory chains. An imported return-type guess for an unknown receiver keeps confidence at most 0.7, and so does a Rust chain match without a proved receiver type.
 - Kotlin multi-dollar strings keep their interpolation threshold.
@@ -124,14 +124,14 @@ Call resolution the fork adds:
 - C++ namespace aliases and declarations in macro-opened namespaces are looked up only in the caller's include closure; upstream pools them across all files.
 - C# namespace `using` directives and `using` aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file (`using static` is still file-wide, as upstream).
 - A Java field declared with a qualified type (`outside.Repository`) keeps its qualifier, so calls through it never resolve to an unrelated project class with the same simple name.
-- Python `super()` calls follow the class's full method resolution order across multiple bases, where upstream goes to the parent's version.
+- Python `super().method()` resolves along the class's C3 method resolution order, starting after the class itself. Upstream resolves it like `self.method()` and drops the link only when it lands on the calling method.
 - A `require` call creates no file dependency when a local binding shadows `require`.
 
 **Server endpoints**
 
 | Addition | What it links |
 |---|---|
-| HTTP routes | Routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny, read from the router object a call is made on rather than the names `app` and `router`, with composed prefixes (Hono `basePath`, Koa `prefix`, Elysia `group`, Fastify `register`); Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/` and method suffixes. Upstream matches calls on `app` and `router` by name and reads Nuxt `server/api/` |
+| HTTP routes | Routes in Hono, Elysia, Fastify, Koa router, H3, Hyper-Express, Bun, Effect v4 and Vixeny, read from the router object a call is made on rather than the names `app` and `router`, with composed prefixes (Hono `basePath`, Koa `prefix`, Elysia `group`, Fastify `register`); Fastify plugin files with `@fastify/autoload` directory prefixes; Nuxt `server/routes/` and method suffixes. Upstream matches calls on `app` and `router` by name, composes Express `X.use('/prefix', router)` mounts across files, and reads Nuxt `server/api/` |
 | Route groups | Group prefixes in route paths for gin, chi, gorilla, actix `web::scope` and GoFrame |
 | TanStack Start server routes | `server.handlers` tables in file routes as method-qualified endpoints, linked to named handlers |
 
