@@ -583,7 +583,9 @@ pub struct KernelResolver {
     /// The run token the table is shared under (see NodeTable); None keeps
     /// the table private.
     generation: Option<String>,
-    bindings_cache: HashMap<String, Rc<Vec<KBinding>>>,
+    /// A file's bindings rows. Lookups cluster by file, so 128 files keep
+    /// nearly every hit: unbounded, n8n's workers held 86-140 MB each.
+    bindings_cache: Lru<Rc<Vec<KBinding>>>,
     import_map_cache: HashMap<String, Rc<Vec<KImport>>>,
     reexport_cache: HashMap<String, Rc<Vec<KReExport>>>,
     lua_declaration_memo: HashMap<String, Arc<Vec<Arc<KNode>>>>,
@@ -786,7 +788,7 @@ impl KernelResolver {
             supertypes_complete: config.supertypes_complete.unwrap_or(false),
             framework_names: config.framework_names,
             ambiguous_ceiling: config.ambiguous_name_ceiling.unwrap_or(500) as i64,
-            bindings_cache: HashMap::new(),
+            bindings_cache: Lru::new(128),
             import_map_cache: HashMap::new(),
             reexport_cache: HashMap::new(),
             lua_declaration_memo: HashMap::new(),
@@ -863,10 +865,10 @@ impl KernelResolver {
     }
 
     /// Deterministic teardown: releases the conn, the node table and the
-    /// cached sources and trees at a known point instead of whenever V8 GCs
-    /// the JS wrapper. A live-db conn is parked, not closed (live_conn):
-    /// closing it would drop this process's POSIX locks on the db,
-    /// node:sqlite's included. A snapshot conn closes.
+    /// cached sources, trees and bindings at a known point instead of
+    /// whenever V8 GCs the JS wrapper. A live-db conn is parked, not closed
+    /// (live_conn): closing it would drop this process's POSIX locks on the
+    /// db, node:sqlite's included. A snapshot conn closes.
     #[napi]
     pub fn close(&mut self) {
         self.debug_stats("close");
@@ -874,6 +876,7 @@ impl KernelResolver {
         self.table.take();
         self.file_cache.clear();
         self.tree_cache.clear();
+        self.bindings_cache.clear();
     }
 
     /// Give the conn up: a live-db conn is parked for reuse, never closed —
@@ -904,7 +907,7 @@ impl KernelResolver {
             "[kernel-stats] {at}: regex(shared)={} files={} (lines={file_lines} bytes={file_bytes}) bindings={} imports={} reexports={} export_index={} memos: symbol={} import_path={} sealed={} c_static={} rust_trait={} root_import={} crate_root={} factory_init={}",
             shared_regex_count(),
             self.file_cache.map.len(),
-            self.bindings_cache.len(),
+            self.bindings_cache.map.len(),
             self.import_map_cache.len(),
             self.reexport_cache.len(),
             self.export_index.len(),
