@@ -183,7 +183,7 @@ Upstream at `6560052` takes 2.3 to 2.7 times as long to index Python as at `290e
 | supabase | 6.30 s | 2.94 s | 2.77 s |
 | n8n | 13.2 s | 4.38 s | 4.06 s |
 
-Both builds rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass; the fork reruns only the passes the changed files can affect. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
+Both builds rebuild the links inferred from events, callbacks and function pointers after a sync, so a sync ends with the graph a full index would build ([colbymchenry/codegraph#1988](https://github.com/colbymchenry/codegraph/issues/1988)). Upstream reruns every inference pass inside each sync that touches an inferred link; the fork reruns every pass that applies to the project's languages once edits pause. `CODEGRAPH_SYNC_RESYNTHESIS=0` turns the fork's rebuild off, trading it for stale inferred links.
 
 **MCP server** on n8n (`codegraph serve --mcp`; memory and CPU summed over the server and the daemon it starts):
 
