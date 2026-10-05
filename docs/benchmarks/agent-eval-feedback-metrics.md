@@ -65,10 +65,11 @@ transcript. `parse-session.mjs <project-dir>` does sufficiency and allocation
 for an *interactive* session. `compare-arms.mjs <out-dir> <label>…` builds the
 table from logs on disk, at any time, for any labels.
 
-**Model policy, both harnesses, not negotiable:** `--model sonnet --effort high`
-on every arm, both arms the same model. Sonnet is the deliberate floor — an
-affordance that lands on it generalizes up to every host; one that only works on
-a stronger model does not generalize down to the agents most users have.
+**Model policy:** follow [model selection and availability](../AGENTS.md#validation-methodology-required-for-every-new-languageframework).
+Sonnet/high remains the default floor model. Comparison arms use the same
+model and effort; an eligible availability fallback does not establish
+weaker-model sufficiency. Retain failed attempts and preserve their output
+before restarting both arms under the selected fallback.
 
 ---
 
