@@ -52,7 +52,7 @@ import {
   statSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { MAX_SCAN_TOTAL_BYTES, scanFits, scanIndexedSource } from './source-scan';
+import { MAX_SCAN_TOTAL_BYTES, QUOTED_SPAN, quotedProsePattern, scanFits, scanIndexedSource, scanQuotedProse } from './source-scan';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
@@ -247,12 +247,6 @@ function filesDefiningSymbol(cg: CodeGraph, symbol: string): string[] {
 
 /** Time the not-found check may spend reading indexed source text. */
 const UNMATCHED_SCAN_BUDGET_MS = 300;
-/**
- * One quoted span of a query: double quotes, backticks, or single quotes that
- * sit away from a word, so the apostrophes in "don't" and "it's" are letters.
- * Matched left to right, so each closing quote ends its own span.
- */
-const QUOTED_SPAN = /"([^"\n]*)"|`([^`\n]*)`|(?<![\w$])'((?:[^'\n]|(?<=\w)'(?=\w))*)'(?![\w$])/g;
 const NAME_SHAPE = /[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g;
 
 /**
@@ -4630,9 +4624,24 @@ export class ToolHandler {
     // default file cap (sized for ranked padding) rises to the holder count;
     // the character budget still bounds the answer, and an explicit maxFiles
     // stands.
-    const literalSeedIds = cg.findLiteralSeedIds(matchQuery);
-    if (!args.maxFiles && literalSeedIds.length > 0) {
-      const holderFiles = new Set<string>();
+    const prosePattern = quotedProsePattern(rawQuery);
+    const proseMatches = prosePattern
+      ? scanQuotedProse(projectRoot,
+        cg.getTextScanFiles().filter(file => !CONFIG_LEAF_LANGUAGES.has(file.language)), prosePattern) : [];
+    const proseFiles = new Set(proseMatches.map(match => match.file));
+    lineAnchors.push(...proseMatches);
+    const proseSeedIds: string[] = [];
+    for (const match of proseMatches) {
+      const nodes = cg.getNodesInFile(match.file);
+      const holder = nodes.filter(n => ANCHOR_CALLABLE_KINDS.has(n.kind)
+        && n.startLine <= match.start && n.endLine >= match.end)
+        .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0]
+        ?? nodes.find(n => n.kind === 'file');
+      if (holder) proseSeedIds.push(holder.id);
+    }
+    const literalSeedIds = [...new Set([...cg.findLiteralSeedIds(matchQuery), ...proseSeedIds])];
+    if (!args.maxFiles && (literalSeedIds.length > 0 || proseFiles.size > 0)) {
+      const holderFiles = new Set<string>(proseFiles);
       for (const id of literalSeedIds) {
         const n = cg.getNode(id);
         if (n) holderFiles.add(n.filePath);
@@ -4705,7 +4714,12 @@ export class ToolHandler {
         traversalDepth: 3,
         maxNodes: 200,
         minScore: 0.2,
+        seedNodeIds: literalSeedIds,
       });
+    for (const id of proseSeedIds) {
+      const node = cg.getNode(id);
+      if (node) subgraph.nodes.set(id, node);
+    }
     for (const n of changedNodes) subgraph.nodes.set(n.id, n);
     if (changedNodes.length > 0) {
       const changedIds = new Set(changedNodes.map((n) => n.id));
@@ -4788,7 +4802,7 @@ export class ToolHandler {
       anchorSpans.set(anchor.file, spans);
     }
 
-    if (subgraph.nodes.size === 0) {
+    if (subgraph.nodes.size === 0 && proseFiles.size === 0) {
       diag?.finishEmpty('no relevant code found — empty subgraph');
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
@@ -5562,6 +5576,11 @@ export class ToolHandler {
       }
       fileGroups.set(node.filePath, group);
     }
+    // File-record-only templates have no node to seed. Their verified source
+    // match still admits a file group, without inventing a symbol or edge.
+    for (const file of proseFiles) {
+      if (!fileGroups.has(file)) fileGroups.set(file, { nodes: [], score: 50, peripheral: 0, injected: 0 });
+    }
 
     // Extract query terms for relevance checking (path-stripped: a pinned
     // file's own path fragments must not count as "term hits" everywhere)
@@ -5665,7 +5684,7 @@ export class ToolHandler {
     {
       if (!queryMentionsTests) {
         // A pinned file is exempt: naming a test file by path IS asking for it.
-        const nonLow = candidateFiles.filter(([p]) => !isLowValue(p) || pinnedSet.has(p));
+        const nonLow = candidateFiles.filter(([p]) => !isLowValue(p) || pinnedSet.has(p) || proseFiles.has(p));
         if (nonLow.length >= 2) {
           candidateFiles = nonLow;
         }
@@ -5681,7 +5700,7 @@ export class ToolHandler {
       Math.min(SCORE_FLOOR_MAX, topScore * SCORE_FLOOR_FRACTION_OF_TOP),
     );
     let relevantFiles = candidateFiles.filter(
-      ([fp, group]) => group.score >= scoreFloor || pinnedSet.has(fp) || injectedFiles.has(fp) || coveringTestLines.has(fp),
+      ([fp, group]) => group.score >= scoreFloor || pinnedSet.has(fp) || proseFiles.has(fp) || injectedFiles.has(fp) || coveringTestLines.has(fp),
     );
     if (relevantFiles.length < SCORE_FLOOR_KEEP_MIN) {
       // Backfill from what the RELATIVE floor cut, best first, at two strengths:
@@ -5788,7 +5807,7 @@ export class ToolHandler {
     // mass is low (a leaf family file like codec.ts is call-connected to little
     // but is exactly what the agent queried). Without this protection the gate
     // prunes a named file and the agent Reads it back.
-    const entryFiles = new Set<string>();
+    const entryFiles = new Set<string>(proseFiles);
     for (const id of entryNodeIds) {
       const n = subgraph.nodes.get(id);
       if (n) entryFiles.add(n.filePath);
@@ -5855,7 +5874,7 @@ export class ToolHandler {
     // connectivity abstract base (`Request.swift`) and the same-named overloads
     // in other files (`Validation.swift`), falls outside the budget, and the
     // agent Reads it. The named file is the answer — rank it at the top.
-    const namedSeedFiles = new Set<string>();
+    const namedSeedFiles = new Set<string>(proseFiles);
     for (const id of tierSeedIds) {
       const n = subgraph.nodes.get(id);
       if (n) namedSeedFiles.add(n.filePath);
@@ -6669,7 +6688,7 @@ export class ToolHandler {
       }
 
       const fileLines = fileContent.split('\n');
-      const lang = group.nodes[0]?.language || '';
+      const lang = group.nodes[0]?.language || (proseFiles.has(filePath) ? cg.getFile(filePath)?.language : '') || '';
       const withLineNumbers = exploreLineNumbersEnabled();
       // Language-neutral separator between two non-contiguous slices of one file
       // (no `//` — not a comment in Python, Ruby, etc.). With line numbers on,
@@ -7096,7 +7115,7 @@ export class ToolHandler {
       }
       // A doc answer keeps its budget: a code file joins it only when the query
       // named a symbol the file defines.
-      if (docTierFiles.size > 0 && !group.nodes.some((n) => codeNamedIds.has(n.id))) continue;
+      if (docTierFiles.size > 0 && !proseFiles.has(filePath) && !group.nodes.some((n) => codeNamedIds.has(n.id))) continue;
 
       // Adaptive sizing (CODEGRAPH_ADAPTIVE_EXPLORE, default on): collapse a file
       // to a per-symbol view when it's a redundant member of a polymorphic family.

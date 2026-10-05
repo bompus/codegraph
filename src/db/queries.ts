@@ -595,13 +595,13 @@ export class QueryBuilder {
   }
 
   /** Hand-written, non-markdown files with their indexed sizes, sorted by path. */
-  getTextScanFiles(): Array<{ path: string; size: number }> {
+  getTextScanFiles(): Array<{ path: string; size: number; language: string }> {
     if (!this.stmts.getTextScanFiles) {
       this.stmts.getTextScanFiles = this.db.prepare(
-        "SELECT path, size FROM files WHERE generated = 0 AND language <> 'markdown' ORDER BY path",
+        "SELECT path, size, language FROM files WHERE generated = 0 AND language <> 'markdown' ORDER BY path",
       );
     }
-    return this.stmts.getTextScanFiles.all() as Array<{ path: string; size: number }>;
+    return this.stmts.getTextScanFiles.all() as Array<{ path: string; size: number; language: string }>;
   }
 
   /** Whether any file binds `name` (an import, parameter, local or declaration). */
