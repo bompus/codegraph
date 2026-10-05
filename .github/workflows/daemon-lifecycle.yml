@@ -4,12 +4,16 @@ on:
     branches: [fork/consolidated]
     paths:
       - 'src/mcp/**'
+      - 'src/runtime-control.ts'
+      - 'src/index.ts'
       - 'src/extraction/**'
       - 'src/codegraph.ts'
       - 'codegraph-kernel/**'
       - '__tests__/daemon-*.test.ts'
       - '__tests__/mcp-*.test.ts'
       - '__tests__/writer-lock.test.ts'
+      - '__tests__/runtime-control.test.ts'
+      - '__tests__/fixtures/runtime-control-daemon.cjs'
       - '__tests__/writer-handover-ordering.test.ts'
       - '__tests__/fixtures/writer-lock-ordering.cjs'
       - '__tests__/query-pool.test.ts'
@@ -54,4 +58,4 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build:kernel
       - run: npm run build
-      - run: npx vitest run __tests__/daemon-install-check.test.ts __tests__/daemon-older-version.test.ts __tests__/cli-version.test.ts __tests__/daemon-registry.test.ts __tests__/daemon-pid-reuse.test.ts __tests__/daemon-lock-refresh.test.ts __tests__/mcp-daemon.test.ts __tests__/daemon-client-liveness.test.ts __tests__/daemon-bind-failure.test.ts __tests__/daemon-socket-fallback.test.ts __tests__/daemon-rendezvous-case.test.ts __tests__/writer-lock.test.ts __tests__/writer-handover-ordering.test.ts __tests__/mcp-writer-lock.test.ts __tests__/mcp-projectpath-lifecycle.test.ts __tests__/query-pool.test.ts __tests__/status-index-health.test.ts --maxWorkers=2 --minWorkers=1
+      - run: npx vitest run __tests__/runtime-control.test.ts __tests__/daemon-install-check.test.ts __tests__/daemon-older-version.test.ts __tests__/cli-version.test.ts __tests__/daemon-registry.test.ts __tests__/daemon-pid-reuse.test.ts __tests__/daemon-lock-refresh.test.ts __tests__/mcp-daemon.test.ts __tests__/daemon-client-liveness.test.ts __tests__/daemon-bind-failure.test.ts __tests__/daemon-socket-fallback.test.ts __tests__/daemon-rendezvous-case.test.ts __tests__/writer-lock.test.ts __tests__/writer-handover-ordering.test.ts __tests__/mcp-writer-lock.test.ts __tests__/mcp-projectpath-lifecycle.test.ts __tests__/query-pool.test.ts __tests__/status-index-health.test.ts --maxWorkers=2 --minWorkers=1

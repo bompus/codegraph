@@ -32,6 +32,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Installers can verify daemon readiness and safely hand writer ownership across build promotion and rollback through a supported runtime-control API.
+
 - `codegraph_explore` now finds quoted prose in script strings and template text through a capped source scan, ignoring case and punctuation without requiring a re-index.
 
 - After a complete scan of indexed source without skipped files, `codegraph_explore` lists query names it cannot find, so an agent can catch a guessed name.

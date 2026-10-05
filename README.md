@@ -837,6 +837,17 @@ Lower-level building blocks are exported from the same entry point for callers
 that drive the graph directly: `DatabaseConnection`, `QueryBuilder`,
 `getDatabasePath`, `initGrammars` / `loadGrammarsForLanguages`, and `FileLock`.
 
+### Installer runtime control
+
+Installers can use the supported `dist/runtime-control.js` module without loading
+the graph API. Its functions are also exported from the package entry point.
+`RUNTIME_CONTROL_PROTOCOL` is `1`. The API verifies daemon identity and readiness,
+reports stop outcomes, and reserves the writer slot for a live updater. A
+replacement bootstrap claims that reservation before running its CLI in the same
+process. Keep the coordination module available separately from the executable
+being replaced, including during rollback. Live legacy writers require explicit
+session quiescence before cutover. See the [runtime control contract](site/src/content/docs/reference/api.md#installer-runtime-control).
+
 **Embedding requirements**
 
 - Install from npm (`npm i @colbymchenry/codegraph`) so the matching

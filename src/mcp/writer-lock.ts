@@ -15,6 +15,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { getCodeGraphDir } from '../directory';
 import { requireKernel } from '../extraction/kernel/loader';
 /** Signal-0 liveness (EPERM ⇒ alive). Local copy to avoid a daemon↔writer cycle. */
@@ -116,18 +117,34 @@ export function tryAcquireWriterLock(
   mode: string,
   lockName: 'writer.pid' | 'rebuild.pid' = 'writer.pid',
 ): WriterAcquireResult {
+  return acquireWriterRecord(projectRoot, {
+    pid: process.pid, mode, startedAt: Date.now(), ready: false,
+  }, lockName);
+}
+
+/** Reserve for a live external updater. A unique mode distinguishes repeated leases by one PID. */
+export function reserveWriterLock(projectRoot: string, holderPid: number): WriterAcquireResult {
+  if (!Number.isSafeInteger(holderPid) || holderPid <= 0 || !isProcessAlive(holderPid)) {
+    throw new Error('Writer reservation requires a live holder PID.');
+  }
+  return acquireWriterRecord(projectRoot, {
+    pid: holderPid, mode: `promotion:${randomUUID()}`, startedAt: Date.now(), ready: false,
+  }, 'writer.pid', false);
+}
+
+function acquireWriterRecord(
+  projectRoot: string,
+  info: WriterLockInfo,
+  lockName: 'writer.pid' | 'rebuild.pid',
+  reuseOwnRecord = true,
+): WriterAcquireResult {
   const pidPath = getWriterPidPath(projectRoot, lockName);
   fs.mkdirSync(path.dirname(pidPath), { recursive: true });
 
   const mutation = lockWriterMutation(pidPath);
   if (!mutation) return { kind: 'taken', existing: readWriterLock(projectRoot, lockName), pidPath };
   try {
-    const info: WriterLockInfo = {
-      pid: process.pid,
-      mode,
-      startedAt: Date.now(),
-      ready: false,
-    };
+    if (!isProcessAlive(info.pid)) return { kind: 'taken', existing: readWriterLock(projectRoot, lockName), pidPath };
 
     const attempt = (): WriterAcquireResult => {
       const tmp = `${pidPath}.${process.pid}.tmp`;
@@ -173,7 +190,7 @@ export function tryAcquireWriterLock(
     };
 
     let result = attempt();
-    if (result.kind === 'taken' && result.existing && result.existing.pid === process.pid) {
+    if (reuseOwnRecord && result.kind === 'taken' && result.existing && result.existing.pid === process.pid) {
       // Same process already holds it (daemon acquired before engine watch).
       cancelPendingRelease(pidPath);
       return { kind: 'acquired', pidPath: result.pidPath, info: result.existing };
@@ -264,13 +281,42 @@ const SWAP_RETRY_DELAYS_MS = [25, 50, 100, 200];
  * section. Callers check whether the record was replaced. Never throws.
  */
 export function swapWriterLock(projectRoot: string, fromPid: number, next: WriterLockInfo): boolean {
+  return updateWriterLock(projectRoot, fromPid, next);
+}
+
+/** Compare a reservation generation before transfer or release; old leases cannot affect successors. */
+export function updateWriterLock(
+  projectRoot: string,
+  expected: number | WriterLockInfo,
+  next: WriterLockInfo | null,
+): boolean {
   const pidPath = getWriterPidPath(projectRoot);
   const tmp = `${pidPath}.${process.pid}.swap.tmp`;
   let mutation: { release(): void } | null = null;
   try {
     mutation = lockWriterMutation(pidPath);
     if (!mutation) return false;
-    if (readWriterLock(projectRoot)?.pid !== fromPid) return false;
+    const matches = (): boolean => {
+      let current: WriterLockInfo | null;
+      try {
+        current = decodeWriterLockInfo(fs.readFileSync(pidPath, 'utf8'));
+        if (!current) throw new Error('Writer ownership record is invalid.');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+      return typeof expected === 'number'
+        ? current?.pid === expected
+        : current?.pid === expected.pid && current.mode === expected.mode && current.startedAt === expected.startedAt;
+    };
+    if (!matches()) return next === null;
+    if (typeof expected !== 'number' && next && !isProcessAlive(expected.pid)) return false;
+    if (!next) {
+      fs.unlinkSync(pidPath);
+      cancelPendingReadiness(pidPath);
+      cancelPendingRelease(pidPath);
+      return true;
+    }
     fs.writeFileSync(tmp, encode(next), { mode: 0o600 });
     for (let attempt = 0; ; attempt++) {
       try {
@@ -285,7 +331,7 @@ export function swapWriterLock(projectRoot: string, fromPid: number, next: Write
           return false;
         }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
-        if (readWriterLock(projectRoot)?.pid !== fromPid) return false;
+        if (!matches()) return false;
       }
     }
   } catch {
