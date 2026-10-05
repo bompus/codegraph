@@ -13,20 +13,23 @@
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
+const writer = require(process.env.CODEGRAPH_TEST_WRITER_MODULE);
 
 const [root, version, socketPath] = process.argv.slice(2);
 const dir = path.join(root, '.codegraph');
 const writeLock = (name, record) => fs.writeFileSync(path.join(dir, name), JSON.stringify(record) + '\n');
 
 const server = net.createServer((socket) => {
-  socket.end(JSON.stringify({ codegraph: version, pid: process.pid, socketPath, protocol: 1 }) + '\n');
+  socket.end(JSON.stringify({ codegraph: version, pid: process.pid, socketPath, protocol: 1, writerProtocol: 1 }) + '\n');
 });
 server.listen(socketPath, () => {
-  writeLock('writer.pid', { pid: process.pid, mode: 'daemon', startedAt: Date.now(), ready: true });
+  writer.tryAcquireWriterLock(root, 'daemon');
+  writer.markWriterReady(root);
   writeLock('daemon.pid', { pid: process.pid, version, socketPath, startedAt: Date.now() });
 });
 process.on('SIGTERM', () => {
-  for (const name of ['writer.pid', 'daemon.pid']) {
+  writer.releaseWriterLock(root);
+  for (const name of ['daemon.pid']) {
     const file = path.join(dir, name);
     try {
       if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === process.pid) fs.unlinkSync(file);

@@ -363,7 +363,9 @@ async function replaceOlderDaemon(root: string, answered: boolean): Promise<'sto
     );
     return 'stopped';
   }
-  if (result.outcome === 'still-running') {
+  if (result.outcome === 'legacy-writer') {
+    process.stderr.write(`[CodeGraph MCP] Left ${daemon} running because it lacks coordinated writer handover; serving reads without auto-sync. Stop its old MCP sessions and daemon, then reconnect with this install.\n`);
+  } else if (result.outcome === 'still-running') {
     process.stderr.write(`[CodeGraph MCP] Asked ${daemon} serving this project to stop, but it has not exited yet.\n`);
   } else if (answered) {
     process.stderr.write(

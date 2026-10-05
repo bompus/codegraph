@@ -58,7 +58,7 @@ The fork publishes no releases. The install scripts, npm package, badges and `co
 
 ### Install the fork from source
 
-You need Node.js 22.13 or newer (or Bun 1.4.0 or newer), git, and a [Rust toolchain](https://rustup.rs/) for the native kernel.
+You need Node.js 22.13 or newer (or Bun 1.4.0 or newer), git, and a [Rust toolchain](https://rustup.rs/) 1.89 or newer for the native kernel.
 
 ```bash
 git clone https://github.com/bompus/codegraph.git
@@ -110,7 +110,7 @@ C# property accessors and expression-bodied properties contribute calls and refe
 
 `codegraph status` reports files that need re-indexing and files with recorded parse errors. `status --json` includes `index.filesNeedingReindex` and `index.filesWithParseErrors`; `files --json` includes each file's extraction errors. A transient parser failure preserves the previous graph and retries on the next sync.
 
-The MCP launcher can replace a daemon from an older release. A daemon exits when its installation is deleted or its package version changes. Different managed builds of the same release retain the fork's version-identity checks.
+The MCP launcher can replace a daemon from an older release when its hello confirms coordinated writer handover. Legacy daemons stay running while new sessions serve reads without auto-sync; stop the old MCP sessions and daemon, then reconnect with the current install. A daemon exits when its installation is deleted or its package version changes. Different managed builds of the same release retain the fork's version-identity checks.
 
 Dispatch and framework coverage the fork adds, by kind:
 
@@ -1108,7 +1108,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **MCP server not connecting** — Your agent starts the server itself, so you don't launch it by hand. Make sure the project is initialized and indexed (`codegraph status`) and that the path in your MCP config is correct. If it still won't connect, re-run `codegraph install` to rewrite the config.
 
-**Two `codegraph serve --mcp` on one project fight over the index / auto-sync stops** — CodeGraph allows one live MCP *writer* per project (the shared background daemon, or a single direct-mode process). Extra clients should proxy to that daemon. If you set `CODEGRAPH_NO_DAEMON=1`, run only one `serve --mcp` for that project; a second instance exits with a clear writer-lock error (see `writer.pid` under `.codegraph/`). Prefer leaving the daemon enabled so multiple MCP hosts share one watcher.
+**Two `codegraph serve --mcp` on one project fight over the index / auto-sync stops** — CodeGraph allows one live MCP *writer* per project (the shared background daemon, or a single direct-mode process). Extra clients should proxy to that daemon. If you set `CODEGRAPH_NO_DAEMON=1`, run only one `serve --mcp` for that project; a second instance exits with a clear writer-lock error (see `writer.pid` under `.codegraph/`; its persistent `writer.pid.mutation.lock` coordinates ownership changes and needs no stale-lock deletion). Prefer leaving the daemon enabled so multiple MCP hosts share one watcher.
 
 **MCP tool calls fail with `Transport closed` while `codegraph status`/`sync` are healthy** — almost always WSL2 with the project on a Windows drive (a `/mnt/c` or `/mnt/d` path), where the local socket CodeGraph uses to share one background server across sessions is unreliable. CodeGraph now falls back to serving the session in-process instead of dropping the connection, and keeps trying to reach the shared server in the background: first after 5 seconds, backing off to every 5 minutes. `CODEGRAPH_DAEMON_RETRY_MS` and `CODEGRAPH_DAEMON_RETRY_MAX_MS` set those two delays, and `CODEGRAPH_DAEMON_RETRY_MS=0` stops retrying. If you still hit it, set `CODEGRAPH_NO_DAEMON=1` in your MCP server's environment to skip the shared server entirely (each session runs in its own process). Moving the project onto the Linux-native filesystem (e.g. under `~/` instead of `/mnt/`) restores the shared server.
 

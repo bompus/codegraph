@@ -251,7 +251,7 @@ export interface StopResult {
   root: string;
   pid: number | null;
   /** 'term' graceful, 'kill' force, 'still-running' refused, 'not-running' stale, 'no-daemon' absent, 'unverified' preserved. */
-  outcome: 'term' | 'kill' | 'still-running' | 'not-running' | 'no-daemon' | 'unverified';
+  outcome: 'term' | 'kill' | 'still-running' | 'not-running' | 'no-daemon' | 'unverified' | 'legacy-writer';
   /** The daemon's version as its lock recorded it, when the stop got that far. */
   version?: string;
 }
@@ -408,6 +408,11 @@ export async function stopOlderDaemon(
   // The hello must name this pid and version (#1553): a reused pid is no daemon.
   if (!canProbeDaemonIdentity(identity) || !await probeDaemonIdentity(identity)) {
     return { root, pid, outcome: 'unverified', version: identity.version };
+  }
+  // A legacy daemon can still publish readiness or release after our claim;
+  // its unfenced mutations cannot be serialized by the new OS lock.
+  if (!await probeDaemonIdentity(identity, undefined, true)) {
+    return { root, pid, outcome: 'legacy-writer', version: identity.version };
   }
   const slot = takeWriterSlotFrom(root, pid);
   if (!slot) return null;

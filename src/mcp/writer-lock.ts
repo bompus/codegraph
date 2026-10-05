@@ -16,6 +16,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getCodeGraphDir } from '../directory';
+import { requireKernel } from '../extraction/kernel/loader';
 /** Signal-0 liveness (EPERM ⇒ alive). Local copy to avoid a daemon↔writer cycle. */
 function isProcessAlive(pid: number): boolean {
   try {
@@ -58,6 +59,28 @@ export type WriterAcquireResult =
   | { kind: 'acquired'; pidPath: string; info: WriterLockInfo }
   | { kind: 'taken'; existing: WriterLockInfo | null; pidPath: string };
 
+const pendingReleases = new Map<string, NodeJS.Timeout>();
+
+function cancelPendingRelease(pidPath: string): void {
+  const timer = pendingReleases.get(pidPath);
+  if (timer) clearTimeout(timer);
+  pendingReleases.delete(pidPath);
+}
+
+/** Serialize every ownership comparison and mutation, including stale cleanup.
+ * Keep the guard file permanently; the OS releases its lock on process exit. */
+function lockWriterMutation(pidPath: string, waitMs = 1000): { release(): void } | null {
+  const acquire = requireKernel().tryWriterMutationLock;
+  if (!acquire) throw new Error('Native kernel lacks writer coordination; rebuild or reinstall CodeGraph.');
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const lock = acquire(`${pidPath}.mutation.lock`);
+    if (lock) return lock;
+    if (Date.now() >= deadline) return null;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+}
+
 function encode(info: WriterLockInfo): string {
   return JSON.stringify(info) + '\n';
 }
@@ -89,87 +112,104 @@ export function tryAcquireWriterLock(
   const pidPath = getWriterPidPath(projectRoot, lockName);
   fs.mkdirSync(path.dirname(pidPath), { recursive: true });
 
-  const info: WriterLockInfo = {
-    pid: process.pid,
-    mode,
-    startedAt: Date.now(),
-    ready: false,
-  };
+  const mutation = lockWriterMutation(pidPath);
+  if (!mutation) return { kind: 'taken', existing: readWriterLock(projectRoot, lockName), pidPath };
+  try {
+    const info: WriterLockInfo = {
+      pid: process.pid,
+      mode,
+      startedAt: Date.now(),
+      ready: false,
+    };
 
-  const attempt = (): WriterAcquireResult => {
-    const tmp = `${pidPath}.${process.pid}.tmp`;
-    let acquired = false;
-    try {
-      fs.writeFileSync(tmp, encode(info), { mode: 0o600 });
+    const attempt = (): WriterAcquireResult => {
+      const tmp = `${pidPath}.${process.pid}.tmp`;
+      let acquired = false;
       try {
-        fs.linkSync(tmp, pidPath);
-        acquired = true;
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-          // taken
-        } else {
-          // No hard links — O_EXCL create.
-          try {
-            const fd = fs.openSync(pidPath, 'wx', 0o600);
+        fs.writeFileSync(tmp, encode(info), { mode: 0o600 });
+        try {
+          fs.linkSync(tmp, pidPath);
+          acquired = true;
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+            // taken
+          } else {
+            // No hard links — O_EXCL create.
             try {
-              fs.writeSync(fd, encode(info));
-              acquired = true;
-            } finally {
-              fs.closeSync(fd);
+              const fd = fs.openSync(pidPath, 'wx', 0o600);
+              try {
+                fs.writeSync(fd, encode(info));
+                acquired = true;
+              } finally {
+                fs.closeSync(fd);
+              }
+            } catch (e2: unknown) {
+              if ((e2 as NodeJS.ErrnoException).code !== 'EEXIST') throw e2;
             }
-          } catch (e2: unknown) {
-            if ((e2 as NodeJS.ErrnoException).code !== 'EEXIST') throw e2;
           }
         }
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
       }
-    } finally {
-      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    }
 
-    if (acquired) return { kind: 'acquired', pidPath, info };
+      if (acquired) {
+        cancelPendingRelease(pidPath);
+        return { kind: 'acquired', pidPath, info };
+      }
 
-    let existing: WriterLockInfo | null = null;
-    try {
-      existing = decodeWriterLockInfo(fs.readFileSync(pidPath, 'utf8'));
-    } catch { /* unreadable */ }
-    return { kind: 'taken', existing, pidPath };
-  };
-
-  let result = attempt();
-  if (result.kind === 'taken' && result.existing && result.existing.pid === process.pid) {
-    // Same process already holds it (daemon acquired before engine watch).
-    return { kind: 'acquired', pidPath: result.pidPath, info: result.existing };
-  }
-  if (result.kind === 'taken') {
-    const existing = result.existing;
-    if (!existing || existing.pid <= 0 || !isProcessAlive(existing.pid)) {
-      // Stale — clear (pid-verified) and retry once.
+      let existing: WriterLockInfo | null = null;
       try {
-        const raw = fs.readFileSync(pidPath, 'utf8');
-        const cur = decodeWriterLockInfo(raw);
-        if (!cur || cur.pid === existing?.pid) {
-          if (!cur || cur.pid <= 0 || !isProcessAlive(cur.pid)) {
-            fs.unlinkSync(pidPath);
-          }
-        }
-      } catch { /* ENOENT ok */ }
-      result = attempt();
+        existing = decodeWriterLockInfo(fs.readFileSync(pidPath, 'utf8'));
+      } catch { /* unreadable */ }
+      return { kind: 'taken', existing, pidPath };
+    };
+
+    let result = attempt();
+    if (result.kind === 'taken' && result.existing && result.existing.pid === process.pid) {
+      // Same process already holds it (daemon acquired before engine watch).
+      cancelPendingRelease(pidPath);
+      return { kind: 'acquired', pidPath: result.pidPath, info: result.existing };
     }
+    if (result.kind === 'taken') {
+      const existing = result.existing;
+      if (!existing || existing.pid <= 0 || !isProcessAlive(existing.pid)) {
+        // Stale — clear (pid-verified) and retry once.
+        try {
+          const raw = fs.readFileSync(pidPath, 'utf8');
+          const cur = decodeWriterLockInfo(raw);
+          if (!cur || cur.pid === existing?.pid) {
+            if (!cur || cur.pid <= 0 || !isProcessAlive(cur.pid)) {
+              fs.unlinkSync(pidPath);
+            }
+          }
+        } catch { /* ENOENT ok */ }
+        result = attempt();
+      }
+    }
+    return result;
+  } finally {
+    mutation.release();
   }
-  return result;
 }
 
 /** Publish catch-up readiness without exposing a partially-written pidfile. */
 export function markWriterReady(projectRoot: string): void {
   const pidPath = getWriterPidPath(projectRoot);
-  const info = readWriterLock(projectRoot);
-  if (!info || info.pid !== process.pid) return;
-  const tmp = `${pidPath}.${process.pid}.ready.tmp`;
+  if (!fs.existsSync(pidPath)) return;
+  const mutation = lockWriterMutation(pidPath);
+  if (!mutation) return;
   try {
-    fs.writeFileSync(tmp, encode({ ...info, ready: true }), { mode: 0o600 });
-    fs.renameSync(tmp, pidPath);
+    const info = readWriterLock(projectRoot);
+    if (!info || info.pid !== process.pid) return;
+    const tmp = `${pidPath}.${process.pid}.ready.tmp`;
+    try {
+      fs.writeFileSync(tmp, encode({ ...info, ready: true }), { mode: 0o600 });
+      fs.renameSync(tmp, pidPath);
+    } finally {
+      try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+    }
   } finally {
-    try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+    mutation.release();
   }
 }
 
@@ -181,18 +221,22 @@ const SWAP_RETRY_DELAYS_MS = [25, 50, 100, 200];
  * the slot passes between two processes without ever falling free (#2335). A
  * stopped daemon's sessions serve themselves in-process the moment it goes, and
  * one that found the slot free or stale would claim it as their own writer.
- * Compare and rename are separate steps, so callers check the result: whether
- * the record was replaced. Never throws.
+ * The OS coordination lock keeps comparison and rename in one critical
+ * section. Callers check whether the record was replaced. Never throws.
  */
 export function swapWriterLock(projectRoot: string, fromPid: number, next: WriterLockInfo): boolean {
   const pidPath = getWriterPidPath(projectRoot);
   const tmp = `${pidPath}.${process.pid}.swap.tmp`;
+  let mutation: { release(): void } | null = null;
   try {
+    mutation = lockWriterMutation(pidPath);
+    if (!mutation) return false;
     if (readWriterLock(projectRoot)?.pid !== fromPid) return false;
     fs.writeFileSync(tmp, encode(next), { mode: 0o600 });
     for (let attempt = 0; ; attempt++) {
       try {
         fs.renameSync(tmp, pidPath);
+        if (next.pid === process.pid) cancelPendingRelease(pidPath);
         return true;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
@@ -207,20 +251,43 @@ export function swapWriterLock(projectRoot: string, fromPid: number, next: Write
   } catch {
     return false;
   } finally {
-    try { fs.unlinkSync(tmp); } catch { /* renamed, or never written */ }
+    if (mutation) {
+      try { fs.unlinkSync(tmp); } catch { /* renamed, or never written */ }
+    }
+    mutation?.release();
   }
 }
 
-/** Release if we still own the lock (pid match). */
+/** Release if we still own the lock. Contention keeps a retry obligation;
+ * callers may retire the engine while this process remains alive. */
 export function releaseWriterLock(projectRoot: string, lockName: 'writer.pid' | 'rebuild.pid' = 'writer.pid'): void {
   const pidPath = getWriterPidPath(projectRoot, lockName);
-  try {
-    if (!fs.existsSync(pidPath)) return;
-    const info = decodeWriterLockInfo(fs.readFileSync(pidPath, 'utf8'));
-    if (info && info.pid === process.pid) {
-      fs.unlinkSync(pidPath);
+  const release = (waitMs: number): void => {
+    let mutation: { release(): void } | null = null;
+    try {
+      if (!fs.existsSync(path.dirname(pidPath))) return;
+      mutation = lockWriterMutation(pidPath, waitMs);
+      if (!mutation) {
+        // One unref'd retry per record. Reacquisition by this process cancels it,
+        // so an old retirement cannot release a newly started watcher.
+        if (!pendingReleases.has(pidPath)) {
+          const timer = setTimeout(() => {
+            pendingReleases.delete(pidPath);
+            release(0);
+          }, 100);
+          timer.unref();
+          pendingReleases.set(pidPath, timer);
+        }
+        return;
+      }
+      cancelPendingRelease(pidPath);
+      const info = readWriterLock(projectRoot, lockName);
+      if (info?.pid === process.pid) fs.unlinkSync(pidPath);
+    } catch { /* best-effort for unavailable files or kernel */ } finally {
+      mutation?.release();
     }
-  } catch { /* best-effort */ }
+  };
+  release(1000);
 }
 
 /** Read current lock without acquiring. */

@@ -29,10 +29,15 @@ The scan checks its 300 ms budget between files and stops at sixteen matches or 
 
 When you ask about tests, `codegraph_explore` includes source from the nearest test callers within three caller hops. These links describe static callers, not measured runtime coverage. Pinned JavaScript and TypeScript test files prioritize matching `it`/`test` callbacks. File and output budgets still apply.
 
+## Daemon lifecycle
+
+Writer handovers, readiness updates and releases share an OS file lock. The persistent `.codegraph/writer.pid.mutation.lock` file stays in place; the OS releases its lock when the process exits.
+
+The launcher can replace a daemon from an older release when its hello confirms coordinated writer handover. Legacy daemons stay running; new sessions serve reads without auto-sync. Stop the old MCP sessions and daemon, then reconnect with the current install to migrate. A daemon exits when its installation is deleted or its package version changes. Managed builds of the same release still require matching build identities.
+
+`CODEGRAPH_DAEMON_INSTALL_CHECK_MS` sets the installation-check interval in milliseconds. It defaults to `30000`; `0` disables the check.
+
 ## The other tools
-
-The launcher can replace a daemon from an older release. A daemon exits when its installation is deleted or its package version changes. Managed builds of the same release still require matching build identities.
-
 
 Seven more tools exist and stay fully functional, but are **unlisted by default** — everything they return already arrives inline on a `codegraph_explore` response (its blast-radius section, the relationship map, a symbol's body and its callee list):
 

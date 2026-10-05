@@ -290,6 +290,8 @@ export interface ContainedSourceReaderLike {
 }
 
 export interface KernelModule {
+  /** Required for writer mutations; older kernels remain usable for reads. */
+  tryWriterMutationLock?(path: string): { release(): void } | null;
   /** Descriptor-verified source reads. Older released kernels omit this API;
    * scans then leave absence unproven. */
   ContainedSourceReader?: new (root: string) => ContainedSourceReaderLike;

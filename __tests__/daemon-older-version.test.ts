@@ -150,7 +150,8 @@ describe('swapWriterLock', () => {
     fs.rmSync(file);
     expect(swapWriterLock(root, 333, record(444, 'daemon'))).toBe(false);
     expect(fs.existsSync(file)).toBe(false);
-    expect(fs.readdirSync(path.join(root, '.codegraph'))).toEqual([]);
+    // The permanent guard inode remains; no PID record or swap temporary does.
+    expect(fs.readdirSync(path.join(root, '.codegraph'))).toEqual(['writer.pid.mutation.lock']);
   });
 });
 
@@ -198,11 +199,11 @@ describe('stopOlderDaemon', () => {
   });
 
   /** A daemon of `version`: its lock, and a socket answering the hello as `helloPid`. */
-  async function fakeDaemon(version: string, helloPid?: number): Promise<{ pid: number; lock: string }> {
+  async function fakeDaemon(version: string, helloPid?: number, writerProtocol: unknown = 1): Promise<{ pid: number; lock: string }> {
     const pid = startDetachedProcess();
     pids.push(pid);
     server = net.createServer((socket) => {
-      socket.end(JSON.stringify({ protocol: 1, codegraph: version, pid: helloPid ?? pid, socketPath }) + '\n');
+      socket.end(JSON.stringify({ protocol: 1, codegraph: version, pid: helloPid ?? pid, socketPath, ...(writerProtocol === null ? {} : { writerProtocol }) }) + '\n');
     });
     await listen(server, socketPath);
     const lock = encodeLockInfo({ pid, version, socketPath, startedAt: Date.now() });
@@ -219,6 +220,18 @@ describe('stopOlderDaemon', () => {
   const writerRecord = (): any => {
     try { return JSON.parse(fs.readFileSync(getWriterPidPath(root), 'utf8')); } catch { return null; }
   };
+
+  it.each([null, 2])('preserves a legacy writer without verified coordination capability (%s)', async (writerProtocol) => {
+    const { pid, lock } = await fakeDaemon('1.6.1', undefined, writerProtocol);
+    const record = { pid, mode: 'daemon', startedAt: 1, ready: false };
+    fs.writeFileSync(getWriterPidPath(root), JSON.stringify(record));
+    const kill = vi.spyOn(process, 'kill');
+    expect(await stopOlderDaemon(root, '1.6.2')).toMatchObject({ pid, outcome: 'legacy-writer' });
+    expect(signalsTo(kill, pid)).toEqual([]);
+    expect(writerRecord()).toEqual(record);
+    expect(fs.readFileSync(pidPath, 'utf8')).toBe(lock);
+    expect(isProcessAlive(pid)).toBe(true);
+  });
 
   it('stops a verified daemon of an older release and clears its lock', async () => {
     const { pid } = await fakeDaemon('1.6.1');
@@ -692,7 +705,7 @@ describe('a launcher meeting a daemon of another version (#2335)', () => {
     const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-sock-'));
     try {
       const socketPath = listenPath(socketDir, 'older');
-      const older = spawn(process.execPath, [OLDER_DAEMON, realRoot, OLDER, socketPath], { detached: true, stdio: 'ignore' });
+      const older = spawn(process.execPath, [OLDER_DAEMON, realRoot, OLDER, socketPath], { detached: true, stdio: 'ignore', env: { ...process.env, CODEGRAPH_TEST_WRITER_MODULE: path.resolve(__dirname, '../dist/mcp/writer-lock.js') } });
       older.unref();
       daemonPids.add(older.pid!);
       await waitFor(() => daemonLock()?.pid === older.pid, 10000, 'the older daemon to hold the project');

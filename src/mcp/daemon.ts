@@ -172,6 +172,7 @@ export interface DaemonHello {
   pid: number;       // daemon pid (informational; for `ps` debugging)
   socketPath: string; // echoed back so the proxy can log it
   protocol: 1;       // bump if the hello shape changes
+  writerProtocol?: 1; // ownership mutations use the OS coordination lock
 }
 
 /**
@@ -453,6 +454,7 @@ export class Daemon {
       pid: process.pid,
       socketPath: this.socketPath,
       protocol: 1,
+      writerProtocol: 1,
     };
     socket.write(JSON.stringify(hello) + '\n');
 

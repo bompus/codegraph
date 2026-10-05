@@ -123,7 +123,7 @@ export function canProbeDaemonIdentity(info: DaemonLockInfo): boolean {
  * its socket. A bare PID liveness probe is insufficient because OSes reuse PIDs
  * after an OOM/SIGKILL (#1553).
  */
-export function probeDaemonIdentity(info: DaemonLockInfo, timeoutMs = 1_000): Promise<boolean> {
+export function probeDaemonIdentity(info: DaemonLockInfo, timeoutMs = 1_000, requireWriterProtocol = false): Promise<boolean> {
   if (!canProbeDaemonIdentity(info)) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
     let socket: net.Socket;
@@ -156,7 +156,8 @@ export function probeDaemonIdentity(info: DaemonLockInfo, timeoutMs = 1_000): Pr
         finish(
           hello.protocol === 1 &&
           hello.pid === info.pid &&
-          (info.version === 'unknown' || hello.codegraph === info.version)
+          (info.version === 'unknown' || hello.codegraph === info.version) &&
+          (!requireWriterProtocol || hello.writerProtocol === 1)
         );
       } catch {
         finish(false);

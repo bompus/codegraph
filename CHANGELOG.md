@@ -24,6 +24,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking Changes
 
+- Source builds require Rust 1.89 or newer for native writer coordination.
+
 - **The native engine is now the only parser; the older WebAssembly parser is gone.** Every supported language is built into the native engine, so there is no fallback for a platform without a native build. Release bundles cover macOS (Intel and Apple silicon), Linux (x64 and arm64, glibc) and Windows (x64 and arm64); other platforms need a from-source build with a Rust toolchain, and CodeGraph now says so at startup instead of failing later. Installs are about 40% smaller and the MCP server starts one process lighter. `CODEGRAPH_KERNEL_LANGS` and `CODEGRAPH_NO_RELAUNCH` no longer do anything; `CODEGRAPH_KERNEL=0` now only switches the per-language native walkers off for debugging (every file is still parsed natively).
 - **Node.js 25 and newer are no longer refused.** The block existed for a V8 bug in compiling the old parser's grammars. Those versions are untested rather than unsupported.
 - **Node.js 22.13 or Bun 1.4.0 is now the minimum.** Both are the first releases where the built-in `node:sqlite` loads without a flag; older ones failed at the first database open. CodeGraph now says so at startup (`CODEGRAPH_ALLOW_UNSAFE_NODE=1` skips the check). `package.json` declares both in `engines`.
@@ -86,6 +88,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Markdown is indexed, and a documentation question gets the section, not the graph.** Every `.md` file's headings, sections, tables and links are nodes (the extractor from #361), and a doc-shaped `codegraph_explore` query that names a markdown file now renders that file's best sections first and whole — the top three by idf-weighted line hits, a heading the query covers word for word counted as named, 8k characters per file — with the blast-radius, relationships and "additional files" blocks held back unless a code file rendered too. Measured on a 109-file docs corpus under headless Claude Code, 36 cells over three rounds: the right file and section in every call, median 1 tool call against 4 for Grep-then-Read, 36 of 36 correct. Code answers keep their shape: markdown nodes leave a subgraph the doc tier did not seed, a markdown body is never mistaken for a generated-file header, and the explore budget tiers count code files only, so a README-heavy repo does not cross a breakpoint. The server instructions say markdown is indexed, which the branch's own text still denied. (#361, #1439)
 
 ### Fixes
+
+- Writer handovers, stale-lock cleanup, readiness updates and releases now share an OS file lock, preventing a competing launcher from overwriting a newer writer. The OS releases coordination locks on process exit. Contended retirement retries release while the owner stays alive; legacy daemons without coordinated handover stay running until their old sessions are restarted.
 
 - Python member calls no longer keep a receiver's original type after it is reassigned on a later line.
 
