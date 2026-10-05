@@ -12,7 +12,7 @@ if (operation === 'hold') {
   if (!held) process.exit(2);
   process.send('held');
   process.on('message', () => { held.release(); process.exit(0); });
-} else if (operation === 'retire') {
+} else if (operation === 'retire' || operation.startsWith('contended-ready')) {
   (async () => {
     writer.tryAcquireWriterLock(root, 'direct');
     const holder = spawn(process.execPath, [__filename, process.argv[2], root, 'hold'], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
@@ -22,10 +22,39 @@ if (operation === 'hold') {
         holder.once('error', reject);
         holder.once('exit', () => reject(new Error('holder exited before readiness')));
       });
-      writer.releaseWriterLock(root);
+      let failedRenames = 0;
+      if (operation === 'contended-ready-io') {
+        const rename = fs.renameSync;
+        fs.renameSync = (...args) => {
+          if (String(args[0]).endsWith('.ready.tmp') && failedRenames++ === 0) {
+            const error = new Error('writer pid file temporarily held by a reader');
+            error.code = 'EPERM';
+            throw error;
+          }
+          return rename(...args);
+        };
+      }
+      if (operation === 'retire') writer.releaseWriterLock(root);
+      else writer.markWriterReady(root);
       const exited = new Promise(resolve => holder.once('exit', resolve));
       holder.send('release');
       await exited;
+      if (operation.startsWith('contended-ready')) {
+        if (operation === 'contended-ready-retire') writer.releaseWriterLock(root);
+        else if (operation === 'contended-ready-renew') {
+          writer.releaseWriterLock(root);
+          writer.tryAcquireWriterLock(root, 'fallback');
+        } else if (operation === 'contended-ready-transfer') {
+          writer.swapWriterLock(root, process.pid, record(333));
+        }
+        // Drive queued readiness work without sleeping while the guard is held.
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline && !writer.readWriterLock(root)?.ready) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        process.stdout.write(JSON.stringify({ info: writer.readWriterLock(root), pid: process.pid, failedRenames }));
+        return;
+      }
       const deadline = Date.now() + 2000;
       while (writer.readWriterLock(root) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
       const released = writer.readWriterLock(root) === null;

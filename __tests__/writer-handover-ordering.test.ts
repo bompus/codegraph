@@ -34,6 +34,27 @@ describe('writer handover ordering', () => {
     },
   );
 
+  it('eventually publishes readiness after coordination contention', () => {
+    const outcome = run('contended-ready');
+    expect(outcome.info).toMatchObject({ pid: outcome.pid, ready: true });
+  });
+
+  it('survives a transient readiness rename error and retries publication', () => {
+    const outcome = run('contended-ready-io');
+    expect(outcome.failedRenames).toBeGreaterThan(1);
+    expect(outcome.info).toMatchObject({ pid: outcome.pid, ready: true });
+  });
+
+  it.each(['retire', 'renew', 'transfer'] as const)(
+    'does not publish queued readiness after %s changes ownership',
+    (operation) => {
+      const outcome = run(`contended-ready-${operation}`);
+      if (operation === 'retire') expect(outcome.info).toBeNull();
+      else if (operation === 'renew') expect(outcome.info).toMatchObject({ pid: outcome.pid, mode: 'fallback', ready: false });
+      else expect(outcome.info).toMatchObject({ pid: 333, ready: false });
+    },
+  );
+
   it('eventually releases a retired writer after coordination contention', () => {
     const outcome = run('retire');
     expect(outcome.released).toBe(true);

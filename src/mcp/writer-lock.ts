@@ -60,6 +60,13 @@ export type WriterAcquireResult =
   | { kind: 'taken'; existing: WriterLockInfo | null; pidPath: string };
 
 const pendingReleases = new Map<string, NodeJS.Timeout>();
+const pendingReadiness = new Map<string, NodeJS.Timeout>();
+
+function cancelPendingReadiness(pidPath: string): void {
+  const timer = pendingReadiness.get(pidPath);
+  if (timer) clearTimeout(timer);
+  pendingReadiness.delete(pidPath);
+}
 
 function cancelPendingRelease(pidPath: string): void {
   const timer = pendingReleases.get(pidPath);
@@ -153,6 +160,7 @@ export function tryAcquireWriterLock(
       }
 
       if (acquired) {
+        cancelPendingReadiness(pidPath);
         cancelPendingRelease(pidPath);
         return { kind: 'acquired', pidPath, info };
       }
@@ -192,25 +200,56 @@ export function tryAcquireWriterLock(
   }
 }
 
-/** Publish catch-up readiness without exposing a partially-written pidfile. */
+/** Publish catch-up readiness without exposing a partially-written pidfile.
+ * Contention retains a retry until publication or an ownership change. */
 export function markWriterReady(projectRoot: string): void {
   const pidPath = getWriterPidPath(projectRoot);
-  if (!fs.existsSync(pidPath)) return;
-  const mutation = lockWriterMutation(pidPath);
-  if (!mutation) return;
-  try {
-    const info = readWriterLock(projectRoot);
-    if (!info || info.pid !== process.pid) return;
-    const tmp = `${pidPath}.${process.pid}.ready.tmp`;
+  const retry = (): void => {
+    if (pendingReadiness.has(pidPath)) return;
+    const timer = setTimeout(() => {
+      pendingReadiness.delete(pidPath);
+      try {
+        publish(0);
+      } catch (error) {
+        // Permanent failures stay local to publication, like the lifecycle's
+        // synchronous catch boundary; an unguarded timer would exit the server.
+        process.stderr.write(`[CodeGraph MCP] Writer readiness publication failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }, 100);
+    timer.unref();
+    pendingReadiness.set(pidPath, timer);
+  };
+  const publish = (waitMs: number): void => {
+    let mutation: { release(): void } | null = null;
     try {
-      fs.writeFileSync(tmp, encode({ ...info, ready: true }), { mode: 0o600 });
-      fs.renameSync(tmp, pidPath);
+      if (!fs.existsSync(pidPath)) {
+        cancelPendingReadiness(pidPath);
+        return;
+      }
+      mutation = lockWriterMutation(pidPath, waitMs);
+      if (!mutation) {
+        retry();
+        return;
+      }
+      cancelPendingReadiness(pidPath);
+      const info = readWriterLock(projectRoot);
+      if (!info || info.pid !== process.pid) return;
+      const tmp = `${pidPath}.${process.pid}.ready.tmp`;
+      try {
+        fs.writeFileSync(tmp, encode({ ...info, ready: true }), { mode: 0o600 });
+        fs.renameSync(tmp, pidPath);
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (['EPERM', 'EACCES', 'EBUSY', 'EINTR', 'EAGAIN'].includes(code ?? '')) retry();
+      else throw error;
     } finally {
-      try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+      mutation?.release();
     }
-  } finally {
-    mutation.release();
-  }
+  };
+  publish(1000);
 }
 
 /** Waits between retries of a writer-record swap refused by Windows (another process has the file open). */
@@ -236,6 +275,7 @@ export function swapWriterLock(projectRoot: string, fromPid: number, next: Write
     for (let attempt = 0; ; attempt++) {
       try {
         fs.renameSync(tmp, pidPath);
+        cancelPendingReadiness(pidPath);
         if (next.pid === process.pid) cancelPendingRelease(pidPath);
         return true;
       } catch (err) {
@@ -262,6 +302,7 @@ export function swapWriterLock(projectRoot: string, fromPid: number, next: Write
  * callers may retire the engine while this process remains alive. */
 export function releaseWriterLock(projectRoot: string, lockName: 'writer.pid' | 'rebuild.pid' = 'writer.pid'): void {
   const pidPath = getWriterPidPath(projectRoot, lockName);
+  cancelPendingReadiness(pidPath);
   const release = (waitMs: number): void => {
     let mutation: { release(): void } | null = null;
     try {
