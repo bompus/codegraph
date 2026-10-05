@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -275,6 +275,44 @@ describe('requested evidence in large selected files', () => {
     expect(sourceIn(out, 'feed.ts')).toContain('return persistPacket(value);');
     expect(sourceIn(out, 'sheet.ts')).toContain('return persistPacket(value);');
     expect(out.length).toBeLessThanOrEqual(25_000);
+  });
+
+  it('includes a local callback helper in a pinned file with hundreds of declarations', async () => {
+    const largeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-large-pinned-source-'));
+    let largeCg: CodeGraph | undefined;
+    let restoreGather: (() => void) | undefined;
+    try {
+      for (const file of ['package.json', 'feed.ts', 'sheet.ts', 'packet.ts']) {
+        fs.copyFileSync(path.join(dir, file), path.join(largeDir, file));
+      }
+      const packet = fs.readFileSync(path.join(largeDir, 'packet.ts'), 'utf8')
+        .replaceAll('validatePacket', 'ensureValue')
+        .replaceAll('packet-verification-end', 'verified-value-end');
+      fs.writeFileSync(path.join(largeDir, 'packet.ts'), packet.replace('function ensureValue', [
+        ...Array.from({ length: 260 }, (_, i) => `function extraPadding${i}() { return "unrelated padding"; }`),
+        'function ensureValue',
+      ].join('\n')));
+      largeCg = CodeGraph.initSync(largeDir);
+      await largeCg.indexAll();
+      // Relevance search can miss a named callable when its node budget is spent.
+      const gather = vi.spyOn(largeCg, 'findRelevantContext')
+        .mockResolvedValueOnce({ nodes: new Map(), edges: [], roots: [] });
+      restoreGather = () => gather.mockRestore();
+      const result = await new ToolHandler(largeCg).execute('codegraph_explore', {
+        query: 'tickFeed readSheet receivePacket persistPacket in feed.ts sheet.ts packet.ts',
+      });
+      expect(result.isError).not.toBe(true);
+      const out = result.content?.[0]?.text ?? '';
+      const source = sourceIn(out, 'packet.ts');
+      expect(source).toContain('const check17 =');
+      expect(source).toContain('return identityKey(value) + "verified-value-end";');
+      expect(source).toContain('Promise.resolve(value).then(drainPackets)');
+      expect(out.length).toBeLessThanOrEqual(25_000);
+    } finally {
+      restoreGather?.();
+      largeCg?.destroy();
+      fs.rmSync(largeDir, { recursive: true, force: true });
+    }
   });
 
   it('respects the file cap when named functions have several pins', async () => {

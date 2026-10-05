@@ -6187,9 +6187,10 @@ export class ToolHandler {
               if (localCallees.size >= LOCAL_CALLEE_CAP) break;
               if (!['calls', 'references'].includes(edge.kind) || node.filePath !== fp
                   || !['function', 'method'].includes(node.kind) || visited.has(node.id)
-                  || node.endLine - node.startLine >= 200 || !group.nodes.some(n => n.id === node.id)) continue;
+                  || node.endLine - node.startLine >= 200) continue;
               visited.add(node.id);
               localCallees.add(node.id);
+              if (!group.nodes.some(n => n.id === node.id)) group.nodes.push(node);
               next.push(node);
             }
           }
