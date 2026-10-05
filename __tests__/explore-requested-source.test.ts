@@ -164,6 +164,38 @@ beforeAll(async () => {
     'export function receipt1() { return playerIdentity(1); }',
     'export function receipt2() { return playerIdentity(2); }',
   ].join('\n'));
+  for (const [file, entry] of [['feed.ts', 'tickFeed'], ['sheet.ts', 'readSheet']]) {
+    fs.writeFileSync(path.join(dir, file), [
+      'import { receivePacket, persistPacket } from "./packet";',
+      ...Array.from({ length: 160 }, (_, i) => `function padding${i}() { return "${'unrelated padding '.repeat(12)}"; }`),
+      `export function ${entry}(value: number) {`,
+      ...Array.from({ length: 20 }, (_, i) => `  const setup${i} = "${'entry preparation '.repeat(4)}";`),
+      '  receivePacket(value);',
+      '  return persistPacket(value);',
+      '}',
+    ].join('\n'));
+  }
+  fs.writeFileSync(path.join(dir, 'packet.ts'), [
+    ...Array.from({ length: 5 }, (_, i) => [
+      `function preparePacket${i}(value: number) {`,
+      ...Array.from({ length: 20 }, (_, j) => `  const unrelated${j} = "${'tickFeed readSheet receivePacket persistPacket '.repeat(2)}";`),
+      '  return value;',
+      '}',
+    ].join('\n')),
+    'function identityKey(value: number) { return "packet-identity-end:" + value; }',
+    ...Array.from({ length: 80 }, (_, i) => `function padding${i}() { return "${'unrelated padding '.repeat(12)}"; }`),
+    'function validatePacket(value: number) {',
+    ...Array.from({ length: 18 }, (_, i) => `  const check${i} = "${'verification context '.repeat(4)}";`),
+    '  return identityKey(value) + "packet-verification-end";',
+    '}',
+    ...Array.from({ length: 80 }, (_, i) => `function trailing${i}() { return "${'unrelated padding '.repeat(12)}"; }`),
+    'function drainPackets(value: number) { return validatePacket(value); }',
+    'export function receivePacket(value: number) {',
+    ...Array.from({ length: 12 }, (_, i) => `  const context${i} = "${'receiver preparation '.repeat(4)}";`),
+    '  return Promise.resolve(value).then(drainPackets);',
+    '}',
+    'export function persistPacket(value: number) { return identityKey(value); }',
+  ].join('\n'));
   cg = CodeGraph.initSync(dir);
   await cg.indexAll();
 }, 60_000);
@@ -233,6 +265,28 @@ describe('requested evidence in large selected files', () => {
     expect(sourceIn(out, 'catalog.ts')).toContain('function readCatalogRecord');
     expect(sourceIn(out, 'catalog-reader.ts')).toContain('function loadRecord');
   });
+  it('keeps local callee bodies through a callback bridge with several whole-file pins', async () => {
+    const out = await explore('tickFeed readSheet receivePacket persistPacket in feed.ts sheet.ts packet.ts');
+    const source = sourceIn(out, 'packet.ts');
+    expect(source).toContain('return "packet-identity-end:" + value;');
+    expect(source).toContain('const check17 =');
+    expect(source).toContain('return identityKey(value) + "packet-verification-end";');
+    expect(source).toContain('Promise.resolve(value).then(drainPackets)');
+    expect(sourceIn(out, 'feed.ts')).toContain('return persistPacket(value);');
+    expect(sourceIn(out, 'sheet.ts')).toContain('return persistPacket(value);');
+    expect(out.length).toBeLessThanOrEqual(25_000);
+  });
+
+  it('respects the file cap when named functions have several pins', async () => {
+    const result = await new ToolHandler(cg).execute('codegraph_explore', {
+      query: 'tickFeed readSheet receivePacket persistPacket in feed.ts sheet.ts packet.ts', maxFiles: 1,
+    });
+    expect(result.isError).not.toBe(true);
+    const out = result.content?.[0]?.text ?? '';
+    expect(sourceIn(out, 'feed.ts')).toContain('return persistPacket(value);');
+    expect(out.match(/^\*\*`[^`]+`\*\*/gm)).toHaveLength(1);
+  });
+
   it('prioritizes direct callers over a dense callee for a single named function', async () => {
     const result = await new ToolHandler(cg).execute('codegraph_explore', { query: 'playerIdentity', maxFiles: 2 });
     const out = result.content?.[0]?.text ?? '';

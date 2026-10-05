@@ -21,6 +21,8 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
+When a query names functions in pinned files, `codegraph_explore` prioritizes their local callee bodies through two call or callback hops. It selects at most sixteen local helpers per file, each at most 200 lines. File and output budgets still apply.
+
 When you ask about tests, `codegraph_explore` includes source from the nearest test callers within three caller hops. These links describe static callers, not measured runtime coverage. Pinned JavaScript and TypeScript test files prioritize matching `it`/`test` callbacks. File and output budgets still apply.
 
 ## The other tools

@@ -62,6 +62,7 @@ against dozens of greps and reads.
 
 ## Reading results
 
+- When a query names functions in pinned files, local callee bodies are prioritized through two call or callback hops. At most sixteen local helpers per file are selected, each at most 200 lines; file and output budgets still apply.
 - Questions about tests include source from the nearest test callers of named symbols, within three caller hops and the file/output budgets. These are static caller links, not measured runtime coverage. Naming a JavaScript or TypeScript test file prioritizes matching \`it\`/\`test\` callbacks.
 
 - **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
