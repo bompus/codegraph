@@ -71,23 +71,31 @@ describe('runtime writer reservations', () => {
   });
 
   it('reports an unreadable reservation as incomplete release, preserving the record', () => {
+    const alias = path.join(root, 'alias');
+    fs.symlinkSync(root, alias, 'junction');
     const actor = spawnSync(process.execPath, ['-e', `
       const fs = require('node:fs'), path = require('node:path');
       const api = require(process.argv[1]), root = process.argv[2];
       const lease = api.reserveRuntimeWriter(root, process.pid);
-      const lock = path.join(root, '.codegraph', 'writer.pid');
+      const lock = fs.realpathSync(path.join(root, '.codegraph', 'writer.pid'));
       const original = fs.readFileSync;
       const before = original(lock, 'utf8');
+      let injectedReads = 0;
       fs.readFileSync = function(file, ...args) {
-        if (file === lock) throw Object.assign(new Error('injected read failure'), {code:'EIO'});
+        if (file === lock) {
+          injectedReads++;
+          throw Object.assign(new Error('injected read failure'), {code:'EIO'});
+        }
         return original.call(this, file, ...args);
       };
       const released = api.releaseRuntimeWriter(root, lease);
       fs.readFileSync = original;
-      console.log(JSON.stringify({released, unchanged:original(lock, 'utf8') === before}));
-    `, path.resolve(__dirname, '../dist/runtime-control.js'), root], { encoding: 'utf8', timeout: 10000 });
+      console.log(JSON.stringify({released, injectedReads, unchanged:original(lock, 'utf8') === before}));
+    `, path.resolve(__dirname, '../dist/runtime-control.js'), alias], { encoding: 'utf8', timeout: 10000 });
     expect(actor.status, actor.stderr).toBe(0);
-    expect(JSON.parse(actor.stdout)).toEqual({ released: false, unchanged: true });
+    const { injectedReads, ...result } = JSON.parse(actor.stdout);
+    expect(result).toEqual({ released: false, unchanged: true });
+    expect(injectedReads).toBe(1);
   });
 
   it('rejects a dead updater before creating ownership', () => {
