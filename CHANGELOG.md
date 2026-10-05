@@ -87,6 +87,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Python member calls no longer keep a receiver's original type after it is reassigned on a later line.
+
 - Source builds now rebuild the native kernel after edits to new, untracked source files instead of using an older prebuild.
 
 - `codegraph_explore` keeps local callee source ahead of unrelated declarations when a query names functions and pins several files.

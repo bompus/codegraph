@@ -661,9 +661,14 @@ impl KernelResolver {
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
-        let bindings = self.bindings(&r.file_path)?;
-        let binding =
-            innermost_binding(&bindings, &object_or_class, Some(r.line)).cloned();
+        let binding = self.receiver_binding(&object_or_class, r)?;
+        if r.language == "python" {
+            if let Some(b) = binding.as_ref().filter(|b| b.kind == "local" && b.line > r.line) {
+                if b.scope_start >= self.enclosing_scope_start_line(&r.file_path, &r.language, r.line)? {
+                    return Ok(None);
+                }
+            }
+        }
 
         if inferable {
             // A PHP `instanceof` branch narrows the receiver inside its body.
@@ -1406,13 +1411,12 @@ impl KernelResolver {
         let bindings = self.bindings(&r.file_path)?;
         // Svelte/Astro markup and a second script sit outside the rows'
         // scopes but still see a script's top-level import.
-        let binding = innermost_binding(&bindings, root, Some(r.line))
+        let binding = self.receiver_binding(root, r)?
             .or_else(|| {
                 is_sfc_scoped_script(&r.language)
-                    .then(|| sfc_top_level_binding(&bindings, root).filter(|b| b.kind == "import"))
+                    .then(|| sfc_top_level_binding(&bindings, root).filter(|b| b.kind == "import").cloned())
                     .flatten()
-            })
-            .cloned();
+            });
 
         if !is_esm_family(&r.language) {
             // `binding?.kind === 'import' && !phpVariable` → br:import;

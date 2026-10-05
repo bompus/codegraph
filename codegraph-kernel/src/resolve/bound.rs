@@ -48,8 +48,13 @@ impl KernelResolver {
             }
         }
         let bindings = self.bindings(&r.file_path)?;
-        let binding = innermost_binding(&bindings, ty.split('.').next().unwrap_or(ty), Some(r.line));
-        let owner = match binding {
+        let root = ty.split('.').next().unwrap_or(ty);
+        let binding = if r.language == "python" {
+            self.receiver_binding(root, r)?
+        } else {
+            innermost_binding(&bindings, root, Some(r.line)).cloned()
+        };
+        let owner = match binding.as_ref() {
             Some(b) => self.bound_type_from_binding(ty, b, r)?,
             None if !is_esm_family(&r.language) => self.visible_unique_type(ty, r)?,
             None => None,
