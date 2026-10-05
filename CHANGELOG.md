@@ -87,6 +87,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Source builds now rebuild the native kernel after edits to new, untracked source files instead of using an older prebuild.
+
 - `codegraph_explore` keeps local callee source ahead of unrelated declarations when a query names functions and pins several files.
 - `codegraph_explore` now returns matching callbacks from pinned JavaScript and TypeScript test files and includes caller-linked test source when asked which tests cover named symbols.
 - The time `codegraph init`, `codegraph index` and `codegraph sync` print now covers the whole run. It used to cover only file parsing, so a slow linking step never showed in the reported time.
