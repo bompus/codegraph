@@ -77,7 +77,7 @@ describe('runtime writer reservations', () => {
       const fs = require('node:fs'), path = require('node:path');
       const api = require(process.argv[1]), root = process.argv[2];
       const lease = api.reserveRuntimeWriter(root, process.pid);
-      const lock = fs.realpathSync(path.join(root, '.codegraph', 'writer.pid'));
+      const lock = fs.realpathSync.native(path.join(root, '.codegraph', 'writer.pid'));
       const original = fs.readFileSync;
       const before = original(lock, 'utf8');
       let injectedReads = 0;
