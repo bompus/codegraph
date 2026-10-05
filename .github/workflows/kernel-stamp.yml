@@ -1,0 +1,42 @@
+name: Kernel source stamps
+on:
+  pull_request:
+    branches: [fork/consolidated]
+    paths:
+      - 'scripts/kernel-stamp.mjs'
+      - 'scripts/ensure-kernel.mjs'
+      - '__tests__/ensure-kernel-stamp.test.ts'
+      - '.github/workflows/kernel-stamp.yml'
+permissions:
+  contents: read
+jobs:
+  stamps:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Run source stamp fixtures without a native kernel build
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { writeFileSync } from 'node:fs';
+          const config = { test: {
+            include: ['__tests__/ensure-kernel-stamp.test.ts'],
+            setupFiles: ['__tests__/file-tmpdir.setup.ts', '__tests__/setup-home-sandbox.ts'],
+            environment: 'node', maxWorkers: 1, minWorkers: 1,
+          }};
+          writeFileSync('.kernel-stamp-config.mjs', `export default ${JSON.stringify(config)};`);
+          writeFileSync('.kernel-stamp-workspace.mjs', `export default [${JSON.stringify(config)}];`);
+          JS
+          npx vitest run --config .kernel-stamp-config.mjs --workspace .kernel-stamp-workspace.mjs
