@@ -41,6 +41,7 @@ export {
 export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
 export { MCPServer } from './mcp';
+export * from './runtime-control';
 import * as extractionStack from './extraction';
 import * as resolutionStack from './resolution';
 import * as syncStack from './sync';

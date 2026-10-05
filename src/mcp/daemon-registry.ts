@@ -268,7 +268,7 @@ export interface StopResult {
  */
 export async function stopDaemonAt(
   root: string,
-  options: { preserveUnverified?: boolean; shutdownGraceMs?: number } = {},
+  options: { preserveUnverified?: boolean; shutdownGraceMs?: number; requireWriterProtocol?: boolean } = {},
 ): Promise<StopResult> {
   let pid: number | null = null;
   let identity: DaemonLockInfo | null = null;
@@ -305,6 +305,9 @@ export async function stopDaemonAt(
     if (options.preserveUnverified) return { root, pid, outcome: 'unverified' };
     const removed = cleanupDaemonArtifacts(root, lockContents);
     return { root, pid, outcome: removed ? 'not-running' : 'unverified' };
+  }
+  if (options.requireWriterProtocol && !await probeDaemonIdentity(identity, undefined, true)) {
+    return { root, pid, version: identity.version, outcome: 'legacy-writer' };
   }
   return stopVerifiedDaemon(root, identity, lockContents, options.shutdownGraceMs);
 }
