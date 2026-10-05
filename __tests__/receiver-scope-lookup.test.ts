@@ -29,6 +29,89 @@ function calls(caller: string) {
 }
 
 describe('receiver types follow each language lookup and scope rules', () => {
+  it.each([
+    ['latest assignment', 'def run():\n    m = Other()\n    m = Model()\n    m.dump()\n', ['9:Model::dump']],
+    ['each call position', 'def run():\n    m = Other()\n    m.dump()\n    m = Model()\n    m.dump()\n', ['10:Model::dump', '8:Other::dump']],
+    ['reassigned parameter', 'def run(m: Other):\n    m = Model()\n    m.dump()\n', ['8:Model::dump']],
+    ['unknown replacement', 'def run():\n    m = Model()\n    m = object()\n    m.dump()\n', []],
+    ['future local binding', 'def run():\n    m.dump()\n    m = Model()\n', []],
+    ['nested assignment isolation', 'def run():\n    m = Model()\n    def inner():\n        m = Other()\n    m.dump()\n', ['10:Model::dump']],
+    ['annotation without replacement', 'def run():\n    m = Model()\n    m: object\n    m.dump()\n', ['9:Model::dump']],
+    ['module annotation without replacement', 'm = Model()\nm: object\ndef run():\n    m.dump()\n', ['9:Model::dump']],
+    ['continued annotation without replacement', String.raw`def run():
+    m = Model()
+    m \
+        : object
+    m.dump()
+`, ['10:Model::dump']],
+  ])('uses the visible Python receiver value for %s', async (_case, body, expected) => {
+    await project({ 'app.py': `class Model:
+    def dump(self): pass
+class Other:
+    def dump(self): pass
+
+${body}` });
+    expect(calls('run').filter(call => call.endsWith('::dump'))).toEqual(expected);
+  });
+
+  it('resolves a Python receiver through its latest local import alias', async () => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'other.py': 'def run(): return 2\n',
+      'app.py': `import pkg.sub as alias
+def known():
+    alias = object()
+    import other as alias
+    return alias.run()
+`,
+    });
+    const from = graph!.getNodesByKind('function').find(n => n.name === 'known')!;
+    const targets = graph!.getOutgoingEdges(from.id).filter(e => e.kind === 'calls')
+      .map(e => graph!.getNode(e.target)!).filter(n => n.name === 'run');
+    expect(targets.map(n => n.filePath)).toEqual(['other.py']);
+  });
+
+  it.each([
+    ['module scope', 'import pkg.sub\nimport pkg.other\ndef known():\n    return pkg.sub.run()\n'],
+    ['function scope', 'import pkg.sub\ndef known():\n    import pkg.other\n    return pkg.sub.run()\n'],
+  ])('retains earlier unaliased Python submodules when another is imported in %s', async (_scope, app) => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'pkg/other.py': 'def different(): return 2\n',
+      'app.py': app,
+    });
+    expect(calls('known')).toEqual(['4:run']);
+  });
+
+  it('treats an explicit Python alias matching the package name as a replacement', async () => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'pkg/other.py': 'def different(): return 2\n',
+      'app.py': `import pkg.other
+import pkg.sub as pkg
+def known():
+    return pkg.other.different()
+`,
+    });
+    expect(calls('known')).toEqual([]);
+  });
+
+  it('keeps a Python receiver initialized before its returned closure runs', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+def outer():
+    def known():
+        return store.get()
+    store = Store()
+    return known
+outer()()
+` });
+    expect(calls('known')).toEqual(['5:Store::get']);
+  });
+
   it('finds a Ruby included module before the superclass chain, last include first', async () => {
     await project({ 'app.rb': `class Base
   def m; end

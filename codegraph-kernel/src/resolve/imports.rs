@@ -661,7 +661,30 @@ impl KernelResolver {
                 .cloned()
                 .map(|node| KCand { node, confidence: 0.9, resolved_by: "import" }));
         }
-        let imports = self.import_mappings(&r.file_path)?;
+        let imports = if r.language == "python" && r.reference_kind != "imports" {
+            let root = r.reference_name.split('.').next().unwrap();
+            match self.receiver_binding(root, r)? {
+                Some(binding) if binding.kind == "import" => {
+                    // Unaliased imports share the package object across scopes,
+                    // so retain its file-wide submodule catalog. An explicit
+                    // alias replaces its receiver value.
+                    let mut selected = vec![binding.clone()];
+                    if self.python_package_import(&binding, r) {
+                        for row in self.bindings(&r.file_path)?.iter() {
+                            if row.name == root && row.kind == "import" && row.target_spec != binding.target_spec
+                                && self.python_package_import(row, r)
+                            {
+                                selected.push(row.clone());
+                            }
+                        }
+                    }
+                    Rc::new(self.import_mappings_from_bindings(&selected))
+                }
+                _ => self.import_mappings(&r.file_path)?,
+            }
+        } else {
+            self.import_mappings(&r.file_path)?
+        };
         if imports.is_empty() && self.read_file(&r.file_path).is_none() {
             return Ok(None);
         }
@@ -1312,6 +1335,31 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+
+    fn python_package_import(&mut self, binding: &KBinding, r: &ResolveRefIn) -> bool {
+        let Some(source) = binding.target_spec.as_deref() else { return false };
+        if binding.target_name.as_deref() != Some("*")
+            || (source != binding.name && !source.starts_with(&format!("{}.", binding.name)))
+        {
+            return false;
+        }
+        let Some(file) = self.read_file(&r.file_path) else { return false };
+        let Some(tree) = self.parsed_tree(&file, r) else { return false };
+        let row = (binding.line - 1).max(0) as usize;
+        let Some(line) = file.get(row) else { return false };
+        let point = tree_sitter::Point::new(row, line.len() - line.trim_start().len());
+        let mut node = tree.root_node().named_descendant_for_point_range(point, point);
+        while let Some(current) = node {
+            if current.kind() == "import_statement" {
+                return super::iteration::named_children(current).into_iter().any(|child| {
+                    child.kind() == "dotted_name"
+                        && child.utf8_text(file.text().as_bytes()).is_ok_and(|text| text == source)
+                });
+            }
+            node = current.parent();
+        }
+        false
     }
 
     /// resolvePythonModuleMember (import-resolver.ts): `mod.func` after

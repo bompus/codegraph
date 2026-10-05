@@ -578,6 +578,50 @@ pub(super) fn innermost_binding<'a>(
     best
 }
 
+impl KernelResolver {
+    /// Python reassignments share one lexical scope. A bare annotation does
+    /// not replace a value; a future local still supplies shadowing evidence.
+    pub(super) fn receiver_binding(&mut self, name: &str, site: &ResolveRefIn) -> Res<Option<KBinding>> {
+        let rows = self.bindings(&site.file_path)?;
+        let Some(binding) = innermost_binding(&rows, name, Some(site.line)) else { return Ok(None) };
+        if site.language != "python" {
+            return Ok(Some(binding.clone()));
+        }
+        let mut latest: Option<&KBinding> = None;
+        for row in rows.iter().filter(|row| row.name == name
+            && row.scope_start == binding.scope_start && row.scope_end == binding.scope_end
+            && row.line <= site.line)
+        {
+            if latest.is_none_or(|best| row.line > best.line) && !self.python_annotation_only(row, site) {
+                latest = Some(row);
+            }
+        }
+        Ok(Some(latest.unwrap_or(binding).clone()))
+    }
+
+    fn python_annotation_only(&mut self, binding: &KBinding, site: &ResolveRefIn) -> bool {
+        if !matches!(binding.kind.as_str(), "local" | "decl") { return false; }
+        let Some(file) = self.read_file(&site.file_path) else { return false };
+        let row = (binding.line - 1).max(0) as usize;
+        let Some(line) = file.get(row) else { return false };
+        let trimmed = line.trim_start();
+        if trimmed.strip_prefix(&binding.name).is_some_and(|tail| tail.trim_start().starts_with('=')) {
+            return false;
+        }
+        let Some(tree) = self.parsed_tree(&file, site) else { return false };
+        let point = tree_sitter::Point::new(row, line.len() - trimmed.len());
+        let mut node = tree.root_node().named_descendant_for_point_range(point, point);
+        while let Some(current) = node {
+            if current.kind() == "assignment" {
+                return current.child_by_field_name("type").is_some()
+                    && current.child_by_field_name("right").is_none();
+            }
+            node = current.parent();
+        }
+        false
+    }
+}
+
 /// Svelte and Astro: languages whose binding rows cover only the script
 /// blocks, while the markup (and, in Svelte, a second `<script>`) sees each
 /// script's top-level names.

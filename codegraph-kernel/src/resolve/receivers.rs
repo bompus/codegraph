@@ -177,6 +177,19 @@ impl KernelResolver {
         if lines.is_empty() {
             return Ok(None);
         }
+        if site.language == "python" {
+            if let Some(binding) = self.receiver_binding(receiver, site)? {
+                if binding.line > site.line || binding.kind == "import" {
+                    return Ok(None);
+                }
+                // An unknown replacement must not revive an earlier type;
+                // nested scopes' assignments never participate in this lookup.
+                return match lines.get((binding.line - 1).max(0) as usize) {
+                    Some(line) => self.infer_match_line(line, receiver, pats, preserve),
+                    None => Ok(None),
+                };
+            }
+        }
         if site.language == "swift" && self.node_by_id(&site.from_node_id)?.is_some_and(|n| n.kind == "route") {
             return self.infer_swift_lexical_receiver_type(&scan_receiver, site, preserve, pats, &lines);
         }
