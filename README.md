@@ -82,6 +82,7 @@ Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the d
 | Markdown indexing | — | ✓ | Headings, sections, tables and links become graph nodes; a documentation question gets the matching section. |
 | Missing names reported | — | ✓ | After a complete scan of indexed source without skipped files, `codegraph_explore` lists requested names it cannot find, helping an agent catch a guessed name. |
 | Local callee source with file pins | — | ✓ | When a query names functions in pinned files, `codegraph_explore` prioritizes local callee bodies through two call or callback hops, within the file and output budgets. |
+| Quoted prose source | — | ✓ | Quoted spans of three or more words find script strings and template text, ignoring case and punctuation, through a capped source scan. No re-index needed. |
 | Requested test source | — | ✓ | Pinned JavaScript and TypeScript test files return matching `it`/`test` callbacks. Questions about tests include source from the nearest test callers of named symbols, within the file and output budgets. |
 | Near-duplicate functions | — | ✓ | `codegraph_explore` and `codegraph_node` name the near-identical copies of a function, so a fix made in one copy is not forgotten in the others. |
 | External HTTP endpoints | — | ✓ | JavaScript and TypeScript calls through `fetch`, axios, ky, got and similar clients appear as endpoint nodes such as `GET https://api.github.com/…`. |

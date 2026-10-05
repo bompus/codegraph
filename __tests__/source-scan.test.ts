@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { scanIndexedSource } from '../src/mcp/source-scan';
+import { quotedProsePattern, scanIndexedSource, scanQuotedProse } from '../src/mcp/source-scan';
 
 let dir: string;
 const LIMITS = { budgetMs: 10_000, maxFileBytes: 1024, maxTotalBytes: 4096 };
@@ -69,5 +69,24 @@ describe('scanIndexedSource', () => {
 
   it('counts a missing or escaping path as skipped', () => {
     expect(words(['a.ts', 'gone.ts', '../outside.ts'])).toEqual({ complete: true, skipped: 2, seen: ['alpha'] });
+  });
+});
+
+describe('quoted prose scan limits', () => {
+  it('stops after sixteen matches and retains their source line coordinates', () => {
+    const text = Array.from({ length: 20 }, () => '<p>Proceed with\r\naccount verification.</p>').join('\r\n');
+    fs.writeFileSync(path.join(dir, 'messages.ts'), text);
+    const matches = scanQuotedProse(dir, [{ path: 'messages.ts', size: Buffer.byteLength(text) }],
+      quotedProsePattern('"Proceed with account verification"')!);
+    expect(matches).toHaveLength(16);
+    expect(matches[0]).toEqual({ file: 'messages.ts', start: 1, end: 2 });
+    expect(matches[15]).toEqual({ file: 'messages.ts', start: 31, end: 32 });
+  });
+
+  it('skips prose files over one MiB even when their indexed size is stale', () => {
+    const text = 'Proceed with account verification.\n' + 'x'.repeat(1024 * 1024);
+    fs.writeFileSync(path.join(dir, 'oversize.ts'), text);
+    expect(scanQuotedProse(dir, [{ path: 'oversize.ts', size: 1 }],
+      quotedProsePattern('"Proceed with account verification"')!)).toEqual([]);
   });
 });

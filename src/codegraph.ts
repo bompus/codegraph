@@ -2294,9 +2294,9 @@ export class CodeGraph {
 
   /**
    * The files whose text a source scan reads: neither generated nor markdown,
-   * with the size recorded at index time.
+   * with the size and language recorded at index time.
    */
-  getTextScanFiles(): Array<{ path: string; size: number }> {
+  getTextScanFiles(): Array<{ path: string; size: number; language: string }> {
     return this.queries.getTextScanFiles();
   }
 

@@ -23,6 +23,10 @@ Exposing one strong code tool is deliberate. Measured agent behavior showed that
 
 When a query names functions in pinned files, `codegraph_explore` prioritizes their local callee bodies through two call or callback hops. It selects at most sixteen local helpers per file, each at most 200 lines. File and output budgets still apply.
 
+Quoted spans of three or more words also find current indexed code by word sequence, ignoring case and punctuation. Matches return an enclosing symbol or source around the matching lines, including script strings and unquoted template text. No re-index is needed.
+
+The scan checks its 300 ms budget between files and stops at sixteen matches or 64 MiB read. Files over 1 MiB are skipped. Up to four spans of at most 300 characters each are considered. File and output budgets still apply. Edits since the last sync can leave indexed symbol extents behind the matching source.
+
 When you ask about tests, `codegraph_explore` includes source from the nearest test callers within three caller hops. These links describe static callers, not measured runtime coverage. Pinned JavaScript and TypeScript test files prioritize matching `it`/`test` callbacks. File and output budgets still apply.
 
 ## The other tools

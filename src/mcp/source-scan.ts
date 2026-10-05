@@ -6,12 +6,53 @@
  */
 import { getKernel } from '../extraction/kernel/loader';
 
+/** Quoted spans; apostrophes between letters stay inside a single-quoted span. */
+export const QUOTED_SPAN = /"([^"\n]*)"|`([^`\n]*)`|(?<![\w$])'((?:[^'\n]|(?<=\w)'(?=\w))*)'(?![\w$])/g;
+
+/** Match up to four copied phrases as whole word sequences, ignoring punctuation. */
+export function quotedProsePattern(query: string): RegExp | null {
+  const phrases = new Set<string>();
+  for (const m of query.matchAll(QUOTED_SPAN)) {
+    const inner = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    if (inner.length > 300) continue;
+    if ((inner.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? []).length < 3) continue;
+    const words = inner.match(/[\p{L}\p{N}]+/gu) ?? [];
+    phrases.add(words.join('[^\\p{L}\\p{N}]+'));
+    if (phrases.size === 4) break;
+  }
+  return phrases.size === 0 ? null
+    : new RegExp(`(?<![\\p{L}\\p{N}])(?:${[...phrases].join('|')})(?![\\p{L}\\p{N}])`, 'giu');
+}
+
+/** Positive matches remain useful when a scan ends before reading every file. */
+export function scanQuotedProse(
+  projectRoot: string,
+  files: readonly ScanFile[],
+  pattern: RegExp,
+): Array<{ file: string; start: number; end: number }> {
+  const matches: Array<{ file: string; start: number; end: number }> = [];
+  let previousFile = '';
+  let cursor = 0;
+  let line = 1;
+  scanIndexedSource(projectRoot, files, pattern, {
+    budgetMs: 300,
+    maxFileBytes: 1024 * 1024,
+    maxTotalBytes: MAX_SCAN_TOTAL_BYTES,
+  }, (file, offset, match, source) => {
+    if (file !== previousFile) { previousFile = file; cursor = 0; line = 1; }
+    for (; cursor < offset; cursor++) if (source.charCodeAt(cursor) === 10) line++;
+    matches.push({ file, start: line, end: line + (match.match(/\n/g)?.length ?? 0) });
+    return matches.length === 16;
+  });
+  return matches;
+}
+
 /**
- * Limits on what a warm scan reads inside a 300 ms budget, with room to spare.
+ * Limits on what a warm absence scan reads inside a 300 ms budget.
  * Cost is about 12 microseconds per file plus 1 ms per MB: 13,609 TypeScript
  * files (39.5 MB) took 175 ms, 2,174 C files (47.4 MB) took 55 ms. A larger
- * project skips the scan, because a scan that runs out of time costs the whole
- * budget and answers nothing.
+ * project skips an absence scan: incomplete coverage cannot prove a name absent.
+ * Positive prose matches do not require complete coverage.
  */
 export const MAX_SCAN_FILES = 16_000;
 export const MAX_SCAN_TOTAL_BYTES = 64 * 1024 * 1024;
@@ -57,14 +98,15 @@ export interface ScanResult {
  * Calls `onMatch` for every match of the global `pattern` in `files`, in
  * order, until it returns true or a limit runs out. Sizes are checked on the
  * opened file, and the read stops one byte past that size, so a file that grew
- * since indexing, or grows while it is read, cannot overrun them.
+ * since indexing, or grows while it is read, cannot overrun them. The callback
+ * receives the match text and the whole opened file's text for line coordinates.
  */
 export function scanIndexedSource(
   projectRoot: string,
   files: readonly ScanFile[],
   pattern: RegExp,
   limits: ScanLimits,
-  onMatch: (filePath: string, offset: number, text: string) => boolean,
+  onMatch: (filePath: string, offset: number, match: string, source: string) => boolean,
 ): ScanResult {
   if (!pattern.global) throw new Error('scanIndexedSource needs a global pattern');
   const deadline = Date.now() + limits.budgetMs;
@@ -93,7 +135,7 @@ export function scanIndexedSource(
     }
     pattern.lastIndex = 0;
     for (const m of text.matchAll(pattern)) {
-      if (onMatch(file.path, m.index ?? 0, m[0])) return { complete: true, skipped };
+      if (onMatch(file.path, m.index ?? 0, m[0], text)) return { complete: true, skipped };
     }
   }
   return { complete: true, skipped };
