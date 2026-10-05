@@ -10,7 +10,8 @@ codegraph version on a chosen real-world repo. Drives the harness in
 `scripts/agent-eval/`.
 
 ## Prerequisites
-- `tmux` 3+, a logged-in `claude` CLI, `node`, `git` (macOS/Linux).
+- `tmux` 3+, a logged-in `claude` CLI, `node`, `git` (macOS/Linux) for the Claude harness below.
+- Model availability and fallback follow `docs/AGENTS.md`. An alternate provider needs a compatible runner; preserve matched arms and the CLI contamination guard, and report unsupported metrics. A focused correctness-only check can use one candidate run without a performance claim.
 - Run from the codegraph repo root.
 
 ## Workflow

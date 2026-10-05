@@ -305,8 +305,9 @@ Medians: with ≈ 2–3 tool calls / ~28s; without ≈ 11 calls / ~47s. Tool cal
 
 Coverage decides whether a flow *exists* in the graph. A second class of change decides
 whether the answer explore returns is *sufficient* — how the byte envelope is divided across
-the files it found. Same pass bar (Read → 0, no wall-clock regression), same `--model sonnet
---effort high` rule, but the harness is `ab-new-vs-baseline.sh` (new build vs baseline build,
+the files it found. Same pass bar (Read → 0, no wall-clock regression) and
+[model selection and availability policy](../AGENTS.md#validation-methodology-required-for-every-new-languageframework),
+but the harness is `ab-new-vs-baseline.sh` (new build vs baseline build,
 **both codegraph-on**) rather than `run-all.sh`'s with-vs-without, because the question is
 whether a change to codegraph helped, not whether codegraph helps.
 
