@@ -37,6 +37,7 @@ cg.close();
 | `CodeGraph.init(path)` / `CodeGraph.open(path)` | Create or open a project index |
 | `indexAll(opts)` | Full index, with progress callback |
 | `sync()` | Incremental update |
+| `getIndexHealth()` | Sorted project-relative `needsReindex` and `parseErrors` paths |
 | `searchNodes(query)` | Full-text symbol search |
 | `getCallers(id)` / `getCallees(id)` | Walk the call graph |
 | `getImpactRadius(id, depth)` | Transitive impact of a change |

@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`6560052a`](https://github.com/colbymchenry/codegraph/commit/6560052a6f856855d3f71eee838fd66ccfa4285d) (v1.6.2, merged 2026-10-03) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`dea076fd`](https://github.com/colbymchenry/codegraph/commit/dea076fd1e9fa3e236e93fa915bb0feebe73579d) (after v1.6.2, merged 2026-10-05) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -74,7 +74,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `dea076fd` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -105,6 +105,12 @@ Compared with upstream `main` at `6560052` (v1.6.2). Each item here and in the d
 | Node.js 25 and newer, Bun | Refused | Allowed from Node.js 22.13 and Bun 1.4.0, the first releases with an unflagged `node:sqlite`; Node 26.10.0 and Bun 1.4.2 passed the full suite at `48903f5` ([Measured results](#measured-results)) |
 
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
+
+C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
+
+`codegraph status` reports files that need re-indexing and files with recorded parse errors. `status --json` includes `index.filesNeedingReindex` and `index.filesWithParseErrors`; `files --json` includes each file's extraction errors. A transient parser failure preserves the previous graph and retries on the next sync.
+
+The MCP launcher can replace a daemon from an older release. A daemon exits when its installation is deleted or its package version changes. Different managed builds of the same release retain the fork's version-identity checks.
 
 Dispatch and framework coverage the fork adds, by kind:
 

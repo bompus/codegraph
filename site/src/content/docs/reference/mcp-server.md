@@ -31,6 +31,9 @@ When you ask about tests, `codegraph_explore` includes source from the nearest t
 
 ## The other tools
 
+The launcher can replace a daemon from an older release. A daemon exits when its installation is deleted or its package version changes. Managed builds of the same release still require matching build identities.
+
+
 Seven more tools exist and stay fully functional, but are **unlisted by default** — everything they return already arrives inline on a `codegraph_explore` response (its blast-radius section, the relationship map, a symbol's body and its callee list):
 
 | Tool | Purpose |

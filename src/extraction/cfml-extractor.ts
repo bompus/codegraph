@@ -3,6 +3,7 @@ import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Lan
 import { generateNodeId, NodeIdAllocator } from './tree-sitter-helpers';
 import { TreeSitterExtractor } from './tree-sitter';
 import { parseSourceTreeSync } from './parse-tree';
+import { KernelUnavailableError } from './kernel/loader';
 
 /** Tags whose own children include an expression: `<cfset …>`, `<cfif …>`, `<cfelseif …>`, `<cfreturn …>`, and `#…#`. */
 const TAG_EXPRESSION_PARENTS: ReadonlySet<string> = new Set([
@@ -101,7 +102,7 @@ export class CfmlExtractor {
       this.errors.push({
         message: `CFML extraction error: ${error instanceof Error ? error.message : String(error)}`,
         severity: 'error',
-        code: 'parse_error',
+        code: error instanceof KernelUnavailableError ? 'parser_error' : 'parse_error',
       });
     }
 
@@ -155,7 +156,7 @@ export class CfmlExtractor {
       this.errors.push({
         message: 'cfml grammar not loaded',
         severity: 'error',
-        code: 'unsupported_language',
+        code: 'parser_error',
       });
       return;
     }

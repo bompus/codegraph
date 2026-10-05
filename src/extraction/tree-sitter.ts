@@ -18,6 +18,7 @@ import {
 } from '../types';
 import { detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage } from './grammars';
 import { parseSourceTreeSync } from './parse-tree';
+import { KernelUnavailableError } from './kernel/loader';
 import { NodeIdAllocator, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -587,6 +588,7 @@ export class TreeSitterExtractor {
    */
   extract(): ExtractionResult {
     const startTime = Date.now();
+    let parserUnavailable = false;
 
     if (!isLanguageSupported(this.language)) {
       return {
@@ -621,6 +623,7 @@ export class TreeSitterExtractor {
       // serialized tree through the NativeNode facade.
       this.tree = parseSourceTreeSync(this.source, this.language);
       if (!this.tree) {
+        parserUnavailable = true;
         throw new Error(`Failed to get parser for language: ${this.language}`);
       }
       if (['javascript', 'typescript', 'jsx', 'tsx'].includes(this.language)) {
@@ -694,7 +697,7 @@ export class TreeSitterExtractor {
         message: `Parse error: ${msg}`,
         filePath: this.filePath,
         severity: 'error',
-        code: 'parse_error',
+        code: parserUnavailable || error instanceof KernelUnavailableError ? 'parser_error' : 'parse_error',
       });
     } finally {
       // Drop the tree with the file; a kernel tree is plain Buffers, so
@@ -741,8 +744,10 @@ export class TreeSitterExtractor {
    * nested function definitions: their bodies are walked — and their
    * candidates attributed — by extractFunction's own body walk.
    */
-  private scanFnRefSubtree(node: SyntaxNode, depth: number): void {
+  private scanFnRefSubtree(node: SyntaxNode, depth: number, walked?: ReadonlySet<number>): void {
     if (!this.fnRefSpec || depth > 12) return;
+    // Subtrees the body walker has already been through.
+    if (walked?.has(node.id)) return;
     const nodeType = node.type;
     if (depth > 0 && (
       this.extractor?.functionTypes.includes(nodeType) ||
@@ -757,7 +762,7 @@ export class TreeSitterExtractor {
     this.maybeCaptureFnRefs(node, nodeType);
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
-      if (child) this.scanFnRefSubtree(child, depth + 1);
+      if (child) this.scanFnRefSubtree(child, depth + 1, walked);
     }
   }
 
@@ -1292,11 +1297,19 @@ export class TreeSitterExtractor {
     }
     // Check for class properties (e.g. C# property_declaration)
     else if (this.extractor.propertyTypes?.includes(nodeType) && this.isInsideClassLikeNode()) {
-      this.extractProperty(node);
-      // Property initializers aren't walked — scan for function-as-value
-      // candidates (#756): Scala `val table = Seq(targetCb)` in an object,
-      // Kotlin `val cb = ::handler` class properties.
-      this.scanFnRefSubtree(node, 0);
+      const propNode = this.extractProperty(node);
+      // The code a property runs is the property's: its calls,
+      // instantiations and reads attribute to it, as a method's do.
+      const bodies = propNode ? this.propertyBodies(node) : [];
+      if (propNode && bodies.length > 0) {
+        this.nodeStack.push(propNode.id);
+        for (const body of bodies) this.visitFunctionBody(body, propNode.id);
+        this.nodeStack.pop();
+      }
+      // Whatever the body walk didn't cover (a C# `= initializer`, any other
+      // language's whole declaration) is scanned for function-as-value
+      // candidates (#756); the bodies captured their own.
+      this.scanFnRefSubtree(node, 0, new Set(bodies.map((b) => b.id)));
       skipChildren = true;
     }
     // Check for class fields (e.g. Java field_declaration, C# field_declaration)
@@ -2226,7 +2239,12 @@ export class TreeSitterExtractor {
     // (#1093) because the two defaults differ — a bodiless CLASS is kept
     // unless a language opts into skipping, a bodiless STRUCT is skipped
     // unless a language opts into keeping.
-    const body = getChildByField(node, this.extractor.bodyField);
+    //
+    // resolveBody first, as for classes and enums: a VB.NET Structure tags
+    // every member as its own `body` field, so the field alone yields only
+    // the first member.
+    const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
+      ?? getChildByField(node, this.extractor.bodyField);
     if (!body && node.type !== 'record_declaration' && !this.extractor.allowBodilessStruct)
       return;
 
@@ -2419,6 +2437,28 @@ export class TreeSitterExtractor {
   }
 
   /**
+   * The parts of a property declaration that run code, for the body walker.
+   * VB.NET writes its `Get` / `Set` blocks, `= initializer` and `As New T`
+   * as children of the declaration itself, so the declaration is walked
+   * whole, the way its methods are (resolveBody). C# runs code in each
+   * accessor's body (`get { … }`, `set => …`) and in an expression-bodied
+   * property's `=> …`; its `= initializer`, like a field's, stays unwalked.
+   * Mirrored in the kernel (csharp/mod.rs property_bodies).
+   */
+  private propertyBodies(node: SyntaxNode): SyntaxNode[] {
+    if (this.language === 'vbnet') return [node];
+    if (this.language !== 'csharp') return [];
+    const bodies: SyntaxNode[] = [];
+    for (const accessor of getChildByField(node, 'accessors')?.namedChildren ?? []) {
+      const body = accessor.type === 'accessor_declaration' ? getChildByField(accessor, 'body') : null;
+      if (body) bodies.push(body);
+    }
+    const value = getChildByField(node, 'value');
+    if (value?.type === 'arrow_expression_clause') bodies.push(value);
+    return bodies;
+  }
+
+  /**
    * Extract a class field declaration (e.g. Java field_declaration, C# field_declaration).
    * Extracts each declarator as a 'field' kind node inside the owning class.
    */
@@ -2526,10 +2566,11 @@ export class TreeSitterExtractor {
           // candidates, so a lambda / method reference / anonymous class in
           // `private final Runnable r = () -> target();` contributed NO call
           // edge at all and `target` looked callerless. Keyed on the `value`
-          // FIELD, which only Java's `variable_declarator` carries — C#,
-          // VB.NET and PHP spell their initializer differently and are
-          // deliberately untouched here.
-          const valueNode = getChildByField(decl, 'value');
+          // FIELD, which only Java's `variable_declarator` carries. VB.NET
+          // writes `= expr` (the declarator's `initializer`) or `As New T(…)`
+          // (inside its as_clause), so its whole declarator is walked. C#
+          // and PHP spell their initializer differently and are untouched.
+          const valueNode = this.language === 'vbnet' ? decl : getChildByField(decl, 'value');
           if (valueNode) {
             this.nodeStack.push(fieldNode.id);
             this.visitFunctionBody(valueNode, fieldNode.id);

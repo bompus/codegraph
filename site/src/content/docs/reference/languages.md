@@ -5,6 +5,8 @@ description: Every language CodeGraph parses, and the extensions it recognizes.
 
 Language support is automatic from the file extension — there's nothing to configure.
 
+C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
+
 | Language | Extensions | Status |
 |---|---|---|
 | TypeScript | `.ts`, `.tsx` | Full support |
@@ -14,6 +16,7 @@ Language support is automatic from the file extension — there's nothing to con
 | Rust | `.rs` | Full support |
 | Java | `.java` | Full support |
 | C# | `.cs` | Full support |
+| VB.NET | `.vb` | Full support |
 | PHP | `.php`, `.inc` | Full support (see Pascal for `.inc` include files) |
 | Ruby | `.rb` | Full support |
 | C | `.c`, `.h` | Full support |

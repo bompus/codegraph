@@ -39,6 +39,11 @@ The MCP server (`codegraph serve --mcp`) is launched automatically by your agent
 
 ## Query commands
 
+`status` reports files whose symbols need re-indexing and files with recorded parse errors. Its JSON output includes `index.filesNeedingReindex` and `index.filesWithParseErrors`. `files --json` includes each file's extraction `errors` array.
+
+A transient parser failure preserves a previously indexed file's graph and retries it on the next sync. A recorded syntax error remains visible until the file or parser changes.
+
+
 `query`, `callers`, `callees`, and `impact` all accept `--json` for machine-readable output.
 
 ```bash

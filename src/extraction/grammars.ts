@@ -7,7 +7,7 @@
  * of docs/design/kernel-only-extraction-plan.md).
  */
 
-import { Language } from '../types';
+import type { ExtractionError, Language } from '../types';
 
 export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'liquid' | 'razor' | 'yaml' | 'twig' | 'xml' | 'properties' | 'markdown' | 'unknown'>;
 
@@ -561,6 +561,21 @@ export function isFileLevelOnlyLanguage(language: Language): boolean {
  */
 export function getSupportedLanguages(): Language[] {
   return [...GRAMMAR_LANGUAGES, 'svelte', 'vue', 'astro', 'liquid', 'markdown'];
+}
+
+/**
+ * Whether these extraction errors say the file was never parsed because its
+ * grammar was not available (`parser_error`, recorded when
+ * the native parser cannot return a tree).
+ *
+ * That is a fact about the running process, not about the file: a daemon whose
+ * install was upgraded or deleted underneath it fails every lazy grammar load
+ * (#2335). Such a result must never replace a file's index data, and a row an
+ * older engine stored that way must be re-indexed — not treated as current
+ * because its content hash still matches.
+ */
+export function hasGrammarLoadFailure(errors: readonly ExtractionError[] | undefined): boolean {
+  return !!errors && errors.some((e) => e.code === 'parser_error');
 }
 
 /**

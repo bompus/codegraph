@@ -286,6 +286,18 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Local JavaScript and TypeScript calls stay connected through linked packages and imports configured by a nested `baseUrl` (#1715).
 
 - Reading indexed files on Windows no longer produces false edit warnings when NTFS last-access updates are enabled. Thanks @JJordan0C. (#1451, #1472)
+
+- In VB.NET, every member of a `Structure` is now indexed, including its fields, properties, methods, constructors and nested enums. Before, only the first member was, so the rest could not be found and their callers looked empty.
+
+- In VB.NET and C#, what a property's `Get` and `Set` code calls, creates and reads now belongs to that property, as do C#'s `get => …` accessors and `=> …` property bodies. Before, it was dropped, so a method used only from a property looked unused.
+
+- In VB.NET, a field or property initializer like `= Compute()` or `As New List(Of Order)` now links what it calls and creates, and so do a `Custom Event`'s `AddHandler`, `RemoveHandler` and `RaiseEvent` blocks. Re-index VB.NET and C# projects after upgrading.
+
+- Upgrading CodeGraph while an agent session is open no longer leaves the old version's background server in charge of your project: the first session started from the new install stops it and starts a current one in its place, even while sessions opened before the upgrade are still running. That old server could no longer load the language parsers the upgrade removed, so it saved every file it re-indexed with no symbols, while new sessions could only read the index beside it without keeping it up to date. A background server from a newer install is never stopped, and sessions opened before the upgrade keep the old version until you restart them. Thanks @lipchey for the report. (#2335)
+
+- A file is no longer saved with no symbols when its language parser can't be loaded, which is what happened to every file a background server re-indexed after an upgrade removed its install: the file keeps what it had and is indexed again once the parser loads, and files an earlier version emptied this way are re-indexed by the next sync. A background server also exits on its own once its install is upgraded or removed, so the next session starts one from the current install. Thanks @lipchey for the report. (#2335)
+
+- `codegraph status` no longer says the index is up to date while indexed files are missing their symbols: it now names files the parser couldn't read and files stored without their symbols (which `codegraph sync` repairs), `status --json` counts both, and `codegraph files --json` lists each file's recorded errors. Thanks @lipchey for the report. (#2336)
 #### MCP / indexing
 
 - Full indexes of large projects no longer sometimes run two to three times slower than usual. A timing clash between two background database maintenance steps could switch reference resolution from several threads to one partway through.

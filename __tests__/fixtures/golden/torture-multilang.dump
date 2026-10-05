@@ -3402,7 +3402,7 @@
 {"source":"variable:36e608fb368763b7f8a74a69f477cec7","target":"function:692077921d04b315880bc35a0bc872a9","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"view\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":49,"col":24,"provenance":null}
 {"source":"variable:6b7262d2883839c6f601126f4dd59e9b","target":"function:d8f9c30c4ee99a9302a150e8eed67acf","kind":"references","metadata":"{\"confidence\":0.95,\"resolvedBy\":\"function-ref\",\"refName\":\"TargetCb\",\"refKind\":\"function_ref\",\"fnRef\":true}","line":14,"col":9,"provenance":null}
 {"source":"variable:788d75a828c79f9847e0be0e2b73a196","target":"variable:8fef25ea8abe486ee94190ed47c3644b","kind":"references","metadata":"{\"valueRef\":true}","line":null,"col":null,"provenance":null}
-== refs (1299)
+== refs (1301)
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Mix2","reference_kind":"implements","line":34,"col":37,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Mix2"}
 {"from_node_id":"class:01a3945fa12793f1af9ac531aedcc8cd","reference_name":"Paint","reference_kind":"implements","line":34,"col":59,"candidates":null,"file_path":"TortureMini.dart","language":"dart","status":"failed","name_tail":"Paint"}
 {"from_node_id":"class:066eb79e83cf3105cebd14593747068f","reference_name":"BaseService","reference_kind":"extends","line":13,"col":14,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"BaseService"}
@@ -4624,6 +4624,8 @@
 {"from_node_id":"property:13da6cd7fb88d8425ef100ac799b81ef","reference_name":"Text","reference_kind":"calls","line":122,"col":33,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"Text"}
 {"from_node_id":"property:13da6cd7fb88d8425ef100ac799b81ef","reference_name":"VStack","reference_kind":"calls","line":122,"col":24,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"VStack"}
 {"from_node_id":"property:20f555c9e314ec2302940348c2df150c","reference_name":"Action","reference_kind":"references","line":40,"col":15,"candidates":null,"file_path":"Torture.cs","language":"csharp","status":"failed","name_tail":"Action"}
+{"from_node_id":"property:2eba142ae17bb518a27a2345a0cc2620","reference_name":"Lookup","reference_kind":"calls","line":39,"col":45,"candidates":null,"file_path":"Torture.cs","language":"csharp","status":"failed","name_tail":"Lookup"}
+{"from_node_id":"property:2eba142ae17bb518a27a2345a0cc2620","reference_name":"Store","reference_kind":"calls","line":39,"col":64,"candidates":null,"file_path":"Torture.cs","language":"csharp","status":"failed","name_tail":"Store"}
 {"from_node_id":"property:36d0b68644ae5cbe11d8a493727a8a5a","reference_name":"Set","reference_kind":"instantiates","line":239,"col":11,"candidates":null,"file_path":"torture.tsx","language":"tsx","status":"failed","name_tail":"Set"}
 {"from_node_id":"property:3f76120a6d12e45f619241f30c648d15","reference_name":"renderDescription","reference_kind":"calls","line":48,"col":28,"candidates":null,"file_path":"torture.swift","language":"swift","status":"failed","name_tail":"renderDescription"}
 {"from_node_id":"property:42cbcdbb0dffcc35a50326fe730508ab","reference_name":"Widget","reference_kind":"references","line":38,"col":15,"candidates":null,"file_path":"Torture.cs","language":"csharp","status":"failed","name_tail":"Widget"}

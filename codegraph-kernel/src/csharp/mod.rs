@@ -5,7 +5,7 @@
 //! extractor, bug-for-bug, checked by the kernel parity tests and the full-index
 //! dump-diff gate. The authoritative quirk list is
 //! docs/design/csharp-kernel-port-checklist.md — including every deliberate
-//! emission hole (property/accessor bodies, constructor initializers,
+//! emission hole (field/property initializers, constructor initializers,
 //! delegates/events/operators/indexers, top-level locals) and garbage ref
 //! (`(repo)` primary-ctor extends, `: byte` enum extends, `nameof` calls)
 //! this file preserves on purpose. Positions in UTF-16 code units.
@@ -341,21 +341,34 @@ impl<'t> Walker<'t> {
             self.extract_method(node);
             skip_children = true;
         } else if kind == "property_declaration" && self.inside_class_like() {
-            // Property accessor/expression bodies are NEVER walked (calls
-            // inside are lost by design) — candidates-only scan.
-            self.extract_property(node);
-            self.scan_fn_ref_subtree(node, 0);
+            // Body references belong to the property; initializer candidates
+            // stay in the surrounding scope and skip the bodies already walked.
+            let walked: Vec<usize> = match self.extract_property(node) {
+                Some((row, name)) => {
+                    let bodies = property_bodies(node);
+                    if !bodies.is_empty() {
+                        self.stack.push(Scope { row, kind: "property", name });
+                        for body in &bodies {
+                            self.visit_for_calls_and_structure(*body);
+                        }
+                        self.stack.pop();
+                    }
+                    bodies.iter().map(|body| body.id()).collect()
+                }
+                None => Vec::new(),
+            };
+            self.scan_fn_ref_subtree(node, 0, &walked);
             skip_children = true;
         } else if kind == "field_declaration" && self.inside_class_like() {
             self.extract_field(node);
-            self.scan_fn_ref_subtree(node, 0);
+            self.scan_fn_ref_subtree(node, 0, &[]);
             skip_children = true;
         } else if kind == "local_declaration_statement" && !self.inside_class_like() {
             // Top-level statements: extractVariable's generic fallback finds no
             // direct identifier/variable_declarator children (C# nests them in
             // variable_declaration) → ZERO nodes, zero refs. Candidates only.
             self.extract_variable(node);
-            self.scan_fn_ref_subtree(node, 0);
+            self.scan_fn_ref_subtree(node, 0, &[]);
             skip_children = true;
         } else if kind == "using_directive" {
             self.extract_import(node);
@@ -544,9 +557,8 @@ impl<'t> Walker<'t> {
     }
 
     /// extractProperty (1986) — property_declaration only (dispatch-gated to
-    /// class-like scopes). Accessor bodies and `=>` value clauses are never
-    /// walked; type refs DO come from the `type` field.
-    fn extract_property(&mut self, node: Node<'t>) {
+    /// class-like scopes). The caller walks bodies with this row on the stack.
+    fn extract_property(&mut self, node: Node<'t>) -> Option<(u32, String)> {
         let docstring = preceding_docstring(node, self.src);
         let visibility = Some(self.visibility_of(node));
         let is_static = Some(self.is_static(node)); // ?? false — always concrete
@@ -558,10 +570,10 @@ impl<'t> Walker<'t> {
                 named_kids(node)
                     .find(|c| c.kind() == "identifier")
             });
-        let Some(name_node) = name_node else { return };
+        let name_node = name_node?;
         let name = self.text(name_node).to_string();
         if name.is_empty() {
-            return;
+            return None;
         }
 
         // Generic scan (isTsJsField=false): FIRST namedChild that isn't a
@@ -595,11 +607,9 @@ impl<'t> Walker<'t> {
             &name,
             node,
             Extra { docstring, signature: Some(signature), visibility, is_static, ..Extra::default() },
-        );
-        if let Some(row) = row {
-            // decorators: none for C#; then the csharp type-ref path.
-            self.extract_csharp_type_refs(node, row);
-        }
+        )?;
+        self.extract_csharp_type_refs(node, row);
+        Some((row, name))
     }
 
     /// extractField (2046) — field_declaration; each declarator becomes a
@@ -829,3 +839,25 @@ fn find_anonymous_class_body(node: Node) -> Option<Node> {
     None
 }
 
+
+// Walk accessor and expression bodies; keep the existing initializer handling.
+fn property_bodies(node: Node) -> Vec<Node> {
+    let mut bodies = Vec::new();
+    if let Some(accessors) = node.child_by_field_name("accessors") {
+        for i in 0..accessors.named_child_count() {
+            let Some(accessor) = accessors.named_child(i) else { continue };
+            if accessor.kind() != "accessor_declaration" {
+                continue;
+            }
+            if let Some(body) = accessor.child_by_field_name("body") {
+                bodies.push(body);
+            }
+        }
+    }
+    if let Some(value) = node.child_by_field_name("value") {
+        if value.kind() == "arrow_expression_clause" {
+            bodies.push(value);
+        }
+    }
+    bodies
+}
