@@ -6152,6 +6152,7 @@ export class ToolHandler {
         && exactQueryNames.has(n.name.toLowerCase()) && isDistinctiveIdentifier(n.name);
     });
     const callerSourceIds = new Set<string>();
+    const calleeSourceIds = new Set<string>();
     for (const [fp, group] of sortedFiles.slice(0, maxFiles)) {
       const stem = fp.split('/').pop()!.replace(/\.[^.]+$/, '');
       const fileNamed = pinnedSet.has(fp) || matchQuery.split(/[^\w$]+/).includes(stem);
@@ -6170,6 +6171,32 @@ export class ToolHandler {
       }
       const hasNamedBody = group.nodes.some(n => namedSeedIds.has(n.id)
         && exactQueryNames.has(n.name.toLowerCase()) && ['function', 'method'].includes(n.kind));
+      // Whole-file pins bring unrelated declarations into the same source
+      // budget. Keep the named callable's local continuation ahead of them,
+      // including a callback reference followed by a call into its helper.
+      const localCallees = new Set<string>();
+      const LOCAL_CALLEE_CAP = 16;
+      if (pinnedSet.has(fp) && hasNamedBody) {
+        let frontier = group.nodes.filter(n => namedSeedIds.has(n.id)
+          && exactQueryNames.has(n.name.toLowerCase()) && ['function', 'method'].includes(n.kind));
+        const visited = new Set(frontier.map(n => n.id));
+        for (let depth = 0; depth < 2 && localCallees.size < LOCAL_CALLEE_CAP; depth++) {
+          const next: Node[] = [];
+          for (const root of frontier.slice(0, LOCAL_CALLEE_CAP)) {
+            for (const { node, edge } of cg.getCallees(root.id)) {
+              if (localCallees.size >= LOCAL_CALLEE_CAP) break;
+              if (!['calls', 'references'].includes(edge.kind) || node.filePath !== fp
+                  || !['function', 'method'].includes(node.kind) || visited.has(node.id)
+                  || node.endLine - node.startLine >= 200) continue;
+              visited.add(node.id);
+              localCallees.add(node.id);
+              if (!group.nodes.some(n => n.id === node.id)) group.nodes.push(node);
+              next.push(node);
+            }
+          }
+          frontier = next;
+        }
+      }
       const testLines = [...(coveringTestLines.get(fp) ?? [])];
       if (!fileNamed && !hasNamedBody && localCallers.size === 0 && !coveringTestLines.has(fp)) continue;
       try {
@@ -6187,12 +6214,13 @@ export class ToolHandler {
           && !['file', 'component', 'module'].includes(n.kind)
           && n.endLine - n.startLine + 1 <= sourceLines.length / 2)
           .map(n => ({ start: n.startLine, end: n.endLine }));
-        if (supporting) needed.push(...requested.filter(r => r.nodeId && r.score === supporting.score));
+        if (supporting && localCallees.size === 0) needed.push(...requested.filter(r => r.nodeId && r.score === supporting.score));
         if (region) needed.push(...(fp.endsWith('.vue') && !supporting ? requested.filter(r => !r.nodeId) : [region]));
         for (const n of group.nodes) {
-          if (localCallers.has(n.id) && n.endLine - n.startLine < 200) {
+          if ((localCallers.has(n.id) || localCallees.has(n.id)) && n.endLine - n.startLine < 200) {
             needed.push({ start: n.startLine, end: n.endLine });
-            callerSourceIds.add(n.id);
+            if (localCallers.has(n.id)) callerSourceIds.add(n.id);
+            if (localCallees.has(n.id)) calleeSourceIds.add(n.id);
           }
         }
         const chars = mergeRanges(needed).reduce((sum, r) => sum
@@ -7542,14 +7570,14 @@ export class ToolHandler {
       // whose scores are open-ended: `>= EXACT_IMPORTANCE` must select exact
       // targets only, while `>= 12` checks still include them.
       const EXACT_IMPORTANCE = 1000;
-      const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number; spine: boolean; spineCallLine?: number; qualifiedName?: string }> = [...rangeNodes.values()]
+      const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number; spine: boolean; spineCallLine?: number; qualifiedName?: string; nodeId?: string }> = [...rangeNodes.values()]
         // Drop whole-file envelope nodes (containers covering >50% of the file).
         .filter(n => !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
         .map(n => {
           let importance = 1;
           if (exactNodeIds.has(n.id)) importance = EXACT_IMPORTANCE;
           else if (namedSeedIds.has(n.id)) importance = 12;
-          else if (callerSourceIds.has(n.id)) importance = 11;
+          else if (callerSourceIds.has(n.id) || calleeSourceIds.has(n.id)) importance = 11;
           else if (entryNodeIds.has(n.id)) importance = 10;
           else if (flow.namedNodeIds.has(n.id)) importance = 9; // agent named it → keep its cluster
           else if (glueNodeIds.has(n.id)) importance = 6; // bridging caller/callee of an entry
@@ -7559,7 +7587,7 @@ export class ToolHandler {
           // processRunExecutionData, the named flow ENTRY at L1562, is a large
           // low-density method that lost the budget to denser blocks and got cut, so
           // the agent Read it back — the very thing explore exists to prevent).
-          return { start: n.startLine, end: n.endLine, name: n.name, kind: n.kind, importance, spine: flow.pathNodeIds.has(n.id), spineCallLine: flow.spineCallSites.get(n.id), qualifiedName: n.qualifiedName };
+          return { start: n.startLine, end: n.endLine, name: n.name, kind: n.kind, nodeId: n.id, importance, spine: flow.pathNodeIds.has(n.id), spineCallLine: flow.spineCallSites.get(n.id), qualifiedName: n.qualifiedName };
         });
 
       // A path or named component can ask for evidence that has no standalone
@@ -7573,9 +7601,15 @@ export class ToolHandler {
           const requested = await requestedSourceRanges(filePath, fileContent, lang || 'unknown', matchQuery,
             fileNamed ? fileIndexNodes : [], [...(coveringTestLines.get(filePath) ?? [])]);
           const declarationScore = Math.max(0, ...requested.filter(r => r.nodeId).map(r => r.score));
-          if (declarationScore > 0) {
+          const hasLocalCallees = ranges.some(r => r.nodeId && calleeSourceIds.has(r.nodeId));
+          for (const r of ranges) {
+            if (r.nodeId && calleeSourceIds.has(r.nodeId)) {
+              r.importance = Math.max(r.importance, 14 + declarationScore);
+            }
+          }
+          if (declarationScore > 0 || hasLocalCallees) {
             for (const r of ranges) {
-              if (r.importance === 12 && exactQueryNames.has(r.name.toLowerCase())) r.importance = 14 + declarationScore;
+              if (r.importance === 12 && exactQueryNames.has(r.name.toLowerCase())) r.importance = (hasLocalCallees ? 15 : 14) + declarationScore;
             }
           }
           for (const r of requested) {
@@ -8320,8 +8354,16 @@ export class ToolHandler {
           while (reshrunk.parts.length > 1 && sectionText(reshrunk.parts).length > room) {
             const holdsFocus = (p: SectionPart) => focus.some((l) => l >= p.range.start && l <= p.range.end);
             let drop = reshrunk.parts.length - 1;
+            let weakest = Infinity;
             for (let k = reshrunk.parts.length - 1; k >= 0; k--) {
-              if (!holdsFocus(reshrunk.parts[k]!)) { drop = k; break; }
+              const part = reshrunk.parts[k]!;
+              if (!holdsFocus(part)) { drop = k; break; }
+              // When every part holds a focus line, discard the least
+              // important body instead of the named body at the file's tail.
+              const importance = Math.max(0, ...clusters[idx]!.members
+                .filter(m => m.start <= part.range.end && m.end >= part.range.start)
+                .map(m => m.importance));
+              if (importance < weakest) { weakest = importance; drop = k; }
             }
             reshrunk.parts.splice(drop, 1);
             reshrunk.shrunk = true;
