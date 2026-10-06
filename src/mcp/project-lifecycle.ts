@@ -20,6 +20,7 @@ interface Project {
   socket: Socket | null;
   timer: NodeJS.Timeout;
   options: Parameters<CodeGraph['watch']>[0];
+  preserveUncertain: boolean;
 }
 
 export interface ProjectLease {
@@ -35,18 +36,20 @@ export function acquireProject(
   root: string,
   open: () => CodeGraph,
   options: Parameters<CodeGraph['watch']>[0],
+  preserveUncertain = false,
 ): ProjectLease {
   root = realpathSync(root);
   const key = canonicalProjectRoot(root);
   let project = projects.get(key);
   if (!project) {
     const cg = open();
-    project = { key, cg, refs: 0, owner: false, caughtUp: false, retirement: null, gate: null, socket: null, options,
+    project = { key, cg, refs: 0, owner: false, caughtUp: false, retirement: null, gate: null, socket: null, options, preserveUncertain,
       timer: setInterval(() => { void ready(root, project!); }, 1000) };
     project.timer.unref();
     projects.set(key, project);
   }
   const entry = project;
+  entry.preserveUncertain ||= preserveUncertain;
   entry.refs++;
   let released = false;
   return {
@@ -111,7 +114,8 @@ function ready(root: string, project: Project): Promise<void> {
 
 async function activate(root: string, project: Project): Promise<void> {
   if (!isInitialized(root)) return;
-  const writer = tryAcquireWriterLock(root, 'fallback');
+  const writer = tryAcquireWriterLock(root, 'fallback', 'writer.pid',
+    { preserveUncertain: project.preserveUncertain });
   if (writer.kind === 'taken') {
     // Keep a real daemon session, so its idle timeout cannot strand this reader.
     // Direct writers have no socket; the periodic retry takes over on their exit.
