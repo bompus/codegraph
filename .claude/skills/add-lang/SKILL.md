@@ -18,7 +18,8 @@ single-token form everywhere (`csharp`, not `c#`).
 ## Prerequisites
 - Run from the codegraph repo root. `node`, `git`, `gh`, and a logged-in
   `claude` CLI (the benchmark spawns real `claude -p` runs).
-- The benchmark uses the local dev build — Step 8 builds + links it on PATH.
+- Read the `codegraph-build-validation` skill for the supported runtime and product gates. Local builds and corpus checks follow the active host's resource admission and limits.
+- Use an owned task checkout and task-owned corpus/output directories. Keep paid runs within the user's selected scope; the checklist does not authorize global installation or runtime activation.
 
 ## Workflow
 
@@ -121,8 +122,12 @@ npm run build:kernel && npm run build
 ```
 Index a small sample repo and check extraction:
 ```bash
-( cd <sample-repo> && codegraph init )
-node scripts/add-lang/verify-extraction.mjs <sample-repo> <lang>
+# Run from the built task checkout; replace SAMPLE and LANGUAGE.
+CG_BUILD="$(pwd)"
+SAMPLE=/absolute/task-owned/sample-repo
+LANGUAGE=language-token
+( cd "$SAMPLE" && node "$CG_BUILD/dist/bin/codegraph.js" init )
+node scripts/add-lang/verify-extraction.mjs "$SAMPLE" "$LANGUAGE"
 ```
 `verify-extraction.mjs` fails (exit 1) if the language isn't detected or only
 `file`/`import` nodes were produced — the classic symptom of wrong node-type
@@ -158,18 +163,47 @@ needs tracing across files). Add a `"<Language>"` block to
 
 ### Step 8 — Benchmark all 3 (extraction + A/B)
 
-Make the dev build the codegraph on PATH **once**, then loop:
+Record the three selected repos, representative prompts, correctness controls
+and run count before running. Retain the repository's small/medium/large coverage
+and flow-prompt acceptance criteria. Apply the active host's benchmark policy
+when available, including exploration versus confirmation; it does not replace
+product correctness gates or require contributors to install personal skills.
+
+Build in the admitted local window, then use the exact task executable for each
+owned corpus. The convenience `bench.sh` resolves `codegraph` from PATH; use the
+explicit sequence below to avoid selecting or changing a global managed runtime.
+`local-install.sh` performs a global link and is not an experiment setup step.
+
 ```bash
-npm run build && ./scripts/local-install.sh
-scripts/add-lang/bench.sh <lang> <name> <url> "<question>" headless   # ×3
+# Run from the task checkout. Replace the corpus, language and question values.
+npm run build
+CG_BUILD="$(pwd)"
+EVAL_ROOT=/absolute/task-owned/disk-directory
+CORPUS_REPO="$EVAL_ROOT/corpus/repo-name"
+LANGUAGE=language-token
+mkdir -p "$EVAL_ROOT/tmp" "$EVAL_ROOT/results"
+# Clone the selected repo into CORPUS_REPO first; it must be exclusively owned.
+( cd "$CORPUS_REPO" && node "$CG_BUILD/dist/bin/codegraph.js" init -i )
+node scripts/add-lang/verify-extraction.mjs "$CORPUS_REPO" "$LANGUAGE"
 ```
-`bench.sh` clones into `$CORPUS` (default `~/codegraph-corpora`), wipes + indexes, runs
-`verify-extraction.mjs`, then the with/without retrieval A/B via
-`scripts/agent-eval/run-all.sh` (skips the paid A/B if extraction is broken).
-Read each `parse-run.mjs` summary printed by `run-all.sh`: tool calls, file
-`Read`s, Grep/Bash, codegraph-tool calls, duration, and **cost** — for both the
-`with` and `without` arms. After the loop, restore the dev link if needed:
-`./scripts/local-install.sh`.
+Continue to the paid A/B only after extraction passes, paid calls are selected,
+and the needed host admission is obtained. Do not override broken extraction.
+For each selected repo/run, use a separate output directory and the same build
+that indexed it:
+```bash
+# Run from the same task checkout and repeat the owned paths explicitly.
+CG_BUILD="$(pwd)"
+EVAL_ROOT=/absolute/task-owned/disk-directory
+CORPUS_REPO="$EVAL_ROOT/corpus/repo-name"
+TMPDIR="$EVAL_ROOT/tmp" AGENT_EVAL_OUT="$EVAL_ROOT/results/run-1" \
+  CG_BIN="$CG_BUILD/dist/bin/codegraph.js" \
+  bash scripts/agent-eval/run-all.sh "$CORPUS_REPO" "question" headless
+```
+Preserve strict MCP configuration, matched arms and the CLI contamination guard.
+Report each `parse-run.mjs` summary: tool calls, file Reads, Grep/Bash, CodeGraph
+calls, duration and cost for both arms. Preserve excluded results and reasons.
+An exploratory pair is not a performance claim; confirmation uses preset
+repetitions and variation criteria. No global restoration step is needed.
 
 ### Step 9 — Docs + CHANGELOG
 
@@ -200,11 +234,9 @@ the PR body. Do not publish or tag: this fork publishes no releases (AGENTS.md
 § Releases).
 
 ## Notes
-- The A/B spawns real **paid** `claude -p` runs (Sonnet at `--effort high` by
-  default, `--max-budget-usd`),
-  2 arms × 3 repos. The corpus dir is shared with `/agent-eval`, so clones
-  are reused across runs.
-- An index must be served by the **same** binary that built it. Step 8 builds +
-  links the dev build first, so this holds.
+- Selected A/B comparisons spawn real paid `claude -p` runs. Model policy is
+  in `docs/AGENTS.md`; count arms, harnesses and confirmation repetitions in the
+  selected plan. Reuse only task-owned corpus clones.
+- An index must be served by the **same** binary/native build that built it. Step 8 selects it explicitly without a global link.
 - If a grammar can't be obtained, or extraction can't reach PASS, **STOP and
   report** — don't ship a half-wired language.

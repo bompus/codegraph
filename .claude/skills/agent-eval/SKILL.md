@@ -26,33 +26,52 @@ Copy this checklist:
 - [ ] 6. Report results
 ```
 
-**Step 1 — version.** Ask with `AskUserQuestion`: which codegraph version to test.
-Offer "Local dev build" and "Latest published"; the free-text "Other" lets the
-user type a specific version (e.g. `0.7.10`). Map the answer to a VERSION token:
+Use selections already supplied by the user. Ask for missing version, language,
+repo and harness choices under the active host's question policy; bundle independent
+choices where practical. This skill requires no particular question-card API.
+
+**Step 1 — version.** Offer "Local dev build", "Latest published" and a specific
+version (e.g. `0.7.10`). Map the answer to a VERSION token:
 - "Local dev build" → `local`
 - "Latest published" → `latest`
 - a typed version → that string (e.g. `0.7.10`)
 
-**Step 2 — language.** Read `.claude/skills/agent-eval/corpus.json`. Ask with
-`AskUserQuestion` which language to test, listing the languages that have entries.
+**Step 2 — language.** Read `.claude/skills/agent-eval/corpus.json` and use a language with an entry.
 
 **Step 3 — repo.** From the chosen language's entries, ask which repo. Label each
 option with its size and file count, e.g. `excalidraw — Medium (~600 files)`.
 Each entry carries the `repo` URL and a representative `question`.
 
-**Step 4 — harness.** Ask with `AskUserQuestion` which harness to run, and map
-the answer to a MODE token:
+**Step 4 — harness.** Map the selected harness to a MODE token:
 - "Headless" → `headless` — `claude -p` with stream-json: exact tokens/cost and a
   clean tool sequence (2 runs, fast, no TTY).
 - "Interactive (tmux)" → `tmux` — drives the real Claude TUI in tmux: faithful
   Explore-subagent behavior, metrics from session logs (2 runs, slower).
 - "Both" → `all` — headless + interactive (4 runs).
 
-**Step 5 — run.** Launch in the background (sets the version, clones if missing,
-wipes + re-indexes, runs the chosen arms — several minutes):
+**Step 5 — run.** Record the selected arms, corpora, controls, run count and
+correctness criteria before launching. Follow the host's admission and benchmark
+policy when available; no personal skill installation is required. Paid calls
+must fit the user's selected scope. A single exploratory pair supports no
+performance claim; set repetitions and variation criteria before confirmation.
+
+Run from an owned task checkout. Use a task-owned corpus: `audit.sh` deletes its
+index and rebuilds it. Do not point it at a real project's or another session's
+index. Set `TMPDIR` and `AGENT_EVAL_OUT` to owned disk directories, because the
+runner defaults to temporary storage and overwrites named result files.
+
+After local admission, launch the selected run with isolated paths:
 ```bash
-scripts/agent-eval/audit.sh <VERSION> <repo-name> <repo-url> "<question>" <MODE>
+# Replace these values with the selected version, repo and owned disk location.
+EVAL_ROOT=/absolute/task-owned/disk-directory
+mkdir -p "$EVAL_ROOT/tmp" "$EVAL_ROOT/corpus" "$EVAL_ROOT/results"
+TMPDIR="$EVAL_ROOT/tmp" CORPUS="$EVAL_ROOT/corpus" \
+  AGENT_EVAL_OUT="$EVAL_ROOT/results" \
+  bash scripts/agent-eval/audit.sh local repo-name repo-url "question" headless
 ```
+For confirmation repetitions, give each run a distinct results directory and
+retain earlier results. Use the same binary/native build to index and serve each
+arm. Preserve strict MCP configuration and the CLI contamination guard.
 
 **Step 6 — report.** When the job finishes, read the log and report per arm:
 - Headless (`parse-run.mjs`): total tool calls, file `Read`s, Grep/Bash,
@@ -74,8 +93,11 @@ codegraph reduced effort and whether both arms reached a correct answer.
 - The index is rebuilt every run (`audit.sh` wipes `.codegraph`) — different
   versions extract differently, so an index must be served by the same binary
   that built it.
-- `audit.sh` temporarily mutates the global `codegraph` install for the test,
-  then restores your dev link via `local-install.sh`.
+- `audit.sh local` builds the owning checkout and passes its exact executable as
+  `CG_BIN`. Published versions use `npm install --prefix` in an isolated directory
+  under `TMPDIR`, removed on exit. Neither path links or restores a global install.
+- `run-all.sh` accepts an explicit `CG_BIN`; PATH is its fallback. Do not use
+  `local-install.sh` to select an experiment binary: that script changes the global install.
 - Corpus repos are cloned to `$CORPUS` (default `~/codegraph-corpora`, on the
   workspace disk) and reused if already present.
 - Add or edit repos in `corpus.json` (fields: `name`, `repo`, `size`, `files`,
