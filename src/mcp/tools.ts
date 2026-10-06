@@ -4752,6 +4752,7 @@ export class ToolHandler {
       string,
       { ranges: ExploreLineRange[]; bytes: number; fingerprint?: string }
     >();
+    const docRenderedLines = new Map<string, { marker: string; lines: { line: number; end: number; bytes: number }[] }>();
     const noteEmitted = (
       fp: string,
       ranges: ExploreLineRange[],
@@ -4873,6 +4874,23 @@ export class ToolHandler {
       anchorSpans.set(anchor.file, spans);
     }
 
+    // Capacity notices describe pin priority, not whether another channel
+    // happened to return the same file. Keep the list bounded and deduplicated.
+    const NOTICE_LABEL_CHARS = 600;
+    const boundedNotice = (prefix: string, entries: string[], suffix: string, maxEntries: number): string => {
+      if (entries.length === 0) return '';
+      const labels: string[] = [];
+      for (const entry of entries) {
+        if (labels.length >= maxEntries || [...labels, entry].join(', ').length > NOTICE_LABEL_CHARS) break;
+        labels.push(entry);
+      }
+      const omitted = entries.length - labels.length;
+      return prefix + labels.join(', ') + (omitted > 0 ? `${labels.length > 0 ? ' ' : ''}(${omitted} more)` : '')
+        + (labels.length === 0 ? '. Explore fewer requested files or narrower line ranges in a separate call.' : suffix);
+    };
+    const capacityNote = boundedNotice(" Requested files not pinned within this call's initial file limit: ",
+      capacityFiles.map(fp => `\`${fp}\``), '. Explore fewer requested paths in a separate call.', POINTER_MAX_FILES);
+
     if (subgraph.nodes.size === 0 && proseFiles.size === 0) {
       diag?.finishEmpty('no relevant code found — empty subgraph');
       const missNote = unresolvedPathSpans.length > 0
@@ -4905,8 +4923,8 @@ export class ToolHandler {
           : '\nNo shared-word symbol candidates found; retry codegraph_explore with literal symbol/file names or code terms.';
       }
       const empty = changes
-        ? `${this.buildChangesSection(cg, changes, changedNodes)}\nNo other relevant code found for "${query}"${missNote}${explanation}${scanNote}`
-        : `No relevant code found for "${query}"${missNote}${explanation}${scanNote}`;
+        ? `${this.buildChangesSection(cg, changes, changedNodes)}\nNo other relevant code found for "${query}"${missNote}${explanation}${capacityNote}${scanNote}`
+        : `No relevant code found for "${query}"${missNote}${explanation}${capacityNote}${scanNote}`;
       // Still an explore call, so it is still recorded: an empty answer spends a
       // call against the tier budget even though it emits no source.
       return { ...this.textResult(empty), [EXPLORE_EMISSION_KEY]: {
@@ -6094,22 +6112,6 @@ export class ToolHandler {
     const unmatchedNamesNote = unmatchedNames.length > 0
       ? ` Not found in the index: ${unmatchedNames.map((n) => `\`${n}\``).join(', ')}.`
       : '';
-    // Capacity notices describe pin priority, not whether another channel
-    // happened to return the same file. Keep the list bounded and deduplicated.
-    const NOTICE_LABEL_CHARS = 600;
-    const boundedNotice = (prefix: string, entries: string[], suffix: string, maxEntries: number): string => {
-      if (entries.length === 0) return '';
-      const labels: string[] = [];
-      for (const entry of entries) {
-        if (labels.length >= maxEntries || [...labels, entry].join(', ').length > NOTICE_LABEL_CHARS) break;
-        labels.push(entry);
-      }
-      const omitted = entries.length - labels.length;
-      return prefix + labels.join(', ') + (omitted > 0 ? `${labels.length > 0 ? ' ' : ''}(${omitted} more)` : '')
-        + (labels.length === 0 ? '. Explore fewer requested files or narrower line ranges in a separate call.' : suffix);
-    };
-    const capacityNote = boundedNotice(" Requested files not pinned within this call's initial file limit: ",
-      capacityFiles.map(fp => `\`${fp}\``), '. Explore fewer requested paths in a separate call.', POINTER_MAX_FILES);
     const gatherPrefix = ' Additional indexed source not included: ';
     const gatherSuffix = '. Explore these ranges to continue.';
     const gatherNotice = (ranges: QueryLineAnchor[]): string => boundedNotice(gatherPrefix,
@@ -7179,7 +7181,7 @@ export class ToolHandler {
       // an answer that is a list or a table only reads as one when every row
       // is present, and its rows rarely carry the question's words.
       const docSecs = docSections.get(filePath);
-      if (docSecs) {
+      if (docSecs && !anchorSpans.has(filePath)) {
         const DOC_FILE_CAP = 8000;
         const numbered = (ln: number) =>
           exploreLineNumbersEnabled() ? `${ln}\t${fileLines[ln - 1] ?? ''}` : (fileLines[ln - 1] ?? '');
@@ -7215,15 +7217,27 @@ export class ToolHandler {
         }
         const parts: string[] = [];
         const shown: string[] = [];
+        const renderedLines: { line: number; end: number; bytes: number }[] = [];
+        let bodyOffset = 0;
         for (const { node: s } of docSecs) {
           const chosen = picked.get(s.id);
           if (!chosen) continue;
-          parts.push(chosen.map(numbered).join('\n'));
+          const rows = chosen.map(ln => {
+            const text = numbered(ln);
+            bodyOffset += text.length;
+            renderedLines.push({ line: ln, end: bodyOffset, bytes: (fileLines[ln - 1] ?? '').length });
+            bodyOffset += 1;
+            return text;
+          });
+          parts.push(rows.join('\n'));
+          bodyOffset += 1; // Two newlines separate selected sections.
           shown.push(s.name);
         }
         if (parts.length > 0) {
           const suffix = `sections: ${shown.join(' · ')}${elided ? ' (long sections show only the rows that match the question)' : ''} — the rest of the file is not shown`;
-          lines.push(fileSectionHeader(filePath, suffix), '', '```' + lang, parts.join('\n\n'), '```', '');
+          const header = fileSectionHeader(filePath, suffix);
+          lines.push(header, '', '```' + lang, parts.join('\n\n'), '```', '');
+          docRenderedLines.set(filePath, { marker: header + '\n\n```' + lang + '\n', lines: renderedLines });
           totalChars += used + 120;
           noteEmitted(filePath, mergeRanges([...picked.values()].flat()
             .map(ln => ({ start: ln, end: ln }))), used, fingerprint);
@@ -8736,6 +8750,7 @@ export class ToolHandler {
 
     const output = flow.text + lines.join('\n');
     let finalText: string;
+    let retainedTextLength = output.length;
     // The epilogue costs less than a file section, so it is cut FIRST (CG-31).
     // Dropping a trailing section throws away source the render loop had already
     // set that file's reservation aside for — the exact starvation the
@@ -8752,6 +8767,7 @@ export class ToolHandler {
         && epilogueOnlyCut !== null
         && epilogueOnlyCut.length + EPILOGUE_CUT_NOTE.length <= hardCeiling) {
       finalText = epilogueOnlyCut + EPILOGUE_CUT_NOTE;
+      retainedTextLength = epilogueOnlyCut.length;
     } else if (output.length > hardCeiling) {
       // Still over with the epilogue gone: cut at a FILE-SECTION boundary (the
       // last ``**` `` file header before the ceiling) so we drop whole trailing
@@ -8759,11 +8775,16 @@ export class ToolHandler {
       // through a method body — a half-rendered method just forces the Read this
       // tool exists to prevent. Fall back to a line boundary only if no section
       // header sits in the back half (degenerate single-giant-section case).
-      const cut = output.slice(0, hardCeiling);
+      const cutNoteReserve = Math.max(
+        EXPLORE_FALLBACK_NOTES.truncated.complete.length,
+        EXPLORE_FALLBACK_NOTES.truncated.trimmed.length,
+      );
+      const cut = output.slice(0, Math.max(0, hardCeiling - cutNoteReserve));
       const lastSection = cut.lastIndexOf('\n' + FILE_SECTION_PREFIX);
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
       finalText = safe + EXPLORE_FALLBACK_NOTES.truncated[trimmedIn(safe) ? 'trimmed' : 'complete'];
+      retainedTextLength = safe.length;
     } else {
       finalText = output;
     }
@@ -8777,6 +8798,17 @@ export class ToolHandler {
     // shown above" + the budget note, so nothing is silently dropped.
     const survivors = renderedFilePaths.filter((fp) =>
       finalText.includes(`${FILE_SECTION_PREFIX}${fp}\``));
+    // A surviving header can precede a cut inside a Markdown section. Record
+    // only complete source lines kept by that cut, with or without numbering.
+    for (const [file, rendered] of docRenderedLines) {
+      const emitted = emittedByFile.get(file);
+      if (!emitted) continue;
+      const markerAt = finalText.indexOf(rendered.marker);
+      const bodyAt = markerAt + rendered.marker.length;
+      const kept = markerAt < 0 ? [] : rendered.lines.filter(row => bodyAt + row.end <= retainedTextLength);
+      emitted.ranges = mergeRanges(kept.map(row => ({ start: row.line, end: row.line })));
+      emitted.bytes = kept.reduce((sum, row) => sum + row.bytes + 1, 0);
+    }
     const shownSymbols = survivors.reduce((sum, fp) => {
       const g = fileGroups.get(fp);
       if (!g) return sum;
@@ -8794,11 +8826,13 @@ export class ToolHandler {
       // no verified continuation. The existing drift guard owns their notice.
       const absolute = validatePathWithinRoot(projectRoot, file);
       if (!absolute || !existsSync(absolute) || this.isFileStaleOnDisk(cg, file)) continue;
+      let content: string;
+      try { content = readFileSync(absolute, 'utf8'); } catch { continue; }
       const emission = emittedByFile.get(file);
       let held: ExploreLineRange[] = [];
       if (dedupEnabled && priorCalls?.calls.some(call => call.files.some(entry => entry.path === file))) {
         try {
-          const fingerprint = emission?.fingerprint ?? fileFingerprint(readFileSync(absolute, 'utf8'));
+          const fingerprint = emission?.fingerprint ?? fileFingerprint(content);
           held = servedRangesForFile(priorCalls, file, fingerprint);
         } catch { continue; }
       }

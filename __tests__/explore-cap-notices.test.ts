@@ -24,6 +24,10 @@ async function explore(query: string, extra: Record<string, unknown> = {}): Prom
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cap-notices-'));
   fs.writeFileSync(path.join(dir, 'big.ts'), bigSource);
+  fs.writeFileSync(path.join(dir, 'config.yaml'), 'flag: true\n');
+  fs.writeFileSync(path.join(dir, '1.ts'), 'export const numericFile = 1;\n');
+  fs.writeFileSync(path.join(dir, 'padding.ts'), 'export function padding() {\n' + Array.from({ length: 100 }, (_, i) => `  // padding row ${i} ${'p'.repeat(45)}`).join('\n') + '\n  return 7;\n}');
+  fs.writeFileSync(path.join(dir, 'partial.md'), Array.from({ length: 300 }, (_, i) => `## Tiny${i}\n\nSmall.\n\n\n`).join('\n') + '## TailSection\n' + Array.from({ length: 1900 }, () => 'x').join('\n') + '\n');
   fs.writeFileSync(path.join(dir, 'compact.ts'), Array.from({ length: 360 }, (_, i) => `export const val${i}=${i};`).join(' '));
   fs.writeFileSync(path.join(dir, 'manual.md'), Array.from({ length: 301 }, (_, i) => `## Chapter${String(i).padStart(3, '0')}\n\nParagraph ${i}.\n`).join('\n'));
   for (let j = 0; j < 3; j++) fs.writeFileSync(path.join(dir, `large-doc${j}.md`),
@@ -73,6 +77,45 @@ describe('bounded explore exclusion notices', () => {
     expect(out).toContain("Requested files not pinned within this call's initial file limit: `unit1.ts`");
     expect(out.match(/\*\*`unit[01]\.ts`/g)?.length).toBe(1);
     expect(out).not.toContain('No indexed file uniquely matches');
+  });
+
+  it('reports an overflow file when the selected file has no code nodes', async () => {
+    const out = await explore('config.yaml 1.ts', { maxFiles: 1 });
+    expect(out).toContain('No relevant code found');
+    expect(out).toContain("Requested files not pinned within this call's initial file limit: `1.ts`");
+  });
+
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)('does not promise a continuation for unreadable source', async () => {
+    const file = path.join(dir, 'big.ts');
+    const mode = fs.statSync(file).mode;
+    fs.chmodSync(file, 0);
+    try {
+      expect(() => fs.readFileSync(file, 'utf8')).toThrow(/EACCES/);
+      const out = await explore('big.ts');
+      expect(out).not.toContain('Additional indexed source not included');
+      expect(out).not.toContain('independent source');
+    } finally { fs.chmodSync(file, mode); }
+  });
+
+  it('offers the Markdown tail cut inside a surviving section', async () => {
+    const state = new ExploreSessionState();
+    const result = await new ToolHandler(cg).execute('codegraph_explore', {
+      query: 'padding.ts partial.md TailSection', maxFiles: 2,
+    }, state);
+    const out = result.content?.[0]?.text ?? '';
+    expect(out).toContain('output truncated to budget');
+    expect(out).toContain('**`partial.md`');
+    const pointer = /Additional indexed source not included: `partial\.md:(\d+)-(\d+)`/.exec(out);
+    expect(pointer).not.toBeNull();
+    const source = fs.readFileSync(path.join(dir, 'partial.md'), 'utf8').split('\n');
+    const firstMissing = Number(pointer![1]);
+    expect(out).not.toContain(`${firstMissing}\tx`);
+    const held = state.view().projects[0]!.calls[0]!.files.find(file => file.path === 'partial.md');
+    expect(held).toBeDefined();
+    expect(held!.ranges.every(range => range.end < firstMissing)).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(19500);
+    const continued = await explore(`partial.md:${pointer![1]}-${pointer![2]}`);
+    expect(continued).toContain(`${firstMissing}\t${source[firstMissing - 1]}`);
   });
 
   it('keeps capacity notices off at the exact file limit', async () => {
