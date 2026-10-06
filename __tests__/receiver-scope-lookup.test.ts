@@ -112,6 +112,169 @@ outer()()
     expect(calls('known')).toEqual(['5:Store::get']);
   });
 
+  it.each([
+    ["direct-reassignment", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A()\n    store = B()\n    return store.get()\ndef exercise(): return known()\n", ["B::get"]],
+    ["returned-future-init", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    def known():\n        return store.get()\n    store = A()\n    return known\ndef exercise(): return outer()()\n", ["A::get"]],
+    ["reassigned-before-definition", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    store = A()\n    store = B()\n    def known():\n        return store.get()\n    return known\ndef exercise(): return outer()()\n", ["B::get"]],
+    ["reassigned-after-definition", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    store = A()\n    def known():\n        return store.get()\n    store = B()\n    return known\ndef exercise(): return outer()()\n", []],
+    ["two-invocation-values", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    store = A()\n    def known():\n        return store.get()\n    first = known()\n    store = B()\n    return [first, known()]\ndef exercise(): return outer()\n", []],
+    ["future-init-then-reassigned", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    def known():\n        return store.get()\n    store = A()\n    store = B()\n    return known\ndef exercise(): return outer()()\n", []],
+    ["unknown-after-definition", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    store = A()\n    def known():\n        return store.get()\n    store = object()\n    return known\ndef exercise(): return outer()()\n", []],
+    ["module-reassigned-after-definition", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\nstore = A()\ndef known():\n    return store.get()\nstore = B()\ndef exercise(): return known()\n", []],
+    ["captured annotation only", "class A:\n    def get(self): return 1\ndef outer():\n    store = A()\n    def known(): return store.get()\n    store: object\n    return known\n", ["A::get"]],
+    ["sibling local mutation", "class A:\n    def get(self): return 1\nclass B:\n    def get(self): return 2\ndef outer():\n    store = A()\n    def known(): return store.get()\n    def unrelated(): store = B()\n    return known\n", ["A::get"]],
+  ])('does not assert an invocation-time receiver type for %s', async (_case, source, expected) => {
+    await project({ 'app.py': source });
+    expect(calls('known').filter(call => call.endsWith('::get')).map(call => call.slice(call.indexOf(':') + 1))).toEqual(expected);
+  });
+
+  it.each(['self', 'cls'])('refuses a captured %s receiver after replacement', async receiver => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+    def outer(${receiver}):
+        def known(): return ${receiver}.get()
+        ${receiver} = object()
+        return known
+` });
+    expect(calls('known')).toEqual([]);
+  });
+
+  it.each(['self', 'cls'])('retains a stable captured %s receiver', async receiver => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+    def outer(${receiver}):
+        def known(): return ${receiver}.get()
+        return known
+` });
+    expect(calls('known')).toEqual(['4:Store::get']);
+  });
+
+  it.each(['lambda: store.get()', 'lambda: [store.get]', '(store.get() for _ in [0])'])('refuses a deferred captured member %s after replacement', async expression => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+class Other:
+    def get(self): return 2
+def outer():
+    store = Store()
+    known = ${expression}
+    store = Other()
+    return known
+` });
+    const from = graph!.getNodesByKind('function').find(n => n.name === 'outer')!;
+    expect(graph!.getOutgoingEdges(from.id).filter(e => ['calls', 'references'].includes(e.kind))
+      .map(e => graph!.getNode(e.target)!.qualifiedName).filter(name => name.endsWith('::get'))).toEqual([]);
+  });
+
+  it('keeps an unsupported future lambda receiver unresolved', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+def outer():
+    known = lambda: store.get()
+    store = Store()
+    return known
+` });
+    expect(calls('outer').filter(call => call.endsWith('::get'))).toEqual([]);
+  });
+
+  it('keeps a lambda default evaluated before a later receiver replacement', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+def outer():
+    store = Store()
+    known = lambda value=store.get(): value
+    store = object()
+    return known
+` });
+    expect(calls('outer').filter(call => call.endsWith('::get'))).toEqual(['5:Store::get']);
+  });
+
+  it('preserves a lambda receiver captured as a default parameter', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+def outer():
+    store = Store()
+    known = lambda store=store: store.get()
+    store = object()
+    return known
+` });
+    expect(calls('outer').filter(call => call.endsWith('::get'))).toEqual(['5:Store::get']);
+  });
+
+  it('keeps the first generator iterable evaluated before receiver replacement', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return [1]
+def outer():
+    store = Store()
+    known = (value for value in store.get())
+    store = object()
+    return known
+` });
+    expect(calls('outer').filter(call => call.endsWith('::get'))).toEqual(['5:Store::get']);
+  });
+
+  it('refuses a lambda default evaluated inside a captured deferred function', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+def outer():
+    store = Store()
+    def known(): return lambda value=store.get(): value
+    store = object()
+    return known
+` });
+    expect(calls('known')).toEqual([]);
+  });
+
+  it('refuses a captured method value after its receiver is replaced', async () => {
+    await project({ 'app.py': `class Store:
+    def get(self): return 1
+def outer():
+    store = Store()
+    def known(): return store.get
+    store = object()
+    return known
+` });
+    const from = graph!.getNodesByKind('function').find(n => n.name === 'known')!;
+    expect(graph!.getOutgoingEdges(from.id).filter(e => e.kind === 'references' && e.metadata?.fnRef === true)
+      .map(e => graph!.getNode(e.target)!.qualifiedName)).toEqual([]);
+  });
+
+  it('retains an unaliased package receiver when another submodule is imported later', async () => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'pkg/other.py': 'def different(): return 2\n',
+      'app.py': `import pkg.sub
+def known(): return pkg.sub.run()
+import pkg.other
+`,
+    });
+    expect(calls('known')).toEqual(['2:run']);
+  });
+
+  it('refuses a module receiver when a later import alias replaces it', async () => {
+    await project({
+      'a.py': 'def run(): return 1\n',
+      'b.py': 'def run(): return 2\n',
+      'app.py': `import a as store
+def known(): return store.run()
+import b as store
+`,
+    });
+    expect(calls('known')).toEqual([]);
+  });
+
+  it('refuses a package receiver when a later assignment replaces the package object', async () => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'app.py': `import pkg.sub
+def known(): return pkg.sub.run()
+pkg = object()
+`,
+    });
+    expect(calls('known')).toEqual([]);
+  });
+
   it('finds a Ruby included module before the superclass chain, last include first', async () => {
     await project({ 'app.rb': `class Base
   def m; end
