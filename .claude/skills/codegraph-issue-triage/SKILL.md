@@ -3,8 +3,25 @@ name: codegraph-issue-triage
 description: Use when assessing an issue, PR comment, or external report against CodeGraph's released, merged, and in-progress state.
 ---
 
-- **When the user references issues, PR comments, or external reports, anchor them to a date and version before drawing conclusions.** Check the comment's `createdAt` against:
-  - The **last released version** — `grep -m1 '^## \[' CHANGELOG.md` shows the top-of-file version (older releases follow). A comment dated before the latest `## [X.Y.Z] - YYYY-MM-DD` is reacting to *released* state — work that's only on `fork/consolidated` or on an unmerged branch doesn't apply.
-  - The **last default-branch commit** — `git log --first-parent origin/fork/consolidated -1 --format='%ai %h %s'`. A comment after the last release but before a fix on `fork/consolidated` may already be addressed there but unreleased.
-  - The **current branch's tip** — your own unmerged work obviously can't be what the comment is reacting to.
-  Always disambiguate "released," "merged-but-unreleased," and "in-progress" before agreeing that a user-reported problem is unfixed (or that a fix is incomplete). A user saying "your fix only covers X" about a recent PR is usually pointing at the *released* shortcomings — your in-flight branch may already address them but they have no way to know that.
+Anchor the report to its stated CodeGraph version or revision and its date before
+deciding whether a fix applies. Ask for a missing tested version under the active
+host's question policy; a comment date alone does not identify the binary tested.
+
+Compare that evidence with:
+
+- **Released state:** `rg -m1 '^## \[[0-9][^]]*\] - ' CHANGELOG.md` selects
+  the first dated version heading, skipping `[Unreleased]`. Inspect the entry
+  containing the fix; a report predating it does not verify that later release.
+- **Merged-but-unreleased state:** `git log --first-parent origin/fork/consolidated -1 --format='%ai %h %s'`
+  identifies the fetched integration tip. Check the fix's commit and ancestry;
+  presence there does not prove the user's released binary contains it.
+- **In-progress state:** record the task branch and revision. An unmerged fix
+  applies only when the reported test actually used that build.
+
+State which of these three states supports the conclusion. Verify the reported
+behavior before calling a problem fixed or a fix incomplete.
+
+If the active host supplies shared bug-diagnosis/reporting guidance, use it for
+reproduction and submission steps. Otherwise follow this repository's contribution
+instructions. Neither path requires a personal house-rules installation. This
+skill owns CodeGraph's release and default-branch lookup, not the host's question API.
