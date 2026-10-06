@@ -309,9 +309,10 @@ impl KernelResolver {
                         .ends_with(".vbproj")
                 });
             if let Some(project) = project {
-                if let Ok(text) = std::fs::read_to_string(project.path()) {
+                if let Some(source) = self.read_file(&project.path().to_string_lossy()) {
+                    let text = source.text();
                     let root = re!(r"(?i)<RootNamespace>\s*([\w.]*)\s*</RootNamespace>")
-                        .captures(&text)
+                        .captures(text)
                         .map(|m| m[1].to_string())
                         .unwrap_or_else(|| {
                             project
@@ -325,7 +326,7 @@ impl KernelResolver {
                         .filter(|s| !s.is_empty())
                         .map(str::to_ascii_lowercase)
                         .collect();
-                    for m in re!(r#"(?i)<Import\s+Include\s*=\s*"([\w.]+)""#).captures_iter(&text) {
+                    for m in re!(r#"(?i)<Import\s+Include\s*=\s*"([\w.]+)""#).captures_iter(text) {
                         h.imports.push(m[1].to_ascii_lowercase());
                     }
                 }
