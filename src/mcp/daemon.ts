@@ -43,7 +43,7 @@
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
-import { canonicalProjectRoot } from '../directory';
+import { canonicalProjectRoot, assertUnlinkedIndex, isInitialized, unsafeIndexRootReason } from '../directory';
 import { MCPEngine } from './engine';
 import { MCPSession } from './session';
 import { SocketTransport } from './transport';
@@ -64,6 +64,8 @@ import {
   assertNoRebuild,
   writerLockHeldMessage,
   type WriterLockInfo,
+  getWriterPidPath,
+  updateWriterLock,
 } from './writer-lock';
 import { registerDaemon, deregisterDaemon } from './daemon-registry';
 
@@ -176,6 +178,7 @@ export interface DaemonHello {
   protocol: 1;       // bump if the hello shape changes
   writerProtocol?: 1; // ownership mutations use the OS coordination lock
   watcher?: { projectRoot: string | null; active: boolean; ready: boolean };
+  refreshProtocol?: 1;
 }
 
 /**
@@ -232,10 +235,12 @@ export class Daemon {
   /** The launcher holding the writer slot for this daemon, when it replaced an older one (#2335). */
   private handoverFrom: number | null;
   private preserveExisting: boolean;
+  private initializeIndex: boolean;
+  private ownedWriter: WriterLockInfo | null = null;
 
   constructor(
     private projectRoot: string,
-    opts: { idleTimeoutMs?: number; maxIdleMs?: number; handoverFrom?: number | null; preserveExisting?: boolean } = {},
+    opts: { idleTimeoutMs?: number; maxIdleMs?: number; handoverFrom?: number | null; preserveExisting?: boolean; initializeIndex?: boolean } = {},
   ) {
     this.socketPath = getDaemonSocketPath(projectRoot);
     this.pidPath = getDaemonPidPath(projectRoot);
@@ -243,12 +248,14 @@ export class Daemon {
     this.maxIdleMs = opts.maxIdleMs ?? resolveMaxIdleMs();
     this.handoverFrom = opts.handoverFrom ?? null;
     this.preserveExisting = opts.preserveExisting ?? false;
+    this.initializeIndex = opts.initializeIndex ?? false;
     // Daemon mode serves many concurrent clients on one event loop, so off-load
     // read-tool dispatch to a worker pool — otherwise concurrent explores
     // serialize and starve the MCP transport (clients time out). Direct mode
     // (one stdio client) leaves the pool off; `CODEGRAPH_QUERY_POOL_SIZE=0`
     // disables it here too.
-    this.engine = new MCPEngine({ queryPool: true, preserveExisting: this.preserveExisting });
+    this.engine = new MCPEngine({ queryPool: true, preserveExisting: this.preserveExisting,
+      ownedProject: this.preserveExisting ? { root: projectRoot, writer: () => this.ownedWriter } : undefined });
     this.engine.setProjectPathHint(projectRoot);
   }
 
@@ -258,6 +265,9 @@ export class Daemon {
    * — the daemon then sticks around until idle/shutdown.
    */
   async start(): Promise<DaemonStartResult> {
+    if (this.initializeIndex && (!this.preserveExisting || this.handoverFrom !== null)) {
+      throw new Error('Index initialization requires ordinary preserving daemon election.');
+    }
     // #1740: claim the project writer lock before opening/watching so a
     // concurrent direct-mode serve --mcp cannot start a second watcher.
     assertNoRebuild(this.projectRoot);
@@ -279,6 +289,7 @@ export class Daemon {
       this.cleanupLockfile();
       throw new Error(msg);
     }
+    this.ownedWriter = writer.info;
 
     let initialLockContents: string;
     try {
@@ -289,6 +300,29 @@ export class Daemon {
     } catch {
       releaseWriterLock(this.projectRoot);
       throw new Error('Lost daemon lock ownership before startup.');
+    }
+
+    if (this.initializeIndex) {
+      try {
+        assertUnlinkedIndex(this.projectRoot);
+        const unsafe = unsafeIndexRootReason(this.projectRoot);
+        if (unsafe) throw new Error(`Watcher startup refuses ${unsafe} as a project root.`);
+        const owner = readWriterLock(this.projectRoot);
+        if (owner?.pid !== process.pid || owner.mode !== 'daemon' ||
+            owner.startedAt !== writer.info.startedAt) throw new Error('Lost writer ownership before initialization.');
+        if (!isInitialized(this.projectRoot)) {
+          const CodeGraph = (require('../codegraph') as typeof import('../codegraph')).default;
+          const graph = CodeGraph.initSync(this.projectRoot);
+          graph.close();
+        }
+      } catch (error) {
+        // Keep any incomplete database for inspection/retry and preserve successors.
+        try {
+          if (fs.readFileSync(this.pidPath, 'utf8') === initialLockContents) fs.unlinkSync(this.pidPath);
+        } catch { /* no owned record left */ }
+        updateWriterLock(this.projectRoot, writer.info, null);
+        throw error;
+      }
     }
 
     // Walk the ordered socket candidates and bind the first that works. The
@@ -463,6 +497,7 @@ export class Daemon {
       socketPath: this.socketPath,
       protocol: 1,
       writerProtocol: 1,
+      refreshProtocol: 1,
       watcher: { ...watcher, projectRoot: watcher.projectRoot ? canonicalProjectRoot(watcher.projectRoot) : null,
         ready: writer?.pid === process.pid &&
         writer.mode === 'daemon' && writer.ready === true },
@@ -483,6 +518,7 @@ export class Daemon {
       const transport = new SocketTransport(socket);
       const session = new MCPSession(transport, this.engine, {
         explicitProjectPath: this.projectRoot,
+        refreshWatcher: (params) => this.refreshWatcher(params),
       });
       transport.onClose(() => this.dropClient(session));
       this.clients.add(session);
@@ -648,6 +684,30 @@ export class Daemon {
         }
       }
     } catch { /* best-effort; we're exiting anyway */ }
+  }
+
+  private async refreshWatcher(params: unknown): Promise<unknown> {
+    const request = params as { projectRoot?: unknown; pid?: unknown; version?: unknown;
+      daemonRecord?: unknown; writerRecord?: unknown } | null;
+    const root = canonicalProjectRoot(this.projectRoot);
+    if (!request || request.projectRoot !== root || request.pid !== process.pid ||
+        request.version !== CodeGraphPackageVersion || typeof request.daemonRecord !== 'string' ||
+        typeof request.writerRecord !== 'string') {
+      throw new Error('Invalid watcher reconciliation identity.');
+    }
+    const assertOwner = (): void => {
+      const writer = readWriterLock(root);
+      if (this.stopping || writer?.pid !== process.pid || writer.mode !== 'daemon' || writer.ready !== true ||
+          writer.startedAt !== this.ownedWriter?.startedAt ||
+          fs.readFileSync(this.pidPath, 'utf8') !== request.daemonRecord ||
+          fs.readFileSync(getWriterPidPath(root), 'utf8') !== request.writerRecord) {
+        throw new Error('Watcher ownership changed during reconciliation.');
+      }
+    };
+    assertOwner();
+    await this.engine.refreshWatcher(root);
+    assertOwner();
+    return { pid: process.pid, version: CodeGraphPackageVersion, projectRoot: root, refreshed: true };
   }
 }
 

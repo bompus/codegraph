@@ -118,7 +118,7 @@ A COBOL copybook named in an explore query prioritizes its indexed source and li
 
 `codegraph status` reports files that need re-indexing and files with recorded parse errors. `status --json` includes `index.filesNeedingReindex` and `index.filesWithParseErrors`; `files --json` includes each file's extraction errors. A transient parser failure preserves the previous graph and retries on the next sync.
 
-The MCP launcher can replace a daemon from an older release when its hello confirms coordinated writer handover. `serve --mcp --path <root> --preserve-existing` opts out of replacement on initial connection and reconnect, requires an index at that exact root, and keeps fallback reads without a watcher. Legacy daemons stay running while new sessions serve reads without auto-sync; stop the old MCP sessions and daemon, then reconnect with the current install. A daemon exits when its installation is deleted or its package version changes. Different managed builds of the same release retain the fork's version-identity checks.
+The MCP launcher can replace a daemon from an older release when its hello confirms coordinated writer handover. `serve --mcp --path <root> --preserve-existing` opts out of replacement on initial connection and reconnect, requires an index at that exact root, and keeps fallback reads without a watcher. Adding `--initialize-index` lets the elected daemon create a missing exact-root index after acquiring writer ownership. Legacy daemons stay running while new sessions serve reads without auto-sync; stop the old MCP sessions and daemon, then reconnect with the current install. A daemon exits when its installation is deleted or its package version changes. Different managed builds of the same release retain the fork's version-identity checks.
 
 Dispatch and framework coverage the fork adds, by kind:
 
@@ -858,11 +858,16 @@ session quiescence before cutover. See the [runtime control contract](site/src/c
 
 For ordinary checkout startup, `startRuntimeWatcher(root, { expectedVersion,
 cliPath, runtimePath?, timeoutMs? })` reuses or elects a shared daemon without
-replacement. It returns `{ pid, version, projectRoot, watching: true }` only after
-verifying the exact root, build, active watcher and writer ownership. An older,
-uncertain, direct or promotion holder blocks startup. A readable index alone is
-insufficient. The caller selects an absolute CLI path from the same validated
-build and its runtime; this operation does not install, promote or move artifacts.
+replacement. The elected daemon initializes a missing index at the exact root
+under writer ownership. Startup requests a fresh reconciliation even when reusing
+a watcher, and waits for file indexing and queued synthesized edges to complete.
+It returns `{ pid, version, projectRoot, watching: true }` only after verifying
+the exact root, build, active watcher and unchanged ownership records. An older,
+uncertain, direct or promotion holder blocks startup. Failed reconciliation or a
+timeout cannot return ready. The caller selects an absolute CLI path from the
+same validated build and its runtime; this operation does not install, promote
+or move artifacts. Legacy CLI initialization that ignores writer ownership
+remains outside this guard.
 
 **Embedding requirements**
 

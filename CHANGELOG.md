@@ -32,6 +32,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
+
+- Installers can start or reuse a checkout's active watcher without replacing existing writers, and MCP launchers can preserve existing daemons across reconnects with `--preserve-existing`.
+
 - Installers can verify daemon readiness and safely hand writer ownership across build promotion and rollback through a supported runtime-control API.
 
 - `codegraph_explore` now finds quoted prose in script strings and template text through a capped source scan, ignoring case and punctuation without requiring a re-index.

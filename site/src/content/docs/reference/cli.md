@@ -33,6 +33,18 @@ codegraph help [command]          # Show help, optionally for one command
 
 The MCP server (`codegraph serve --mcp`) is launched automatically by your agent — you don't run it by hand. See [MCP Server](/codegraph/reference/mcp-server/).
 
+## serve
+
+`codegraph serve --mcp --path <root> --preserve-existing` preserves existing daemons and requires an index at that exact project root.
+
+Adding `--initialize-index` permits the elected daemon to create a missing index after acquiring writer ownership. It requires `--preserve-existing` and an explicit `--path`; no ancestor or child index is adopted.
+
+```bash
+codegraph serve --mcp --path /path/to/project --preserve-existing --initialize-index
+```
+
+Embedding callers that need a verified watcher and fresh reconciliation use `startRuntimeWatcher`. See the [runtime control contract](/codegraph/reference/api/#installer-runtime-control).
+
 ## init, index, and sync
 
 `codegraph init` creates the local `.codegraph/` directory **and** builds the full graph in one step. (The old `-i`/`--index` flag is now a no-op, accepted only so existing scripts don't break.) After that the file watcher keeps the graph current automatically — `index` (a full rebuild from scratch) and `sync` (an incremental update) are only needed when the watcher is disabled or you're scripting against the index outside an agent session.
