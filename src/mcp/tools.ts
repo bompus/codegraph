@@ -88,6 +88,7 @@ import {
   fileFingerprint,
   formatBackReference,
   mergeRanges,
+  subtractRange,
   servedRangesForFile,
   symbolsInSpans,
 } from './explore-dedup';
@@ -4631,6 +4632,8 @@ export class ToolHandler {
     let unresolvedPathSpans: string[] = [];
     let lineAnchors: QueryLineAnchor[] = [];
     let setAsideMatches: QuerySetAsideMatch[] = [];
+    let capacityFiles: string[] = [];
+    let unexaminedPathSpans = false;
     let matchQuery = changes ? normalizeQuerySpelling(rawMatch) : query;
     if (queryMightContainPaths(rawMatch)) {
       try {
@@ -4643,15 +4646,21 @@ export class ToolHandler {
             symbolFiles: (symbol) => filesDefiningSymbol(cg, symbol),
           },
         );
-        if (extraction.pinnedFiles.length > 0 || extraction.unresolvedPathSpans.length > 0) {
+        if (extraction.pinnedFiles.length > 0 || extraction.unresolvedPathSpans.length > 0
+            || extraction.unexaminedPathSpans) {
           pinnedFiles = extraction.pinnedFiles;
           unresolvedPathSpans = extraction.unresolvedPathSpans;
           lineAnchors = extraction.lineAnchors;
           setAsideMatches = extraction.setAsideMatches;
+          capacityFiles = extraction.capacityFiles;
+          unexaminedPathSpans = extraction.unexaminedPathSpans;
           matchQuery = normalizeQuerySpelling(extraction.strippedQuery);
         }
       } catch { /* path pinning must never fail an explore call */ }
     }
+    const scanNote = unexaminedPathSpans
+      ? ' Further path-like references were not examined within the bounded path scan; explore them in a separate call.'
+      : '';
     // A COBOL copybook the query names (`CVACT01Y`) names its FILE as surely as
     // `app/cpy/CVACT01Y.cpy` would (#2342), so it is pinned the same way: the
     // copybook's own source is admitted, ranked first and funded first. Looked
@@ -4743,6 +4752,7 @@ export class ToolHandler {
       string,
       { ranges: ExploreLineRange[]; bytes: number; fingerprint?: string }
     >();
+    const docRenderedLines = new Map<string, { marker: string; lines: { line: number; end: number; bytes: number }[] }>();
     const noteEmitted = (
       fp: string,
       ranges: ExploreLineRange[],
@@ -4787,6 +4797,7 @@ export class ToolHandler {
     // the file itself, so its contents ARE the answer regardless of what the
     // stripped query text matched (which, for a pure-path query, is nothing).
     const PINNED_FILE_NODE_CAP = 300;
+    const gatherExcluded = new Map<string, ExploreLineRange[]>();
     for (const fp of pinnedFiles) {
       let fileNodes: Node[] = [];
       try { fileNodes = cg.getNodesInFile(fp); } catch { continue; }
@@ -4797,9 +4808,13 @@ export class ToolHandler {
         const file = fileNodes.find(n => n.kind === 'file' && !CONFIG_LEAF_LANGUAGES.has(n.language));
         if (file) seeds.push(file);
       }
-      seeds
-        .sort((a, b) => a.startLine - b.startLine)
-        .slice(0, PINNED_FILE_NODE_CAP)
+      seeds.sort((a, b) => a.startLine - b.startLine);
+      if (seeds.length > PINNED_FILE_NODE_CAP) {
+        gatherExcluded.set(fp, mergeRanges(seeds.slice(PINNED_FILE_NODE_CAP)
+          .filter(n => n.startLine > 0 && n.endLine >= n.startLine)
+          .map(n => ({ start: n.startLine, end: n.endLine }))));
+      }
+      seeds.slice(0, PINNED_FILE_NODE_CAP)
         .forEach((n) => { if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n); });
     }
 
@@ -4859,6 +4874,23 @@ export class ToolHandler {
       anchorSpans.set(anchor.file, spans);
     }
 
+    // Capacity notices describe pin priority, not whether another channel
+    // happened to return the same file. Keep the list bounded and deduplicated.
+    const NOTICE_LABEL_CHARS = 600;
+    const boundedNotice = (prefix: string, entries: string[], suffix: string, maxEntries: number): string => {
+      if (entries.length === 0) return '';
+      const labels: string[] = [];
+      for (const entry of entries) {
+        if (labels.length >= maxEntries || [...labels, entry].join(', ').length > NOTICE_LABEL_CHARS) break;
+        labels.push(entry);
+      }
+      const omitted = entries.length - labels.length;
+      return prefix + labels.join(', ') + (omitted > 0 ? `${labels.length > 0 ? ' ' : ''}(${omitted} more)` : '')
+        + (labels.length === 0 ? '. Explore fewer requested files or narrower line ranges in a separate call.' : suffix);
+    };
+    const capacityNote = boundedNotice(" Requested files not pinned within this call's initial file limit: ",
+      capacityFiles.map(fp => `\`${fp}\``), '. Explore fewer requested paths in a separate call.', POINTER_MAX_FILES);
+
     if (subgraph.nodes.size === 0 && proseFiles.size === 0) {
       diag?.finishEmpty('no relevant code found — empty subgraph');
       const missNote = unresolvedPathSpans.length > 0
@@ -4891,8 +4923,8 @@ export class ToolHandler {
           : '\nNo shared-word symbol candidates found; retry codegraph_explore with literal symbol/file names or code terms.';
       }
       const empty = changes
-        ? `${this.buildChangesSection(cg, changes, changedNodes)}\nNo other relevant code found for "${query}"${missNote}${explanation}`
-        : `No relevant code found for "${query}"${missNote}${explanation}`;
+        ? `${this.buildChangesSection(cg, changes, changedNodes)}\nNo other relevant code found for "${query}"${missNote}${explanation}${capacityNote}${scanNote}`
+        : `No relevant code found for "${query}"${missNote}${explanation}${capacityNote}${scanNote}`;
       // Still an explore call, so it is still recorded: an empty answer spends a
       // call against the tier budget even though it emits no source.
       return { ...this.textResult(empty), [EXPLORE_EMISSION_KEY]: {
@@ -6080,18 +6112,32 @@ export class ToolHandler {
     const unmatchedNamesNote = unmatchedNames.length > 0
       ? ` Not found in the index: ${unmatchedNames.map((n) => `\`${n}\``).join(', ')}.`
       : '';
-    const formatSummary = (symbols: number, files: number, pins: number): string => {
+    const gatherPrefix = ' Additional indexed source not included: ';
+    const gatherSuffix = '. Explore these ranges to continue.';
+    const gatherNotice = (ranges: QueryLineAnchor[]): string => boundedNotice(gatherPrefix,
+      ranges.map(r => `\`${r.file}:${r.start}-${r.end}\``), gatherSuffix, TRIMMED_FILES_NAMED);
+    // Bound every possible subset of final uncovered files. Long path labels
+    // cannot consume the source envelope, even when no complete label fits.
+    const longestLabels = [...gatherExcluded].map(([file, ranges]) => {
+      const end = ranges.reduce((max, range) => Math.max(max, range.end), 0);
+      return `\`${file}:${end}-${end}\``.length;
+    }).sort((a, b) => b - a).slice(0, TRIMMED_FILES_NAMED);
+    const gatherNoticeReserve = gatherExcluded.size === 0 ? '' : ' '.repeat(
+      gatherPrefix.length + gatherSuffix.length
+      + Math.min(NOTICE_LABEL_CHARS, longestLabels.reduce((n, size) => n + size + 2, 0))
+      + ` (${gatherExcluded.size} more)`.length);
+    const formatSummary = (symbols: number, files: number, pins: number, gatherNote = ''): string => {
       let text = `Found ${symbols} symbol${symbols === 1 ? '' : 's'} across ${files} file${files === 1 ? '' : 's'}.`;
       if (pins > 0) text += ` ${pins} file${pins === 1 ? '' : 's'} pinned from the query.`;
       if (unresolvedPathSpans.length > 0) {
         text += ` No indexed file uniquely matches ${unresolvedPathSpans.map(s => `\`${s}\``).join(', ')}.`;
       }
-      return text + unmatchedNamesNote + setAsideNote;
+      return text + unmatchedNamesNote + setAsideNote + capacityNote + scanNote + gatherNote;
     };
     // Reserve the summary's maximum actual size before spending the source
     // envelope. Replacing a short sentinel after fitting could exceed the cap.
     const summaryPlaceholder = SUMMARY_SENTINEL.padEnd(
-      formatSummary(subgraph.nodes.size, fileGroups.size, pinnedFiles.length).length,
+      formatSummary(subgraph.nodes.size, fileGroups.size, pinnedFiles.length, gatherNoticeReserve).length,
     );
 
     // Step 3: Build relationship map
@@ -6450,7 +6496,7 @@ export class ToolHandler {
         ? ` No indexed file uniquely matches ${unresolvedPathSpans.map((sp) => `\`${sp}\``).join(', ')}.`.length
         : 0)
       + unmatchedNamesNote.length
-      + setAsideNote.length;
+      + setAsideNote.length + capacityNote.length + scanNote.length + gatherNoticeReserve.length;
     const epilogueFloor = Math.max(
       EXPLORE_FALLBACK_NOTES.lost.complete.length, EXPLORE_FALLBACK_NOTES.lost.trimmed.length,
     ) + 2 + cliffPointerFloor + summaryReserve;
@@ -7135,7 +7181,7 @@ export class ToolHandler {
       // an answer that is a list or a table only reads as one when every row
       // is present, and its rows rarely carry the question's words.
       const docSecs = docSections.get(filePath);
-      if (docSecs) {
+      if (docSecs && !anchorSpans.has(filePath)) {
         const DOC_FILE_CAP = 8000;
         const numbered = (ln: number) =>
           exploreLineNumbersEnabled() ? `${ln}\t${fileLines[ln - 1] ?? ''}` : (fileLines[ln - 1] ?? '');
@@ -7171,16 +7217,30 @@ export class ToolHandler {
         }
         const parts: string[] = [];
         const shown: string[] = [];
+        const renderedLines: { line: number; end: number; bytes: number }[] = [];
+        let bodyOffset = 0;
         for (const { node: s } of docSecs) {
           const chosen = picked.get(s.id);
           if (!chosen) continue;
-          parts.push(chosen.map(numbered).join('\n'));
+          const rows = chosen.map(ln => {
+            const text = numbered(ln);
+            bodyOffset += text.length;
+            renderedLines.push({ line: ln, end: bodyOffset, bytes: (fileLines[ln - 1] ?? '').length });
+            bodyOffset += 1;
+            return text;
+          });
+          parts.push(rows.join('\n'));
+          bodyOffset += 1; // Two newlines separate selected sections.
           shown.push(s.name);
         }
         if (parts.length > 0) {
           const suffix = `sections: ${shown.join(' · ')}${elided ? ' (long sections show only the rows that match the question)' : ''} — the rest of the file is not shown`;
-          lines.push(fileSectionHeader(filePath, suffix), '', '```' + lang, parts.join('\n\n'), '```', '');
+          const header = fileSectionHeader(filePath, suffix);
+          lines.push(header, '', '```' + lang, parts.join('\n\n'), '```', '');
+          docRenderedLines.set(filePath, { marker: header + '\n\n```' + lang + '\n', lines: renderedLines });
           totalChars += used + 120;
+          noteEmitted(filePath, mergeRanges([...picked.values()].flat()
+            .map(ln => ({ start: ln, end: ln }))), used, fingerprint);
           renderedFilePaths.push(filePath);
           filesIncluded++;
           if (elided) anyFileTrimmed = true;
@@ -8690,6 +8750,7 @@ export class ToolHandler {
 
     const output = flow.text + lines.join('\n');
     let finalText: string;
+    let retainedTextLength = output.length;
     // The epilogue costs less than a file section, so it is cut FIRST (CG-31).
     // Dropping a trailing section throws away source the render loop had already
     // set that file's reservation aside for — the exact starvation the
@@ -8706,6 +8767,7 @@ export class ToolHandler {
         && epilogueOnlyCut !== null
         && epilogueOnlyCut.length + EPILOGUE_CUT_NOTE.length <= hardCeiling) {
       finalText = epilogueOnlyCut + EPILOGUE_CUT_NOTE;
+      retainedTextLength = epilogueOnlyCut.length;
     } else if (output.length > hardCeiling) {
       // Still over with the epilogue gone: cut at a FILE-SECTION boundary (the
       // last ``**` `` file header before the ceiling) so we drop whole trailing
@@ -8713,11 +8775,16 @@ export class ToolHandler {
       // through a method body — a half-rendered method just forces the Read this
       // tool exists to prevent. Fall back to a line boundary only if no section
       // header sits in the back half (degenerate single-giant-section case).
-      const cut = output.slice(0, hardCeiling);
+      const cutNoteReserve = Math.max(
+        EXPLORE_FALLBACK_NOTES.truncated.complete.length,
+        EXPLORE_FALLBACK_NOTES.truncated.trimmed.length,
+      );
+      const cut = output.slice(0, Math.max(0, hardCeiling - cutNoteReserve));
       const lastSection = cut.lastIndexOf('\n' + FILE_SECTION_PREFIX);
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
       finalText = safe + EXPLORE_FALLBACK_NOTES.truncated[trimmedIn(safe) ? 'trimmed' : 'complete'];
+      retainedTextLength = safe.length;
     } else {
       finalText = output;
     }
@@ -8731,6 +8798,17 @@ export class ToolHandler {
     // shown above" + the budget note, so nothing is silently dropped.
     const survivors = renderedFilePaths.filter((fp) =>
       finalText.includes(`${FILE_SECTION_PREFIX}${fp}\``));
+    // A surviving header can precede a cut inside a Markdown section. Record
+    // only complete source lines kept by that cut, with or without numbering.
+    for (const [file, rendered] of docRenderedLines) {
+      const emitted = emittedByFile.get(file);
+      if (!emitted) continue;
+      const markerAt = finalText.indexOf(rendered.marker);
+      const bodyAt = markerAt + rendered.marker.length;
+      const kept = markerAt < 0 ? [] : rendered.lines.filter(row => bodyAt + row.end <= retainedTextLength);
+      emitted.ranges = mergeRanges(kept.map(row => ({ start: row.line, end: row.line })));
+      emitted.bytes = kept.reduce((sum, row) => sum + row.bytes + 1, 0);
+    }
     const shownSymbols = survivors.reduce((sum, fp) => {
       const g = fileGroups.get(fp);
       if (!g) return sum;
@@ -8742,10 +8820,37 @@ export class ToolHandler {
     // honored, and which path spans matched nothing so the agent can correct
     // them instead of trusting a response that quietly ignored the path.
     const pinnedShown = pinnedFiles.filter((fp) => survivors.includes(fp)).length;
+    const uncoveredGather: QueryLineAnchor[] = [];
+    for (const [file, excluded] of gatherExcluded) {
+      // Indexed line pointers are unsafe after drift, and unreadable files have
+      // no verified continuation. The existing drift guard owns their notice.
+      const absolute = validatePathWithinRoot(projectRoot, file);
+      if (!absolute || !existsSync(absolute) || this.isFileStaleOnDisk(cg, file)) continue;
+      let content: string;
+      try { content = readFileSync(absolute, 'utf8'); } catch { continue; }
+      const emission = emittedByFile.get(file);
+      let held: ExploreLineRange[] = [];
+      if (dedupEnabled && priorCalls?.calls.some(call => call.files.some(entry => entry.path === file))) {
+        try {
+          const fingerprint = emission?.fingerprint ?? fileFingerprint(content);
+          held = servedRangesForFile(priorCalls, file, fingerprint);
+        } catch { continue; }
+      }
+      const delivered = mergeRanges([
+        ...(survivors.includes(file) ? emission?.ranges ?? [] : []), ...held,
+      ]);
+      let missing: ExploreLineRange | undefined;
+      for (const range of excluded) {
+        missing = subtractRange(range, delivered)[0];
+        if (missing) break;
+      }
+      if (missing) uncoveredGather.push({ file, ...missing });
+    }
     const summaryLine = formatSummary(
       survivors.length > 0 ? shownSymbols : subgraph.nodes.size,
       survivors.length > 0 ? survivors.length : fileGroups.size,
       pinnedShown,
+      gatherNotice(uncoveredGather),
     );
     finalText = finalText.replace(summaryPlaceholder, summaryLine);
 
