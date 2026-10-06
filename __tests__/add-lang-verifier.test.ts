@@ -13,10 +13,16 @@ function run(status: unknown, native = false, competing = false) {
   roots.push(root);
   const binary = join(root, native ? 'status' : 'task build.mjs');
   const args = join(root, 'args.json');
-  writeFileSync(binary, `import { writeFileSync } from 'node:fs';
+  if (native) {
+    writeFileSync(binary, `printf '%s\\n' "$@" > '${args}'
+printf '%s\\n' '${JSON.stringify(status)}'
+`);
+  } else {
+    writeFileSync(binary, `import { writeFileSync } from 'node:fs';
 writeFileSync(${JSON.stringify(args)}, JSON.stringify(process.argv.slice(2)));
 console.log(${JSON.stringify(JSON.stringify(status))});
 `);
+  }
   const globalBin = join(root, 'global');
   const globalMarker = join(root, 'global-used');
   mkdirSync(globalBin);
@@ -30,9 +36,9 @@ console.log('{}');
   writeFileSync(join(globalBin, 'codegraph.cmd'), `@"${process.execPath}" "${globalScript}" %*\r\n`);
   const result = spawnSync(process.execPath, [verifier, 'owned sample', 'python'], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, PATH: competing ? `${globalBin}${delimiter}${process.env.PATH || ''}` : '', CG_BIN: native ? process.execPath : binary },
+    env: { ...process.env, PATH: competing ? `${globalBin}${delimiter}${process.env.PATH || ''}` : '', CG_BIN: native ? '/bin/sh' : binary },
   });
-  return { result, globalUsed: existsSync(globalMarker), args: existsSync(args) ? JSON.parse(readFileSync(args, 'utf8')) : undefined };
+  return { result, globalUsed: existsSync(globalMarker), args: existsSync(args) ? (native ? readFileSync(args, 'utf8').trimEnd().split('\n') : JSON.parse(readFileSync(args, 'utf8'))) : undefined };
 }
 const healthy = { initialized: true, languages: ['python'], nodesByKind: { function: 2 }, fileCount: 1, edgeCount: 2 };
 
@@ -50,7 +56,7 @@ it('ignores a competing codegraph command on PATH', () => {
   expect(globalUsed).toBe(false);
 });
 
-it('accepts a directly executable CG_BIN', () => {
+it.runIf(process.platform !== 'win32')('accepts a non-JavaScript executable CG_BIN', () => {
   const { result, args } = run(healthy, true);
   expect(result.status).toBe(0);
   expect(args).toEqual(['owned sample', '--json']);
