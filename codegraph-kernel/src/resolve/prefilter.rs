@@ -1,6 +1,7 @@
 //! isBuiltInOrExternal, the prefilter, and the binding predicates (index.ts, name-matcher.ts).
 
 use super::*;
+use super::iteration::{descendant_for_position, named_children};
 
 impl KernelResolver {
     // -----------------------------------------------------------------------
@@ -598,6 +599,88 @@ impl KernelResolver {
             }
         }
         Ok(Some(latest.unwrap_or(binding).clone()))
+    }
+
+    /// A closure reads its captured cell when invoked, not when defined.
+    /// Without invocation-order evidence, a later replacement cannot supply
+    /// one reliable receiver type. A single future initialization is retained.
+    pub(super) fn python_captured_receiver_mutates(&mut self, site: &ResolveRefIn) -> Res<bool> {
+        if site.language != "python" || !matches!(site.reference_kind.as_str(), "calls" | "references" | "function_ref") {
+            return Ok(false);
+        }
+        let receiver = match site.reference_name.split_once('.') {
+            Some((root, _)) => root.to_string(),
+            None => match self.bare_call_receiver(site)? {
+                Some((_, receiver)) if matches!(receiver.as_str(), "self" | "cls") => receiver,
+                _ => return Ok(false),
+            },
+        };
+        let root = receiver.as_str();
+        let Some(binding) = self.receiver_binding(root, site)? else { return Ok(false) };
+        let rows = self.bindings(&site.file_path)?;
+        let mut lines = Vec::new();
+        for row in rows.iter().filter(|row| row.name == root
+            && row.scope_start == binding.scope_start && row.scope_end == binding.scope_end)
+        {
+            if self.python_annotation_only(row, site) { continue; }
+            // Importing another submodule retains the same package object.
+            if row.line != binding.line && binding.kind == "import" && row.kind == "import"
+                && self.python_package_import(&binding, site) && self.python_package_import(row, site)
+            {
+                continue;
+            }
+            lines.push(row.line);
+        }
+        let selected = lines.iter().filter(|line| **line <= site.line).max()
+            .or_else(|| lines.iter().min());
+        if !selected.is_some_and(|line| lines.iter().any(|next| *next > site.line.max(*line))) {
+            return Ok(false);
+        }
+        let mut captured = binding.scope_start < self.enclosing_scope_start_line(&site.file_path, &site.language, site.line)?;
+        // Lambdas and generator expressions have no graph function node.
+        // Their bodies are deferred, but defaults and the first iterable are not.
+        if let Some(source) = self.read_file(&site.file_path) {
+            let text = source.text();
+            if let Some(tree) = self.parsed_tree(&source, site) {
+                let leaf = descendant_for_position(tree.root_node(), text,
+                    ((site.line - 1).max(0) as usize, site.column.max(0) as usize));
+                let at = leaf.start_byte();
+                let mut current = Some(leaf);
+                while let Some(node) = current {
+                    current = node.parent();
+                    if node.kind() == "lambda" {
+                        let in_body = node.child_by_field_name("body")
+                            .is_some_and(|body| body.start_byte() <= at && at < body.end_byte());
+                        if !in_body { continue; }
+                        if node.child_by_field_name("parameters").is_some_and(|params|
+                            named_children(params).into_iter().any(|param| {
+                                let name = param.child_by_field_name("name")
+                                    .or_else(|| matches!(param.kind(), "list_splat_pattern" | "dictionary_splat_pattern")
+                                        .then(|| param.named_child(0)).flatten()).unwrap_or(param);
+                                name.kind() == "identifier" && &text[name.start_byte()..name.end_byte()] == root
+                            })) { return Ok(false); }
+                        captured = true;
+                    } else if node.kind() == "generator_expression" {
+                        let clauses: Vec<_> = named_children(node).into_iter()
+                            .filter(|child| child.kind() == "for_in_clause").collect();
+                        if clauses.first().and_then(|clause| clause.child_by_field_name("right"))
+                            .is_some_and(|iterable| iterable.start_byte() <= at && at < iterable.end_byte()) { continue; }
+                        if clauses.iter().filter_map(|clause| clause.child_by_field_name("left"))
+                            .any(|target| {
+                                let mut targets = vec![target];
+                                while let Some(target) = targets.pop() {
+                                    if target.kind() == "identifier" && &text[target.start_byte()..target.end_byte()] == root { return true; }
+                                    targets.extend(named_children(target));
+                                }
+                                false
+                            })
+                        { return Ok(false); }
+                        captured = true;
+                    }
+                }
+            }
+        }
+        Ok(captured)
     }
 
     fn python_annotation_only(&mut self, binding: &KBinding, site: &ResolveRefIn) -> bool {

@@ -1309,7 +1309,7 @@ impl KernelResolver {
         Ok(None)
     }
 
-    fn python_package_import(&mut self, binding: &KBinding, r: &ResolveRefIn) -> bool {
+    pub(super) fn python_package_import(&mut self, binding: &KBinding, r: &ResolveRefIn) -> bool {
         let Some(source) = binding.target_spec.as_deref() else { return false };
         if binding.target_name.as_deref() != Some("*")
             || (source != binding.name && !source.starts_with(&format!("{}.", binding.name)))

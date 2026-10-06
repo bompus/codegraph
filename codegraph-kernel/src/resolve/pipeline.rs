@@ -738,6 +738,7 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if self.python_captured_receiver_mutates(r)? { return Ok(ResolveOutcome::unresolved()); }
         if let Some(outcome) = self.resolve_vb_explicit(r)? { return Ok(outcome); }
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which
