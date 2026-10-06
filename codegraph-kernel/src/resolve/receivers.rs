@@ -839,24 +839,32 @@ impl KernelResolver {
     /// literal spells its result type, `var f = func(…) *T { … }` (also
     /// wrapped in `sync.OnceValue(…)`): `T` as written, and the variable,
     /// whose file's imports place a `pkg.T`.
-    fn go_func_value_result_type(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<(String, Arc<KNode>)>> {
-        let dir = pos_dirname(&r.file_path);
-        let values: Vec<Arc<KNode>> = self
-            .nodes_by_name(name)?
-            .iter()
-            .filter(|n| n.language == "go" && n.kind == "variable" && pos_dirname(&n.file_path) == dir)
-            .cloned()
-            .collect();
-        let [value] = values.as_slice() else { return Ok(None) };
-        let literal = re!(
-            r"^=\s*(?:sync\.OnceValue\s*\(\s*)?func\s*\((?:[^()]|\([^()]*\))*\)\s*\*?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\{"
-        );
-        Ok(value
-            .signature
-            .as_deref()
-            .and_then(|sig| literal.captures(sig))
-            .map(|c| (c[1].to_string(), value.clone())))
+fn go_bare_result(
+    &mut self,
+    name: &str,
+    r: &ResolveRefIn,
+) -> Res<Option<(String, Arc<KNode>)>> {
+    let rows = self.bindings(&r.file_path)?;
+    if let Some(binding) = innermost_binding(&rows, name, Some(r.line)) {
+        if binding.kind != "decl" {
+            return Ok(None);
+        }
+        if let Some(id) = binding.node_id.as_deref() {
+            let Some(node) = self.node_by_id(id)? else { return Ok(None) };
+            return Ok(go_result_from_node(&node).map(|ty| (ty, node)));
+        }
+        return Ok(None);
     }
+    let dir = pos_dirname(&r.file_path);
+    let nodes: Vec<_> = self.nodes_by_name(name)?.iter()
+        .filter(|n| n.language == "go"
+            && matches!(n.kind.as_str(), "function" | "variable" | "constant")
+            && !n.qualified_name.contains("::")
+            && pos_dirname(&n.file_path) == dir)
+        .cloned().collect();
+    let [node] = nodes.as_slice() else { return Ok(None) };
+    Ok(go_result_from_node(node).map(|ty| (ty, node.clone())))
+}
 
     /// cppClassExists — an aggregate type with this last `::` segment exists.
     pub(super) fn cpp_class_exists(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
@@ -952,23 +960,8 @@ impl KernelResolver {
         let last_dot = inner.rfind('.');
         if last_dot.is_none() || last_dot == Some(0) {
             if r.language == "go" {
-                let Some(ret) = self.lookup_callee_return_type(inner, r)? else {
-                    // A function value whose literal gives no result type
-                    // says nothing about what `m` is called on.
-                    return match self.go_func_value_result_type(inner, r)? {
-                        Some((ty, value)) => self.match_bound_type_member(&ty, method, &r.clone().at(&value)),
-                        None => Ok(None),
-                    };
-                };
-                let fqn = self.imported_fqn_of(&ret, r)?;
-                return self.resolve_method_on_type(
-                    &ret,
-                    method,
-                    r,
-                    0.85,
-                    "instance-method",
-                    fqn.as_deref(),
-                );
+                let Some((raw, callee)) = self.go_bare_result(inner, r)? else { return Ok(None); };
+                return self.go_method_on_declared_type(&raw, &callee.file_path, method, r);
             }
             if !CONSTRUCTS_VIA_BARE_CALL.contains(r.language.as_str())
                 || !inner.as_bytes()[0].is_ascii_uppercase()
@@ -1030,20 +1023,21 @@ impl KernelResolver {
         method: &str,
         r: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
-        if pkg.contains('.') {
+        if pkg.contains('.') || self.is_shadowed_import(pkg, r)? {
             return Ok(None);
         }
-        let Some(pkg_dir) = self.go_imported_package_dir(&r.file_path, pkg)? else {
+        let Some(dir) = self.go_imported_package_dir(&r.file_path, pkg)? else {
             return Ok(None);
         };
-        let ret = self.nodes_by_name(func)?.iter().find_map(|n| {
-            (n.kind == "function" && n.language == "go" && pos_dirname(&n.file_path) == pkg_dir)
-                .then(|| n.return_type.clone())
-                .flatten()
-                .filter(|t| !t.is_empty())
-        });
-        let Some(ret) = ret else { return Ok(None) };
-        self.go_method_in_package(&ret, method, &pkg_dir, r)
+        let nodes: Vec<_> = self.nodes_by_name(func)?.iter()
+            .filter(|n| n.language == "go" && n.is_exported
+                && matches!(n.kind.as_str(), "function" | "variable" | "constant")
+                && !n.qualified_name.contains("::")
+                && pos_dirname(&n.file_path) == dir)
+            .cloned().collect();
+        let [callee] = nodes.as_slice() else { return Ok(None) };
+        let Some(raw) = go_result_from_node(callee) else { return Ok(None) };
+        self.go_method_on_declared_type(&raw, &callee.file_path, method, r)
     }
 
     /// resolveJvmImport (import-resolver.ts) — `imports`-kind java/kotlin FQN
@@ -1170,4 +1164,18 @@ pub(super) fn pick_closest_jvm_candidate(candidates: &[Arc<KNode>], from_path: &
         }
     }
     best.clone()
+}
+
+fn go_result_from_node(node: &KNode) -> Option<String> {
+    if node.kind == "function" {
+        return node.return_type.clone().filter(|ty| !ty.is_empty());
+    }
+    if !matches!(node.kind.as_str(), "variable" | "constant") {
+        return None;
+    }
+    let literal = re!(
+        r"^=\s*(?:sync\.OnceValue\s*\(\s*)?func\s*\((?:[^()]|\([^()]*\))*\)\s*(\*?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?(?:\[[^\]]*\])?)\s*\{"
+    );
+    literal.captures(node.signature.as_deref()?)
+        .map(|hit| hit[1].to_string())
 }

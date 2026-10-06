@@ -113,12 +113,12 @@ fn normalize<'t>(node: Node<'t>, src: &str) -> Vec<(String, Node<'t>)> {
 }
 
 impl<'t> Walker<'t> {
-    pub(super) fn capture_value_ref_scope(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>) {
+    pub(super) fn capture_value_ref_scope(&mut self, kind: &'static str, name: &str, row: u32, node: Node<'t>, value_target: bool) {
         if !self.variant.value_refs() {
             return;
         }
         let target_kind_ok = kind == "constant" || kind == "variable";
-        if target_kind_ok
+        if value_target && target_kind_ok
             && util::utf16_len(name) >= 3
             && util::has_upper_or_underscore().is_match(name)
         {

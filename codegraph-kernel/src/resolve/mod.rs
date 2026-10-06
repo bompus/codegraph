@@ -106,6 +106,12 @@ pub struct KernelWorkspaceIn {
 }
 
 #[napi(object)]
+pub struct KernelGoModule {
+    pub module_path: String,
+    pub dir: String,
+}
+
+#[napi(object)]
 pub struct KernelResolverConfig {
     pub db_path: String,
     pub project_root: String,
@@ -113,7 +119,7 @@ pub struct KernelResolverConfig {
     /// Deepest `dir` first, as path-aliases.ts orders them.
     pub scoped_aliases: Option<Vec<KernelScopedAliasIn>>,
     pub workspaces: Option<KernelWorkspaceIn>,
-    pub go_module_path: Option<String>,
+    pub go_modules: Option<Vec<KernelGoModule>>,
     /// Already-resolved compile_commands include dirs (may be empty →
     /// the kernel applies the same hardcoded fallback as the TS path).
     pub cpp_include_dirs: Option<Vec<String>>,
@@ -200,6 +206,8 @@ pub struct KernelCandidateOut {
 #[napi(object)]
 pub struct ResolveOutcome {
     pub status: String,
+    pub edge_kind: Option<String>,
+    pub also_target_node_ids: Option<Vec<String>>,
     pub target_node_id: Option<String>,
     pub confidence: Option<f64>,
     pub resolved_by: Option<String>,
@@ -217,6 +225,8 @@ impl ResolveOutcome {
     fn unresolved() -> Self {
         ResolveOutcome {
             status: "unresolved".into(),
+            edge_kind: None,
+            also_target_node_ids: None,
             target_node_id: None,
             confidence: None,
             resolved_by: None,
@@ -265,6 +275,8 @@ impl ResolveOutcome {
     fn resolved(target: &KNode, confidence: f64, by: &str, is_final: bool, cands: Option<Vec<KernelCandidateOut>>) -> Self {
         ResolveOutcome {
             status: "resolved".into(),
+            edge_kind: None,
+            also_target_node_ids: None,
             target_node_id: Some(target.id.clone()),
             confidence: Some(confidence),
             resolved_by: Some(by.to_string()),
@@ -511,14 +523,18 @@ mod name_scope;
 mod language_type_scope;
 mod resolver_upstream;
 mod js_scope_upstream;
+mod js_objects_upstream;
+mod js_object_facts_upstream;
 mod overloads_upstream;
 mod scala_type_scope;
 mod swift_type_scope;
 mod kotlin_type_scope;
 mod php_scope;
 mod lang_scope;
+mod dart_fields;
 mod lua_alias;
 mod member_scope;
+mod vbnet;
 mod receivers;
 mod bound;
 mod fields;
@@ -566,7 +582,7 @@ pub struct KernelResolver {
     aliases: Option<KernelAliasMapIn>,
     scoped_aliases: Vec<KernelScopedAliasIn>,
     workspaces: Option<WorkspaceK>,
-    go_module_path: Option<String>,
+    go_modules: Vec<KernelGoModule>,
     cpp_include_dirs: Vec<String>,
     node_builtins: HashSet<String>,
     frameworks_active: bool,
@@ -602,7 +618,13 @@ pub struct KernelResolver {
     /// phpSupertypeQns, by declaration id.
     php_supers_memo: HashMap<String, Rc<Vec<String>>>,
     /// dartSupertypesOf, by type name.
+    vb: vbnet::VbMemo,
+    js_objects: js_objects_upstream::JsObjects,
     dart_supers_memo: HashMap<String, Rc<Vec<String>>>,
+    dart_lineage_memo: HashMap<String, Rc<HashMap<String, u32>>>,
+    dart_getter_memo: HashMap<String, bool>,
+    dart_fields_memo: HashMap<String, (Rc<SourceFile>, HashSet<String>)>,
+    dart_extension_owner_memo: HashMap<String, Option<(Vec<String>, bool)>>,
     /// dartHierarchyAt, by call site (file, line).
     dart_hierarchy_memo: HashMap<(String, i64), Rc<HashMap<String, u32>>>,
     /// Kotlin supertypes named in a type's head, by type name.
@@ -781,7 +803,7 @@ impl KernelResolver {
             aliases: config.aliases,
             scoped_aliases: config.scoped_aliases.unwrap_or_default(),
             workspaces,
-            go_module_path: config.go_module_path,
+            go_modules: config.go_modules.unwrap_or_default(),
             cpp_include_dirs,
             node_builtins: config.node_builtin_specifiers.into_iter().collect(),
             frameworks_active: config.frameworks_active,
@@ -802,7 +824,13 @@ impl KernelResolver {
             rust_trait_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
+            vb: vbnet::VbMemo::default(),
+            js_objects: Default::default(),
             dart_supers_memo: HashMap::new(),
+            dart_lineage_memo: HashMap::new(),
+            dart_getter_memo: HashMap::new(),
+            dart_fields_memo: HashMap::new(),
+            dart_extension_owner_memo: HashMap::new(),
             dart_hierarchy_memo: HashMap::new(),
             declared_member_memo: HashMap::new(),
             declared_member_lines: HashMap::new(),
@@ -877,6 +905,8 @@ impl KernelResolver {
         self.file_cache.clear();
         self.tree_cache.clear();
         self.bindings_cache.clear();
+        self.js_objects.clear();
+        self.vb = Default::default();
     }
 
     /// Give the conn up: a live-db conn is parked for reuse, never closed —
@@ -1248,7 +1278,7 @@ mod tests {
              start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, start_column INTEGER NOT NULL, \
              end_column INTEGER NOT NULL, signature TEXT, visibility TEXT, \
              is_exported INTEGER NOT NULL DEFAULT 0, return_type TEXT, type_parameters TEXT, decorators TEXT, \
-             is_async INTEGER NOT NULL DEFAULT 0); \
+             is_async INTEGER NOT NULL DEFAULT 0, is_static INTEGER NOT NULL DEFAULT 0); \
              CREATE INDEX idx_nodes_name ON nodes(name); \
              CREATE INDEX idx_nodes_qualified_name ON nodes(qualified_name); \
              CREATE INDEX idx_nodes_file_path ON nodes(file_path); \
@@ -1388,6 +1418,7 @@ mod tests {
                 r"(?-u:\b)R\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)",
                 r"(?-u:\b)R(?-u:\b)\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{",
                 r"(?-u:\b)var\s+R\s+\*?([A-Za-z_][A-Za-z0-9_.]*)",
+                r"(?:^|[(,])\s*R\s+\*?([a-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*(?:[,)]|$)",
                 r"(?-u:\b)R\s+\*?([A-Z][A-Za-z0-9_.]*)",
             ]),
             ("php", &[

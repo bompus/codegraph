@@ -243,6 +243,15 @@ impl KernelResolver {
     }
 
     pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+if super::lang_scope::is_dart_member_read(r) {
+    let Some(candidate) = self.match_dart_member_read(r)? else {
+        return Ok(ResolveOutcome::unresolved());
+    };
+    let mut outcome = self.finish_pre_framework(r, candidate)?;
+    // Parent adds this outcome field and its JS transport.
+    outcome.edge_kind = Some("calls".to_string());
+    return Ok(outcome);
+}
         if self.is_built_in_or_external(r) {
             return Ok(ResolveOutcome::unresolved());
         }
@@ -358,9 +367,15 @@ impl KernelResolver {
         if let Some(outcome) = self.resolve_php_imported_static(r)? {
             return Ok(outcome);
         }
+        // A classic-script object can be declared in another file without an import.
+        // Imported roots retain the binding resolver's authority.
+        if let Some(c) = self.match_object_path_call(r)? {
+            if let Some(c) = self.gate_language(Some(c), r) { return self.finish(r, c, None, true); }
+        }
         // matchBoundReceiverCall — claimed refs are terminal either way.
-        let namespace_chain = is_unresolved_js_member_call(r) && self.import_mappings(&r.file_path)?.iter()
-            .any(|m| m.is_namespace && m.local_name == r.reference_name.split('.').next().unwrap_or(""));
+        let namespace_chain = is_unresolved_js_member_call(r)
+            && self.import_mappings(&r.file_path)?.iter().any(|m| m.is_namespace
+                && m.local_name == r.reference_name.split('.').next().unwrap_or(""));
         if is_binding_receiver_call(r) && !namespace_chain && !self.is_component_receiver_out_of_scope(r)? {
             match probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?) {
                 None => {
@@ -399,6 +414,11 @@ impl KernelResolver {
                             return self.finish(r, c, None, true);
                         }
                     }
+                }
+            }
+            if !namespace {
+                if let Some(c) = self.match_object_path_call(r)? {
+                    if let Some(c) = self.gate_language(Some(c),r) { return self.finish(r,c,None,true); }
                 }
             }
             return Ok(ResolveOutcome::unresolved());
@@ -718,6 +738,7 @@ impl KernelResolver {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if let Some(outcome) = self.resolve_vb_explicit(r)? { return Ok(outcome); }
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which
         // needs no bindings rows — run it ahead of the eligibility gate.
@@ -905,6 +926,10 @@ impl KernelResolver {
         if winner.node.id == r.from_node_id && is_inheritance_ref(&r.reference_kind) {
             let Some(other) = self.other_supertype_named(r)? else { return Ok(ResolveOutcome::unresolved()); }; winner=other;
         }
+if r.language == "dart" && r.reference_kind == "references"
+    && winner.node.id == r.from_node_id {
+    return Ok(ResolveOutcome::unresolved());
+}
         winner=self.retarget_overload(winner,r)?;
         if r.reference_kind == "calls" {
             // memberName = the last `.` segment — `Cls::member` and bare
@@ -1024,7 +1049,7 @@ impl KernelResolver {
 
     /// finish for an arm resolveOneInner evaluates before the framework loop:
     /// its verdict must not be overturned by a framework hit.
-    fn finish_pre_framework(&mut self, r: &ResolveRefIn, c: KCand) -> Res<ResolveOutcome> {
+    pub(super) fn finish_pre_framework(&mut self, r: &ResolveRefIn, c: KCand) -> Res<ResolveOutcome> {
         let mut out = self.finish(r, c, None, true)?;
         out.pre_framework = true;
         Ok(out)

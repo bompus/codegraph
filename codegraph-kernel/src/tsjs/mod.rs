@@ -17,7 +17,7 @@ mod frameworks;
 mod extractors;
 mod fnref;
 use crate::walker::named_kids;
-use crate::walker::{Scope, ValueScope, scope_qualified_name};
+use crate::walker::{Scope, ValueScope};
 use crate::textutil::{is_builtin_type, is_literal_receiver};
 use crate::textutil as util;
 
@@ -130,6 +130,24 @@ fn is_vue_collection_name(name: &str) -> bool {
     matches!(name, "actions" | "mutations" | "getters")
 }
 
+/// OBJECT_MEMBER_FUNCTION_TYPES (tree-sitter.ts, #2300): the function values an
+/// owned object literal's member can hold.
+fn is_object_member_function(kind: &str) -> bool {
+    matches!(kind, "arrow_function" | "function_expression" | "generator_function")
+}
+
+/// STATIC_OBJECT_KEY_TYPES (tree-sitter.ts, #2300): keys that name a member — a
+/// computed `[expr]` key names nothing static.
+fn is_static_object_key(kind: &str) -> bool {
+    matches!(kind, "property_identifier" | "string" | "number")
+}
+
+/// HOST_GLOBAL_ROOTS (tree-sitter.ts, #2300): `window.App = {…}` defines the
+/// global `App`. (`self` is usually `var self = this` in page code, not the global.)
+fn is_host_global_root(name: &str) -> bool {
+    matches!(name, "window" | "globalThis")
+}
+
 
 /// Extra node properties, per-extract-site (mirrors createNode's `extra`).
 #[derive(Default)]
@@ -141,6 +159,9 @@ struct Extra {
     is_async: Option<bool>,
     is_static: Option<bool>,
     qualified_name: Option<String>,
+    /// Never a value-read target: a local, or an object hung on a dotted path
+    /// (createNode's `valueTarget = false`, #2300).
+    not_value_target: bool,
 }
 
 
@@ -191,6 +212,12 @@ struct Walker<'t> {
     /// `exports.x = function () {}` / `module.exports.x = () => …`: (x, line),
     /// consumed by the AST-only decl pass (the walker names such nodes itself).
     cjs_fn_exports: Vec<(String, u32)>,
+    /// An object literal hung on a path (`window.App = {…}`) is qualified by
+    /// the path, and so is what it holds (#2300): row → that qualified name.
+    /// Mirrors TreeSitterExtractor.objectPathOwners.
+    object_path_owners: HashMap<u32, String>,
+    /// ownsObjectLiterals: false for a generated or minified bundle (#2300).
+    owns_objects: bool,
 }
 
 
@@ -244,6 +271,8 @@ impl<'t> Walker<'t> {
             fs_value_counts: HashMap::new(),
             value_scopes: Vec::new(),
             vue_store_file: None,
+            object_path_owners: HashMap::new(),
+            owns_objects: !util::is_generated_file(file_path) && !util::is_minified_content(file_path, source),
             md_ref_keys: HashSet::new(),
             later_exports: HashMap::new(),
             import_decls: HashMap::new(),
@@ -298,6 +327,7 @@ impl<'t> Walker<'t> {
         let start_line = self.line_of(node);
         let column = self.col_of(node);
         let id = self.node_id_allocator.generate(self.file_path, kind, name, start_line, column);
+        let value_target = !extra.not_value_target;
 
         // endLine body extension: resolveBody only (TS/JS: function-valued
         // class fields whose body nests in the arrow / HOF-wrapped arrow).
@@ -312,7 +342,27 @@ impl<'t> Walker<'t> {
             }
         }
 
-        let qualified = extra.qualified_name.unwrap_or_else(|| scope_qualified_name(&self.stack, name));
+        let qualified = extra.qualified_name.unwrap_or_else(|| {
+            let mut parts: Vec<&str> = Vec::new();
+            for s in &self.stack {
+                // A path-hung object literal qualifies what it holds by its
+                // path (`window.App::init`), which carries its own scope.
+                if let Some(path) = self.object_path_owners.get(&s.row) {
+                    parts.clear();
+                    parts.push(path);
+                    continue;
+                }
+                if s.kind != "file" {
+                    parts.push(&s.name);
+                }
+            }
+            let mut qn = parts.join("::");
+            if !qn.is_empty() {
+                qn.push_str("::");
+            }
+            qn.push_str(name);
+            qn
+        });
 
         let mut flags = BoolFlags::default();
         if let Some(v) = extra.is_exported {
@@ -358,7 +408,7 @@ impl<'t> Walker<'t> {
             self.defined_fn_names.insert(name.to_string());
         }
         self.emit_decl_binding(kind, name, row, node, extra.is_exported == Some(true));
-        self.capture_value_ref_scope(kind, name, row, node);
+        self.capture_value_ref_scope(kind, name, row, node, value_target);
         Some(row)
     }
 
@@ -381,6 +431,12 @@ impl<'t> Walker<'t> {
         self.maybe_capture_fn_refs(node);
         let owner = self.top_row();
         self.markdown_refs_from_string(node, owner);
+
+        // `window.App = {…}` / `App.utils = {…}`: the object's functions are
+        // the path's members (#2300). Its whole subtree is handled there.
+        if kind == "assignment_expression" && self.extract_assigned_object_owner(node, true) {
+            return;
+        }
 
         if is_function_type(kind) {
             // (the isInsideClassLike + methodTypes overlap is Python/Ruby-only)
@@ -465,6 +521,16 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
+
+        // A named object literal in a body (an IIFE's `const App = {…}`) owns
+        // its function members as one at module scope does, and so does
+        // `window.App = {…}` written in here (#2300). Each handles its subtree.
+        if kind == "variable_declarator" && self.extract_local_object_owner(node) {
+            return;
+        }
+        if kind == "assignment_expression" && self.extract_assigned_object_owner(node, false) {
+            return;
+        }
 
         if kind == "call_expression" {
             self.extract_call(node);

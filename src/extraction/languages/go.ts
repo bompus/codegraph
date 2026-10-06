@@ -7,35 +7,22 @@ import type { LanguageExtractor } from '../tree-sitter-types';
  * `New().Method()` could be called on (the #645/#608 mechanism). Reads the
  * `result` field: a pointer `*Foo` is unwrapped to `Foo`, a multi-return
  * `(*Foo, error)` takes the first result (the idiomatic value-or-error shape),
- * a qualified `pkg.Foo` reduces to its last segment, and generics to the base.
- * Built-ins / unnamed results simply fail the later existence check.
+ * a qualified `pkg.Foo` retains its package, and generics reduce to the base.
+ * Unnamed collection results are excluded; built-ins fail the later existence check.
  */
 function extractGoReturnType(node: SyntaxNode, source: string): string | undefined {
-  let result = getChildByField(node, 'result');
-  if (!result) return undefined;
-  // Multi-return `(T, error)` → the first result's type.
-  if (result.type === 'parameter_list') {
-    const first = result.namedChildren.find((c: SyntaxNode) => c.type === 'parameter_declaration');
-    if (!first) return undefined;
-    result = getChildByField(first, 'type') ?? first;
+  let result: SyntaxNode | null | undefined = getChildByField(node, 'result');
+  if (result?.type === 'parameter_list') {
+    const first = result.namedChildren.find((child: SyntaxNode) => child.type === 'parameter_declaration');
+    result = first ? getChildByField(first, 'type') : undefined;
   }
-  // Unwrap a pointer `*Foo` → `Foo`.
   if (result?.type === 'pointer_type') {
-    result =
-      result.namedChildren.find(
-        (c: SyntaxNode) =>
-          c.type === 'type_identifier' || c.type === 'qualified_type' || c.type === 'generic_type',
-      ) ?? result;
+    result = result.namedChildren.find((child: SyntaxNode) =>
+      ['type_identifier', 'qualified_type', 'generic_type'].includes(child.type));
   }
-  if (!result) return undefined;
-  const text = getNodeText(result, source)
-    .trim()
-    .replace(/^\*/, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/\[[^\]]*\]/g, ''); // strip generic args `Foo[T]`
-  const last = text.split('.').pop()?.trim(); // qualified `pkg.Foo` → `Foo`
-  if (!last || !/^[A-Za-z_]\w*$/.test(last)) return undefined;
-  return last;
+  if (!result || !['type_identifier', 'qualified_type', 'generic_type'].includes(result.type)) return undefined;
+  const base = getNodeText(result, source).trim().split('[')[0]!.trim();
+  return /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?$/.test(base) ? base : undefined;
 }
 
 export const goExtractor: LanguageExtractor = {

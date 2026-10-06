@@ -279,9 +279,8 @@ impl KernelResolver {
         if let Some(hit) = self.py_globals.classes.get(&global.id) {
             return Ok(hit.clone());
         }
-        let external = self.python_external_writes(global)?;
-        let mut writes = external.writes.clone();
-        let mut known = !external.unknown && !self.python_dynamic_global_write(&global.name, &global.file_path)?;
+        let mut writes = Vec::new();
+        let mut known = !self.python_dynamic_global_write(&global.name, &global.file_path)?;
         if known {
             for b in self.python_global_bindings(&global.name, &global.file_path)?.iter() {
                 let PyBinding::Assign { ty, value, line } = b else {
@@ -306,6 +305,11 @@ impl KernelResolver {
                 };
                 writes.push((constructor, global.file_path.clone(), *line));
             }
+        }
+        if known {
+            let external = self.python_external_writes(global)?;
+            known = !external.unknown;
+            writes.extend(external.writes.iter().cloned());
         }
         let mut classes: Vec<Arc<KNode>> = Vec::new();
         if known {

@@ -93,6 +93,12 @@ impl KernelResolver {
     /// (`case class B()` in a test method), or a method of such a type —
     /// declared inside a function is reachable only from inside it.
     pub(super) fn is_lexically_reachable(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let bare = re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name);
+        if candidate.kind == "function" && bare && !self.object_member_reachable_by_name(candidate,r)? { return Ok(false); }
+        if bare && js_objects_upstream::path_holder(candidate) && js_objects_upstream::literal_owner(candidate) {
+            let last = js_objects_upstream::last_segment(candidate);
+            if !last.starts_with("window.") && !last.starts_with("globalThis.") { return Ok(false); }
+        }
         if self.js_declaration_reachable(candidate, r) == Some(false) { return Ok(false); }
         if matches!(candidate.kind.as_str(), "variable" | "constant") || (candidate.kind == "field" && candidate.language == "scala") {
             if !self.scala_block_reachable(candidate, r) { return Ok(false); }
@@ -270,7 +276,16 @@ impl KernelResolver {
 
     /// isVisibleAcrossFiles (name-matcher.ts).
     pub(super) fn is_visible_across_files(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
-        if candidate.language == "go" && self.go_external_qualified(r)? { return Ok(false); }
+        if candidate.language == "go" {
+            if self.go_external_qualified(r)? { return Ok(false); }
+            if let Some(imp) = self.go_ref_qualifier(r)? {
+                if let Some(dir) = self.go_package_dir(&imp.source, &r.file_path) {
+                    if candidate.kind == "method" || candidate.qualified_name.contains("::")
+                        || pos_dirname(&candidate.file_path) != dir { return Ok(false); }
+                }
+            }
+        }
+
         if !self.language_type_visible(candidate,r)? { return Ok(false); }
         if candidate.file_path == r.file_path {
             return Ok(true);
@@ -534,7 +549,7 @@ impl KernelResolver {
     }
 
     /// findBestMatch (name-matcher.ts) — strict `>` first-max scoring.
-    pub(super) fn find_best_match(&self, r: &ResolveRefIn, candidates: &[Arc<KNode>]) -> Option<Arc<KNode>> {
+    pub(super) fn find_best_match(&mut self, r: &ResolveRefIn, candidates: &[Arc<KNode>]) -> Option<Arc<KNode>> {
         let mut best_score = -1f64;
         let mut best: Option<Arc<KNode>> = None;
         let mut ref_dirs: Vec<String> =
@@ -549,6 +564,7 @@ impl KernelResolver {
             if candidate.file_path == r.file_path {
                 score += 100.0;
             }
+            if r.language == "vbnet" && self.vb_same_project(&candidate.file_path, &r.file_path) { score += 80.0; }
             score += path_proximity_from_dirs(&ref_dirs, &candidate.file_path) as f64;
             if candidate.language == r.language {
                 score += 50.0;
@@ -1067,6 +1083,7 @@ impl KernelResolver {
             && super::lua_alias::is_global(&r.reference_name)
             && !self.nodes_in_file(&r.file_path)?.iter().any(|n| n.name == r.reference_name && n.kind == "function") { return Ok(None); }
         if let Some(alias) = self.csharp_alias_type_target(r)? { return Ok(Some(alias)); }
+        if let Some(c) = self.match_collapsed_object_call(r)? { return Ok(Some(c)); }
         if let Some(c) = self.match_by_exact_name(r)? {
             return Ok(Some(c));
         }
@@ -1188,7 +1205,26 @@ impl KernelResolver {
                 .collect()
         };
 
-        let candidates = keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?);
+        let candidates = if r.language == "csharp" && r.reference_kind == "instantiates" {
+            // Relative qualification searches enclosing namespaces before the global namespace.
+            let absolute = r.reference_name.strip_prefix("global::");
+            let spelling = absolute.unwrap_or(&r.reference_name);
+            let leaf = spelling.rsplit([':', '.']).next().unwrap_or("");
+            let nodes = self.nodes_by_name(leaf)?;
+            let mut namespace = if absolute.is_some() { String::new() }
+                else { self.csharp_namespaces_at(r).unwrap_or_default().join(".") };
+            let mut found = Vec::new();
+            loop {
+                let qualified = if namespace.is_empty() { spelling.to_string() }
+                    else { format!("{namespace}.{spelling}") };
+                found.extend(nodes.iter().filter(|n| n.language == "csharp"
+                    && matches!(n.kind.as_str(), "class" | "struct" | "record")
+                    && n.qualified_name.replace("::", ".") == qualified).cloned());
+                if !found.is_empty() || namespace.is_empty() { break; }
+                namespace = namespace.rsplit_once('.').map_or("", |(parent, _)| parent).to_string();
+            }
+            found
+        } else { keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?) };
         if candidates.len() == 1 {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),

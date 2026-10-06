@@ -24,7 +24,7 @@ name-matched the bare method (`bar`), so in 7 of 9 languages it silently attache
 
 1. **Capture the factory's declared return type** — a per-language `getReturnType`
    hook writes `nodes.return_type` (schema v5). `*Foo`→`Foo`, `List<Bar>`→`List`,
-   `pkg.Foo`→`Foo`, `-> Self` / `: self` / `this.type` → the declaring type.
+   Go `pkg.Foo` retains its package in the declaration file; `-> Self` / `: self` / `this.type` → the declaring type.
 2. **Preserve the chained receiver at extraction** — `tree-sitter.ts` (or a bespoke
    extractor) encodes `Foo.getInstance().bar()` as the marker string
    `Foo.getInstance().bar` (the `().` marker never appears in an ordinary ref). A

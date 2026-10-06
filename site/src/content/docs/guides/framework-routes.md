@@ -87,3 +87,5 @@ React Router `<Link to>` and `navigate` can read destinations returned by a rout
 Inline HTTP handler calls retain simple member receivers. Framework name conventions prefer visible declarations in the calling file, then the applicable package or directory; they exclude unrelated nested types and test-local declarations. React and Express naming conventions require imports to reach another file. NestJS provider lookup also supports convention siblings in the same directory. Vue/React conventions apply to script references, and Astro component conventions apply to `.astro` markup.
 
 Express treats the last registration argument as the handler, excluding a trailing comma. Inline arrow and function-expression handlers contribute their body calls, including when passed through a wrapper call. An inline middleware before a named handler does not replace that handler.
+
+Axum and Actix handler links use the handler argument position, including multiline and nested registrations. Actix scope prefixes remain part of the route path.

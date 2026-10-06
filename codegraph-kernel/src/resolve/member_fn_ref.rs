@@ -49,28 +49,21 @@ impl KernelResolver {
             let typed = if receiver.contains('.') {
                 Some(self.match_go_field_chain_call(receiver, member, r)?)
             } else if let Some(raw) = self.infer_local_receiver_type(receiver, r, true)? {
-                let raw = raw.trim_start_matches(['*', '&']);
-                if raw.contains('.') {
-                    // `pkg.Type` names that package's type, which only its
-                    // import can place; an external package has none here.
-                    Some(self.match_bound_type_member(raw, member, r)?)
-                } else if let Some(ty) = self.normalize_inferred_type_name(raw)? {
-                    Some(self.resolve_method_on_type(&ty, member, r, 0.9, "function-ref", None)?)
-                } else {
-                    Some(None)
-                }
+                Some(self.go_method_on_declared_type(&raw, &r.file_path, member, r)?)
             } else {
-                let types = self
-                    .nodes_by_name(receiver)?
-                    .iter()
-                    .filter(|n| n.language == "go" && (n.kind == "struct" || n.kind == "interface"))
+                let dir = pos_dirname(&r.file_path);
+                let types = self.nodes_by_name(receiver)?.iter()
+                    .filter(|n| n.language == "go"
+                        && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                        && !n.qualified_name.contains("::") && pos_dirname(&n.file_path) == dir)
                     .count();
                 match types {
                     0 => None,
-                    1 => Some(self.resolve_method_on_type(receiver, member, r, 0.9, "function-ref", None)?),
+                    1 => Some(self.go_method_in_package(receiver, member, dir, r)?),
                     _ => Some(None),
                 }
             };
+
             // No name-only fallback for Go: struct fields aren't nodes, so a
             // field read (`c.Errors`) would match any same-named method.
             return match typed {
@@ -178,7 +171,7 @@ impl KernelResolver {
 
     /// Is `name` bound at `r` by something other than its import (a
     /// parameter, a local)? Files without binding rows keep the import.
-    fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
         let rows = self.bindings(&r.file_path)?;
         Ok(innermost_binding(&rows, name, Some(r.line)).is_some_and(|b| b.kind != "import"))
     }

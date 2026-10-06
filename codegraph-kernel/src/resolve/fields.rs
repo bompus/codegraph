@@ -16,9 +16,10 @@ impl KernelResolver {
             return Ok(None);
         }
         let (base, field) = (segs[0], segs[1]);
-        let Some(base_type) = self.infer_local_receiver_type(base, r, false)? else {
+        let Some(base_type) = self.infer_local_receiver_type(base, r, true)? else {
             return Ok(None);
         };
+        let Some((base_type, base_dir)) = self.go_type_package(&base_type, &r.file_path)? else { return Ok(None); };
         // `\bFIELD\s+\*?\[?\]?TYPE`
         static FIELD_TYPE: LazyLock<Affix> =
             LazyLock::new(|| Affix::new("", r"\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)", true, false, false));
@@ -26,7 +27,7 @@ impl KernelResolver {
             self.nodes_by_name(&base_type)?
                 .iter()
                 .filter(|n| {
-                    matches!(n.kind.as_str(), "struct" | "class") && n.language == "go"
+                    matches!(n.kind.as_str(), "struct" | "class") && n.language == "go" && pos_dirname(&n.file_path) == base_dir
                 })
                 .cloned()
                 .collect(),
@@ -77,19 +78,25 @@ impl KernelResolver {
     /// `None` when `pkg` is no import there or names a package outside the
     /// module.
     pub(super) fn go_imported_package_dir(&mut self, file_path: &str, pkg: &str) -> Res<Option<String>> {
-        let Some(mod_path) = self.go_module_path.clone() else {
-            return Ok(None);
-        };
-        let source = self
-            .import_mappings(file_path)?
-            .iter()
-            .find(|i| i.local_name == pkg)
-            .map(|imp| imp.source.clone());
-        Ok(match source {
-            Some(src) if src == mod_path => Some(String::new()),
-            Some(src) if src.starts_with(&format!("{}/", mod_path)) => Some(src[mod_path.len() + 1..].to_string()),
-            _ => None,
-        })
+        let source = self.import_mappings(file_path)?.iter()
+            .find(|i| i.local_name == pkg).map(|i| i.source.clone());
+        Ok(source.and_then(|src| self.go_package_dir(&src, file_path)))
+    }
+
+    pub(super) fn go_package_dir(&self, import_path: &str, from_file: &str) -> Option<String> {
+        let own = self.go_modules.iter().filter(|m| m.dir.is_empty() || from_file.starts_with(&format!("{}/", m.dir)))
+            .max_by_key(|m| m.dir.len());
+        let mut best: Option<&KernelGoModule> = None;
+        for m in &self.go_modules {
+            let hidden = m.dir.split('/').any(|d| d == "testdata" || d.starts_with(['.', '_']));
+            let is_own = own.is_some_and(|o| std::ptr::eq(o, m));
+            if hidden && !is_own { continue; }
+            if import_path != m.module_path && !import_path.starts_with(&format!("{}/", m.module_path)) { continue; }
+            if best.is_none_or(|b| m.module_path.len() > b.module_path.len() || (m.module_path.len() == b.module_path.len() && is_own)) { best = Some(m); }
+        }
+        let m = best?;
+        let rest = import_path.strip_prefix(&m.module_path)?.trim_start_matches('/');
+        Some(if m.dir.is_empty() { rest.to_string() } else if rest.is_empty() { m.dir.clone() } else { format!("{}/{rest}", m.dir) })
     }
 
     /// `Type::method` among Go methods declared in `pkg_dir`: a Go method
@@ -116,16 +123,121 @@ impl KernelResolver {
             })
             .cloned()
             .collect();
-        if named.is_empty() {
-            return self.resolve_method_on_type(type_name, method, r, 0.85, "instance-method", None);
-        }
         let in_pkg: Vec<Arc<KNode>> =
             named.into_iter().filter(|m| pos_dirname(&m.file_path) == pkg_dir).collect();
-        if in_pkg.is_empty() || (r.reference_kind == "function_ref" && in_pkg.len() != 1) {
-            return Ok(None);
-        }
+        if in_pkg.is_empty() { return self.go_promoted_method(type_name, method, pkg_dir, r); }
+        if r.reference_kind == "function_ref" && in_pkg.len() != 1 { return Ok(None); }
         let ordered = prefer_call_site_file(in_pkg, &r.file_path);
         Ok(Some(KCand { node: ordered[0].clone(), confidence: 0.85, resolved_by: "instance-method" }))
+    }
+
+    pub(super) fn go_type_package(
+        &mut self,
+        raw: &str,
+        file: &str,
+    ) -> Res<Option<(String, String)>> {
+        let raw = raw.trim();
+        let raw = raw.strip_prefix('&').unwrap_or(raw).trim();
+        let Some(hit) = re!(
+            r"^\*?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\[[\s\S]*\])?$"
+        ).captures(raw) else { return Ok(None) };
+        let named = &hit[1];
+        if let Some((pkg, name)) = named.split_once('.') {
+            return Ok(self.go_imported_package_dir(file, pkg)?
+                .map(|dir| (name.to_string(), dir)));
+        }
+        Ok(Some((named.to_string(), pos_dirname(file).to_string())))
+    }
+
+    pub(super) fn go_method_on_declared_type(
+        &mut self,
+        raw: &str,
+        decl_file: &str,
+        method: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        let Some((ty, dir)) = self.go_type_package(raw, decl_file)? else {
+            return Ok(None);
+        };
+        self.go_method_in_package(&ty, method, &dir, r)
+    }
+
+    fn go_embedded_types(&mut self, ty: &str, dir: &str) -> Res<Vec<(String, String)>> {
+        let owners: Vec<_> = self.nodes_by_name(ty)?.iter()
+            .filter(|n| n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                && pos_dirname(&n.file_path) == dir).cloned().collect();
+        let mut out = Vec::new();
+        for owner in owners {
+            let Some(lines) = self.read_file(&owner.file_path) else { continue };
+            let text = lines.iter().skip((owner.start_line - 1).max(0) as usize)
+                .take((owner.end_line - owner.start_line + 1).max(0) as usize)
+                .map(|line| strip_line_comments(line)).collect::<Vec<_>>().join("\n");
+            let Some(body) = text.split_once('{').map(|(_, b)| b.rsplit_once('}').map_or(b, |(b, _)| b)) else { continue };
+            // Hide nested anonymous struct/interface bodies while preserving declaration separators.
+            let mut depth = 0usize;
+            let mut flat = String::new();
+            for ch in body.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    '\n' => flat.push(ch),
+                    _ if depth == 0 => flat.push(ch),
+                    _ => (),
+                }
+            }
+            for line in flat.split(['\n', ';']) {
+                let Some(hit) = re!(r"^\s*\*?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\[[^\]]*\])?\s*(?:`[^`]*`)?\s*$").captures(line) else { continue };
+                if let Some(base) = self.go_type_package(&hit[1], &owner.file_path)? { out.push(base); }
+            }
+        }
+        Ok(out)
+    }
+
+    fn go_promoted_method(
+        &mut self,
+        ty: &str,
+        method: &str,
+        dir: &str,
+        r: &ResolveRefIn,
+    ) -> Res<Option<KCand>> {
+        // Each path gets its own visited set. Shared bases reached by two paths
+        // must still contribute two candidates for ambiguity detection.
+        let mut initial = HashSet::new();
+        initial.insert((dir.to_string(), ty.to_string()));
+        let mut level = vec![(ty.to_string(), dir.to_string(), initial)];
+        for _depth in 0..4 {
+            let mut next = Vec::new();
+            let mut hits = Vec::new();
+            for (owner, package, visited) in level {
+                for (base, base_dir) in self.go_embedded_types(&owner, &package)? {
+                    if visited.contains(&(base_dir.clone(), base.clone())) { continue; }
+                    let mut path = visited.clone();
+                    path.insert((base_dir.clone(), base.clone()));
+                    let want = format!("{base}::{method}");
+                    let members: Vec<_> = self.nodes_by_name(method)?.iter()
+                        .filter(|n| n.language == "go" && n.kind == "method"
+                            && (n.qualified_name == want
+                                || n.qualified_name.ends_with(&format!("::{want}")))
+                            && pos_dirname(&n.file_path) == base_dir)
+                        .cloned().collect();
+                    hits.extend(members);
+                    next.push((base, base_dir, path));
+                }
+            }
+            if !hits.is_empty() {
+                if r.reference_kind == "function_ref" && hits.len() != 1 {
+                    return Ok(None);
+                }
+                let ordered = prefer_call_site_file(hits, &r.file_path);
+                return Ok(Some(KCand {
+                    node: ordered[0].clone(), confidence: 0.85,
+                    resolved_by: "instance-method",
+                }));
+            }
+            if next.is_empty() { break; }
+            level = next;
+        }
+        Ok(None)
     }
 
     /// matchTsFieldCall restricted to the boundOwner path (br:fieldchain) —
@@ -702,6 +814,7 @@ impl KernelResolver {
         let Some(caller) = self.node_by_id(&r.from_node_id)? else {
             return Ok(None);
         };
+        let caller = self.this_scope_caller(caller)?;
         let Some(sep) = caller.qualified_name.rfind("::") else {
             return Ok(None);
         };

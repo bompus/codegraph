@@ -191,7 +191,7 @@ export interface KernelResolverConfig {
   /** Nested tsconfig/jsconfig aliases, deepest `dir` first; a file under `dir` uses `map` instead of `aliases`. */
   scopedAliases?: { dir: string; map: KernelAliasMapIn }[];
   workspaces?: KernelWorkspaceIn;
-  goModulePath?: string;
+  goModules?: { modulePath: string; dir: string }[];
   cppIncludeDirs?: string[];
   nodeBuiltinSpecifiers: string[];
   frameworksActive: boolean;
@@ -248,6 +248,8 @@ export interface KernelCandidateOut {
  */
 export interface ResolveOutcome {
   status: 'resolved' | 'unresolved' | string;
+  edgeKind?: string;
+  alsoTargetNodeIds?: string[];
   targetNodeId?: string;
   confidence?: number;
   resolvedBy?: string;

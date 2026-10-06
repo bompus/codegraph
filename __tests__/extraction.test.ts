@@ -1405,7 +1405,7 @@ export const exported = { handler: () => target() };
       return result.unresolvedReferences
         .filter((u) => u.referenceKind === 'calls' && u.referenceName === name)
         .map((u) => byId.get(u.fromNodeId))
-        .map((n) => (n ? `${n.kind}:${n.name}` : '?'))
+        .map((n) => (n ? `${n.kind}:${n.qualifiedName}` : '?'))
         .sort();
     };
 
@@ -1416,16 +1416,54 @@ export const exported = { handler: () => target() };
     });
 
     it('a non-exported object literal contributes calls (it was skipped outright)', () => {
-      // `exported`'s members are minted as their own function nodes, so its
-      // arrow's call comes from `handler`; the non-exported ones attribute to
-      // the declared constant.
+      // A named literal's function members are its own nodes, exported or not
+      // (#2300), so each arrow's call comes from its `handler`; the literal's
+      // eager value and the array's arrow attribute to the declared constant.
       expect(callersOf('target')).toEqual([
         'constant:list',
         'constant:obj',
-        'constant:obj',
-        'function:handler',
+        'function:exported::handler',
+        'function:obj::handler',
       ]);
     });
+  });
+
+  // A destructuring declaration mints no symbol, so its initializer was never
+  // walked at module scope: `const { a } = useFoo(1)` recorded no call at all,
+  // where the same line inside a function did (#2340).
+  it.each(['ts', 'tsx', 'js', 'jsx'])('records the calls of a module-scope destructuring declaration (%s, #2340)', (ext) => {
+    const code = [
+      'const { a } = useFoo(1)',
+      'let [b, c] = pair()',
+      'var { d: { e } } = nested()',
+      'const { f = fallback() } = withDefault()',
+      'const [g = other(), ...rest] = list()',
+      'export const { h } = exported()',
+      'const { i } = await load(() => inArrow())',
+      'export function probe() { const { j } = inner(); return j }',
+      '',
+    ].join('\n');
+    const result = extractFromSource(`app.${ext}`, code);
+    const byId = new Map(result.nodes.map((n) => [n.id, n]));
+    const calls = result.unresolvedReferences
+      .filter((r) => r.referenceKind === 'calls')
+      .map((r) => `${byId.get(r.fromNodeId)?.kind}:${r.referenceName}@${r.line}`)
+      .sort();
+    expect(calls).toEqual([
+      'file:exported@6',
+      'file:fallback@4',
+      'file:inArrow@7',
+      'file:list@5',
+      'file:load@7',
+      'file:nested@3',
+      'file:other@5',
+      'file:pair@2',
+      'file:useFoo@1',
+      'file:withDefault@4',
+      'function:inner@8', // inside a function: the function's, as before
+    ]);
+    // Exported factory bindings remain indexed by the fork.
+    expect(result.nodes.filter((n) => n.kind === 'constant' || n.kind === 'variable').map((n) => n.name)).toEqual(['h']);
   });
 });
 
@@ -9703,6 +9741,33 @@ const token = getTokenMp();
       (ref) => ref.referenceKind === 'calls' && ref.referenceName === 'getTokenMp'
     );
     expect(call).toBeDefined();
+  });
+
+  it.each(['LF', 'CRLF'])('should attribute calls in <script setup> destructuring and in the template to the component (%s, #2340)', (ending) => {
+    const lf = `<template>
+  <NuxtLink :to="useBar(link.location)">{{ useBar(link) }}</NuxtLink>
+  <li v-for="item in items" @click="item.open()">{{ label(item) }}</li>
+</template>
+
+<script setup lang="ts">
+const { a } = useFoo(1)
+const [b] = useFoo(2)
+</script>
+`;
+    const code = ending === 'CRLF' ? lf.replace(/\n/g, '\r\n') : lf;
+    const result = extractFromSource('Card.vue', code);
+    const component = result.nodes.find((n) => n.kind === 'component')!;
+    const calls = result.unresolvedReferences
+      .filter((r) => r.referenceKind === 'calls')
+      .map((r) => `${r.fromNodeId === component.id ? 'component' : r.fromNodeId}:${r.referenceName}@${r.line}`)
+      .sort();
+    expect(calls).toEqual([
+      'component:label@3',
+      'component:useBar@2',
+      'component:useBar@2',
+      'component:useFoo@7',
+      'component:useFoo@8',
+    ]);
   });
 
   it('should extract calls from Vue Options API object methods', () => {

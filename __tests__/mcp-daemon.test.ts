@@ -309,9 +309,17 @@ describe('Shared MCP daemon (issue #411)', () => {
     });
     servers.push(server);
     sendInitialize(server.child, `file://${tempDir}`, 1);
-    await waitFor(() => findResponse(server.stdout, 1), 10000);
-    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 10000);
-    const pid = await waitFor(() => readLockPid(realRoot), 10000);
+    const startupFailure = (error: unknown): never => {
+      throw new Error(`${(error as Error).message}`
+        + `\nproxy exit=${server.child.exitCode} signal=${server.child.signalCode}`
+        + `\nstdout:\n${server.stdout.join('\n')}`
+        + `\nstderr:\n${server.stderr.join('\n')}`
+        + `\ndaemon.log:\n${readDaemonLog(realRoot)}`, { cause: error });
+    };
+    await waitFor(() => findResponse(server.stdout, 1), 10000, 25, 'initialize response').catch(startupFailure);
+    await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')),
+      10000, 25, 'daemon attach log').catch(startupFailure);
+    const pid = await waitFor(() => readLockPid(realRoot), 10000, 25, 'daemon pidfile').catch(startupFailure);
     const raw = net.connect(getDaemonSocketPath(realRoot));
     try {
       await new Promise<void>((resolve, reject) => {

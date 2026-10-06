@@ -59,6 +59,10 @@ CODEGRAPH_MCP_TOOLS=explore,sessions,node,search,callers
 
 Each also has a CLI equivalent (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`) for scripts and non-MCP harnesses.
 
+## Copybooks
+
+A named COBOL copybook prioritizes its indexed source and lists COPY and EXEC SQL INCLUDE sites. If no source is indexed, the result says so.
+
 ## How agents should use it
 
 CodeGraph *is* the pre-built search index. For "how does X work?", architecture, a flow ("how does X reach Y"), or where-is-X questions — and while editing code — an agent should answer with `codegraph_explore` and stop, typically with **zero file reads**, rather than re-deriving the answer with `grep` + `Read`. A direct CodeGraph answer is one to a few calls; a grep/read exploration is dozens.

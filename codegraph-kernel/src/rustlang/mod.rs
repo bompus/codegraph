@@ -388,7 +388,7 @@ impl<'t> Walker<'t> {
         let name = self.extract_name(node);
         if name == "<anonymous>" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.visit_for_calls_and_structure(body);
+                self.visit_for_calls_and_structure(body, None);
             }
             return;
         }
@@ -446,7 +446,7 @@ impl<'t> Walker<'t> {
         self.extract_type_annotations(node, row);
         self.stack.push(Scope { row, kind, name });
         if let Some(body) = node.child_by_field_name("body") {
-            self.visit_for_calls_and_structure(body);
+            self.visit_for_calls_and_structure(body, None);
         }
         self.stack.pop();
     }
@@ -584,10 +584,10 @@ impl<'t> Walker<'t> {
             match declared {
                 Some((row, name)) => {
                     self.stack.push(Scope { row, kind: "variable", name });
-                    self.visit_for_calls_and_structure(value);
+                    self.visit_for_calls_and_structure(value, None);
                     self.stack.pop();
                 }
-                None => self.visit_for_calls_and_structure(value),
+                None => self.visit_for_calls_and_structure(value, None),
             }
         }
     }
@@ -707,10 +707,8 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// extractInstantiation — struct_expression via the GENERIC path: strip
-    /// from the first `<`, keep the trailing `::`/`.` segment (JS slice
-    /// semantics: slice(lastDot+1) after a `::` leaves one `:`, then ONE
-    /// leading `[:.]` is stripped).
+    /// Retain the Rust constructor path so an enum variant keeps its owner.
+    /// Generic arguments do not participate in declaration lookup.
     fn extract_instantiation(&mut self, node: Node<'t>) {
         let ctor = node
             .child_by_field_name("constructor")
@@ -719,11 +717,12 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
 
-        let class_name = crate::textutil::strip_generic_and_qualifier(self.text(ctor));
+        let class_name = crate::textutil::generic_args_re().replace_all(self.text(ctor), "");
+        let class_name = class_name.trim().trim_end_matches("::");
 
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, crate::buffers::EDGE_INSTANTIATES, node);
+            self.push_ref_at(from, class_name, crate::buffers::EDGE_INSTANTIATES, node);
         }
     }
 
@@ -879,7 +878,9 @@ impl<'t> Walker<'t> {
     // --- visitFunctionBody -----------------------------------------------------
 
 
-    fn visit_for_calls_and_structure(&mut self, node: Node<'t>) {
+    /// `parent` is `node`'s parent, handed down by the walk (None at a body's
+    /// root): `Node::parent()` walks down from the tree's root on every call.
+    fn visit_for_calls_and_structure(&mut self, node: Node<'t>, parent: Option<Node<'t>>) {
         stack_guard!();
         let kind = node.kind();
         self.maybe_capture_fn_refs(node);
@@ -896,6 +897,7 @@ impl<'t> Walker<'t> {
         } else if kind == "struct_expression" {
             self.extract_instantiation(node);
         }
+        self.extract_static_member_ref(node, parent);
 
         // Nested NAMED fns become their own nodes (a nested fn inside an impl
         // method walks up to the impl and indexes as a METHOD).
@@ -932,7 +934,65 @@ impl<'t> Walker<'t> {
         }
 
         for c in named_kids(node) {
-            self.visit_for_calls_and_structure(c);
+            self.visit_for_calls_and_structure(c, Some(node));
+        }
+    }
+
+    /// extractStaticMemberRef — the rust branch (#2328): an enum variant
+    /// written as a path (`Mode::A`, `mode::Mode::B`, a `Mode::C(x)` /
+    /// `Mode::D { .. }` pattern, `Self::A` in an impl) references the receiver
+    /// — the segment before the member, at the place it is written; the
+    /// resolver keeps it only on an enum that declares the member. A lowercase
+    /// receiver (module) or member (fn), a call's callee or a struct literal's
+    /// name (both already linked to their member), a path's prefix and a `use`
+    /// tree emit nothing. Mirrored byte-for-byte — change both.
+    fn extract_static_member_ref(&mut self, node: Node<'t>, parent: Option<Node<'t>>) {
+        let kind = node.kind();
+        if (kind != "scoped_identifier" && kind != "scoped_type_identifier") || self.stack.is_empty() {
+            return;
+        }
+        // Looked up only at a body's root (a `const X: M = M::A;` value).
+        let Some(parent) = parent.or_else(|| node.parent()) else { return };
+        let member_path = if kind == "scoped_identifier" {
+            !matches!(
+                parent.kind(),
+                "scoped_identifier"
+                    | "scoped_type_identifier"
+                    | "use_declaration"
+                    | "use_list"
+                    | "scoped_use_list"
+                    | "use_as_clause"
+                    | "use_wildcard"
+            )
+        } else {
+            parent.kind() == "struct_pattern"
+        };
+        if !member_path {
+            return;
+        }
+        if parent.kind() == "call_expression"
+            && parent.child_by_field_name("function").map(|f| f.start_byte()) == Some(node.start_byte())
+        {
+            return;
+        }
+        let Some(member) = node.child_by_field_name("name") else { return };
+        let mut recv = node.child_by_field_name("path");
+        if let Some(r) = recv {
+            if r.kind() == "scoped_identifier" {
+                recv = r.child_by_field_name("name");
+            }
+        }
+        let Some(recv) = recv else { return };
+        if recv.kind() != "identifier" || !self.text(member).starts_with(|c: char| c.is_ascii_uppercase()) {
+            return;
+        }
+        let mut text = self.text(recv).to_string();
+        if text == "Self" {
+            text = self.receiver_type_of(node).unwrap_or_default();
+        }
+        if util::capitalized_re().is_match(&text) {
+            let owner = self.top_row();
+            self.push_ref_at(owner, &text, crate::buffers::EDGE_REFERENCES, recv);
         }
     }
 

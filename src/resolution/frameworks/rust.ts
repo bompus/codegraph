@@ -107,6 +107,13 @@ export const rustResolver: FrameworkResolver = {
     const references: UnresolvedRef[] = [];
     const now = Date.now();
     const safe = stripCommentsForRegex(content, 'rust');
+    // Where a handler's own name is written, for the handler expression `expr`
+    // ending at `exprEnd`: the Rust scope gate reads the reference's line, and
+    // rustfmt wraps a long `.route(` call so its handler sits below it (#2326).
+    const handlerSite = (exprEnd: number, expr: string, handler: string) => {
+      const offset = exprEnd - expr.length + expr.lastIndexOf(handler);
+      return { line: safe.slice(0, offset).split('\n').length, column: offset - safe.lastIndexOf('\n', offset - 1) - 1 };
+    };
 
     // Actix-web / Rocket attribute: #[get("/path")] fn handler(..)
     // Capture the method, path, and the fn identifier that follows.
@@ -165,12 +172,24 @@ export const rustResolver: FrameworkResolver = {
       const line = safe.slice(0, match.index).split('\n').length;
 
       const methodBody = args.slice(pathMatch[0].length);
+      const bodyAt = openIdx + 1 + pathMatch[0].length;
       const methodHandlerRegex = /\b(get|post|put|patch|delete|head|options|trace)\s*\(\s*([A-Za-z_][\w:]*)/g;
       let mh: RegExpExecArray | null;
+      // The method routers are the argument's top-level chain (`get(a).post(b)`);
+      // a `get(` nested in it — `get(|| async { cache.get(key) })` — is a call
+      // inside a closure handler, not a route.
+      let depth = 0;
+      let scanned = 0;
       while ((mh = methodHandlerRegex.exec(methodBody)) !== null) {
+        for (; scanned < mh.index; scanned++) {
+          if (methodBody[scanned] === '(') depth++;
+          else if (methodBody[scanned] === ')') depth--;
+        }
+        if (depth > 0) continue;
         const upper = mh[1]!.toUpperCase();
         const handler = mh[2]!.split('::').filter(Boolean).pop();
         if (!handler) continue;
+        const site = handlerSite(bodyAt + mh.index + mh[0].length, mh[2]!, handler);
 
         const routeNode: Node = {
           id: `route:${filePath}:${line}:${upper}:${routePath}`,
@@ -191,8 +210,8 @@ export const rustResolver: FrameworkResolver = {
           fromNodeId: routeNode.id,
           referenceName: handler,
           referenceKind: 'references',
-          line,
-          column: 0,
+          line: site.line,
+          column: site.column,
           filePath,
           language: 'rust',
         });
@@ -235,9 +254,10 @@ export const rustResolver: FrameworkResolver = {
 
     // Actix-web builder API (the dominant actix routing style; attribute macros
     // are handled above). The handler lives in `.to(handler)`, not `get(handler)`.
-    const pushActixRoute = (routePath: string, method: string, handlerExpr: string, line: number) => {
+    const pushActixRoute = (routePath: string, method: string, handlerExpr: string, line: number, exprEnd: number) => {
       const handler = handlerExpr.split('::').filter(Boolean).pop();
       if (!handler) return;
+      const site = handlerSite(exprEnd, handlerExpr, handler);
       const upper = method.toUpperCase();
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${upper}:${routePath}`,
@@ -257,8 +277,8 @@ export const rustResolver: FrameworkResolver = {
         fromNodeId: routeNode.id,
         referenceName: handler,
         referenceKind: 'references',
-        line,
-        column: 0,
+        line: site.line,
+        column: site.column,
         filePath,
         language: 'rust',
       });
@@ -283,13 +303,13 @@ export const rustResolver: FrameworkResolver = {
         if (chain[1] === 'route') {
           const m2 = /web::(get|post|put|patch|delete|head)\s*\(\s*\)\s*\.to\s*\(\s*([A-Za-z_][\w:]*)/.exec(args);
           if (m2) {
-            pushActixRoute(routePath, m2[1]!, m2[2]!, safe.slice(0, open).split('\n').length);
+            pushActixRoute(routePath, m2[1]!, m2[2]!, safe.slice(0, open).split('\n').length, open + 1 + m2.index + m2[0].length);
           }
         } else if (chain[1] === 'to') {
           // Direct `.resource("/x").to(handler)` (all methods).
           const m2 = /^\s*([A-Za-z_][\w:]*)/.exec(args);
           if (m2) {
-            pushActixRoute(routePath, 'ANY', m2[1]!, safe.slice(0, open).split('\n').length);
+            pushActixRoute(routePath, 'ANY', m2[1]!, safe.slice(0, open).split('\n').length, open + 1 + m2.index + m2[0].length);
           }
         }
         p = close + 1;
@@ -300,7 +320,7 @@ export const rustResolver: FrameworkResolver = {
     const appRouteRegex = /\.route\s*\(\s*"([^"]+)"\s*,\s*web::(get|post|put|patch|delete|head)\s*\(\s*\)\s*\.to\s*\(\s*([A-Za-z_][\w:]*)/g;
     while ((match = appRouteRegex.exec(safe)) !== null) {
       const line = safe.slice(0, match.index).split('\n').length;
-      pushActixRoute(scopedPath(match.index, match[1]!), match[2]!, match[3]!, line);
+      pushActixRoute(scopedPath(match.index, match[1]!), match[2]!, match[3]!, line, match.index + match[0].length);
     }
 
     return { nodes, references };

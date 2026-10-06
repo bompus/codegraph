@@ -44,6 +44,7 @@ impl KernelResolver {
         let Some(from) = self.node_by_id(&r.from_node_id)? else {
             return Ok(ThisMember::Miss);
         };
+        let from = self.this_scope_caller(from)?;
         // A class-body hook (Ruby `before_action :x`) attributes to the class
         // node itself; a member strips its own segment.
         let class_prefix = if is_supertype_bearing_kind(&from.kind) || from.kind == "module" {
@@ -83,6 +84,7 @@ impl KernelResolver {
         let Some(from) = self.node_by_id(&r.from_node_id)? else {
             return Ok(None);
         };
+        let from = self.this_scope_caller(from)?;
         if member.is_empty() {
             return Ok(None);
         }

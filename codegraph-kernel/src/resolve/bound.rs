@@ -235,6 +235,19 @@ impl KernelResolver {
         method: &str,
         site: &ResolveRefIn,
     ) -> Res<Option<KCand>> {
+        if site.language == "go" {
+            let Some((name, dir)) = self.go_type_package(ty, &site.file_path)? else { return Ok(None); };
+            return Ok(self.go_method_in_package(&name, method, &dir, site)?
+                .map(|mut candidate| {
+                    candidate.confidence = 0.9;
+                    candidate.resolved_by = "instance-method";
+                    candidate
+                }));
+        }
+if site.language == "dart" && site.reference_kind == "calls" {
+    return Ok(self.dart_member_of(ty, method, site, false)?
+        .map(|(node, _)| KCand { node, confidence: 0.9, resolved_by: "instance-method" }));
+}
         let owner = match self.resolve_bound_type(ty, site, 0)? {
             Some(o) => o,
             None => return Ok(None),
@@ -1154,7 +1167,16 @@ impl KernelResolver {
         resolved_by: &'static str,
         preferred_fqn: Option<&str>,
     ) -> Res<Option<KCand>> {
-        self.resolve_method_on_type_at(type_name, method, r, confidence, resolved_by, preferred_fqn, 0, false)
+        if r.language == "go" {
+            let Some((name, dir)) = self.go_type_package(type_name, &r.file_path)? else { return Ok(None); };
+            return Ok(self.go_method_in_package(&name, method, &dir, r)?
+                .map(|candidate| KCand { node: candidate.node, confidence, resolved_by }));
+        }
+let found = self.resolve_method_on_type_at(type_name, method, r, confidence, resolved_by, preferred_fqn, 0, false)?;
+if found.is_some() || r.language != "dart" { return Ok(found); }
+Ok(self.dart_member_of(type_name, method, r, false)?
+    .filter(|(_, via_extension)| *via_extension)
+    .map(|(node, _)| KCand { node, confidence, resolved_by }))
     }
 
     /// resolve_method_on_type for a PHP or Ruby type named by its fully

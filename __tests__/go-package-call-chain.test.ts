@@ -80,3 +80,60 @@ describe('Go pkg.New().Method() follows the imported function result type', () =
     expect(methods(out)).toEqual([]);
   });
 });
+
+
+describe('Go factory results retain their declaration package', () => {
+  const packages = {
+    'go.mod': 'module example.com/m\n\ngo 1.21\n',
+    'other/type.go': 'package other\ntype Widget struct{}\nfunc (w *Widget) Bar() {}\n',
+    'decoy/type.go': 'package decoy\ntype Widget struct{}\nfunc (w *Widget) Bar() {}\n',
+  };
+  it.each(['*alias.Widget', '(value *alias.Widget, err error)'])('places a package factory result %s using its own imports', async (result) => {
+    const out = await callees({
+      ...packages,
+      'factory/new.go': `package factory
+import alias "example.com/m/other"
+type Widget struct{}
+func (w *Widget) Bar() {}
+func New() ${result} { panic("fixture") }
+`,
+      'caller/main.go': `package caller
+import (
+  "example.com/m/factory"
+  alias "example.com/m/decoy"
+)
+type Widget struct{}
+func (w *Widget) Bar() {}
+func caller() { factory.New().Bar() }
+`,
+    }, 'caller');
+    expect(methods(out)).toEqual(['method:Widget::Bar@other/type.go']);
+  });
+  it('places a bare factory from a sibling file using the declaration imports', async () => {
+    const out = await callees({
+      ...packages,
+      'caller/new.go': 'package caller\nimport alias "example.com/m/other"\nfunc New() *alias.Widget { return nil }\n',
+      'caller/main.go': 'package caller\nimport alias "example.com/m/decoy"\nfunc caller() { New().Bar() }\n',
+    }, 'caller');
+    expect(methods(out)).toEqual(['method:Widget::Bar@other/type.go']);
+  });
+  it('does not borrow a package factory for a shadowing function parameter', async () => {
+    const out = await callees({
+      ...packages,
+      'caller/new.go': 'package caller\nimport alias "example.com/m/other"\nfunc New() *alias.Widget { return nil }\n',
+      'caller/main.go': 'package caller\nfunc caller(New func() any) { New().Bar() }\n',
+    }, 'caller');
+    expect(methods(out)).toEqual([]);
+  });
+  it.each(['[]alias.Widget', 'map[string]alias.Widget'])('does not use element methods for a collection result %s', async (result) => {
+    const out = await callees({
+      ...packages,
+      'factory/new.go': `package factory
+import alias "example.com/m/other"
+func New() ${result} { return nil }
+`,
+      'caller/main.go': 'package caller\nimport "example.com/m/factory"\nfunc caller() { factory.New().Bar() }\n',
+    }, 'caller');
+    expect(methods(out)).toEqual([]);
+  });
+});

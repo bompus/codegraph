@@ -7,6 +7,14 @@ Language support is automatic from the file extension — there's nothing to con
 
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
 
+C# field and property initializers retain their calls and references under the member that owns them. Target-typed `new()` resolves relative declared types through enclosing namespaces and honors `global::` qualification without requiring a redundant `using`. VB.NET resolves typed receivers, enclosing and inherited members, and Shared member reads without choosing unrelated project declarations.
+
+Go imports follow the nearest indexed module and the longest matching module path, including module changes during incremental sync. Unexported receivers and embedded methods stay in their declaring package. Dart getter reads become calls only when the receiver type reaches that getter and no nearer field in the visible class hierarchy overrides it; enum extensions and type-position references participate in resolution. Rust enum-variant values retain their enum references.
+
+Named JavaScript and TypeScript object literals own their function members, including local objects and classic-script global assignments. Member calls follow the visible object; loop-local objects stay within their scope. Destructured member calls resolve across lines while preserving the source binding at the destructure declaration; unrelated bare names stay unresolved. Vue template expressions contribute calls to script bindings while preserving component ownership. Encoded attribute expressions retain their original source positions, and template-local bindings stay within their scope.
+
+A COBOL copybook named in an explore query prioritizes its indexed source and lists its COPY and EXEC SQL INCLUDE sites. Missing indexed source is reported explicitly.
+
 | Language | Extensions | Status |
 |---|---|---|
 | TypeScript | `.ts`, `.tsx` | Full support |

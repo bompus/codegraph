@@ -905,7 +905,7 @@ impl KernelResolver {
     /// on, read from the call site (`this.container.classList` for
     /// `this.container.classList.toggle()`); None for a call written bare or
     /// not found.
-    fn bare_call_receiver(&mut self, r: &ResolveRefIn) -> Res<Option<(Rc<SourceFile>, String)>> {
+    pub(super) fn bare_call_receiver(&mut self, r: &ResolveRefIn) -> Res<Option<(Rc<SourceFile>, String)>> {
         if !re!(r"^[A-Za-z_$][\w$]*$").is_match(&r.reference_name) {
             return Ok(None);
         }

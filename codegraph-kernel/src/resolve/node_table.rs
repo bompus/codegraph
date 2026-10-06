@@ -29,6 +29,7 @@ pub(super) struct KNode {
     pub(super) decorators: Option<Vec<String>>,
     /// `async` function or method: its call yields a Promise.
     pub(super) is_async: bool,
+    pub(super) is_static: bool,
 }
 
 impl KNode {
@@ -55,6 +56,7 @@ impl KNode {
             type_parameters: raw_tps.as_deref().and_then(parse_json_string_array),
             decorators: raw_decs.as_deref().and_then(parse_json_string_array),
             is_async: row.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0,
+            is_static: row.get::<_, Option<i64>>(17)?.unwrap_or(0) != 0,
         })
     }
 }
@@ -559,4 +561,4 @@ pub(super) struct WorkspaceK {
 pub(super) const NODE_COLS: &str = "id, kind, name, qualified_name, file_path, language, \
                          start_line, end_line, start_column, end_column, \
                          signature, visibility, is_exported, return_type, \
-                         type_parameters, decorators, is_async";
+                         type_parameters, decorators, is_async, is_static";

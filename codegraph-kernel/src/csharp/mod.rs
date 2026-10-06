@@ -348,7 +348,9 @@ impl<'t> Walker<'t> {
                     let bodies = property_bodies(node);
                     if !bodies.is_empty() {
                         self.stack.push(Scope { row, kind: "property", name });
+                        let declared = node.child_by_field_name("type");
                         for body in &bodies {
+                            self.extract_target_typed_new(Some(*body), declared);
                             self.visit_for_calls_and_structure(*body);
                         }
                         self.stack.pop();
@@ -360,8 +362,8 @@ impl<'t> Walker<'t> {
             self.scan_fn_ref_subtree(node, 0, &walked);
             skip_children = true;
         } else if kind == "field_declaration" && self.inside_class_like() {
-            self.extract_field(node);
-            self.scan_fn_ref_subtree(node, 0, &[]);
+            let walked = self.extract_field(node);
+            self.scan_fn_ref_subtree(node, 0, &walked);
             skip_children = true;
         } else if kind == "local_declaration_statement" && !self.inside_class_like() {
             // Top-level statements: extractVariable's generic fallback finds no
@@ -612,9 +614,49 @@ impl<'t> Walker<'t> {
         Some((row, name))
     }
 
+    fn extract_target_typed_new(&mut self, value: Option<Node<'t>>, declared: Option<Node<'t>>) {
+        let Some(value) = value else { return };
+        if value.kind() != "implicit_object_creation_expression" || self.stack.is_empty() {
+            return;
+        }
+        let Some(class_name) = declared.and_then(|t| self.class_type_name(t)) else { return };
+        let from = self.top_row();
+        self.push_ref_at(from, &class_name, crate::buffers::EDGE_INSTANTIATES, value);
+    }
+
+    /// csharpClassTypeName (tree-sitter.ts) — the class a declared type
+    /// names, preserving qualification: `List<Foo>` → List, `Ns.Foo` →
+    /// Ns.Foo, `global::Foo` → global::Foo, `Foo?` → Foo. Predefined, array, tuple and pointer
+    /// types name no class.
+    fn class_type_name(&self, node: Node) -> Option<String> {
+        match node.kind() {
+            "identifier" => {
+                let text = self.text(node);
+                (!text.is_empty()).then(|| text.to_string())
+            }
+            "generic_name" => {
+                let ident = (0..node.named_child_count())
+                    .filter_map(|i| node.named_child(i))
+                    .find(|c| c.kind() == "identifier")?;
+                self.class_type_name(ident)
+            }
+            "qualified_name" => Some(format!("{}.{}",
+                self.class_type_name(node.child_by_field_name("qualifier")?)?,
+                self.class_type_name(node.child_by_field_name("name")?)?)),
+            "alias_qualified_name" => {
+                let alias = self.text(node.child_by_field_name("alias")?);
+                let name = self.class_type_name(node.child_by_field_name("name")?)?;
+                Some(format!("{alias}::{name}"))
+            }
+            "nullable_type" => self.class_type_name(node.child_by_field_name("type")?),
+            _ => None,
+        }
+    }
+
     /// extractField (2046) — field_declaration; each declarator becomes a
     /// field/constant node anchored at the DECLARATOR.
-    fn extract_field(&mut self, node: Node<'t>) {
+    fn extract_field(&mut self, node: Node<'t>) -> Vec<usize> {
+        let mut walked = Vec::new();
         let docstring = preceding_docstring(node, self.src);
         let visibility = Some(self.visibility_of(node));
         let is_static = Some(self.is_static(node));
@@ -679,6 +721,12 @@ impl<'t> Walker<'t> {
                     // The ladder skips a field's children, so the declarator's
                     // string literals are reached here, owned by the field.
                     self.markdown_refs_from_subtree(decl, row);
+                    self.stack.push(Scope { row, kind: field_kind, name });
+                    let declared = var_decl.and_then(|vd| vd.child_by_field_name("type"));
+                    self.extract_target_typed_new(decl.named_child(decl.named_child_count().saturating_sub(1)), declared);
+                    self.visit_for_calls_and_structure(decl);
+                    self.stack.pop();
+                    walked.push(decl.id());
                 }
             }
         } else {
@@ -700,6 +748,7 @@ impl<'t> Walker<'t> {
                 }
             }
         }
+        walked
     }
 
     /// extractMethod (1737) — method_declaration + constructor_declaration.
@@ -855,9 +904,7 @@ fn property_bodies(node: Node) -> Vec<Node> {
         }
     }
     if let Some(value) = node.child_by_field_name("value") {
-        if value.kind() == "arrow_expression_clause" {
-            bodies.push(value);
-        }
+        bodies.push(value);
     }
     bodies
 }

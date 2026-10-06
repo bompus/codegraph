@@ -150,6 +150,7 @@ pub(super) fn receiver_link(receiver: &str) -> &str {
 }
 
 pub(super) fn is_std_method(language: &str, name: &str) -> bool {
+    if language == "vbnet" { return CSHARP_STD_METHODS.iter().any(|m| m.eq_ignore_ascii_case(name)); }
     match language {
         "rust" => RUST_STD_METHODS, "go" => GO_STD_METHODS,
         "kotlin" => KOTLIN_STD_METHODS, "csharp" => CSHARP_STD_METHODS, "dart" => DART_STD_METHODS,
