@@ -127,7 +127,8 @@ CG_BUILD="$(pwd)"
 SAMPLE=/absolute/task-owned/sample-repo
 LANGUAGE=language-token
 ( cd "$SAMPLE" && node "$CG_BUILD/dist/bin/codegraph.js" init )
-node scripts/add-lang/verify-extraction.mjs "$SAMPLE" "$LANGUAGE"
+CG_BIN="$CG_BUILD/dist/bin/codegraph.js" \
+  node scripts/add-lang/verify-extraction.mjs "$SAMPLE" "$LANGUAGE"
 ```
 `verify-extraction.mjs` fails (exit 1) if the language isn't detected or only
 `file`/`import` nodes were produced — the classic symptom of wrong node-type
@@ -184,7 +185,8 @@ LANGUAGE=language-token
 mkdir -p "$EVAL_ROOT/tmp" "$EVAL_ROOT/results"
 # Clone the selected repo into CORPUS_REPO first; it must be exclusively owned.
 ( cd "$CORPUS_REPO" && node "$CG_BUILD/dist/bin/codegraph.js" init -i )
-node scripts/add-lang/verify-extraction.mjs "$CORPUS_REPO" "$LANGUAGE"
+CG_BIN="$CG_BUILD/dist/bin/codegraph.js" \
+  node scripts/add-lang/verify-extraction.mjs "$CORPUS_REPO" "$LANGUAGE"
 ```
 Continue to the paid A/B only after extraction passes, paid calls are selected,
 and the needed host admission is obtained. Do not override broken extraction.
