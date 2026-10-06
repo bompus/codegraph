@@ -159,7 +159,7 @@ describe('extractQueryPaths — resolution and stripping', () => {
 
   it('passes through untouched when nothing resolves', () => {
     const q = 'plain prose question about scrolling';
-    const out = extractQueryPaths(q, INDEX);
+    const { capacityFiles, unexaminedPathSpans, ...out } = extractQueryPaths(q, INDEX);
     expect(out).toEqual({ strippedQuery: q, pinnedFiles: [], unresolvedPathSpans: [], lineAnchors: [], setAsideMatches: [] });
   });
 });
@@ -199,13 +199,13 @@ describe('extractQueryPaths — extension-less kebab basenames', () => {
 
   it('leaves kebab prose that names no indexed file untouched — and unreported', () => {
     const q = 'how does cross-call dedup make explore non-blocking';
-    const out = extractQueryPaths(q, INDEX);
+    const { capacityFiles, unexaminedPathSpans, ...out } = extractQueryPaths(q, INDEX);
     expect(out).toEqual({ strippedQuery: q, pinnedFiles: [], unresolvedPathSpans: [], lineAnchors: [], setAsideMatches: [] });
   });
 
   it('leaves a stem shared by too many files alone — one hot name must not pin half the repo', () => {
     const q = 'refactor the user-profile rendering';
-    const out = extractQueryPaths(q, INDEX);
+    const { capacityFiles, unexaminedPathSpans, ...out } = extractQueryPaths(q, INDEX);
     expect(out).toEqual({ strippedQuery: q, pinnedFiles: [], unresolvedPathSpans: [], lineAnchors: [], setAsideMatches: [] });
   });
 
@@ -510,4 +510,46 @@ describe('extractQueryPaths — same-named files, narrowed by named symbols', ()
     expect(out.pinnedFiles).toEqual(['src/lib/chat-manager.ts']);
     expect(l.asked).toEqual([]);
   });
+});
+
+
+describe('explicit reference capacity reporting', () => {
+  it('reports overflow once while preserving the original matching query', () => {
+    const out = extractQueryPaths('src/lib/chat-manager.ts src/lib/task-runner-manager.ts src/lib/task-runner-manager.ts', INDEX, { maxPins: 1 });
+    expect(out.pinnedFiles).toEqual(['src/lib/chat-manager.ts']);
+    expect(out.capacityFiles).toEqual(['src/lib/task-runner-manager.ts']);
+    expect(out.strippedQuery).toBe('src/lib/task-runner-manager.ts src/lib/task-runner-manager.ts');
+    expect(out.unresolvedPathSpans).toEqual([]);
+  });
+
+  it('reports partial shared-basename capacity separately from ambiguity and missing files', () => {
+    const out = extractQueryPaths('generic-modal.tsx src/missing.ts and/or', INDEX, { maxPins: 1 });
+    expect(out.pinnedFiles).toEqual(['src/x/generic-modal.tsx']);
+    expect(out.capacityFiles).toEqual(['src/y/generic-modal.tsx']);
+    expect(out.setAsideMatches).toEqual([]);
+    expect(out.strippedQuery).toBe('src/missing.ts and/or');
+  });
+
+  it('does not count duplicate pins, ambiguous references or prose as capacity overflow', () => {
+    const out = extractQueryPaths('src/lib/chat-manager.ts src/lib/chat-manager.ts user-profile.tsx and/or', INDEX, { maxPins: 1 });
+    expect(out.capacityFiles).toEqual([]);
+    expect(out.unexaminedPathSpans).toBe(false);
+  });
+
+  it('marks the bounded scan incomplete without inventing overflow matches', () => {
+    const files = Array.from({ length: 10 }, (_, i) => `src/unit${i}.ts`);
+    const out = extractQueryPaths(files.join(' '), files, { maxPins: 1 });
+    expect(out.pinnedFiles).toEqual([files[0]]);
+    expect(out.capacityFiles).toEqual(files.slice(1, 8));
+    expect(out.unexaminedPathSpans).toBe(true);
+    expect(out.strippedQuery).toBe(files.slice(1).join(' '));
+  });
+});
+
+
+it('reports extensionless overflow after explicit paths fill pin capacity', () => {
+  const out = extractQueryPaths('background-image-table then src/lib/chat-manager.ts', INDEX, { maxPins: 1 });
+  expect(out.pinnedFiles).toEqual(['src/lib/chat-manager.ts']);
+  expect(out.capacityFiles).toEqual(['src/components/training-set-page/background-image-table.tsx']);
+  expect(out.strippedQuery).toBe('background-image-table then');
 });

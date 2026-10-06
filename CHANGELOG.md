@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- `codegraph_explore` reports requested-file limits and uncovered indexed continuation ranges so partial answers have a clear next query.
+
 - Explore retains explicitly pinned code in mixed documentation/code requests, returns parameterized test callbacks, and preserves quoted source terms that match the filename stem.
 
 - Python closures no longer link calls or method values to a captured receiver type when later replacement makes that type uncertain.

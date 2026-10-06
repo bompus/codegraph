@@ -21,6 +21,8 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
+Explore reports requested files that did not receive pin priority within the file limit. Those files may still appear through other matches. References beyond the bounded path scan are marked unexamined. When a capped file gather leaves indexed source uncovered, the summary offers continuation ranges for another explore call. Existing file and output limits still apply.
+
 Explicit code-file pins remain eligible when the query also names documentation. Quoted terms used to select template or style source remain meaningful even when they match the filename stem. File and output budgets still apply.
 
 When a query names functions in pinned files, `codegraph_explore` prioritizes their local callee bodies through two call or callback hops. It selects at most sixteen local helpers per file, each at most 200 lines. File and output budgets still apply.

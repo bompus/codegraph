@@ -60,6 +60,10 @@ export interface QueryPathExtraction {
    * Surfaced so a set-aside file is visible, not silently dropped.
    */
   setAsideMatches: QuerySetAsideMatch[];
+  /** Resolved references that did not receive pin priority because maxPins was full. */
+  capacityFiles: string[];
+  /** Further path-like references remain beyond the bounded candidate scan. */
+  unexaminedPathSpans: boolean;
 }
 
 export interface QuerySetAsideMatch {
@@ -326,6 +330,8 @@ export function extractQueryPaths(
     unresolvedPathSpans: [],
     lineAnchors: [],
     setAsideMatches: [],
+    capacityFiles: [],
+    unexaminedPathSpans: false,
   };
   if (!query.trim() || indexedPaths.length === 0) return passthrough;
 
@@ -339,6 +345,8 @@ export function extractQueryPaths(
   const pinned: string[] = [];
   const pinnedSeen = new Set<string>();
   const unresolved: string[] = [];
+  const capacity = new Set<string>();
+  let unexaminedPathSpans = false;
   const anchors: QueryLineAnchor[] = [];
   const setAside: QuerySetAsideMatch[] = [];
   /** Token index → the ONE file it pinned, for binding prose line ranges. */
@@ -395,8 +403,14 @@ export function extractQueryPaths(
   const collectLimit = opts.symbolFiles ? Number.POSITIVE_INFINITY : maxMatchesPerSpan;
 
   for (let i = 0; i < tokens.length; i++) {
-    if (pinned.length >= maxPins) break;
-    if (candidatesExamined >= MAX_CANDIDATE_SPANS) break;
+    if (candidatesExamined >= MAX_CANDIDATE_SPANS) {
+      unexaminedPathSpans = tokens.slice(i).some(token => {
+        const span = stripWrapping(token).path;
+        return span.length >= 4 && (/[/\\]/.test(span) || DOTTED_BASENAME.test(span));
+      });
+      break;
+    }
+    const atCapacity = pinned.length >= maxPins;
     const { path: stripped, lines } = stripWrapping(tokens[i]!);
     if (stripped.length < 4) continue;
     const hasSlash = /[/\\]/.test(stripped);
@@ -407,13 +421,21 @@ export function extractQueryPaths(
     candidatesExamined++;
 
     const resolved = resolveSpan(normalized.toLowerCase(), lowerToOriginal, collectLimit);
+    const asideCount = setAside.length;
     const pinnable = resolved.matches.length > 0 ? pinnableMatches(normalized, resolved.matches) : null;
     const matches = pinnable ?? [];
     const ambiguous = resolved.ambiguous || (resolved.matches.length > 0 && pinnable === null);
+    if (atCapacity) {
+      // Observe overflow without changing the matching query or disambiguation.
+      setAside.length = asideCount;
+      for (const m of matches) if (!pinnedSeen.has(m)) capacity.add(m);
+      continue;
+    }
     if (matches.length > 0) {
       consumed.add(i);
       for (const m of matches) {
-        if (pinnedSeen.has(m) || pinned.length >= maxPins) continue;
+        if (pinnedSeen.has(m)) continue;
+        if (pinned.length >= maxPins) { capacity.add(m); continue; }
         pinnedSeen.add(m);
         pinned.push(m);
       }
@@ -458,13 +480,19 @@ export function extractQueryPaths(
   // examines every remaining token: lookups are O(1) map hits, so the
   // scan-cost rationale behind MAX_CANDIDATE_SPANS doesn't apply.
   let basenameStems: Map<string, string[]> | null = null;
-  for (let i = 0; i < tokens.length && pinned.length < maxPins; i++) {
+  for (let i = 0; i < tokens.length; i++) {
     if (consumed.has(i)) continue;
     const { path: stripped, lines } = stripWrapping(tokens[i]!);
     if (stripped.length < 4 || !KEBAB_BASENAME.test(stripped)) continue;
     basenameStems ??= buildBasenameStems(indexedPaths);
     const stemMatches = basenameStems.get(stripped.toLowerCase());
+    const asideCount = setAside.length;
     const matches = stemMatches ? pinnableMatches(stripped, stemMatches) : null;
+    if (pinned.length >= maxPins) {
+      setAside.length = asideCount;
+      for (const m of matches ?? []) if (!pinnedSeen.has(m)) capacity.add(m);
+      continue;
+    }
     if (!matches) continue;
     // A quoted duplicate stem asks for source evidence inside an already
     // pinned file. Keep it in the matching query rather than consuming it again.
@@ -472,7 +500,8 @@ export function extractQueryPaths(
       && matches.some(m => pinnedSeen.has(m));
     if (!keepQuotedStem) consumed.add(i);
     for (const m of matches) {
-      if (pinnedSeen.has(m) || pinned.length >= maxPins) continue;
+      if (pinnedSeen.has(m)) continue;
+      if (pinned.length >= maxPins) { capacity.add(m); continue; }
       pinnedSeen.add(m);
       pinned.push(m);
     }
@@ -523,11 +552,13 @@ export function extractQueryPaths(
     }
   }
 
-  if (consumed.size === 0) return passthrough;
+  if (consumed.size === 0 && capacity.size === 0 && !unexaminedPathSpans) return passthrough;
   const seenAnchor = new Set<string>();
   return {
     strippedQuery: tokens.filter((_, i) => !consumed.has(i)).join(' '),
     pinnedFiles: pinned,
+    capacityFiles: [...capacity],
+    unexaminedPathSpans,
     unresolvedPathSpans: unresolved,
     lineAnchors: anchors.filter((a) => {
       const key = `${a.file}:${a.start}-${a.end}`;
