@@ -27,6 +27,8 @@ Token and dollar savings are real too, but they're the **scale-dependent bonus**
 
 Extraction is **deterministic** — derived from the AST, never LLM-summarized.
 
+Later-exported TypeScript and JavaScript store actions use AST export facts, including files with LF, CRLF or CR line endings.
+
 ## 100% local
 
 No data leaves your machine. No API keys, no external services — just a SQLite database in `.codegraph/`.

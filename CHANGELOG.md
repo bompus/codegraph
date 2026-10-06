@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- JavaScript and TypeScript store actions exported on a later line remain indexed with LF, CRLF or CR line endings.
+
 - Incremental Go sync invalidates nearest-module caches after a module is renamed, removed or added.
 - JavaScript loop-local object paths stay local, and scoped destructured member calls resolve across source lines while preserving their declaration-site source binding in scripts and single-file components.
 - Dart fields in the visible class hierarchy shadow inherited and extension getters; an unrelated same-named class cannot suppress a getter call.
