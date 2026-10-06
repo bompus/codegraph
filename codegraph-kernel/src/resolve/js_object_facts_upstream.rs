@@ -1,6 +1,9 @@
 //! File facts for f40db4b9 object-path resolution.
 use super::awaited::{blank_string_contents, strip_ts_comments};
 use super::*;
+use tree_sitter::{Point, Tree};
+
+type DestructureScopes = HashMap<String, HashMap<String, Vec<Option<(Point, Point)>>>>;
 
 type BindingRanges = RefCell<HashMap<String, Rc<Vec<(i64, i64)>>>>;
 
@@ -16,7 +19,7 @@ pub(super) struct JsObjectFacts {
     length: usize,
     bindings: BindingRanges,
     function_bindings: RefCell<HashMap<(i64,i64,String),bool>>,
-    destructured: OnceCell<HashMap<String, HashSet<String>>>,
+    destructured: OnceCell<DestructureScopes>,
     classic: OnceCell<bool>,
 }
 
@@ -166,11 +169,30 @@ impl JsObjectFacts {
         bound
     }
 
-    pub fn destructures(&self, path: &str, member: &str) -> bool {
+    pub fn destructures(&self, path: &str, member: &str, r: &ResolveRefIn, tree: &Tree) -> bool {
         self.destructured.get_or_init(|| {
-            let mut paths: HashMap<String,HashSet<String>> = HashMap::new();
+            let mut paths = DestructureScopes::new();
             let re = re!(r"\{([^{}]*)\}\s*=\s*((?:(?:window|globalThis)\s*\.\s*)?[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)");
             for caps in re.captures_iter(&self.code) {
+                let at = caps.get(0).unwrap().start();
+                let row = self.byte_line_starts.partition_point(|start| *start <= at).saturating_sub(1);
+                let units = self.byte_units[at].saturating_sub(self.line_starts[row]);
+                let Some(line) = self.source.get(row) else { continue };
+                let point = Point::new(row, super::names::js_unit_to_byte(line, units));
+                let mut ancestor = tree.root_node().descendant_for_point_range(point, point);
+                let mut declaration = None;
+                while let Some(node) = ancestor {
+                    if node.kind() == "variable_declarator" {
+                        if node.child_by_field_name("name").is_some_and(|pattern|
+                            pattern.kind() == "object_pattern" && pattern.start_position() <= point && point < pattern.end_position()) {
+                            declaration = Some(node);
+                        }
+                        break;
+                    }
+                    ancestor = node.parent();
+                }
+                let Some(declaration) = declaration else { continue };
+                let scope = super::js_scope_upstream::binding_scope(declaration);
                 let rhs = caps.get(2).unwrap();
                 // Equivalent to upstream's two negative lookaheads, without
                 // permitting regex backtracking to shorten the path.
@@ -188,12 +210,17 @@ impl JsObjectFacts {
                     let local = pair.next().map(|s| s.split('=').next().unwrap_or("").trim()).unwrap_or(key);
                     // An explicit alias is permitted only when key == local.
                     if key == local && re!(r"^[A-Za-z_$][\w$]*$").is_match(key) {
-                        paths.entry(path.clone()).or_default().insert(key.to_string());
+                        paths.entry(path.clone()).or_default().entry(key.to_string()).or_default().push(scope);
                     }
                 }
             }
             paths
-        }).get(path).is_some_and(|keys| keys.contains(member))
+        }).get(path).and_then(|keys| keys.get(member)).is_some_and(|scopes| {
+            let Some(line) = self.source.get((r.line - 1).max(0) as usize) else { return false };
+            let point = Point::new((r.line - 1).max(0) as usize,
+                super::names::js_unit_to_byte(line, r.column.max(0) as usize));
+            scopes.iter().any(|scope| scope.is_none_or(|(start, end)| point >= start && point < end))
+        })
     }
 
     pub fn classic(&self, path: &str) -> bool {

@@ -496,6 +496,7 @@ function patternBindings(node: TreeNode | null, names = new Set<string>()): Set<
   if (!node) return names;
   switch (node.type) {
     case 'identifier':
+    case 'type_identifier':
     case 'shorthand_property_identifier_pattern':
       names.add(node.text);
       break;
@@ -541,7 +542,7 @@ function expressionBindings(expression: string): Array<{ start: number; end: num
   const tree = parseSourceTreeSync(`(${expression})`, 'typescript');
   try {
     const scopes = tree?.rootNode.descendantsOfType([
-      'arrow_function', 'function_expression', 'function_declaration', 'generator_function', 'method_definition',
+      'arrow_function', 'function_expression', 'function_declaration', 'generator_function', 'generator_function_declaration', 'method_definition',
     ]) ?? [];
     const bindings = scopes.map(node => {
       const names = patternBindings(node.childForFieldName('parameters') ?? node.childForFieldName('parameter'));
@@ -549,12 +550,22 @@ function expressionBindings(expression: string): Array<{ start: number; end: num
       if (name && node.type !== 'method_definition') names.add(name.text);
       return { start: node.startIndex - 1, end: node.endIndex - 1, names };
     });
-    for (const node of tree?.rootNode.descendantsOfType(['variable_declarator', 'function_declaration', 'class_declaration']) ?? []) {
+    for (const node of tree?.rootNode.descendantsOfType(['variable_declarator', 'function_declaration', 'generator_function_declaration', 'class_declaration']) ?? []) {
       const names = patternBindings(node.childForFieldName('name'));
       const functionScoped = node.type === 'variable_declarator' && node.parent?.type === 'variable_declaration';
       let scope = node.parent;
       while (scope && !scopes.some(fn => fn.id === scope!.id)
         && (functionScoped || !['statement_block', 'for_statement', 'for_in_statement'].includes(scope.type))) scope = scope.parent;
+      if (scope) bindings.push({ start: scope.startIndex - 1, end: scope.endIndex - 1, names });
+    }
+    for (const node of tree?.rootNode.descendantsOfType(['catch_clause', 'for_in_statement']) ?? []) {
+      const loopKind = node.childForFieldName('kind')?.text;
+      if (node.type === 'for_in_statement' && !loopKind) continue;
+      const names = patternBindings(node.childForFieldName(node.type === 'catch_clause' ? 'parameter' : 'left'));
+      let scope: TreeNode | null = node;
+      if (loopKind === 'var') {
+        while (scope && !scopes.some(fn => fn.id === scope!.id)) scope = scope.parent;
+      }
       if (scope) bindings.push({ start: scope.startIndex - 1, end: scope.endIndex - 1, names });
     }
     return bindings;

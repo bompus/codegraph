@@ -84,6 +84,9 @@ describe('vueTemplateCalls', () => {
     ['{ formatter({ key: fmt }) { return fmt() } } + key()', ['key']],
     ['{ formatter(v) { return formatter(v) } }', ['formatter']],
     ['(() => { const format = () => 0; return format(); })() + format()', ['format']],
+    ['(() => { try { work() } catch (format) { format(); } })() + format()', ['work', 'format']],
+    ['(() => { for (const format of rows) format(); })() + format()', ['format']],
+    ['(() => { class Format { static run() {} } return Format.run(); })() + Format.run()', ['Format.run']],
   ] as const)('keeps method parameters and local declarations in their scope: %s', (expression, expected) => {
     expect(names(`<template><p>{{ ${expression} }}</p></template>`)).toEqual(expected);
   });

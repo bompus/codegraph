@@ -13,7 +13,7 @@ struct JsBindingFact {
     scope: Option<(Point, Point)>,
 }
 
-fn binding_scope(node: Node<'_>) -> Option<(Point, Point)> {
+pub(super) fn binding_scope(node: Node<'_>) -> Option<(Point, Point)> {
     let function_scoped = node.kind() == "variable_declarator"
         && node
             .parent()
@@ -46,6 +46,45 @@ fn visible(scope: Option<(Point, Point)>, point: Point) -> bool {
 }
 
 impl KernelResolver {
+    /// Parse embedded scripts with the original file's byte and line positions.
+    pub(super) fn js_binding_tree(&mut self, source: &Rc<SourceFile>, r: &ResolveRefIn) -> Option<Rc<tree_sitter::Tree>> {
+        if !is_sfc_language(&r.language) {
+            return self.parsed_tree(source, r);
+        }
+        let key = format!("sfc-script\0{}\0{}", r.language, r.file_path);
+        if let Some((cached, tree)) = self.tree_cache.get(&key) {
+            if Rc::ptr_eq(cached, source) { return tree.clone(); }
+        }
+        // The extractors use these same script tags and Astro line fences.
+        // Mask each non-script byte while preserving newlines and UTF-8 offsets.
+        let text = source.text();
+        let mut bytes: Vec<u8> = text.bytes().map(|b| if matches!(b, b'\r' | b'\n') { b } else { b' ' }).collect();
+        for capture in re!(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>").captures_iter(text) {
+            if let Some(content) = capture.get(1) {
+                bytes[content.start()..content.end()].copy_from_slice(content.as_str().as_bytes());
+            }
+        }
+        if r.language == "astro" {
+            let mut offset = 0;
+            let mut start = None;
+            for line in text.split_inclusive('\n') {
+                if let Some(from) = start {
+                    if line.trim() == "---" {
+                        bytes[from..offset].copy_from_slice(&text.as_bytes()[from..offset]);
+                        break;
+                    }
+                } else if !line.trim().is_empty() {
+                    if line.trim() != "---" { break; }
+                    start = Some(offset + line.len());
+                }
+                offset += line.len();
+            }
+        }
+        let script = String::from_utf8(bytes).ok()?;
+        let tree = crate::tree::parse_with_cached_parser(&script, "typescript").ok().map(Rc::new);
+        self.tree_cache.put(key, (source.clone(), tree.clone()));
+        tree
+    }
     /// Parameter patterns bind names only within their enclosing function.
     pub(super) fn js_parameter_binds(&mut self, r: &ResolveRefIn, name: &str) -> bool {
         self.js_parameter_scope(r, name).is_some()
@@ -53,7 +92,7 @@ impl KernelResolver {
 
     pub(super) fn js_parameter_scope(&mut self, r: &ResolveRefIn, name: &str) -> Option<(Point, Point)> {
         let source = self.read_file(&r.file_path)?;
-        let tree = self.parsed_tree(&source, r)?;
+        let tree = self.js_binding_tree(&source, r)?;
         let line = source.get((r.line - 1).max(0) as usize)?;
         let point = Point::new((r.line - 1).max(0) as usize,
             super::names::js_unit_to_byte(line, r.column.max(0) as usize));
@@ -85,7 +124,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let Some(tree) = self.parsed_tree(&source, r) else {
+        let Some(tree) = self.js_binding_tree(&source, r) else {
             return Ok(None);
         };
         let Some(line) = source.get((r.line - 1).max(0) as usize) else {
@@ -219,7 +258,7 @@ impl KernelResolver {
             return false;
         };
         let site = r.clone().at(member);
-        let Some(tree) = self.parsed_tree(&source, &site) else {
+        let Some(tree) = self.js_binding_tree(&source, &site) else {
             return false;
         };
         let Some(line) = source.get((member.start_line - 1).max(0) as usize) else {
@@ -255,7 +294,7 @@ impl KernelResolver {
             return None;
         }
         let source = self.read_file(&n.file_path)?;
-        let tree = self.parsed_tree(&source, r)?;
+        let tree = self.js_binding_tree(&source, r)?;
         let line = source.get((r.line - 1).max(0) as usize)?;
         let point = Point::new(
             (r.line - 1).max(0) as usize,
@@ -301,18 +340,28 @@ impl KernelResolver {
         if self.resolve_via_import(r).ok().flatten().is_some() {
             return false;
         }
-        let Some(source) = self.read_file(&r.file_path) else {
-            return false;
-        };
+        let Some((key, point)) = self.js_binding_index(r) else { return false };
+        self.upstream_js_bindings
+            .get(&key)
+            .and_then(|index| index.by_name.get(&r.reference_name))
+            .is_some_and(|facts| {
+                facts.iter().any(|fact| {
+                    caller.is_none_or(|f| {
+                        fact.start.row >= (f.start_line - 1).max(0) as usize
+                            && fact.end.row < f.end_line.max(0) as usize
+                    }) && visible(fact.scope, point)
+                })
+            })
+    }
+    fn js_binding_index(&mut self, r: &ResolveRefIn) -> Option<(String, Point)> {
+        let source = self.read_file(&r.file_path)?;
         let key = format!("{}\0{}", r.language, r.file_path);
         if !self
             .upstream_js_bindings
             .get(&key)
             .is_some_and(|index| Rc::ptr_eq(&index.source, &source))
         {
-            let Some(tree) = self.parsed_tree(&source, r) else {
-                return false;
-            };
+            let tree = self.js_binding_tree(&source, r)?;
             let mut by_name: HashMap<String, Vec<JsBindingFact>> = HashMap::new();
             let mut queue = vec![tree.root_node()];
             while let Some(node) = queue.pop() {
@@ -389,25 +438,23 @@ impl KernelResolver {
                 },
             );
         }
-        let Some(line) = source.get((r.line - 1).max(0) as usize) else {
-            return false;
-        };
+        let line = source.get((r.line - 1).max(0) as usize)?;
         let point = Point::new(
             (r.line - 1).max(0) as usize,
             super::names::js_unit_to_byte(line, r.column.max(0) as usize),
         );
-        self.upstream_js_bindings
-            .get(&key)
-            .and_then(|index| index.by_name.get(&r.reference_name))
-            .is_some_and(|facts| {
-                facts.iter().any(|fact| {
-                    caller.is_none_or(|f| {
-                        fact.start.row >= (f.start_line - 1).max(0) as usize
-                            && fact.end.row < f.end_line.max(0) as usize
-                    }) && visible(fact.scope, point)
-                })
-            })
+        Some((key, point))
     }
+
+    pub(super) fn js_root_binding_scope(&mut self, r: &ResolveRefIn, name: &str) -> Option<(Point, Point)> {
+        let parameter = self.js_parameter_scope(r, name);
+        let (key, point) = self.js_binding_index(r)?;
+        self.upstream_js_bindings.get(&key).and_then(|index| index.by_name.get(name))
+            .into_iter().flatten().filter_map(|fact| fact.scope)
+            .filter(|scope| visible(Some(*scope), point)).chain(parameter)
+            .max_by_key(|(start, _)| *start)
+    }
+
 }
 
 fn destructured_binding_property(

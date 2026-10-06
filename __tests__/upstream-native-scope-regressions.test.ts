@@ -53,6 +53,20 @@ describe('upstream ports preserve declaration scope', () => {
     await project(sameFile ? { 'main.js': declaration + consumer } : { 'ns.js': declaration, 'use.js': consumer });
     expect(calls('outside')).toEqual([]);
   });
+  it.each(['main.js', 'Page.vue', 'Page.svelte', 'Page.astro'])('keeps a destructured member inside its declaring function in %s', async file => {
+    const code = "const label = '日本🙂'; const api = { post() {} }; function local() { const { post } = api; return post(); } function outside() { return post(); }\n";
+    const source = file.endsWith('.vue') ? `<template><p>日本🙂</p></template>\n<script setup>\n${code}</script>`
+      : file.endsWith('.svelte') ? `<p>日本🙂</p>\n<script>\n${code}</script>`
+      : file.endsWith('.astro') ? `---\n${code}---\n` : code;
+    await project({ [file]: source });
+    expect(calls('local')).toEqual([`${file}:api::post`]);
+    expect(calls('outside')).toEqual([]);
+  });
+  it('retains a call through a parameter-owned path after its literal assignment', async () => {
+    await project({ 'main.js': 'var App = {}; function define({ App }) { App.utils = { pad() {} }; App.utils.pad(); } function outside() { App.utils.pad(); }\n' });
+    expect(calls('define')).toEqual(['main.js:App.utils::pad']);
+    expect(calls('outside')).toEqual([]);
+  });
   it('distinguishes a path root parameter from a global root on the same line', async () => {
     await project({ 'main.js': 'var App = {}; function define() { App.utils = { pad() {} }; } function use(App) { App.utils.pad(); }\n' });
     expect(calls('use')).toEqual([]);

@@ -103,18 +103,16 @@ impl KernelResolver {
     }
 
     fn js_holder_scope(&mut self,n: &KNode,r: &ResolveRefIn,via_global: bool) -> Res<Option<i64>> {
-        if global_host(n) && !self.js_global_holder(n)? { return Ok(None); }
+        if global_host(n) && !via_global && !self.js_global_holder(n)? { return Ok(None); }
+        let root = if via_global && global_host(n) { last_segment(n).split('.').next().unwrap_or("") }
+            else { holder_path(n).split('.').next().unwrap_or("") };
         if path_holder(n) {
-            let root = holder_path(n).split('.').next().unwrap_or("");
             let site = ResolveRefIn { column: n.start_column, ..r.clone().at(n).naming(root, "references") };
-            if let Some(scope) = self.js_parameter_scope(&site, root) {
-                if self.js_parameter_scope(r, root) != Some(scope) { return Ok(None); }
-            }
+            if self.js_root_binding_scope(&site, root) != self.js_root_binding_scope(r, root) { return Ok(None); }
         }
         let mut depth = -1;
-        if !via_global {
+        {
             if let Some(facts) = self.js_object_facts(&n.file_path) {
-                let root = holder_path(n).split('.').next().unwrap_or("");
                 let declared = facts.offset(n.start_line, n.start_column) as i64;
                 let at = facts.offset(r.line, r.column) as i64;
                 let scopes = facts.binding_scopes(root);
@@ -126,7 +124,6 @@ impl KernelResolver {
         }
         if path_holder(n) && !global_host(n) {
             if let Some(facts) = self.js_object_facts(&n.file_path) {
-                let root = holder_path(n).split('.').next().unwrap_or("");
                 let declared = facts.offset(n.start_line, n.start_column) as i64;
                 let at = facts.offset(r.line, r.column) as i64;
                 for (start, end) in facts.binding_scopes(root).iter() {
@@ -147,7 +144,6 @@ impl KernelResolver {
             }
         }
         if !via_global {
-            let root = holder_path(n).split('.').next().unwrap_or("");
             if let Some(caller) = self.node_by_id(&r.from_node_id)? {
                 if matches!(caller.kind.as_str(),"function" | "method")
                     && caller.start_line <= r.line && caller.end_line >= r.line
@@ -170,7 +166,7 @@ impl KernelResolver {
             reference_name: root.to_string(), reference_kind: "references".to_string(),
             line: n.start_line, column: n.start_column, candidates: None,
             file_path: n.file_path.clone(), language: n.language.clone(), failure_reason: None };
-        if self.js_parameter_binds(&site, root) { return Ok(false); }
+        if self.js_root_binding_scope(&site, root).is_some() { return Ok(false); }
         let global = if global_host(n) {
             let host = root;
             self.js_object_facts(&n.file_path).is_some_and(|facts| {
@@ -219,9 +215,6 @@ impl KernelResolver {
             literal_owner(n) && same_language_family(&n.language,&r.language) && holder_path(n) == path
         }).cloned().collect();
         if named.is_empty() { return Ok(ObjectPathMatch::NoHolder); }
-        if self.js_parameter_binds(r, host.unwrap_or(path.split('.').next().unwrap_or(path))) {
-            return Ok(ObjectPathMatch::Refused);
-        }
         let mut local = Vec::new();
         for n in named.iter().filter(|n| n.file_path == r.file_path) {
             if let Some(depth) = self.js_holder_scope(n,r,host.is_some())? { local.push((n.clone(),depth)); }
@@ -233,6 +226,9 @@ impl KernelResolver {
             for (n,_) in local.iter().filter(|(_,depth)| *depth == nearest) {
                 if let Some(hit) = self.js_hit_holder(n,member,r)? { return Ok(ObjectPathMatch::Found(hit)); }
             }
+            return Ok(ObjectPathMatch::Refused);
+        }
+        if self.js_parameter_binds(r, host.unwrap_or(path.split('.').next().unwrap_or(path))) {
             return Ok(ObjectPathMatch::Refused);
         }
         let mut hits = Vec::new();
@@ -321,6 +317,8 @@ impl KernelResolver {
                 }
             }
         }
-        Ok(self.js_object_facts(&r.file_path).is_some_and(|f| f.destructures(holder_path(&owner),&n.name)))
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
+        let Some(tree) = self.js_binding_tree(&source, r) else { return Ok(false) };
+        Ok(self.js_object_facts(&r.file_path).is_some_and(|f| f.destructures(holder_path(&owner), &n.name, r, &tree)))
     }
 }
