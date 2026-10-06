@@ -82,25 +82,35 @@ validated build. The same functions are exported from the package entry point.
 | `reserveRuntimeWriter(root, holderPid)` | Opaque JSON reservation for a live updater, or `null` when the slot is occupied |
 | `claimRuntimeWriter(root, reservation)` | `true` when this bootstrap process claims that exact reservation |
 | `releaseRuntimeWriter(root, reservation)` | `true` when the reservation is gone; preserves successor ownership |
-| `checkRuntimeReady(root, identity, timeoutMs?, options?)` | The expected identity after hello, MCP initialization and status verification; `{requireWatcher: true}` additionally requires the exact active watcher and writer ownership |
-| `startRuntimeWatcher(root, options)` | `{pid, version, projectRoot, watching: true}` after ordinary reuse/election and active-watcher verification |
+| `checkRuntimeReady(root, identity, timeoutMs?, options?)` | The expected identity after hello, MCP initialization and status verification; `{requireWatcher: true}` requires the exact active watcher and writer ownership; adding `refresh: true` waits for a daemon-owned fresh reconciliation |
+| `startRuntimeWatcher(root, options)` | `{pid, version, projectRoot, watching: true}` after guarded initialization or reuse, fresh reconciliation and active-watcher verification |
 
 Ordinary startup accepts `{expectedVersion, cliPath, runtimePath?, timeoutMs?}`.
 The caller supplies an absolute CLI path from the validated coordination build;
 `runtimePath` defaults to the calling runtime, and `timeoutMs` defaults to 120000.
-The module must match `expectedVersion` before launch. An index must already
-exist at the exact canonical root: no ancestor or child index is adopted.
+The module and selected CLI must match `expectedVersion` before initialization.
+The elected daemon acquires writer ownership before creating a missing index at
+the exact canonical root. No ancestor or child index is adopted.
 The operation never stops an existing daemon, claims a promotion reservation or
 starts a fallback watcher. Concurrent starters use existing daemon election and
 writer guards; they reuse a verified winner or refuse with preserved ownership.
 Legacy, uncertain, wrong-build, direct and promotion owners block startup.
-Disabled, failed and initializing watchers cannot return ready.
+Disabled, failed and initializing watchers cannot return ready. Every successful
+startup waits for a fresh reconciliation, including when it reuses a watcher.
+File indexing and queued synthesized edges must complete before acknowledgment.
+The daemon and caller both reject changed ownership records. A reconciliation
+failure, unsupported refresh protocol or timeout fails startup without stopping
+the shared daemon. Complete reconciliation also refuses
+`CODEGRAPH_SYNC_RESYNTHESIS=0`. These guards do not fence legacy CLI initialization that
+ignores writer ownership.
 
 `serve --mcp --path <root> --preserve-existing` applies the same preservation
 policy on every connection attempt, including reconnect and detached election.
 It may serve fallback reads without auto-sync; this is not watcher readiness.
 `new MCPServer(root, {preserveExisting: true})` selects this policy for library
-clients. Ordinary startup launches its detached candidate through this existing
+clients. Adding `--initialize-index`, or `{initializeIndex: true}` to this
+constructor, permits guarded initialization and requires preservation plus an
+explicit root. Ordinary startup launches its detached candidate through this
 path. A timeout leaves a possibly shared elected daemon alone; its usual
 client/idle lifecycle retires an unused daemon. Installation, immutable artifact
 selection and service limits remain the caller's responsibility.

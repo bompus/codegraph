@@ -121,6 +121,16 @@ export function getCodeGraphDir(projectRoot: string): string {
   return path.join(projectRoot, codeGraphDirNameFor(projectRoot));
 }
 
+/** Guard exact-root startup before either initialization or writable opening. */
+export function assertUnlinkedIndex(projectRoot: string): void {
+  const directory = getCodeGraphDir(projectRoot);
+  for (const file of [directory, ...['codegraph.db', 'codegraph.db-wal', 'codegraph.db-shm'].map(name => path.join(directory, name))]) {
+    if (fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      throw new Error('Watcher startup refuses a linked project index.');
+    }
+  }
+}
+
 /**
  * Check if a project has been initialized with CodeGraph.
  *

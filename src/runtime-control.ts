@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
-import { canonicalProjectRoot, isInitialized, getCodeGraphDir } from './directory';
+import { canonicalProjectRoot, assertUnlinkedIndex, unsafeIndexRootReason } from './directory';
 import { getDaemonPidPath, decodeLockInfo, probeDaemonIdentity } from './mcp/daemon-paths';
 import { isProcessAlive, stopDaemonAt, type StopResult } from './mcp/daemon-registry';
 import { reserveWriterLock, updateWriterLock, readWriterLock, getWriterPidPath, type WriterLockInfo } from './mcp/writer-lock';
@@ -77,10 +77,11 @@ export async function checkRuntimeReady(
   projectRoot: string,
   expected: RuntimeIdentity,
   timeoutMs = 120_000,
-  options: { requireWatcher?: boolean } = {},
+  options: { requireWatcher?: boolean; refresh?: boolean } = {},
 ): Promise<RuntimeIdentity> {
   projectRoot = canonicalProjectRoot(projectRoot);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Readiness timeout must be positive.');
+  if (options.refresh && !options.requireWatcher) throw new Error('Refresh requires watcher ownership verification.');
   const deadline = Date.now() + timeoutMs;
   const raw = fs.readFileSync(getDaemonPidPath(projectRoot), 'utf8');
   const writerRaw = options.requireWatcher ? fs.readFileSync(getWriterPidPath(projectRoot), 'utf8') : null;
@@ -124,6 +125,9 @@ export async function checkRuntimeReady(
               msg.watcher?.ready !== true)) {
             return finish(new Error('The exact project watcher is not ready.'));
           }
+          if (options.refresh && msg.refreshProtocol !== 1) {
+            return finish(new Error('Daemon does not support verified reconciliation.'));
+          }
           phase = 'initialize';
           socket.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
             protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'codegraph-runtime-control', version: '1' },
@@ -132,11 +136,20 @@ export async function checkRuntimeReady(
           if (msg.error || msg.result?.serverInfo?.version !== expected.version) {
             return finish(new Error('MCP readiness build mismatch.'));
           }
-          phase = 'status';
+          phase = options.refresh ? 'refresh' : 'status';
           socket.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
-          socket.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
-            name: 'codegraph_status', arguments: { projectPath: projectRoot },
-          } }) + '\n');
+          socket.write(JSON.stringify(options.refresh
+            ? { jsonrpc: '2.0', id: 2, method: 'codegraph/refresh', params: {
+              projectRoot, ...expected, daemonRecord: raw, writerRecord: writerRaw,
+            } }
+            : { jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+              name: 'codegraph_status', arguments: { projectPath: projectRoot },
+            } }) + '\n');
+        } else if (phase === 'refresh' && msg.id === 2) {
+          const result = msg.result;
+          finish(msg.error || result?.pid !== expected.pid || result?.version !== expected.version ||
+            result?.projectRoot !== projectRoot || result?.refreshed !== true
+            ? new Error(`Watcher reconciliation failed: ${msg.error?.message ?? 'invalid acknowledgement'}`) : undefined);
         } else if (phase === 'status' && msg.id === 2) {
           const text = Array.isArray(msg.result?.content)
             ? msg.result.content.filter((item: { type?: string; text?: unknown }) => item?.type === 'text' && typeof item.text === 'string')
@@ -170,7 +183,7 @@ export async function checkRuntimeReady(
   return expected;
 }
 
-/** Reuse or elect an exact-checkout watcher without replacement or promotion. */
+/** Initialize, reuse or elect an exact-checkout watcher and reconcile before returning. */
 export async function startRuntimeWatcher(projectRoot: string, options: {
   expectedVersion: string; cliPath: string; runtimePath?: string; timeoutMs?: number;
 }): Promise<RuntimeWatcher> {
@@ -184,10 +197,9 @@ export async function startRuntimeWatcher(projectRoot: string, options: {
       (options.runtimePath && !path.isAbsolute(options.runtimePath))) {
     throw new Error('Watcher startup requires an absolute CLI and runtime path.');
   }
-  if (!isInitialized(projectRoot)) throw new Error('Watcher startup requires an index at the exact project root.');
-  for (const file of [getCodeGraphDir(projectRoot), path.join(getCodeGraphDir(projectRoot), 'codegraph.db')]) {
-    if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Watcher startup refuses a linked project index.');
-  }
+  assertUnlinkedIndex(projectRoot);
+  const unsafe = unsafeIndexRootReason(projectRoot);
+  if (unsafe) throw new Error(`Watcher startup refuses ${unsafe} as a project root.`);
   const deadline = Date.now() + timeoutMs;
   let launched = false;
   let launchError: Error | undefined;
@@ -197,7 +209,7 @@ export async function startRuntimeWatcher(projectRoot: string, options: {
     if (identity) {
       if (identity.version !== options.expectedVersion) throw new Error('Existing daemon build is preserved; watcher startup is blocked.');
       try {
-        await checkRuntimeReady(projectRoot, identity, Math.max(1, deadline - Date.now()), { requireWatcher: true });
+        await checkRuntimeReady(projectRoot, identity, Math.max(1, deadline - Date.now()), { requireWatcher: true, refresh: true });
         return { ...identity, projectRoot, watching: true };
       } catch (error) { lastError = error; }
     } else if (!launched) {
@@ -215,8 +227,8 @@ export async function startRuntimeWatcher(projectRoot: string, options: {
         }
       }
       const { spawnDetachedDaemon } = await import('./mcp');
-      const child = spawnDetachedDaemon(projectRoot, false, { preserveExisting: true,
-        cliPath: options.cliPath, runtimePath: options.runtimePath });
+      const child = spawnDetachedDaemon(projectRoot, false, { preserveExisting: true, initializeIndex: true,
+        expectedVersion: options.expectedVersion, cliPath: options.cliPath, runtimePath: options.runtimePath });
       child.once('error', (error) => { launchError = error; });
       launched = true;
     }

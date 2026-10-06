@@ -133,6 +133,8 @@ export interface IndexOptions {
    * is searchable as fast as before; one-shot syncs refresh inline.
    */
   deferSynthesis?: boolean;
+  /** Sync must finish queued synthesis and reject failed file extraction or incomplete synthesis. */
+  requireComplete?: boolean;
 }
 
 /**
@@ -897,6 +899,9 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
+    if (options.requireComplete && process.env.CODEGRAPH_SYNC_RESYNTHESIS === '0') {
+      throw new Error('Complete reconciliation requires synthesized-edge refresh to be enabled.');
+    }
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
@@ -1234,9 +1239,13 @@ export class CodeGraph {
         // A refresh that failed or was killed left the graph without its
         // synthesized edges; retry it on any sync, a no-op one included.
         const retrySynthesis = process.env.CODEGRAPH_SYNC_RESYNTHESIS !== '0' && this.queries.isSynthesisPending();
-        if ((resynthesis && this.synthesisDirty.size > 0) || retrySynthesis) {
-          if (options.deferSynthesis) this.scheduleSynthesisRefresh();
-          else await this.refreshSynthesis(options.onProgress);
+        if ((resynthesis && this.synthesisDirty.size > 0) || retrySynthesis ||
+            (options.requireComplete && this.synthesisDirty.size > 0)) {
+          if (options.deferSynthesis && !options.requireComplete) this.scheduleSynthesisRefresh();
+          else await this.refreshSynthesis(options.onProgress, options.requireComplete);
+        }
+        if (options.requireComplete && this.queries.isSynthesisPending()) {
+          throw new Error('Reconciliation did not complete synthesized-edge refresh.');
         }
         if (filesChanged || result.filesRemoved > 0) {
           this.refreshNearDuplicates(result.changedFilePaths, result.filesRemoved > 0);
@@ -1268,6 +1277,10 @@ export class CodeGraph {
         }
 
         this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
+
+        if (options.requireComplete && result.failedFilePaths?.length) {
+          throw new Error(`Reconciliation failed to index ${result.failedFilePaths.length} file(s).`);
+        }
 
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
         result.durationMs = Date.now() - startedAt;
@@ -1557,7 +1570,7 @@ export class CodeGraph {
    * synthesized edges, never wrong ones. Caller holds the index mutex and
    * file lock.
    */
-  private async refreshSynthesis(onProgress?: IndexOptions['onProgress']): Promise<void> {
+  private async refreshSynthesis(onProgress?: IndexOptions['onProgress'], requireComplete = false): Promise<void> {
     if (this.synthesisDirty.size === 0 && !this.queries.isSynthesisPending()) return;
     const files = [...this.synthesisDirty];
     this.synthesisDirty.clear();
@@ -1572,6 +1585,8 @@ export class CodeGraph {
       this.lastSynthesisMs = Date.now() - t;
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[synth-timing] sync-resynthesis: ${Date.now() - t}ms (${files.length} files, ${dropped} dropped, ${edges} synthesized)`);
     } catch (error) {
+      for (const file of files) this.synthesisDirty.add(file);
+      if (requireComplete) throw new Error('Reconciliation did not complete synthesized-edge refresh.', { cause: error });
       logWarn('Synthesized-edge refresh failed; the next sync retries it', { error: String(error) });
     }
   }

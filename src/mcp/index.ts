@@ -37,7 +37,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, StdioOptions, type ChildProcess } from 'child_process';
-import { resolveServerRoot, getCodeGraphDir, canonicalProjectRoot, isInitialized } from '../directory';
+import { resolveServerRoot, getCodeGraphDir, canonicalProjectRoot, isInitialized, assertUnlinkedIndex } from '../directory';
 import { StdioTransport } from './transport';
 import { MCPEngine } from './engine';
 import { MCPSession } from './session';
@@ -90,6 +90,7 @@ const DIRECT_QUERY_POOL_MAX = 2;
  * process IS the daemon and must never try to spawn another (infinite spawn).
  */
 const DAEMON_INTERNAL_ENV = 'CODEGRAPH_DAEMON_INTERNAL';
+const DAEMON_EXPECTED_BUILD_ENV = 'CODEGRAPH_DAEMON_EXPECTED_BUILD';
 
 /**
  * Env var naming the launcher that holds the project's writer slot for the
@@ -280,7 +281,7 @@ function resolveDaemonRoot(explicitPath: string | null): string | null {
  * launcher holds the writer slot for it (see {@link DAEMON_HANDOVER_ENV}).
  */
 export function spawnDetachedDaemon(root: string, handover = false, options: {
-  preserveExisting?: boolean; cliPath?: string; runtimePath?: string;
+  preserveExisting?: boolean; initializeIndex?: boolean; expectedVersion?: string; cliPath?: string; runtimePath?: string;
 } = {}): ChildProcess {
   const scriptPath = options.cliPath ?? process.argv[1];
   if (!scriptPath) {
@@ -302,13 +303,16 @@ export function spawnDetachedDaemon(root: string, handover = false, options: {
     // into the daemon's env (and from there into anything the daemon spawns),
     // where a long-dead session's host pid would trigger spurious shutdowns.
     const env: NodeJS.ProcessEnv = { ...process.env, [DAEMON_INTERNAL_ENV]: '1' };
+    if (options.expectedVersion) env[DAEMON_EXPECTED_BUILD_ENV] = options.expectedVersion;
+    else delete env[DAEMON_EXPECTED_BUILD_ENV];
     delete env[HOST_PPID_ENV];
     if (handover) env[DAEMON_HANDOVER_ENV] = String(process.pid);
     else delete env[DAEMON_HANDOVER_ENV];
     const child = spawn(
       options.runtimePath ?? process.execPath,
       [...(options.cliPath ? [] : process.execArgv), scriptPath, 'serve', '--mcp', '--path', root,
-        ...(options.preserveExisting ? ['--preserve-existing'] : [])],
+        ...(options.preserveExisting ? ['--preserve-existing'] : []),
+        ...(options.initializeIndex ? ['--initialize-index'] : [])],
       {
         detached: true,
         stdio,
@@ -437,7 +441,7 @@ export class MCPServer {
   /** Project root whose writer.pid we hold in direct mode (#1740); released on stop. */
   private writerLockRoot: string | null = null;
 
-  constructor(projectPath?: string, private options: { preserveExisting?: boolean } = {}) {
+  constructor(projectPath?: string, private options: { preserveExisting?: boolean; initializeIndex?: boolean } = {}) {
     this.projectPath = projectPath || null;
   }
 
@@ -455,6 +459,9 @@ export class MCPServer {
    * mode — a misbehaving daemon must never block a session from starting.
    */
   async start(): Promise<void> {
+    if (this.options.initializeIndex && (!this.options.preserveExisting || !this.projectPath)) {
+      throw new Error('Index initialization requires preserving startup and an explicit project root.');
+    }
     // Long-lived process (direct / proxy / daemon alike): flush buffered
     // telemetry opportunistically. Fire-and-forget + unref'd — adds nothing
     // to the handshake path and never keeps the process alive.
@@ -481,15 +488,13 @@ export class MCPServer {
       return this.startDirect('CODEGRAPH_NO_DAEMON set');
     }
 
-    const root = resolveDaemonRoot(this.projectPath);
+    const root = this.options.initializeIndex ? canonicalProjectRoot(this.projectPath!) : resolveDaemonRoot(this.projectPath);
     if (this.options.preserveExisting && (!this.projectPath || !root ||
-        canonicalProjectRoot(root) !== canonicalProjectRoot(this.projectPath) || !isInitialized(root))) {
+        canonicalProjectRoot(root) !== canonicalProjectRoot(this.projectPath) || (!this.options.initializeIndex && !isInitialized(root)))) {
       throw new Error('Preserving startup requires an initialized index at the exact project root.');
     }
     if (this.options.preserveExisting && root) {
-      for (const file of [getCodeGraphDir(root), path.join(getCodeGraphDir(root), 'codegraph.db')]) {
-        if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Preserving startup refuses a linked project index.');
-      }
+      assertUnlinkedIndex(root);
     }
     if (!root) {
       // No initialized project found — daemon mode has nowhere to put its
@@ -656,19 +661,22 @@ export class MCPServer {
    * and reaps itself via client-refcount + idle timeout (see {@link Daemon}).
    */
   private async startDaemonProcess(): Promise<void> {
+    const expectedVersion = process.env[DAEMON_EXPECTED_BUILD_ENV];
+    delete process.env[DAEMON_EXPECTED_BUILD_ENV];
+    if (expectedVersion && expectedVersion !== CodeGraphPackageVersion) {
+      throw new Error('Selected daemon CLI does not match the expected build.');
+    }
     // In daemon mode stderr IS `.codegraph/daemon.log`; stamp every line so
     // kills/restarts can be placed in time (#1431 — the log was undatable).
     timestampStderrLines();
     const root = this.options.preserveExisting
       ? canonicalProjectRoot(this.projectPath ?? process.cwd())
       : resolveDaemonRoot(this.projectPath) ?? this.projectPath ?? process.cwd();
-    if (this.options.preserveExisting && !isInitialized(root)) {
+    if (this.options.preserveExisting && !this.options.initializeIndex && !isInitialized(root)) {
       throw new Error('Preserving startup requires an initialized index at the exact project root.');
     }
     if (this.options.preserveExisting) {
-      for (const file of [getCodeGraphDir(root), path.join(getCodeGraphDir(root), 'codegraph.db')]) {
-        if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Preserving startup refuses a linked project index.');
-      }
+      assertUnlinkedIndex(root);
     }
     // Read once and dropped, so nothing this daemon spawns inherits it.
     const handoverPid = Number(process.env[DAEMON_HANDOVER_ENV]);
@@ -681,7 +689,8 @@ export class MCPServer {
       const lock = tryAcquireDaemonLock(root);
 
       if (lock.kind === 'acquired') {
-        const daemon = new Daemon(root, { handoverFrom, preserveExisting: this.options.preserveExisting });
+        const daemon = new Daemon(root, { handoverFrom, preserveExisting: this.options.preserveExisting,
+          initializeIndex: this.options.initializeIndex });
         await daemon.start();
         this.daemon = daemon;
         this.mode = 'daemon';

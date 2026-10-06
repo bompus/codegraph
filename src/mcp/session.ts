@@ -103,6 +103,8 @@ export interface MCPSessionOptions {
    * where the project lives.
    */
   explicitProjectPath?: string | null;
+  /** Only a shared daemon can acknowledge ownership-bound reconciliation. */
+  refreshWatcher?: (params: unknown) => Promise<unknown>;
 }
 
 /**
@@ -116,6 +118,7 @@ export class MCPSession {
   private rootsAttempted = false;
   private resolvePromise: Promise<void> | null = null;
   private explicitProjectPath: string | null;
+  private refreshWatcher?: MCPSessionOptions['refreshWatcher'];
   /**
    * What `codegraph_explore` has already returned to THIS client, per project
    * (CG-17). Owned by the session, not the engine: the daemon shares one engine
@@ -132,6 +135,7 @@ export class MCPSession {
     opts: MCPSessionOptions = {},
   ) {
     this.explicitProjectPath = opts.explicitProjectPath ?? null;
+    this.refreshWatcher = opts.refreshWatcher;
   }
 
   /**
@@ -181,6 +185,15 @@ export class MCPSession {
         break;
       case 'ping':
         if (isRequest) this.transport.sendResult((message as JsonRpcRequest).id, {});
+        break;
+      case 'codegraph/refresh':
+        if (isRequest) {
+          if (!this.refreshWatcher) {
+            this.transport.sendError(message.id, ErrorCodes.MethodNotFound, 'Verified watcher reconciliation is unavailable.');
+          } else {
+            this.transport.sendResult(message.id, await this.refreshWatcher(message.params));
+          }
+        }
         break;
       case 'resources/list':
         // We expose no MCP resources, but some clients (opencode, Codex) probe
