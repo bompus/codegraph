@@ -85,6 +85,21 @@ def known():
     expect(calls('known')).toEqual(['4:run']);
   });
 
+  it.each([
+    ['module imports', 'import pkg.sub, pkg.other\ndef known():\n    return pkg.sub.run()\n', ['3:run']],
+    ['local imports', 'def known():\n    import pkg.sub, pkg.other\n    return pkg.sub.run()\n', ['3:run']],
+    ['explicit alias', 'import pkg.sub, pkg.other as pkg\ndef known():\n    return pkg.sub.run()\n', []],
+    ['value replacement', 'import pkg.sub; pkg = object()\ndef known():\n    return pkg.sub.run()\n', []],
+  ])('preserves only compatible same-line Python package bindings for %s', async (_case, app, expected) => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'pkg/other.py': 'def different(): return 2\n',
+      'app.py': app,
+    });
+    expect(calls('known')).toEqual(expected);
+  });
+
   it('treats an explicit Python alias matching the package name as a replacement', async () => {
     await project({
       'pkg/__init__.py': '',

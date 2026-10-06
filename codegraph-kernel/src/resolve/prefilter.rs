@@ -620,15 +620,17 @@ impl KernelResolver {
         let Some(binding) = self.receiver_binding(root, site)? else { return Ok(false) };
         let rows = self.bindings(&site.file_path)?;
         let mut lines = Vec::new();
+        let mut same_line_package_import_seen = false;
         for row in rows.iter().filter(|row| row.name == root
             && row.scope_start == binding.scope_start && row.scope_end == binding.scope_end)
         {
             if self.python_annotation_only(row, site) { continue; }
             // Importing another submodule retains the same package object.
-            if row.line != binding.line && binding.kind == "import" && row.kind == "import"
+            if binding.kind == "import" && row.kind == "import"
                 && self.python_package_import(&binding, site) && self.python_package_import(row, site)
             {
-                continue;
+                if row.line != binding.line || same_line_package_import_seen { continue; }
+                same_line_package_import_seen = true;
             }
             lines.push(row.line);
         }
