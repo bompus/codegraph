@@ -21,13 +21,15 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
+Explicit code-file pins remain eligible when the query also names documentation. Quoted terms used to select template or style source remain meaningful even when they match the filename stem. File and output budgets still apply.
+
 When a query names functions in pinned files, `codegraph_explore` prioritizes their local callee bodies through two call or callback hops. It selects at most sixteen local helpers per file, each at most 200 lines. File and output budgets still apply.
 
 Quoted spans of three or more words also find current indexed code by word sequence, ignoring case and punctuation. Matches return an enclosing symbol or source around the matching lines, including script strings and unquoted template text. No re-index is needed.
 
 The scan checks its 300 ms budget between files and stops at sixteen matches or 64 MiB read. Files over 1 MiB are skipped. Up to four spans of at most 300 characters each are considered. File and output budgets still apply. Edits since the last sync can leave indexed symbol extents behind the matching source.
 
-When you ask about tests, `codegraph_explore` includes source from the nearest test callers within three caller hops. These links describe static callers, not measured runtime coverage. Pinned JavaScript and TypeScript test files prioritize matching `it`/`test` callbacks. File and output budgets still apply.
+When you ask about tests, `codegraph_explore` includes source from the nearest test callers within three caller hops. These links describe static callers, not measured runtime coverage. Pinned JavaScript and TypeScript test files prioritize matching `it`/`test` callbacks, including `.each` parameterized tests. File and output budgets still apply.
 
 ## Daemon lifecycle
 

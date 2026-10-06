@@ -62,10 +62,11 @@ against dozens of greps and reads.
 
 ## Reading results
 
+- Explicit code-file pins remain eligible when the query also names documentation, within the file and output budgets. Quoted terms used to select template or style source remain meaningful even when they match the filename stem.
 - A named COBOL copybook prioritizes its indexed source and lists COPY and EXEC SQL INCLUDE sites. If no source is indexed, the result says so.
 - When a query names functions in pinned files, local callee bodies are prioritized through two call or callback hops. At most sixteen local helpers per file are selected, each at most 200 lines; file and output budgets still apply.
 - Quoted spans of three or more words also match current indexed code by word sequence, ignoring case and punctuation. This includes script strings and unquoted template text. The scan checks its 300 ms budget between files and stops at sixteen matches or 64 MiB read. It skips files over 1 MiB and considers up to four spans of at most 300 characters each. File and output budgets still apply; no re-index is needed.
-- Questions about tests include source from the nearest test callers of named symbols, within three caller hops and the file/output budgets. These are static caller links, not measured runtime coverage. Naming a JavaScript or TypeScript test file prioritizes matching \`it\`/\`test\` callbacks.
+- Questions about tests include source from the nearest test callers of named symbols, within three caller hops and the file/output budgets. These are static caller links, not measured runtime coverage. Naming a JavaScript or TypeScript test file prioritizes matching \`it\`/\`test\` callbacks, including \`.each\` parameterized tests.
 
 - **The source codegraph returns is the file's current text** (files that changed since the last sync are flagged), so re-checking it with grep costs time and context without adding accuracy. Call edges from the parse are reliable; a hop marked as a name match (see Limitations) is the one to check.
 - **Read/Grep are for what the index lacks**: a detail a codegraph answer didn't cover, or files codegraph doesn't index (such as configs). Markdown is indexed — every \`.md\` file's headings, sections, tables and links — so a documentation question (a rule, a runbook, a plan row, a research finding) goes to \`codegraph_explore\` too; it returns the section body, not just its heading.

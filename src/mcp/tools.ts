@@ -7187,9 +7187,10 @@ export class ToolHandler {
         }
         continue;
       }
-      // A doc answer keeps its budget: a code file joins it only when the query
-      // named a symbol the file defines.
-      if (docTierFiles.size > 0 && !proseFiles.has(filePath) && !group.nodes.some((n) => codeNamedIds.has(n.id))) continue;
+      // A doc answer keeps unrelated code out. Explicit file pins, named
+      // symbols and prose matches still request code within the same budgets.
+      if (docTierFiles.size > 0 && !pinnedSet.has(filePath) && !proseFiles.has(filePath)
+          && !group.nodes.some((n) => codeNamedIds.has(n.id))) continue;
 
       // Adaptive sizing (CODEGRAPH_ADAPTIVE_EXPLORE, default on): collapse a file
       // to a per-symbol view when it's a redundant member of a polymorphic family.
