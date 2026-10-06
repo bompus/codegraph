@@ -326,7 +326,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In VB.NET, a call to one of .NET's own methods such as `Add`, `Contains`, `Clear` or `Dispose` on a value whose type isn't known is no longer linked to a project method of that name, unless the value is named after that method's class.
 
-- In VB.NET, a type name is looked up the way VB.NET does it — through the namespaces around it, the file's and project's `Imports` (aliases included), and the caller's own project — so a class declared in several namespaces or projects no longer draws every call to whichever copy was indexed first, and two candidates nothing tells apart get no link at all.
+- VB.NET resolves type names through surrounding namespaces, file and project `Imports` (including aliases), and the caller's project. Same-named types in different namespaces or projects no longer capture every call. When scope and imports do not distinguish the candidates, the call stays unlinked.
 
 - In VB.NET, a call with no receiver, or on `Me`, now reaches only a member of the class it is written in, of a class it inherits, or of a Module, and no longer a nearby class's member of the same name.
 
