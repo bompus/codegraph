@@ -32,10 +32,6 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
-- Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
-
-- Installers can start or reuse a checkout's active watcher without replacing existing writers, and MCP launchers can preserve existing daemons across reconnects with `--preserve-existing`.
-
 - Installers can verify daemon readiness and safely hand writer ownership across build promotion and rollback through a supported runtime-control API.
 
 - `codegraph_explore` now finds quoted prose in script strings and template text through a capped source scan, ignoring case and punctuation without requiring a re-index.
@@ -94,6 +90,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Markdown is indexed, and a documentation question gets the section, not the graph.** Every `.md` file's headings, sections, tables and links are nodes (the extractor from #361), and a doc-shaped `codegraph_explore` query that names a markdown file now renders that file's best sections first and whole — the top three by idf-weighted line hits, a heading the query covers word for word counted as named, 8k characters per file — with the blast-radius, relationships and "additional files" blocks held back unless a code file rendered too. Measured on a 109-file docs corpus under headless Claude Code, 36 cells over three rounds: the right file and section in every call, median 1 tool call against 4 for Grep-then-Read, 36 of 36 correct. Code answers keep their shape: markdown nodes leave a subgraph the doc tier did not seed, a markdown body is never mistaken for a generated-file header, and the explore budget tiers count code files only, so a README-heavy repo does not cross a breakpoint. The server instructions say markdown is indexed, which the branch's own text still denied. (#361, #1439)
 
 - Installers can start or reuse a checkout's active watcher without replacing existing writers, and MCP launchers can preserve existing daemons across reconnects with `--preserve-existing`.
+
+- Ordinary watcher startup can initialize a missing project index under daemon ownership and waits for fresh file indexing and queued synthesized edges before reporting readiness.
 
 ### Fixes
 
