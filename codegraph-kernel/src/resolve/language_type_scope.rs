@@ -410,7 +410,7 @@ impl KernelResolver {
         }))
     }
 
-    fn csharp_namespaces_at(&mut self, r: &ResolveRefIn) -> Option<Vec<String>> {
+    pub(super) fn csharp_namespaces_at(&mut self, r: &ResolveRefIn) -> Option<Vec<String>> {
         let source = self.read_file(&r.file_path)?;
         let tree = self.parsed_tree(&source, r)?;
         let mut node = super::iteration::descendant_for_position(

@@ -325,6 +325,22 @@ impl KernelResolver {
         let Some(owner) = self.js_member_owner(n)? else { return Ok(false) };
         let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
         let Some(tree) = self.js_binding_tree(&source, r) else { return Ok(false) };
-        Ok(self.js_object_facts(&r.file_path).is_some_and(|f| f.destructures(holder_path(&owner), &n.name, r, &tree)))
+        let Some(facts) = self.js_object_facts(&r.file_path) else { return Ok(false) };
+        for (line, column, root) in facts.destructure_sites(holder_path(&owner), &n.name, r, &tree) {
+            // The captured member keeps the RHS binding at its declaration.
+            let site = ResolveRefIn { line, column, ..r.clone() };
+            let rhs_scope = self.js_root_binding_scope(&site, &root);
+            if owner.file_path == r.file_path {
+                let owner_root = if global_host(&owner) { last_segment(&owner) }
+                    else { holder_path(&owner) }.split('.').next().unwrap_or("");
+                if owner_root != root {
+                    if rhs_scope.is_none() && self.js_global_holder(&owner)? { return Ok(true); }
+                    continue;
+                }
+                let declaration = ResolveRefIn { column: owner.start_column, ..r.clone().at(&owner) };
+                if self.js_root_binding_scope(&declaration, owner_root) == rhs_scope { return Ok(true); }
+            } else if rhs_scope.is_none() && self.js_global_holder(&owner)? { return Ok(true); }
+        }
+        Ok(false)
     }
 }

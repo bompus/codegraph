@@ -3,7 +3,13 @@ use super::awaited::{blank_string_contents, strip_ts_comments};
 use super::*;
 use tree_sitter::{Point, Tree};
 
-type DestructureScopes = HashMap<String, HashMap<String, Vec<Option<(Point, Point)>>>>;
+struct DestructureSite {
+    scope: Option<(Point, Point)>,
+    line: i64,
+    column: i64,
+    root: String,
+}
+type DestructureScopes = HashMap<String, HashMap<String, Vec<DestructureSite>>>;
 
 type BindingRanges = RefCell<HashMap<String, Rc<Vec<(i64, i64)>>>>;
 
@@ -169,7 +175,7 @@ impl JsObjectFacts {
         bound
     }
 
-    pub fn destructures(&self, path: &str, member: &str, r: &ResolveRefIn, tree: &Tree) -> bool {
+    pub fn destructure_sites(&self, path: &str, member: &str, r: &ResolveRefIn, tree: &Tree) -> Vec<(i64, i64, String)> {
         self.destructured.get_or_init(|| {
             let mut paths = DestructureScopes::new();
             let re = re!(r"\{([^{}]*)\}\s*=\s*((?:(?:window|globalThis)\s*\.\s*)?[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)");
@@ -200,6 +206,9 @@ impl JsObjectFacts {
                 if tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
                     || tail.trim_start().starts_with(['.','(','[']) { continue; }
                 let mut path: String = rhs.as_str().chars().filter(|ch| !ch.is_whitespace()).collect();
+                let root = path.split('.').next().unwrap_or("").to_string();
+                let rhs_row = self.byte_line_starts.partition_point(|start| *start <= rhs.start()).saturating_sub(1);
+                let rhs_column = self.byte_units[rhs.start()].saturating_sub(self.line_starts[rhs_row]) as i64;
                 for prefix in ["window.","globalThis."] {
                     if let Some(rest) = path.strip_prefix(prefix) { path = rest.to_string(); break; }
                 }
@@ -210,16 +219,17 @@ impl JsObjectFacts {
                     let local = pair.next().map(|s| s.split('=').next().unwrap_or("").trim()).unwrap_or(key);
                     // An explicit alias is permitted only when key == local.
                     if key == local && re!(r"^[A-Za-z_$][\w$]*$").is_match(key) {
-                        paths.entry(path.clone()).or_default().entry(key.to_string()).or_default().push(scope);
+                        paths.entry(path.clone()).or_default().entry(key.to_string()).or_default().push(DestructureSite { scope, line: rhs_row as i64 + 1, column: rhs_column, root: root.clone() });
                     }
                 }
             }
             paths
-        }).get(path).and_then(|keys| keys.get(member)).is_some_and(|scopes| {
-            let Some(line) = self.source.get((r.line - 1).max(0) as usize) else { return false };
+        }).get(path).and_then(|keys| keys.get(member)).map_or_else(Vec::new, |sites| {
+            let Some(line) = self.source.get((r.line - 1).max(0) as usize) else { return Vec::new() };
             let point = Point::new((r.line - 1).max(0) as usize,
                 super::names::js_unit_to_byte(line, r.column.max(0) as usize));
-            scopes.iter().any(|scope| scope.is_none_or(|(start, end)| point >= start && point < end))
+            sites.iter().filter(|site| site.scope.is_none_or(|(start, end)| point >= start && point < end))
+                .map(|site| (site.line, site.column, site.root.clone())).collect()
         })
     }
 

@@ -94,8 +94,8 @@ fn ends_with_member_dot(before: &str) -> bool {
 
 /// The Dart type declaration head: the supertypes it names, and whether it is
 /// an `extension` (whose one supertype is the type it extends).
-struct DartHead {
-    supers: Vec<String>,
+pub(super) struct DartHead {
+    pub(super) supers: Vec<String>,
     extension: bool,
 }
 
@@ -448,7 +448,7 @@ impl KernelResolver {
 
     /// dartHeadOf: a declaration's head read from source up to its body, with
     /// comments and type arguments dropped first.
-    fn dart_head_of(&mut self, decl: &KNode) -> DartHead {
+    pub(super) fn dart_head_of(&mut self, decl: &KNode) -> DartHead {
         let Some(lines) = self.read_file(&decl.file_path) else { return DartHead { supers: Vec::new(), extension: false } };
         let from = (decl.start_line - 1).max(0) as usize;
         let to = (decl.end_line.min(decl.start_line + 40).max(0) as usize).min(lines.len());
@@ -873,7 +873,7 @@ impl KernelResolver {
             if replace { best = Some((n, rank)); }
         }
         if getters_only {
-            if let Some(depth) = self.dart_field_depth(&lineage, name, r)? {
+            if let Some(depth) = self.dart_field_depth(type_name, name, r)? {
                 if best.as_ref().is_some_and(|(_, rank)| depth <= *rank) { return Ok(None); }
             }
         }

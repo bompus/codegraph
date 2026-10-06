@@ -259,7 +259,7 @@ function scalaBaseTypeName(node: SyntaxNode | null, source: string): string | nu
 
 /**
  * The class a C# declared type names, as `new T()` would name it: `Foo`,
- * `List<Foo>` → `List`, `Ns.Foo` → `Ns.Foo`, `global::Foo` → `Foo`, `Foo?` → `Foo`.
+ * `List<Foo>` → `List`, `Ns.Foo` → `Ns.Foo`, `global::Foo` → `global::Foo`, `Foo?` → `Foo`.
  * Predefined, array, tuple and pointer types name no class → null. Mirrored
  * in the kernel (csharp.rs class_type_name).
  */
@@ -280,7 +280,7 @@ function csharpClassTypeName(node: SyntaxNode | null, source: string): string | 
       const name = csharpClassTypeName(getChildByField(node, 'name'), source);
       if (!alias || !name) return null;
       const qualifier = getNodeText(alias, source);
-      return qualifier === 'global' ? name : `${qualifier}::${name}`;
+      return `${qualifier}::${name}`;
     }
     case 'nullable_type':
       return csharpClassTypeName(getChildByField(node, 'type'), source);

@@ -95,6 +95,20 @@ describe('C# field and property initializers', () => {
     else process.env.CODEGRAPH_KERNEL = kernel;
   });
 
+  it.each(['default', 'generic'])('resolves relative and global declared type namespaces (%s)', async backend => {
+    fs.writeFileSync(path.join(root, 'Lib.cs'), 'namespace Lib { public class Crate {} }\nnamespace Outer { namespace Lib { public class Crate {} } }\n');
+    fs.writeFileSync(path.join(root, 'Box.cs'), 'namespace Outer { public class Box { private readonly Lib.Crate _near = new(); private readonly global::Lib.Crate _global = new(); } }\n');
+    if (backend === 'generic') process.env.CODEGRAPH_KERNEL = '0';
+    else delete process.env.CODEGRAPH_KERNEL;
+    cg = await CodeGraph.init(root, { index: true });
+    for (const [field, target] of [['_near', 'Outer.Lib::Crate'], ['_global', 'Lib::Crate']]) {
+      const node = cg.getNodesByQualifiedName(`Outer::Box::${field}`)[0]!;
+      expect(node).toBeDefined();
+      expect(cg.getOutgoingEdges(node.id).filter(edge => edge.kind === 'instantiates')
+        .map(edge => cg!.getNode(edge.target)!.qualifiedName)).toEqual([target]);
+    }
+  });
+
   it.each(['default', 'generic'].flatMap(backend => [false, true].map(qualifiedOnly => ({ backend, qualifiedOnly }))))('are walked as the member they initialize ($backend, qualified type only $qualifiedOnly)', async ({ backend, qualifiedOnly }) => {
     if (qualifiedOnly) fs.writeFileSync(path.join(root, 'Box.cs'), FILES['Box.cs']!.replace('using Lib;\n', ''));
     if (backend === 'generic') process.env.CODEGRAPH_KERNEL = '0';

@@ -1206,12 +1206,24 @@ impl KernelResolver {
         };
 
         let candidates = if r.language == "csharp" && r.reference_kind == "instantiates" {
-            // Source spells namespace/type separators with dots; graph names use ::.
-            let leaf = r.reference_name.rsplit([':', '.']).next().unwrap_or("");
-            self.nodes_by_name(leaf)?.iter().filter(|n| n.language == "csharp"
-                && matches!(n.kind.as_str(), "class" | "struct" | "record")
-                && n.qualified_name.replace("::", ".") == r.reference_name)
-                .cloned().collect()
+            // Relative qualification searches enclosing namespaces before the global namespace.
+            let absolute = r.reference_name.strip_prefix("global::");
+            let spelling = absolute.unwrap_or(&r.reference_name);
+            let leaf = spelling.rsplit([':', '.']).next().unwrap_or("");
+            let nodes = self.nodes_by_name(leaf)?;
+            let mut namespace = if absolute.is_some() { String::new() }
+                else { self.csharp_namespaces_at(r).unwrap_or_default().join(".") };
+            let mut found = Vec::new();
+            loop {
+                let qualified = if namespace.is_empty() { spelling.to_string() }
+                    else { format!("{namespace}.{spelling}") };
+                found.extend(nodes.iter().filter(|n| n.language == "csharp"
+                    && matches!(n.kind.as_str(), "class" | "struct" | "record")
+                    && n.qualified_name.replace("::", ".") == qualified).cloned());
+                if !found.is_empty() || namespace.is_empty() { break; }
+                namespace = namespace.rsplit_once('.').map_or("", |(parent, _)| parent).to_string();
+            }
+            found
         } else { keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?) };
         if candidates.len() == 1 {
             return Ok(Some(KCand {

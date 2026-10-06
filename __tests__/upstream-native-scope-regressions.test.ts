@@ -69,6 +69,11 @@ describe('upstream ports preserve declaration scope', () => {
     expect(calls('local')).toEqual([`${file}:api::post`]);
     expect(calls('outside')).toEqual([]);
   });
+  it('binds a destructure source at its declaration rather than a later captured call', async () => {
+    await project({ 'main.js': 'const api = { post() {} };\nfunction shadow(api) { const { post } = api; return post(); }\nfunction capture() { const { post } = api; function captured(api) { return post(); } return captured(); }\n' });
+    expect(calls('shadow')).toEqual([]);
+    expect(calls('captured')).toEqual(['main.js:api::post']);
+  });
   it('retains a call through a parameter-owned path after its literal assignment', async () => {
     await project({ 'main.js': 'var App = {}; function define({ App }) { App.utils = { pad() {} }; App.utils.pad(); } function outside() { App.utils.pad(); }\n' });
     expect(calls('define')).toEqual(['main.js:App.utils::pad']);

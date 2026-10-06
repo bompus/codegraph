@@ -42,13 +42,30 @@ extension BoxActions on Box {
   int twice() => size * 2;
 }
 `,
+    // This unimported library cannot override render.dart's Square getter lineage.
+    'lib/unrelated.dart': 'class Square { final int area = 7; }\n',
+    'lib/derived.dart': `import 'shape.dart';
+class ImportedSolid extends Box {
+  final int area = 7;
+  ImportedSolid(int size) : super(size);
+}
+`,
+    'lib/barrel.dart': "export 'derived.dart';\n",
+    'lib/package-use.dart': `import 'package:repro/derived.dart';
+int packageOverride(ImportedSolid x) => x.area;
+`,
+    'lib/barrel-use.dart': `import 'barrel.dart';
+int exportedOverride(ImportedSolid x) => x.area;
+`,
     'lib/use.dart': `import 'shape.dart';
+import 'derived.dart';
 
 String a(Shape s) => s.label;   // getter, extension on enum
 String b(Shape s) => s.shout(); // method, extension on enum
 int c(Box x) => x.area;         // getter, plain class
 int d(Box x) => x.grow();       // method, plain class
 int e(Box x) => x.twice();      // method, extension on class
+int importedOverride(ImportedSolid x) => x.area;
 `,
     // Block bodies and class methods, through a parameter, a local and a field.
     'lib/render.dart': `import 'shape.dart';
@@ -148,6 +165,11 @@ describe('Dart getter reads (#2338)', () => {
 
   it('does not call an inherited getter overridden by a field', () => {
     const fn = cg.getNodesByQualifiedName('overridden')[0]!;
+    expect(cg.getOutgoingEdges(fn.id).filter(edge => edge.kind === 'calls')).toEqual([]);
+  });
+
+  it.each(['importedOverride', 'packageOverride', 'exportedOverride'])('does not call an inherited getter overridden by an imported class field (%s)', caller => {
+    const fn = cg.getNodesByQualifiedName(caller)[0]!;
     expect(cg.getOutgoingEdges(fn.id).filter(edge => edge.kind === 'calls')).toEqual([]);
   });
 
