@@ -110,6 +110,20 @@ describe('MCP explicit projectPath lifecycle (#1835)', { timeout: 30_000 }, () =
     finally { reader.close(); }
   }
 
+  it('preserves uncertain explicit-project ownership during activation and retries', async () => {
+    await engine.stop();
+    engine = new MCPEngine({ preserveExisting: true });
+    engines.push(engine);
+    const file = path.join(serviceA, '.codegraph', 'writer.pid');
+    onOpen = () => fs.writeFileSync(file, 'uncertain');
+    expect(await search(serviceA, 'alphaOriginal')).toContain('alphaOriginal');
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.isWatching()).toBe(false);
+    await engine.getToolHandler().execute('codegraph_status', { projectPath: serviceA });
+    expect(fs.readFileSync(file, 'utf8')).toBe('uncertain');
+    expect(opened[0]!.isWatching()).toBe(false);
+  });
+
   /**
    * A daemon owner starts with idle exit OFF. Armed at startup, its 500ms
    * timer raced this process's first connection and lost on a loaded machine,

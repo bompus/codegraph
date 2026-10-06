@@ -3,11 +3,13 @@
  * stale-dead-pid / live-holder refusal.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import filesystem from 'fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { MCPEngine } from '../src/mcp/engine';
 import {
   decodeWriterLockInfo,
@@ -23,6 +25,8 @@ describe('writer lock (#1740)', () => {
   let holder: ChildProcess | null = null;
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    syncBuiltinESMExports();
     try { holder?.kill('SIGKILL'); } catch { /* already gone */ }
     holder = null;
     for (const child of foreignHolders) {
@@ -60,6 +64,36 @@ describe('writer lock (#1740)', () => {
     expect(again.kind).toBe('acquired');
     releaseWriterLock(root);
   });
+
+  it('preserves an uncertain writer record at ordinary candidate acquisition', () => {
+    const root = makeProject();
+    const file = getWriterPidPath(root);
+    fs.writeFileSync(file, 'uncertain');
+    expect(tryAcquireWriterLock(root, 'daemon', 'writer.pid', { preserveUncertain: true }).kind).toBe('taken');
+    expect(fs.readFileSync(file, 'utf8')).toBe('uncertain');
+  });
+
+  it.each(['uncertain', 'invalid-pid', 'same-pid-successor'])(
+    'preserves a %s record arriving during stale-writer cleanup', (successor) => {
+      const root = makeProject();
+      const file = getWriterPidPath(root);
+      const deadPid = 2147483646;
+      fs.writeFileSync(file, JSON.stringify({ pid: deadPid, mode: 'daemon', startedAt: 1 }));
+      const next = successor === 'uncertain' ? 'uncertain' : JSON.stringify({
+        pid: successor === 'invalid-pid' ? 0 : deadPid, mode: 'direct', startedAt: 2,
+      });
+      const original = filesystem.readFileSync;
+      let reads = 0;
+      vi.spyOn(filesystem, 'readFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+        if (target === file && ++reads === 2) fs.writeFileSync(file, next);
+        return Reflect.apply(original, filesystem, [target, ...args]);
+      }) as typeof filesystem.readFileSync);
+      syncBuiltinESMExports();
+      expect(tryAcquireWriterLock(root, 'daemon', 'writer.pid', { preserveUncertain: true }).kind).toBe('taken');
+      expect(fs.readFileSync(file, 'utf8')).toBe(next);
+      expect(reads).toBeGreaterThanOrEqual(2);
+    },
+  );
 
   it('reports taken when a live foreign pid holds the lock', () => {
     const root = makeProject();

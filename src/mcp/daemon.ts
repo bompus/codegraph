@@ -43,6 +43,7 @@
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
+import { canonicalProjectRoot } from '../directory';
 import { MCPEngine } from './engine';
 import { MCPSession } from './session';
 import { SocketTransport } from './transport';
@@ -56,6 +57,7 @@ import {
 } from './daemon-paths';
 import { CodeGraphPackageJsonPath, CodeGraphPackageReleaseVersion, CodeGraphPackageVersion } from './version';
 import {
+  readWriterLock,
   releaseWriterLock,
   swapWriterLock,
   tryAcquireWriterLock,
@@ -173,6 +175,7 @@ export interface DaemonHello {
   socketPath: string; // echoed back so the proxy can log it
   protocol: 1;       // bump if the hello shape changes
   writerProtocol?: 1; // ownership mutations use the OS coordination lock
+  watcher?: { projectRoot: string | null; active: boolean; ready: boolean };
 }
 
 /**
@@ -228,22 +231,24 @@ export class Daemon {
   private pidPath: string;
   /** The launcher holding the writer slot for this daemon, when it replaced an older one (#2335). */
   private handoverFrom: number | null;
+  private preserveExisting: boolean;
 
   constructor(
     private projectRoot: string,
-    opts: { idleTimeoutMs?: number; maxIdleMs?: number; handoverFrom?: number | null } = {},
+    opts: { idleTimeoutMs?: number; maxIdleMs?: number; handoverFrom?: number | null; preserveExisting?: boolean } = {},
   ) {
     this.socketPath = getDaemonSocketPath(projectRoot);
     this.pidPath = getDaemonPidPath(projectRoot);
     this.idleTimeoutMs = opts.idleTimeoutMs ?? resolveIdleTimeoutMs();
     this.maxIdleMs = opts.maxIdleMs ?? resolveMaxIdleMs();
     this.handoverFrom = opts.handoverFrom ?? null;
+    this.preserveExisting = opts.preserveExisting ?? false;
     // Daemon mode serves many concurrent clients on one event loop, so off-load
     // read-tool dispatch to a worker pool — otherwise concurrent explores
     // serialize and starve the MCP transport (clients time out). Direct mode
     // (one stdio client) leaves the pool off; `CODEGRAPH_QUERY_POOL_SIZE=0`
     // disables it here too.
-    this.engine = new MCPEngine({ queryPool: true });
+    this.engine = new MCPEngine({ queryPool: true, preserveExisting: this.preserveExisting });
     this.engine.setProjectPathHint(projectRoot);
   }
 
@@ -256,7 +261,8 @@ export class Daemon {
     // #1740: claim the project writer lock before opening/watching so a
     // concurrent direct-mode serve --mcp cannot start a second watcher.
     assertNoRebuild(this.projectRoot);
-    let writer = tryAcquireWriterLock(this.projectRoot, 'daemon');
+    let writer = tryAcquireWriterLock(this.projectRoot, 'daemon', 'writer.pid',
+      { preserveUncertain: this.preserveExisting });
     // The launcher that stopped an older daemon has held the slot for us since
     // (#2335); take it over without letting it fall free.
     if (writer.kind === 'taken' && this.handoverFrom !== null &&
@@ -449,12 +455,17 @@ export class Daemon {
     socket.once('close', () => this.sockets.delete(socket));
     // Hello first so the proxy can verify versions before piping any
     // application bytes. The proxy reads exactly one line, then forwards.
+    const writer = readWriterLock(this.projectRoot);
+    const watcher = this.engine.getWatcherState();
     const hello: DaemonHello = {
       codegraph: CodeGraphPackageVersion,
       pid: process.pid,
       socketPath: this.socketPath,
       protocol: 1,
       writerProtocol: 1,
+      watcher: { ...watcher, projectRoot: watcher.projectRoot ? canonicalProjectRoot(watcher.projectRoot) : null,
+        ready: writer?.pid === process.pid &&
+        writer.mode === 'daemon' && writer.ready === true },
     };
     socket.write(JSON.stringify(hello) + '\n');
 
