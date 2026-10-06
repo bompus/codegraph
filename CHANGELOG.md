@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Explore retains explicitly pinned code in mixed documentation/code requests, returns parameterized test callbacks, and preserves quoted source terms that match the filename stem.
+
 - Python closures no longer link calls or method values to a captured receiver type when later replacement makes that type uncertain.
 - Python receiver calls no longer link to a stale type after same-line replacement when statement order cannot establish a reliable type.
 

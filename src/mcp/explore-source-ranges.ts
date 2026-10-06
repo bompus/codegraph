@@ -2,6 +2,7 @@ import type { Language, Node } from '../types';
 import { parseSourceTree, type TreeNode as SyntaxNode } from '../extraction/parse-tree';
 import { seedLiteralsInQuery } from '../extraction/literal-capture';
 import { extractSearchTerms, isTestPath } from '../search/query-utils';
+import { QUOTED_SPAN } from './source-scan';
 
 export interface RequestedSourceRange {
   start: number;
@@ -23,7 +24,10 @@ export async function requestedSourceRanges(
   // or "board". Match the remaining question against its template and styles.
   const basename = filePath.split('/').pop()!.replace(/\.[^.]+$/, '');
   const escapedBasename = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const question = query.replace(new RegExp(`\\b${escapedBasename}\\b`, 'gi'), '');
+  const question = query.replace(
+    new RegExp(`${QUOTED_SPAN.source}|\\b${escapedBasename}\\b`, 'gi'),
+    match => /^["'`]/.test(match) ? match : '',
+  );
   const terms = extractSearchTerms(question).filter(term => !test
     || !['test', 'tests', 'testing', 'spec', 'specs', 'verify', 'verifies', 'verifi'].includes(term));
   const literals = seedLiteralsInQuery(question);
@@ -82,10 +86,20 @@ export async function requestedSourceRanges(
     try {
       const visit = (node: SyntaxNode): void => {
         if (node.type === 'call_expression') {
-          const callee = node.childForFieldName('function')?.text ?? '';
+          const callee = node.childForFieldName('function');
+          const parameterized = callee?.type === 'call_expression';
+          let target = parameterized ? callee.childForFieldName('function') : callee;
+          const members: string[] = [];
+          while (target?.type === 'member_expression') {
+            members.push(target.childForFieldName('property')?.text ?? '');
+            target = target.childForFieldName('object');
+          }
+          const each = parameterized && members.shift() === 'each';
+          const testCall = (!parameterized || each) && target?.type === 'identifier'
+            && /^(?:it|test)$/.test(target.text)
+            && members.every(member => /^(?:only|skip|concurrent|serial|failing)$/.test(member));
           const args = node.childForFieldName('arguments')?.namedChildren ?? [];
-          if (/^(?:it|test)(?:\.(?:only|skip|concurrent|serial|failing))*$/.test(callee)
-              && args.some(a => ['arrow_function', 'function_expression'].includes(a.type))) {
+          if (testCall && args.some(a => ['arrow_function', 'function_expression'].includes(a.type))) {
             const callHit = callLines.some(line => line >= node.startPosition.row + 1 && line <= node.endPosition.row + 1);
             const hit = score(node.text) + score(args[0]?.text ?? '') + (callHit ? scoreCeiling : 0);
             if (hit > 0) {

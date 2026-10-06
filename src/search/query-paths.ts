@@ -466,6 +466,9 @@ export function extractQueryPaths(
     const stemMatches = basenameStems.get(stripped.toLowerCase());
     const matches = stemMatches ? pinnableMatches(stripped, stemMatches) : null;
     if (!matches) continue;
+    // A quoted duplicate stem asks for source evidence inside an already
+    // pinned file. Keep it in the matching query rather than consuming it again.
+    if (!lines && /^["'`]/.test(tokens[i]!) && matches.every(m => pinnedSeen.has(m))) continue;
     consumed.add(i);
     for (const m of matches) {
       if (pinnedSeen.has(m) || pinned.length >= maxPins) continue;
