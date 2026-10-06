@@ -47,6 +47,12 @@ describe('upstream ports preserve declaration scope', () => {
     await project(sameFile ? { 'main.js': declaration + consumer } : { 'ns.js': declaration, 'use.js': consumer });
     expect(calls('outside')).toEqual([]);
   });
+  it.each([false, true])('does not publish a path assigned through a destructured root (same file %s)', async sameFile => {
+    const declaration = 'var App = {}; function define({ App }) { App.utils = { pad() {} }; }\n';
+    const consumer = 'function outside() { App.utils.pad(); }\n';
+    await project(sameFile ? { 'main.js': declaration + consumer } : { 'ns.js': declaration, 'use.js': consumer });
+    expect(calls('outside')).toEqual([]);
+  });
   it('distinguishes a path root parameter from a global root on the same line', async () => {
     await project({ 'main.js': 'var App = {}; function define() { App.utils = { pad() {} }; } function use(App) { App.utils.pad(); }\n' });
     expect(calls('use')).toEqual([]);

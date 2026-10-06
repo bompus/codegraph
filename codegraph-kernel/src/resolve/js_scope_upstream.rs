@@ -48,9 +48,13 @@ fn visible(scope: Option<(Point, Point)>, point: Point) -> bool {
 impl KernelResolver {
     /// Parameter patterns bind names only within their enclosing function.
     pub(super) fn js_parameter_binds(&mut self, r: &ResolveRefIn, name: &str) -> bool {
-        let Some(source) = self.read_file(&r.file_path) else { return false };
-        let Some(tree) = self.parsed_tree(&source, r) else { return false };
-        let Some(line) = source.get((r.line - 1).max(0) as usize) else { return false };
+        self.js_parameter_scope(r, name).is_some()
+    }
+
+    pub(super) fn js_parameter_scope(&mut self, r: &ResolveRefIn, name: &str) -> Option<(Point, Point)> {
+        let source = self.read_file(&r.file_path)?;
+        let tree = self.parsed_tree(&source, r)?;
+        let line = source.get((r.line - 1).max(0) as usize)?;
         let point = Point::new((r.line - 1).max(0) as usize,
             super::names::js_unit_to_byte(line, r.column.max(0) as usize));
         let mut current = tree.root_node().descendant_for_point_range(point, point);
@@ -58,11 +62,11 @@ impl KernelResolver {
             let parameters = node.child_by_field_name("parameters")
                 .or_else(|| node.child_by_field_name("parameter"));
             if parameters.is_some_and(|p| destructured_binding_property(p, name, source.text()).is_some()) {
-                return true;
+                return Some((node.start_position(), node.end_position()));
             }
             current = node.parent();
         }
-        false
+        None
     }
 
     pub(super) fn js_typed_destructured_member(

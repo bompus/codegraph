@@ -309,7 +309,10 @@ impl KernelResolver {
                         .ends_with(".vbproj")
                 });
             if let Some(project) = project {
-                if let Some(source) = self.read_file(&project.path().to_string_lossy()) {
+                let project_path = project.path();
+                let relative = project_path.strip_prefix(&self.project_root).ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"));
+                if let Some(source) = relative.and_then(|p| self.read_file(&p)) {
                     let text = source.text();
                     let root = re!(r"(?i)<RootNamespace>\s*([\w.]*)\s*</RootNamespace>")
                         .captures(text)

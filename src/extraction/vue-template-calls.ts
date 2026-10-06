@@ -537,18 +537,27 @@ function templateBindings(pattern: string): Set<string> {
 
 /** Native syntax ranges keep nested function parameters inside their own scopes. */
 function expressionBindings(expression: string): Array<{ start: number; end: number; names: Set<string> }> {
-  if (!expression.includes('=>') && !/\bfunction\b/.test(expression)) return [];
+  if (!expression.includes('=>') && !expression.includes('{') && !/\bfunction\b/.test(expression)) return [];
   const tree = parseSourceTreeSync(`(${expression})`, 'typescript');
   try {
     const scopes = tree?.rootNode.descendantsOfType([
-      'arrow_function', 'function_expression', 'function_declaration', 'generator_function',
+      'arrow_function', 'function_expression', 'function_declaration', 'generator_function', 'method_definition',
     ]) ?? [];
-    return scopes.map(node => {
+    const bindings = scopes.map(node => {
       const names = patternBindings(node.childForFieldName('parameters') ?? node.childForFieldName('parameter'));
       const name = node.childForFieldName('name');
-      if (name) names.add(name.text);
+      if (name && node.type !== 'method_definition') names.add(name.text);
       return { start: node.startIndex - 1, end: node.endIndex - 1, names };
     });
+    for (const node of tree?.rootNode.descendantsOfType(['variable_declarator', 'function_declaration', 'class_declaration']) ?? []) {
+      const names = patternBindings(node.childForFieldName('name'));
+      const functionScoped = node.type === 'variable_declarator' && node.parent?.type === 'variable_declaration';
+      let scope = node.parent;
+      while (scope && !scopes.some(fn => fn.id === scope!.id)
+        && (functionScoped || !['statement_block', 'for_statement', 'for_in_statement'].includes(scope.type))) scope = scope.parent;
+      if (scope) bindings.push({ start: scope.startIndex - 1, end: scope.endIndex - 1, names });
+    }
+    return bindings;
   } finally { tree?.delete(); }
 }
 

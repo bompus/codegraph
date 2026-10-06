@@ -79,6 +79,15 @@ describe('vueTemplateCalls', () => {
     ]);
   });
 
+  it.each([
+    ['{ formatter(fmt) { return fmt() } } + fmt()', ['fmt']],
+    ['{ formatter({ key: fmt }) { return fmt() } } + key()', ['key']],
+    ['{ formatter(v) { return formatter(v) } }', ['formatter']],
+    ['(() => { const format = () => 0; return format(); })() + format()', ['format']],
+  ] as const)('keeps method parameters and local declarations in their scope: %s', (expression, expected) => {
+    expect(names(`<template><p>{{ ${expression} }}</p></template>`)).toEqual(expected);
+  });
+
   it('reads a CRLF file the same way', () => {
     const lf = '<template>\n  <p\n    :title="label(\n      item)"\n  >{{ useBar(x) }}</p>\n</template>\n';
     const crlf = lf.replace(/\n/g, '\r\n');

@@ -104,6 +104,13 @@ impl KernelResolver {
 
     fn js_holder_scope(&mut self,n: &KNode,r: &ResolveRefIn,via_global: bool) -> Res<Option<i64>> {
         if global_host(n) && !self.js_global_holder(n)? { return Ok(None); }
+        if path_holder(n) {
+            let root = holder_path(n).split('.').next().unwrap_or("");
+            let site = ResolveRefIn { column: n.start_column, ..r.clone().at(n).naming(root, "references") };
+            if let Some(scope) = self.js_parameter_scope(&site, root) {
+                if self.js_parameter_scope(r, root) != Some(scope) { return Ok(None); }
+            }
+        }
         let mut depth = -1;
         if !via_global {
             if let Some(facts) = self.js_object_facts(&n.file_path) {
@@ -157,13 +164,16 @@ impl KernelResolver {
         if let Some(hit) = self.js_objects.globals.get(&n.id) { return Ok(*hit); }
         // A false seed breaks recursive path/root cycles.
         self.js_objects.globals.insert(n.id.clone(),false);
+        let root = if global_host(n) { last_segment(n).split('.').next().unwrap_or("") }
+            else { holder_path(n).split('.').next().unwrap_or("") };
+        let site = ResolveRefIn { row_id: None, from_node_id: n.id.clone(),
+            reference_name: root.to_string(), reference_kind: "references".to_string(),
+            line: n.start_line, column: n.start_column, candidates: None,
+            file_path: n.file_path.clone(), language: n.language.clone(), failure_reason: None };
+        if self.js_parameter_binds(&site, root) { return Ok(false); }
         let global = if global_host(n) {
-            let host = last_segment(n).split('.').next().unwrap_or("");
-            let site = ResolveRefIn { row_id: None, from_node_id: n.id.clone(),
-                reference_name: host.to_string(), reference_kind: "references".to_string(),
-                line: n.start_line, column: n.start_column, candidates: None,
-                file_path: n.file_path.clone(), language: n.language.clone(), failure_reason: None };
-            !self.js_parameter_binds(&site, host) && self.js_object_facts(&n.file_path).is_some_and(|facts| {
+            let host = root;
+            self.js_object_facts(&n.file_path).is_some_and(|facts| {
                 let declared = facts.offset(n.start_line, n.start_column) as i64;
                 !facts.binding_scopes(host).iter().any(|(start, end)| declared > *start && declared < *end)
             })
