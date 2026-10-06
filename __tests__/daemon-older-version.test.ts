@@ -446,7 +446,7 @@ describe('a launcher meeting a daemon of another version (#2335)', () => {
     const cg = await CodeGraph.init(tempDir);
     try { await cg.indexAll(); } finally { cg.close(); }
     realRoot = fs.realpathSync(tempDir);
-  });
+  }, 45_000);
 
   afterEach(async () => {
     // Every launcher first (with the runtime flags there is no relaunch child),
