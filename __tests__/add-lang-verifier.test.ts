@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 
 const verifier = resolve(import.meta.dirname, '../scripts/add-lang/verify-extraction.mjs');
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function run(status: unknown, native = false) {
+function run(status: unknown, native = false, competing = false) {
   const root = mkdtempSync(join(tmpdir(), 'add-lang-verifier-'));
   roots.push(root);
   const binary = join(root, native ? 'status' : 'task build.mjs');
@@ -17,11 +17,22 @@ function run(status: unknown, native = false) {
 writeFileSync(${JSON.stringify(args)}, JSON.stringify(process.argv.slice(2)));
 console.log(${JSON.stringify(JSON.stringify(status))});
 `);
+  const globalBin = join(root, 'global');
+  const globalMarker = join(root, 'global-used');
+  mkdirSync(globalBin);
+  const globalScript = join(globalBin, 'codegraph');
+  writeFileSync(globalScript, `#!${process.execPath}
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(globalMarker)}, 'wrong build');
+console.log('{}');
+`);
+  chmodSync(globalScript, 0o755);
+  writeFileSync(join(globalBin, 'codegraph.cmd'), `@"${process.execPath}" "${globalScript}" %*\r\n`);
   const result = spawnSync(process.execPath, [verifier, 'owned sample', 'python'], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, PATH: '', CG_BIN: native ? process.execPath : binary },
+    env: { ...process.env, PATH: competing ? `${globalBin}${delimiter}${process.env.PATH || ''}` : '', CG_BIN: native ? process.execPath : binary },
   });
-  return { result, args: existsSync(args) ? JSON.parse(readFileSync(args, 'utf8')) : undefined };
+  return { result, globalUsed: existsSync(globalMarker), args: existsSync(args) ? JSON.parse(readFileSync(args, 'utf8')) : undefined };
 }
 const healthy = { initialized: true, languages: ['python'], nodesByKind: { function: 2 }, fileCount: 1, edgeCount: 2 };
 
@@ -30,6 +41,13 @@ it('uses the selected JavaScript build without a codegraph command on PATH', () 
   expect(result.status).toBe(0);
   expect(result.stdout).toContain('RESULT: PASS');
   expect(args).toEqual(['status', 'owned sample', '--json']);
+});
+
+it('ignores a competing codegraph command on PATH', () => {
+  const { result, args, globalUsed } = run(healthy, false, true);
+  expect(result.status).toBe(0);
+  expect(args).toEqual(['status', 'owned sample', '--json']);
+  expect(globalUsed).toBe(false);
 });
 
 it('accepts a directly executable CG_BIN', () => {
