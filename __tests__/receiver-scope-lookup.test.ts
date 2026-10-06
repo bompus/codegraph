@@ -85,6 +85,21 @@ def known():
     expect(calls('known')).toEqual(['4:run']);
   });
 
+  it.each([
+    ['module imports', 'import pkg.sub, pkg.other\ndef known():\n    return pkg.sub.run()\n', ['3:run']],
+    ['local imports', 'def known():\n    import pkg.sub, pkg.other\n    return pkg.sub.run()\n', ['3:run']],
+    ['explicit alias', 'import pkg.sub, pkg.other as pkg\ndef known():\n    return pkg.sub.run()\n', []],
+    ['value replacement', 'import pkg.sub; pkg = object()\ndef known():\n    return pkg.sub.run()\n', []],
+  ])('preserves only compatible same-line Python package bindings for %s', async (_case, app, expected) => {
+    await project({
+      'pkg/__init__.py': '',
+      'pkg/sub.py': 'def run(): return 1\n',
+      'pkg/other.py': 'def different(): return 2\n',
+      'app.py': app,
+    });
+    expect(calls('known')).toEqual(expected);
+  });
+
   it('treats an explicit Python alias matching the package name as a replacement', async () => {
     await project({
       'pkg/__init__.py': '',
@@ -126,6 +141,43 @@ outer()()
   ])('does not assert an invocation-time receiver type for %s', async (_case, source, expected) => {
     await project({ 'app.py': source });
     expect(calls('known').filter(call => call.endsWith('::get')).map(call => call.slice(call.indexOf(':') + 1))).toEqual(expected);
+  });
+
+
+  it.each([
+    ["local-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A(); store = B()\n    return store.get()\ndef exercise(): return known()\n", "known", []],
+    ["local-reverse", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = B(); store = A()\n    return store.get()\ndef exercise(): return known()\n", "known", []],
+    ["module-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\nstore = A(); store = B()\ndef known(): return store.get()\ndef exercise(): return known()\n", "known", []],
+    ["module-unknown", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\nstore = A(); store = object()\ndef known(): return store.get()\ndef exercise(): return known()\n", "known", []],
+    ["lambda-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    store = A()\n    known = lambda: store.get(); store = B()\n    return known\ndef exercise(): return outer()()\n", "outer", []],
+    ["lambda-two-values", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef outer():\n    store = A()\n    known = lambda: store.get(); first = known(); store = B(); return [first, known()]\ndef exercise(): return outer()\n", "outer", []],
+    ["stable-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A(); return store.get()\n", "known", ["A::get"]],
+    ["future-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    first = store.get(); store = A(); return first\n", "known", []],
+    ["stable-parameter-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known(store: A): return store.get()\n", "known", ["A::get"]],
+    ["deferred-single-same-line", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A(); run = lambda: store.get(); return run\n", "known", ["A::get"]],
+    ["annotation-first replacement", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A()\n    store: B; store = B()\n    return store.get()\n", "known", []],
+    ["other annotation before replacement", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A()\n    unused: object; store = B()\n    return store.get()\n", "known", ["B::get"]],
+    ["other value before bare annotation", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A()\n    unused = object(); store: B\n    return store.get()\n", "known", ["A::get"]],
+    ["same-line bare annotation", "class A:\n    def get(self): return 'A'\nclass B:\n    def get(self): return 'B'\n\ndef known():\n    store = A()\n    store: B; unused = object()\n    return store.get()\n", "known", ["A::get"]],
+  ])('keeps same-line Python receiver uncertainty conservative for %s', async (_case, source, caller, expected) => {
+    await project({ 'app.py': source });
+    expect(calls(caller).filter(call => call.endsWith('::get')).map(call => call.slice(call.indexOf(':') + 1))).toEqual(expected);
+  });
+
+  it.each([
+    ['replacement', 'store = A(); store = B(); return store.get', []],
+    ['stable', 'store = A(); return store.get', ['A::get']],
+  ])('keeps same-line Python method values conservative for %s', async (_case, body, expected) => {
+    await project({ 'app.py': `class A:
+    def get(self): return 1
+class B:
+    def get(self): return 2
+def known():
+    ${body}
+` });
+    const from = graph!.getNodesByKind('function').find(n => n.name === 'known')!;
+    expect(graph!.getOutgoingEdges(from.id).filter(e => e.kind === 'references' && e.metadata?.fnRef === true)
+      .map(e => graph!.getNode(e.target)!.qualifiedName)).toEqual(expected);
   });
 
   it.each(['self', 'cls'])('refuses a captured %s receiver after replacement', async receiver => {

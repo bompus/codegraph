@@ -145,7 +145,7 @@ Call resolution the fork adds:
 - C# namespace `using` directives and `using` aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file (`using static` is still file-wide, as upstream).
 - A Java field declared with a qualified type (`outside.Repository`) keeps its qualifier, so calls through it never resolve to an unrelated project class with the same simple name.
 - Python `super().method()` resolves along the class's C3 method resolution order, starting after the class itself. Upstream resolves it like `self.method()` and drops the link only when it lands on the calling method.
-- Python receivers reassigned on later lines use the latest preceding value in their lexical scope. An unknown replacement leaves the member call unresolved. Calls and method values through a captured receiver stay unlinked when a later replacement makes its invocation-time value uncertain.
+- Python receivers reassigned on later lines use the latest preceding value in their lexical scope. An unknown replacement leaves the member call unresolved. Calls and method values through a captured receiver stay unlinked when a later replacement makes its invocation-time value uncertain. Same-line replacements also stay unlinked when statement order cannot establish a reliable receiver type. Unaliased imports that add submodules to the same package preserve that package receiver.
 - A `require` call creates no file dependency when a local binding shadows `require`.
 
 **Server endpoints**

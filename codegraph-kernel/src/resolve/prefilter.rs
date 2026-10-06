@@ -601,10 +601,11 @@ impl KernelResolver {
         Ok(Some(latest.unwrap_or(binding).clone()))
     }
 
-    /// A closure reads its captured cell when invoked, not when defined.
-    /// Without invocation-order evidence, a later replacement cannot supply
-    /// one reliable receiver type. A single future initialization is retained.
-    pub(super) fn python_captured_receiver_mutates(&mut self, site: &ResolveRefIn) -> Res<bool> {
+    /// Same-line bindings cannot select a reliable replacement by line alone.
+    /// A closure also reads its captured cell when invoked, not when defined;
+    /// a later replacement leaves its receiver uncertain. A single future
+    /// initialization is retained when there is no competing replacement.
+    pub(super) fn python_receiver_uncertain(&mut self, site: &ResolveRefIn) -> Res<bool> {
         if site.language != "python" || !matches!(site.reference_kind.as_str(), "calls" | "references" | "function_ref") {
             return Ok(false);
         }
@@ -619,20 +620,51 @@ impl KernelResolver {
         let Some(binding) = self.receiver_binding(root, site)? else { return Ok(false) };
         let rows = self.bindings(&site.file_path)?;
         let mut lines = Vec::new();
+        let mut same_line_package_import_seen = false;
         for row in rows.iter().filter(|row| row.name == root
             && row.scope_start == binding.scope_start && row.scope_end == binding.scope_end)
         {
             if self.python_annotation_only(row, site) { continue; }
             // Importing another submodule retains the same package object.
-            if row.line != binding.line && binding.kind == "import" && row.kind == "import"
+            if binding.kind == "import" && row.kind == "import"
                 && self.python_package_import(&binding, site) && self.python_package_import(row, site)
             {
-                continue;
+                if row.line != binding.line || same_line_package_import_seen { continue; }
+                same_line_package_import_seen = true;
             }
             lines.push(row.line);
         }
         let selected = lines.iter().filter(|line| **line <= site.line).max()
             .or_else(|| lines.iter().min());
+        // Binding rows retain lines, not statement offsets. A tied selected
+        // line cannot reliably identify the assignment, even for direct calls.
+        if selected.is_some_and(|line| lines.iter().filter(|other| *other == line).count() > 1)
+            || (binding.line == site.line && lines.iter().any(|line| *line < site.line))
+        {
+            return Ok(true);
+        }
+        // Keep a lone same-line assignment only when its value is established
+        // before the call. A call in its initializer still reads the old value.
+        if binding.line == site.line {
+            if let Some(source) = self.read_file(&site.file_path) {
+                let text = source.text();
+                if let Some(tree) = self.parsed_tree(&source, site) {
+                    let point = tree_sitter::Point::new((site.line - 1).max(0) as usize, site.column.max(0) as usize);
+                    let mut nodes = vec![tree.root_node()];
+                    while let Some(node) = nodes.pop() {
+                        if node.start_position().row > point.row || node.end_position().row < point.row { continue; }
+                        if node.kind() == "assignment" && node.child_by_field_name("right").is_some()
+                            && node.child_by_field_name("left").is_some_and(|target|
+                                target.kind() == "identifier" && &text[target.start_byte()..target.end_byte()] == root)
+                            && node.end_position() >= point
+                        {
+                            return Ok(true);
+                        }
+                        nodes.extend(named_children(node));
+                    }
+                }
+            }
+        }
         if !selected.is_some_and(|line| lines.iter().any(|next| *next > site.line.max(*line))) {
             return Ok(false);
         }
@@ -689,20 +721,37 @@ impl KernelResolver {
         let row = (binding.line - 1).max(0) as usize;
         let Some(line) = file.get(row) else { return false };
         let trimmed = line.trim_start();
-        if trimmed.strip_prefix(&binding.name).is_some_and(|tail| tail.trim_start().starts_with('=')) {
-            return false;
-        }
+        if trimmed.strip_prefix(&binding.name).is_some_and(|tail| {
+            let tail = tail.trim_start();
+            tail.starts_with('=') && !tail.starts_with("==")
+        }) { return false; }
         let Some(tree) = self.parsed_tree(&file, site) else { return false };
-        let point = tree_sitter::Point::new(row, line.len() - trimmed.len());
-        let mut node = tree.root_node().named_descendant_for_point_range(point, point);
-        while let Some(current) = node {
-            if current.kind() == "assignment" {
-                return current.child_by_field_name("type").is_some()
-                    && current.child_by_field_name("right").is_none();
+        let text = file.text();
+        let mut annotation = false;
+        let mut nodes = vec![tree.root_node()];
+        while let Some(node) = nodes.pop() {
+            if node.start_position().row > row || node.end_position().row < row { continue; }
+            if node.kind() == "assignment" && node.start_position().row == row {
+                if let Some(target) = node.child_by_field_name("left") {
+                    let mut targets = vec![target];
+                    let mut binds_name = false;
+                    while let Some(target) = targets.pop() {
+                        if matches!(target.kind(), "attribute" | "subscript") { continue; }
+                        if target.kind() == "identifier" && &text[target.start_byte()..target.end_byte()] == binding.name.as_str() {
+                            binds_name = true;
+                            break;
+                        }
+                        targets.extend(named_children(target));
+                    }
+                    if binds_name {
+                        if node.child_by_field_name("right").is_some() { return false; }
+                        annotation |= node.child_by_field_name("type").is_some();
+                    }
+                }
             }
-            node = current.parent();
+            nodes.extend(named_children(node));
         }
-        false
+        annotation
     }
 }
 
