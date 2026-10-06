@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`f40db4b9`](https://github.com/colbymchenry/codegraph/commit/f40db4b9ccdda007cb9a7076419ee268c4ef6b9f) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`aeb8f955`](https://github.com/colbymchenry/codegraph/commit/aeb8f95581f23946d04b5ae9b3dbda918f5a7700) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -70,11 +70,13 @@ npm link               # puts `codegraph` on your PATH
 codegraph install      # wires CodeGraph into your agents
 ```
 
+Later-exported TypeScript and JavaScript store actions are read from AST export facts, including files with LF, CRLF or CR line endings.
+
 Then run `codegraph init` in each project, as in [Get Started](#get-started). Indexes built by upstream releases should be rebuilt (`codegraph index --force`), because the fork writes tables and node kinds that upstream does not.
 
 ### What the fork adds
 
-Compared with upstream `main` at `f40db4b9` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `aeb8f955` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|

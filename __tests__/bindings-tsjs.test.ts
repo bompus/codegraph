@@ -261,3 +261,25 @@ describe.skipIf(!kernelBuilt)('TS/JS bindings: generic-extractor and SFC paths',
     expect(go!.nodeId).toBe(result.nodes.find((n) => n.name === 'go')!.id);
   });
 });
+
+// Protect the later-exported Zustand shape from upstream #2364 at the native
+// extraction boundary; the fork answers exports from AST binding facts.
+describe.skipIf(!kernelBuilt)('later-exported store actions across line endings', () => {
+  describe.each([
+    ['ts', 'typescript'], ['tsx', 'tsx'], ['js', 'javascript'], ['jsx', 'jsx'],
+  ] as const)('%s', (ext, language) => {
+    it.each(['\n', '\r\n', '\r'])('keeps actions with %j line endings', (ending) => {
+      const source = [
+        'import { create } from "zustand";',
+        'const useStore = create((set) => ({ inc: () => set({}) }));',
+        'export default useStore;',
+        '',
+      ].join(ending);
+      const result = tryKernelExtract(`store.${ext}`, source, language);
+      expect(result?.nodes.some((node) => node.kind === 'function' && node.name === 'inc')).toBe(true);
+      expect(by(result?.bindings ?? [], 'useStore', 'decl')).toMatchObject({
+        exportedAs: 'default', exportForm: 'esm-default',
+      });
+    });
+  });
+});
