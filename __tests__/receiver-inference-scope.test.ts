@@ -186,3 +186,44 @@ class Child(${bases}):
     expect(edges('inherited', 'references')).toEqual(['11:Store::fetch']);
   });
 });
+
+describe('Go method values keep package and promotion scope', () => {
+  it('uses the caller package type despite a same-named type in another package', async () => {
+    await project({
+      'main.go': 'package main\ntype Store struct{}\nfunc (s Store) Ping() {}\nfunc caller() { _ = Store.Ping }\n',
+      'other/store.go': 'package other\ntype Store struct{}\nfunc (s Store) Ping() {}\n',
+    });
+    expect(edges('caller', 'references')).toEqual(['4:Store::Ping']);
+    const caller = graph!.getNodesByKind('function').find(n => n.name === 'caller')!;
+    expect(graph!.getOutgoingEdges(caller.id).filter(e => e.kind === 'references')
+      .map(e => graph!.getNode(e.target)!.filePath)).toEqual(['main.go']);
+  });
+
+  it.each([
+    ['two owners', 'type Left struct{}\nfunc (s Left) Ping() {}\ntype Right struct{}\nfunc (s Right) Ping() {}\ntype Store struct { Left; Right }', []],
+    ['diamond', 'type Base struct{}\nfunc (s Base) Ping() {}\ntype Left struct{ Base }\ntype Right struct{ Base }\ntype Store struct { Left; Right }', []],
+    ['shallower owner', 'type Base struct{}\nfunc (s Base) Ping() {}\ntype Left struct{}\nfunc (s Left) Ping() {}\ntype Right struct{ Base }\ntype Store struct { Left; Right }', ['Left::Ping']],
+    ['cycle', 'type Left struct { *Store }\ntype Store struct { *Left }', []],
+    ['anonymous field before embed', 'type Base struct{}\nfunc (s Base) Ping() {}\ntype Store struct { Field struct { Base }; Base }', ['Base::Ping']],
+  ])('keeps promoted method values unambiguous for %s', async (_label, declarations, targets) => {
+    await project({ 'main.go': `package main\n${declarations}\nfunc caller(s Store) { _ = s.Ping }\n` });
+    const caller = graph!.getNodesByKind('function').find(n => n.name === 'caller')!;
+    expect(graph!.getOutgoingEdges(caller.id).filter(e => e.kind === 'references')
+      .map(e => graph!.getNode(e.target)!.qualifiedName).sort()).toEqual([...targets, 'Store'].sort());
+  });
+
+  it.each(['calls', 'references'] as const)('keeps a typed receiver shadowing an imported alias for %s', async (kind) => {
+    await project({
+      'main.go': `package main
+import "fmt"
+type Printer struct{}
+func (s Printer) Println() {}
+func caller(fmt Printer) { ${kind === 'calls' ? 'fmt.Println()' : '_ = fmt.Println'} }
+func unknown(fmt any) { ${kind === 'calls' ? 'fmt.Println()' : '_ = fmt.Println'} }
+`,
+    });
+    expect(edges('caller', kind)).toEqual(kind === 'calls'
+      ? ['5:Printer::Println'] : ['5:Printer', '5:Printer::Println']);
+    expect(edges('unknown', kind)).toEqual([]);
+  });
+});

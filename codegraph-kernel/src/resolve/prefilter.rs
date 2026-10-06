@@ -49,7 +49,8 @@ impl KernelResolver {
         // owns `pkg.member` names (isBindingReceiverCall, index.ts).
         if r.language == "go" && !is_binding_receiver_call(r) {
             if let Some(dot) = name.find('.') {
-                if dot > 0 && GO_STDLIB_PACKAGES.contains(&name[..dot]) {
+                if dot > 0 && GO_STDLIB_PACKAGES.contains(&name[..dot])
+                    && !self.is_shadowed_import(&name[..dot], r).unwrap_or(false) {
                     return true;
                 }
             }

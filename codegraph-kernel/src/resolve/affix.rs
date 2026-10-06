@@ -290,6 +290,7 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
             rp("", r"\s+\*?([a-z_][A-Za-z0-9_]*\.[A-Z][A-Za-z0-9_]*)(?:\s*[,)]|\s*$)", true, false, false, 0),
             both(r"\s*:=\s*&?([A-Za-z_][A-Za-z0-9_.]*)\s*\{", b":", 0),
             rp(r"(?-u:\b)var\s+", r"\s+\*?([A-Za-z_][A-Za-z0-9_.]*)", false, false, false, 0),
+            rp(r"(?:^|[(,])\s*", r"\s+\*?([a-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*(?:[,)]|$)", false, false, false, 0),
             rp("", r"\s+\*?([A-Z][A-Za-z0-9_.]*)", true, false, false, 0),
         ],
     );

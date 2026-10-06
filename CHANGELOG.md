@@ -91,6 +91,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Vue template attributes decode HTML entities before finding calls, so quoted strings do not create false callers and helper calls retain their source positions.
+
+- Go factory chains retain qualified return types and resolve them through the factory declaration's imports. A local or parameter that shadows a package factory no longer borrows that factory's return type.
+
 - Writer handovers, stale-lock cleanup, readiness updates and releases now share an OS file lock, preventing a competing launcher from overwriting a newer writer. The OS releases coordination locks on process exit. Contended retirement retries release while the owner stays alive; legacy daemons without coordinated handover stay running until their old sessions are restarted.
 
 - Python member calls no longer keep a receiver's original type after it is reassigned on a later line.
@@ -304,6 +308,46 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A file is no longer saved with no symbols when its language parser can't be loaded, which is what happened to every file a background server re-indexed after an upgrade removed its install: the file keeps what it had and is indexed again once the parser loads, and files an earlier version emptied this way are re-indexed by the next sync. A background server also exits on its own once its install is upgraded or removed, so the next session starts one from the current install. Thanks @lipchey for the report. (#2335)
 
 - `codegraph status` no longer says the index is up to date while indexed files are missing their symbols: it now names files the parser couldn't read and files stored without their symbols (which `codegraph sync` repairs), `status --json` counts both, and `codegraph files --json` lists each file's recorded errors. Thanks @lipchey for the report. (#2336)
+
+- In C#, a field or property initializer like `private readonly ILogger _log = LogManager.GetLogger(typeof(X));` or `public List<Foo> Items { get; } = new();` now links what it calls, creates and reads, including inside a lambda, and a target-typed `new()` there counts as creating the declared type. Before, initializers were skipped, so a method or class used only from one — like a converter created in a static list — looked unused, and a method passed as a value there was credited to the whole class instead of the field or property.
+
+- In C# and VB.NET, a constant no longer stands in for a type with the same name: `new Station { … }` links to class `Station` even when another class declares `private const string Station`, `new Version(…)` no longer links to a `const string Version`, and a field like `static readonly Meter Meter` no longer points at itself. Thanks @EvanYu1980 for the report and @drakeo338. (#2337)
+
+- In VB.NET, a call on a variable, parameter, field or property now reaches a method of the type it is declared with — one that type inherits, or an extension method written for it — and nothing when that type comes from outside your project, instead of any project method that merely shares the name.
+
+- In VB.NET, a call to one of .NET's own methods such as `Add`, `Contains`, `Clear` or `Dispose` on a value whose type isn't known is no longer linked to a project method of that name, unless the value is named after that method's class.
+
+- In VB.NET, a type name is looked up the way VB.NET does it — through the namespaces around it, the file's and project's `Imports` (aliases included), and the caller's own project — so a class declared in several namespaces or projects no longer draws every call to whichever copy was indexed first, and two candidates nothing tells apart get no link at all.
+
+- In VB.NET, a call with no receiver, or on `Me`, now reaches only a member of the class it is written in, of a class it inherits, or of a Module, and no longer a nearby class's member of the same name.
+
+- VB.NET designer code such as `New System.Drawing.Point(…)` or `Me.Size = New System.Drawing.Size(…)` is no longer linked to a project type or member that only shares the name, and a class nested inside another is matched by its bare name only from inside that class or one that inherits it.
+
+- Python global-write inference validates the local binding before scanning other files. The native resolver retains its bounded source and name caches.
+
+- In VB.NET, reading or setting a `Shared` field or property through its class or module name, like `AppSession.SessionId`, `AppSession.CurrentUser = "demo"` or `AppSession.Items(0)`, now counts as a use of that member and of the class, and so do reading an `Enum` value like `Mode.Fast` and calling a `Shared` function without parentheses. Before, only calls written with parentheses were linked, so `codegraph callers` on such a field, property or class came back empty and impact missed most of the code that depends on it. A local, parameter or field that only shares a class's name is not mistaken for the class. Thanks @serkanince for the report and @ChrisPrapas. (#2305)
+
+- In Vue and Nuxt components, calls written in the template (`{{ formatDate(post) }}`, `:to="getAccountRoute(account)"`, `@click="save(item)"`) and calls in a destructuring declaration at the top of `<script setup>` or of a TypeScript or JavaScript file (`const { t } = useI18n()`) now link to the function they call, so `callers` and impact for a composable or helper used this way are no longer mostly empty. A `v-for` item or slot prop is never taken for a project function, a handler like `@click="open = false"` no longer links to an unrelated function of the same name, and a component's own function named like a Nuxt helper, such as `clearError`, is now the one its calls reach. Thanks @deniskern for the report, and @drakeo338 and @L0garithmic. (#2340)
+
+- In COBOL, asking `codegraph_explore` (or `codegraph explore` and `codegraph context`) about a copybook by name, such as `CVACT01Y` or a member brought in with `EXEC SQL INCLUDE`, now answers with the copybook's own source when it is indexed and every `COPY` or `EXEC SQL INCLUDE` statement that includes it, and says so when the copybook's source isn't part of the project. Before, it answered "No relevant code found", or showed an unrelated program whose name was a letter or two away. Thanks @popolusiak for the report. (#2342)
+
+- In Dart, reading a getter such as `box.area` or `status.label` now counts as calling it, so `codegraph callers` and impact list the code that reads it — whether the getter is declared on the class, inherited, or added by an extension — and a method an extension adds to an enum, like `shape.shout()`, now links as well. A plain field, a getter of a type from outside your project, or a value whose type isn't written down still links nothing. Re-index Dart projects after upgrading. Thanks @brookly255-lv for the report. (#2338)
+
+- In Dart, a type is now linked from more of the places it is written, not only from parameters and return types: the type an `extension … on` targets, a field's type, a top-level variable's type, generic arguments such as `Future<Report?>.value(null)` or Riverpod's `final reportProvider = Family<Report?, String>()`, and a local variable's type, a cast or a type check inside a function. So `callers` and impact for a model class now reach the extensions, models and providers that use it. Thanks @mg-mg-mg for the report. (#2327)
+
+- In Go, calls through a method receiver or parameter of an unexported type, the usual shape of gRPC and HTTP handlers (`s.service.AddItem()` inside `func (s *server) Create()`), now resolve, and always within that type's own package: another package's `server` with a same-named method no longer takes the call, and a method the type gets from a struct or interface it embeds is found too. Re-index Go projects after upgrading. Thanks @GoDiao for the report and the fix. (#2323)
+
+- In Go, calls into a module whose `go.mod` is not at the project root now resolve, whether it is a `server/` backend next to a `web/` frontend or one of several modules side by side as in etcd, so calls like `store.New()` and `s.db.CreateItem()` find their targets instead of being treated as calls into a third-party package. A name written through a package, like a `job.OPCommand` result type or a field of type `artifact.Manager`, now links to that package's symbol rather than a same-named one elsewhere, which also corrects links in projects with a single `go.mod`. Re-index Go projects after upgrading. Thanks @GoDiao for the report and @danusha2345 for the fix. (#2322)
+
+- JavaScript and TypeScript named-object resolution reuses scoped file facts and releases them when the resolver closes.
+
+- The time `codegraph init` and `codegraph index` print beside the node and edge counts now covers the whole run, resolving references and linking included, and `codegraph sync` reports its whole run the same way. Before, it counted only reading and parsing the files, which can be a small part of an index, so a slow index looked fast. Thanks @bompus for the report. (#2334)
+
+- In Rust, code that uses an enum only through its variants, like `mode::Mode::A` in an expression, a `Mode::B =>` match arm or `Self::A` inside the enum's own `impl`, now shows up in that enum's callers and impact, linked to the enum that actually declares the variant rather than to a same-named type elsewhere. Standard-library variants like `Ordering::Less` or `Option::Some` and associated items like `Foo::new()` or `Foo::MAX` don't count as using a project enum. Re-index Rust projects after upgrading. Thanks @mg-mg-mg for the report and @danusha2345. (#2328)
+
+- Axum routes now link to their handler when rustfmt wraps the `.route(` call so the handler sits on a later line, and when the handler's name also appears elsewhere on the line, as in `delete(handlers::user::delete)` or `.route("/login", post(handlers::user::login))`; Actix's `web::resource(…)` and `.route(…)` registrations get the same fix. A call inside a closure handler is no longer mistaken for a route, and an Actix resource no longer takes the next route's handler as its own. Thanks @mg-mg-mg for the report and @danusha2345. (#2326)
+
+- In JavaScript and TypeScript, the functions written inside a named object literal are now symbols of their own even when the object isn't exported: a plain `const api = { load() {…} }`, an object declared inside an IIFE or a function, and a namespace hung on the page or on another object, like `window.App = { init() {…} }`, `App.utils = {…}` or `dw_page = {…}`. Calls such as `api.load()`, `window.App.init()`, `App.utils.pad()`, a sibling's `this.render()`, and `App.init()` from another script on the page now reach them, the calls made inside a member belong to that member instead of the object, and a bare `init()` is no longer taken for `App.init`, so script-tag apps no longer lose most of their code from `callers` and impact. A member's qualified name now carries its object, exported or not (`api::load`, `window.App::init`), so asking for `App.init` finds it. Re-index JavaScript and TypeScript projects after upgrading. Thanks @tkhoaaa for the report and @danusha2345. (#2300)
 #### MCP / indexing
 
 - Full indexes of large projects no longer sometimes run two to three times slower than usual. A timing clash between two background database maintenance steps could switch reference resolution from several threads to one partway through.

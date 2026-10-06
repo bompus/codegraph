@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`dea076fd`](https://github.com/colbymchenry/codegraph/commit/dea076fd1e9fa3e236e93fa915bb0feebe73579d) (after v1.6.2, merged 2026-10-05) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`f40db4b9`](https://github.com/colbymchenry/codegraph/commit/f40db4b9ccdda007cb9a7076419ee268c4ef6b9f) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -74,7 +74,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `dea076fd` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `f40db4b9` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -107,6 +107,14 @@ Compared with upstream `main` at `dea076fd` (after v1.6.2). Each item here and i
 The other languages are the same in both, listed under [Supported Languages](#supported-languages).
 
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
+
+C# field and property initializers retain their calls and references under the member that owns them. VB.NET resolves typed receivers, enclosing and inherited members, and Shared member reads without choosing unrelated project declarations.
+
+Go imports follow the nearest indexed module and the longest matching module path. Unexported receivers and embedded methods stay in their declaring package. Dart getter reads become calls only when the receiver type reaches that getter; enum extensions and type-position references participate in resolution. Rust enum-variant values retain their enum references.
+
+Named JavaScript and TypeScript object literals own their function members, including local objects and classic-script global assignments. Member calls follow the visible object; bare names do not expose unrelated properties. Vue template expressions contribute calls to script bindings while preserving component ownership. Encoded attribute expressions retain their original source positions, and template-local bindings stay within their scope.
+
+A COBOL copybook named in an explore query prioritizes its indexed source and lists its COPY and EXEC SQL INCLUDE sites. Missing indexed source is reported explicitly.
 
 `codegraph status` reports files that need re-indexing and files with recorded parse errors. `status --json` includes `index.filesNeedingReindex` and `index.filesWithParseErrors`; `files --json` includes each file's extraction errors. A transient parser failure preserves the previous graph and retries on the next sync.
 

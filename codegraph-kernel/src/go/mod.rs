@@ -38,11 +38,6 @@ fn go_two_hop_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z_][0-9A-Za-z_]*\.[A-Za-z_][0-9A-Za-z_]*$").unwrap())
 }
-fn bracket_args_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").unwrap())
-}
-
 // Grouped var declarations wrap their specs in var_spec_list; constants and
 // ungrouped declarations expose specs directly. Share that grammar boundary
 // between symbol extraction and binding collection.
@@ -252,22 +247,22 @@ impl<'t> Walker<'t> {
         if result.kind() == "parameter_list" {
             let first = named_kids(result)
                 .find(|c| c.kind() == "parameter_declaration")?;
-            result = first.child_by_field_name("type").unwrap_or(first);
+            result = first.child_by_field_name("type")?;
         }
         if result.kind() == "pointer_type" {
-            result = named_kids(result)
-                .find(|c| matches!(c.kind(), "type_identifier" | "qualified_type" | "generic_type"))
-                .unwrap_or(result);
+            result = named_kids(result).find(|c| {
+                matches!(c.kind(), "type_identifier" | "qualified_type" | "generic_type")
+            })?;
         }
-        let text = self.text(result).trim();
-        let text = text.strip_prefix('*').unwrap_or(text);
-        let text = crate::textutil::generic_args_re().replace_all(text, "");
-        let text = bracket_args_re().replace_all(&text, "");
-        let last = text.rsplit('.').next().unwrap_or("").trim().to_string();
-        if last.is_empty() || !crate::textutil::ascii_ident_re().is_match(&last) {
+        if !matches!(result.kind(), "type_identifier" | "qualified_type" | "generic_type") {
             return None;
         }
-        Some(last)
+        let text = self.text(result).trim();
+        let base = text.split_once('[').map_or(text, |(base, _)| base).trim();
+        let valid = base.split('.').all(|part| {
+            !part.is_empty() && crate::textutil::ascii_ident_re().is_match(part)
+        });
+        (valid && base.split('.').count() <= 2).then(|| base.to_string())
     }
 
     /// goExtractor.getReceiverType: the regex over the receiver's text.

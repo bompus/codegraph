@@ -776,3 +776,151 @@ impl KernelResolver {
         }
     }
 }
+
+pub(super) fn is_dart_member_read(r: &ResolveRefIn) -> bool {
+    r.language == "dart" && r.reference_kind == "references"
+        && re!(r"^[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z_$][A-Za-z0-9_$]*$")
+            .is_match(&r.reference_name)
+}
+
+impl KernelResolver {
+    fn dart_lineage(&mut self, type_name: &str) -> Res<Rc<HashMap<String, u32>>> {
+        if let Some(hit) = self.dart_lineage_memo.get(type_name) { return Ok(hit.clone()); }
+        let mut queue = VecDeque::from([(type_name.to_string(), 0u32)]);
+        let mut depths = HashMap::new();
+        while depths.len() < 40 {
+            let Some((name, depth)) = queue.pop_front() else { break };
+            if depths.contains_key(&name) { continue; }
+            depths.insert(name.clone(), depth);
+            for sup in self.dart_supertypes_of(&name)?.iter() {
+                queue.push_back((sup.clone(), depth + 1));
+            }
+        }
+        let depths = Rc::new(depths);
+        self.dart_lineage_memo.insert(type_name.to_string(), depths.clone());
+        Ok(depths)
+    }
+
+    fn dart_extension_owner(&mut self, member: &KNode) -> Res<Option<(Vec<String>, bool)>> {
+        if let Some(hit) = self.dart_extension_owner_memo.get(&member.id) { return Ok(hit.clone()); }
+        let found = if let Some(cut) = member.qualified_name.rfind("::") {
+            let qn = &member.qualified_name[..cut];
+            let owner = self.nodes_in_file(&member.file_path)?.iter().find(|n|
+                n.qualified_name == qn && n.kind == "class"
+                && n.start_line <= member.start_line && n.end_line >= member.start_line
+            ).cloned();
+            if let Some(owner) = owner {
+                let head = self.dart_head_of(&owner);
+                if head.extension {
+                    // An unnamed extension is `extension on T`; a named one is
+                    // `extension Name<T> on T`. Extension types are excluded by dart_head_of.
+                    let named = self.read_file(&owner.file_path).is_some_and(|lines| {
+                        let from = (owner.start_line - 1).max(0) as usize;
+                        let to = (owner.start_line + 5).max(0) as usize;
+                        let text = lines.iter().skip(from).take(to.saturating_sub(from)).cloned().collect::<Vec<_>>().join("\n");
+                        let text = re!(r"/\*(?s:.)*?\*/|//[^\n]*").replace_all(&text, " ");
+                        re!(r"(?-u:\b)extension\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+                            .captures(&text).is_some_and(|m| &m[1] != "on" && &m[1] != "type")
+                    });
+                    Some((head.supers, named))
+                } else { None }
+            } else { None }
+        } else { None };
+        self.dart_extension_owner_memo.insert(member.id.clone(), found.clone());
+        Ok(found)
+    }
+
+    fn is_dart_getter(&mut self, n: &KNode) -> bool {
+        if n.language != "dart" || n.kind != "method" { return false; }
+        if let Some(hit) = self.dart_getter_memo.get(&n.id) { return *hit; }
+        let getter = self.read_file(&n.file_path).is_some_and(|lines| {
+            let first = lines.get((n.start_line - 1).max(0) as usize).map(String::as_str).unwrap_or("");
+            let next = lines.get(n.start_line.max(0) as usize).map(String::as_str).unwrap_or("");
+            let head = format!("{} {}", super::names::js_slice(first, n.start_column.max(0) as usize), next);
+            Self::cached_regex(&format!(r"^[^={{;]*?(?-u:\b)get\s+{}(?:$|[^A-Za-z0-9_$])", regex::escape(&n.name)))
+                .ok().is_some_and(|pattern| pattern.is_match(&head))
+        });
+        self.dart_getter_memo.insert(n.id.clone(), getter);
+        getter
+    }
+
+    /// Returns the member and whether an extension supplies it.
+    pub(super) fn dart_member_of(&mut self, type_name: &str, name: &str,
+        r: &ResolveRefIn, getters_only: bool) -> Res<Option<(Arc<KNode>, bool)>> {
+        let lineage = self.dart_lineage(type_name)?;
+        let candidates: Vec<_> = self.nodes_by_name(name)?.iter().cloned().collect();
+        let mut best: Option<(Arc<KNode>, u32)> = None;
+        for n in candidates {
+            if n.language != "dart" || !is_dart_member(&n)
+                || (getters_only && !self.is_dart_getter(&n)) { continue; }
+            let rank = if let Some((on, named)) = self.dart_extension_owner(&n)? {
+                if !named && n.file_path != r.file_path { continue; }
+                let Some(depth) = on.iter().filter_map(|t| lineage.get(t)).min() else { continue };
+                DART_EXTENSION_RANK + *depth
+            } else {
+                let owner = n.qualified_name.rsplit_once("::").map(|(o, _)| o.rsplit("::").next().unwrap_or(o)).unwrap_or("");
+                let Some(depth) = lineage.get(owner) else { continue };
+                *depth
+            };
+            let replace = best.as_ref().is_none_or(|(old, old_rank)| {
+                rank < *old_rank || (rank == *old_rank && (
+                    (n.file_path == r.file_path && old.file_path != r.file_path)
+                    || (old.file_path != r.file_path && n.file_path != r.file_path
+                        && super::names::compute_path_proximity(&r.file_path, &n.file_path)
+                            > super::names::compute_path_proximity(&r.file_path, &old.file_path))
+                ))
+            });
+            if replace { best = Some((n, rank)); }
+        }
+        Ok(best.map(|(n, rank)| (n, rank >= DART_EXTENSION_RANK)))
+    }
+
+    /// Dart fields have no graph nodes. Reuse the source-backed member scan.
+    pub(super) fn infer_dart_field_receiver_type(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+        if r.language != "dart" || !re!(r"^[A-Za-z_$][A-Za-z0-9_$]*$").is_match(receiver) { return Ok(None); }
+        let nodes = self.nodes_in_file(&r.file_path)?;
+        let cls = nodes.iter().filter(|n| n.language == "dart" && is_dart_type_kind(&n.kind)
+            && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line).cloned();
+        let Some(cls) = cls else { return Ok(None) };
+        // An untyped local/parameter must not revive an enclosing field.
+        if let Some(f) = nodes.iter().filter(|n| n.language == "dart" && matches!(n.kind.as_str(), "method" | "function")
+            && n.start_line <= r.line && n.end_line >= r.line).max_by_key(|n| n.start_line) {
+            if let Some(lines) = self.read_file(&f.file_path) {
+                let body = lines.iter().skip((f.start_line - 1).max(0) as usize)
+                    .take((r.line - f.start_line + 1).max(0) as usize).cloned().collect::<Vec<_>>().join("\n");
+                let pattern = Self::cached_regex(&format!(r"(?-u:\b)(?:var|final|dynamic)\s+{}(?:$|[^A-Za-z0-9_$])", regex::escape(receiver)))?;
+                if pattern.is_match(&body) { return Ok(None); }
+            }
+        }
+        let mut queue = VecDeque::from([cls]);
+        let mut seen = HashSet::new();
+        while seen.len() < 8 {
+            let Some(decl) = queue.pop_front() else { break };
+            if !seen.insert(decl.id.clone()) { continue; }
+            if let Some(ty) = self.declared_member_type(&decl, receiver)? { return Ok(Some(ty)); }
+            for sup in self.dart_head_of(&decl).supers {
+                queue.extend(self.nodes_by_name(&sup)?.iter().filter(|n| n.language == "dart" && is_dart_type_kind(&n.kind)).cloned());
+            }
+        }
+        Ok(None)
+    }
+
+    pub(super) fn match_dart_member_read(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        let Some((receiver, member)) = r.reference_name.split_once('.') else { return Ok(None) };
+        let candidates: Vec<_> = self.nodes_by_name(member)?.iter().cloned().collect();
+        if !candidates.iter().any(|n| self.is_dart_getter(n)) { return Ok(None); }
+        let names = self.nodes_by_name(receiver)?;
+        let project_type = receiver.starts_with(|c: char| c.is_ascii_uppercase())
+            && names.iter().any(|n| n.language == "dart" && is_dart_type_kind(&n.kind));
+        let ty = if project_type { Some(receiver.to_string()) } else {
+            match self.infer_local_receiver_type(receiver, r, false)? {
+                Some(ty) => Some(ty),
+                None => self.infer_dart_field_receiver_type(receiver, r)?,
+            }
+        };
+        let Some(ty) = ty else { return Ok(None) };
+        Ok(self.dart_member_of(&ty, member, r, true)?.map(|(node, _)| KCand {
+            node, confidence: 0.9, resolved_by: "instance-method",
+        }))
+    }
+}

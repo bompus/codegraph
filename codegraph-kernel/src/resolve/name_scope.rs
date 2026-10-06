@@ -187,7 +187,7 @@ fn rust_glob_covers(uses: &RustScopeUses, candidate: &KNode, r: &ResolveRefIn) -
 /// A property, a method (a constructor is one), an enum case or a field
 /// shares a type's name, not its meaning.
 pub(super) fn can_name_in_type_position(n: &KNode) -> bool {
-    !matches!(n.kind.as_str(), "property" | "method" | "enum_member" | "field")
+    !matches!(n.kind.as_str(), "property" | "method" | "enum_member" | "field" | "constant")
 }
 
 /// A bare Rust reference name — the ones the scope filter applies to.
@@ -252,6 +252,21 @@ impl KernelResolver {
     /// the prelude's unless the file defines it or imports a project item of
     /// that name.
     pub(super) fn is_rust_name_in_scope(&mut self, candidate: &KNode, r: &ResolveRefIn) -> bool {
+        if r.language == "rust" && r.reference_kind == "references" {
+            if let Some(lines) = self.read_file(&r.file_path) {
+                if let Some(line) = lines.get((r.line - 1).max(0) as usize) {
+                    let at = js_slice(line, r.column.max(0) as usize);
+                    let via_self = r.reference_name != "Self" && re!(r"^Self\s*::").is_match(at);
+                    let named = at.strip_prefix(&r.reference_name).is_some_and(|tail| !tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
+                    if via_self || named {
+                        if let Some(hit) = re!(r"^\w+\s*::\s*([A-Z]\w*)").captures(at) {
+                            let variant = hit[1].to_string();
+                            if !self.declares_rust_variant(candidate, &variant) { return false; }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(visible) = self.rust_upstream_name_visible(candidate, r) { return visible; }
         let name = r.reference_name.as_str();
         // Bare in the SOURCE: the index keeps `crate::error::Result` by its
@@ -559,5 +574,13 @@ mod tests {
         assert_eq!(rust_module_name("src/glob.rs"), "glob");
         assert_eq!(rust_module_name("src/walk/mod.rs"), "walk");
         assert_eq!(rust_module_name("lib.rs"), "lib");
+    }
+}
+
+impl KernelResolver {
+    fn declares_rust_variant(&self, n: &KNode, variant: &str) -> bool {
+        if n.kind != "enum" { return false; }
+        let qualified = format!("{}::{}", n.qualified_name, variant);
+        self.nodes_in_file(&n.file_path).is_ok_and(|nodes| nodes.iter().any(|m| m.kind == "enum_member" && m.qualified_name == qualified))
     }
 }

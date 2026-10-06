@@ -515,46 +515,45 @@ impl KernelResolver {
         Ok(n.file_path != r.file_path || n.start_line < f.start_line || n.start_line > f.end_line)
     }
 
+    pub(super) fn go_ref_qualifier(&mut self, r: &ResolveRefIn) -> Res<Option<KImport>> {
+        if r.language != "go" || r.reference_kind == "imports" {
+            return Ok(None);
+        }
+        let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);
+        if !re!(r"^[A-Za-z_]\w*$").is_match(name) {
+            return Ok(None);
+        }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else {
+            return Ok(None);
+        };
+        let at = super::names::js_unit_to_byte(line, r.column.max(0) as usize)
+            .min(line.len());
+        let root = if line[at..].starts_with(name) {
+            re!(r"(?:^|[^\w.])([A-Za-z_]\w*)\.$")
+                .captures(&line[..at]).map(|hit| hit[1].to_string())
+        } else {
+            let bare = Self::cached_regex(&format!(
+                r"(?:^|[^\w.]){}\b", regex::escape(name)
+            ))?;
+            if bare.is_match(line) { return Ok(None); }
+            let qualified = Self::cached_regex(&format!(
+                r"(?:^|[^\w.])([A-Za-z_]\w*)\.{}\b", regex::escape(name)
+            ))?;
+            qualified.captures(line).map(|hit| hit[1].to_string())
+        };
+        let Some(root) = root else { return Ok(None) };
+        if self.is_shadowed_import(&root, r)? { return Ok(None); }
+        Ok(self.import_mappings(&r.file_path)?.iter()
+            .find(|imp| imp.local_name == root).cloned())
+    }
+
     pub(super) fn go_external_qualified(&mut self, r: &ResolveRefIn) -> Res<bool> {
         if r.language != "go" || r.reference_kind == "imports" {
             return Ok(false);
         }
-        let name = r
-            .reference_name
-            .rsplit('.')
-            .next()
-            .unwrap_or(&r.reference_name);
-        let Some(lines) = self.read_file(&r.file_path) else {
-            return Ok(false);
-        };
-        let Some(line) = lines.get((r.line - 1).max(0) as usize) else {
-            return Ok(false);
-        };
-        let at = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
-        let root = if line[at..].starts_with(name) {
-            re!(r"(?:^|[^\w.])([A-Za-z_]\w*)\.$")
-                .captures(&line[..at])
-                .map(|m| m[1].to_string())
-        } else {
-            let re = Self::cached_regex(&format!(
-                r"(?:^|[^\w.])([A-Za-z_]\w*)\.{}\b",
-                regex::escape(name)
-            ))?;
-            re.captures(line).map(|m| m[1].to_string())
-        };
-        let Some(root) = root else {
-            return Ok(false);
-        };
-        let imports = self.import_mappings(&r.file_path)?;
-        let Some(imp) = imports.iter().find(|m| m.local_name == root) else {
-            return Ok(false);
-        };
-        Ok(!imp.source.starts_with('.')
-            && !imp.source.contains("/internal/")
-            && !self
-                .go_module_path
-                .as_ref()
-                .is_some_and(|m| imp.source == *m || imp.source.starts_with(&format!("{m}/"))))
+        let Some(imp) = self.go_ref_qualifier(r)? else { return Ok(false); };
+        Ok(!imp.source.starts_with('.') && !imp.source.contains("/internal/") && self.go_package_dir(&imp.source, &r.file_path).is_none())
     }
 
     pub(super) fn python_fixture_type(
@@ -665,7 +664,8 @@ impl KernelResolver {
             name = regex::escape(name)
         ))
         .ok()?;
-        let path = if line[at..].starts_with(name) {
+        let via_self = r.reference_kind == "references" && name != "Self" && re!(r"^Self\s*::").is_match(&line[at..]);
+        let path = if via_self { None } else if line[at..].starts_with(name) {
             re!(r"((?:[A-Za-z_]\w*\s*::\s*)+)$")
                 .captures(&line[..at])
                 .map(|m| m[1].to_string())

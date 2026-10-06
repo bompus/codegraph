@@ -7,6 +7,14 @@ Language support is automatic from the file extension — there's nothing to con
 
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
 
+C# field and property initializers retain their calls and references under the member that owns them. VB.NET resolves typed receivers, enclosing and inherited members, and Shared member reads without choosing unrelated project declarations.
+
+Go imports follow the nearest indexed module and the longest matching module path. Unexported receivers and embedded methods stay in their declaring package. Dart getter reads become calls only when the receiver type reaches that getter; enum extensions and type-position references participate in resolution. Rust enum-variant values retain their enum references.
+
+Named JavaScript and TypeScript object literals own their function members, including local objects and classic-script global assignments. Member calls follow the visible object; bare names do not expose unrelated properties. Vue template expressions contribute calls to script bindings while preserving component ownership. Encoded attribute expressions retain their original source positions, and template-local bindings stay within their scope.
+
+A COBOL copybook named in an explore query prioritizes its indexed source and lists its COPY and EXEC SQL INCLUDE sites. Missing indexed source is reported explicitly.
+
 | Language | Extensions | Status |
 |---|---|---|
 | TypeScript | `.ts`, `.tsx` | Full support |

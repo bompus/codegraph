@@ -46,6 +46,25 @@ fn visible(scope: Option<(Point, Point)>, point: Point) -> bool {
 }
 
 impl KernelResolver {
+    /// Parameter patterns bind names only within their enclosing function.
+    pub(super) fn js_parameter_binds(&mut self, r: &ResolveRefIn, name: &str) -> bool {
+        let Some(source) = self.read_file(&r.file_path) else { return false };
+        let Some(tree) = self.parsed_tree(&source, r) else { return false };
+        let Some(line) = source.get((r.line - 1).max(0) as usize) else { return false };
+        let point = Point::new((r.line - 1).max(0) as usize,
+            super::names::js_unit_to_byte(line, r.column.max(0) as usize));
+        let mut current = tree.root_node().descendant_for_point_range(point, point);
+        while let Some(node) = current {
+            let parameters = node.child_by_field_name("parameters")
+                .or_else(|| node.child_by_field_name("parameter"));
+            if parameters.is_some_and(|p| destructured_binding_property(p, name, source.text()).is_some()) {
+                return true;
+            }
+            current = node.parent();
+        }
+        false
+    }
+
     pub(super) fn js_typed_destructured_member(
         &mut self,
         r: &ResolveRefIn,
@@ -393,6 +412,10 @@ fn destructured_binding_property(
     text: &str,
 ) -> Option<Option<String>> {
     match pattern.kind() {
+        "required_parameter" | "optional_parameter" => {
+            destructured_binding_property(pattern.child_by_field_name("pattern")
+                .or_else(|| pattern.child_by_field_name("name"))?, name, text)
+        }
         "shorthand_property_identifier_pattern"
             if &text[pattern.start_byte()..pattern.end_byte()] == name =>
         {
@@ -415,7 +438,7 @@ fn destructured_binding_property(
             destructured_binding_property(pattern.child_by_field_name("left")?, name, text)
                 .map(|_| None)
         }
-        "object_pattern" | "array_pattern" | "rest_pattern" => {
+        "object_pattern" | "array_pattern" | "rest_pattern" | "formal_parameters" => {
             super::iteration::named_children(pattern)
                 .into_iter()
                 .find_map(|child| {

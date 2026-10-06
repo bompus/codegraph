@@ -593,7 +593,7 @@ pub(super) fn is_static_member_container(kind: &str) -> bool {
 /// OBJECT_LITERAL_LANGUAGES (name-matcher.ts): object literals declare
 /// callable members.
 pub(super) fn is_object_literal_language(lang: &str) -> bool {
-    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts")
+    matches!(lang, "typescript" | "tsx" | "javascript" | "jsx" | "arkts" | "vue" | "svelte" | "astro")
 }
 
 /// splitCamelCase — receiver/class word split for matchMethodCall's

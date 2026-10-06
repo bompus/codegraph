@@ -47,6 +47,7 @@ import type {
 } from './extraction';
 import type { ReferenceResolver, ResolutionResult } from './resolution';
 import { GraphTraverser, GraphQueryManager } from './graph';
+import { findNamedCopybooks, type NamedCopybook } from './graph/cobol-copybooks';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { logWarn } from './errors';
@@ -2599,6 +2600,11 @@ export class CodeGraph {
    */
   async getCode(nodeId: string): Promise<string | null> {
     return this.contextBuilder.getCode(nodeId);
+  }
+
+  /** Indexed source and include sites for copybooks named in the query. */
+  findNamedCopybooks(query: string): NamedCopybook[] {
+    return findNamedCopybooks(this.queries, query);
   }
 
   /**

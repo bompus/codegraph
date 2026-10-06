@@ -34,7 +34,7 @@ import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
 import { loadProjectAliases, loadScopedAliases, scopedAliasesForFile, type AliasMap, type AliasScope } from './path-aliases';
-import { loadGoModule, type GoModule } from './go-module';
+import { findGoModuleForImport, goModulePackageDir, loadGoModule, type GoModule } from './go-module';
 import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packages';
 import { logDebug } from '../errors';
 import { lexicalPathWithinRoot, safeJsonParse } from '../utils';
@@ -158,7 +158,9 @@ export class ReferenceResolver {
   private projectAliases: AliasMap | null | undefined = undefined;
   private aliasScopes: AliasScope[] | undefined = undefined;
   // go.mod module path. Same lazy/immutable convention as projectAliases.
-  private goModule: GoModule | null | undefined = undefined;
+  private goModuleByDir = new Map<string, GoModule | null>();
+  private goModules: GoModule[] | null = null;
+  private goPackageDirs = new Map<string, string | null>();
   // Monorepo workspace member packages. Same lazy/immutable convention.
   private workspacePackages: WorkspacePackages | null | undefined = undefined;
 
@@ -297,6 +299,8 @@ export class ReferenceResolver {
     this.nodesByKindCache.clear();
     this.fileExistsMemo.clear();
     this.knownFiles = null;
+    this.goModules = null;
+    this.goPackageDirs.clear();
     this.allFilesCache = null;
     this.cachesWarmed = false;
     // The import-resolver's per-context memos assume the
@@ -307,6 +311,43 @@ export class ReferenceResolver {
       clearTypeParameterMemos(this.context);
       clearRustScopeMemos(this.context);
     }
+  }
+
+  private nearestGoModule(dir: string): GoModule | null {
+    const walked: string[] = [];
+    let found: GoModule | null | undefined;
+    for (;;) {
+      found = this.goModuleByDir.get(dir);
+      if (found !== undefined) break;
+      walked.push(dir);
+      found = loadGoModule(path.join(this.projectRoot, dir));
+      if (found || dir === '') break;
+      dir = goDirOf(dir);
+    }
+    for (const d of walked) this.goModuleByDir.set(d, found);
+    return found;
+  }
+
+  /**
+   * The project's Go modules: the root `go.mod`'s, and the nearest `go.mod`
+   * of every directory holding an indexed `.go` file — so an ignored or
+   * vendored tree, which holds no indexed file, adds none, and nothing walks
+   * the disk. The go tool ignores `testdata/` and `_`/`.`-prefixed
+   * directories, so a module there serves only its own files (#2322).
+   */
+  private getGoModules(): GoModule[] {
+    if (this.goModules) return this.goModules;
+    const dirs = new Set<string>(['']);
+    for (const file of this.knownFiles ?? this.queries.getAllFilePaths()) {
+      if (file.endsWith('.go')) dirs.add(goDirOf(file));
+    }
+    const modules = new Set<GoModule>();
+    for (const dir of dirs) {
+      const mod = this.nearestGoModule(dir);
+      if (mod) modules.add(mod);
+    }
+    this.goModules = [...modules];
+    return this.goModules;
   }
 
   /** `readFile` through the LRU content cache (null = read failed, also cached). */
@@ -554,11 +595,15 @@ export class ReferenceResolver {
 
       getScopedAliasesFor: (filePath: string) => scopedAliasesForFile(filePath, this.context.getAliasScopes!()),
 
-      getGoModule: () => {
-        if (this.goModule === undefined) {
-          this.goModule = loadGoModule(this.projectRoot);
-        }
-        return this.goModule;
+      getGoPackageDir: (importPath: string, fromFile?: string) => {
+        const own = fromFile === undefined ? null : this.nearestGoModule(goDirOf(fromFile));
+        const key = `${importPath}\0${own?.rootDir ?? ''}`;
+        const hit = this.goPackageDirs.get(key);
+        if (hit !== undefined) return hit;
+        const mod = findGoModuleForImport(importPath, this.getGoModules().filter(m => !/(?:^|\/)(?:testdata|[_.][^/]*)(?:\/|$)/.test(path.relative(this.projectRoot, m.rootDir).split(path.sep).join('/'))), own);
+        const dir = mod ? goModulePackageDir(importPath, mod, this.projectRoot) : null;
+        this.goPackageDirs.set(key, dir);
+        return dir;
       },
 
       getWorkspacePackages: () => {
@@ -783,7 +828,7 @@ export class ReferenceResolver {
     if (!snapshot) this.queries.mapWalIndex();
     const aliases = this.context.getProjectAliases?.() ?? null;
     const workspaces = this.context.getWorkspacePackages?.() ?? null;
-    const goModule = this.context.getGoModule?.() ?? null;
+
     const toKv = (m: Map<string, string> | undefined): { key: string; value: string }[] =>
       m ? [...m].map(([key, value]) => ({ key, value })) : [];
     return new kernelModule.KernelResolver({
@@ -804,7 +849,7 @@ export class ReferenceResolver {
             localLinkNames: workspaces.localLinkNames ? [...workspaces.localLinkNames] : undefined,
           }
         : undefined,
-      goModulePath: goModule?.modulePath,
+      goModules: this.getGoModules().map(m => ({ modulePath: m.modulePath, dir: path.relative(this.projectRoot, m.rootDir).split(path.sep).join('/') })),
       cppIncludeDirs: this.context.getCppIncludeDirs?.() ?? [],
       nodeBuiltinSpecifiers: [...builtinModules],
       frameworksActive: this.frameworks.length > 0,
@@ -840,6 +885,8 @@ export class ReferenceResolver {
     return {
       original: ref,
       targetNodeId: outcome.targetNodeId,
+      edgeKind: outcome.edgeKind as ResolvedRef['edgeKind'],
+      alsoTargets: outcome.alsoTargetNodeIds?.map(targetNodeId => ({ targetNodeId })),
       confidence: outcome.confidence ?? 0,
       resolvedBy: (outcome.resolvedBy ?? 'exact-match') as ResolvedRef['resolvedBy'],
     };
@@ -2378,4 +2425,9 @@ export function createResolver(projectRoot: string, queries: QueryBuilder): Refe
   const resolver = new ReferenceResolver(projectRoot, queries);
   resolver.initialize();
   return resolver;
+}
+
+function goDirOf(p: string): string {
+  const dir = path.posix.dirname(p.replace(/\\/g, '/'));
+  return dir === '.' || dir === '/' ? '' : dir;
 }

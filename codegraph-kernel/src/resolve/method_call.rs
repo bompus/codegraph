@@ -716,6 +716,9 @@ impl KernelResolver {
                 probe!(r, "mc:infer-local", self.infer_local_receiver_type(&object_or_class, &site, true)?)
             };
             if inferred.is_none() { if let Some(verdict)=self.python_fixture_member(&object_or_class,&method_name,r)? { return Ok(verdict); } }
+if inferred.is_none() && r.language == "dart" {
+    inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
+}
             if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             if inferred.is_none() && r.language == "go" {
                 if let Some(c) = self.match_go_factory_receiver(&object_or_class, &method_name, r)? {
@@ -777,40 +780,11 @@ impl KernelResolver {
         }
 
         // mc-literal — OBJECT_LITERAL_LANGUAGES is the ESM set.
-        if dotted
-            && !object_or_class.contains('.')
-            && is_object_literal_language(&r.language)
-        {
-            let holders: Vec<Arc<KNode>> = prefer_call_site_file(
-                self.nodes_by_name(&object_or_class)?
-                    .iter()
-                    .filter(|n| {
-                        matches!(n.kind.as_str(), "constant" | "variable")
-                            && n.file_path == r.file_path
-                    })
-                    .cloned()
-                    .collect(),
-                &r.file_path,
-            );
-            for holder in holders {
-                // `binding?.nodeId !== holder.id` — an absent binding or
-                // node_id skips every holder, exactly like TS.
-                let bound_id = binding.as_ref().and_then(|b| b.node_id.as_deref());
-                if bound_id != Some(holder.id.as_str()) {
-                    continue;
-                }
-                if let Some(hit) = self.resolve_object_literal_member(
-                    &holder,
-                    &method_name,
-                    r,
-                    0.85,
-                    "instance-method",
-                )? {
-                    return Ok(Some(hit));
-                }
-                if let Some(hit) = self.resolve_object_literal_binding(&holder, &method_name, r)? {
-                    return Ok(Some(hit));
-                }
+        if dotted && !object_or_class.contains('.') && is_object_literal_language(&r.language) {
+            match self.resolve_object_path_member(&object_or_class,&method_name,r,None)? {
+                js_objects_upstream::ObjectPathMatch::Found(hit) => return Ok(Some(hit)),
+                js_objects_upstream::ObjectPathMatch::Refused => return Ok(None),
+                js_objects_upstream::ObjectPathMatch::NoHolder => {}
             }
         }
 
@@ -866,7 +840,7 @@ impl KernelResolver {
             let inferred = if r.language == "cpp" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, false)?
             } else {
-                self.infer_local_receiver_type(&object_or_class, r, false)?
+                self.infer_local_receiver_type(&object_or_class, r, r.language == "go")?
             };
             // guarded/gofactory/iteration are evidence-gated in TS and
             // never run here; mc-await still does.
@@ -874,6 +848,9 @@ impl KernelResolver {
                 self.infer_declared_member_receiver_type(&format!("this.{object_or_class}"), r)?
             } else { inferred };
             if inferred.is_none() { if let Some(verdict)=self.python_fixture_member(&object_or_class,&method_name,r)? { return Ok(verdict); } }
+if inferred.is_none() && r.language == "dart" {
+    inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
+}
             if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             let mut awaited_file: Option<String> = None;
             if inferred.is_none() && is_esm_family(&r.language) {
@@ -1011,34 +988,11 @@ impl KernelResolver {
         // Object-literal namespace receiver — same-file const/variable
         // holders; under requireReceiverEvidence=false there is no binding
         // filter — every holder gets its object-literal member scan.
-        if dotted
-            && !object_or_class.contains('.')
-            && is_object_literal_language(&r.language)
-        {
-            let holders = prefer_call_site_file(
-                self.nodes_by_name(&object_or_class)?
-                    .iter()
-                    .filter(|n| {
-                        matches!(n.kind.as_str(), "constant" | "variable")
-                            && n.file_path == r.file_path
-                    })
-                    .cloned()
-                    .collect(),
-                &r.file_path,
-            );
-            for holder in &holders {
-                if let Some(hit) = self.resolve_object_literal_member(
-                    holder,
-                    &method_name,
-                    r,
-                    0.85,
-                    "instance-method",
-                )? {
-                    return Ok(Some(hit));
-                }
-                if let Some(hit) = self.resolve_object_literal_binding(holder, &method_name, r)? {
-                    return Ok(Some(hit));
-                }
+        if dotted && !object_or_class.contains('.') && is_object_literal_language(&r.language) {
+            match self.resolve_object_path_member(&object_or_class,&method_name,r,None)? {
+                js_objects_upstream::ObjectPathMatch::Found(hit) => return Ok(Some(hit)),
+                js_objects_upstream::ObjectPathMatch::Refused => return Ok(None),
+                js_objects_upstream::ObjectPathMatch::NoHolder => {}
             }
         }
 
@@ -1210,6 +1164,7 @@ impl KernelResolver {
                 let ordered = prefer_call_site_file(target.clone(), &r.file_path);
                 let mut best: Option<Arc<KNode>> = None;
                 let mut best_score = 0i64;
+                let mut tied = Vec::new();
                 for m in &ordered {
                     let owner = m.qualified_name.rsplit_once("::").map(|(p, _)| p.rsplit([':', '.']).next().unwrap_or("")).unwrap_or("");
                     let class_words = split_camel_case(owner);
@@ -1230,8 +1185,11 @@ impl KernelResolver {
                     if score > best_score {
                         best_score = score;
                         best = Some(m.clone());
-                    }
+                        tied.clear();
+                        tied.push(m.clone());
+                    } else if score == best_score { tied.push(m.clone()); }
                 }
+                if r.language == "vbnet" && best_score >= 2 && tied.len() > 1 { best = self.vb_break_tie(tied, r); }
                 if let Some(bm) = best {
                     if best_score >= 2 && (bm.id != r.from_node_id || self.same_owner_receiver_proven(&bm,r)) {
                         return Ok(Some(KCand {
@@ -1349,6 +1307,7 @@ impl KernelResolver {
         resolved_by: &'static str,
     ) -> Res<Option<KCand>> {
         let candidates = prefer_call_site_file(self.nodes_by_name(class_name)?.iter().cloned().collect(), &r.file_path);
+        let candidates = if r.language == "vbnet" { self.vb_prefer(candidates, r) } else { candidates };
         let type_ref=r.clone().naming(class_name,"references");
         let mut visible=Vec::new();for c in candidates {if self.language_type_visible(&c,&type_ref)? {visible.push(c);}}
         let candidates=visible;

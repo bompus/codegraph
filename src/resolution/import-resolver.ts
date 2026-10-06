@@ -285,8 +285,7 @@ function isExternalImport(
     // In-module imports look like `<module-path>/sub/pkg` — local to
     // this project. Without the module-path check we'd flag every
     // cross-package call in a Go monorepo as external (issue #388).
-    const mod = context?.getGoModule?.();
-    if (mod && (importPath === mod.modulePath || importPath.startsWith(mod.modulePath + '/'))) {
+    if (context?.getGoPackageDir?.(importPath) != null) {
       return false;
     }
     // `internal/` packages stay local even when go.mod is missing —

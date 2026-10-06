@@ -84,13 +84,15 @@ pub(super) struct MemberSite {
     vb_receiver: Option<String>,
     /// VB.NET: the receiver is a service locator's `(Of T)` type argument.
     vb_type_arg: bool,
+    vb_scoped: bool,
+    vb_unqualified: bool,
     csharp_bare: bool,
     objc_shape: Option<ObjcShape>,
 }
 
 impl MemberSite {
     pub(super) fn is_judged(&self) -> bool {
-        self.vb_receiver.is_some() || self.csharp_bare || self.objc_shape.is_some()
+        self.vb_receiver.is_some() || self.vb_scoped || self.vb_unqualified || self.csharp_bare || self.objc_shape.is_some()
     }
 }
 
@@ -113,7 +115,9 @@ impl KernelResolver {
             && re!(r"^[A-Za-z_][A-Za-z0-9_]*:*(?:[A-Za-z0-9_]+:)*$").is_match(&r.reference_name))
         .then(|| self.objc_call_shape(r))
         .flatten();
-        MemberSite { vb_receiver, vb_type_arg, csharp_bare, objc_shape }
+        let vb_unqualified = r.language == "vbnet" && word && vb_receiver.is_none() && matches!(r.reference_kind.as_str(), "calls" | "instantiates");
+        let vb_scoped = r.language == "vbnet" && r.reference_kind == "calls" && word && (vb_receiver.is_none() || vb_receiver.as_ref().is_some_and(|v| re!(r"(?i)^(Me|MyClass|MyBase)$").is_match(v)));
+        MemberSite { vb_receiver, vb_type_arg, vb_scoped, vb_unqualified, csharp_bare, objc_shape }
     }
 
     /// Whether the member rules let `n` stand for the name at `site`.
@@ -123,6 +127,11 @@ impl KernelResolver {
                 return Ok(false);
             }
         }
+        if let Some(receiver) = &site.vb_receiver {
+            if !self.vb_qualified_by(n, receiver, r) { return Ok(false); }
+        }
+        if site.vb_scoped && !self.vb_member_in_scope(n, r)? { return Ok(false); }
+        if site.vb_unqualified && !self.vb_nested_in_scope(n, r)? { return Ok(false); }
         if site.csharp_bare && !self.is_csharp_member_in_scope(n, r)? {
             return Ok(false);
         }
@@ -191,7 +200,7 @@ impl KernelResolver {
         let start = if names::js_slice(&lower, column).starts_with(&name) {
             Some(names::js_unit_to_byte(&lower, column))
         } else {
-            word_occurrences(&lower, &name, false).next()
+            word_occurrences(&lower, &name, false).find(|at| *at >= names::js_unit_to_byte(&lower, column))
         }?;
         let before = &line[..start];
         let dot = re!(r"([A-Za-z0-9_.()]*?)\s*\.\s*$").captures(before)?;

@@ -429,6 +429,12 @@ seam preserves literal metadata and rebases binding scopes and lines to full-fil
 positions. `sfc-component-owns-script.test.ts` covers hierarchy and execution
 ownership.
 
+### Vue template calls and Rust handler positions
+
+Vue interpolation, directive and event expressions link to visible script bindings. Template-local names and v-pre regions stay excluded; script and component ownership remain distinct. Named object literals in component scripts retain their own function members.
+
+Axum and Actix route handlers may appear below the route registration line or inside nested call arguments. Handler references keep the actual argument position. Actix scoped paths and per-resource registrations retain their existing prefix rules.
+
 ### Rails resource action filters
 
 `frameworks/ruby.ts` reads literal `only:` and `except:` action filters for both

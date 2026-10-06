@@ -61,11 +61,7 @@ impl KernelResolver {
             if import_path.starts_with('.') {
                 return false;
             }
-            if let Some(mod_path) = &self.go_module_path {
-                if import_path == mod_path || import_path.starts_with(&format!("{}/", mod_path)) {
-                    return false;
-                }
-            }
+            if self.go_package_dir(import_path, from_file).is_some() { return false; }
             if import_path.contains("/internal/") {
                 return false;
             }
@@ -1293,45 +1289,21 @@ impl KernelResolver {
         r: &ResolveRefIn,
         imports: &[KImport],
     ) -> Res<Option<KCand>> {
-        let Some(mod_path) = self.go_module_path.clone() else {
-            return Ok(None);
-        };
-        let Some(dot) = r.reference_name.find('.') else {
-            return Ok(None);
-        };
-        if dot == 0 {
-            return Ok(None);
-        }
-        let receiver = &r.reference_name[..dot];
-        let member_name = &r.reference_name[dot + 1..];
-        if member_name.is_empty() {
-            return Ok(None);
-        }
-        for imp in imports.iter() {
-            if imp.local_name != receiver {
-                continue;
-            }
-            if imp.source != mod_path && !imp.source.starts_with(&format!("{}/", mod_path)) {
-                continue;
-            }
-            let pkg_dir = if imp.source == mod_path {
-                String::new()
-            } else {
-                imp.source[mod_path.len() + 1..].to_string()
-            };
-            for node in self.nodes_by_name(member_name)?.iter() {
-                if node.language != "go" || !node.is_exported {
-                    continue;
-                }
-                let fp = &node.file_path;
-                let file_dir = fp.rfind('/').map(|i| &fp[..i]).unwrap_or("");
-                if file_dir == pkg_dir {
-                    return Ok(Some(KCand {
-                        node: node.clone(),
-                        confidence: 0.9,
-                        resolved_by: "import",
-                    }));
-                }
+        let proven = self.go_ref_qualifier(r)?;
+        let (receiver, member_name) = if let Some((receiver, member)) = r.reference_name.split_once('.') {
+            (receiver.to_string(), member)
+        } else if let Some(imp) = proven { (imp.local_name, r.reference_name.as_str()) }
+        else { return Ok(None); };
+        if member_name.is_empty() || self.is_shadowed_import(&receiver, r)? { return Ok(None); }
+        for imp in imports {
+            if imp.local_name != receiver { continue; }
+            let Some(pkg_dir) = self.go_package_dir(&imp.source, &r.file_path) else { continue };
+            let nodes: Vec<_> = self.nodes_by_name(member_name)?.iter()
+                .filter(|n| n.language == "go" && n.is_exported && n.kind != "method"
+                    && !n.qualified_name.contains("::") && pos_dirname(&n.file_path) == pkg_dir)
+                .cloned().collect();
+            if let [node] = nodes.as_slice() {
+                return Ok(Some(KCand { node: node.clone(), confidence: 0.9, resolved_by: "import" }));
             }
         }
         Ok(None)
