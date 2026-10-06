@@ -2323,8 +2323,11 @@ program
   .option('--mcp', 'Run as MCP server (stdio transport)')
   .option('--no-watch', 'Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)')
   .option('--preserve-existing', 'Never replace an existing writer; require an exact indexed project path')
-  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean; preserveExisting?: boolean }) => {
-    const projectPath = options.path ? resolveProjectPath(options.path) : undefined;
+  .option('--initialize-index', 'With --preserve-existing, initialize the exact project index under daemon ownership')
+  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean; preserveExisting?: boolean; initializeIndex?: boolean }) => {
+    const projectPath = options.path
+      ? options.preserveExisting ? path.resolve(options.path) : resolveProjectPath(options.path)
+      : undefined;
 
     // Commander sets watch=false when --no-watch is passed. Route it through
     // the same env-var chokepoint the watcher and MCP server already honor.
@@ -2352,7 +2355,8 @@ program
         }
         // Start MCP server - it handles initialization lazily based on rootUri from client
         const { MCPServer } = await import('../mcp/index');
-        const server = new MCPServer(projectPath, { preserveExisting: options.preserveExisting });
+        const server = new MCPServer(projectPath, { preserveExisting: options.preserveExisting,
+          initializeIndex: options.initializeIndex });
         await server.start();
         // Server will run until terminated
       } else {

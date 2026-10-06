@@ -13,10 +13,10 @@
 import * as os from 'os';
 import * as path from 'path';
 import type CodeGraph from '../index';
-import { resolveServerRoot } from '../directory';
+import { resolveServerRoot, canonicalProjectRoot, assertUnlinkedIndex } from '../directory';
 import { ToolHandler } from './tools';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
-import { assertNoRebuild, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
+import { assertNoRebuild, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage, readWriterLock, type WriterLockInfo } from './writer-lock';
 import { QueryPool, resolvePoolSize } from './query-pool';
 import { endFreshnessMeasurements } from './index-freshness';
 import { acquireProject, ProjectLease } from './project-lifecycle';
@@ -62,6 +62,8 @@ export interface MCPEngineOptions {
    * not just the later file watcher.
    */
   writerLockRoot?: string;
+  /** A daemon opens only this exact root while it still owns the writer slot. */
+  ownedProject?: { root: string; writer: () => WriterLockInfo | null };
 }
 
 /**
@@ -88,7 +90,9 @@ export class MCPEngine {
   // Retained synchronization ownership for each cached explicit project.
   private explicitProjects = new Map<CodeGraph, ProjectLease>();
   private defaultLease: ProjectLease | null = null;
-  private opts: Required<Omit<MCPEngineOptions, 'writerLockRoot' | 'queryPoolDefaultMax'>> & Pick<MCPEngineOptions, 'queryPoolDefaultMax'>;
+  private opts: Required<Omit<MCPEngineOptions, 'writerLockRoot' | 'queryPoolDefaultMax' | 'ownedProject'>> & Pick<MCPEngineOptions, 'queryPoolDefaultMax'>;
+  private ownedProjectRoot: string | null;
+  private ownedWriter: (() => WriterLockInfo | null) | undefined;
   private closed = false;
   private stopPromise: Promise<void> | null = null;
   // Off-loop read-tool pool. Workers each hold their own WAL read connections;
@@ -96,6 +100,8 @@ export class MCPEngine {
   private queryPool: QueryPool | null = null;
 
   constructor(opts: MCPEngineOptions = {}) {
+    this.ownedProjectRoot = opts.ownedProject ? canonicalProjectRoot(opts.ownedProject.root) : null;
+    this.ownedWriter = opts.ownedProject?.writer;
     this.opts = { readOnly: opts.readOnly ?? false, watch: opts.watch ?? true, queryPool: opts.queryPool ?? false,
       queryPoolDefaultMax: opts.queryPoolDefaultMax, preserveExisting: opts.preserveExisting ?? false };
     this.toolHandler = new ToolHandler(null);
@@ -188,6 +194,20 @@ export class MCPEngine {
       active: !this.closed && !this.opts.readOnly && (this.cg?.isWatching() ?? false) };
   }
 
+  /** Reconcile through the active default watcher, serialized with its own sync work. */
+  async refreshWatcher(projectRoot: string): Promise<void> {
+    assertUnlinkedIndex(projectRoot);
+    const cg = this.cg;
+    if (!cg || this.closed || this.opts.readOnly || !cg.isWatching() ||
+        canonicalProjectRoot(cg.getProjectRoot()) !== projectRoot) {
+      throw new Error('The exact project watcher is not active for reconciliation.');
+    }
+    await cg.sync({ requireComplete: true });
+    if (this.closed || this.cg !== cg || !cg.isWatching()) {
+      throw new Error('Watcher changed during reconciliation.');
+    }
+  }
+
   /** Shared ToolHandler — sessions delegate tool dispatch through this. */
   getToolHandler(): ToolHandler {
     return this.toolHandler;
@@ -241,7 +261,8 @@ export class MCPEngine {
     // down-scan is throttled so the persistent no-default state doesn't pay a
     // directory walk on every tool call; the up-walk always runs.
     const scanDue = Date.now() - this.lastRetrySubScanAt >= RETRY_SUBSCAN_TTL_MS;
-    const res = resolveServerRoot(searchFrom, { subprojectScan: scanDue });
+    const res = this.ownedProjectRoot ? { root: this.ownedProjectRoot, viaSubScan: false, candidates: [] }
+      : resolveServerRoot(searchFrom, { subprojectScan: scanDue });
     if (scanDue) {
       this.lastRetrySubScanAt = Date.now();
       if (!res.root) this.toolHandler.setKnownSubprojects(res.candidates, searchFrom);
@@ -256,6 +277,7 @@ export class MCPEngine {
         this.cg = null;
       }
       assertNoRebuild(resolvedRoot);
+      this.assertOwnedRoot(resolvedRoot);
       this.cg = loadCodeGraph().openSync(resolvedRoot, { readOnly: this.opts.readOnly });
       this.projectPath = resolvedRoot;
       this.toolHandler.setDefaultCodeGraph(this.cg);
@@ -361,7 +383,8 @@ export class MCPEngine {
     // several candidates → no default project, but SAY so (#1607): the silent
     // variant of this state read as "CodeGraph is broken" and was diagnosable
     // only by knowing to look for a missing ~/.codegraph/daemons/ entry.
-    const res = resolveServerRoot(searchFrom);
+    const res = this.ownedProjectRoot ? { root: this.ownedProjectRoot, viaSubScan: false, candidates: [] }
+      : resolveServerRoot(searchFrom);
     const resolvedRoot = res.root;
     if (!resolvedRoot) {
       // Sessions may still discover a project later via roots/list, and the
@@ -386,8 +409,11 @@ export class MCPEngine {
     this.projectPath = resolvedRoot;
     try {
       assertNoRebuild(resolvedRoot);
+      this.assertOwnedRoot(resolvedRoot);
       const opened = await loadCodeGraph().open(resolvedRoot, { readOnly: this.opts.readOnly });
       if (this.closed) { opened.close(); return; }
+      try { this.assertOwnedRoot(resolvedRoot); }
+      catch (error) { opened.close(); throw error; }
       this.cg = opened;
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
@@ -407,6 +433,17 @@ export class MCPEngine {
     process.stderr.write(
       `[CodeGraph MCP] No .codegraph/ at ${searchFrom}; adopted the single indexed sub-project ${rel} as the default project.\n`
     );
+  }
+
+  private assertOwnedRoot(root: string): void {
+    if (!this.ownedProjectRoot) return;
+    assertUnlinkedIndex(root);
+    const writer = readWriterLock(root);
+    const expected = this.ownedWriter?.();
+    if (canonicalProjectRoot(root) !== this.ownedProjectRoot || !expected || writer?.pid !== process.pid ||
+        writer.mode !== 'daemon' || writer.startedAt !== expected.startedAt || writer.mode !== expected.mode) {
+      throw new Error('Daemon no longer owns the exact project before opening its index.');
+    }
   }
 
   /**

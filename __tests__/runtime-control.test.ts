@@ -26,6 +26,7 @@ import { getWriterPidPath } from '../src/mcp/writer-lock';
 let root: string;
 let server: net.Server | null = null;
 let statusProjectPath: unknown;
+let refreshRequests = 0;
 const actors: ChildProcess[] = [];
 const detachedActors: number[] = [];
 function spySpawn() {
@@ -35,6 +36,7 @@ function spySpawn() {
 }
 beforeEach(() => {
   statusProjectPath = null;
+  refreshRequests = 0;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-runtime-'));
   fs.mkdirSync(path.join(root, '.codegraph'));
 });
@@ -169,6 +171,8 @@ describe('runtime writer reservations', () => {
 async function fakeDaemon(options: { wrongHello?: boolean; wrongBuild?: boolean; statusError?: boolean; guidance?: boolean; closeEarly?: boolean; legacy?: boolean; changeRecord?: boolean;
   version?: string; watcherRoot?: string; inactive?: boolean; initializing?: boolean; stopWatchingDuringStatus?: boolean;
   changeWriterGeneration?: boolean;
+  refreshError?: boolean; noRefresh?: boolean; refreshWrongRoot?: boolean; refreshWrongPid?: boolean;
+  refreshTimeout?: boolean;
 } = {}): Promise<void> {
   const guidance = options.guidance ? await new ToolHandler(null).execute('codegraph_status', {}) : null;
   const socketPath = getDaemonSocketPath(root);
@@ -180,6 +184,7 @@ async function fakeDaemon(options: { wrongHello?: boolean; wrongBuild?: boolean;
     socket.setEncoding('utf8');
     socket.write(JSON.stringify({ protocol: 1, pid: process.pid, codegraph: options.wrongHello ? 'other' : version,
       ...(options.legacy ? {} : { writerProtocol: 1 }),
+      ...(options.noRefresh ? {} : { refreshProtocol: 1 }),
       watcher: { projectRoot: options.watcherRoot ?? fs.realpathSync.native(root), active: watching, ready: !options.initializing },
     }) + '\n');
     let buffer = '';
@@ -192,11 +197,22 @@ async function fakeDaemon(options: { wrongHello?: boolean; wrongBuild?: boolean;
           if (options.closeEarly) { socket.end(); return; }
           socket.write(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { serverInfo: { version: options.wrongBuild ? 'other' : version } } }) + '\n');
         } else if (msg.id === 2) {
-          statusProjectPath = msg.params?.arguments?.projectPath;
+          statusProjectPath = msg.method === 'codegraph/refresh' ? msg.params?.projectRoot : msg.params?.arguments?.projectPath;
           if (options.changeRecord) fs.writeFileSync(getDaemonPidPath(root), encodeLockInfo({ ...info, version: 'other' }));
           if (options.stopWatchingDuringStatus) watching = false;
           if (options.changeWriterGeneration) fs.writeFileSync(getWriterPidPath(root), JSON.stringify({
             pid: process.pid, mode: 'daemon', ready: true, startedAt: 999 }));
+          if (msg.method === 'codegraph/refresh') {
+            refreshRequests++;
+            if (options.refreshTimeout) continue;
+            socket.write(JSON.stringify({ jsonrpc: '2.0', id: 2,
+              ...(options.refreshError ? { error: { code: -32603, message: 'injected refresh failure' } } : { result: {
+                pid: options.refreshWrongPid ? process.pid + 1 : process.pid, version,
+                projectRoot: options.refreshWrongRoot ? path.dirname(root) : fs.realpathSync.native(root), refreshed: true,
+              } }),
+            }) + '\n');
+            continue;
+          }
           socket.write(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { isError: !!options.statusError, content: [{ type: 'text', text: options.guidance ? guidance!.content[0].text : `**CodeGraph Status**\n**Server build:** ${version}\n**Files indexed:** 1\n**Total nodes:** 2\n**Total edges:** 1` }] } }) + '\n');
         }
       }
@@ -293,6 +309,7 @@ describe('ordinary watcher startup', () => {
       version: CodeGraphPackageVersion, projectRoot: fs.realpathSync.native(root), watching: true });
     expect(spawnProbe).not.toHaveBeenCalled();
     expect(fs.readFileSync(getDaemonPidPath(root), 'utf8')).toBe(before);
+    expect(refreshRequests).toBe(1);
   });
 
   it.each(['legacy', 'direct', 'fallback', 'promotion', 'invalid', 'wrong-build'])(
@@ -311,12 +328,12 @@ describe('ordinary watcher startup', () => {
     },
   );
 
-  it('fails compatibility and exact-root validation before any launch', async () => {
+  it('fails build compatibility before any initialization or launch', async () => {
     const spawnProbe = spySpawn();
     await expect(startRuntimeWatcher(root, { ...options(), expectedVersion: 'different' })).rejects.toThrow('build');
-    await expect(startRuntimeWatcher(root, options())).rejects.toThrow('exact project root');
     expect(spawnProbe).not.toHaveBeenCalled();
     expect(readWriterLock(root)).toBeNull();
+    expect(fs.existsSync(path.join(root, '.codegraph/codegraph.db'))).toBe(false);
   });
 
   it('does not borrow a parent or linked index for an exact checkout', async () => {
@@ -324,10 +341,155 @@ describe('ordinary watcher startup', () => {
     const childRoot = path.join(root, 'child');
     fs.mkdirSync(childRoot);
     const launch = spySpawn();
-    await expect(startRuntimeWatcher(childRoot, options())).rejects.toThrow('exact project root');
     fs.symlinkSync(path.join(root, '.codegraph'), path.join(childRoot, '.codegraph'), 'junction');
     await expect(startRuntimeWatcher(childRoot, options())).rejects.toThrow('linked project index');
     expect(launch).not.toHaveBeenCalled();
+    expect(readWriterLock(root)).toBeNull();
+  });
+
+  it.each(['refreshError', 'noRefresh', 'refreshWrongRoot', 'refreshWrongPid', 'refreshTimeout', 'changeWriterGeneration'] as const)(
+    'rejects %s without replacing or terminating the matching watcher', async (failure) => {
+      await initialize();
+      tryAcquireWriterLock(root, 'daemon');
+      markWriterReady(root);
+      await fakeDaemon({ version: CodeGraphPackageVersion, [failure]: true });
+      const daemon = fs.readFileSync(getDaemonPidPath(root), 'utf8');
+      const launch = spySpawn();
+      await expect(checkRuntimeReady(root, { pid: process.pid, version: CodeGraphPackageVersion }, 150,
+        { requireWatcher: true, refresh: true })).rejects.toThrow();
+      expect(launch).not.toHaveBeenCalled();
+      expect(fs.readFileSync(getDaemonPidPath(root), 'utf8')).toBe(daemon);
+    },
+  );
+
+  it('initializes an exact child index and refreshes the same daemon after a new edit', async () => {
+    vi.stubEnv('CODEGRAPH_WATCH_DEBOUNCE_MS', '60000');
+    vi.stubEnv('CODEGRAPH_QUERY_POOL_SIZE', '0');
+    await initialize();
+    const parentDatabase = fs.readFileSync(path.join(root, '.codegraph/codegraph.db'));
+    const childRoot = path.join(root, 'checkout');
+    fs.mkdirSync(childRoot);
+    const source = path.join(childRoot, 'sample.ts');
+    fs.writeFileSync(source, 'export function initialChildSymbol() {}\n');
+    const original = childProcess.spawn;
+    const launched = spySpawn().mockImplementation(((...args: Parameters<typeof spawn>) => {
+      const child = original(...args);
+      actors.push(child);
+      return child;
+    }) as typeof spawn);
+    const first = await startRuntimeWatcher(childRoot, options()).catch(error => {
+      const log = path.join(childRoot, '.codegraph/daemon.log');
+      throw new Error(`${error.message}\n${fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : 'No child daemon log.'}`);
+    });
+    const names = () => {
+      const reader = CodeGraph.openSync(childRoot, { readOnly: true });
+      try { return reader.getNodesByKind('function').map(n => n.name); }
+      finally { reader.close(); }
+    };
+    expect(names()).toContain('initialChildSymbol');
+    const owner = fs.readFileSync(getWriterPidPath(childRoot), 'utf8');
+    fs.writeFileSync(source, 'export function reconciledChildSymbol() {}\n');
+    const second = await startRuntimeWatcher(childRoot, options());
+    expect(second.pid).toBe(first.pid);
+    expect(launched).toHaveBeenCalledTimes(1);
+    expect(names()).toEqual(['reconciledChildSymbol']);
+    expect(fs.readFileSync(getWriterPidPath(childRoot), 'utf8')).toBe(owner);
+    expect(fs.readFileSync(path.join(root, '.codegraph/codegraph.db'))).toEqual(parentDatabase);
+    expect(readWriterLock(root)).toBeNull();
+  }, 15000);
+
+  it('converges concurrent uninitialized starters without duplicate writers or an ancestor index', async () => {
+    fs.writeFileSync(path.join(root, 'sample.ts'), 'export function initializedOnce() {}\n');
+    const original = childProcess.spawn;
+    spySpawn().mockImplementation(((...args: Parameters<typeof spawn>) => {
+      const child = original(...args);
+      actors.push(child);
+      return child;
+    }) as typeof spawn);
+    const results = await Promise.allSettled([startRuntimeWatcher(root, options()), startRuntimeWatcher(root, options())]);
+    const winners = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
+    expect(winners.length).toBeGreaterThan(0);
+    expect(new Set(winners.map(w => w.pid)).size).toBe(1);
+    const reader = CodeGraph.openSync(root, { readOnly: true });
+    try { expect(reader.getNodesByKind('function').map(n => n.name)).toEqual(['initializedOnce']); }
+    finally { reader.close(); }
+    expect(readWriterLock(root)).toMatchObject({ pid: winners[0]!.pid, mode: 'daemon', ready: true });
+  });
+
+  it.each(['success', 'failure', 'successor', 'previous-successor'] as const)(
+    'waits for the real daemon refresh and preserves ownership on %s', async (outcome) => {
+      fs.writeFileSync(path.join(root, 'sample.ts'), 'export function beforeRefresh() {}\n');
+      const child = spawn(process.execPath, ['-e', `
+        const { MCPEngine } = require(process.argv[1] + '/engine');
+        const { Daemon, tryAcquireDaemonLock } = require(process.argv[1] + '/daemon');
+        const refresh = MCPEngine.prototype.refreshWatcher;
+        MCPEngine.prototype.refreshWatcher = async function(...args) {
+          process.send('refresh-started');
+          await new Promise(resolve => process.once('message', resolve));
+          if (process.argv[3] === 'failure') throw new Error('injected daemon refresh failure');
+          return refresh.apply(this, args);
+        };
+        (async () => {
+          const root = process.argv[2];
+          tryAcquireDaemonLock(root);
+          const daemon = new Daemon(root, {preserveExisting:true, initializeIndex:true, idleTimeoutMs:0});
+          await daemon.start();
+          await daemon.engine.ensureInitialized(root);
+          await daemon.engine.getToolHandler().execute('codegraph_status', {});
+          process.send('ready');
+        })().catch(error => { console.error(error); process.exit(1); });
+      `, path.resolve(__dirname, '../dist/mcp'), root, outcome],
+      { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { ...process.env,
+        CODEGRAPH_QUERY_POOL_SIZE: '0', CODEGRAPH_WATCH_DEBOUNCE_MS: '60000' } });
+      actors.push(child);
+      expect((await once(child, 'message'))[0]).toBe('ready');
+      const identity = { pid: child.pid!, version: CodeGraphPackageVersion };
+      const daemonBefore = fs.readFileSync(getDaemonPidPath(root), 'utf8');
+      let writerBefore = fs.readFileSync(getWriterPidPath(root), 'utf8');
+      fs.writeFileSync(path.join(root, 'sample.ts'), 'export function afterRefresh() {}\n');
+      if (outcome === 'previous-successor') {
+        const record = JSON.parse(writerBefore);
+        writerBefore = JSON.stringify({ ...record, startedAt: record.startedAt + 1 });
+        fs.writeFileSync(getWriterPidPath(root), writerBefore);
+      }
+      const started = outcome === 'previous-successor' ? null : once(child, 'message');
+      let settled = false;
+      const pending = checkRuntimeReady(root, identity, 2000, { requireWatcher: true, refresh: true })
+        .then(value => ({ value, error: null }), error => ({ value: null, error: error as Error }))
+        .finally(() => { settled = true; });
+      if (started) {
+        expect((await started)[0]).toBe('refresh-started');
+        expect(settled).toBe(false);
+      }
+      if (outcome === 'successor') {
+        const record = JSON.parse(writerBefore);
+        writerBefore = JSON.stringify({ ...record, startedAt: record.startedAt + 1 });
+        fs.writeFileSync(getWriterPidPath(root), writerBefore);
+      }
+      if (started) child.send('finish-refresh');
+      const result = await pending;
+      if (outcome === 'success') {
+        expect(result.error).toBeNull();
+        expect(result.value).toEqual(identity);
+        const reader = CodeGraph.openSync(root, { readOnly: true });
+        try { expect(reader.getNodesByKind('function').map(n => n.name)).toEqual(['afterRefresh']); }
+        finally { reader.close(); }
+      } else expect(result.error?.message).toContain(outcome === 'failure'
+        ? 'injected daemon refresh failure' : 'ownership changed');
+      expect(fs.readFileSync(getDaemonPidPath(root), 'utf8')).toBe(daemonBefore);
+      expect(fs.readFileSync(getWriterPidPath(root), 'utf8')).toBe(writerBefore);
+    }, 10000,
+  );
+
+  it('rejects a different selected CLI build before creating the index or ownership records', async () => {
+    const child = spawnSync(process.execPath, [path.resolve(__dirname, '../dist/bin/codegraph.js'),
+      'serve', '--mcp', '--path', root, '--preserve-existing', '--initialize-index'],
+    { encoding: 'utf8', timeout: 10000, env: { ...process.env, CODEGRAPH_DAEMON_INTERNAL: '1',
+      CODEGRAPH_DAEMON_EXPECTED_BUILD: 'different-build' } });
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain('does not match the expected build');
+    expect(fs.existsSync(path.join(root, '.codegraph/codegraph.db'))).toBe(false);
+    expect(fs.existsSync(getDaemonPidPath(root))).toBe(false);
     expect(readWriterLock(root)).toBeNull();
   });
 
@@ -378,29 +540,90 @@ describe('ordinary watcher startup', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('preserves an uncertain writer appearing after daemon election but before project activation', async () => {
+  it.each(['uncertain', 'same-pid-successor', 'open-successor'])(
+    'preserves a %s writer appearing after daemon election before activation', async event => {
     await initialize();
     const candidate = spawn(process.execPath, ['-e', `
       const fs = require('node:fs');
       const { MCPEngine } = require(process.argv[1] + '/engine');
       const { Daemon, tryAcquireDaemonLock } = require(process.argv[1] + '/daemon');
+      const CodeGraph = require(process.argv[1] + '/../codegraph').default;
       const root = process.argv[2], file = root + '/.codegraph/writer.pid';
+      let closedOnRejection = false;
+      if (process.argv[3] === 'open-successor') {
+        const open = CodeGraph.open;
+        CodeGraph.open = async function(...args) {
+          const graph = await open.apply(this, args);
+          const close = graph.close.bind(graph);
+          graph.close = () => { closedOnRejection = true; close(); };
+          process.send('opened');
+          await new Promise(resolve => process.once('message', resolve));
+          return graph;
+        };
+      }
       const initialize = MCPEngine.prototype.ensureInitialized;
       MCPEngine.prototype.ensureInitialized = async function(...args) {
-        fs.writeFileSync(file, 'uncertain');
+        const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (process.argv[3] !== 'open-successor') {
+          fs.writeFileSync(file, process.argv[3] === 'uncertain' ? 'uncertain'
+            : JSON.stringify({...record, startedAt:record.startedAt + 1}));
+        }
         await initialize.apply(this, args);
         await this.getToolHandler().execute('codegraph_status', {});
-        process.send({writer:fs.readFileSync(file, 'utf8'), watcher:this.getWatcherState()});
+        process.send({writer:fs.readFileSync(file, 'utf8'), watcher:this.getWatcherState(), closedOnRejection});
       };
       tryAcquireDaemonLock(root);
       new Daemon(root, {preserveExisting:true, idleTimeoutMs:0}).start()
         .catch(error => { console.error(error); process.exit(1); });
-    `, path.resolve(__dirname, '../dist/mcp'), root],
+    `, path.resolve(__dirname, '../dist/mcp'), root, event],
     { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], env: { ...process.env, CODEGRAPH_QUERY_POOL_SIZE: '0' } });
     actors.push(candidate);
+    if (event === 'open-successor') {
+      expect((await once(candidate, 'message'))[0]).toBe('opened');
+      const writer = readWriterLock(root)!;
+      fs.writeFileSync(getWriterPidPath(root), JSON.stringify({ ...writer, startedAt: writer.startedAt + 1 }));
+      candidate.send('finish-open');
+    }
     const [state] = await once(candidate, 'message');
-    expect(state).toMatchObject({ writer: 'uncertain', watcher: { active: false } });
-    expect(fs.readFileSync(getWriterPidPath(root), 'utf8')).toBe('uncertain');
+    expect(state).toMatchObject({ watcher: { active: false } });
+    expect(fs.readFileSync(getWriterPidPath(root), 'utf8')).toBe(state.writer);
+    if (event === 'uncertain') expect(state.writer).toBe('uncertain');
+    else expect(JSON.parse(state.writer).pid).toBe(candidate.pid);
+    if (event === 'open-successor') expect(state.closedOnRejection).toBe(true);
+  });
+
+  it.each([false, true])('retains a partial database and preserves successors on initialization failure (successor=%s)', successor => {
+    const result = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const CodeGraph = require(process.argv[1] + '/../codegraph').default;
+      const { Daemon, tryAcquireDaemonLock } = require(process.argv[1] + '/daemon');
+      const { readWriterLock, getWriterPidPath } = require(process.argv[1] + '/writer-lock');
+      const root = process.argv[2], init = CodeGraph.initSync;
+      let expectedWriter = null;
+      CodeGraph.initSync = function(...args) {
+        const graph = init.apply(this, args);
+        graph.close();
+        if (process.argv[3] === 'true') {
+          expectedWriter = JSON.stringify({...readWriterLock(root), startedAt:readWriterLock(root).startedAt + 1});
+          fs.writeFileSync(getWriterPidPath(root), expectedWriter);
+        }
+        throw new Error('injected initialization failure');
+      };
+      tryAcquireDaemonLock(root);
+      new Daemon(root, {preserveExisting:true, initializeIndex:true}).start()
+        .then(() => process.exit(1))
+        .catch(error => { console.log(JSON.stringify({error:error.message, expectedWriter})); process.exit(0); });
+    `, path.resolve(__dirname, '../dist/mcp'), root, String(successor)],
+    { encoding: 'utf8', timeout: 10000, env: { ...process.env, CODEGRAPH_QUERY_POOL_SIZE: '0' } });
+    expect(result.status, result.stderr).toBe(0);
+    const outcome = JSON.parse(result.stdout);
+    expect(outcome.error).toBe('injected initialization failure');
+    expect(fs.existsSync(getDaemonPidPath(root))).toBe(false);
+    if (successor) expect(fs.readFileSync(getWriterPidPath(root), 'utf8')).toBe(outcome.expectedWriter);
+    else expect(readWriterLock(root)).toBeNull();
+    const reader = CodeGraph.openSync(root, { readOnly: true });
+    try { expect(reader.getNodesByKind('function')).toEqual([]); }
+    finally { reader.close(); }
   });
 
   it('converges racing ordinary starters on one real watcher without a promotion lease', async () => {
@@ -424,9 +647,9 @@ describe('ordinary watcher startup', () => {
     await checkRuntimeReady(root, winner, 1000, { requireWatcher: true });
   });
 
-  it.each(['promotion', 'older', 'invalid-writer'])(
-    'preserves a %s owner appearing after the empty-slot precheck, at real candidate election', async (event) => {
-      await initialize();
+  it.each(['promotion', 'older', 'invalid-writer'].flatMap(event => [true, false].map(initialized => ({ event, initialized }))))(
+    'preserves a $event owner after precheck before election (initialized=$initialized)', async ({ event, initialized }) => {
+      if (initialized) await initialize();
       const original = childProcess.spawn;
       let before: string;
       let protectedFile: string;
@@ -450,6 +673,7 @@ describe('ordinary watcher startup', () => {
       await expect(startRuntimeWatcher(root, { ...options(), timeoutMs: 1000 })).rejects.toThrow('did not become ready');
       expect(actors).toHaveLength(1);
       expect(fs.readFileSync(protectedFile!, 'utf8')).toBe(before!);
+      if (!initialized) expect(fs.existsSync(path.join(root, '.codegraph/codegraph.db'))).toBe(false);
     },
   );
 
