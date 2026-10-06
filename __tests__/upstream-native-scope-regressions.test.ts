@@ -53,11 +53,18 @@ describe('upstream ports preserve declaration scope', () => {
     await project(sameFile ? { 'main.js': declaration + consumer } : { 'ns.js': declaration, 'use.js': consumer });
     expect(calls('outside')).toEqual([]);
   });
-  it.each(['main.js', 'Page.vue', 'Page.svelte', 'Page.astro'])('keeps a destructured member inside its declaring function in %s', async file => {
+  it.each([false, true])('keeps a loop-owned path out of global consumers (same file %s)', async sameFile => {
+    const declaration = 'var App = {}; for (const App of apps) { App.utils = { pad() {} }; }\n';
+    const consumer = 'function outside() { App.utils.pad(); }\n';
+    await project(sameFile ? { 'main.js': declaration + consumer } : { 'ns.js': declaration, 'use.js': consumer });
+    expect(calls('outside')).toEqual([]);
+  });
+  it.each(['main.js', 'Page.vue', 'Page.svelte', 'Page.astro'].flatMap(file => [false, true].map(multiline => ({ file, multiline }))))('keeps a destructured member inside its declaring function in $file (multiline $multiline)', async ({ file, multiline }) => {
     const code = "const label = '日本🙂'; const api = { post() {} }; function local() { const { post } = api; return post(); } function outside() { return post(); }\n";
-    const source = file.endsWith('.vue') ? `<template><p>日本🙂</p></template>\n<script setup>\n${code}</script>`
-      : file.endsWith('.svelte') ? `<p>日本🙂</p>\n<script>\n${code}</script>`
-      : file.endsWith('.astro') ? `---\n${code}---\n` : code;
+    const script = multiline ? code.replace('; function local()', ';\nfunction local()') : code;
+    const source = file.endsWith('.vue') ? `<template><p>日本🙂</p></template>\n<script setup>\n${script}</script>`
+      : file.endsWith('.svelte') ? `<p>日本🙂</p>\n<script>\n${script}</script>`
+      : file.endsWith('.astro') ? `---\n${script}---\n` : script;
     await project({ [file]: source });
     expect(calls('local')).toEqual([`${file}:api::post`]);
     expect(calls('outside')).toEqual([]);

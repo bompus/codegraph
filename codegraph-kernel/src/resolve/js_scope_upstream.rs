@@ -14,10 +14,14 @@ struct JsBindingFact {
 }
 
 pub(super) fn binding_scope(node: Node<'_>) -> Option<(Point, Point)> {
-    let function_scoped = node.kind() == "variable_declarator"
-        && node
-            .parent()
-            .is_some_and(|p| p.kind() == "variable_declaration");
+    let loop_kind = (node.kind() == "for_in_statement")
+        .then(|| node.child_by_field_name("kind")).flatten();
+    if loop_kind.is_some_and(|kind| kind.kind() != "var") {
+        return Some((node.start_position(), node.end_position()));
+    }
+    let function_scoped = loop_kind.is_some_and(|kind| kind.kind() == "var")
+        || (node.kind() == "variable_declarator" && node.parent()
+            .is_some_and(|p| p.kind() == "variable_declaration"));
     let mut current = node.parent();
     while let Some(scope) = current {
         let lexical = matches!(
@@ -391,8 +395,12 @@ impl KernelResolver {
                             });
                     }
                 }
-                if node.kind() == "variable_declarator" {
-                    if let Some(pattern) = node.child_by_field_name("name") {
+                let pattern = if node.kind() == "variable_declarator" {
+                    node.child_by_field_name("name")
+                } else if node.kind() == "for_in_statement" && node.child_by_field_name("kind").is_some() {
+                    node.child_by_field_name("left")
+                } else { None };
+                if let Some(pattern) = pattern {
                         let mut names = vec![pattern];
                         let scope = binding_scope(node);
                         while let Some(name) = names.pop() {
@@ -426,7 +434,6 @@ impl KernelResolver {
                                 names.extend(super::iteration::named_children(name));
                             }
                         }
-                    }
                 }
                 queue.extend(super::iteration::named_children(node));
             }

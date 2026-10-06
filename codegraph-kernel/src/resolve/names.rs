@@ -1205,7 +1205,14 @@ impl KernelResolver {
                 .collect()
         };
 
-        let candidates = keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?);
+        let candidates = if r.language == "csharp" && r.reference_kind == "instantiates" {
+            // Source spells namespace/type separators with dots; graph names use ::.
+            let leaf = r.reference_name.rsplit([':', '.']).next().unwrap_or("");
+            self.nodes_by_name(leaf)?.iter().filter(|n| n.language == "csharp"
+                && matches!(n.kind.as_str(), "class" | "struct" | "record")
+                && n.qualified_name.replace("::", ".") == r.reference_name)
+                .cloned().collect()
+        } else { keep_for_ref(&self.nodes_by_qualified_name(&r.reference_name)?) };
         if candidates.len() == 1 {
             return Ok(Some(KCand {
                 node: candidates[0].clone(),

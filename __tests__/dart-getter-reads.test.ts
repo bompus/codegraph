@@ -58,6 +58,13 @@ class Square extends Box {
   static Square get unit => const Square(1);
 }
 
+class Solid extends Box {
+  final int area = 7;
+  const Solid(int size) : super(size);
+}
+
+int overridden(Solid s) => s.area;
+
 class Renderer {
   final Box box;
   final Shape shape;
@@ -137,6 +144,11 @@ describe('Dart getter reads (#2338)', () => {
       'calls c',
       'calls inherited',
     ]);
+  });
+
+  it('does not call an inherited getter overridden by a field', () => {
+    const fn = cg.getNodesByQualifiedName('overridden')[0]!;
+    expect(cg.getOutgoingEdges(fn.id).filter(edge => edge.kind === 'calls')).toEqual([]);
   });
 
   it('link a static getter read through its class', () => {

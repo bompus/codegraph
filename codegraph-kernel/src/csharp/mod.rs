@@ -625,8 +625,8 @@ impl<'t> Walker<'t> {
     }
 
     /// csharpClassTypeName (tree-sitter.ts) — the class a declared type
-    /// names, as `new T()` would name it: `List<Foo>` → List, `Ns.Foo` /
-    /// `global::Foo` → Foo, `Foo?` → Foo. Predefined, array, tuple and pointer
+    /// names, preserving qualification: `List<Foo>` → List, `Ns.Foo` →
+    /// Ns.Foo, `global::Foo` → Foo, `Foo?` → Foo. Predefined, array, tuple and pointer
     /// types name no class.
     fn class_type_name(&self, node: Node) -> Option<String> {
         match node.kind() {
@@ -640,7 +640,14 @@ impl<'t> Walker<'t> {
                     .find(|c| c.kind() == "identifier")?;
                 self.class_type_name(ident)
             }
-            "qualified_name" | "alias_qualified_name" => self.class_type_name(node.child_by_field_name("name")?),
+            "qualified_name" => Some(format!("{}.{}",
+                self.class_type_name(node.child_by_field_name("qualifier")?)?,
+                self.class_type_name(node.child_by_field_name("name")?)?)),
+            "alias_qualified_name" => {
+                let alias = self.text(node.child_by_field_name("alias")?);
+                let name = self.class_type_name(node.child_by_field_name("name")?)?;
+                Some(if alias == "global" { name } else { format!("{alias}::{name}") })
+            }
             "nullable_type" => self.class_type_name(node.child_by_field_name("type")?),
             _ => None,
         }

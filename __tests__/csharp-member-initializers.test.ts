@@ -9,7 +9,7 @@
  * A target-typed `new()` names no type of its own; as an initializer it
  * constructs the member's declared type.
  *
- * Runs against the native kernel (when built) and the wasm extractor, which
+ * Runs against the native walker and the generic native-tree extractor, which
  * must agree.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -95,8 +95,9 @@ describe('C# field and property initializers', () => {
     else process.env.CODEGRAPH_KERNEL = kernel;
   });
 
-  it.each(['default', 'wasm'])('are walked as the member they initialize (%s)', async (backend) => {
-    if (backend === 'wasm') process.env.CODEGRAPH_KERNEL = '0';
+  it.each(['default', 'generic'].flatMap(backend => [false, true].map(qualifiedOnly => ({ backend, qualifiedOnly }))))('are walked as the member they initialize ($backend, qualified type only $qualifiedOnly)', async ({ backend, qualifiedOnly }) => {
+    if (qualifiedOnly) fs.writeFileSync(path.join(root, 'Box.cs'), FILES['Box.cs']!.replace('using Lib;\n', ''));
+    if (backend === 'generic') process.env.CODEGRAPH_KERNEL = '0';
     else delete process.env.CODEGRAPH_KERNEL;
     cg = await CodeGraph.init(root, { index: true });
     const graph = cg;

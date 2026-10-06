@@ -872,6 +872,11 @@ impl KernelResolver {
             });
             if replace { best = Some((n, rank)); }
         }
+        if getters_only {
+            if let Some(depth) = self.dart_field_depth(&lineage, name, r)? {
+                if best.as_ref().is_some_and(|(_, rank)| depth <= *rank) { return Ok(None); }
+            }
+        }
         Ok(best.map(|(n, rank)| (n, rank >= DART_EXTENSION_RANK)))
     }
 

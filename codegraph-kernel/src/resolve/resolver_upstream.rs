@@ -506,7 +506,7 @@ impl KernelResolver {
         if !local {
             return Ok(false);
         }
-        if self
+        if self.js_destructured_object_member(n, r)? || self
             .js_typed_destructured_member(r)?
             .is_some_and(|member| member.id == n.id)
         {

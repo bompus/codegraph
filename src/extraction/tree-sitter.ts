@@ -259,7 +259,7 @@ function scalaBaseTypeName(node: SyntaxNode | null, source: string): string | nu
 
 /**
  * The class a C# declared type names, as `new T()` would name it: `Foo`,
- * `List<Foo>` → `List`, `Ns.Foo` / `global::Foo` → `Foo`, `Foo?` → `Foo`.
+ * `List<Foo>` → `List`, `Ns.Foo` → `Ns.Foo`, `global::Foo` → `Foo`, `Foo?` → `Foo`.
  * Predefined, array, tuple and pointer types name no class → null. Mirrored
  * in the kernel (csharp.rs class_type_name).
  */
@@ -270,9 +270,18 @@ function csharpClassTypeName(node: SyntaxNode | null, source: string): string | 
       return getNodeText(node, source) || null;
     case 'generic_name':
       return csharpClassTypeName(node.namedChildren.find((c: SyntaxNode) => c.type === 'identifier') ?? null, source);
-    case 'qualified_name':
-    case 'alias_qualified_name':
-      return csharpClassTypeName(getChildByField(node, 'name'), source);
+    case 'qualified_name': {
+      const qualifier = csharpClassTypeName(getChildByField(node, 'qualifier'), source);
+      const name = csharpClassTypeName(getChildByField(node, 'name'), source);
+      return qualifier && name ? `${qualifier}.${name}` : null;
+    }
+    case 'alias_qualified_name': {
+      const alias = getChildByField(node, 'alias');
+      const name = csharpClassTypeName(getChildByField(node, 'name'), source);
+      if (!alias || !name) return null;
+      const qualifier = getNodeText(alias, source);
+      return qualifier === 'global' ? name : `${qualifier}::${name}`;
+    }
     case 'nullable_type':
       return csharpClassTypeName(getChildByField(node, 'type'), source);
     default:

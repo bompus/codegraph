@@ -93,6 +93,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Incremental Go sync invalidates nearest-module caches after a module is renamed, removed or added.
+- JavaScript loop-local object paths stay local, and scoped destructured member calls resolve across source lines in scripts and single-file components.
+- Dart fields shadow inherited and extension getters instead of creating wrong call edges.
+- C# target-typed initializers retain qualified declared types in both native and generic extraction.
+
 - Vue template attributes decode HTML entities before finding calls, so quoted strings do not create false callers and helper calls retain their source positions.
 
 - Go factory chains retain qualified return types and resolve them through the factory declaration's imports. A local or parameter that shadows a package factory no longer borrows that factory's return type.

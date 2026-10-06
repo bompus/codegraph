@@ -301,6 +301,7 @@ export class ReferenceResolver {
     this.knownFiles = null;
     this.goModules = null;
     this.goPackageDirs.clear();
+    this.goModuleByDir.clear();
     this.allFilesCache = null;
     this.cachesWarmed = false;
     // The import-resolver's per-context memos assume the

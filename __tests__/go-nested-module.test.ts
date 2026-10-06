@@ -329,3 +329,27 @@ describe('Go module at the project root', () => {
     ]);
   });
 });
+
+
+describe('Go module declarations between resolution passes', () => {
+  it('refreshes renamed, removed and newly nested module paths during sync', async () => {
+    const main = (module: string) => `package main\nimport "${module}/p"\nfunc run() { p.Call() }\n`;
+    const cg = await indexProject({
+      'go.mod': 'module example.com/root\n',
+      'svc/go.mod': 'module example.com/svc\n',
+      'svc/p/p.go': 'package p\nfunc Call() {}\n',
+      'main.go': main('example.com/svc'),
+    });
+    const root = projects.find(project => project.cg === cg)!.root;
+    const expected = ['svc/p/p.go::Call'];
+    expect(targets(cg, 'main.go', 'run')).toEqual(expected);
+    for (const module of ['example.com/renamed', null, 'example.com/added']) {
+      const modFile = path.join(root, 'svc/go.mod');
+      if (module) fs.writeFileSync(modFile, `module ${module}\n`);
+      else fs.unlinkSync(modFile);
+      fs.writeFileSync(path.join(root, 'main.go'), main(module ?? 'example.com/root/svc'));
+      await cg.sync();
+      expect(targets(cg, 'main.go', 'run'), `module transition ${module}`).toEqual(expected);
+    }
+  });
+});

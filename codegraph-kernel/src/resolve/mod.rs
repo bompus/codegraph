@@ -531,6 +531,7 @@ mod swift_type_scope;
 mod kotlin_type_scope;
 mod php_scope;
 mod lang_scope;
+mod dart_fields;
 mod lua_alias;
 mod member_scope;
 mod vbnet;
@@ -622,6 +623,7 @@ pub struct KernelResolver {
     dart_supers_memo: HashMap<String, Rc<Vec<String>>>,
     dart_lineage_memo: HashMap<String, Rc<HashMap<String, u32>>>,
     dart_getter_memo: HashMap<String, bool>,
+    dart_fields_memo: HashMap<String, (Rc<SourceFile>, HashSet<String>)>,
     dart_extension_owner_memo: HashMap<String, Option<(Vec<String>, bool)>>,
     /// dartHierarchyAt, by call site (file, line).
     dart_hierarchy_memo: HashMap<(String, i64), Rc<HashMap<String, u32>>>,
@@ -827,6 +829,7 @@ impl KernelResolver {
             dart_supers_memo: HashMap::new(),
             dart_lineage_memo: HashMap::new(),
             dart_getter_memo: HashMap::new(),
+            dart_fields_memo: HashMap::new(),
             dart_extension_owner_memo: HashMap::new(),
             dart_hierarchy_memo: HashMap::new(),
             declared_member_memo: HashMap::new(),
