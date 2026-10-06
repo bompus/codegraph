@@ -34,6 +34,8 @@ const loadCodeGraph = (): typeof import('../index').default =>
 const RETRY_SUBSCAN_TTL_MS = 5_000;
 
 export interface MCPEngineOptions {
+  /** Preserve uncertain writer records during project activation and retries. */
+  preserveExisting?: boolean;
   /** Serve existing index contents without syncing, watching, or claiming a writer slot. */
   readOnly?: boolean;
   /**
@@ -94,7 +96,8 @@ export class MCPEngine {
   private queryPool: QueryPool | null = null;
 
   constructor(opts: MCPEngineOptions = {}) {
-    this.opts = { readOnly: opts.readOnly ?? false, watch: opts.watch ?? true, queryPool: opts.queryPool ?? false, queryPoolDefaultMax: opts.queryPoolDefaultMax };
+    this.opts = { readOnly: opts.readOnly ?? false, watch: opts.watch ?? true, queryPool: opts.queryPool ?? false,
+      queryPoolDefaultMax: opts.queryPoolDefaultMax, preserveExisting: opts.preserveExisting ?? false };
     this.toolHandler = new ToolHandler(null);
     this.toolHandler.setProjectLifecycle({
       open: (root, open) => {
@@ -103,7 +106,7 @@ export class MCPEngine {
         assertNoRebuild(root);
         if (this.opts.readOnly) return loadCodeGraph().openSync(root, { readOnly: true });
         if (!this.opts.watch) return open();
-        const lease = acquireProject(root, open, this.watchOptions());
+        const lease = acquireProject(root, open, this.watchOptions(), this.opts.preserveExisting);
         this.explicitProjects.set(lease.cg, lease);
         return lease.cg;
       },
@@ -121,7 +124,8 @@ export class MCPEngine {
     });
     if (opts.writerLockRoot && !this.opts.readOnly) {
       assertNoRebuild(opts.writerLockRoot);
-      const writer = tryAcquireWriterLock(opts.writerLockRoot, 'fallback');
+      const writer = tryAcquireWriterLock(opts.writerLockRoot, 'fallback', 'writer.pid',
+        { preserveUncertain: this.opts.preserveExisting });
       if (writer.kind === 'taken') {
         throw new Error(writerLockHeldMessage(writer.existing, writer.pidPath));
       }
@@ -176,6 +180,12 @@ export class MCPEngine {
   /** Project root that the engine resolved on first init (null if none). */
   getProjectPath(): string | null {
     return this.projectPath;
+  }
+
+  /** Actual default watcher state, never inferred from a readable index. */
+  getWatcherState(): { projectRoot: string | null; active: boolean } {
+    return { projectRoot: this.cg?.getProjectRoot() ?? null,
+      active: !this.closed && !this.opts.readOnly && (this.cg?.isWatching() ?? false) };
   }
 
   /** Shared ToolHandler — sessions delegate tool dispatch through this. */
@@ -426,7 +436,7 @@ export class MCPEngine {
     if (this.opts.readOnly || !this.cg || this.watcherStarted || !this.opts.watch) return;
 
     const opened = this.cg;
-    this.defaultLease = acquireProject(opened.getProjectRoot(), () => opened, this.watchOptions());
+    this.defaultLease = acquireProject(opened.getProjectRoot(), () => opened, this.watchOptions(), this.opts.preserveExisting);
     this.cg = this.defaultLease.cg;
     if (this.cg !== opened) opened.close();
     this.toolHandler.setDefaultCodeGraph(this.cg);

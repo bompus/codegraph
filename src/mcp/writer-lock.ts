@@ -116,10 +116,11 @@ export function tryAcquireWriterLock(
   projectRoot: string,
   mode: string,
   lockName: 'writer.pid' | 'rebuild.pid' = 'writer.pid',
+  options: { preserveUncertain?: boolean } = {},
 ): WriterAcquireResult {
   return acquireWriterRecord(projectRoot, {
     pid: process.pid, mode, startedAt: Date.now(), ready: false,
-  }, lockName);
+  }, lockName, true, options.preserveUncertain);
 }
 
 /** Reserve for a live external updater. A unique mode distinguishes repeated leases by one PID. */
@@ -137,6 +138,7 @@ function acquireWriterRecord(
   info: WriterLockInfo,
   lockName: 'writer.pid' | 'rebuild.pid',
   reuseOwnRecord = true,
+  preserveUncertain = false,
 ): WriterAcquireResult {
   const pidPath = getWriterPidPath(projectRoot, lockName);
   fs.mkdirSync(path.dirname(pidPath), { recursive: true });
@@ -146,6 +148,7 @@ function acquireWriterRecord(
   try {
     if (!isProcessAlive(info.pid)) return { kind: 'taken', existing: readWriterLock(projectRoot, lockName), pidPath };
 
+    let observedRaw: string | null = null;
     const attempt = (): WriterAcquireResult => {
       const tmp = `${pidPath}.${process.pid}.tmp`;
       let acquired = false;
@@ -184,7 +187,8 @@ function acquireWriterRecord(
 
       let existing: WriterLockInfo | null = null;
       try {
-        existing = decodeWriterLockInfo(fs.readFileSync(pidPath, 'utf8'));
+        observedRaw = fs.readFileSync(pidPath, 'utf8');
+        existing = decodeWriterLockInfo(observedRaw);
       } catch { /* unreadable */ }
       return { kind: 'taken', existing, pidPath };
     };
@@ -197,11 +201,16 @@ function acquireWriterRecord(
     }
     if (result.kind === 'taken') {
       const existing = result.existing;
+      if (preserveUncertain && (!existing || !Number.isSafeInteger(existing.pid) || existing.pid <= 0)) return result;
       if (!existing || existing.pid <= 0 || !isProcessAlive(existing.pid)) {
         // Stale — clear (pid-verified) and retry once.
         try {
           const raw = fs.readFileSync(pidPath, 'utf8');
           const cur = decodeWriterLockInfo(raw);
+          if (preserveUncertain && (raw !== observedRaw || !cur ||
+              !Number.isSafeInteger(cur.pid) || cur.pid <= 0)) {
+            return { kind: 'taken', existing: cur, pidPath };
+          }
           if (!cur || cur.pid === existing?.pid) {
             if (!cur || cur.pid <= 0 || !isProcessAlive(cur.pid)) {
               fs.unlinkSync(pidPath);

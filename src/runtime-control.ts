@@ -1,17 +1,20 @@
-/** Supported daemon control for installers. Process launch and artifact swaps belong to the caller. */
+/** Supported daemon control and ordinary startup. Artifact selection and swaps belong to the caller. */
 import * as fs from 'fs';
 import * as net from 'net';
-import { canonicalProjectRoot } from './directory';
+import * as path from 'path';
+import { canonicalProjectRoot, isInitialized, getCodeGraphDir } from './directory';
 import { getDaemonPidPath, decodeLockInfo, probeDaemonIdentity } from './mcp/daemon-paths';
 import { isProcessAlive, stopDaemonAt, type StopResult } from './mcp/daemon-registry';
-import { reserveWriterLock, updateWriterLock, type WriterLockInfo } from './mcp/writer-lock';
+import { reserveWriterLock, updateWriterLock, readWriterLock, getWriterPidPath, type WriterLockInfo } from './mcp/writer-lock';
+import { CodeGraphPackageVersion } from './mcp/version';
 
 export const RUNTIME_CONTROL_PROTOCOL = 1;
 export interface RuntimeIdentity { pid: number; version: string }
+export interface RuntimeWatcher extends RuntimeIdentity { projectRoot: string; watching: true }
 /** Opaque, JSON-serializable reservation. Retain the exact value until claim or release. */
 export interface WriterReservation { pid: number; mode: string; startedAt: number }
 
-export async function getRuntimeIdentity(projectRoot: string): Promise<RuntimeIdentity | null> {
+export async function getRuntimeIdentity(projectRoot: string, options: { timeoutMs?: number; requireWatcher?: boolean } = {}): Promise<RuntimeIdentity | null> {
   projectRoot = canonicalProjectRoot(projectRoot);
   let raw: string;
   try { raw = fs.readFileSync(getDaemonPidPath(projectRoot), 'utf8'); }
@@ -20,7 +23,8 @@ export async function getRuntimeIdentity(projectRoot: string): Promise<RuntimeId
     throw error;
   }
   const info = decodeLockInfo(raw);
-  if (!info || !await probeDaemonIdentity(info)) return null;
+  if (!info || !await probeDaemonIdentity(info, options.timeoutMs ?? 1000,
+    options.requireWatcher, options.requireWatcher ? projectRoot : undefined)) return null;
   // A probe awaits I/O; a successor may have replaced the record meanwhile.
   try {
     if (fs.readFileSync(getDaemonPidPath(projectRoot), 'utf8') !== raw) return null;
@@ -73,10 +77,13 @@ export async function checkRuntimeReady(
   projectRoot: string,
   expected: RuntimeIdentity,
   timeoutMs = 120_000,
+  options: { requireWatcher?: boolean } = {},
 ): Promise<RuntimeIdentity> {
   projectRoot = canonicalProjectRoot(projectRoot);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Readiness timeout must be positive.');
+  const deadline = Date.now() + timeoutMs;
   const raw = fs.readFileSync(getDaemonPidPath(projectRoot), 'utf8');
+  const writerRaw = options.requireWatcher ? fs.readFileSync(getWriterPidPath(projectRoot), 'utf8') : null;
   const info = decodeLockInfo(raw);
   if (!info || info.pid !== expected.pid || info.version !== expected.version) {
     throw new Error('Daemon identity changed before readiness.');
@@ -112,6 +119,11 @@ export async function checkRuntimeReady(
           if (msg.protocol !== 1 || msg.pid !== expected.pid || msg.codegraph !== expected.version) {
             return finish(new Error('Daemon identity changed during readiness.'));
           }
+          if (options.requireWatcher && (msg.writerProtocol !== 1 ||
+              msg.watcher?.projectRoot !== projectRoot || msg.watcher?.active !== true ||
+              msg.watcher?.ready !== true)) {
+            return finish(new Error('The exact project watcher is not ready.'));
+          }
           phase = 'initialize';
           socket.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
             protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'codegraph-runtime-control', version: '1' },
@@ -142,9 +154,77 @@ export async function checkRuntimeReady(
       }
     });
   });
-  const after = await getRuntimeIdentity(projectRoot);
+  if (Date.now() >= deadline) throw new Error('MCP readiness timed out.');
+  const after = await getRuntimeIdentity(projectRoot, { timeoutMs: deadline - Date.now(), requireWatcher: options.requireWatcher });
   if (after?.pid !== expected.pid || after.version !== expected.version) {
     throw new Error('Daemon identity changed after readiness.');
   }
+  if (options.requireWatcher) {
+    const writer = readWriterLock(projectRoot);
+    if (writer?.pid !== expected.pid || writer.mode !== 'daemon' || writer.ready !== true ||
+        fs.readFileSync(getDaemonPidPath(projectRoot), 'utf8') !== raw ||
+        fs.readFileSync(getWriterPidPath(projectRoot), 'utf8') !== writerRaw) {
+      throw new Error('Watcher ownership changed after readiness.');
+    }
+  }
   return expected;
+}
+
+/** Reuse or elect an exact-checkout watcher without replacement or promotion. */
+export async function startRuntimeWatcher(projectRoot: string, options: {
+  expectedVersion: string; cliPath: string; runtimePath?: string; timeoutMs?: number;
+}): Promise<RuntimeWatcher> {
+  projectRoot = canonicalProjectRoot(projectRoot);
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Readiness timeout must be positive.');
+  if (CodeGraphPackageVersion === '0.0.0-unknown' || options.expectedVersion !== CodeGraphPackageVersion) {
+    throw new Error('Runtime-control build is unavailable or does not match the expected watcher build.');
+  }
+  if (!path.isAbsolute(options.cliPath) || !fs.statSync(options.cliPath).isFile() ||
+      (options.runtimePath && !path.isAbsolute(options.runtimePath))) {
+    throw new Error('Watcher startup requires an absolute CLI and runtime path.');
+  }
+  if (!isInitialized(projectRoot)) throw new Error('Watcher startup requires an index at the exact project root.');
+  for (const file of [getCodeGraphDir(projectRoot), path.join(getCodeGraphDir(projectRoot), 'codegraph.db')]) {
+    if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Watcher startup refuses a linked project index.');
+  }
+  const deadline = Date.now() + timeoutMs;
+  let launched = false;
+  let launchError: Error | undefined;
+  let lastError: unknown;
+  do {
+    const identity = await getRuntimeIdentity(projectRoot, { timeoutMs: Math.max(1, deadline - Date.now()) });
+    if (identity) {
+      if (identity.version !== options.expectedVersion) throw new Error('Existing daemon build is preserved; watcher startup is blocked.');
+      try {
+        await checkRuntimeReady(projectRoot, identity, Math.max(1, deadline - Date.now()), { requireWatcher: true });
+        return { ...identity, projectRoot, watching: true };
+      } catch (error) { lastError = error; }
+    } else if (!launched) {
+      // A failed hello is not an empty slot. Existing guards arbitrate the race
+      // after this read; the candidate never clears live or uncertain owners.
+      for (const file of [getDaemonPidPath(projectRoot), getWriterPidPath(projectRoot)]) {
+        try {
+          const raw = fs.readFileSync(file, 'utf8');
+          const owner = file === getDaemonPidPath(projectRoot) ? decodeLockInfo(raw) : readWriterLock(projectRoot);
+          if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || isProcessAlive(owner.pid)) {
+            throw new Error('Existing or uncertain writer is preserved; watcher startup is blocked.');
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+      const { spawnDetachedDaemon } = await import('./mcp');
+      const child = spawnDetachedDaemon(projectRoot, false, { preserveExisting: true,
+        cliPath: options.cliPath, runtimePath: options.runtimePath });
+      child.once('error', (error) => { launchError = error; });
+      launched = true;
+    }
+    if (launchError) throw launchError;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+  } while (Date.now() < deadline);
+  // An elected daemon can already serve other clients. Its idle lifecycle,
+  // rather than this caller's timeout, owns retirement of an unused candidate.
+  throw new Error(`Watcher startup did not become ready: ${lastError instanceof Error ? lastError.message : 'deadline exceeded'}`);
 }

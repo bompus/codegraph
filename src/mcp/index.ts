@@ -36,8 +36,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn, StdioOptions } from 'child_process';
-import { resolveServerRoot, getCodeGraphDir } from '../directory';
+import { spawn, StdioOptions, type ChildProcess } from 'child_process';
+import { resolveServerRoot, getCodeGraphDir, canonicalProjectRoot, isInitialized } from '../directory';
 import { StdioTransport } from './transport';
 import { MCPEngine } from './engine';
 import { MCPSession } from './session';
@@ -279,8 +279,10 @@ function resolveDaemonRoot(explicitPath: string | null): string | null {
  * launcher proxies through the single winner. `handover` tells the daemon this
  * launcher holds the writer slot for it (see {@link DAEMON_HANDOVER_ENV}).
  */
-function spawnDetachedDaemon(root: string, handover = false): void {
-  const scriptPath = process.argv[1];
+export function spawnDetachedDaemon(root: string, handover = false, options: {
+  preserveExisting?: boolean; cliPath?: string; runtimePath?: string;
+} = {}): ChildProcess {
+  const scriptPath = options.cliPath ?? process.argv[1];
   if (!scriptPath) {
     // No resolvable CLI entry point to re-invoke — let the caller fall back to
     // direct mode rather than spawn something broken.
@@ -304,8 +306,9 @@ function spawnDetachedDaemon(root: string, handover = false): void {
     if (handover) env[DAEMON_HANDOVER_ENV] = String(process.pid);
     else delete env[DAEMON_HANDOVER_ENV];
     const child = spawn(
-      process.execPath,
-      [...process.execArgv, scriptPath, 'serve', '--mcp', '--path', root],
+      options.runtimePath ?? process.execPath,
+      [...(options.cliPath ? [] : process.execArgv), scriptPath, 'serve', '--mcp', '--path', root,
+        ...(options.preserveExisting ? ['--preserve-existing'] : [])],
       {
         detached: true,
         stdio,
@@ -320,6 +323,7 @@ function spawnDetachedDaemon(root: string, handover = false): void {
     // and the session is served in-process.
     child.on('error', () => { /* no daemon — see above */ });
     child.unref();
+    return child;
   } finally {
     // The child holds its own dup of the log fd now; the launcher doesn't need it.
     if (logFd !== null) {
@@ -433,7 +437,7 @@ export class MCPServer {
   /** Project root whose writer.pid we hold in direct mode (#1740); released on stop. */
   private writerLockRoot: string | null = null;
 
-  constructor(projectPath?: string) {
+  constructor(projectPath?: string, private options: { preserveExisting?: boolean } = {}) {
     this.projectPath = projectPath || null;
   }
 
@@ -473,10 +477,20 @@ export class MCPServer {
     // Direct mode if the user opted out. Setting the env var is sufficient to
     // get the pre-#411 single-process behavior.
     if (daemonOptOutSet()) {
+      if (this.options.preserveExisting) throw new Error('Preserving startup requires shared daemon mode.');
       return this.startDirect('CODEGRAPH_NO_DAEMON set');
     }
 
     const root = resolveDaemonRoot(this.projectPath);
+    if (this.options.preserveExisting && (!this.projectPath || !root ||
+        canonicalProjectRoot(root) !== canonicalProjectRoot(this.projectPath) || !isInitialized(root))) {
+      throw new Error('Preserving startup requires an initialized index at the exact project root.');
+    }
+    if (this.options.preserveExisting && root) {
+      for (const file of [getCodeGraphDir(root), path.join(getCodeGraphDir(root), 'codegraph.db')]) {
+        if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Preserving startup refuses a linked project index.');
+      }
+    }
     if (!root) {
       // No initialized project found — daemon mode has nowhere to put its
       // socket. The fresh-checkout / outside-project case; behave as before.
@@ -493,6 +507,7 @@ export class MCPServer {
       await this.runProxyWithLocalHandshake(root);
       return;
     } catch (err) {
+      if (this.options.preserveExisting) throw err;
       // Belt-and-braces: a throw during proxy SETUP (before the client was served)
       // is still safe to recover from with a direct-mode session.
       const msg = err instanceof Error ? err.message : String(err);
@@ -644,16 +659,29 @@ export class MCPServer {
     // In daemon mode stderr IS `.codegraph/daemon.log`; stamp every line so
     // kills/restarts can be placed in time (#1431 — the log was undatable).
     timestampStderrLines();
-    const root = resolveDaemonRoot(this.projectPath) ?? this.projectPath ?? process.cwd();
+    const root = this.options.preserveExisting
+      ? canonicalProjectRoot(this.projectPath ?? process.cwd())
+      : resolveDaemonRoot(this.projectPath) ?? this.projectPath ?? process.cwd();
+    if (this.options.preserveExisting && !isInitialized(root)) {
+      throw new Error('Preserving startup requires an initialized index at the exact project root.');
+    }
+    if (this.options.preserveExisting) {
+      for (const file of [getCodeGraphDir(root), path.join(getCodeGraphDir(root), 'codegraph.db')]) {
+        if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Preserving startup refuses a linked project index.');
+      }
+    }
     // Read once and dropped, so nothing this daemon spawns inherits it.
     const handoverPid = Number(process.env[DAEMON_HANDOVER_ENV]);
     const handoverFrom = Number.isInteger(handoverPid) && handoverPid > 0 ? handoverPid : null;
     delete process.env[DAEMON_HANDOVER_ENV];
+    if (this.options.preserveExisting && handoverFrom !== null) {
+      throw new Error('Preserving startup cannot claim a replacement handover.');
+    }
     for (let attempt = 0; attempt < TAKEOVER_MAX_RETRIES; attempt++) {
       const lock = tryAcquireDaemonLock(root);
 
       if (lock.kind === 'acquired') {
-        const daemon = new Daemon(root, { handoverFrom });
+        const daemon = new Daemon(root, { handoverFrom, preserveExisting: this.options.preserveExisting });
         await daemon.start();
         this.daemon = daemon;
         this.mode = 'daemon';
@@ -667,8 +695,14 @@ export class MCPServer {
       // Taken. If the holder is alive, another daemon already serves (or is
       // binding) — we're redundant; exit cleanly so the launcher proxies to it.
       const existing = lock.existing;
+      if (this.options.preserveExisting && existing && (!Number.isSafeInteger(existing.pid) || existing.pid <= 0)) {
+        throw new Error('Uncertain daemon ownership is preserved; refusing candidate takeover.');
+      }
       let disprovedLiveIdentity = false;
       if (existing && existing.pid > 0 && isProcessAlive(existing.pid)) {
+        if (this.options.preserveExisting) {
+          throw new Error(`Existing daemon pid ${existing.pid} is preserved; refusing candidate takeover.`);
+        }
         // Give a newly-elected daemon time to bind, then require its socket hello
         // to match the lock PID/version. PID existence alone accepts an unrelated
         // process after OS PID reuse and permanently wedges startup (#1553).
@@ -703,6 +737,9 @@ export class MCPServer {
         // ambiguous under the legacy lock format, so both cases fail closed.
         await clearStaleDaemonArtifacts(root);
       } else if (lock.lockContents !== null) {
+        if (this.options.preserveExisting && !existing) {
+          throw new Error('Uncertain daemon ownership is preserved; refusing candidate takeover.');
+        }
         clearStaleDaemonLock(lock.pidPath, existing?.pid, {
           expectedLockContents: lock.lockContents,
         });
@@ -751,12 +788,24 @@ export class MCPServer {
       // before #2278 named their pipe after the root as typed). Either way it
       // makes way for one from this install (#2335).
       const answered = probe === 'older-version';
-      const older = await replaceOlderDaemon(root, answered);
+      if (this.options.preserveExisting) {
+        if (probe) return null;
+        let existing: ReturnType<typeof decodeLockInfo> = null;
+        try {
+          existing = decodeLockInfo(fs.readFileSync(getDaemonPidPath(root), 'utf8'));
+          if (!existing || isProcessAlive(existing.pid)) return null;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+        }
+        const writer = readWriterLock(root);
+        if (writer && isProcessAlive(writer.pid)) return null;
+      }
+      const older = this.options.preserveExisting ? 'none' : await replaceOlderDaemon(root, answered);
       if (older === 'kept' && answered) return null;
       // None reachable — spawn one (detached) and poll for its bind. After a
       // replacement this launcher holds the writer slot for it meanwhile.
       try {
-        spawnDetachedDaemon(root, older === 'stopped');
+        spawnDetachedDaemon(root, older === 'stopped', this.options);
         for (let attempt = 0; attempt < DAEMON_CONNECT_MAX_RETRIES; attempt++) {
           await sleep(DAEMON_CONNECT_RETRY_DELAY_MS);
           const s = await connectAnyCandidate();
@@ -771,7 +820,8 @@ export class MCPServer {
         if (older === 'stopped') releaseWriterLock(root);
       }
     };
-    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => makeFallbackEngine(root), root });
+    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => this.options.preserveExisting
+      ? readOnlyFallback('preserving startup did not verify a shared daemon') : makeFallbackEngine(root), root });
   }
 
   /** Standard SIGINT/SIGTERM handlers that route to our `stop()` (direct mode). */
