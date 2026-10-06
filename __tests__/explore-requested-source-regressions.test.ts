@@ -36,6 +36,8 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, 'cache_key.vue'), component);
   fs.writeFileSync(path.join(dir, 'Board.vue'), component);
   fs.writeFileSync(path.join(dir, 'cache-key.vue'), component.replaceAll('cache_key', 'cache-key'));
+  fs.writeFileSync(path.join(dir, 'cache-key.ts'),
+    'export function siblingWorker() { return "SIBLING_BODY_MARKER"; }\n');
   cg = CodeGraph.initSync(dir);
   await cg.indexAll();
 }, 60_000);
@@ -92,8 +94,9 @@ describe('explicit source survives unrelated query context', () => {
   });
 
   it.each(['"', "'", '`'])('keeps a quoted kebab identifier wrapped in %s', async quote => {
-    expect(sourceIn(await explore(`cache-key.vue ${quote}cache-key${quote}`), 'cache-key.vue'))
-      .toContain('STYLE_BODY_MARKER');
+    const output = await explore(`cache-key.vue ${quote}cache-key${quote}`);
+    expect(sourceIn(output, 'cache-key.vue')).toContain('STYLE_BODY_MARKER');
+    expect(sourceIn(output, 'cache-key.ts')).toContain('SIBLING_BODY_MARKER');
   });
 
   it('keeps alternate-filename and alternate-term source controls working', async () => {

@@ -468,14 +468,15 @@ export function extractQueryPaths(
     if (!matches) continue;
     // A quoted duplicate stem asks for source evidence inside an already
     // pinned file. Keep it in the matching query rather than consuming it again.
-    if (!lines && /^["'`]/.test(tokens[i]!) && matches.every(m => pinnedSeen.has(m))) continue;
-    consumed.add(i);
+    const keepQuotedStem = !lines && /^["'`]/.test(tokens[i]!)
+      && matches.some(m => pinnedSeen.has(m));
+    if (!keepQuotedStem) consumed.add(i);
     for (const m of matches) {
       if (pinnedSeen.has(m) || pinned.length >= maxPins) continue;
       pinnedSeen.add(m);
       pinned.push(m);
     }
-    if (matches.length === 1 && pinnedSeen.has(matches[0]!)) {
+    if (!keepQuotedStem && matches.length === 1 && pinnedSeen.has(matches[0]!)) {
       singleFileAt.set(i, matches[0]!);
       if (lines) anchors.push({ file: matches[0]!, ...lines });
     }
