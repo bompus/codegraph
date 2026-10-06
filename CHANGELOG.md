@@ -96,6 +96,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixes
 
 - Python closures no longer link calls or method values to a captured receiver type when later replacement makes that type uncertain.
+- Python receiver calls no longer link to a stale type after same-line replacement when statement order cannot establish a reliable type.
 
 - JavaScript and TypeScript store actions exported on a later line remain indexed with LF, CRLF or CR line endings.
 
