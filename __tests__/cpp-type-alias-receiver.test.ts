@@ -541,3 +541,31 @@ describe('what does not rule a guess out', () => {
     }
   });
 });
+
+
+describe('recovered aggregate and macro namespace owners', () => {
+  it('prefers enclosing qualified functions over a same-spelled global namespace', async () => {
+    const cg = await indexed({ 'main.cpp': 'namespace detail { int escape() { return 1; } }\nnamespace library { namespace detail { int escape() { return 2; } } int run() { return detail::escape(); } }\n' });
+    try { expect(calls(cg, 'library::run')).toEqual(['library::detail::escape (main.cpp)']); }
+    finally { cg.close(); }
+  });
+
+  it('uses the first anonymous declarator as the type for pointer and value receivers', async () => {
+    const cg = await indexed({ 'main.cpp': 'struct { void ping() {} } *p, value;\nvoid run() { p->ping(); }\nvoid runValue() { value.ping(); }\n' });
+    try {
+      expect(calls(cg, 'run')).toEqual(['p::ping (main.cpp)']);
+      expect(calls(cg, 'runValue')).toEqual(['p::ping (main.cpp)']);
+    }
+    finally { cg.close(); }
+  });
+
+  it('combines a namespace macro prefix with an extracted ordinary namespace', async () => {
+    const cg = await indexed({
+      'include/serializer.hpp': '#define LIB_BEGIN namespace lib {\n#define LIB_END }\nLIB_BEGIN\nnamespace detail { class serializer { public: void dump() {} }; }\nLIB_END\n',
+      'main.cpp': '#include "include/serializer.hpp"\nusing Serializer = ::lib::detail::serializer;\nvoid run() { Serializer s; s.dump(); }\n',
+      'decoy.hpp': 'namespace other { namespace detail { class serializer { public: void dump() {} }; } }\n',
+    });
+    try { expect(calls(cg, 'run')).toEqual(['detail::serializer::dump (include/serializer.hpp)']); }
+    finally { cg.close(); }
+  });
+});

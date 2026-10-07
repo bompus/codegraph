@@ -121,7 +121,7 @@ impl KernelResolver {
         if ty.contains("::") {
             let named = self.nodes_by_name(simple)?;
             let mut visible = Vec::new();
-            for node in named.iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && n.qualified_name == simple && matches!(n.kind.as_str(), "class" | "struct" | "union" | "type_alias")) {
+            for node in named.iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && (n.qualified_name == simple || ty.ends_with(&format!("::{}", n.qualified_name))) && matches!(n.kind.as_str(), "class" | "struct" | "union" | "type_alias")) {
                 if !included.contains(&node.file_path) { continue; }
                 let frames = self.namespace_frames(&node.file_path)?;
                 let mut frames: Vec<_> = frames.into_iter().filter(|(start, end, _)| *start <= node.start_line && *end >= node.start_line).collect();

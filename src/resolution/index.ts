@@ -23,7 +23,7 @@ import {
   CPP_DEFINE_SIGNATURE,
 } from './types';
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
-import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, clearImportResolverMemos } from './import-resolver';
+import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos } from './import-resolver';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
@@ -1164,18 +1164,19 @@ export class ReferenceResolver {
    * ref's line), so a sibling must not inherit this row's failure (#1269).
    */
   private static partitionFailedCleanup(unresolved: UnresolvedRef[]): {
-    byRowId: Array<{ rowId: number; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }>;
-    legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }>;
+    byRowId: Array<{ rowId: number; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason']; nameTail?: string }>;
+    legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason']; nameTail?: string }>;
   } {
-    const byRowId: Array<{ rowId: number; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
-    const legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
+    const byRowId: Array<{ rowId: number; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason']; nameTail?: string }> = [];
+    const legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason']; nameTail?: string }> = [];
     for (const r of unresolved) {
-      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName, referenceKind: r.referenceKind, failureReason: r.failureReason });
+      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName, referenceKind: r.referenceKind, failureReason: r.failureReason, nameTail: r.nameTail });
       else legacyKeys.push({
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,
         referenceKind: r.referenceKind,
         failureReason: r.failureReason,
+        nameTail: r.nameTail,
       });
     }
     return { byRowId, legacyKeys };
@@ -1494,7 +1495,9 @@ export class ReferenceResolver {
     // through `super` is never the method making it (./super-self).
     const settled = gateSwiftTypeTarget(this.settleKernelOutcome(ref, outcome), ref, this.context);
     const scoped = gateRustScope(gateTypeParameter(settled, ref, this.context), ref, this.context);
-    return { ref, result: gateSuperSelfCall(scoped, ref, this.context) };
+    const result = gateSuperSelfCall(scoped, ref, this.context);
+    if (!result) ref.nameTail = importBindingTail(ref, this.context);
+    return { ref, result };
   }
 
   /**

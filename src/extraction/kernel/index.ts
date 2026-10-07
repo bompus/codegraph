@@ -233,7 +233,8 @@ export function tryKernelBindings(filePath: string, source: string, language: La
  */
 export function attachBindingNodeIds(bindings: Binding[], nodes: Node[]): Binding[] {
   // Same-line namesakes (`function y() {}; function y(n) {}`) pair up in
-  // source order; a surplus row takes the first node.
+  // source order; surplus declarations take the first node. Surplus locals
+  // remain nodeless: an anonymous aggregate and its variable can share a name.
   const byNameLine = new Map<string, { ids: string[]; next: number }>();
   for (const n of nodes) {
     if (n.kind === 'file' || n.kind === 'import') continue;
@@ -245,7 +246,7 @@ export function attachBindingNodeIds(bindings: Binding[], nodes: Node[]): Bindin
   for (const b of bindings) {
     if (b.nodeId !== undefined || (b.kind !== 'decl' && b.kind !== 'import' && b.kind !== 'local')) continue;
     const slot = byNameLine.get(`${b.name}\0${b.line}`);
-    if (slot) b.nodeId = slot.ids[slot.next++] ?? slot.ids[0];
+    if (slot) b.nodeId = slot.ids[slot.next++] ?? (b.kind === 'local' ? undefined : slot.ids[0]);
   }
   return bindings;
 }

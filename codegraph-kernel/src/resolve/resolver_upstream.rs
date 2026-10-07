@@ -6,7 +6,7 @@ pub(super) fn test_suite_path(path: &str) -> bool {
     let name = lower.rsplit('/').next().unwrap_or(&lower);
     name.starts_with("test_")
         || name == "conftest.py"
-        || re!(r"[._-](?:tests?|specs?)\.[a-z0-9]+$").is_match(name)
+        || re!(r"[._-](?:tests?|specs?|unittest)\.[a-z0-9]+$").is_match(name)
         || re!(r"(?:Test|Tests|TestCase)\.(?:java|kt|kts|swift|cs|scala|groovy|m|mm|vb|fs)$")
             .is_match(path)
         || re!(r"(?:^|/)(?:tests?|__tests__|specs?|e2e)/").is_match(&lower)
@@ -518,6 +518,10 @@ impl KernelResolver {
     pub(super) fn go_written_qualifier(&mut self, r: &ResolveRefIn) -> Res<Option<String>> {
         if r.language != "go" || r.reference_kind == "imports" {
             return Ok(None);
+        }
+        if let Some((root, _)) = r.reference_name.split_once('.') {
+            if !re!(r"^[A-Za-z_]\w*$").is_match(root) || self.is_shadowed_import(root, r)? { return Ok(None); }
+            return Ok(Some(root.to_string()));
         }
         let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);
         if !re!(r"^[A-Za-z_]\w*$").is_match(name) {

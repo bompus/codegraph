@@ -66,6 +66,7 @@ impl KernelResolver {
             return true;
         }
         if r.language == "c" || r.language == "cpp" {
+            let name = name.strip_prefix("::").unwrap_or(name);
             // `std::` prefix — never a user-defined qualified name.
             if name.starts_with("std::") {
                 return true;
@@ -82,6 +83,7 @@ impl KernelResolver {
     /// VB.NET) the name or any `.`/`::`/`->` part of it in any case —
     /// `formatprice()` calls `FormatPrice`, which the exact-name set never lists.
     pub(super) fn has_any_possible_match_in(&self, name: &str, language: &str) -> bool {
+        let name = if matches!(language, "c" | "cpp") { name.strip_prefix("::").unwrap_or(name) } else { name };
         if self.has_any_possible_match(name) {
             return true;
         }
@@ -276,7 +278,9 @@ impl KernelResolver {
             return local;
         }
         if self.is_alias_prefix(&source, &r.file_path) {
-            return local;
+            if let Some(file) = self.resolve_import_path(&source, &r.file_path, &r.language)? {
+                if self.known_file(&file) { return local; }
+            }
         }
         if self.workspaces.is_some() && self.resolve_workspace_import(&source).is_some() {
             return local;
@@ -284,6 +288,7 @@ impl KernelResolver {
         match self.repository_package(package_name_of(&source), &r.file_path) {
             RepositoryPackage::Mapped => return local,
             RepositoryPackage::Manifest => return Ok(BareImport::UnmappedLocal),
+            RepositoryPackage::External => return Ok(BareImport::External),
             RepositoryPackage::No => {}
         }
         if !source.starts_with("node:") && !self.node_builtins.contains(&source) {
@@ -291,7 +296,7 @@ impl KernelResolver {
             let local = match self.root_import_memo.get(&head) {
                 Some(&v) => v,
                 None => {
-                    let v = self.file_exists(&head);
+                    let v = self.sorted_files().is_some_and(|files| files.iter().any(|file| file.starts_with(&format!("{head}/"))));
                     self.root_import_memo.insert(head, v);
                     v
                 }
@@ -345,6 +350,7 @@ impl KernelResolver {
             if self.manifest_own_packages(&dir).contains(package) {
                 return RepositoryPackage::Manifest;
             }
+            if self.manifest_external_packages(&dir).contains(package) { return RepositoryPackage::External; }
             if dir.is_empty() {
                 return RepositoryPackage::No;
             }
@@ -353,6 +359,28 @@ impl KernelResolver {
                 None => String::new(),
             };
         }
+    }
+
+    /// Declared dependencies remain external unless a preceding workspace or indexed alias proves ownership.
+    fn manifest_external_packages(&mut self, dir: &str) -> Rc<HashSet<String>> {
+        if let Some(hit) = self.manifest_external_memo.get(dir) { return hit.clone(); }
+        let path = if dir.is_empty() { "package.json".to_string() } else { format!("{dir}/package.json") };
+        let mut packages = HashSet::new();
+        if let Some(file) = self.read_file(&path) {
+            // Reuse the bundled SQLite JSON parser rather than maintaining a second manifest parser.
+            let sql = "SELECT key, value FROM json_each(?1, '$.dependencies') UNION ALL SELECT key, value FROM json_each(?1, '$.devDependencies') UNION ALL SELECT key, value FROM json_each(?1, '$.peerDependencies') UNION ALL SELECT key, value FROM json_each(?1, '$.optionalDependencies')";
+            if let Ok(conn) = self.conn() {
+                if let Ok(mut statement) = conn.prepare(sql) {
+                    if let Ok(rows) = statement.query_map([file.text()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) {
+                        for (name, version) in rows.flatten() {
+                            if !version.starts_with("workspace:") && !version.starts_with("file:") && !version.starts_with("link:") { packages.insert(name); }
+                        }
+                    }
+                }
+            }
+        }
+        let packages = Rc::new(packages);
+        self.manifest_external_memo.insert(dir.to_string(), packages.clone()); packages
     }
 
     /// The package names `<dir>/package.json` owns: its `name`, and every
@@ -814,6 +842,7 @@ enum RepositoryPackage {
     Mapped,
     /// A manifest's own `name` or `workspace:` dependency, nothing more.
     Manifest,
+    External,
     No,
 }
 

@@ -152,14 +152,18 @@ describe('Paper end-to-end: a requireNativeComponent module rendered under anoth
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('segmented-control: <RNCSegmentedControlNativeComponent> → requireNativeComponent("RNCSegmentedControl") → the native view', async () => {
+  it.each([
+    ['module.exports =', true],
+    ['export default', true],
+    ['exports.Named =', false],
+  ])('%s native component only supplies a default JSX alias when declared', async (declaration, isDefault) => {
     const write = (rel: string, content: string) => {
       fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
       fs.writeFileSync(path.join(dir, rel), content);
     };
     write('package.json', '{"dependencies":{"react-native":"^0.73"}}');
     write('js/RNCSegmentedControlNativeComponent.js', `import { requireNativeComponent } from 'react-native';
-module.exports = requireNativeComponent('RNCSegmentedControl');
+${declaration} requireNativeComponent('RNCSegmentedControl');
 `);
     write('js/SegmentedControl.js', `import * as React from 'react';
 import RNCSegmentedControlNativeComponent from './RNCSegmentedControlNativeComponent';
@@ -181,6 +185,10 @@ RCT_EXPORT_VIEW_PROPERTY(values, NSArray)
       const control = cg.getNodesByName('SegmentedControl').find((n) => n.filePath === 'js/SegmentedControl.js')!;
       const rendered = cg.getOutgoingEdges(control.id).filter((e) => e.kind === 'calls').map((e) => cg.getNode(e.target)!);
       const component = rendered.find((n) => n.kind === 'component' && n.name === 'RNCSegmentedControl');
+      if (!isDefault) {
+        expect(component).toBeUndefined();
+        return;
+      }
       expect(component?.filePath).toBe('js/RNCSegmentedControlNativeComponent.js');
       const native = cg
         .getOutgoingEdges(component!.id)

@@ -306,17 +306,13 @@ impl KernelResolver {
         let nodes = self.nodes_in_file(file_path)?;
         let mut by_name: HashMap<String, Arc<KNode>> = HashMap::new();
         let mut default_component: Option<Arc<KNode>> = None;
-        let mut default_fn_class: Option<Arc<KNode>> = None;
         for n in nodes.iter() {
             if !n.is_exported {
                 continue;
             }
             by_name.entry(n.name.clone()).or_insert_with(|| n.clone());
-            if default_component.is_none() && n.kind == "component" {
+            if default_component.is_none() && n.kind == "component" && matches!(std::path::Path::new(file_path).extension().and_then(|s| s.to_str()), Some("svelte" | "vue" | "astro")) {
                 default_component = Some(n.clone());
-            }
-            if default_fn_class.is_none() && (n.kind == "function" || n.kind == "class") {
-                default_fn_class = Some(n.clone());
             }
         }
         let rows = self.bindings(file_path)?;
@@ -363,7 +359,6 @@ impl KernelResolver {
         let idx = Rc::new(FileExportIndexK {
             by_name,
             default_component,
-            default_fn_class,
             default_binding,
         });
         self.export_index.insert(file_path.to_string(), idx.clone());
@@ -410,19 +405,9 @@ impl KernelResolver {
         let export_index = self.file_export_index(file_path)?;
         // 1. Direct hit.
         if want.is_default {
-            let forwarded = self.reexports(file_path)?.iter().any(|r| r.kind == "named" && r.exported_name.as_deref() == Some("default"));
-            let direct = export_index
-                .default_component
-                .clone()
+            let direct = export_index.by_name.get("default").cloned()
                 .or_else(|| export_index.default_binding.clone())
-                // A file the walk already passed through for another name
-                // can't supply its default by the first-exported-declaration
-                // guess: that is a re-export cycle, which ESM rejects.
-                .or_else(|| {
-                    let file_prefix = format!("{file_path}\0");
-                    let reentered = visited.iter().filter(|k| k.starts_with(&file_prefix)).nth(1).is_some();
-                    export_index.default_fn_class.clone().filter(|_| !reentered && !forwarded)
-                });
+                .or_else(|| export_index.default_component.clone());
             if let Some(d) = direct {
                 return self.memo_symbol_opt(memo_key, Some(d.clone()));
             }
@@ -544,6 +529,7 @@ impl KernelResolver {
                 }
             }
         }
+        if want.is_default { return self.memo_symbol_opt(memo_key, None); }
         // 3. Wildcard re-exports.
         for rex in reexports.iter() {
             if rex.kind == "wildcard" {

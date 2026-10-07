@@ -1052,7 +1052,8 @@ export class CodeGraph {
             // now resolve, and nothing else ever revisits them (their rows
             // were parked as status='failed' by an earlier completed pass).
             // Look them up by the symbol names the changed files now carry
-            // and re-resolve just that set. On a sync where no failed ref
+            // and module keys for renamed/default imports, then re-resolve that set.
+            // On a sync where no failed ref
             // matches, this is one indexed lookup.
             const tRetry = Date.now();
             const retryable = this.queries.getRetryableFailedReferences([...new Set([

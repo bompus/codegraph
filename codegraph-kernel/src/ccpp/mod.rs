@@ -351,6 +351,7 @@ pub struct Walker<'t> {
     brace_scopes: Option<BraceScopes>,
     class_scopes: NestedIntervals<Scope>,
     class_scope_rows: HashSet<u32>,
+    walk_declared_types: bool,
 }
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
@@ -366,6 +367,7 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
         w.brace_scopes = brace_scopes::scan(source);
     }
 
+    w.walk_declared_types = variant == Variant::C || !tree.root_node().has_error() || w.brace_scopes.is_some();
     let line_count = w.line_count;
     let base_name = crate::buffers::push_file_node(&mut w.arena, &mut w.tables, file_path, line_count);
     w.nodes_meta.push(NodeMeta { kind: "file", name: base_name.to_string() });
@@ -409,6 +411,7 @@ impl<'t> Walker<'t> {
             brace_scopes: None,
             class_scopes: NestedIntervals::new(),
             class_scope_rows: HashSet::new(),
+            walk_declared_types: false,
         }
     }
     markdown_refs_impl!();
@@ -683,21 +686,33 @@ impl<'t> Walker<'t> {
         } else if self.is_attribute_prototype_part(node) {
             skip_children = true;
         } else if kind == "declaration" && !self.inside_class_like() {
-            // In brace scopes, a class the tree reads as a declaration's type
-            // (glued to the tokens after it by error recovery) is still a class.
-            if self.brace_scopes.is_some() {
-                if let Some(t) = node.child_by_field_name("type") {
-                    let class_like = matches!(
-                        t.kind(),
-                        "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier"
-                    );
-                    if class_like && t.child_by_field_name("body").is_some() {
-                        self.visit_node(t);
-                    }
-                }
+            // A class, struct, union or enum defined in the declaration's type
+            // (`struct Foo { … } foo;`) is a definition like one written on its
+            // own, and the variables keep their nodes beside it — so is, in
+            // brace scopes, a class the tree reads as a declaration's type
+            // (glued to the tokens after it by error recovery). The fn-ref
+            // scan skips the walked type, which captured its own (the TS
+            // walked set).
+            let defined_type = node
+                .child_by_field_name("type")
+                .filter(|t| self.walk_declared_types && is_class_like_definition(*t));
+            if let Some(t) = defined_type {
+                self.visit_node(t);
             }
             self.extract_variable(node);
-            self.scan_fn_ref_subtree(node, 0);
+            match defined_type {
+                Some(t) => {
+                    self.maybe_capture_fn_refs(node);
+                    for i in 0..node.named_child_count() {
+                        if let Some(c) = node.named_child(i) {
+                            if c.id() != t.id() {
+                                self.scan_fn_ref_subtree(c, 1);
+                            }
+                        }
+                    }
+                }
+                None => self.scan_fn_ref_subtree(node, 0),
+            }
             skip_children = true;
         } else if kind == "field_declaration" && self.inside_class_like() {
             if self.variant == Variant::Cpp && self.is_cpp_pure_virtual_method_decl(node) {
@@ -1315,4 +1330,18 @@ fn declarator_identifier<'t>(node: Node<'t>) -> Option<Node<'t>> {
             _ => return None,
         }
     }
+}
+
+fn is_class_like_definition(node: Node) -> bool {
+    matches!(node.kind(), "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier")
+        && node.child_by_field_name("body").is_some()
+}
+
+fn defining_declaration(node: Node) -> Option<Node> {
+    if !is_class_like_definition(node) {
+        return None;
+    }
+    let parent = node.parent()?;
+    let is_type = parent.child_by_field_name("type").map(|t| t.id()) == Some(node.id());
+    (parent.kind() == "declaration" && is_type).then_some(parent)
 }

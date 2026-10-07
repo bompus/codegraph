@@ -269,7 +269,7 @@ fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a SourceFile) 
 }
 
 fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str, source: &SourceFile) -> Option<String> {
-    if parent.kind() == "compound_statement" {
+    if matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit") {
         for declaration in named_children(parent).into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
             // C++ parses a parenthesized initializer as a function declarator.
             // Recognize only a standard smart pointer initialized from a known pointer value.
@@ -320,7 +320,15 @@ fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str
 }
 
 fn cpp_ast_declared_type(ty: tree_sitter::Node, mut declarator: tree_sitter::Node, source: &SourceFile) -> String {
-    let mut raw = source.text()[ty.start_byte()..ty.end_byte()].to_string();
+    let type_node = if matches!(ty.kind(), "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier") {
+        ty.child_by_field_name("name").unwrap_or_else(|| {
+            let first = ty.parent().and_then(|p| p.child_by_field_name("declarator")).unwrap_or(declarator);
+            let mut name = first;
+            while let Some(inner) = name.child_by_field_name("declarator").or_else(|| matches!(name.kind(), "reference_declarator" | "parenthesized_declarator").then(|| name.named_child(0)).flatten()) { name = inner; }
+            name
+        })
+    } else { ty };
+    let mut raw = source.text()[type_node.start_byte()..type_node.end_byte()].to_string();
     loop {
         match declarator.kind() {
             "pointer_declarator" => raw.push('*'),

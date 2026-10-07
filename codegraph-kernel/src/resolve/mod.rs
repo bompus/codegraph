@@ -688,6 +688,7 @@ pub struct KernelResolver {
     objc_hierarchy_memo: HashMap<String, Rc<HashSet<String>>>,
     /// manifest_own_packages, by directory.
     manifest_own_memo: HashMap<String, Rc<HashSet<String>>>,
+    manifest_external_memo: HashMap<String, Rc<HashSet<String>>>,
     /// lexicalScopeOf, by candidate id: the scoping function body's lines.
     lexical_scope_memo: HashMap<String, Option<(i64, i64)>>,
     language_type_scope_memo: HashMap<String, Rc<language_type_scope::LanguageTypeScope>>,
@@ -876,6 +877,7 @@ impl KernelResolver {
             objc_supers_memo: HashMap::new(),
             objc_hierarchy_memo: HashMap::new(),
             manifest_own_memo: HashMap::new(),
+            manifest_external_memo: HashMap::new(),
             lexical_scope_memo: HashMap::new(),
             language_type_scope_memo: HashMap::new(),
             scala_package_object_membership_memo: HashMap::new(),

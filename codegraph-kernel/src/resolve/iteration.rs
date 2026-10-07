@@ -588,6 +588,20 @@ impl KernelResolver {
                 IterationHit { ty: ty.to_string(), site }
             }));
         }
+        if collection.kind() == "call_expression" {
+            let Some(function) = collection.child_by_field_name("function").filter(|n| n.kind() == "identifier") else { return Ok(None); };
+            let name = node_text(function, text);
+            let (row, _) = point16(text, function.start_byte(), function.start_position());
+            let bindings = self.bindings(&r.file_path)?;
+            if innermost_binding(&bindings, name, Some(row as i64 + 1)).is_some_and(|b| b.kind == "local" || b.kind == "param") { return Ok(None); }
+            let candidates: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| n.language == "go" && n.kind == "function"
+                && pos_dirname(&n.file_path) == pos_dirname(&r.file_path)).cloned().collect();
+            let [callee] = candidates.as_slice() else { return Ok(None); };
+            let Some(result) = callee.signature.as_deref().and_then(go_result_types).and_then(|results| results.first().copied()) else { return Ok(None); };
+            let Some(element) = re!(r"^\[\]\s*\*?([A-Za-z0-9_.]+)$").captures(result) else { return Ok(None); };
+            let mut site = r.clone(); site.file_path = callee.file_path.clone(); site.line = callee.start_line;
+            return Ok(Some(IterationHit { ty: element[1].to_string(), site }));
+        }
         if collection.kind() != "identifier" {
             return Ok(None);
         }

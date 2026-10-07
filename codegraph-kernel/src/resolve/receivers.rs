@@ -616,7 +616,16 @@ impl KernelResolver {
         let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")
             .replace_all(raw, " ");
         let no_ref = re!(r"[&*]+").replace_all(&kw, " ");
-        let no_gen = re!(r"<[^>]*>").replace_all(&no_ref, " ");
+        let mut no_gen = String::new();
+        let mut depth = 0usize;
+        for c in no_ref.chars() {
+            match c {
+                '<' => depth += 1,
+                '>' => { if depth == 0 { return Ok(None); } depth -= 1; },
+                _ if depth == 0 => no_gen.push(c),
+                _ => {},
+            }
+        }
         let normalized = no_gen.split_whitespace().collect::<Vec<_>>().join(" ");
         if normalized.is_empty() {
             return Ok(None);
@@ -693,6 +702,7 @@ impl KernelResolver {
                         return Ok(None);
                     }
                     Some(t) => return Ok(Some(t)),
+                    None if decl.chars().fold(0i32, |d, c| if c == '<' { d + 1 } else if c == '>' { d - 1 } else { d }) < 0 => return Ok(None),
                     None => {}
                 }
             }
