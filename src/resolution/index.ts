@@ -251,7 +251,8 @@ export class ReferenceResolver {
     for (const fw of this.frameworks) {
       if (!fw.crossFileNodes) continue;
       try {
-        updated += this.reconcileCrossFileNodes(fw.crossFileNodes(this.context));
+        const result = fw.crossFileNodes(this.context);
+        updated += this.queries.runInTransaction(() => this.reconcileCrossFileNodes(result));
       } catch (err) {
         logDebug(`Framework '${fw.name}' crossFileNodes failed`, {
           error: err instanceof Error ? err.message : String(err),

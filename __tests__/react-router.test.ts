@@ -10,7 +10,7 @@
  * is what the app-root gate has to get right. Mirrors `nextjs.test.ts`.
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -20,6 +20,7 @@ import { buildScreens } from '../src/ui-server/api/screens';
 import { buildSteps } from '../src/ui-server/api/steps';
 import { reactRouterRoot, reactRouterNavVerb } from '../src/resolution/frameworks/react-router';
 import type { Node } from '../src/types';
+import { ReferenceResolver } from '../src/resolution';
 
 // =============================================================================
 // The app root a route file owns
@@ -1774,6 +1775,42 @@ describe('react-router: route tables re-exported through a barrel', () => {
     });
     try {
       expect(routeBindings(cg)).toEqual(expected);
+    } finally {
+      cg.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('react-router: route-table reference persistence', () => {
+  it('rolls back a failed reference write so the next pass restores the complete route', async () => {
+    const { root, cg } = await indexProject({
+      'package.json': JSON.stringify({ name: 'web', dependencies: { react: '^18', 'react-router-dom': '^6' } }),
+      'src/Home.tsx': component('Home'),
+      'src/table.tsx': "import { Home } from './Home';\nexport const routes = [{ path: '/home', element: <Home /> }];\n",
+      'src/App.tsx': "import { Routes, Route } from 'react-router-dom';\nimport { routes } from './table';\nexport function App() { return <Routes>{routes.map(route => <Route {...route} />)}</Routes>; }\n",
+    });
+    try {
+      expect(routeBindings(cg)).toEqual(['/home -> Home']);
+      const route = cg.getNodesByKind('route').find(n => n.name === '/home')!;
+      cg.queries.deleteNode(route.id);
+      const resolver = new ReferenceResolver(root, cg.queries);
+      resolver.initialize();
+      const insert = vi.spyOn(cg.queries, 'insertUnresolvedRefsBatch').mockImplementationOnce(() => {
+        throw new Error('injected reference write failure');
+      });
+      try {
+        resolver.runPostExtract();
+      } finally {
+        insert.mockRestore();
+      }
+      expect(cg.getNode(route.id)).toBeNull();
+      resolver.runPostExtract();
+      expect(cg.getNode(route.id)?.name).toBe('/home');
+      expect(cg.queries.getUnresolvedReferencesFrom(route.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ referenceName: 'Home', referenceKind: 'references' }),
+      ]));
     } finally {
       cg.close();
       fs.rmSync(root, { recursive: true, force: true });

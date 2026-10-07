@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Cross-file route-table reconciliation commits nodes and references together, allowing retry after a failed reference write.
+
 - C++ receiver scans ignore multiline raw-string contents before reading declarations.
 - Go conventional import names are available before reading chained calls and keep source order; imported types also resolve from a module root.
 - C++ receiver lookup reuses comment-stripped source and refuses outer receiver types hidden by unproven function declarations.
