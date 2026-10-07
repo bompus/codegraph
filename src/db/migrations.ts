@@ -5,11 +5,12 @@
  */
 
 import { SqliteDatabase } from './sqlite-adapter';
+import { referenceNameTail } from './reference-tail';
 
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * Migration definition
@@ -325,6 +326,29 @@ CREATE TABLE synth_skips (
         DROP INDEX IF EXISTS idx_nodes_kind;
         CREATE INDEX idx_nodes_kind ON nodes(kind, name);
       `);
+    },
+  },
+  {
+    version: 18,
+    description: 'Retry a failed import when sync adds the file it names: path tails and failed-import indexes',
+    up: (db) => {
+      // Partial legacy databases can omit the reference table.
+      if ((db.prepare('PRAGMA table_info(unresolved_refs)').all() as unknown[]).length === 0) return;
+      // Partial over failed imports, so both stay small. Keep the definitions
+      // in lockstep with schema.sql.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_unresolved_failed_import_tail ON unresolved_refs(reference_kind, name_tail) WHERE status = 'failed' AND reference_kind = 'imports';
+        CREATE INDEX IF NOT EXISTS idx_unresolved_failed_import_name ON unresolved_refs(reference_kind, reference_name) WHERE status = 'failed' AND reference_kind = 'imports';
+      `);
+      // A path import parked before this version carries its dotted tail —
+      // the extension or a path fragment — which no file's keys match.
+      // Rewrite it to the path tail a failed import is parked under now.
+      // Idempotent: a rewritten tail rewrites to itself.
+      const update = db.prepare('UPDATE unresolved_refs SET name_tail = ? WHERE id = ?');
+      const rows = db
+        .prepare("SELECT id, reference_name FROM unresolved_refs WHERE status = 'failed' AND reference_kind = 'imports' AND reference_name LIKE '%/%'")
+        .all() as Array<{ id: number; reference_name: string }>;
+      for (const row of rows) update.run(referenceNameTail(row.reference_name, 'imports'), row.id);
     },
   },
 ];

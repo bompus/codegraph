@@ -36,7 +36,7 @@ use crate::buffers::{
 };
 use crate::walker::{Scope, ValueScope, Cand, scope_qualified_name};
 use crate::textutil::is_builtin_type;
-use crate::docstring::preceding_docstring;
+use crate::docstring::preceding_docstring_stepping_over;
 use crate::ids;
 use crate::textutil as util;
 use std::collections::{HashMap, HashSet};
@@ -47,6 +47,63 @@ use tree_sitter::Node;
 
 
 
+
+
+const DOCSTRING_STEP_OVER: &[&str] = &["annotation"];
+const DECORATOR_STEP_OVER: &[&str] = &["comment", "documentation_comment"];
+/// The UpperCamel test of isDartTypeName (`/^[_$]*[A-Z]/`) — how Dart writes
+/// a type, `_Private` and `$Generated` ones included.
+fn is_upper_camel(text: &str) -> bool {
+    text.trim_start_matches(&['_', '$'][..])
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
+}
+
+/// DART_BODILESS_CTORS (dart.ts) — `const Foo.bar();` and a redirecting
+/// factory `const factory Foo.bar() = _Bar;`, each a signature kind of its
+/// own inside a `declaration`.
+fn is_bodiless_ctor(kind: &str) -> bool {
+    matches!(kind, "constant_constructor_signature" | "redirecting_factory_constructor_signature")
+}
+
+/// DART_LOWERCASE_TYPES (dart.ts) — Dart's lowercase built-in types, which a
+/// type argument can name: `<int>`, `<void>`.
+fn is_lowercase_type(name: &str) -> bool {
+    matches!(name, "int" | "double" | "num" | "bool" | "dynamic" | "void")
+}
+
+/// DART_PREFIXED (dart.ts) — what a callee can sit under in front of a
+/// generic call: `await`, `-`, `!`.
+fn is_prefixed(kind: &str) -> bool {
+    matches!(kind, "unary_expression" | "await_expression")
+}
+
+/// DART_COMMENTS (dart.ts) — line and block comments, and dartdoc.
+fn is_comment(node: Node) -> bool {
+    matches!(node.kind(), "comment" | "documentation_comment")
+}
+
+/// dartPrevNamed (dart.ts) — the named sibling before `node`, past comments:
+/// `tester //` + newline + `.state(…)` puts the comment, not `tester`, right
+/// before the `.state` selector.
+fn prev_named<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    let mut prev = node.prev_named_sibling();
+    while let Some(p) = prev.filter(|p| is_comment(*p)) {
+        prev = p.prev_named_sibling();
+    }
+    prev
+}
+
+/// dartNextNamed (dart.ts) — the named sibling after `node`, past comments.
+fn next_named<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    let mut next = node.next_named_sibling();
+    while let Some(n) = next.filter(|n| is_comment(*n)) {
+        next = n.next_named_sibling();
+    }
+    next
+}
 
 
 #[derive(Default)]
@@ -224,7 +281,9 @@ impl<'t> Walker<'t> {
 
     /// dartConstructorSignature (dart.ts:25-35).
     fn constructor_signature(&self, node: Node<'t>) -> Option<Node<'t>> {
-        if matches!(node.kind(), "factory_constructor_signature" | "constructor_signature") {
+        if matches!(node.kind(), "factory_constructor_signature" | "constructor_signature")
+            || is_bodiless_ctor(node.kind())
+        {
             return Some(node);
         }
         if node.kind() == "method_signature" {
@@ -254,9 +313,12 @@ impl<'t> Walker<'t> {
     /// dartCtorInfo (dart.ts:61-70).
     fn ctor_info(&self, node: Node<'t>) -> Option<(String, String)> {
         let ctor = self.constructor_signature(node)?;
+        // The names before the parameters: a redirecting factory names its
+        // target after them (`factory Foo() = _Impl.named;`).
         let mut cursor = ctor.walk();
         let ids: Vec<Node<'t>> = ctor
             .named_children(&mut cursor)
+            .take_while(|c| c.kind() != "formal_parameter_list")
             .filter(|c| c.kind() == "identifier")
             .collect();
         let class_name = self.enclosing_type_name(node)?;
@@ -287,14 +349,6 @@ impl<'t> Walker<'t> {
         Some(last.to_string())
     }
 
-    /// isMisparsedFunction (dart.ts:177-188) — skip the UNNAMED constructor.
-    fn is_unnamed_ctor(&self, node: Node<'t>) -> bool {
-        match self.ctor_info(node) {
-            Some((class_name, ctor_name)) => ctor_name == class_name,
-            None => false,
-        }
-    }
-
     /// getSignature (dart.ts:189-208).
     fn signature_of(&self, node: Node<'t>) -> Option<String> {
         let sig = self.inner_signature(node);
@@ -302,10 +356,15 @@ impl<'t> Walker<'t> {
         let params = sig
             .named_children(&mut c1)
             .find(|c| c.kind() == "formal_parameter_list");
+        // A constructor has no return type: the type a redirecting factory
+        // names is its target (`= _Impl`).
         let mut c2 = sig.walk();
-        let ret = sig
-            .named_children(&mut c2)
-            .find(|c| matches!(c.kind(), "type_identifier" | "void_type"));
+        let ret = if is_bodiless_ctor(sig.kind()) {
+            None
+        } else {
+            sig.named_children(&mut c2)
+                .find(|c| matches!(c.kind(), "type_identifier" | "void_type"))
+        };
         if params.is_none() && ret.is_none() {
             return None;
         }
@@ -470,24 +529,34 @@ impl<'t> Walker<'t> {
                 });
                 let name = self.text(name_node).to_string();
                 let constant = self.create_node("constant", &name, node, Extra { signature, ..Default::default() });
-                // The types its initializer names are the constant's (#2327).
+                // The initializer is code the constant runs — its calls,
+                // instantiations, reads and the types it names (#2327) are
+                // the constant's. walkInitializer: the body walk, and the
+                // dispatcher's fn-ref scan skips what it walked.
                 if let Some(constant) = constant {
-                    let mut value = name_node.next_named_sibling();
-                    while let Some(v) = value {
-                        self.type_refs_dart(v, constant);
-                        value = v.next_named_sibling();
-                    }
+                    self.stack.push(Scope { row: constant, kind: "constant", name });
+                    self.visit_body(node);
+                    self.stack.pop();
+                    return;
                 }
             }
             self.scan_fn_ref_subtree(node, 0);
             return;
         }
 
-        // A field's declared type and initializer types are its class's (Dart
-        // fields mint no nodes); a top-level variable's are the file's (#2327).
-        // The visitNode hook's `declaration` / `program` rows (dart.ts).
-        // (Parent lookups walk down from the root, so only the node kinds that
-        // can be these positions ask for theirs.)
+        // A field's or top-level variable's initializer is code its class or
+        // the file runs (neither mints a node) — the hook's
+        // `initialized_identifier` row, walked like a body (walkInitializer).
+        if node.kind() == "initialized_identifier" && self.is_field_or_top_level_entry(node) {
+            self.visit_body(node);
+            return;
+        }
+
+        // A field's declared type is its class's (Dart fields mint no nodes);
+        // a top-level variable's is the file's (#2327). The visitNode hook's
+        // `declaration` / `program` rows (dart.ts). (Parent lookups walk down
+        // from the root, so only the node kinds that can be these positions
+        // ask for theirs.)
         if node.kind() == "declaration" {
             let in_body = node
                 .parent()
@@ -502,26 +571,16 @@ impl<'t> Walker<'t> {
             if is_field {
                 let owner = self.top_row();
                 for child in kids {
-                    match child.kind() {
-                        "initialized_identifier_list" => self.initializer_type_refs_dart(child, owner),
-                        "static_final_declaration_list" => {}
-                        _ => self.type_refs_dart(child, owner),
+                    if !matches!(child.kind(), "initialized_identifier_list" | "static_final_declaration_list") {
+                        self.type_refs_dart(child, owner);
                     }
                 }
             }
-        } else {
-            let top_level_type =
-                matches!(node.kind(), "type_identifier" | "type_arguments" | "function_type" | "record_type");
-            if (top_level_type || node.kind() == "initialized_identifier_list")
-                && node.parent().map(|p| p.kind() == "program").unwrap_or(false)
-            {
-                let owner = self.top_row();
-                if top_level_type {
-                    self.type_refs_dart(node, owner);
-                } else {
-                    self.initializer_type_refs_dart(node, owner);
-                }
-            }
+        } else if matches!(node.kind(), "type_identifier" | "type_arguments" | "function_type" | "record_type")
+            && node.parent().map(|p| p.kind() == "program").unwrap_or(false)
+        {
+            let owner = self.top_row();
+            self.type_refs_dart(node, owner);
         }
 
         // maybeCaptureFnRefs (:990) — the double-walk fn-ref twin source.
@@ -545,7 +604,10 @@ impl<'t> Walker<'t> {
                 self.extract_class(node);
                 return;
             }
-            "method_signature" | "constructor_signature" => {
+            "method_signature"
+            | "constructor_signature"
+            | "constant_constructor_signature"
+            | "redirecting_factory_constructor_signature" => {
                 self.extract_method(node);
                 return;
             }
@@ -559,9 +621,13 @@ impl<'t> Walker<'t> {
                     return;
                 }
             }
-            "import_or_export" => {
+            // importTypes (dart.ts): `import` / `export`, and `part
+            // 'x.g.dart';`, which links the library to the part's file. The
+            // TS ladder goes on into the directive's children, so this does
+            // too: an annotation's arguments are fn-ref capture points
+            // (`@Tag(bar) import 'a.dart';` captures `bar`).
+            "import_or_export" | "part_directive" => {
                 self.extract_import(node);
-                return;
             }
             "new_expression" => {
                 // INSTANTIATION_KINDS row — from the FILE/CLASS on the
@@ -572,7 +638,8 @@ impl<'t> Walker<'t> {
         }
 
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
+        for child in children {
             self.visit(child);
         }
     }
@@ -593,13 +660,13 @@ impl<'t> Walker<'t> {
         }
         // isMisparsedFunction: the unnamed constructor is skipped — node
         // suppressed, body still walked (attributed to the current stack top).
-        if self.is_unnamed_ctor(node) {
+        if self.is_misparsed_function(node) {
             if let Some(body) = self.resolve_body(node) {
                 self.visit_body(body);
             }
             return;
         }
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = self.docstring_of(node);
         let signature = self.signature_of(node);
         let visibility = self.visibility_of(node);
         let is_async = self.is_async_of(node);
@@ -641,13 +708,13 @@ impl<'t> Walker<'t> {
         }
         let name = self.extract_name(node);
         // isMisparsedFunction — the unnamed ctor: body-only walk.
-        if self.is_unnamed_ctor(node) {
+        if self.is_misparsed_function(node) {
             if let Some(body) = self.resolve_body(node) {
                 self.visit_body(body);
             }
             return;
         }
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = self.docstring_of(node);
         let signature = self.signature_of(node);
         let visibility = self.visibility_of(node);
         let is_async = self.is_async_of(node);
@@ -689,7 +756,7 @@ impl<'t> Walker<'t> {
         // fallback finds the ON type's type_identifier — a class named after
         // the extended type (preserved).
         let name = self.extract_name(node);
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = self.docstring_of(node);
         let visibility = self.visibility_of(node);
         let row = self.create_node(
             "class",
@@ -704,7 +771,8 @@ impl<'t> Walker<'t> {
         self.stack.push(Scope { row, kind: "class", name });
         let body = resolved_body.unwrap_or(node);
         let mut cursor = body.walk();
-        for child in body.named_children(&mut cursor) {
+        let children: Vec<Node<'t>> = body.named_children(&mut cursor).collect();
+        for child in children {
             self.visit(child);
         }
         self.stack.pop();
@@ -719,7 +787,7 @@ impl<'t> Walker<'t> {
             None => return,
         };
         let name = self.extract_name(node);
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = self.docstring_of(node);
         let visibility = self.visibility_of(node);
         let row = self.create_node(
             "enum",
@@ -734,7 +802,8 @@ impl<'t> Walker<'t> {
         // No extractDecoratorsFor on the enum path.
         self.stack.push(Scope { row, kind: "enum", name });
         let mut cursor = body.walk();
-        for child in body.named_children(&mut cursor) {
+        let children: Vec<Node<'t>> = body.named_children(&mut cursor).collect();
+        for child in children {
             if child.kind() == "enum_constant" {
                 self.extract_enum_members(child);
             } else {
@@ -760,7 +829,7 @@ impl<'t> Walker<'t> {
         if name == "<anonymous>" {
             return false;
         }
-        let docstring = preceding_docstring(node, self.src);
+        let docstring = self.docstring_of(node);
         // `value` field is null (type_alias has no fields) → no refs from
         // the aliased type; returns false → children re-visited.
         self.create_node("type_alias", &name, node, Extra { docstring, ..Default::default() });
@@ -781,6 +850,12 @@ impl<'t> Walker<'t> {
             find_child(uri, "string_literal")
         };
         let mut module: Option<String> = None;
+        // A part: `part 'x.g.dart';` holds its `uri` directly.
+        if node.kind() == "part_directive" {
+            if let Some(sl) = find_child(node, "uri").and_then(|uri| find_child(uri, "string_literal")) {
+                module = Some(self.text(sl).replace(['\'', '"'], ""));
+            }
+        }
         if let Some(li) = find_child(node, "library_import") {
             if let Some(spec) = find_child(li, "import_specification") {
                 if let Some(sl) = uri_of(spec) {
@@ -805,7 +880,7 @@ impl<'t> Walker<'t> {
             node,
             Extra { signature: Some(signature), ..Default::default() },
         );
-        if created.is_some() {
+        if created.is_some() && !self.stack.is_empty() {
             let parent_row = self.top_row();
             self.push_ref_at(parent_row, &module, crate::buffers::EDGE_IMPORTS, node);
         }
@@ -823,7 +898,8 @@ impl<'t> Walker<'t> {
         // Scan 1: direct children (+ modifiers descent) — inert for dart
         // (annotations are preceding siblings), ported for fidelity.
         let mut cursor = decl.walk();
-        for child in decl.named_children(&mut cursor) {
+        let kids: Vec<Node<'t>> = decl.named_children(&mut cursor).collect();
+        for child in kids {
             self.consider_decorator(child, decorated_row);
             if child.kind() == "modifiers" {
                 let mut mc = child.walk();
@@ -835,8 +911,11 @@ impl<'t> Walker<'t> {
         }
         // Scan 2: preceding siblings, backward, stop at the first
         // non-annotation — stacked annotations emit in REVERSE source order.
-        if let Some(parent) = decl.parent() {
-            let decl_start = decl.start_byte();
+        // A `declaration`-wrapped member's annotations precede the wrapper,
+        // and the comments between annotations and declaration are stepped over.
+        let anchor = self.declaration_wrapper(decl).unwrap_or(decl);
+        if let Some(parent) = anchor.parent() {
+            let decl_start = anchor.start_byte();
             let mut decl_idx: Option<usize> = None;
             for i in 0..parent.named_child_count() {
                 if let Some(sib) = parent.named_child(i) {
@@ -849,6 +928,9 @@ impl<'t> Walker<'t> {
             if let Some(di) = decl_idx {
                 for j in (0..di).rev() {
                     let Some(sib) = parent.named_child(j) else { continue };
+                    if DECORATOR_STEP_OVER.contains(&sib.kind()) {
+                        continue;
+                    }
                     if !matches!(sib.kind(), "decorator" | "annotation" | "marker_annotation") {
                         break;
                     }
@@ -979,6 +1061,20 @@ impl<'t> Walker<'t> {
         } else {
             node
         };
+        // A redirecting factory names the class it constructs after `=`, then
+        // perhaps that class's constructor (`= _$QuestionImpl.fromJson`, two
+        // type_identifiers). Neither the constructor nor an import prefix is
+        // a type, and Dart writes types UpperCamel.
+        if sig.kind() == "redirecting_factory_constructor_signature" {
+            let mut cursor = sig.walk();
+            let kids: Vec<Node<'t>> = sig.named_children(&mut cursor).collect();
+            for child in kids {
+                if child.kind() != "type_identifier" || is_upper_camel(self.text(child)) {
+                    self.type_refs_from_subtree(child, row);
+                }
+            }
+            return;
+        }
         self.type_refs_from_subtree(sig, row);
     }
 
@@ -1006,13 +1102,7 @@ impl<'t> Walker<'t> {
     /// constructor call names.
     fn is_type_name_dart(&self, node: Node<'t>) -> bool {
         let text = self.text(node);
-        let upper = text
-            .trim_start_matches(&['_', '$'][..])
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_uppercase())
-            .unwrap_or(false);
-        if !upper || is_builtin_type(text) {
+        if !is_upper_camel(text) || is_builtin_type(text) {
             return false;
         }
         if node.next_sibling().map(|s| s.kind() == ".").unwrap_or(false) {
@@ -1041,23 +1131,6 @@ impl<'t> Walker<'t> {
         }
     }
 
-    /// pushDartInitializerTypeRefs (dart.ts) — each `initialized_identifier`'s
-    /// value (every named child after its name).
-    fn initializer_type_refs_dart(&mut self, list: Node<'t>, from_row: u32) {
-        let mut cursor = list.walk();
-        let entries: Vec<Node<'t>> = list.named_children(&mut cursor).collect();
-        for entry in entries {
-            if entry.kind() != "initialized_identifier" {
-                continue;
-            }
-            let mut ec = entry.walk();
-            let parts: Vec<Node<'t>> = entry.named_children(&mut ec).skip(1).collect();
-            for part in parts {
-                self.type_refs_dart(part, from_row);
-            }
-        }
-    }
-
     /// dartMemberRead (dart.ts) — `x.area` / `x?.area` not followed by a call's
     /// argument part, receiver a plain name: a `references` ref `x.area` on
     /// `area`, which the resolver links to a getter only (#2338).
@@ -1075,17 +1148,23 @@ impl<'t> Walker<'t> {
             found
         });
         let Some(member) = member else { return };
-        let Some(receiver) = node.prev_named_sibling() else { return };
+        let Some(receiver) = prev_named(node) else { return };
         if receiver.kind() != "identifier" {
             return;
         }
-        if let Some(next) = node.next_named_sibling() {
+        let next = next_named(node);
+        if let Some(next) = next {
             if next.kind() == "selector" {
                 let mut nc = next.walk();
                 if next.named_children(&mut nc).any(|c| c.kind() == "argument_part") {
                     return;
                 }
             }
+        }
+        // The callee of a generic call the grammar read as comparisons
+        // (`ref.read<Repo>(p)`) is called; a prefixed type argument names a type.
+        if self.in_misparsed_generic_call(receiver, next, node.parent()) {
+            return;
         }
         let name = format!("{}.{}", self.text(receiver), self.text(member));
         let reader = self.top_row();
@@ -1107,18 +1186,26 @@ impl<'t> Walker<'t> {
             self.extract_instantiation(node);
         } else if let Some(callee) = self.bare_call_name(node) {
             // extractBareCall (:5159-5173) — ref at the MATCHED node.
-            let caller_row = self.top_row();
-            self.push_ref_at(caller_row, &callee, crate::buffers::EDGE_CALLS, node);
+            if !self.stack.is_empty() {
+                let caller_row = self.top_row();
+                self.push_ref_at(caller_row, &callee, crate::buffers::EDGE_CALLS, node);
+            }
         }
 
         self.extract_static_member_ref(node);
 
-        // A getter read `x.area` (#2338); a type the body names (#2327).
+        // A getter read `x.area` (#2338); a type the body names (#2327) — the
+        // type argument of a generic call parsed as comparisons included.
         self.extract_member_read(node);
-        if kind == "type_identifier" && self.is_type_name_dart(node) {
-            let name = self.text(node).to_string();
+        let type_node = match kind {
+            "type_identifier" => Some(node),
+            "relational_operator" => self.misparsed_generic_call(node).map(|(_, type_name)| type_name),
+            _ => None,
+        };
+        if let Some(type_node) = type_node.filter(|t| self.is_type_name_dart(*t)) {
+            let name = self.text(type_node).to_string();
             let owner = self.top_row();
-            self.push_ref_at(owner, &name, crate::buffers::EDGE_REFERENCES, node);
+            self.push_ref_at(owner, &name, crate::buffers::EDGE_REFERENCES, type_node);
         }
 
         if kind == "function_signature" {
@@ -1130,7 +1217,8 @@ impl<'t> Walker<'t> {
         }
 
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        let children: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
+        for child in children {
             self.visit_body(child);
         }
     }
@@ -1141,5 +1229,48 @@ impl<'t> Walker<'t> {
 
     // --- value-reference edges (:398-931) ---------------------------------
 
+
+    fn is_misparsed_function(&self, node: Node<'t>) -> bool {
+        match self.ctor_info(node) {
+            Some((class_name, ctor_name)) => ctor_name == class_name,
+            None => is_bodiless_ctor(node.kind()),
+        }
+    }
+
+    fn declaration_wrapper(&self, node: Node<'t>) -> Option<Node<'t>> {
+        let parent = node.parent()?;
+        if parent.kind() != "declaration" {
+            return None;
+        }
+        if parent.named_child(0)? == node {
+            Some(parent)
+        } else {
+            None
+        }
+    }
+
+    fn docstring_of(&self, node: Node<'t>) -> Option<String> {
+        preceding_docstring_stepping_over(
+            self.declaration_wrapper(node).unwrap_or(node),
+            self.src,
+            DOCSTRING_STEP_OVER,
+        )
+    }
+
+    fn is_field_or_top_level_entry(&self, node: Node<'t>) -> bool {
+        let Some(list) = node.parent() else { return false };
+        if list.kind() != "initialized_identifier_list" {
+            return false;
+        }
+        let Some(owner) = list.parent() else { return false };
+        if owner.kind() == "program" {
+            return true;
+        }
+        owner.kind() == "declaration"
+            && owner
+                .parent()
+                .map(|p| matches!(p.kind(), "class_body" | "extension_body" | "enum_body"))
+                .unwrap_or(false)
+    }
 }
 

@@ -736,7 +736,8 @@ impl KernelResolver {
         if self.is_import_binding_call_target(&hit.node, r)? {
             return Ok(false);
         }
-        if self.java_outside_import(r)? || !self.language_type_visible(&hit.node, r)? {
+        if self.java_outside_import(r)? || !self.language_type_visible(&hit.node, r)?
+            || !self.dart_top_level_visible(&hit.node, r)? || !self.dart_bare_member_visible(&hit.node, r)? {
             return Ok(false);
         }
         if r.language == "cpp"

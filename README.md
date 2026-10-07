@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`aeb8f955`](https://github.com/colbymchenry/codegraph/commit/aeb8f95581f23946d04b5ae9b3dbda918f5a7700) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`3f5a9e2e`](https://github.com/colbymchenry/codegraph/commit/3f5a9e2e1d6b2feb51cbc23cc2a757487cbbf47a) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -76,7 +76,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `aeb8f955` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `3f5a9e2e` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -111,15 +111,15 @@ The other languages are the same in both, listed under [Supported Languages](#su
 
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
 
-C# field and property initializers retain their calls and references under the member that owns them. Target-typed `new()` resolves relative declared types through enclosing namespaces and honors `global::` qualification without requiring a redundant `using`. VB.NET resolves typed receivers, enclosing and inherited members, and Shared member reads without choosing unrelated project declarations.
+C# field and property initializers retain their calls and references under the member that owns them. Target-typed `new()` resolves relative declared types through enclosing namespaces and honors `global::` qualification without requiring a redundant `using`. VB.NET resolves typed receivers, enclosing and inherited members, and field or property reads through values and Shared types without choosing unrelated project declarations. Names beginning with keywords, such as `SharedCache`, `Dimension` and `NewItem`, retain their declarations.
 
-Go imports follow the nearest indexed module and the longest matching module path, including module changes during incremental sync. Unexported receivers and embedded methods stay in their declaring package. Dart getter reads become calls only when the receiver type reaches that getter and no nearer field in the visible class hierarchy overrides it; enum extensions and type-position references participate in resolution. Rust enum-variant values retain their enum references.
+Go imports follow the nearest indexed module and the longest matching module path, including module changes during incremental sync. Unexported receivers and embedded methods stay in their declaring package. Dart imports, exports and part directives follow their library URIs and visibility rules. Calls through import prefixes, annotations and member chains follow the visible declaration and written receiver types, including explicit generic lookup types. Parameters and locals shadow bare calls. Top-level and field initializers contribute calls; const constructors, redirecting factories and annotated members retain their declarations and dartdoc. Getter reads become calls only when the receiver type reaches that getter and no nearer field in the visible class hierarchy overrides it; enum extensions and type-position references participate in resolution. Rust enum-variant values retain their enum references.
 
 Named JavaScript and TypeScript object literals own their function members, including local objects and classic-script global assignments. Member calls follow the visible object; loop-local objects stay within their scope. Destructured member calls resolve across lines while preserving the source binding at the destructure declaration; unrelated bare names stay unresolved. Vue template expressions contribute calls to script bindings while preserving component ownership. Encoded attribute expressions retain their original source positions, and template-local bindings stay within their scope.
 
 A COBOL copybook named in an explore query prioritizes its indexed source and lists its COPY and EXEC SQL INCLUDE sites. Missing indexed source is reported explicitly.
 
-`codegraph status` reports files that need re-indexing and files with recorded parse errors. `status --json` includes `index.filesNeedingReindex` and `index.filesWithParseErrors`; `files --json` includes each file's extraction errors. A transient parser failure preserves the previous graph and retries on the next sync.
+`codegraph status` reports files that need re-indexing and files with recorded parse errors. `status --json` includes `index.filesNeedingReindex` and `index.filesWithParseErrors`; `files --json` includes each file's extraction errors. A transient parser failure preserves the previous graph and retries on the next sync. When a file named by an unresolved import appears later, incremental sync retries that import without selecting unrelated namesakes.
 
 The MCP launcher can replace a daemon from an older release when its hello confirms coordinated writer handover. `serve --mcp --path <root> --preserve-existing` opts out of replacement on initial connection and reconnect, requires an index at that exact root, and keeps fallback reads without a watcher. Adding `--initialize-index` lets the elected daemon create a missing exact-root index after acquiring writer ownership. Legacy daemons stay running while new sessions serve reads without auto-sync; stop the old MCP sessions and daemon, then reconnect with the current install. A daemon exits when its installation is deleted or its package version changes. Different managed builds of the same release retain the fork's version-identity checks.
 

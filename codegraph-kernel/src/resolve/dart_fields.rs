@@ -19,58 +19,11 @@ impl KernelResolver {
     }
 
     fn dart_visible_declarations(&mut self, name: &str, file: &str) -> Res<Vec<Arc<KNode>>> {
-        let declarations: Vec<_> = self.nodes_by_name(name)?.iter()
-            .filter(|n| n.language == "dart" && matches!(n.kind.as_str(), "class" | "enum" | "interface"))
-            .cloned().collect();
-        let local: Vec<_> = declarations.iter().filter(|n| n.file_path == file).cloned().collect();
-        if !local.is_empty() { return Ok(local); }
-        let mut visible = HashSet::new();
-        let mut queue = VecDeque::from([file.to_string()]);
-        while visible.len() < 40 {
-            let Some(library) = queue.pop_front() else { break };
-            if !visible.insert(library.clone()) { continue; }
-            let imports: Vec<_> = self.nodes_in_file(&library)?.iter()
-                .filter(|n| n.language == "dart" && n.kind == "import").cloned().collect();
-            for import in imports {
-                let signature = import.signature.as_deref().unwrap_or("");
-                if library != file && !signature.trim_start().starts_with("export ") { continue; }
-                if re!(r"\bas\s+[A-Za-z_$]").is_match(signature) { continue; }
-                if let Some(show) = re!(r"\bshow\s+([^;]+)").captures(signature) {
-                    if !show[1].split(',').any(|item| item.trim() == name) { continue; }
-                }
-                if re!(r"\bhide\s+([^;]+)").captures(signature)
-                    .is_some_and(|hide| hide[1].split(',').any(|item| item.trim() == name)) { continue; }
-                let target = if let Some(package) = import.name.strip_prefix("package:") {
-                    let Some((package, path)) = package.split_once('/') else { continue };
-                    let mut directory = pos_dirname(&library).to_string();
-                    let mut target = None;
-                    loop {
-                        let manifest = if directory.is_empty() { "pubspec.yaml".to_string() }
-                            else { format!("{directory}/pubspec.yaml") };
-                        if let Some(source) = self.read_file(&manifest) {
-                            if re!(r#"(?m)^name:\s*['\"]?([A-Za-z0-9_]+)"#).captures(source.text())
-                                .is_some_and(|found| &found[1] == package) {
-                                let candidate = if directory.is_empty() { format!("lib/{path}") }
-                                    else { format!("{directory}/lib/{path}") };
-                                target = self.probe_extensions(&candidate, "dart");
-                            }
-                            break;
-                        }
-                        if directory.is_empty() { break; }
-                        directory = pos_dirname(&directory).to_string();
-                    }
-                    target
-                } else if import.name.contains(':') { None }
-                else {
-                    let directory = pos_resolve(&self.project_root, pos_dirname(&library));
-                    self.resolve_relative_import(&import.name, &directory, "dart")?
-                };
-                if let Some(target) = target {
-                    queue.push_back(target);
-                }
-            }
-        }
-        Ok(declarations.into_iter().filter(|n| visible.contains(&n.file_path)).collect())
+        let declarations = self.nodes_by_name(name)?.iter().filter(|n| n.language == "dart" && matches!(n.kind.as_str(), "class" | "enum" | "interface")).cloned().collect::<Vec<_>>();
+        let mut visible = Vec::new();
+        for n in declarations { if self.dart_visible(file, &n.file_path, &n.name, "") { visible.push(n); } }
+        let own = visible.iter().filter(|n| self.dart_same_library(file, &n.file_path)).cloned().collect::<Vec<_>>();
+        Ok(if own.is_empty() { visible } else { own })
     }
 
     fn dart_declares_field(&mut self, declaration: &KNode, name: &str, r: &ResolveRefIn) -> bool {

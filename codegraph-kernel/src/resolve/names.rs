@@ -681,7 +681,7 @@ impl KernelResolver {
         // Nested locals reachable only from inside their container (#1230).
         let mut kept: Vec<Arc<KNode>> = Vec::with_capacity(candidates.len());
         for n in candidates.into_iter() {
-            if self.is_lexically_reachable(&n, r)? && self.language_type_visible(&n, r)? && self.php_class_visible(&n,r)?
+            if self.dart_top_level_visible(&n, r)? && self.is_lexically_reachable(&n, r)? && self.language_type_visible(&n, r)? && self.php_class_visible(&n,r)?
                 && !(matches!(r.language.as_str(),"lua"|"luau") && r.reference_kind=="calls" && !r.reference_name.contains(['.',':']) && n.kind=="method")
                 && !(r.language=="python" && r.reference_kind=="calls" && n.file_path!=r.file_path && self.is_receiver_less_call(r)? && self.python_locally_bound(&r.reference_name,r)? && !self.python_fixture_reachable(&n,&r.file_path)) {
                 kept.push(n);
@@ -784,6 +784,18 @@ impl KernelResolver {
             candidates.retain(|n| n.file_path == r.file_path);
         }
 
+        if r.language == "dart" {
+            let mut own = Vec::new();
+            for n in &candidates {
+                if self.dart_library_decl(n)? && self.dart_same_library(&r.file_path, &n.file_path) { own.push(n.clone()); }
+            }
+            if !own.is_empty() {
+                let ids: HashSet<_> = own.iter().map(|n| n.id.clone()).collect();
+                let mut preferred = Vec::new();
+                for n in candidates { if !self.dart_library_decl(&n)? || ids.contains(&n.id) { preferred.push(n); } }
+                candidates = preferred;
+            }
+        }
         // A bare Dart call means the nearest member of the hierarchy around it.
         let candidates = self.nearest_dart_members(candidates, r)?;
         let candidates = self.nearest_swift_members(candidates, r)?;
@@ -1197,9 +1209,10 @@ impl KernelResolver {
             nodes
                 .iter()
                 .filter(|n| {
-                    r.reference_kind != "calls"
+                    !(r.reference_kind == "imports" && n.kind == "import")
+                        && (r.reference_kind != "calls"
                         || !(n.kind == "constant"
-                            && (n.language == "yaml" || n.language == "properties"))
+                            && (n.language == "yaml" || n.language == "properties")))
                 })
                 .cloned()
                 .collect()

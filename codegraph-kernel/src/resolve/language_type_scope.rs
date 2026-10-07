@@ -186,32 +186,15 @@ impl KernelResolver {
                     .any(|m| m[1].starts_with(&format!("{package}."))));
             }
         }
-        if r.language == "dart" && n.kind == "class" {
-            let source = self.read_file(&n.file_path);
-            if source
-                .as_ref()
-                .and_then(|f| f.get((n.start_line - 1).max(0) as usize))
-                .is_some_and(|line| re!(r"^\s*extension\s+on\b").is_match(line))
-            {
-                return Ok(false);
-            }
+        if r.language == "dart" && self.dart_unnamed_extension(n) {
+            return Ok(false);
         }
-        if r.language == "dart" && n.kind == "method" && n.file_path != r.file_path {
+        if r.language == "dart" && n.kind == "method" && !self.dart_same_library(&r.file_path, &n.file_path) {
             if let Some((owner, _)) = n.qualified_name.rsplit_once("::") {
-                let decl = self
-                    .nodes_in_file(&n.file_path)?
-                    .iter()
-                    .find(|p| p.kind == "class" && p.qualified_name == owner)
-                    .cloned();
-                if let Some(decl) = decl {
-                    let source = self.read_file(&decl.file_path);
-                    if source
-                        .as_ref()
-                        .and_then(|f| f.get((decl.start_line - 1).max(0) as usize))
-                        .is_some_and(|line| re!(r"^\s*extension\s+on\b").is_match(line))
-                    {
-                        return Ok(false);
-                    }
+                let decl = self.nodes_in_file(&n.file_path)?.iter()
+                    .find(|p| p.kind == "class" && p.qualified_name == owner).cloned();
+                if decl.is_some_and(|decl| self.dart_unnamed_extension(&decl)) {
+                    return Ok(false);
                 }
             }
         }

@@ -1,6 +1,6 @@
-# tree-sitter-vbnet.wasm — provenance & rebuild
+# VB.NET native grammar provenance and rebuild
 
-`src/extraction/wasm/tree-sitter-vbnet.wasm` is built from
+`codegraph-kernel/grammars/vbnet/` is generated from
 [govindbanura/tree-sitter-vbnet](https://github.com/govindbanura/tree-sitter-vbnet)
 (MIT) at commit `538b7087bf80e86004531b392fe1186379c0a2b5` with the patch in
 `tree-sitter-vbnet.patch` applied. The patch carries two files: `grammar.js`
@@ -82,6 +82,31 @@ on those repos plus SCrawler and PCL:
 12. **LINQ queries** — query expressions no longer require a trailing
     `Select`/`Group` clause, `Aggregate`-led queries, and
     `Distinct`/`Skip`/`Take` clauses.
+13. **Names that begin with a keyword** — upstream lexed every member
+    modifier as one `token(prec(10, choice(…)))` and `Sub New` as one
+    `token(prec(100, …))`. A token that outranks the `prec(-1)` identifier
+    ends where its text ends, so `Public SharedCache` lexed as `Shared` +
+    `Cache`, `Public Dimension` as `Dim` + `ension`, and `Sub NewItem()` as a
+    constructor followed by `Item`. `Dim` and `Const` also appeared inside
+    that token, which kept the local-declaration `Dim`/`Const` out of keyword
+    extraction too, so `Constants.X = 1` in a method lexed as `Const ants.X`.
+    The modifiers and `Sub New` are now plain keywords, which the `word`
+    lexer matches only after it has read the whole identifier. `Protected
+    Friend` and `Private Protected` parse as two modifiers, and `prec(1)` on
+    `member_modifier` keeps a line that could start either a member or a
+    local declaration read as a member, as before.
+    The high-precedence tokens had also let the lexer fold a newline into the
+    keyword after it. Two parses depended on that by accident, so they are
+    now part of the grammar. `option_statements` may begin with newlines (an
+    `Option` line under a comment banner, as in every `My Project`
+    designer file). Upstream's top-level `file_attribute_section` is gone, so
+    every attribute line above a top-level declaration belongs to that
+    declaration, as one inside a class or namespace already did.
+    Measured on all five corpora below: clean parses rose on staxrip (138 →
+    141 of 145) and fell nowhere. Apart from the fixed names and the
+    positions of the newlines no longer folded into a keyword, the trees
+    changed only where `Protected Friend` became two modifiers and where an
+    attribute line now attaches to its declaration.
 
 ### External scanner (`src/scanner.c`, new)
 
@@ -130,6 +155,16 @@ Known remaining gap (localized ERROR regions, deliberately unpatched):
   `word:` stays and column-0 labels keep a localized error; indented labels
   parse fine. Worth an upstream tree-sitter investigation eventually.
 
+Before changing a keyword rule, run `tree-sitter generate --log` and read the
+`Keywords - exclude …` lines. A keyword-shaped token that is left out of
+keyword extraction is lexed with its own precedence, and if that precedence is
+above the identifier's it splits every identifier that starts with it. Those
+lines name the tokens left out and the reason: a token that matches the same
+string as another one, or that conflicts with a token, such as `"\n"`. Four
+remain: `Inherits`, plain `Implements` and both spellings of `IsNot`. Valid VB
+never starts a name where one of them can appear, so they split nothing in
+valid code.
+
 ## Rebuild
 
 ```bash
@@ -152,9 +187,20 @@ cat > tree-sitter.json <<'JSON'
 JSON
 npm install tree-sitter-cli@0.25.10   # ≥0.25 REQUIRED: the /u regex flag (Unicode
                                       # identifiers) is dropped silently by 0.24.x
-npx tree-sitter generate              # src/scanner.c from the patch is picked up
-npx tree-sitter build --wasm -o tree-sitter-vbnet.wasm   # needs emscripten or Docker
+npx tree-sitter generate --abi 14
+# Copy parser.c, scanner.c and tree_sitter/*.h into codegraph-kernel/grammars/vbnet/.
+# Build the native addon from the CodeGraph checkout:
+npm run build:kernel
 ```
+
+Generated source SHA-256:
+
+- `parser.c`: `b0884e91a4244c17194ab91e6b318644b48aa36abdd32ce94c5dd955c19a08fb`
+- `scanner.c`: `51a81d6616e6499bdce1ee58aacd7798b34623a098a3d7d5a89bd1d61c7842a5`
+
+The native grammar uses tree-sitter-cli 0.25.10 and ABI 14. The patch supplies
+`scanner.c`; generation produces `parser.c` and the headers. Source checkouts
+and packaged builds load the native addon, with no WebAssembly fallback.
 
 Upstream's checked-in `test/corpus` expectations predate its own grammar.js
 (every corpus test fails at the pinned commit, before any patching), so the

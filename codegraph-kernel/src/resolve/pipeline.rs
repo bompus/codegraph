@@ -576,6 +576,7 @@ if super::lang_scope::is_dart_member_read(r) {
             return Ok(None);
         }
         if r.reference_kind == "imports" {
+            if cand.node.kind == "import" { return Ok(None); }
             return Ok(if is_importable_kind(&cand.node.kind) {
                 Some(cand)
             } else {
@@ -738,7 +739,21 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if matches!(r.language.as_str(), "lua" | "luau") && r.reference_kind == "imports" {
+            return match self.resolve_lua_require(r)? { Some(c) => self.finish_pre_framework(r, c), None => Ok(ResolveOutcome::unresolved()) };
+        }
+        if r.language == "dart" {
+            if matches!(r.reference_kind.as_str(), "calls" | "function_ref") && !r.reference_name.contains('.') && self.dart_local_binding(&r.reference_name, r) == Some(false) { return Ok(ResolveOutcome::unresolved()); }
+            if r.reference_kind == "imports" {
+                let files = self.dart_uri_files(&r.file_path, &r.reference_name);
+                if files.len() != 1 || files[0] == r.file_path { return Ok(ResolveOutcome::unresolved()); }
+                let node = self.nodes_in_file(&files[0])?.iter().find(|n| n.kind == "file").cloned();
+                return match node { Some(node) => self.finish_pre_framework(r, KCand { node, confidence: 0.95, resolved_by: "import" }), None => Ok(ResolveOutcome::unresolved()) };
+            }
+        }
+
         if self.python_receiver_uncertain(r)? { return Ok(ResolveOutcome::unresolved()); }
+        if let Some(outcome) = self.resolve_dart_written(r)? { return Ok(outcome); }
         if let Some(outcome) = self.resolve_vb_explicit(r)? { return Ok(outcome); }
         // Rust pure-`::` path refs (`crate::m::Item`, `a::b::c`): TS
         // resolves them through resolveViaImport's module-file arm, which

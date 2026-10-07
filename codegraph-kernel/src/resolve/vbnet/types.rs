@@ -652,10 +652,13 @@ impl KernelResolver {
     }
     pub(in crate::resolve) fn vb_members(&mut self, owner: &KNode, name: &str) -> Res<Vec<Arc<KNode>>> {
         let qn = format!("{}::{}", owner.qualified_name, name).to_ascii_lowercase();
-        let candidates: Vec<_> = self.nodes_by_lower_name(name)?.iter()
-            .filter(|n| n.language == "vbnet" && n.qualified_name.to_ascii_lowercase() == qn)
-            .cloned().collect();
-        Ok(candidates.into_iter().filter(|n| self.vb_declaration_project(n, owner)).collect())
+        let parts = self.nodes_by_qualified_name(&owner.qualified_name)?.iter().filter(|n| n.language == "vbnet" && vb_like_kind(&n.kind)).cloned().collect::<Vec<_>>();
+        let mut candidates = Vec::new();
+        for part in parts {
+            if !self.vb_declaration_project(&part, owner) { continue; }
+            candidates.extend(self.nodes_in_file(&part.file_path)?.iter().filter(|n| n.language == "vbnet" && n.qualified_name.to_ascii_lowercase() == qn).cloned());
+        }
+        Ok(candidates)
     }
     pub(in crate::resolve) fn vb_prefer(
         &mut self,

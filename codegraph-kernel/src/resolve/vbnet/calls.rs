@@ -1,6 +1,92 @@
 use super::*;
 
+struct VbReceiver {
+    owners: Vec<Arc<KNode>>,
+    typed: Option<VbType>,
+    through_type: bool,
+    color_color: bool,
+}
+
+
 impl KernelResolver {
+    fn vb_value_receiver(&mut self, typed: Option<VbType>) -> Res<Option<VbReceiver>> {
+        let Some(t) = typed.filter(|t| vb_key(t) != "object") else { return Ok(None); };
+        Ok(self.vb_owners(&t)?.map(|owners| VbReceiver { owners, typed: Some(t), through_type: false, color_color: false }))
+    }
+    fn vb_path_receiver(&mut self, head: &str, links: &[&str], r: &ResolveRefIn) -> Res<Option<VbReceiver>> {
+        let mut at = if head.starts_with('{') {
+            let owner = self.node_by_id(&r.from_node_id)?;
+            let typed = self.vb_resolve_param(vb_type(head.trim_matches(['{', '}']), &r.file_path, r.line), owner.as_deref())?;
+            self.vb_value_receiver(typed)?
+        } else if re!(r"(?i)^(Me|MyClass|MyBase)$").is_match(head) {
+            let own = self.vb_around(&r.file_path, r.line)?.first().cloned();
+            match own {
+                Some(own) if head.eq_ignore_ascii_case("MyBase") => {
+                    let base = self.vb_supers(&own)?.into_iter().find(|(_, implemented)| !implemented).map(|(t, _)| t);
+                    self.vb_value_receiver(base)?
+                }
+                Some(own) => Some(VbReceiver { typed: Some(vb_simple(&own.name, r)), owners: vec![own], through_type: false, color_color: false }),
+                None => None,
+            }
+        } else {
+            let name = head.trim_matches(['[', ']']);
+            let bound = self.vb_receiver_type(name, r, 0)?;
+            let written = match &bound { None => Some(vb_simple(name, r)), Some(Some(t)) if !t.array && t.name.eq_ignore_ascii_case(name) => Some(t.clone()), _ => None };
+            if let Some(written) = written {
+                let (owners, ambiguous) = self.vb_types_at(&written, true)?;
+                (!ambiguous && !owners.is_empty()).then_some(VbReceiver { owners, typed: None, through_type: true, color_color: bound.is_some() })
+            } else { self.vb_value_receiver(bound.flatten())? }
+        };
+        for link in links {
+            let Some(prior) = at else { return Ok(None); };
+            let name = link.trim_matches(['[', ']']);
+            let found = self.vb_member_on(&prior.owners, name, r, true, prior.typed.as_ref(), true)?
+                .or(self.vb_member_on(&prior.owners, &format!("[{name}]"), r, true, prior.typed.as_ref(), true)?);
+            let Some(found) = found else { return Ok(None); };
+            at = if vb_like_kind(&found.node.kind) {
+                prior.through_type.then_some(VbReceiver { owners: vec![found.node], typed: None, through_type: true, color_color: false })
+            } else { let typed = self.vb_member_type(&found)?; self.vb_value_receiver(typed)? };
+        }
+        Ok(at)
+    }
+    fn vb_member_read(&mut self, head: &str, links: &[&str], name: &str, r: &ResolveRefIn) -> Res<Option<VbHit>> {
+        let Some(at) = self.vb_path_receiver(head, links, r)? else { return Ok(None); };
+        let name = name.trim_matches(['[', ']']);
+        let found = self.vb_member_on(&at.owners, name, r, true, at.typed.as_ref(), true)?
+            .or(self.vb_member_on(&at.owners, &format!("[{name}]"), r, true, at.typed.as_ref(), true)?);
+        let Some(mut found) = found else { return Ok(None); };
+        if found.node.id == r.from_node_id { return Ok(None); }
+        if !at.through_type && !matches!(found.node.kind.as_str(), "method" | "field" | "property" | "constant" | "variable") { return Ok(None); }
+        if at.through_type && !found.node.is_static {
+            if let Some(shared) = self.nodes_by_qualified_name(&found.node.qualified_name)?.iter().find(|n| n.is_static && n.file_path == found.node.file_path && n.id != r.from_node_id) { found.node = shared.clone(); }
+        }
+        let constant = self.read_file(&found.node.file_path).and_then(|f| f.get((found.node.start_line - 1).max(0) as usize).cloned())
+            .is_some_and(|line| re!(r"(?i)^\s*(?:(?:Public|Private|Protected|Friend|Shadows)\s+)*Const\b").is_match(&line));
+        let shared = found.node.is_static || constant || matches!(found.node.kind.as_str(), "constant" | "enum_member") || at.owners.iter().any(|n| self.vb_module(n));
+        let through_value = !at.through_type || at.color_color && !shared;
+        let line = self.read_file(&r.file_path).and_then(|f| f.get((r.line - 1).max(0) as usize).cloned()).unwrap_or_default();
+        let named = re!(r"(?i)\b(?:AddressOf\s+|NameOf\s*\(\s*)$").is_match(super::names::js_prefix(&line, r.column.max(0) as usize));
+        let edge_kind = (found.node.kind == "method" && !named).then(|| "calls".to_string());
+        if through_value || found.node.kind == "method" || !links.is_empty() {
+            return Ok(Some(VbHit { candidate: KCand { node: found.node, confidence: if through_value { 0.9 } else { 0.85 }, resolved_by: if through_value { "instance-method" } else { "qualified-name" } }, edge_kind, also: vec![] }));
+        }
+        self.vb_read_through(found.node, &at.owners, r, 0.9, edge_kind.as_deref())
+    }
+    fn vb_path_call(&mut self, head: &str, links: &[&str], name: &str, r: &ResolveRefIn) -> Res<Option<VbHit>> {
+        let Some(at) = self.vb_path_receiver(head, links, r)? else { return Ok(None); };
+        let Some(typed) = at.typed.filter(|_| !at.through_type) else { return Ok(None); };
+        let name = name.trim_matches(['[', ']']);
+        self.vb_value_call(&typed, &at.owners, name, r)
+    }
+    fn vb_value_call(&mut self, typed: &VbType, owners: &[Arc<KNode>], member: &str, r: &ResolveRefIn) -> Res<Option<VbHit>> {
+        if let Some(found) = self.vb_member_on(owners, member, r, false, Some(typed), false)? {
+            return Ok(Some(VbHit { candidate: KCand { node: found.node, confidence: 0.9, resolved_by: "instance-method" }, edge_kind: None, also: vec![] }));
+        }
+        if let Some(found) = self.vb_member_on(owners, member, r, true, Some(typed), false)? {
+            return Ok(Some(VbHit { candidate: KCand { node: found.node, confidence: 0.9, resolved_by: "instance-method" }, edge_kind: Some("references".into()), also: vec![] }));
+        }
+        Ok(self.vb_extension_for(typed, owners, member, r)?.map(|candidate| VbHit { candidate, edge_kind: None, also: vec![] }))
+    }
     pub(in crate::resolve) fn vb_read_through(
         &mut self,
         member: Arc<KNode>,
@@ -38,59 +124,6 @@ impl KernelResolver {
                 vec![owner.id.clone()]
             },
         }))
-    }
-    pub(in crate::resolve) fn vb_shared_read(
-        &mut self,
-        receiver: &str,
-        member: &str,
-        r: &ResolveRefIn,
-    ) -> Res<Option<VbHit>> {
-        let bound = self.vb_receiver_type(receiver, r, 0)?;
-        let written = match bound {
-            None => vb_simple(receiver, r),
-            Some(Some(t)) if !t.array && t.name.eq_ignore_ascii_case(receiver) => t,
-            _ => return Ok(None),
-        };
-        let (owners, ambiguous) = self.vb_types_at(&written, true)?;
-        if ambiguous || owners.is_empty() {
-            return Ok(None);
-        }
-        let member = member.trim_matches(['[', ']']);
-        let found = self
-            .vb_member_on(&owners, member, r, true, None, true)?
-            .or(self.vb_member_on(&owners, &format!("[{member}]"), r, true, None, true)?);
-        let Some(mut found) = found else {
-            return Ok(None);
-        };
-        if !found.node.is_static {
-            if let Some(shared) = self
-                .nodes_by_qualified_name(&found.node.qualified_name)?
-                .iter()
-                .find(|n| {
-                    n.is_static && n.file_path == found.node.file_path && n.id != r.from_node_id
-                })
-            {
-                found.node = shared.clone();
-            }
-        }
-        if found.node.kind == "method" {
-            let line = self
-                .read_file(&r.file_path)
-                .and_then(|f| f.get((r.line - 1).max(0) as usize).cloned())
-                .unwrap_or_default();
-            let before = super::names::js_prefix(&line, r.column.max(0) as usize);
-            let named = re!(r"(?i)\b(?:AddressOf\s+|NameOf\s*\(\s*)$").is_match(before);
-            return Ok(Some(VbHit {
-                candidate: KCand {
-                    node: found.node,
-                    confidence: 0.85,
-                    resolved_by: "qualified-name",
-                },
-                edge_kind: (!named).then(|| "calls".into()),
-                also: vec![],
-            }));
-        }
-        self.vb_read_through(found.node, &owners, r, 0.9, None)
     }
     // None = no proven type/owner, so ordinary matching may continue.
     // Some(None) = a proven receiver/owner has no project target, so stop.
@@ -140,24 +173,9 @@ impl KernelResolver {
         let Some(owners) = self.vb_owners(&t)? else {
             return Ok(Some(None));
         };
-        if let Some(found) = self.vb_member_on(&owners, member, r, false, Some(&t), false)? {
-            return Ok(Some(Some(VbHit {
-                candidate: KCand {
-                    node: found.node,
-                    confidence: 0.9,
-                    resolved_by: "instance-method",
-                },
-                edge_kind: None,
-                also: vec![],
-            })));
-        }
-        let extension = self.vb_extension_for(&t, &owners, member, r)?;
-        Ok(Some(extension.map(|candidate| VbHit {
-            candidate,
-            edge_kind: None,
-            also: vec![],
-        })))
+        self.vb_value_call(&t, &owners, member, r).map(Some)
     }
+
     pub(in crate::resolve) fn vb_site_receiver(&mut self, r: &ResolveRefIn) -> Option<String> {
         let lines = self.read_file(&r.file_path)?;
         let line = lines.get((r.line - 1).max(0) as usize)?;
@@ -185,13 +203,21 @@ impl KernelResolver {
             return Ok(None);
         }
         let hit = if r.reference_kind == "references" {
-            let Some(m) =
-                re!(r"^([A-Za-z_]\w*)\.(\[?[A-Za-z_]\w*\]?)$").captures(&r.reference_name)
-            else {
-                return Ok(None);
-            };
-            Some(self.vb_shared_read(&m[1], &m[2], r)?)
+            let Some(m) = re!(r"^(\{[^{}]+\}|\[?[A-Za-z_]\w*\]?)((?:\.\[?[A-Za-z_]\w*\]?)*)\.(\[?[A-Za-z_]\w*\]?)$").captures(&r.reference_name) else { return Ok(None); };
+            let links = m[2].trim_start_matches('.').split('.').filter(|s| !s.is_empty()).collect::<Vec<_>>();
+            Some(self.vb_member_read(&m[1], &links, &m[3], r)?)
         } else if r.reference_kind == "calls" {
+            if let Some(m) = re!(r"^(\{[^{}]+\}|\[?[A-Za-z_]\w*\]?)((?:\.\[?[A-Za-z_]\w*\]?)*)\.(\[?[A-Za-z_]\w*\]?)$").captures(&r.reference_name) {
+                if !m[2].is_empty() || m[1].starts_with('{') || re!(r"(?i)^(Me|MyClass|MyBase)$").is_match(&m[1]) {
+                    let links = m[2].trim_start_matches('.').split('.').filter(|s| !s.is_empty()).collect::<Vec<_>>();
+                    let hit = self.vb_path_call(&m[1], &links, &m[3], r)?;
+                    return match hit { Some(hit) => {
+                        let mut out = self.finish_pre_framework(r, hit.candidate)?;
+                        if out.status == "resolved" { out.edge_kind = hit.edge_kind; }
+                        Ok(Some(out))
+                    }, None => Ok(Some(ResolveOutcome::unresolved())) };
+                }
+            }
             let Some(receiver) = self.vb_site_receiver(r) else {
                 return Ok(None);
             };
