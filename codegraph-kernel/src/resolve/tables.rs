@@ -1128,7 +1128,7 @@ pub(super) fn is_test_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let name = filename.to_ascii_lowercase();
     name.starts_with("test_") || name.starts_with("test.")
-        || re!(r"[._-](?:test|tests|spec|specs|unittest)\.[a-z0-9]+$").is_match(&name)
+        || re!(r"[._-](?:test|tests|spec|specs|unittest|unittests)\.[a-z0-9]+$").is_match(&name)
         || re!(r"(?:Test|Tests|TestCase|Tester|Spec|Specs)\.[A-Za-z0-9]+$").is_match(filename)
         || re!(r"(?:^|/)(?:tests?|__tests__|specs?|testlib|testing|e2e)/").is_match(&lower)
         || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
@@ -1137,7 +1137,17 @@ pub(super) fn is_test_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_rust_use_bindings;
+    use super::{collect_rust_use_bindings, is_test_path};
+
+    #[test]
+    fn singular_and_plural_unittest_filenames_are_test_paths() {
+        for path in ["tools/run_all_unittest.cc", "tools/run_all_unittests.cc", "src/widget-unittests.cpp", "src/widget.UNITTESTS.CC"] {
+            assert!(is_test_path(path), "{path}");
+        }
+        for path in ["tools/run_all_unitests.cc", "src/unittests_helper.cc", "src/widget.cc"] {
+            assert!(!is_test_path(path), "{path}");
+        }
+    }
 
     #[test]
     fn rust_use_groups_flatten_in_order() {

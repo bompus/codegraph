@@ -28,7 +28,7 @@ import { tryKernelExtract, resetKernelForTests } from '../src/extraction/kernel'
 import type { ExtractionResult, Language } from '../src/types';
 
 
-const ENV_KEYS = ['CODEGRAPH_KERNEL', 'CODEGRAPH_KERNEL_LANGS', 'CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT'] as const;
+const ENV_KEYS = ['CODEGRAPH_KERNEL', 'CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT'] as const;
 
 /** `<kind> <qualifiedName>` for every symbol, file and imports aside. */
 function symbols(result: ExtractionResult): string[] {
@@ -64,7 +64,6 @@ describe('a type defined in a C/C++ declaration', () => {
 
   function extract(_backend: 'kernel', file: string, source: string, language: Language): ExtractionResult {
     delete process.env.CODEGRAPH_KERNEL;
-    process.env.CODEGRAPH_KERNEL_LANGS = 'all';
     const result = tryKernelExtract(file, source, language);
     expect(result, `kernel extraction of ${file}`).not.toBeNull();
     return result!;

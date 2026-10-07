@@ -267,7 +267,7 @@ describe('a failed reference through an import binding', () => {
   }, 60_000);
 });
 
-describe('schema v15', () => {
+describe('schema v21', () => {
   let db: DatabaseConnection | undefined;
 
   afterEach(() => {
