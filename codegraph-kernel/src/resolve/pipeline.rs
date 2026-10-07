@@ -954,6 +954,12 @@ if r.language == "dart" && r.reference_kind == "references"
     && winner.node.id == r.from_node_id {
     return Ok(ResolveOutcome::unresolved());
 }
+        if r.language == "go" && r.reference_kind == "extends"
+            && self.node_by_id(&r.from_node_id)?.is_some_and(|n| n.kind == "interface")
+            && !self.go_interface_target(&winner.node, r)?
+        {
+            return Ok(ResolveOutcome::unresolved());
+        }
         winner=self.retarget_overload(winner,r)?;
         if r.reference_kind == "calls" {
             // memberName = the last `.` segment — `Cls::member` and bare

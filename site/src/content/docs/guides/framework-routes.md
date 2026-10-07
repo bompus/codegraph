@@ -90,4 +90,4 @@ Express treats the last registration argument as the handler, excluding a traili
 
 Axum and Actix handler links use the handler argument position, including multiline and nested registrations. Actix scope prefixes remain part of the route path.
 
-Angular template calls in bindings, interpolation and control-flow blocks link the component member they invoke. Template locals hide same-named component members; inherited component members remain unsupported. Framework detection reads nested app manifests recursively.
+Angular template calls in property bindings, interpolations, structural directives and control-flow blocks link the component member they invoke. A method passed to a child, such as `[displayWith]="displayFn"`, links as a function reference. Template locals hide same-named component members; inherited component members remain unsupported. Framework detection reads the root manifest and the first two directory levels. Remaining slots cover directories above JS/TS code, shallowest first, within the manifest limit.

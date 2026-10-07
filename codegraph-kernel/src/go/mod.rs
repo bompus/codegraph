@@ -289,7 +289,7 @@ impl<'t> Walker<'t> {
         } else if kind == "method_declaration" {
             self.extract_method(node);
             skip_children = true;
-        } else if kind == "type_spec" {
+        } else if matches!(kind, "type_spec" | "type_alias") {
             skip_children = self.extract_type_alias(node);
         } else if matches!(kind, "var_declaration" | "short_var_declaration" | "const_declaration")
             && !self.inside_class_like()

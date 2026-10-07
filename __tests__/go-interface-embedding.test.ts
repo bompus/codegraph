@@ -244,6 +244,56 @@ describe('the type hierarchy of an indexed Go module', () => {
     root = '';
   });
 
+  it.each(['native', 'generic'] as const)('rejects named type-set terms and retains interface aliases: %s', async (backend) => {
+    const saved = process.env.CODEGRAPH_KERNEL;
+    try {
+      if (backend === 'generic') process.env.CODEGRAPH_KERNEL = '0';
+      else delete process.env.CODEGRAPH_KERNEL;
+      resetKernelForTests();
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-go-interface-target-'));
+      fs.writeFileSync(path.join(root, 'go.mod'), 'module example.com/app\n\ngo 1.22\n');
+      fs.mkdirSync(path.join(root, 'api'));
+      fs.writeFileSync(path.join(root, 'api', 'api.go'), `package api
+ type Reader interface { Read() }
+ type ReaderAlias = Reader
+ type NamedInt int
+ `);
+      fs.writeFileSync(path.join(root, 'main.go'), `package app
+ import "example.com/app/api"
+ type Reader interface { Read() }
+ type Alias = Reader
+ type Chain = Alias
+ type Defined Reader
+ type NamedInt int
+ type ScalarAlias = NamedInt
+ type Record struct{}
+ type CycleA = CycleB
+ type CycleB = CycleA
+ type Direct interface { Reader }
+ type ViaAlias interface { Alias }
+ type ViaChain interface { Chain }
+ type ViaDefined interface { Defined }
+ type ViaPackage interface { api.ReaderAlias }
+ type Only interface { NamedInt }
+ type OnlyAlias interface { ScalarAlias }
+ type OnlyRecord interface { Record }
+ type OnlyPackage interface { api.NamedInt }
+ type OnlyCycle interface { CycleA }
+ `);
+      cg = await CodeGraph.init(root, { index: true });
+      const graph = cg;
+      const sources = graph.getNodesByKind('interface').filter((n) => n.filePath === 'main.go' && n.name !== 'Reader');
+      const links = graph.getOutgoingEdgesFrom(sources.map((n) => n.id), ['extends', 'implements'])
+        .map((e) => `${graph.getNode(e.source)?.name}->${graph.getNode(e.target)?.name}`).sort();
+      expect(links.filter((link) => link.startsWith('Only'))).toEqual([]);
+      expect(links).toEqual(['Direct->Reader', 'ViaAlias->Alias', 'ViaChain->Chain', 'ViaDefined->Defined', 'ViaPackage->ReaderAlias']);
+    } finally {
+      if (saved === undefined) delete process.env.CODEGRAPH_KERNEL;
+      else process.env.CODEGRAPH_KERNEL = saved;
+      resetKernelForTests();
+    }
+  }, 60_000);
+
   it('links embedded interfaces and structs to the package that declares them', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-go-embedding-'));
     const files: Record<string, string> = {

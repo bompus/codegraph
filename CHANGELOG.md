@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Go interface type-set terms no longer appear as base interfaces; named aliases still link when their declarations reach an interface.
+
 - `codegraph_explore` reports requested-file limits and uncovered indexed continuation ranges so partial answers have a clear next query.
 
 - Explore retains explicitly pinned code in mixed documentation/code requests, returns parameterized test callbacks, and preserves quoted source terms that match the filename stem.

@@ -58,7 +58,7 @@ export const goExtractor: LanguageExtractor = {
   interfaceTypes: [],  // Handled via type_spec → resolveTypeAliasKind
   structTypes: [],     // Handled via type_spec → resolveTypeAliasKind
   enumTypes: [],
-  typeAliasTypes: ['type_spec'], // Go type declarations
+  typeAliasTypes: ['type_spec', 'type_alias'], // Go type definitions and aliases
   importTypes: ['import_declaration'],
   callTypes: ['call_expression'],
   variableTypes: ['var_declaration', 'short_var_declaration', 'const_declaration'],
