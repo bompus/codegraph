@@ -95,6 +95,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- C++ receiver scans ignore multiline raw-string contents before reading declarations.
 - Go conventional import names are available before reading chained calls and keep source order; imported types also resolve from a module root.
 - C++ receiver lookup reuses comment-stripped source and refuses outer receiver types hidden by unproven function declarations.
 - React layout links stay with React routes, and navigation in an imported route-table file survives removing and restoring its destination.
