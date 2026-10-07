@@ -620,8 +620,8 @@ if super::lang_scope::is_dart_member_read(r) {
                         .cloned().collect();
                     if let Some(target) = prefer_call_site_file(types, &r.file_path).first() {
                         cand.node = target.clone();
-                    } else if !is_type { return Ok(None); }
-                } else if !is_type { return Ok(None); }
+                    } else { return Ok(None); }
+                } else { return Ok(None); }
             }
         }
         self.cap_chain_confidence(&mut cand, r)?;
@@ -863,6 +863,9 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// resolveOneInner's bare slice (a name with no separator).
     pub(super) fn resolve_bare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if let Some(result) = self.go_assertion_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
         if let Some(result) = self.cpp_complex_call(r)? {
             return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
         }

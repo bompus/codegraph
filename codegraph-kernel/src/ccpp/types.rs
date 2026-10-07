@@ -4,13 +4,17 @@ use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
+    fn class_like_docstring(&self, node: Node<'t>) -> Option<String> {
+        preceding_docstring(defining_declaration(node).unwrap_or(node), self.src)
+    }
+
     /// extractClass for cpp class_specifier (skipBodilessClass, #1093).
     pub(super) fn extract_class(&mut self, node: Node<'t>) {
         stack_guard!();
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: self.class_like_docstring(node),
             visibility: self.visibility_of(node),
             end: self.brace_body_end(body),
             ..Extra::default()
@@ -32,7 +36,7 @@ impl<'t> Walker<'t> {
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: self.class_like_docstring(node),
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
             end: self.brace_body_end(body),
             ..Extra::default()
@@ -53,7 +57,7 @@ impl<'t> Walker<'t> {
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
         let extra = Extra {
-            docstring: preceding_docstring(node, self.src),
+            docstring: self.class_like_docstring(node),
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
             ..Extra::default()
         };

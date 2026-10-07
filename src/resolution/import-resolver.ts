@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { moduleTail } from '../db/reference-tail';
 import { Binding, Language } from '../types';
 import { UnresolvedRef,  ResolutionContext, ImportMapping } from './types';
 import { applyAliases, type AliasMap } from './path-aliases';
@@ -1044,4 +1045,15 @@ export function isBoundToOutOfRepoImport(
     return isExternalImport(imp.source, ref.language, context, ref.filePath);
   }
   return false;
+}
+
+/** Park an unresolved renamed/default import under the module a later sync can introduce. */
+export function importBindingTail(ref: UnresolvedRef, context: ResolutionContext): string | undefined {
+  if (!ESM_IMPORT_LANGUAGES.has(ref.language) || !/^[A-Za-z_$][\w$]*$/.test(ref.referenceName)) return undefined;
+  const binding = context.getImportMappings(ref.filePath, ref.language).find(m => m.localName === ref.referenceName);
+  if (!binding || (!binding.isDefault && !binding.isNamespace && binding.exportedName === binding.localName)) return undefined;
+  if (isExternalImport(binding.source, ref.language, context, ref.filePath)) return undefined;
+  const modulePath = binding.source.startsWith('.')
+    ? path.posix.join(path.posix.dirname(ref.filePath), binding.source) : binding.source;
+  return moduleTail(modulePath) || undefined;
 }

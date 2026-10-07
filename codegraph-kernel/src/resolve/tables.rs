@@ -1128,7 +1128,7 @@ pub(super) fn is_test_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let name = filename.to_ascii_lowercase();
     name.starts_with("test_") || name.starts_with("test.")
-        || re!(r"[._-](?:test|tests|spec|specs)\.[a-z0-9]+$").is_match(&name)
+        || re!(r"[._-](?:test|tests|spec|specs|unittest)\.[a-z0-9]+$").is_match(&name)
         || re!(r"(?:Test|Tests|TestCase|Tester|Spec|Specs)\.[A-Za-z0-9]+$").is_match(filename)
         || re!(r"(?:^|/)(?:tests?|__tests__|specs?|testlib|testing|e2e)/").is_match(&lower)
         || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)

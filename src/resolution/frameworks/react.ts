@@ -435,13 +435,65 @@ function readObjectPath(text: string, at: number, keys: string[]): string | null
 function lazyRouteComponent(spec: string, fromFile: string, context: ResolutionContext): string | null {
   const file = resolveImportPath(spec, fromFile, 'typescript', context);
   if (!file) return null;
-  const source = context.readFile(file) ?? '';
-  const named = /\bexport\s+default\s+(?:async\s+)?(?:function\s*\*?\s*|class\s+)?([A-Za-z_$][\w$]*)/.exec(source)?.[1] ??
-    (/\bexport\s+(?:const|function|class)\s+Component\b/.test(source) ? 'Component' : null);
-  if (!named) return null;
-  const node = context.getNodesInFile(file).find((n) => n.name === named &&
-    (n.kind === 'function' || n.kind === 'component' || n.kind === 'class' || n.kind === 'constant' || n.kind === 'variable'));
-  return node?.id ?? null;
+  return exportedComponent(file, 'default', context) ?? exportedComponent(file, 'Component', context);
+}
+
+/** What a module can export as a component: a declaration, or a value holding one. */
+const EXPORTED_COMPONENT_KINDS = new Set(['function', 'component', 'class', 'constant', 'variable']);
+
+/** A barrel can forward another barrel; a few hops settle it. */
+const MAX_REEXPORT_HOPS = 4;
+
+/**
+ * The component `file` exports as `name`: one it declares — `export default
+ * Page`, `export function Component`, `export { Page as Component }` — or one
+ * it forwards from the module that declares it, as a barrel `index.ts` does:
+ * `export { default } from './page'`, `export { Page as Component } from
+ * './page'`, or `export * from './page'`, which forwards every name but the
+ * default. As in JavaScript, a name the file exports itself hides one an
+ * `export *` would forward, and a name two `export *` modules both forward is
+ * exported by neither.
+ */
+function exportedComponent(file: string, name: string, context: ResolutionContext, visited: ReadonlySet<string> = new Set()): string | null {
+  if (visited.has(file) || visited.size > MAX_REEXPORT_HOPS) return null;
+  const bindings = context.getBindings?.(file) ?? [];
+  const local = bindings.find((b) => b.kind !== 'reexport' && b.exportedAs === name)?.name
+    ?? ownExport(stripCommentsForRegex(context.readFile(file) ?? '', 'typescript'), name);
+  if (local) return context.getNodesInFile(file).find((n) => n.name === local && EXPORTED_COMPONENT_KINDS.has(n.kind))?.id ?? null;
+  const language = scriptLanguage(file);
+  const reExports = bindings.filter((b) => b.kind === 'reexport' && b.targetSpec);
+  const through = new Set(visited).add(file);
+  const forwarded = (source: string, exported: string): string | null => {
+    const target = resolveImportPath(source, file, language, context);
+    return target ? exportedComponent(target, exported, context, through) : null;
+  };
+  for (const re of reExports) {
+    if (re.name !== '*' && re.exportedAs === name) return forwarded(re.targetSpec!, re.targetName ?? re.name);
+  }
+  if (name === 'default') return null;
+  let found: string | null = null;
+  for (const re of reExports) {
+    if (re.name !== '*' || re.exportedAs !== '*') continue;
+    const id = forwarded(re.targetSpec!, name);
+    if (id && found && id !== found) return null;
+    found ??= id;
+  }
+  return found;
+}
+
+/**
+ * The local name a module's own `export` gives `name`: `export default Page`
+ * (or `function Page`, `class Page`), `export function Component`, `export
+ * const Component`, `export { Page as Component }`. Null when it has none.
+ */
+function ownExport(source: string, name: string): string | null {
+  if (name === 'default') {
+    const declared = /\bexport\s+default\s+(?:async\s+)?(?:function\s*\*?\s*|class\s+)?([A-Za-z_$][\w$]*)/.exec(source)?.[1];
+    if (declared) return declared;
+  } else if (new RegExp(String.raw`\bexport\s+(?:async\s+)?(?:const|let|var|function|class)\s+${name.replace(/\$/g, '\\$')}(?![\w$])`).test(source)) {
+    return name;
+  }
+  return null;
 }
 
 /**

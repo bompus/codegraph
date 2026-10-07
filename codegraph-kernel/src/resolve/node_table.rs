@@ -539,7 +539,6 @@ pub(super) struct KReExport {
 pub(super) struct FileExportIndexK {
     pub(super) by_name: HashMap<String, Arc<KNode>>,
     pub(super) default_component: Option<Arc<KNode>>,
-    pub(super) default_fn_class: Option<Arc<KNode>>,
     pub(super) default_binding: Option<Arc<KNode>>,
 }
 

@@ -1103,6 +1103,68 @@ impl KernelResolver {
         Ok(Some(KCand { node: candidates[0].clone(), confidence: 0.85, resolved_by: "exact-match" }))
     }
 
+    /// An assertion owns its method chain, including terminal misses.
+    pub(super) fn go_assertion_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        if r.language != "go" || r.reference_kind != "calls" || r.reference_name.contains('.') { return Ok(None); }
+        let Some(file) = self.read_file(&r.file_path) else { return Ok(None); };
+        let Some(tree) = self.parsed_tree(&file, r) else { return Ok(None); };
+        let mut node = super::iteration::descendant_for_position(tree.root_node(), file.text(),
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        let mut call = None;
+        loop {
+            if node.kind() == "call_expression" {
+                if let Some(function) = node.child_by_field_name("function") {
+                    if let Some(field) = function.child_by_field_name("field") {
+                        if function.kind() == "selector_expression" && file.text()[field.byte_range()] == r.reference_name {
+                            call = Some(function); break;
+                        }
+                    }
+                }
+            }
+            let Some(parent) = node.parent() else { break; };
+            if matches!(parent.kind(), "argument_list" | "block" | "source_file") { break; }
+            node = parent;
+        }
+        let Some(mut selector) = call else { return Ok(None); };
+        let mut methods = Vec::new();
+        let raw = loop {
+            let (Some(member), Some(mut operand)) = (selector.child_by_field_name("field"), selector.child_by_field_name("operand")) else { return Ok(None); };
+            methods.push(file.text()[member.byte_range()].to_string());
+            while operand.kind() == "parenthesized_expression" {
+                let Some(inner) = operand.named_child(0) else { return Ok(None); }; operand = inner;
+            }
+            if operand.kind() == "type_assertion_expression" {
+                let Some(ty) = operand.child_by_field_name("type") else { return Ok(Some(None)); };
+                break file.text()[ty.byte_range()].to_string();
+            }
+            if operand.kind() != "call_expression" { return Ok(None); }
+            let Some(function) = operand.child_by_field_name("function") else { return Ok(None); };
+            if function.kind() != "selector_expression" { return Ok(None); }
+            selector = function;
+        };
+        let Some((ty, own_dir)) = self.go_type_package(&raw, &r.file_path)? else { return Ok(Some(None)); };
+        let mut dirs = vec![own_dir];
+        if !raw.contains('.') {
+            for import in self.import_mappings(&r.file_path)?.iter().filter(|i| i.local_name == ".") {
+                if let Some(dir) = self.go_package_dir(&import.source, &r.file_path) { dirs.push(dir); }
+            }
+        }
+        let declarations = self.nodes_by_name(&ty)?;
+        let dirs: HashSet<_> = dirs.into_iter().filter(|dir| declarations.iter().any(|n|
+            n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                && pos_dirname(&n.file_path) == dir)).collect();
+        if dirs.len() != 1 { return Ok(Some(None)); }
+        let dir = dirs.into_iter().next().unwrap();
+        methods.reverse();
+        let mut result = self.go_method_in_package(&ty, &methods[0], &dir, r)?;
+        for method in methods.iter().skip(1) {
+            let Some(previous) = result else { return Ok(Some(None)); };
+            let Some(return_type) = previous.node.return_type.as_deref() else { return Ok(Some(None)); };
+            result = self.go_method_on_declared_type(return_type, &previous.node.file_path, method, r)?;
+        }
+        Ok(Some(result))
+    }
+
     fn go_collapsed_chain_call(&mut self, r: &ResolveRefIn) -> Option<Vec<String>> {
         if r.language != "go" || r.reference_kind != "calls" || r.reference_name.contains('.') { return None; }
         let file = self.read_file(&r.file_path)?;
@@ -1295,6 +1357,37 @@ impl KernelResolver {
                 .cloned()
                 .collect()
         };
+
+        if matches!(r.language.as_str(), "c" | "cpp") && r.reference_name.starts_with("::") {
+            let spelling = r.reference_name.trim_start_matches("::");
+            let mut exact = Vec::new();
+            for node in keep_for_ref(&self.nodes_by_qualified_name(spelling)?) {
+                if !matches!(node.language.as_str(), "c" | "cpp") { continue; }
+                if self.namespace_frames(&node.file_path)?.iter().any(|(start, end, _)|
+                    *start <= node.start_line && node.start_line <= *end) { continue; }
+                exact.push(node);
+            }
+            let exact = prefer_call_site_file(exact, &r.file_path);
+            return Ok(exact.first().filter(|node| exact.len() == 1 || node.file_path == r.file_path)
+                .map(|node| KCand { node: node.clone(), confidence: 0.95, resolved_by: "qualified-name" }));
+        }
+
+        // Relative C++ qualification searches the caller's enclosing scopes
+        // before an identically written name in another namespace.
+        if matches!(r.language.as_str(), "c" | "cpp") && r.reference_name.contains("::") {
+            let visible = self.namespace_visible_files(&r.file_path, &r.language)?;
+            let mut scope = self.node_by_id(&r.from_node_id)?.map(|n| n.qualified_name.clone()).unwrap_or_default();
+            while let Some((parent, _)) = scope.rsplit_once("::") {
+                scope = parent.to_string();
+                let qualified = format!("{scope}::{}", r.reference_name);
+                let named = keep_for_ref(&self.nodes_by_qualified_name(&qualified)?);
+                let candidates: Vec<_> = named.into_iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && visible.contains(&n.file_path)).collect();
+                if candidates.is_empty() { continue; }
+                let candidates = prefer_call_site_file(candidates, &r.file_path);
+                return Ok(candidates.first().filter(|n| candidates.len() == 1 || n.file_path == r.file_path)
+                    .map(|node| KCand { node: node.clone(), confidence: 0.95, resolved_by: "qualified-name" }));
+            }
+        }
 
         let candidates = if r.language == "csharp" && r.reference_kind == "instantiates" {
             // Relative qualification searches enclosing namespaces before the global namespace.

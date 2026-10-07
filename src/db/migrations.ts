@@ -10,7 +10,7 @@ import { referenceNameTail } from './reference-tail';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 20;
+export const CURRENT_SCHEMA_VERSION = 21;
 
 /**
  * Migration definition
@@ -397,6 +397,22 @@ CREATE TABLE synth_skips (
         const tail = referenceNameTail(row.reference_name, row.reference_kind);
         if (tail !== row.name_tail) update.run(tail, row.id);
       }
+    },
+  },
+  {
+    version: 21,
+    description: 'Retry a failed reference through an import binding by its whole name: module-tail name index',
+    up: (db) => {
+      // A failed reference through an import binding the module declares
+      // under another name is parked under the module's key from this
+      // version on, and still looked up by its whole name. Rows parked before
+      // keep the tail their name gives, which the name lookup already finds;
+      // a re-index parks them under their modules. Keep the definition in
+      // lockstep with schema.sql.
+      if (!db.prepare("SELECT 1 FROM pragma_table_info('unresolved_refs') WHERE name = 'name_tail'").get()) return;
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_unresolved_failed_module_name ON unresolved_refs(status, reference_name) WHERE status = 'failed' AND name_tail GLOB 'module:*';
+      `);
     },
   },
 ];

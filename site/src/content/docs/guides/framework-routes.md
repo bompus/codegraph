@@ -95,3 +95,5 @@ Angular template calls in property bindings, interpolations, structural directiv
 React Router also reads imported route tables from their module-level export bindings, and JSX index and layout routes. Incremental sync retries lazy module links and navigation destinations when their files or routes appear. Angular shared-library navigation is reconsidered when another app changes the sole-app fallback. Framework resolvers apply only to their supported languages, including TSX/JSX for SolidStart route targets.
 
 Cross-file route-table nodes and their references are persisted in one transaction per framework. A failed write rolls back that reconciliation, allowing the next pass to retry it.
+
+React Router lazy modules follow default or `Component` exports through local named and wildcard re-exports. Local exports take precedence; ambiguous wildcard exports and re-export cycles stay unresolved. JSX component lookup follows its import and excludes names bound as local values or parameters.

@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`ed199e60`](https://github.com/colbymchenry/codegraph/commit/ed199e60d8f1aed5baf73836366ef0a6f7838d11) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`b635dd46`](https://github.com/colbymchenry/codegraph/commit/b635dd467f0578926a9c01a37b9d28d2b26689f1) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -76,7 +76,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `ed199e60` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `b635dd46` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -112,6 +112,8 @@ The other languages are the same in both, listed under [Supported Languages](#su
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
 
 C# field and property initializers retain their calls and references under the member that owns them. Target-typed `new()` resolves relative declared types through enclosing namespaces and honors `global::` qualification without requiring a redundant `using`. VB.NET resolves typed receivers, enclosing and inherited members, and field or property reads through values and Shared types without choosing unrelated project declarations. Names beginning with keywords, such as `SharedCache`, `Dimension` and `NewItem`, retain their declarations.
+
+Go declaration comments attach to the declared type, and defined types retain references to their named component types. Assertion calls follow the asserted project type and each declared return in a method chain. Local bindings shadow package imports. C/C++ types defined beside variables retain their members and comments; nested template arguments preserve receiver ownership, and leading `::` names require a visible global declaration. C++ declaration attributes and macros preserve source positions. Multiplication operands remain intact, and anonymous pointer declarations share their first declared type name. Macro-opened namespaces combine with ordinary nested scopes when resolving included owners. Renamed and default imports are retried when their module appears during sync. Named-only components are not default exports; explicit forwarded defaults retain their target. Whitespace before a type argument does not create a JSX rendering edge. React JSX respects component imports and local shadowing; lazy routes follow component exports through local barrels. Named flow paths prefer an equally long path containing more requested symbols.
 
 The native resolver includes upstream's Go import-name assumptions, type-position checks, alias method forwarding and embedded interface method sets. Chained Go calls follow declared return types at each fluent step; an unproven receiver stays unresolved instead of borrowing an unrelated method by name. C++ bases use enclosing-scope directives, parent-scope lookup and translation-unit visibility; included test-named headers remain eligible, while declared external library receivers avoid unrelated project methods. Incremental sync retries newly available Liquid targets, lazy route modules and navigation destinations. Navigation in an imported route-table file also survives removing and restoring its destination. Route-table nodes and their references commit together, so a failed reference write can be retried without leaving an incomplete route. React layout links exclude Vue and Angular routes. C++ receiver declaration scans exclude multiline raw-string contents.
 

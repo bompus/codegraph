@@ -4,6 +4,18 @@ use crate::walker::named_kids;
 use super::*;
 
 impl<'t> Walker<'t> {
+    fn unnamed_type_variable_name(&self, node: Node) -> Option<String> {
+        if node.child_by_field_name("name").is_some() {
+            return None;
+        }
+        let declaration = defining_declaration(node)?;
+        let mut cursor = declaration.walk();
+        let identifier = declaration
+            .children_by_field_name("declarator", &mut cursor)
+            .find_map(c_declarator_identifier)?;
+        Some(self.text(identifier).to_string())
+    }
+
     /// extractNameRaw for the c/cpp extractor configs (nameField 'declarator';
     /// cpp resolveName = extractCppQualifiedMethodName).
     pub(super) fn extract_name_raw(&self, node: Node) -> String {
@@ -22,6 +34,7 @@ impl<'t> Walker<'t> {
                 return hook;
             }
         }
+        if let Some(name) = self.unnamed_type_variable_name(node) { return name; }
         if let Some(name_node) = node.child_by_field_name("declarator") {
             let mut resolved = name_node;
             // Unwrap pointer/reference declarators (`int* f()`, `T& f()`).

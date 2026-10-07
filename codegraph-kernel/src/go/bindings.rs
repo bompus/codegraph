@@ -19,7 +19,7 @@ impl<'t> Walker<'t> {
     /// or function literal.
     pub(super) fn emit_param_bindings(&mut self, node: Node<'t>) {
         let scope = (self.line_of(node), node.end_position().row as u32 + 1);
-        for field in ["receiver", "parameters"] {
+        for field in ["receiver", "parameters", "result"] {
             let Some(list) = node.child_by_field_name(field) else { continue };
             for i in 0..list.named_child_count() {
                 let Some(p) = list.named_child(i) else { continue };
@@ -60,7 +60,7 @@ impl<'t> Walker<'t> {
                     }
                 }
             }
-            "var_declaration" => {
+            "var_declaration" | "const_declaration" => {
                 for spec in declaration_specs(node) {
                     names.extend(named_kids(spec).filter(|c| c.kind() == "identifier"));
                 }

@@ -913,13 +913,16 @@ impl KernelResolver {
         let Some(lines) = self.read_file(&r.file_path) else {
             return Ok(None);
         };
-        let whole = lines
-            .iter()
-            .skip((r.line - 1).max(0) as usize)
-            .take(8)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let first = lines.get((r.line - 1).max(0) as usize).map(String::as_str).unwrap_or("");
+        let first_col = super::names::js_unit_to_byte(first, r.column.max(0) as usize).min(first.len());
+        let tail = &first[first_col..];
+        if let Some(at) = bare_call_at(tail, &r.reference_name) {
+            let head = tail[..at].trim_end().strip_suffix('.')
+                .map(|s| s.trim_end_matches('?').trim_end().to_string());
+            return Ok(head.map(|h| (lines, h)));
+        }
+        let whole = lines.iter().skip((r.line - 1).max(0) as usize).take(8)
+            .map(String::as_str).collect::<Vec<_>>().join("\n");
         let col = super::names::js_unit_to_byte(&whole, r.column.max(0) as usize).min(whole.len());
         let text = &whole[col..];
         let Some(at) = bare_call_at(text, &r.reference_name) else {

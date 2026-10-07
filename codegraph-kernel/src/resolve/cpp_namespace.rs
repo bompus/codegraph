@@ -87,7 +87,7 @@ impl KernelResolver {
         self.cpp_namespaces.includes.insert(file.to_string(),seen.clone());Ok(seen)
     }
     pub(super) fn match_cpp_macro_namespaced(&mut self,r:&ResolveRefIn)->Res<Option<KCand>> {
-        if !matches!(r.language.as_str(),"c"|"cpp") || !r.reference_name.contains("::") {return Ok(None);}
+        if !matches!(r.language.as_str(),"c"|"cpp") || !r.reference_name.trim_start_matches("::").contains("::") {return Ok(None);}
         self.prepare_namespace_macros()?;
         let visible=self.namespace_visible_files(&r.file_path,&r.language)?;
         let mut parts:Vec<String>=r.reference_name.split("::").filter(|p|!p.is_empty()).map(str::to_string).collect();
