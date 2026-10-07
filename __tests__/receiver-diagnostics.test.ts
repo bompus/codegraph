@@ -16,12 +16,12 @@ function setup() {
   const raw = db.getDb();
   const queries = new QueryBuilder(raw);
   queries.insertNodes([{ id: 'caller', name: 'caller', qualifiedName: 'caller', kind: 'function', language: 'typescript', filePath: 'app.ts', startLine: 1, endLine: 5, startColumn: 0, endColumn: 0, updatedAt: 0 }]);
-  queries.insertUnresolvedRefsBatch([1, 2].map(line => ({ fromNodeId: 'caller', referenceName: 'unknown.run', referenceKind: 'calls', referenceKind: 'calls', filePath: 'app.ts', language: 'typescript', line, column: 0 })));
+  queries.insertUnresolvedRefsBatch([1, 2].map(line => ({ fromNodeId: 'caller', referenceName: 'unknown.run', referenceKind: 'calls', filePath: 'app.ts', language: 'typescript', line, column: 0 })));
   return { raw, queries };
 }
 it('migrates existing unresolved rows without changing their retry state', () => {
   const { raw, queries } = setup();
-  queries.markReferencesFailed([{ fromNodeId: 'caller', referenceName: 'unknown.run', referenceKind: 'calls', referenceKind: 'calls' }]);
+  queries.markReferencesFailed([{ fromNodeId: 'caller', referenceName: 'unknown.run', referenceKind: 'calls' }]);
   raw.exec('ALTER TABLE unresolved_refs DROP COLUMN failure_reason');
   raw.exec('DELETE FROM schema_versions WHERE version > 11');
   runMigrations(raw, 11);

@@ -35,6 +35,22 @@ it('parks matching missing includes in both files, then retries both when the he
 
 const cases = [
   {
+    name: 'a multiline imported receiver resolves on its own source line',
+    files: {
+      'lib/main.dart': "import 'helper.dart' as kit;\nvoid run() { /* 🦊 */ kit\n  .helper(); }\n",
+      'lib/helper.dart': 'void helper() {}\n',
+    },
+    from: 'run', kind: 'calls', target: 'helper', targetFile: 'lib/helper.dart',
+  },
+  {
+    name: 'a multiline local receiver shadows the imported prefix',
+    files: {
+      'lib/main.dart': "import 'helper.dart' as kit;\nvoid run(Object kit) { /* 🦊 */ kit\n  .helper(); }\n",
+      'lib/helper.dart': 'void helper() {}\n',
+    },
+    from: 'run', kind: 'calls', target: 'helper', targetFile: 'lib/helper.dart', absent: true,
+  },
+  {
     name: 'prefixed instance chain preserves the constructor library',
     files: {
       'lib/main.dart': "import 'package:kit/kit.dart' as kit;\nclass Widget { void touch() {} }\nvoid run() { kit.Widget().touch(); }\n",

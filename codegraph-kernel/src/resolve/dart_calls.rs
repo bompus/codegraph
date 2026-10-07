@@ -689,9 +689,13 @@ impl KernelResolver {
             };
             before = i;
         }
+        let Some((line, column)) = token_position(&source, t[before].start) else {
+            return Ok(Some(ResolveOutcome::unresolved()));
+        };
         let site = ResolveRefIn {
             reference_name: t[before].text.clone(),
-            column: (t[before].start - start) as i64,
+            line,
+            column,
             ..r.clone()
         };
         if let Some((prefix, tail)) = r.reference_name.split_once('.') {
@@ -924,4 +928,31 @@ fn dart_expr_end(t: &[DartToken]) -> usize {
         }
     }
     t.len()
+}
+
+// Token offsets refer to the normalized whole file; reference columns use UTF-16.
+fn token_position(source: &SourceFile, byte: usize) -> Option<(i64, i64)> {
+    let mut start = 0;
+    for (row, line) in source.iter().enumerate() {
+        if byte <= start + line.len() {
+            let prefix = line.get(..byte - start)?;
+            return Some((row as i64 + 1, names::utf16_len(prefix) as i64));
+        }
+        start += line.len() + 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receiver_position_uses_its_line_and_utf16_column() {
+        let source = SourceFile::new(vec!["// header".into(), "/* 🦊 */ kit".into(), "  .helper();".into()]);
+        let byte = source.text().find("kit").unwrap();
+        assert_eq!(token_position(&source, byte), Some((2, 9)));
+        assert_eq!(token_position(&source, source.text().find("helper").unwrap()), Some((3, 3)));
+        assert_eq!(token_position(&source, source.text().len() + 1), None);
+    }
 }
