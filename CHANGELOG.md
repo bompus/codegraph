@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Shopify templates and Liquid links now stay current when a theme marker is added or removed, including committed changes after reopening and ignored marker files in otherwise included themes.
+
 - Go interface type-set terms no longer appear as base interfaces; named aliases still link when their declarations reach an interface.
 
 - `codegraph_explore` reports requested-file limits and uncovered indexed continuation ranges so partial answers have a clear next query.

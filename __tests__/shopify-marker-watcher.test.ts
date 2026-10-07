@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { CodeGraph } from '../src';
 import { FileWatcher, __emitWatchEventForTests } from '../src/sync/watcher';
 
@@ -114,4 +115,66 @@ it('keeps unchanged marker events and ordinary files out of full reconciliation'
   expect(sync).not.toHaveBeenCalled();
   await emit('sections/header.liquid');
   expect(sync.mock.calls.map(call => call[0])).toEqual([['sections/header.liquid']]);
+});
+
+it('detects committed schema markers and rebinds unchanged Liquid references after reopening', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-shopify-marker-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+  git('init'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+  write('.gitignore', '.codegraph/\n');
+  write('a/sections/header.liquid', "{% render 'card' %}");
+  write('a/templates/index.json', '{"sections": {}}');
+  write('b/config/settings_schema.json', '[]');
+  write('b/snippets/card.liquid', '<p>Card</p>');
+  git('add', '-A'); git('commit', '-m', 'initial themes');
+  graph = await CodeGraph.init(root, { index: true });
+  const targets = () => {
+    const source = graph!.getNodesByKind('file').find(n => n.filePath === 'a/sections/header.liquid')!;
+    return graph!.getOutgoingEdges(source.id).map(e => graph!.getNode(e.target)?.filePath);
+  };
+  expect(targets()).toContain('b/snippets/card.liquid');
+  write('a/config/settings_schema.json', '[]');
+  git('add', '-A'); git('commit', '-m', 'mark second theme');
+  graph.close(); graph = CodeGraph.openSync(root);
+  expect.soft(graph.getChangedFiles().added).toContain('a/templates/index.json');
+  expect((await graph.sync()).filesModified).toBe(1);
+  expect.soft(targets()).not.toContain('b/snippets/card.liquid');
+  expect(graph.getChangedFiles()).toEqual({ added: [], modified: [], removed: [] });
+  fs.unlinkSync(path.join(root, 'a/config/settings_schema.json'));
+  git('add', '-A'); git('commit', '-m', 'remove second marker');
+  graph.close(); graph = CodeGraph.openSync(root);
+  expect(graph.getChangedFiles().removed).toContain('a/templates/index.json');
+  await graph.sync();
+  expect(targets()).toContain('b/snippets/card.liquid');
+  expect((await graph.sync()).filesModified).toBe(0);
+});
+
+it('honors file-ignored markers while excluding entire theme subtrees', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-shopify-marker-'));
+  write('.gitignore', 'a/config/settings_schema.json\nexcluded/\n');
+  write('a/templates/index.json', '{"sections": {}}');
+  write('excluded/templates/index.json', '{"sections": {}}');
+  graph = await CodeGraph.init(root, { index: true });
+  let complete!: () => void;
+  const sync = vi.fn(async () => {
+    const result = await graph!.sync();
+    return { filesChanged: result.filesAdded + result.filesModified + result.filesRemoved, durationMs: 0 };
+  });
+  watcher = new FileWatcher(root, sync, { inertForTests: true, debounceMs: 10, onSyncComplete: () => complete() });
+  watcher.start(); await watcher.waitUntilReady(); vi.useFakeTimers();
+  write('excluded/config/settings_schema.json', '[]');
+  await emit('excluded/config/settings_schema.json');
+  expect(sync).not.toHaveBeenCalled();
+  write('a/config/settings_schema.json', '[]');
+  const done = new Promise<void>(resolve => { complete = resolve; });
+  await emit('a/config/settings_schema.json');
+  expect(sync).toHaveBeenCalledOnce();
+  await done;
+  expect(graph.getNodesByKind('file').map(n => n.filePath)).toContain('a/templates/index.json');
+  expect(sync).toHaveBeenCalledOnce();
+  fs.unlinkSync(path.join(root, 'a/config/settings_schema.json'));
+  const removed = new Promise<void>(resolve => { complete = resolve; });
+  await emit('a/config/settings_schema.json'); await removed;
+  expect(graph.getNodesByKind('file').map(n => n.filePath)).not.toContain('a/templates/index.json');
+  expect(sync).toHaveBeenCalledTimes(2);
 });
