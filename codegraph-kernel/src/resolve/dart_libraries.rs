@@ -265,7 +265,17 @@ impl KernelResolver {
         if let Some(d) = self.dart_libraries.directives.get(file) {
             return d.clone();
         }
-        let d = self.read_file(file).map(|s| directives(s.text()));
+        let d = (|| {
+            if !lexical_path_within_root(&self.root_abs, file) {
+                return None;
+            }
+            let root = std::fs::canonicalize(&self.root_abs).ok()?;
+            let path = std::fs::canonicalize(pos_resolve(&self.root_abs, file)).ok()?;
+            if !path.starts_with(root) {
+                return None;
+            }
+            self.read_file(file).map(|s| directives(s.text()))
+        })();
         self.dart_libraries
             .directives
             .insert(file.into(), d.clone());
@@ -435,6 +445,7 @@ impl KernelResolver {
             return chosen
                 .iter()
                 .map(|p| pos_normalize(&pos_join(&pos_join(&p.1, "lib"), rest)))
+                .filter(|path| lexical_path_within_root(&self.root_abs, path))
                 .collect();
         }
         if re!(r"^[A-Za-z][\w+.-]*:").is_match(uri) {

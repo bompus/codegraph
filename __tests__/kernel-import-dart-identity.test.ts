@@ -115,3 +115,21 @@ describe('native Dart declaration identity and source boundaries', () => {
     }
   });
 });
+
+// Keep the external fixture in the test's own parent directory.
+async function checkExternalDirective(mode: 'parent-path' | 'symlink'): Promise<void> {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-dart-uri-boundary-'));
+  write({
+    'project/pubspec.yaml': 'name: app\n',
+    'project/lib/secret.dart': 'void secret() {}\n',
+    'project/lib/main.dart': `import 'package:app/${mode === 'parent-path' ? '../../escape.dart' : 'escape.dart'}';\nvoid run() { secret(); }\n`,
+    'escape.dart': "export 'package:app/secret.dart';\n",
+  });
+  if (mode === 'symlink') fs.symlinkSync(path.join(root, 'escape.dart'), path.join(root, 'project/lib/escape.dart'));
+  cg = await CodeGraph.init(path.join(root, 'project'), { index: true });
+  const source = cg.getNodesInFile('lib/main.dart').find(n => n.name === 'run')!;
+  const targets = cg.getOutgoingEdgesFrom([source.id], ['calls']).map(e => cg!.getNode(e.target)!);
+  expect(targets.map(n => `${n.filePath}:${n.name}`)).not.toContain('lib/secret.dart:secret');
+}
+it('refuses Dart package directives outside the indexed root through parent paths', () => checkExternalDirective('parent-path'));
+it.runIf(process.platform !== 'win32')('refuses Dart package directives outside the indexed root through symlinks', () => checkExternalDirective('symlink'));
