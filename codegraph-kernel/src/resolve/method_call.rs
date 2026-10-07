@@ -837,7 +837,16 @@ if inferred.is_none() && r.language == "dart" {
             // No binding anchor under requireReceiverEvidence=false — the
             // inferrers run at the ref's own site with qualified names
             // normalized (preserveQualifiedName=false).
-            let inferred = if r.language == "cpp" {
+            let cpp_alias = if r.language == "cpp" { self.cpp_receiver_alias(&object_or_class, r)? } else { None };
+            let inferred = if let Some(alias) = &cpp_alias {
+                match &alias.raw {
+                    Some(raw) => match self.cpp_type_owner(raw, &alias.site, 0, false)? {
+                        Some(owner) => Some(owner.qualified_name.clone()),
+                        None => Some(raw.clone()),
+                    },
+                    None => None,
+                }
+            } else if r.language == "cpp" {
                 self.infer_cpp_receiver_type(&object_or_class, r, 0, false)?
             } else {
                 self.infer_local_receiver_type(&object_or_class, r, r.language == "go")?
@@ -851,7 +860,7 @@ if inferred.is_none() && r.language == "dart" {
 if inferred.is_none() && r.language == "dart" {
     inferred = self.infer_dart_field_receiver_type(&object_or_class, r)?;
 }
-            if inferred.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
+            if inferred.is_none() && cpp_alias.is_none() { inferred = self.infer_declared_member_receiver_type(&object_or_class, r)?; }
             let mut awaited_file: Option<String> = None;
             if inferred.is_none() && is_esm_family(&r.language) {
                 if let Some(a) = self.infer_esm_awaited_call_type(&object_or_class, r)? {
@@ -866,7 +875,7 @@ if inferred.is_none() && r.language == "dart" {
             }
             // Same unique-field fallback as the bound arm — `recv->fp(...)`
             // proves its field member when exactly one exists.
-            if inferred.is_none() && (r.language == "c" || r.language == "cpp") {
+            if inferred.is_none() && cpp_alias.is_none() && (r.language == "c" || r.language == "cpp") {
                 if let Some(hit) = self.unique_field_candidate(&method_name, r)? {
                     return Ok(Some(hit));
                 }
@@ -941,6 +950,11 @@ if inferred.is_none() && r.language == "dart" {
                         }
                     }
                 }
+            }
+            if let Some(alias) = &cpp_alias {
+                let dot = self.cpp_receiver_operator_is(&object_or_class, ".", r);
+                let template = match &alias.raw { Some(raw) => self.cpp_alias_names_template(raw, &alias.site, r)?, None => false };
+                if !template && (alias.pointer || dot) { return Ok(None); }
             }
         }
 

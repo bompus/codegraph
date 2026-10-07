@@ -782,9 +782,9 @@ impl<'t> Walker<'t> {
 
     /// extractInheritance — the rust-reachable cases: trait_bounds
     /// (supertraits; a scoped `fmt::Debug` bound matches NO case and is
-    /// dropped), the Go embedding check on field_declaration (inert in rust —
-    /// every field has a field_identifier), and the field_declaration_list
-    /// recursion that reaches it.
+    /// dropped) and the field_declaration_list recursion. The TS Go-embedding
+    /// check on field_declaration is gated to Go (and was inert here anyway —
+    /// every rust field has a field_identifier).
     fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
         let extends_kind = crate::buffers::EDGE_EXTENDS;
@@ -816,18 +816,6 @@ impl<'t> Walker<'t> {
                         if let Some(tn) = type_node {
                             let name = self.text(tn).to_string();
                             self.push_ref_at(class_row, &name, extends_kind, tn);
-                        }
-                    }
-                }
-                "field_declaration" => {
-                    let has_field_identifier = named_kids(child)
-                        .any(|c| c.kind() == "field_identifier");
-                    if !has_field_identifier {
-                        let type_id = named_kids(child)
-                            .find(|c| c.kind() == "type_identifier");
-                        if let Some(type_id) = type_id {
-                            let name = self.text(type_id).to_string();
-                            self.push_ref_at(class_row, &name, extends_kind, type_id);
                         }
                     }
                 }

@@ -605,7 +605,7 @@ function collectIncludedFiles(
       if (defaults.ignores(rel)) return;
       if (!include.ignores(rel)) return;
       if (exclude && exclude.ignores(rel)) return;
-      if (!isSourceFile(rel, overrides)) return;
+      if (!isSourceFile(rel, overrides, rootDir)) return;
       out.add(rel);
     }
   };
@@ -814,9 +814,10 @@ function findNestedGitRepos(absDir: string, relPrefix: string): string[] {
  */
 export function preloadLanguagesForFiles(
   files: string[],
-  overrides?: Record<string, Language>
+  overrides?: Record<string, Language>,
+  rootDir?: string
 ): Language[] {
-  const languages = [...new Set(files.map((f) => detectLanguage(f, undefined, overrides)))];
+  const languages = [...new Set(files.map((f) => detectLanguage(f, undefined, overrides, rootDir)))];
   // A Flow-typed `.js` is read with the TSX grammar (see detectLanguage).
   if ((languages.includes('javascript') || languages.includes('jsx')) && !languages.includes('tsx')) languages.push('tsx');
   if (languages.includes('c')) {
@@ -1361,7 +1362,8 @@ export function getGitChangedFiles(rootDir: string, sinceCommit?: string | null)
     // Custom extension → language overrides from the project's codegraph.json,
     // so change detection sees the same custom-extension files the full index does.
     const overrides = loadExtensionOverrides(rootDir);
-    collectGitStatus(rootDir, '', changes, overrides, loadIncludeIgnoredMatcher(rootDir), loadExcludeMatcher(rootDir), sinceCommit ?? undefined);
+    const isSource = (filePath: string): boolean => isSourceFile(filePath, overrides, rootDir);
+    collectGitStatus(rootDir, '', changes, isSource, loadIncludeIgnoredMatcher(rootDir), loadExcludeMatcher(rootDir), sinceCommit ?? undefined);
     return changes;
   } catch {
     return null;
@@ -1433,7 +1435,7 @@ export function canTrustGitFastPath(rootDir: string, sinceCommit?: string | null
   }
 }
 
-function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, overrides?: Record<string, Language>, includeIgnored: Ignore | null = null, exclude: Ignore | null = null, sinceCommit?: string): void {
+function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSource: (filePath: string) => boolean, includeIgnored: Ignore | null = null, exclude: Ignore | null = null, sinceCommit?: string): void {
   const output = execFileSync(
     'git',
     // `-uall` lists individual untracked files instead of collapsing an
@@ -1462,7 +1464,7 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
   // filtered by exactly the rules a working-tree change is (#766, #999, #1829).
   const classify = (statusCode: string, rel: string): void => {
     const filePath = normalizePath(prefix + rel);
-    if (!isSourceFile(filePath, overrides)) return;
+    if (!isSource(filePath)) return;
 
     if (statusCode.includes('D')) {
       // Deletions stay unfiltered: getChangedFiles acts on one only when the
@@ -1526,11 +1528,11 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
   // and they are left alone (#970, #976), mirroring the full-index scan.
   for (const rel of untrackedDirs) {
     for (const repoRel of findNestedGitRepos(path.join(repoDir, rel), rel)) {
-      collectGitStatus(path.join(repoDir, repoRel), prefix + repoRel, out, overrides, includeIgnored, exclude);
+      collectGitStatus(path.join(repoDir, repoRel), prefix + repoRel, out, isSource, includeIgnored, exclude);
     }
   }
   for (const rel of findIgnoredEmbeddedRepos(repoDir, includeIgnored, prefix)) {
-    collectGitStatus(path.join(repoDir, rel), prefix + rel, out, overrides, includeIgnored, exclude);
+    collectGitStatus(path.join(repoDir, rel), prefix + rel, out, isSource, includeIgnored, exclude);
   }
 }
 
@@ -1554,7 +1556,7 @@ export function scanDirectory(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath, overrides)) {
+      if (isSourceFile(filePath, overrides, rootDir)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -1605,7 +1607,7 @@ export async function scanDirectoryAsync(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath, overrides)) {
+      if (isSourceFile(filePath, overrides, rootDir)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -1713,7 +1715,7 @@ function scanDirectoryWalk(
             }
           } else if (stat.isFile()) {
             if (!isIgnored(fullPath, false, active)) {
-              if (isSourceFile(relativePath, overrides)) {
+              if (isSourceFile(relativePath, overrides, rootDir)) {
                 files.push(relativePath);
                 count++;
                 onProgress?.(count, relativePath);
@@ -1734,7 +1736,7 @@ function scanDirectoryWalk(
         }
       } else if (entry.isFile()) {
         if (!isIgnored(fullPath, false, active)) {
-          if (isSourceFile(relativePath, overrides)) {
+          if (isSourceFile(relativePath, overrides, rootDir)) {
             files.push(relativePath);
             count++;
             onProgress?.(count, relativePath);
@@ -2211,7 +2213,7 @@ export class ExtractionOrchestrator {
     await new Promise(resolve => setImmediate(resolve));
 
     // Detect needed languages and load grammars in the parse worker
-    const neededLanguages = preloadLanguagesForFiles(files, overrides);
+    const neededLanguages = preloadLanguagesForFiles(files, overrides, this.rootDir);
 
     // Parse files on a pool of worker threads (keeps the main thread free for UI
     // and uses every core). Falls back to in-process parsing when the compiled
@@ -2287,7 +2289,7 @@ export class ExtractionOrchestrator {
      * here on the main thread, where the codegraph.json overrides are loaded.
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
-      const language = detectLanguage(filePath, content, overrides);
+      const language = detectLanguage(filePath, content, overrides, this.rootDir);
       const names = this.frameworksForFile(filePath, frameworkNames);
       if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, names));
       return pool.requestParse({ filePath, content, language, frameworkNames: names });
@@ -2339,7 +2341,7 @@ export class ExtractionOrchestrator {
       // Store: on the writer thread when active (fresh DB — bundles applied
       // in the same file order this chain dispatches them), else on the main
       // thread (SQLite connections are per-thread).
-      const language = detectLanguage(filePath, content, overrides);
+      const language = detectLanguage(filePath, content, overrides, this.rootDir);
       if (grammarUnavailable) {
         // Store nothing: a row from an earlier run keeps its data, and with no
         // row (or an older hash) the next sync or index retries the file.
@@ -2383,7 +2385,7 @@ export class ExtractionOrchestrator {
         // Files with no symbols but no errors (yaml, twig, properties) are
         // tracked at the file level — count them as indexed so the CLI doesn't
         // misleadingly report "No files found to index".
-        const lang = detectLanguage(filePath, content, overrides);
+        const lang = detectLanguage(filePath, content, overrides, this.rootDir);
         if (isFileLevelOnlyLanguage(lang)) {
           filesIndexed++;
         } else {
@@ -2664,7 +2666,7 @@ export class ExtractionOrchestrator {
         // so decode here — otherwise a kernel-language retry passes the gate
         // below via `errors.length === 0`, stores nothing, and the file is
         // permanently recorded as "(0 symbols)" with the error erased (#1541).
-        const language = detectLanguage(filePath, content, overrides);
+        const language = detectLanguage(filePath, content, overrides, this.rootDir);
         result = materializeKernelResult(result, filePath, language);
 
         if (result.nodes.length > 0 || result.errors.length === 0) {
@@ -2719,7 +2721,7 @@ export class ExtractionOrchestrator {
           }
 
           // Same undecoded-transport hazard as the first retry pass (#1541).
-          const language = detectLanguage(filePath, fullContent, overrides);
+          const language = detectLanguage(filePath, fullContent, overrides, this.rootDir);
           result = materializeKernelResult(result, filePath, language);
 
           if (result.nodes.length > 0 || result.errors.length === 0) {
@@ -2881,7 +2883,7 @@ export class ExtractionOrchestrator {
       };
     }
 
-    const language = detectLanguage(relativePath, content, loadExtensionOverrides(this.rootDir));
+    const language = detectLanguage(relativePath, content, loadExtensionOverrides(this.rootDir), this.rootDir);
 
     // Check file size
     if (stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
@@ -3408,7 +3410,7 @@ export class ExtractionOrchestrator {
       const overrides = loadExtensionOverrides(this.rootDir);
       currentFiles = unique.filter(
         (p) =>
-          isSourceFile(p, overrides) &&
+          isSourceFile(p, overrides, this.rootDir) &&
           !scope.ignores(p) &&
           fs.existsSync(path.join(this.rootDir, p))
       );
@@ -3601,7 +3603,7 @@ export class ExtractionOrchestrator {
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
       const overrides = loadExtensionOverrides(this.rootDir);
-      await loadGrammarsForLanguages(preloadLanguagesForFiles(filesToIndex, overrides));
+      await loadGrammarsForLanguages(preloadLanguagesForFiles(filesToIndex, overrides, this.rootDir));
     }
 
     // Index changed files
@@ -3733,7 +3735,7 @@ export class ExtractionOrchestrator {
       for (const filePath of candidates) {
         const tracked = this.queries.getFileByPath(filePath);
         const fullPath = path.join(this.rootDir, filePath);
-        if (!isSourceFile(filePath, overrides) || scope.ignores(filePath) || !fs.existsSync(fullPath)) {
+        if (!isSourceFile(filePath, overrides, this.rootDir) || scope.ignores(filePath) || !fs.existsSync(fullPath)) {
           if (tracked) removed.push(filePath);
           continue;
         }

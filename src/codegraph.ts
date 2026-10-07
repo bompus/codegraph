@@ -1543,7 +1543,7 @@ export class CodeGraph {
    * Extract nodes and edges from source code (without storing)
    */
   extractFromSource(filePath: string, source: string): ExtractionResult {
-    return extraction().extractFromSource(filePath, source);
+    return extraction().extractFromSource(filePath, source, extraction().detectLanguage(filePath, source, undefined, this.projectRoot));
   }
 
   // ===========================================================================

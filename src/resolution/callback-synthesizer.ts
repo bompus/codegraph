@@ -6215,7 +6215,7 @@ async function synthesizeWith(
   const merged: Edge[] = [];
   const seen = new Set<string>();
   for (const e of passEdges.flat()) {
-    const key = `${e.source}>${e.target}`;
+    const key = `${e.source}>${e.target}>${e.kind}`;
     if (seen.has(key)) continue;
     seen.add(key);
     merged.push(e);

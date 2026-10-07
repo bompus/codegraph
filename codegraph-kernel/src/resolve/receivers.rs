@@ -768,6 +768,12 @@ impl KernelResolver {
         if let Some(m) = make.captures(expr) {
             return Ok(Some(m[1].to_string()));
         }
+        // Dots in a template parameter pack are not member access.
+        if expr.contains('<') {
+            if let Some(owner) = self.cpp_type_owner(expr, r, 0, true)? {
+                return Ok(Some(owner.qualified_name.clone()));
+            }
+        }
         if let Some(dot) = expr.rfind('.') {
             if dot > 0 {
                 let recv = &expr[..dot];
@@ -785,6 +791,9 @@ impl KernelResolver {
         }
         if let Some(ret) = self.lookup_callee_return_type(expr, r)? {
             return Ok(Some(ret));
+        }
+        if let Some(owner) = self.cpp_type_owner(expr, r, 0, true)? {
+            return Ok(Some(owner.qualified_name.clone()));
         }
         if self.cpp_class_exists(expr, r)? {
             return Ok(Some(cpp_last_segment(expr)));

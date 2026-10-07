@@ -535,6 +535,12 @@ impl KernelResolver {
         if ty.rsplit("::").next() != Some(name) {
             return Ok(None);
         }
+        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
+        if self.cpp_alias_expansion(raw_type, r, 0, &included)?.is_some() {
+            let Some(owner) = self.cpp_type_owner(raw_type, r, 0, true)? else { return Ok(None); };
+            let expanded = r.clone().naming(&format!("::{}::{}/{argc}", owner.qualified_name, owner.name), "calls");
+            return self.match_cpp_constructor(&expanded);
+        }
         // Innermost lexical namespace first, then outward, then global.
         let scopes: Vec<String> = if raw_type.starts_with("::") {
             Vec::new()

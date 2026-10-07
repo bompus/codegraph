@@ -36,6 +36,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSourceFile, buildScopeIgnore, type ScopeIgnore } from '../extraction';
+import { isShopifyThemeMarker } from '../extraction/grammars';
 import { loadExtensionOverrides, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { logDebug, logWarn } from '../errors';
 import { normalizePath } from '../utils';
@@ -650,7 +651,8 @@ export class FileWatcher {
       this.refreshScope(rel);
       return;
     }
-    if (!isSourceFile(rel, loadExtensionOverrides(this.projectRoot))) {
+    const themeMarker = isShopifyThemeMarker(rel);
+    if (!themeMarker && !isSourceFile(rel, loadExtensionOverrides(this.projectRoot), this.projectRoot)) {
       this.maybeScheduleForRemovedDir(rel);
       return;
     }
@@ -669,6 +671,7 @@ export class FileWatcher {
       });
     }
 
+    if (themeMarker) this.needsFullScan = true;
     logDebug('File change detected', { file: rel });
     if (this.ready) {
       const now = Date.now();

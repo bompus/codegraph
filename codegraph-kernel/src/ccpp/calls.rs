@@ -321,8 +321,8 @@ impl<'t> Walker<'t> {
     }
 
     /// extractInheritance — the branches whose node kinds occur in the c/cpp
-    /// grammars: base_class_clause (#1043), the field_declaration Go-embedding
-    /// shape, and the field_declaration_list recursion that reaches it.
+    /// grammars: base_class_clause (#1043) and field_declaration_list recursion.
+    /// Pointer, array and function members are not supertypes.
     pub(super) fn extract_inheritance(&mut self, node: Node<'t>, class_row: u32) {
         stack_guard!();
         let extends_kind = crate::buffers::EDGE_EXTENDS;
@@ -338,18 +338,6 @@ impl<'t> Walker<'t> {
                         ) {
                             let name = strip_cpp_template_args(self.text(t));
                             self.push_ref_at(class_row, &name, extends_kind, t);
-                        }
-                    }
-                }
-                "field_declaration" => {
-                    let has_field_identifier = named_kids(child)
-                        .any(|c| c.kind() == "field_identifier");
-                    if !has_field_identifier {
-                        let type_id = named_kids(child)
-                            .find(|c| c.kind() == "type_identifier");
-                        if let Some(type_id) = type_id {
-                            let name = self.text(type_id).to_string();
-                            self.push_ref_at(class_row, &name, extends_kind, type_id);
                         }
                     }
                 }

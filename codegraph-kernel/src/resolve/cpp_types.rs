@@ -9,7 +9,12 @@ impl KernelResolver {
 
     pub(super) fn cpp_type_owner_visible(&mut self, raw: &str, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
         if depth > 4 { return Ok(None); }
-        let ty = raw.trim_start_matches("::").split('<').next().unwrap_or(raw).trim();
+        if let Some(alias) = self.cpp_alias_expansion(raw, r, depth, included)? {
+            if constructor && (alias.pointer || alias.reference) { return Ok(None); }
+            return match alias.raw { Some(raw) => self.cpp_type_owner_visible(&raw, &alias.site, depth + 1, constructor, included), None => Ok(None) };
+        }
+        let normalized = super::cpp_aliases::type_segments(raw).map(|p| p.join("::")).unwrap_or_else(|| raw.to_string());
+        let ty = normalized.trim();
         let scopes = if raw.starts_with("::") { Vec::new() } else {
             self.node_by_id(&r.from_node_id)?.map(|n| n.qualified_name.split("::").map(str::to_string).collect::<Vec<_>>()).unwrap_or_default()
         };

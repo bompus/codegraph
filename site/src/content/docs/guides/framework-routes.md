@@ -89,3 +89,5 @@ Inline HTTP handler calls retain simple member receivers. Framework name convent
 Express treats the last registration argument as the handler, excluding a trailing comma. Inline arrow and function-expression handlers contribute their body calls, including when passed through a wrapper call. An inline middleware before a named handler does not replace that handler.
 
 Axum and Actix handler links use the handler argument position, including multiline and nested registrations. Actix scope prefixes remain part of the route path.
+
+Angular template calls in bindings, interpolation and control-flow blocks link the component member they invoke. Template locals hide same-named component members; inherited component members remain unsupported. Framework detection reads nested app manifests recursively.

@@ -560,6 +560,8 @@ mod python_globals;
 mod object_literal;
 mod cpp;
 mod cpp_types;
+mod cpp_aliases;
+mod shopify;
 mod cpp_receivers;
 mod cpp_namespace;
 mod inherited_method;

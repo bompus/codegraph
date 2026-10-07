@@ -312,11 +312,12 @@ describe("isolated MCP refresh launcher", () => {
 
   it("rejects a deployment changed during preflight and retries its final revision", async () => {
     const server = await start();
-    server.deploy(B, { toolsDelay: 350 });
+    server.deploy(B, { toolsGate: true });
     server.send({ id: 1, method: "tools/call", params: { name: "status" } });
-    await waitFor(() => (server.stderr().match(/FIXTURE_PID=/g)?.length === 2 ? true : undefined));
+    await waitFor(() => existsSync(join(server.directory, "dist", `tools-waiting-${B}`)) ? true : undefined);
     const C = "c".repeat(40);
     server.deploy(C);
+    writeFileSync(join(server.directory, "dist", `tools-release-${B}`), "");
     expect((await server.response(1)).result.structuredContent.revision).toBe(A);
     expect((await server.call(2)).result.structuredContent.revision).toBe(C);
   });
