@@ -79,10 +79,9 @@ impl KernelResolver {
         let mut seen=HashSet::new();let mut pending=vec![file.to_string()];
         while let Some(file)=pending.pop() {
             if !seen.insert(file.clone()) {continue;}
-            let Some(source)=self.read_file(&file) else {continue};
-            let code=super::awaited::strip_ts_comments(source.text());
-            for m in re!(r#"(?m)^\s*#\s*include\s*([<"])([^>"]+)[>"]"#).captures_iter(&code) {
-                if let Some(target)=self.resolve_cpp_include(&file,m[1].chars().next().unwrap(),&m[2],language)? {pending.push(target);}
+            for node in self.nodes_in_file(&file)?.iter().filter(|n| n.kind == "import" && matches!(n.language.as_str(), "c" | "cpp")) {
+                let delimiter = if node.signature.as_deref().is_some_and(|s| s.contains('<')) { '<' } else { '"' };
+                if let Some(target)=self.resolve_cpp_include(&file,delimiter,&node.name,language)? {pending.push(target);}
             }
         }
         self.cpp_namespaces.includes.insert(file.to_string(),seen.clone());Ok(seen)

@@ -33,7 +33,7 @@ import {
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
 import { QueryBuilder, type NodeSpan } from './db/queries';
-import { importPathKeys } from './db/reference-tail';
+import { importPathKeys, moduleReferenceKeys } from './db/reference-tail';
 import {
   isInitialized,
   createDirectory,
@@ -989,7 +989,11 @@ export class CodeGraph {
         const fullReconcile = !options.paths || options.paths.length === 0;
         const gitState = this.orchestrator.beginGitIndexState(fullReconcile);
 
-        const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure);
+        const watchRoutes = this.resolver.hasNavigationRouters();
+        let routesBefore: Node[] | null = null;
+        const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure, () => {
+          if (watchRoutes && routesBefore === null) routesBefore = this.queries.getNodesByKind('route');
+        });
 
         // Fold the store phase's WAL BEFORE the post-store reads below
         // (resolution reads on the main thread) — same rationale as
@@ -1000,25 +1004,17 @@ export class CodeGraph {
         // every sync that touched files so edits to `app.module.ts` propagate
         // to controllers in unchanged files. The pass is idempotent and cheap
         // (regex over *.module.ts only).
-        if (result.filesAdded > 0 || result.filesModified > 0) {
-          // Re-detect frameworks: a sync can add the dependency and the route together.
+        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
           this.redetectFrameworks();
           this.resolver.runPostExtract();
-        } else if (result.filesRemoved > 0) {
-          // A pure-removal sync still resolves refs below — the deletion path
-          // resurrects the removed file's incoming edges as pending refs
-          // (#1240 removal case) and the orphan sweep consumes them. In a
-          // long-lived process (daemon) the resolver's name caches were
-          // warmed against the pre-removal graph; drop them so resolution
-          // sees the post-removal state. (runPostExtract above clears caches
-          // itself, so the changed-files branch is already covered.)
-          this.resolver.clearCaches();
-          // RedwoodSDK classifies a route as a page from its handler's JSX, so
-          // deleting a handler file must re-run that pass; a route prefixed by
-          // where another file registers it must drop a deleted registration.
-          if (this.queries.getNodesByKind('route').some(n => n.id.startsWith('route:redwood:') ||
-            n.qualifiedName.includes('::fastify-plugin:') || n.qualifiedName.includes('::solid-table:')))
-            this.resolver.runPostExtract();
+        }
+        if (routesBefore) {
+          const routes = resolution().changedRoutes(routesBefore, this.queries.getNodesByKind('route'));
+          this.resolver.reopenNavigationsFor(routes, result.changedFilePaths ?? []);
+          if (routes.length > 0) {
+            this.queries.setSynthesisPending(true);
+            for (const route of routes) this.synthesisDirty.add(route.filePath);
+          }
         }
 
         // Resolve references if files were updated
@@ -1059,9 +1055,10 @@ export class CodeGraph {
             // and re-resolve just that set. On a sync where no failed ref
             // matches, this is one indexed lookup.
             const tRetry = Date.now();
-            const retryable = this.queries.getRetryableFailedReferences(
-              this.queries.getNodeNamesByFiles(result.changedFilePaths)
-            );
+            const retryable = this.queries.getRetryableFailedReferences([...new Set([
+              ...this.queries.getNodeNamesByFiles(result.changedFilePaths),
+              ...result.changedFilePaths.flatMap(moduleReferenceKeys),
+            ])]);
             const retryRows = new Set(retryable.map(ref => ref.rowId));
             const importRetry = this.queries.getRetryableFailedImports(
               (result.addedFilePaths ?? []).flatMap(importPathKeys),
@@ -1070,6 +1067,7 @@ export class CodeGraph {
             for (const ref of importRetry) {
               if (!retryRows.has(ref.rowId)) { retryable.push(ref); retryRows.add(ref.rowId); }
             }
+            retryable.sort((a, b) => (a.rowId ?? 0) - (b.rowId ?? 0));
             if (retryable.length > 0) {
               options.onProgress?.({
                 phase: 'resolving',
@@ -1892,6 +1890,24 @@ export class CodeGraph {
    */
   getUnresolvedSupertypeSourcesAmong(nodeIds: Iterable<string>): Set<string> {
     return this.queries.getUnresolvedSupertypeSourcesAmong(nodeIds);
+  }
+
+  /**
+   * The names each of the given symbols refers to, by reference kind, where
+   * the resolver could not follow the reference — a decorator or an interface
+   * from outside the index, which leaves no edge. Ids with none are absent.
+   */
+  getUnresolvedReferenceNamesFrom(nodeIds: Iterable<string>, kinds: readonly Edge['kind'][]): Map<string, string[]> {
+    return this.queries.getUnresolvedReferenceNamesFrom(nodeIds, kinds);
+  }
+
+  /**
+   * Every symbol that refers to each of the given names, by reference kind,
+   * where the resolver could not follow it: for `implements`, every class that
+   * names a given interface from outside the index.
+   */
+  getUnresolvedReferenceSourcesNamed(names: Iterable<string>, kinds: readonly Edge['kind'][]): Map<string, Set<string>> {
+    return this.queries.getUnresolvedReferenceSourcesNamed(names, kinds);
   }
 
   /**

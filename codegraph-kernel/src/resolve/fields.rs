@@ -210,6 +210,33 @@ impl KernelResolver {
             let text = lines.iter().skip((owner.start_line - 1).max(0) as usize)
                 .take((owner.end_line - owner.start_line + 1).max(0) as usize)
                 .map(|line| strip_line_comments(line)).collect::<Vec<_>>().join("\n");
+            if owner.kind == "type_alias" {
+                // Alias method sets follow their targets; defined types do not.
+                let site = ResolveRefIn { from_node_id: owner.id.clone(), reference_name: owner.name.clone(), reference_kind: "references".to_string(), line: owner.start_line, column: owner.start_column, file_path: owner.file_path.clone(), language: "go".to_string(), row_id: None, candidates: None, failure_reason: None };
+                if let Some(tree) = self.parsed_tree(&lines, &site) {
+                    let mut declaration = super::iteration::descendant_for_position(
+                        tree.root_node(), lines.text(),
+                        ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize + 1),
+                    );
+                    while !matches!(declaration.kind(), "type_alias" | "type_spec") {
+                        let Some(parent) = declaration.parent() else { break; };
+                        declaration = parent;
+                    }
+                    let is_alias = declaration.kind() == "type_alias" || {
+                        let mut cursor = declaration.walk();
+                        let found = declaration.children(&mut cursor).any(|n| n.kind() == "ERROR"
+                            && lines.text()[n.start_byte()..n.end_byte()].trim() == "=");
+                        found
+                    };
+                    if is_alias {
+                        if let Some(ty) = declaration.child_by_field_name("type") {
+                            let raw = &lines.text()[ty.start_byte()..ty.end_byte()];
+                            if let Some(base) = self.go_type_package(raw, &owner.file_path)? { out.push(base); }
+                        }
+                        continue;
+                    }
+                }
+            }
             let Some(body) = text.split_once('{').map(|(_, b)| b.rsplit_once('}').map_or(b, |(b, _)| b)) else { continue };
             // Hide nested anonymous struct/interface bodies while preserving declaration separators.
             let mut depth = 0usize;

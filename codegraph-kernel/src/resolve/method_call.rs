@@ -658,6 +658,7 @@ impl KernelResolver {
             McShape::Done(res) => return Ok(res),
         };
 
+        if r.language == "cpp" && self.cpp_external_receiver(&object_or_class, r)? { return Ok(None); }
         if matches!(r.language.as_str(), "java" | "kotlin") {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }

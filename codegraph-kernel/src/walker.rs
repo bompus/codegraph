@@ -4,6 +4,7 @@ use tree_sitter::Node;
 
 /// One scope-stack entry: the row of the node that opened it (0 = the file
 /// node), its kind, and its name for qualified-name building.
+#[derive(Clone)]
 pub(crate) struct Scope {
     pub row: u32,
     pub kind: &'static str,

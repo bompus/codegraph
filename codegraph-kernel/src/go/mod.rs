@@ -108,6 +108,7 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
     w.visit_node(tree.root_node());
+    w.emit_assumed_import_bindings(tree.root_node());
     w.flush_fn_ref_candidates();
     w.flush_value_refs(tree.root_node());
     w.stack.pop();
@@ -415,7 +416,8 @@ impl<'t> Walker<'t> {
         self.stack.pop();
     }
 
-    /// extractTypeAlias for Go: type_spec → struct / interface / plain alias.
+    /// extractTypeAlias for Go: type_spec (`type A B`) and type_alias
+    /// (`type A = B`) → struct / interface / plain alias.
     fn extract_type_alias(&mut self, node: Node<'t>) -> bool {
         stack_guard!();
         let name = self.extract_name(node);
@@ -466,14 +468,22 @@ impl<'t> Walker<'t> {
             return true;
         }
 
-        self.create_node(
+        let row = self.create_node(
             "type_alias",
             &name,
             node,
             Extra { docstring, is_exported, ..Extra::default() },
         );
-        // (go type_spec has no `value` field — no type-ref walk; TS/tsx member
-        // extraction is TS-family-only)
+        // (go has no `value` field — no TS-style type-ref walk or member
+        // extraction.) An alias references what its `type` field names; a
+        // defined type (`type_spec`) declares a type of its own.
+        if let Some(row) = row {
+            let references = crate::buffers::EDGE_REFERENCES;
+            for ty in self.alias_type_names(node) {
+                let text = self.text(ty).to_string();
+                self.push_ref_at(row, &text, references, ty);
+            }
+        }
         false
     }
 
@@ -601,6 +611,46 @@ impl<'t> Walker<'t> {
             if let Some(spec) = spec {
                 handle_spec(self, spec);
             }
+        }
+    }
+
+    /// Keep the written/path name and add the conventional package name only
+    /// when no other import in the file binds or assumes that name.
+    fn emit_assumed_import_bindings(&mut self, root: Node<'t>) {
+        let mut imports = Vec::new();
+        // Imports are top-level declarations. Do not revisit unrelated deep
+        // function bodies after the guarded walker has deferred the file.
+        let mut pending: Vec<_> = named_kids(root).filter(|n| n.kind() == "import_declaration").collect();
+        while let Some(node) = pending.pop() {
+            if node.kind() == "import_spec" { imports.push(node); }
+            else { pending.extend(named_kids(node)); }
+        }
+        let mut bound = HashSet::new();
+        let mut assumed: HashMap<String, Vec<(String, Node<'t>)>> = HashMap::new();
+        for spec in imports {
+            let Some(lit) = spec.child_by_field_name("path")
+                .or_else(|| named_kids(spec).find(|c| c.kind() == "interpreted_string_literal")) else { continue };
+            let path = self.text(lit).trim_matches('"').to_string();
+            let local = self.import_local_name(spec, &path);
+            bound.insert(local);
+            if spec.child_by_field_name("name").is_some() { continue; }
+            let mut parts = path.rsplit('/');
+            let last = parts.next().unwrap_or("");
+            let base = if last.starts_with('v') && last.len() > 1
+                && last[1..].bytes().all(|b| b.is_ascii_digit()) {
+                parts.next().unwrap_or(last)
+            } else { last };
+            let base = base.strip_prefix("go-").unwrap_or(base);
+            let name: String = base.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
+                assumed.entry(name).or_default().push((path, spec));
+            }
+        }
+        for (name, candidates) in assumed {
+            if bound.contains(&name) || candidates.len() != 1 { continue; }
+            let (path, spec) = &candidates[0];
+            self.emit_import_binding(&name, path, *spec);
+            self.imported_names.insert(name);
         }
     }
 
@@ -770,6 +820,45 @@ impl<'t> Walker<'t> {
         }
     }
 
+    /// goAliasTypeNames (languages/go.ts): the name nodes of the types an
+    /// alias's `type` field names, in source order, but its own type
+    /// parameters and the predeclared types. Generic aliases parse as a
+    /// `type_spec` with an error child containing `=` in this grammar.
+    fn alias_type_names(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let mut names = Vec::new();
+        let is_alias = node.kind() == "type_alias" || named_kids(node).any(|c| c.kind() == "ERROR" && self.text(c).trim() == "=");
+        if !is_alias { return names; }
+        let Some(ty) = node.child_by_field_name("type") else { return names };
+        let mut params: HashSet<&str> = HashSet::new();
+        if let Some(list) = node.child_by_field_name("type_parameters") {
+            for decl in (0..list.named_child_count()).filter_map(|i| list.named_child(i)) {
+                for c in (0..decl.named_child_count()).filter_map(|j| decl.named_child(j)) {
+                    if c.kind() == "identifier" {
+                        params.insert(self.text(c));
+                    }
+                }
+            }
+        }
+        self.collect_alias_type_names(ty, &params, &mut names);
+        names
+    }
+
+    fn collect_alias_type_names(&self, node: Node<'t>, params: &HashSet<&str>, out: &mut Vec<Node<'t>>) {
+        stack_guard!();
+        if node.kind() == "type_identifier" {
+            let text = self.text(node);
+            if !params.contains(text) && !is_go_predeclared_type(text) {
+                out.push(node);
+            }
+            return;
+        }
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                self.collect_alias_type_names(c, params, out);
+            }
+        }
+    }
+
     /// extractInheritance — the Go branches: interface embedding (a type_elem
     /// holding one named type; a union, `~T` or basic type is a constraint)
     /// and struct embedding (field_declaration without a field_identifier),
@@ -849,4 +938,3 @@ fn is_go_predeclared_type(name: &str) -> bool {
             | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
     )
 }
-

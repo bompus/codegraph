@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`02d22aeb`](https://github.com/colbymchenry/codegraph/commit/02d22aebedd7fa70ddfe8b368c43bb24a80bdf0a) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`ed199e60`](https://github.com/colbymchenry/codegraph/commit/ed199e60d8f1aed5baf73836366ef0a6f7838d11) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -76,7 +76,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 ### What the fork adds
 
-Compared with upstream `main` at `02d22aeb` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `ed199e60` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -112,6 +112,8 @@ The other languages are the same in both, listed under [Supported Languages](#su
 C# property accessors and expression-bodied properties contribute calls and references owned by the property. VB.NET member bodies and field initializers also contribute their calls and references.
 
 C# field and property initializers retain their calls and references under the member that owns them. Target-typed `new()` resolves relative declared types through enclosing namespaces and honors `global::` qualification without requiring a redundant `using`. VB.NET resolves typed receivers, enclosing and inherited members, and field or property reads through values and Shared types without choosing unrelated project declarations. Names beginning with keywords, such as `SharedCache`, `Dimension` and `NewItem`, retain their declarations.
+
+The native resolver includes upstream's Go import-name assumptions, type-position checks, alias method forwarding and embedded interface method sets. Chained Go calls follow declared return types at each fluent step; an unproven receiver stays unresolved instead of borrowing an unrelated method by name. C++ bases use enclosing-scope directives, parent-scope lookup and translation-unit visibility; included test-named headers remain eligible, while declared external library receivers avoid unrelated project methods. Incremental sync retries newly available Liquid targets, lazy route modules and navigation destinations.
 
 Go interfaces link named embedded interfaces and aliases that resolve to interfaces. Named scalar or struct terms, unions, underlying-type constraints and basic types are not supertypes. Package-qualified embeddings stay in their imported package. Go imports follow the nearest indexed module and the longest matching module path, including module changes during incremental sync. Unexported receivers and embedded methods stay in their declaring package. Dart imports, exports and part directives follow their library URIs and visibility rules. Library directive reads stay inside the indexed project, including resolved symlink targets. Calls through import prefixes, annotations and member chains follow the visible declaration and written receiver types, including explicit generic lookup types. Parameters and locals shadow bare calls. Top-level and field initializers contribute calls; const constructors, redirecting factories and annotated members retain their declarations and dartdoc. Getter reads become calls only when the receiver type reaches that getter and no nearer field in the visible class hierarchy overrides it; enum extensions and type-position references participate in resolution. Rust enum-variant values retain their enum references.
 

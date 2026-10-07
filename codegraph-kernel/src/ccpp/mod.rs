@@ -14,6 +14,10 @@
 //!  - cpp namespace prefix stack (#1291): named `namespace a::b {` pushes the
 //!    name AS WRITTEN onto the qualifiedName prefix; anonymous falls through.
 //!    No namespace NODE is minted (#1093 crowd-out).
+//!  - cpp brace scopes (brace_scopes.rs): when the tree has errors, each node
+//!    is walked in the namespaces, and at declaration level the classes, the
+//!    source's braces put it in, not the tree's (error recovery closes scopes
+//!    at the wrong `}`). Files with parse errors use this recovery path.
 //!  - out-of-line `Cls::method` defs: name = LAST `::` segment of the
 //!    declarator's qualified_identifier (BFS that skips parameter_list +
 //!    trailing_return_type), receiver = the template-stripped qualifier,
@@ -89,6 +93,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 use tree_sitter::Node;
+
+mod brace_scopes;
+use brace_scopes::{BraceScopes, NestedIntervals};
 
 
 // --- compiled regexes (JS \w/\s spelled as ASCII classes for parity) ---------
@@ -338,6 +345,12 @@ pub struct Walker<'t> {
     /// Each class body's access specifiers as (start byte, visibility), by
     /// body node id: members look up the nearest preceding one.
     access_specifiers: RefCell<HashMap<usize, Vec<(usize, u8)>>>,
+    /// A cpp file whose tree has errors is walked in the scopes its braces
+    /// open (visit_in_brace_scope; only when the parsed tree has errors): the
+    /// scan, and the class-like nodes extracted so far by their bodies' braces.
+    brace_scopes: Option<BraceScopes>,
+    class_scopes: NestedIntervals<Scope>,
+    class_scope_rows: HashSet<u32>,
 }
 
 pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut, String> {
@@ -349,6 +362,9 @@ pub fn extract(file_path: &str, source: &str, language: &str) -> Result<EmitOut,
     let t0 = std::time::Instant::now();
     let tree = crate::langs::parse(language, source)?;
     let mut w = Walker::new(source, file_path, variant);
+    if variant == Variant::Cpp && tree.root_node().has_error() {
+        w.brace_scopes = brace_scopes::scan(source);
+    }
 
     let line_count = w.line_count;
     let base_name = crate::buffers::push_file_node(&mut w.arena, &mut w.tables, file_path, line_count);
@@ -390,6 +406,9 @@ impl<'t> Walker<'t> {
             md_ref_keys: HashSet::new(),
             line_count: source.bytes().filter(|b| *b == b'\n').count() as u32 + 1,
             access_specifiers: RefCell::new(HashMap::new()),
+            brace_scopes: None,
+            class_scopes: NestedIntervals::new(),
+            class_scope_rows: HashSet::new(),
         }
     }
     markdown_refs_impl!();
@@ -537,6 +556,61 @@ impl<'t> Walker<'t> {
 
     fn visit_node(&mut self, node: Node<'t>) {
         stack_guard!();
+        if self.brace_scopes.is_some() {
+            self.visit_in_brace_scope(node);
+        } else {
+            self.dispatch_node(node);
+        }
+    }
+
+    /// visitInCppBraceScope: walk `node` in the namespaces and classes its
+    /// source braces put it in (see brace_scopes.rs). The namespaces apply
+    /// everywhere; the enclosing classes only at declaration level, where the
+    /// stack above the file node holds nothing but class scopes.
+    fn visit_in_brace_scope(&mut self, node: Node<'t>) {
+        stack_guard!();
+        let at = node.start_byte();
+        let namespaces = self.brace_scopes.as_ref().map(|s| s.namespaces_at(at)).unwrap_or_default();
+        let saved = std::mem::replace(&mut self.namespace_prefix, namespaces);
+        let mut base = self.stack.len();
+        while base > 1 && self.class_scope_rows.contains(&self.stack[base - 1].row) {
+            base -= 1;
+        }
+        let mut walked: Option<Vec<Scope>> = None;
+        if base == 1 {
+            let classes = self.class_scopes.at(at);
+            let same = classes.len() == self.stack.len() - base
+                && classes.iter().zip(&self.stack[base..]).all(|(c, s)| c.row == s.row);
+            if !same {
+                walked = Some(self.stack.split_off(base));
+                self.stack.extend(classes);
+            }
+        }
+        self.dispatch_node(node);
+        if let Some(walked) = walked {
+            self.stack.truncate(base);
+            self.stack.extend(walked);
+        }
+        self.namespace_prefix = saved;
+    }
+
+    /// cppBodyEnd: where a class-like node ends in brace scopes — the `}`
+    /// that closes its body — or None to keep the tree's.
+    fn brace_body_end(&self, body: Node<'t>) -> Option<(u32, u32)> {
+        let close = self.brace_scopes.as_ref()?.close_of(body.start_byte())?;
+        Some(self.cols.position(self.src, close + 1))
+    }
+
+    /// openCppClassScope: a class-like node's body as a scope for visit_in_brace_scope.
+    fn open_class_scope(&mut self, scope: &Scope, body: Node<'t>) {
+        let Some(close) = self.brace_scopes.as_ref().and_then(|s| s.close_of(body.start_byte())) else { return };
+        if self.class_scopes.add(body.start_byte(), close, scope.clone()) {
+            self.class_scope_rows.insert(scope.row);
+        }
+    }
+
+    fn dispatch_node(&mut self, node: Node<'t>) {
+        stack_guard!();
         let kind = node.kind();
         let mut skip_children = false;
 
@@ -609,6 +683,19 @@ impl<'t> Walker<'t> {
         } else if self.is_attribute_prototype_part(node) {
             skip_children = true;
         } else if kind == "declaration" && !self.inside_class_like() {
+            // In brace scopes, a class the tree reads as a declaration's type
+            // (glued to the tokens after it by error recovery) is still a class.
+            if self.brace_scopes.is_some() {
+                if let Some(t) = node.child_by_field_name("type") {
+                    let class_like = matches!(
+                        t.kind(),
+                        "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier"
+                    );
+                    if class_like && t.child_by_field_name("body").is_some() {
+                        self.visit_node(t);
+                    }
+                }
+            }
             self.extract_variable(node);
             self.scan_fn_ref_subtree(node, 0);
             skip_children = true;

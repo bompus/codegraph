@@ -758,6 +758,11 @@ function angularAppRoot(filePath: string, context: ResolutionContext): string {
 
 export type AngularRouteTable = RootedRouteTable;
 
+/** True for a route the table holds: this resolver's, at an absolute path. */
+function inAngularTable(node: Node): boolean {
+  return isAngularRoute(node) && node.name.startsWith('/');
+}
+
 const tables = new WeakMap<ResolutionContext, AngularRouteTable>();
 
 export function angularRouteTable(context: ResolutionContext): AngularRouteTable {
@@ -767,7 +772,7 @@ export function angularRouteTable(context: ResolutionContext): AngularRouteTable
   const byRoot = new Map<string, RouteTable>();
   const byFile = new Map<string, Node>();
   for (const node of all) {
-    if (!isAngularRoute(node) || !node.name.startsWith('/')) continue;
+    if (!inAngularTable(node)) continue;
     const root = angularAppRoot(node.filePath, context);
     let t = byRoot.get(root);
     if (!t) byRoot.set(root, (t = { source: all, exact: new Map(), dynamic: [] }));
@@ -1033,6 +1038,14 @@ export const angularRouterResolver: FrameworkResolver = {
 
   claimsReference(name: string): boolean {
     return NAV_CALL.test(name) || LAZY_COMPONENT_REF.test(name) || LAYOUT_REF.test(name);
+  },
+
+  navigation: {
+    tails: ['navigate', 'navigateByUrl', 'createUrlTree', 'parseUrl'],
+    // Shared libraries can use the sole-app fallback. Adding or removing an
+    // app changes that eligibility, so retry across the workspace; resolution
+    // still enforces each call's own app and refuses ambiguous shared calls.
+    scope: (route) => inAngularTable(route) ? [''] : null,
   },
 
   extract(filePath: string, content: string): FrameworkExtractionResult {

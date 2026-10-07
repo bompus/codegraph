@@ -383,7 +383,7 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         // react-native-bridge's claimsReference returns false — JS-visible
         // method names reach the resolver through the name-exists arm.
         "react-native-bridge" => false,
-        "react" => name.starts_with("lazy-import:"),
+        "react" => name.starts_with("lazy-import:") || name.starts_with("layout:"),
         "react-router" => rr_nav_re().is_match(name) || name.starts_with("react-router-module:"),
         "rails" => rails_claim_re().is_match(name),
         "solid-start" => name.starts_with("solid-start-target:"),

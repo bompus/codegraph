@@ -15,6 +15,7 @@ import {
   KernelResolveStats,
   ResolutionContext,
   FrameworkResolver,
+  CrossFileNodes,
   ImportMapping,
   isSupertypeTarget,
   isInheritanceRef,
@@ -27,9 +28,11 @@ import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visi
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
 import { gateSuperSelfCall } from './super-self';
+import { resurrectRefFromDroppedEdge } from './resurrect-ref';
+import { GO_TYPE_KINDS, isGoBareName, isGoUnknownQualified, goTypePositionTarget } from './go-type-visibility';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
-import { detectFrameworksWithSkips } from './frameworks';
+import { detectFrameworksWithSkips, getResolvingFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
@@ -106,6 +109,8 @@ export class ReferenceResolver {
   private queries: QueryBuilder;
   private context: ResolutionContext;
   private frameworks: FrameworkResolver[] = [];
+  /** `frameworks` narrowed to those that resolve each reference language (see getResolvingFrameworks). */
+  private frameworksByLanguage = new Map<Language, FrameworkResolver[]>();
   // Chained static-factory/fluent call refs the first pass couldn't resolve,
   // collected in-memory and left pending in the DB until the post-pass
   // finishes, so a restart can recover the queue (#1577). Drained by
@@ -192,7 +197,18 @@ export class ReferenceResolver {
   /** `persist: false` on a read-only connection: reuse detection skips without writing them. */
   initialize(persist = true): void {
     this.clearCaches();
+    this.frameworksByLanguage.clear();
     this.frameworks = detectFrameworksWithSkips(this.context, this.queries, { persist });
+  }
+
+  /** The detected frameworks whose `resolve()` reads a reference written in `language`. */
+  private frameworksFor(language: Language): FrameworkResolver[] {
+    let frameworks = this.frameworksByLanguage.get(language);
+    if (!frameworks) {
+      frameworks = getResolvingFrameworks(this.frameworks, language);
+      this.frameworksByLanguage.set(language, frameworks);
+    }
+    return frameworks;
   }
 
   /**
@@ -232,6 +248,16 @@ export class ReferenceResolver {
         });
       }
     }
+    for (const fw of this.frameworks) {
+      if (!fw.crossFileNodes) continue;
+      try {
+        updated += this.reconcileCrossFileNodes(fw.crossFileNodes(this.context));
+      } catch (err) {
+        logDebug(`Framework '${fw.name}' crossFileNodes failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     const rows = skips.take();
     if (rows.length > 0) {
       try {
@@ -246,8 +272,53 @@ export class ReferenceResolver {
   }
 
   /**
-   * Pre-build the known-file set the framework resolvers' file checks read.
-   * Node lookups go through indexed SQLite queries.
+   * Bring a framework's cross-file nodes in line with what it wants now:
+   * insert the new ones with their references (pending, for the resolution
+   * that follows), rename the ones whose name changed, and remove the ones it
+   * no longer wants. A removed node's incoming resolution edges go back to
+   * being the references that made them, exactly as when a file is deleted,
+   * so they rebind elsewhere or park as failed. Unchanged nodes are not
+   * touched, so their edges survive. Returns the number of nodes changed.
+   */
+  private reconcileCrossFileNodes(result: CrossFileNodes): number {
+    const wanted = new Map<string, Node>();
+    for (const node of result.nodes) if (result.owns(node)) wanted.set(node.id, node);
+    const existing = new Map<string, Node>();
+    for (const node of this.queries.getNodesByKind(result.kind)) if (result.owns(node)) existing.set(node.id, node);
+    let changed = 0;
+    for (const [id, old] of existing) {
+      if (wanted.has(id)) continue;
+      const refs = this.queries.getCrossFileIncomingEdgesWithTarget(old.filePath)
+        .filter((e) => e.target === id)
+        .map((e) => resurrectRefFromDroppedEdge(e))
+        .filter((r): r is UnresolvedReference => r !== null);
+      if (refs.length > 0) this.queries.insertUnresolvedRefsBatch(refs);
+      this.queries.deleteNode(id);
+      changed++;
+    }
+    const added: Node[] = [];
+    for (const [id, node] of wanted) {
+      const old = existing.get(id);
+      if (!old) added.push(node);
+      else if (old.name !== node.name || old.qualifiedName !== node.qualifiedName) {
+        this.queries.updateNode(node);
+        changed++;
+      }
+    }
+    if (added.length > 0) {
+      this.queries.insertNodes(added);
+      const ids = new Set(added.map((n) => n.id));
+      this.queries.insertUnresolvedRefsBatch(result.references.filter((r) => ids.has(r.fromNodeId)));
+      changed += added.length;
+    }
+    return changed;
+  }
+
+  /**
+   * Pre-build lightweight caches for resolution.
+   * Node lookups are now handled by indexed SQLite queries instead of
+   * loading all nodes into memory (which caused OOM on large codebases).
+   * We cache the set of known symbol names for fast pre-filtering.
    */
   warmCaches(): void {
     if (this.cachesWarmed) return;
@@ -617,6 +688,7 @@ export class ReferenceResolver {
       getCppIncludeDirs: () => {
         return loadCppIncludeDirs(this.projectRoot);
       },
+
     };
   }
 
@@ -928,7 +1000,7 @@ export class ReferenceResolver {
       return this.applyResolveTail(null, ref);
     }
     const candidates: ResolvedRef[] = [];
-    for (const framework of this.frameworks) {
+    for (const framework of this.frameworksFor(ref.language)) {
       const resolved = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
       // Name the resolver on the edge (`metadata.framework`): a Swift→ObjC or
       // React Native bridge hop says how it got into the graph, as a
@@ -2272,6 +2344,91 @@ export class ReferenceResolver {
     return this.frameworks.map((f) => f.name);
   }
 
+  /** True when a detected router binds navigation calls to its routes (see {@link reopenNavigationsFor}). */
+  hasNavigationRouters(): boolean {
+    return this.frameworks.some((f) => f.navigation !== undefined);
+  }
+
+  /**
+   * Put back in the pending set the navigation calls `routes` — route nodes a
+   * sync added, removed or renamed ({@link changedRoutes}) — may now resolve
+   * differently, for the sync's resolution sweep: the calls parked as failed,
+   * and the calls whose `navigates` edges a router's resolver made. Calls in
+   * `changedFilePaths` are left alone; the sync resolved them against the new
+   * routes already. Returns the number of references put back.
+   *
+   * A navigation call names its route by path (`navigate('/login')`) and its
+   * reference by the router's method (`navigate`, `history.push`), so a route
+   * table that changed in another file is invisible to the rest of sync. A
+   * call parked as failed while its route was missing is keyed on `push`,
+   * which no synced file defines, and a resolved call keeps the route it bound
+   * to while a better one was missing (a catch-all, a parameter route, one arm
+   * of a conditional) or a route renamed under it. A full index resolves every
+   * call against the final table. Each router says which calls a route of its
+   * own can answer (`FrameworkResolver.navigation`): the method tails, and the
+   * apps whose files match against that route's table. A name more of those
+   * calls share than `perNameCeiling` is skipped, as the symbol retry skips a
+   * common tail.
+   */
+  reopenNavigationsFor(routes: readonly Node[], changedFilePaths: readonly string[] = [], perNameCeiling: number = 500): number {
+    if (routes.length === 0) return 0;
+    const plans: Array<{ router: FrameworkResolver; scopes: string[] }> = [];
+    const tails = new Set<string>();
+    for (const router of this.frameworks) {
+      if (!router.navigation) continue;
+      const scopes = new Set<string>();
+      for (const route of routes) {
+        for (const scope of router.navigation.scope(route, this.context) ?? []) scopes.add(scope);
+      }
+      if (scopes.size === 0) continue;
+      plans.push({ router, scopes: [...scopes] });
+      for (const tail of router.navigation.tails) tails.add(tail);
+    }
+    if (plans.length === 0) return 0;
+    const claimed = (name: string, filePath: string): boolean =>
+      plans.some(({ router, scopes }) => scopes.some((scope) => filePath.startsWith(scope)) && router.claimsReference?.(name) === true);
+
+    const fresh = new Set(changedFilePaths);
+    const failed = new Map<string, number[]>();
+    for (const ref of this.queries.getFailedCallsByTail([...tails])) {
+      if (fresh.has(ref.filePath) || !claimed(ref.referenceName, ref.filePath)) continue;
+      const rowIds = failed.get(ref.referenceName);
+      if (rowIds) rowIds.push(ref.rowId);
+      else failed.set(ref.referenceName, [ref.rowId]);
+    }
+    const resolved = new Map<string, Array<Edge & { edgeId: number; sourceFilePath: string; sourceLanguage: Language }>>();
+    for (const edge of this.queries.getResolvedNavigations()) {
+      const name = edge.metadata?.refName;
+      if (typeof name !== 'string' || fresh.has(edge.sourceFilePath) || !claimed(name, edge.sourceFilePath)) continue;
+      const edges = resolved.get(name);
+      if (edges) edges.push(edge);
+      else resolved.set(name, [edge]);
+    }
+
+    const rowIds: number[] = [];
+    const edgeIds: number[] = [];
+    const refs: UnresolvedReference[] = [];
+    // A conditional's arms are edges of one call: it goes back as one reference.
+    const sites = new Set<string>();
+    for (const name of new Set([...failed.keys(), ...resolved.keys()])) {
+      const rows = failed.get(name) ?? [];
+      const edges = resolved.get(name) ?? [];
+      if (rows.length + edges.length > perNameCeiling) continue;
+      for (const rowId of rows) rowIds.push(rowId);
+      for (const edge of edges) {
+        const ref = resurrectRefFromDroppedEdge(edge);
+        if (!ref) continue;
+        edgeIds.push(edge.edgeId);
+        const site = `${ref.fromNodeId}\0${ref.referenceName}\0${ref.line}\0${ref.column}`;
+        if (sites.has(site)) continue;
+        sites.add(site);
+        refs.push(ref);
+      }
+    }
+    if (edgeIds.length > 0) this.queries.replaceResolutionEdgesWithUnresolvedRefs(edgeIds, refs);
+    return this.queries.reopenFailedReferences(rowIds) + refs.length;
+  }
+
   /**
    * Get file path from node ID
    */
@@ -2325,6 +2482,10 @@ export class ReferenceResolver {
    * For `imports`: the target must be importable. A member that only exists
    * inside a type never is.
    *
+   * For a Go type position: the target is a type of the package Go reads the
+   * name from, moved there when a strategy found a method, a function or
+   * another package's type (see goTypePositionTarget).
+   *
    * For `extends`/`implements`, it cannot be describing a real supertype when:
    *
    *  1. The target's kind can never be a supertype (an enum member, a method,
@@ -2356,6 +2517,12 @@ export class ReferenceResolver {
     if (ref.referenceKind === 'calls') {
       const target = this.nodeById(result.targetNodeId);
       if (target?.kind === 'constant' && CPP_DEFINE_SIGNATURE.test(target.signature ?? '')) return null;
+      // A Go call made through an expression — `h.Validate().Error()`, a
+      // `.Metrics()` chained onto the line above — calls a method of whatever
+      // the expression is. A type is called only bare (`T(x)`, `(*T)(x)`) or
+      // through its package; as a struct here it read as an instantiation.
+      if (target && ref.language === 'go' && GO_TYPE_KINDS.has(target.kind) &&
+          !ref.referenceName.includes('.') && !isGoBareName(ref, this.context)) return null;
     }
 
     // An `imports` reference names something importable — never a member that
@@ -2363,6 +2530,20 @@ export class ReferenceResolver {
     if (ref.referenceKind === 'imports') {
       const target = this.nodeById(result.targetNodeId);
       return target && !isImportableKind(target.kind) ? null : result;
+    }
+
+    // A Go alias names its type as an embedding does (below): written through
+    // a package that is none of the file's imports as indexed, the type found
+    // by its bare name is another package's namesake, or the alias itself.
+    if (ref.language === 'go' && ref.referenceKind === 'references' &&
+        this.nodeById(ref.fromNodeId)?.kind === 'type_alias' && isGoUnknownQualified(ref, this.context)) return null;
+
+    // A Go type position — a parameter or result type, a composite literal's
+    // type — names a type of the package Go reads it from (route handlers are
+    // `references` too, but values).
+    if (ref.language === 'go' && (ref.referenceKind === 'instantiates' ||
+        (ref.referenceKind === 'references' && this.nodeById(ref.fromNodeId)?.kind !== 'route'))) {
+      return goTypePositionTarget(result, ref, this.context);
     }
 
     if (!isInheritanceRef(ref)) return result;
@@ -2417,6 +2598,20 @@ export class ReferenceResolver {
     if (tgt && ref.language && crossesKnownFamily(tgt, ref.language)) return null;
     return result;
   }
+}
+
+/**
+ * The routes a sync added, removed or renamed: `before` is every route node
+ * before the sync changed a file, `after` every one after its post-extract
+ * pass, and a route whose file and path are on one side only changed. A route
+ * renamed in place — the same node under a new path — is in the result twice,
+ * as its old self and its new one.
+ */
+export function changedRoutes(before: readonly Node[], after: readonly Node[]): Node[] {
+  const key = (route: Node): string => `${route.filePath}\0${route.name}`;
+  const beforeKeys = new Set(before.map(key));
+  const afterKeys = new Set(after.map(key));
+  return [...before.filter((route) => !afterKeys.has(key(route))), ...after.filter((route) => !beforeKeys.has(key(route)))];
 }
 
 /**

@@ -81,7 +81,8 @@ impl<'t> Walker<'t> {
             // A method value `c.store.Fetch` keeps its receiver (#1820).
             "selector_expression" => {
                 if let Some(field) = v.child_by_field_name("field") {
-                    self.fn_ref_cands.extend(Cand::member(from, self.text(v), field));
+                    let path = self.selector_path(v);
+                    self.fn_ref_cands.extend(Cand::member(from, &path, field));
                 }
             }
             "literal_element" | "expression_list" => {
@@ -91,6 +92,18 @@ impl<'t> Walker<'t> {
             }
             _ => {}
         }
+    }
+
+    fn selector_path(&self, mut node: Node<'t>) -> String {
+        let mut fields = Vec::new();
+        while node.kind() == "selector_expression" {
+            let (Some(operand), Some(field)) = (node.child_by_field_name("operand"), node.child_by_field_name("field")) else { break; };
+            fields.push(self.text(field));
+            node = operand;
+        }
+        let mut path = self.text(node).trim().to_string();
+        for field in fields.into_iter().rev() { path.push('.'); path.push_str(field); }
+        path
     }
 
     pub(super) fn scan_fn_ref_subtree(&mut self, node: Node<'t>, depth: u32) {

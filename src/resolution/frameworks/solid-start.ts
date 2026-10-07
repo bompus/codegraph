@@ -421,7 +421,7 @@ export function extractSolidStartRoutes(
 
 export const solidStartResolver: FrameworkResolver = {
   name: 'solid-start',
-  languages: ['typescript', 'javascript'],
+  languages: ['typescript', 'javascript', 'tsx', 'jsx'],
   detect: (context) => dependsOn(context, '@solidjs/start'),
   claimsReference: (name) => name.startsWith('solid-start-target:'),
   resolve(ref, context) {
