@@ -268,10 +268,18 @@ fn skip_ws(s: &str, at: usize) -> usize {
 }
 
 /// Every `\bNAME\b` occurrence's byte offset in `hay` (JS ASCII boundaries).
+fn js_identifier_start(code: &str, at: usize) -> bool {
+    at == 0 || !code.as_bytes().get(at - 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
+}
+fn js_identifier_end(code: &str, at: usize) -> bool {
+    !code.as_bytes().get(at).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
+}
+fn js_identifier_bounds(code: &str, at: usize, len: usize) -> bool { js_identifier_start(code, at) && js_identifier_end(code, at + len) }
+
 fn word_occurrences<'a>(hay: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
     hay.match_indices(name)
         .map(|(at, _)| at)
-        .filter(move |&at| word_boundary_at(hay, at) && word_boundary_at(hay, at + name.len()))
+        .filter(move |&at| js_identifier_bounds(hay, at, name.len()))
 }
 
 /// Non-overlapping matches, leftmost first, of
@@ -295,7 +303,7 @@ pub(super) fn declaration_matches(code: &str, name: &str, keywords: &[&str], bra
                 }
                 let rest = &code[after_ws..];
                 // No `\b` before NAME here — only after it.
-                if rest.starts_with(name) && word_boundary_at(code, after_ws + name.len()) {
+                if rest.starts_with(name) && js_identifier_end(code, after_ws + name.len()) {
                     matched_end = Some(after_ws + name.len());
                     break;
                 }
@@ -307,7 +315,7 @@ pub(super) fn declaration_matches(code: &str, name: &str, keywords: &[&str], bra
                     if let Some(at) = body
                         .match_indices(name)
                         .map(|(at, _)| body_start + at)
-                        .filter(|&at| word_boundary_at(code, at) && word_boundary_at(code, at + name.len()))
+                        .filter(|&at| js_identifier_bounds(code, at, name.len()))
                         .last()
                     {
                         matched_end = Some(at + name.len());
@@ -332,7 +340,7 @@ pub(super) fn declaration_matches(code: &str, name: &str, keywords: &[&str], bra
 /// `\bNAME\s*=(?!=)` anywhere in `code`.
 fn has_assignment(code: &str, name: &str) -> bool {
     code.match_indices(name).any(|(at, _)| {
-        if !word_boundary_at(code, at) {
+        if !js_identifier_start(code, at) {
             return false;
         }
         let eq = skip_ws(code, at + name.len());
@@ -344,7 +352,7 @@ fn has_assignment(code: &str, name: &str) -> bool {
 /// (`const NAME =`), a comparison or an arrow.
 fn is_reassigned(code: &str, name: &str) -> bool {
     code.match_indices(name).any(|(at, _)| {
-        if !word_boundary_at(code, at) || !word_boundary_at(code, at + name.len()) {
+        if !js_identifier_bounds(code, at, name.len()) {
             return false;
         }
         let before = code[..at].trim_end();
@@ -380,7 +388,7 @@ pub(super) fn parameter_bindings(code: &str, name: &str) -> Vec<(usize, Option<u
         .match_indices(name)
         .filter_map(|(at, _)| {
             let arrow = skip_ws(code, at + name.len());
-            (word_boundary_at(code, at) && code[arrow..].starts_with("=>")).then(|| (at, block_at(arrow + 2)))
+            (js_identifier_bounds(code, at, name.len()) && code[arrow..].starts_with("=>")).then(|| (at, block_at(arrow + 2)))
         })
         .collect();
     let after_list = re!(r"^\s*(?::[^=;{]*)?(?:=>|\{)");

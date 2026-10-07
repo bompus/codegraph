@@ -345,6 +345,7 @@ pub(super) struct SourceFile {
     python_file: OnceCell<bound::PyFile>,
     python_field_file: OnceCell<bound::PyFile>,
     cpp_field_tree: OnceCell<Option<Rc<tree_sitter::Tree>>>,
+    dart_tokens: OnceCell<Vec<dart_libraries::DartToken>>,
     /// `lines_containing` memo, by needle.
     needle_lines: RefCell<HashMap<String, Rc<[u32]>>>,
 }
@@ -362,6 +363,7 @@ impl SourceFile {
             python_file: OnceCell::new(),
             python_field_file: OnceCell::new(),
             cpp_field_tree: OnceCell::new(),
+            dart_tokens: OnceCell::new(),
             needle_lines: RefCell::new(HashMap::new()),
         }
     }
@@ -369,6 +371,10 @@ impl SourceFile {
     /// The lines rejoined with `\n` (CRLF already normalized).
     pub(super) fn text(&self) -> &str {
         self.text.get_or_init(|| self.lines.join("\n"))
+    }
+
+    fn dart_tokens(&self) -> &[dart_libraries::DartToken] {
+        self.dart_tokens.get_or_init(|| dart_libraries::tokens(self.text()))
     }
 
     /// Indices of the lines containing `needle`, ascending — one SIMD pass
@@ -532,6 +538,9 @@ mod kotlin_type_scope;
 mod php_scope;
 mod lang_scope;
 mod dart_fields;
+mod dart_libraries;
+mod dart_local;
+mod dart_calls;
 mod lua_alias;
 mod member_scope;
 mod vbnet;
@@ -620,6 +629,8 @@ pub struct KernelResolver {
     /// dartSupertypesOf, by type name.
     vb: vbnet::VbMemo,
     js_objects: js_objects_upstream::JsObjects,
+    dart_libraries: dart_libraries::DartLibraries,
+    dart_locals: dart_local::DartLocals,
     dart_supers_memo: HashMap<String, Rc<Vec<String>>>,
     dart_lineage_memo: HashMap<String, Rc<HashMap<String, u32>>>,
     dart_getter_memo: HashMap<String, bool>,
@@ -826,6 +837,8 @@ impl KernelResolver {
             php_supers_memo: HashMap::new(),
             vb: vbnet::VbMemo::default(),
             js_objects: Default::default(),
+            dart_libraries: Default::default(),
+            dart_locals: Default::default(),
             dart_supers_memo: HashMap::new(),
             dart_lineage_memo: HashMap::new(),
             dart_getter_memo: HashMap::new(),

@@ -31,12 +31,12 @@ it('migrates existing unresolved rows without changing their retry state', () =>
 it('persists reasons by call site, exposes them, and clears a stale reason on a new outcome', () => {
   const { queries } = setup();
   const refs = queries.getUnresolvedReferences();
-  queries.markReferencesFailedByRowIds([{ rowId: refs[0]!.rowId!, referenceName: 'unknown.run', failureReason: 'unknown-receiver' }]);
+  queries.markReferencesFailedByRowIds([{ rowId: refs[0]!.rowId!, referenceName: 'unknown.run', referenceKind: 'calls', failureReason: 'unknown-receiver' }]);
   expect(queries.getUnresolvedReferencesCount()).toBe(1);
   expect(queries.getUnresolvedReferencesInFile('app.ts').map(r => r.failureReason)).toEqual(['unknown-receiver', undefined]);
   const retry = queries.getRetryableFailedReferences(['run']);
   expect(retry).toHaveLength(1);
-  queries.markReferencesFailedByRowIds([{ rowId: retry[0]!.rowId!, referenceName: 'unknown.run' }]);
+  queries.markReferencesFailedByRowIds([{ rowId: retry[0]!.rowId!, referenceName: 'unknown.run', referenceKind: 'calls' }]);
   expect(queries.getRetryableFailedReferences(['run'])[0]!.failureReason).toBeUndefined();
 });
 it.each(['sync', 'yielding', 'batched'] as const)('records unknown receivers even without a same-named project method (%s)', async mode => {

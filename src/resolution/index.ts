@@ -1091,13 +1091,13 @@ export class ReferenceResolver {
    * ref's line), so a sibling must not inherit this row's failure (#1269).
    */
   private static partitionFailedCleanup(unresolved: UnresolvedRef[]): {
-    byRowId: Array<{ rowId: number; referenceName: string; failureReason?: UnresolvedRef['failureReason'] }>;
+    byRowId: Array<{ rowId: number; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }>;
     legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }>;
   } {
-    const byRowId: Array<{ rowId: number; referenceName: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
+    const byRowId: Array<{ rowId: number; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
     const legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; failureReason?: UnresolvedRef['failureReason'] }> = [];
     for (const r of unresolved) {
-      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName, failureReason: r.failureReason });
+      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName, referenceKind: r.referenceKind, failureReason: r.failureReason });
       else legacyKeys.push({
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,

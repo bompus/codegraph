@@ -33,6 +33,7 @@ import {
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
 import { QueryBuilder, type NodeSpan } from './db/queries';
+import { importPathKeys } from './db/reference-tail';
 import {
   isInitialized,
   createDirectory,
@@ -1061,6 +1062,14 @@ export class CodeGraph {
             const retryable = this.queries.getRetryableFailedReferences(
               this.queries.getNodeNamesByFiles(result.changedFilePaths)
             );
+            const retryRows = new Set(retryable.map(ref => ref.rowId));
+            const importRetry = this.queries.getRetryableFailedImports(
+              (result.addedFilePaths ?? []).flatMap(importPathKeys),
+              this.queries.getNodeNamesByFiles(result.changedFilePaths, ['namespace', 'module'])
+            );
+            for (const ref of importRetry) {
+              if (!retryRows.has(ref.rowId)) { retryable.push(ref); retryRows.add(ref.rowId); }
+            }
             if (retryable.length > 0) {
               options.onProgress?.({
                 phase: 'resolving',

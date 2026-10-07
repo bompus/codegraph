@@ -22,6 +22,8 @@ codegraph sync            # incremental — only changed files
 
 `sync` is fast because it only reparses what changed — it's what the file watcher runs for you on every edit (see [Stay fresh automatically](#stay-fresh-automatically)). You rarely need to run it by hand.
 
+When a file named by an unresolved import appears later, incremental sync retries that import without selecting unrelated namesakes.
+
 ## Stay fresh automatically
 
 **You don't need to run `codegraph sync` by hand during an agent session.** When your agent (Claude Code, Cursor, Codex, opencode, Hermes, Gemini, Antigravity, Kiro) launches `codegraph serve --mcp`, three layers cooperate to keep the index in step with your code — and to never give the agent a quiet wrong answer in the small window between an edit and the next sync.

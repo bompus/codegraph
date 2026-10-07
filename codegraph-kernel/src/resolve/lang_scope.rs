@@ -374,6 +374,24 @@ impl KernelResolver {
         }
     }
 
+    pub(super) fn dart_bare_member_visible(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if !is_bare_call_of(r, "dart") || !self.is_receiver_less_dart_call(r)
+            || !n.qualified_name.contains("::") { return Ok(true); }
+        Ok(self.dart_member_depth(n, r)? != DART_UNREACHED)
+    }
+
+    pub(super) fn dart_unnamed_extension(&mut self, n: &KNode) -> bool {
+        if n.language != "dart" || n.kind != "class" { return false; }
+        self.read_file(&n.file_path).is_some_and(|lines| {
+            let text = lines.iter().skip((n.start_line - 1).max(0) as usize)
+                .take((n.end_line - n.start_line + 1).clamp(1, 6) as usize)
+                .cloned().collect::<Vec<_>>().join("\n");
+            let text = re!(r"/\*(?s:.)*?\*/|//[^\n]*").replace_all(&text, " ");
+            let head = text.split(['{', ';']).next().unwrap_or("");
+            re!(r"\bextension\s*(?:<[^>]*>\s*)?on\b").is_match(head)
+        })
+    }
+
     /// dartMemberDepth: supertype steps from the class a call is written in
     /// to `method`'s owner; an extension `on` a type of that hierarchy ranks
     /// after every real member; DART_UNREACHED outside the hierarchy.
@@ -784,7 +802,7 @@ pub(super) fn is_dart_member_read(r: &ResolveRefIn) -> bool {
 }
 
 impl KernelResolver {
-    fn dart_lineage(&mut self, type_name: &str) -> Res<Rc<HashMap<String, u32>>> {
+    pub(super) fn dart_lineage(&mut self, type_name: &str) -> Res<Rc<HashMap<String, u32>>> {
         if let Some(hit) = self.dart_lineage_memo.get(type_name) { return Ok(hit.clone()); }
         let mut queue = VecDeque::from([(type_name.to_string(), 0u32)]);
         let mut depths = HashMap::new();
@@ -830,7 +848,7 @@ impl KernelResolver {
         Ok(found)
     }
 
-    fn is_dart_getter(&mut self, n: &KNode) -> bool {
+    pub(super) fn is_dart_getter(&mut self, n: &KNode) -> bool {
         if n.language != "dart" || n.kind != "method" { return false; }
         if let Some(hit) = self.dart_getter_memo.get(&n.id) { return *hit; }
         let getter = self.read_file(&n.file_path).is_some_and(|lines| {
@@ -847,6 +865,12 @@ impl KernelResolver {
     /// Returns the member and whether an extension supplies it.
     pub(super) fn dart_member_of(&mut self, type_name: &str, name: &str,
         r: &ResolveRefIn, getters_only: bool) -> Res<Option<(Arc<KNode>, bool)>> {
+        self.dart_member_of_in_library(type_name, name, r, getters_only, None)
+    }
+
+    /// Keep an inferred type tied to its declaring library while looking up members.
+    pub(super) fn dart_member_of_in_library(&mut self, type_name: &str, name: &str,
+        r: &ResolveRefIn, getters_only: bool, library: Option<&str>) -> Res<Option<(Arc<KNode>, bool)>> {
         let lineage = self.dart_lineage(type_name)?;
         let candidates: Vec<_> = self.nodes_by_name(name)?.iter().cloned().collect();
         let mut best: Option<(Arc<KNode>, u32)> = None;
@@ -854,12 +878,18 @@ impl KernelResolver {
             if n.language != "dart" || !is_dart_member(&n)
                 || (getters_only && !self.is_dart_getter(&n)) { continue; }
             let rank = if let Some((on, named)) = self.dart_extension_owner(&n)? {
-                if !named && n.file_path != r.file_path { continue; }
+                if !named && !self.dart_same_library(&r.file_path, &n.file_path) { continue; }
                 let Some(depth) = on.iter().filter_map(|t| lineage.get(t)).min() else { continue };
                 DART_EXTENSION_RANK + *depth
             } else {
                 let owner = n.qualified_name.rsplit_once("::").map(|(o, _)| o.rsplit("::").next().unwrap_or(o)).unwrap_or("");
                 let Some(depth) = lineage.get(owner) else { continue };
+                if let Some(library) = library {
+                    if (*depth == 0 && !self.dart_same_library(library, &n.file_path))
+                        || (*depth != 0 && !self.dart_visible(library, &n.file_path, owner, "")) {
+                        continue;
+                    }
+                }
                 *depth
             };
             let replace = best.as_ref().is_none_or(|(old, old_rank)| {
