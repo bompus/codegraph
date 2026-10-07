@@ -12,7 +12,7 @@ void afterImport() {}
 void trailing() {}
 
 @override
-// ignore: must_call_super
+// ignore: must_call_super // Parser fixture for annotation/comment scanning; no analyzer runs.
 void lineBelow() {}
 
 @x
@@ -64,7 +64,7 @@ void afterBody() {}
 
 class C {
   @override
-  // ignore: must_call_super
+  // ignore: must_call_super // Parser fixture for annotation/comment scanning; no analyzer runs.
   void method() {}
 
   @x /* inline */ void inline() {}
@@ -129,7 +129,7 @@ class C {
 }
 
 @immutable
-// ignore: something
+// ignore: something // Parser fixture for annotation/comment scanning; no analyzer runs.
 class D {}
 
 @internal

@@ -103,12 +103,12 @@ class C {
   )
   void multi() {}
 
-  @override // ignore: must_call_super
+  @override // ignore: must_call_super // Parser fixture for annotation/comment scanning; no analyzer runs.
   void trailingComment() {}
 
   /// Doc above, ignore below.
   @override
-  // ignore: invalid_use_of_protected_member
+  // ignore: invalid_use_of_protected_member // Parser fixture for annotation/comment scanning; no analyzer runs.
   void ignoreBelow() {}
 
   @x
@@ -138,7 +138,7 @@ class C {
 
 /// Class doc above a comment.
 @immutable
-// ignore: something
+// ignore: something // Parser fixture for annotation/comment scanning; no analyzer runs.
 class D {}
 
 @immutable

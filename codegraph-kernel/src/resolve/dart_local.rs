@@ -114,7 +114,7 @@ fn statement_end(
         if !t[i].string && (matches!(text, ";" | ")" | "]" | "}") || expression && text == ",") {
             return t[i].start;
         }
-        if matches!(text, "(" | "[" | "{") {
+        if !t[i].string && matches!(text, "(" | "[" | "{") {
             if let Some(end) = pairs[i] {
                 i = end + 1;
                 continue;

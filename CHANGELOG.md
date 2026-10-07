@@ -102,7 +102,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Python closures no longer link calls or method values to a captured receiver type when later replacement makes that type uncertain.
 - Python receiver calls no longer link to a stale type after same-line replacement when statement order cannot establish a reliable type.
 
-- JavaScript and TypeScript store actions exported on a later line remain indexed with LF, CRLF or CR line endings.
+- JavaScript and TypeScript store actions exported on a later line remain indexed with LF, CRLF or CR line endings. Re-index JavaScript and TypeScript projects after upgrading.
 
 - Incremental Go sync invalidates nearest-module caches after a module is renamed, removed or added.
 - JavaScript loop-local object paths stay local, and scoped destructured member calls resolve across source lines while preserving their declaration-site source binding in scripts and single-file components.
@@ -367,13 +367,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - In JavaScript and TypeScript, the functions written inside a named object literal are now symbols of their own even when the object isn't exported: a plain `const api = { load() {…} }`, an object declared inside an IIFE or a function, and a namespace hung on the page or on another object, like `window.App = { init() {…} }`, `App.utils = {…}` or `dw_page = {…}`. Calls such as `api.load()`, `window.App.init()`, `App.utils.pad()`, a sibling's `this.render()`, and `App.init()` from another script on the page now reach them, the calls made inside a member belong to that member instead of the object, and a bare `init()` is no longer taken for `App.init`, so script-tag apps no longer lose most of their code from `callers` and impact. A member's qualified name now carries its object, exported or not (`api::load`, `window.App::init`), so asking for `App.init` finds it. Re-index JavaScript and TypeScript projects after upgrading. Thanks @tkhoaaa for the report and @danusha2345. (#2300)
 
-- In VB.NET, a type name is looked up the way VB.NET does it — through the namespaces around it, the file's and project's `Imports` (aliases included), and the caller's own project — so a class declared in several namespaces or projects no longer draws every call to whichever copy was indexed first, and two candidates nothing tells apart get no link at all.
-
 - Indexing large Python projects is much faster again and needs less memory: since 1.6.2, resolving Python references re-read source files over and over, so a project the size of CPython took several times as long to index. The graph it builds is unchanged. Thanks @bompus for the report. (#2332)
 
 - Indexing a project that includes large bundled JavaScript files, such as a copy of pdf.js or d3, is fast again: since 1.6.2, resolving the calls in a JavaScript or TypeScript file re-read the file's text above each call, so a single bundled library could add many seconds to an index. The graph it builds is unchanged. Thanks @bompus for the report. (#2334)
-
-- In JavaScript and TypeScript files with Windows (CRLF) line endings, as a Windows checkout usually has them, a store exported on a later line, like `const useStore = create(…)` followed by `export default useStore;`, now has its actions indexed, as it already did with Unix line endings. Before, those actions were missing from the graph on Windows, so their callers and impact came back empty. Re-index JavaScript and TypeScript projects after upgrading.
 
 - In VB.NET, a name that begins with a keyword, like `SharedCache`, `Dimension`, `PublicKey` or `FriendlyName`, is now indexed whole, and a method like `Sub NewItem()` is no longer taken for a constructor. Before, the keyword was cut off (`Cache`, `ension`, `Key`) or the declaration was lost, and a line in a method that starts with such a name, like `Constants.Reload()` or `ConstVBV.Value = False`, was misread as a declaration, so reads of and calls to these names didn't link. A `Private Protected` member now counts as private instead of public. Re-index VB.NET projects after upgrading.
 

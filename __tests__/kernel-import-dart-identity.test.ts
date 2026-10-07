@@ -35,6 +35,21 @@ it('parks matching missing includes in both files, then retries both when the he
 
 const cases = [
   {
+    name: 'an arrow body string opener does not extend parameter scope',
+    files: { 'lib/main.dart': "void text() {}\nString wrap(String text) => '(' + text + ')';\nvoid run() { text(); }\n" },
+    from: 'run', kind: 'calls', target: 'text', targetFile: 'lib/main.dart',
+  },
+  {
+    name: 'a loop body string opener does not extend loop-local scope',
+    files: { 'lib/main.dart': "void item() {}\nvoid run(List<String> items) { for (final item in items) print('['); item(); }\n" },
+    from: 'run', kind: 'calls', target: 'item', targetFile: 'lib/main.dart',
+  },
+  {
+    name: 'an initializer string opener does not extend constructor parameter scope',
+    files: { 'lib/main.dart': "void text() {}\nclass Box { final String value; Box(String text): value = '{' + text + '}'; }\nvoid run() { text(); }\n" },
+    from: 'run', kind: 'calls', target: 'text', targetFile: 'lib/main.dart',
+  },
+  {
     name: 'a multiline imported receiver resolves on its own source line',
     files: {
       'lib/main.dart': "import 'helper.dart' as kit;\nvoid run() { /* 🦊 */ kit\n  .helper(); }\n",
