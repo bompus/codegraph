@@ -342,6 +342,7 @@ pub(super) struct SourceFile {
     java_static_imports: OnceCell<name_scope::JavaStaticImports>,
     php_file_scope: OnceCell<php_scope::PhpFileScope>,
     rust_code_lines: OnceCell<Vec<String>>,
+    cpp_code_lines: OnceCell<Vec<String>>,
     python_file: OnceCell<bound::PyFile>,
     python_field_file: OnceCell<bound::PyFile>,
     cpp_field_tree: OnceCell<Option<Rc<tree_sitter::Tree>>>,
@@ -360,6 +361,7 @@ impl SourceFile {
             java_static_imports: OnceCell::new(),
             php_file_scope: OnceCell::new(),
             rust_code_lines: OnceCell::new(),
+            cpp_code_lines: OnceCell::new(),
             python_file: OnceCell::new(),
             python_field_file: OnceCell::new(),
             cpp_field_tree: OnceCell::new(),
@@ -412,6 +414,11 @@ impl SourceFile {
     pub(super) fn rust_code_lines(&self) -> &Vec<String> {
         self.rust_code_lines
             .get_or_init(|| fields::mask_rust_code(self.text()).split('\n').map(str::to_string).collect())
+    }
+
+    /// C++ lines with raw literals and comments masked, shared by receiver lookups.
+    pub(super) fn cpp_code_lines(&self) -> &[String] {
+        self.cpp_code_lines.get_or_init(|| awaited::strip_ts_comments(&cpp::mask_cpp_raw_strings(self.text())).split('\n').map(str::to_string).collect())
     }
 
     /// The file's Python statements and the scopes they run in
@@ -1247,6 +1254,21 @@ impl Drop for KernelResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpp_receiver_lines_exclude_raw_string_declarations() {
+        for prefix in ["R", "u8R", "uR", "UR", "LR"] {
+            for delimiter in ["", "payload"] {
+                let text = format!("Slice *ptr;\nauto text = {prefix}\"{delimiter}(\nWidget *ptr;\n){delimiter}\";\nptr->size();");
+                let source = SourceFile::new(text.lines().map(str::to_string).collect());
+                let code = source.cpp_code_lines();
+                assert_eq!(code.len(), 5);
+                assert_eq!(code[0], "Slice *ptr;");
+                assert!(!code[2].contains("Widget"), "raw literal leaked into declarations: {prefix}/{delimiter}");
+                assert_eq!(code[4], "ptr->size();");
+            }
+        }
+    }
 
     #[test]
     fn utf16_len_counts_units_from_bytes() {

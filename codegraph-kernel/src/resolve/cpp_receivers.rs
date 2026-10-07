@@ -3,6 +3,76 @@ use super::*;
 use super::iteration::{descendant_for_position, named_children};
 
 impl KernelResolver {
+    /// Plain receivers use lexical AST declarations before any backward text scan.
+    pub(super) fn cpp_plain_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        if r.language != "cpp" || r.reference_kind != "calls" { return Ok(None); }
+        let method = r.reference_name.rsplit(['.', '>']).next().unwrap_or(&r.reference_name);
+        if !re!(r"^[A-Za-z_]\w*$").is_match(method) { return Ok(None); }
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
+        let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        while at.kind() != "call_expression" {
+            let Some(parent) = at.parent() else { return Ok(None) }; at = parent;
+        }
+        let Some(function) = at.child_by_field_name("function").filter(|n| n.kind() == "field_expression") else { return Ok(None) };
+        let Some(field) = function.child_by_field_name("field") else { return Ok(None) };
+        if &source.text()[field.start_byte()..field.end_byte()] != method { return Ok(None); }
+        let Some(argument) = function.child_by_field_name("argument") else { return Ok(None) };
+        let operator = super::awaited::strip_ts_comments(&source.text()[argument.end_byte()..field.start_byte()]);
+        let mut receiver = argument;
+        while receiver.kind() == "parenthesized_expression" {
+            let children = named_children(receiver);
+            let [only] = children.as_slice() else { return Ok(None) }; receiver = *only;
+        }
+        if receiver.kind() != "identifier" { return Ok(None); }
+        let name = &source.text()[receiver.start_byte()..receiver.end_byte()];
+        let mut raw = None;
+        let mut scope = receiver;
+        while let Some(parent) = scope.parent() {
+            if let Some(ty) = cpp_binding_type(parent, scope, name, &source) { raw = Some(ty); break; }
+            if parent.kind() == "for_range_loop" && parent.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_name(n, &source) == name) {
+                raw = parent.child_by_field_name("type").zip(parent.child_by_field_name("declarator")).map(|(ty, declarator)| cpp_ast_declared_type(ty, declarator, &source));
+                break;
+            }
+            scope = parent;
+        }
+        if raw.is_none() {
+            if let Some(caller) = self.node_by_id(&r.from_node_id)? {
+                if let Some((owner_name, _)) = caller.qualified_name.rsplit_once("::") {
+                    let visible = self.namespace_visible_files(&r.file_path, "cpp")?;
+                    let owners = self.nodes_by_qualified_name(owner_name)?;
+                    let owners: Vec<_> = owners.iter().filter(|n| matches!(n.kind.as_str(), "class" | "struct" | "union") && visible.contains(&n.file_path)).collect();
+                    if let [owner] = owners.as_slice() { raw = self.cpp_field_type(owner, name, r)?; }
+                }
+            }
+        }
+        let Some(raw) = raw else { return Ok(None) };
+        if raw.trim_end_matches('&').trim() == "auto" { return Ok(None); }
+        if raw.contains('[') { return Ok(Some(None)); }
+        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
+        if self.cpp_alias_expansion(&raw, r, 0, &included)?.is_some_and(|alias| alias.pointer || (operator.trim() == "->" && alias.raw.as_deref().is_some_and(|ty| ty.ends_with("::iterator") || ty.ends_with("::const_iterator")))) { return Ok(None); }
+        let mut depth = 0usize;
+        let mut pointers = 0usize;
+        for ch in raw.chars() {
+            match ch { '<' => depth += 1, '>' => depth = depth.saturating_sub(1), '*' if depth == 0 => pointers += 1, _ => () }
+        }
+        let ty = match operator.trim() {
+            "." if pointers == 0 => raw.trim_end_matches('&').trim().to_string(),
+            "->" if pointers == 1 && !raw.contains('<') => raw.replace(['*', '&'], "").trim().to_string(),
+            "->" if pointers == 0 => {
+                let Some(hit) = re!(r"^std::(?:unique_ptr|shared_ptr)\s*<\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*>\s*&?$").captures(&raw) else { return Ok(Some(None)) };
+                hit[1].to_string()
+            }
+            _ => return Ok(Some(None)),
+        };
+        let primary = ty.split('<').next().unwrap_or(&ty).trim();
+        if let Some(caller) = self.node_by_id(&r.from_node_id)? { if self.cpp_template_parameter(&caller, primary, r)? { return Ok(Some(None)); } }
+        if self.cpp_alias_expansion(primary, r, 0, &included)?.is_some_and(|alias| alias.pointer) { return Ok(None); }
+        let Some(owner) = self.cpp_type_owner(primary, r, 0, false)? else { return Ok(None) };
+        // Preserve the existing guarded alias and specialization fallback on a miss.
+        Ok(self.match_bound_type_member(&owner.qualified_name, method, r)?.map(Some))
+    }
+
     pub(super) fn cpp_complex_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
         if r.language != "cpp" || r.reference_kind != "calls" || !re!(r"^[A-Za-z_]\w*$").is_match(&r.reference_name) { return Ok(None); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
@@ -125,6 +195,15 @@ impl KernelResolver {
     }
 
     fn cpp_field_owner(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let Some(ty) = self.cpp_field_type(owner, field, r)? else { return Ok(None) };
+        let primary = ty.split('<').next().unwrap_or(&ty).trim();
+        let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
+        if self.cpp_template_parameter(owner, primary, &site)? { return Ok(None); }
+        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
+        self.cpp_type_owner_visible(primary, &site, 0, false, &included)
+    }
+
+    fn cpp_field_type(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Option<String>> {
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
         let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
         let Some(tree) = self.cpp_field_tree(&source, &site) else { return Ok(None) };
@@ -142,15 +221,11 @@ impl KernelResolver {
             let mut cursor = declaration.walk();
             for (index, child) in declaration.children(&mut cursor).enumerate() {
                 if declaration.field_name_for_child(index as u32) == Some("declarator") && cpp_declarator_name(child, &source) == field {
-                    types.push(source.text()[ty.start_byte()..ty.end_byte()].to_string());
+                    types.push(cpp_ast_declared_type(ty, child, &source));
                 }
             }
         }
-        let [ty] = types.as_slice() else { return Ok(None) };
-        let primary = ty.split('<').next().unwrap_or(ty).trim();
-        if self.cpp_template_parameter(owner, primary, &site)? { return Ok(None); }
-        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
-        self.cpp_type_owner_visible(primary, &site, 0, false, &included)
+        Ok(match types.as_slice() { [only] => Some(only.clone()), _ => None })
     }
 
     fn cpp_range_binding(&self, node: tree_sitter::Node, source: &SourceFile) -> bool {
@@ -196,20 +271,76 @@ fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a SourceFile) 
 fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str, source: &SourceFile) -> Option<String> {
     if parent.kind() == "compound_statement" {
         for declaration in named_children(parent).into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
+            // C++ parses a parenthesized initializer as a function declarator.
+            // Recognize only a standard smart pointer initialized from a known pointer value.
+            if let Some(declarator) = declaration.child_by_field_name("declarator").filter(|n| n.kind() == "function_declarator") {
+                if declarator.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_name(n, source) == name) {
+                    let ty = declaration.child_by_field_name("type")?;
+                    let raw = &source.text()[ty.start_byte()..ty.end_byte()];
+                    if re!(r"^std::(?:unique_ptr|shared_ptr)\s*<\s*[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*\s*>$").is_match(raw) {
+                        let parameters = declarator.child_by_field_name("parameters").map(named_children).unwrap_or_default();
+                        if let [parameter] = parameters.as_slice() {
+                            if parameter.child_by_field_name("declarator").is_none() {
+                                if let Some(argument) = parameter.child_by_field_name("type").filter(|n| n.kind() == "type_identifier") {
+                                    let argument = &source.text()[argument.start_byte()..argument.end_byte()];
+                                    let mut child = declaration;
+                                    while let Some(scope) = child.parent() {
+                                        if let Some(bound) = cpp_binding_type(scope, child, argument, source) {
+                                            if bound.ends_with('*') && !bound.contains('[') { return Some(raw.to_string()); }
+                                            break;
+                                        }
+                                        child = scope;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // This declaration shadows the receiver even when its type is unproven.
+                    return Some(String::new());
+                }
+            }
             let mut cursor = declaration.walk();
-            if declaration.children(&mut cursor).enumerate().any(|(i, child)| declaration.field_name_for_child(i as u32) == Some("declarator") && cpp_declarator_name(child, source) == name) {
-                return Some(declaration.child_by_field_name("type").map(|ty| source.text()[ty.start_byte()..ty.end_byte()].to_string()).unwrap_or_default());
+            if declaration.children(&mut cursor).enumerate().any(|(i, child)| declaration.field_name_for_child(i as u32) == Some("declarator") && cpp_declarator_binds(child, name, source)) {
+                let declarator = named_children(declaration).into_iter().find(|n| cpp_declarator_binds(*n, name, source))?;
+                return Some(declaration.child_by_field_name("type").map(|ty| cpp_ast_declared_type(ty, declarator, source)).unwrap_or_default());
             }
         }
     }
     if matches!(parent.kind(), "lambda_expression" | "function_definition") {
         let mut queue = named_children(parent).into_iter().filter(|n| n.kind() != "compound_statement").collect::<Vec<_>>();
         while let Some(parameter) = queue.pop() {
-            if parameter.kind() == "parameter_declaration" && parameter.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_name(n, source) == name) {
-                return Some(parameter.child_by_field_name("type").map(|ty| source.text()[ty.start_byte()..ty.end_byte()].to_string()).unwrap_or_default());
+            if parameter.kind() == "parameter_declaration" && parameter.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_binds(n, name, source)) {
+                let declarator = parameter.child_by_field_name("declarator")?;
+                return Some(parameter.child_by_field_name("type").map(|ty| cpp_ast_declared_type(ty, declarator, source)).unwrap_or_default());
             }
             if parameter.kind() != "compound_statement" { queue.extend(named_children(parameter)); }
         }
     }
     None
+}
+
+fn cpp_ast_declared_type(ty: tree_sitter::Node, mut declarator: tree_sitter::Node, source: &SourceFile) -> String {
+    let mut raw = source.text()[ty.start_byte()..ty.end_byte()].to_string();
+    loop {
+        match declarator.kind() {
+            "pointer_declarator" => raw.push('*'),
+            "reference_declarator" => raw.push('&'),
+            "array_declarator" | "structured_binding_declarator" => raw.push_str("[]"),
+            _ => (),
+        }
+        let inner = declarator.child_by_field_name("declarator").or_else(|| (declarator.kind() == "reference_declarator").then(|| declarator.named_child(0)).flatten());
+        let Some(inner) = inner else { break }; declarator = inner;
+    }
+    raw
+}
+
+fn cpp_declarator_binds(node: tree_sitter::Node, name: &str, source: &SourceFile) -> bool {
+    if cpp_declarator_name(node, source) == name { return true; }
+    if matches!(node.kind(), "init_declarator" | "reference_declarator" | "pointer_declarator" | "parenthesized_declarator") {
+        return node.child_by_field_name("declarator").or_else(|| node.named_child(0)).is_some_and(|n| cpp_declarator_binds(n, name, source));
+    }
+    if node.kind() == "structured_binding_declarator" {
+        return named_children(node).iter().any(|n| &source.text()[n.start_byte()..n.end_byte()] == name);
+    }
+    false
 }

@@ -1,6 +1,6 @@
 # Framework & language coverage — what is done, what is left
 
-**Last verified: 2026-08-29** (Angular row: 2026-10-06) against the build at that date. Re-verify with the
+**Last verified: 2026-08-29** (Angular row: 2026-10-06; React Router row: 2026-10-07) against the build at that date. Re-verify with the
 queries in [Checking this file is still true](#checking-this-file-is-still-true)
 before trusting a row; this is a snapshot, not a live view.
 
@@ -38,7 +38,7 @@ arms disagree unresolved rather than guessed.
 |---|---|---|---|---|
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts`, `monorepo-app-frameworks.test.ts`, `monorepo-app-frameworks-sync.test.ts` | upstream: evanbacon.dev (`+api` endpoints), react-native-true-sheet (nearest manifest decides the app) |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
-| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations |
+| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; upstream route-table and JSX index/layout regressions cover imported route tables, nested layouts and index pages; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` (Nuxt file routes: `nuxtResolver` in `frameworks/vue.ts`) | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges); vue-element-admin (62 routes), vue-admin-template (14), vben (192), halo console (34) — named tables, module files, `children` + layouts; Nuxt: mealie, elk, nuxt/movies |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts`, `sveltekit-route-names.test.ts` | sveltekit-realworld (31 edges); shadcn-svelte and skeleton (`(group)` layouts: 13 and 23 edges), svelte.dev (74), kit's test apps (47) |
@@ -395,6 +395,70 @@ Each of these cost real debugging time; they are not hypothetical.
    template-bound handler there was listed as dead code. A new detector that
    gates on a dependency should ask `dependsOn`, not read a `package.json`
    itself, so it sees the same manifests every other detector does.
+13. **A route table can be named only by another file.** The ASP.NET Core
+   React template keeps its routes in `AppRoutes.js`, a file that never names
+   the router, and renders them from `App.js` with `AppRoutes.map(({ element,
+   ...rest }) => <Route {...rest} element={element} />)`; codedthemes' admin
+   kits put one route object per file and list them in
+   `createBrowserRouter([MainRoutes, LoginRoutes])`. Read on its own, such a
+   file cannot be told from a menu's `{ path, element }` list, and per-file
+   extraction cannot see the file that hands it over, nor run again when that
+   file changes. So React keeps those routes in the cross-file pass
+   (`FrameworkResolver.crossFileNodes`, reconciled in `runPostExtract` on every
+   index and sync, removals included): it starts from the files that import
+   React Router, takes only a `useRoutes` / `create*Router` argument or a
+   `.map` whose callback renders a `<Route>` from the item's own fields
+   (`{...route}`, `{...rest}`, `path={route.path}` — never
+   `path={r.layout + r.path}`), follows the import to the table and the tables
+   it names in turn, and owns its routes by id (`…:table:<path>`). One limit
+   it shares with every router: a table rendered by a component that is
+   itself mounted under another file's `<Route path="/admin/*">` reads as if
+   at the root. A sync that changes such a route resolves the calls it can
+   answer again (16), as for any other route.
+14. **An index route is at its parent's address, so it needs that address
+   written down.** `<Route index element={<Home />} />` inside `<Route
+   path="/" element={<Layout />}>` is the page at `/`, and Layout is the
+   layout of every route nested in it (trap 2: emitting Layout as a second
+   `/` page drew the app's chrome as the home screen and its header's links
+   from `/` alone). A `<Route path>` with no element only groups its children
+   and yields its address the same way. But a `<Routes>` inside a component
+   is mounted wherever another file's `<Route path="shop/*" element={<Shop
+   />}>` puts it: read as `/`, crwn-clothing's `Shop` index made a second
+   home page. So an index route at the top of a `<Routes>` is read only
+   inside the router itself (`createRoutesFromElements(…)`, `<BrowserRouter>`),
+   and one under a path the file does not spell out (`path={paths.agents}`)
+   not at all; `path={"agents"}` is spelled out. Reading what an element
+   renders has three traps of its own: skip elements written in an attribute
+   unless the attribute hands over a page (`component`, `element`, `page`) —
+   `<Suspense fallback={<Loader />}>` bound fifteen routes of one app to the
+   spinner; trim the line break Prettier writes after `element={`, which hid
+   every long element; and read `<Outlet />` as rendering nothing of its own.
+   Version 5's `<Route path="" component={NotFound} />` is a catch-all, not
+   the page at its parent's address. A table written in another file and
+   mapped inside a `<Route element>` gets no layout edge: the layout's name
+   would be looked up in the table's file, and the cross-file pass compares
+   only route names, so a changed layout would never reach the table's routes.
+15. **`resolve()` sees only references written in the framework's own
+   languages** (`getResolvingFrameworks`): Express's `logger` middleware rule
+   once took etcd's Go `*zap.Logger` result types for a method. A navigation
+   written in markup (`.svelte`, `.vue`) needs that language in `languages`.
+   A resolver that reads a language it extracts nothing from lists it in
+   `resolveLanguages` instead — Svelte's `$lib/…` imports in `.ts` route
+   modules, ASP.NET's Razor `@model` — because widening `languages` also runs
+   `extract()` on those files. `claimsReference()` is still asked of every
+   detected framework.
+16. **A navigation call waits for a route, not for a name.** A call indexed
+   before its route existed is parked as failed (or bound to a catch-all, a
+   parameter route, the other arm of a conditional), and sync revisits a
+   failed reference only by matching its last name segment against the names
+   the synced files define — never `push` or `navigate`. Set the resolver's
+   `navigation`: `tails`, the method names its calls end in, and `scope`, the
+   apps whose calls one of its routes can answer (its own app's table, or every
+   file for a table the whole project shares). A sync that adds, removes or
+   renames a route — a cross-file table route included — then resolves those
+   calls again, failed or not; without it the synced index keeps an answer a
+   full index does not have. `sync-navigation-retry.test.ts` runs all seven
+   routers through it, and asserts each router's calls end in a declared tail.
 
 ---
 

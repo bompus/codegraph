@@ -637,6 +637,8 @@ impl KernelResolver {
     /// terminator. The JS lookahead `(?=[;=,)\[{(]|$)` is post-checked on the
     /// remainder: the greedy `\s*` tail can't shrink into a passing position.
     pub(super) fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Res<Option<String>> {
+        let code = super::awaited::strip_ts_comments(line);
+        let line = code.as_str();
         let re = shared_regex(&format!(
             r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*(?-u:\b){}(?-u:\b)\s*",
             escaped_receiver

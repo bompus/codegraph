@@ -12,11 +12,14 @@ impl<'t> Walker<'t> {
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
             visibility: self.visibility_of(node),
+            end: self.brace_body_end(body),
             ..Extra::default()
         };
         let Some(row) = self.create_node("class", &name, node, extra) else { return };
         self.extract_inheritance(node, row);
-        self.stack.push(Scope { row, kind: "class", name });
+        let scope = Scope { row, kind: "class", name };
+        self.open_class_scope(&scope, body);
+        self.stack.push(scope);
         for c in named_kids(body) {
             self.visit_node(c);
         }
@@ -31,11 +34,14 @@ impl<'t> Walker<'t> {
         let extra = Extra {
             docstring: preceding_docstring(node, self.src),
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
+            end: self.brace_body_end(body),
             ..Extra::default()
         };
         let Some(row) = self.create_node(kind, &name, node, extra) else { return };
         self.extract_inheritance(node, row);
-        self.stack.push(Scope { row, kind, name });
+        let scope = Scope { row, kind, name };
+        self.open_class_scope(&scope, body);
+        self.stack.push(scope);
         for c in named_kids(body) {
             self.visit_node(c);
         }

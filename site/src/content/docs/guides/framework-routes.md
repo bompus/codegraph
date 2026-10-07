@@ -91,3 +91,7 @@ Express treats the last registration argument as the handler, excluding a traili
 Axum and Actix handler links use the handler argument position, including multiline and nested registrations. Actix scope prefixes remain part of the route path.
 
 Angular template calls in property bindings, interpolations, structural directives and control-flow blocks link the component member they invoke. A method passed to a child, such as `[displayWith]="displayFn"`, links as a function reference. Template locals hide same-named component members; inherited component members remain unsupported. Framework detection reads the root manifest and the first two directory levels. Remaining slots cover directories above JS/TS code, shallowest first, within the manifest limit.
+
+React Router also reads imported route tables from their module-level export bindings, and JSX index and layout routes. Incremental sync retries lazy module links and navigation destinations when their files or routes appear. Angular shared-library navigation is reconsidered when another app changes the sole-app fallback. Framework resolvers apply only to their supported languages, including TSX/JSX for SolidStart route targets.
+
+Cross-file route-table nodes and their references are persisted in one transaction per framework. A failed write rolls back that reconciliation, allowing the next pass to retry it.

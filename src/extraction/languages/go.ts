@@ -51,6 +51,40 @@ export function goEmbeddedTypeName(type: SyntaxNode | null | undefined, source: 
   return GO_PREDECLARED_TYPES.has(getNodeText(type, source)) ? undefined : type;
 }
 
+/**
+ * The name nodes of the types a Go alias declaration names, in source order:
+ * `Event` in `type Event = mvccpb.Event`, `List` and `Event` in `type Page =
+ * List[Event]`, each where it is written, so resolution reads a package
+ * qualifier back. The alias's own type parameters (`T` in `type Items[T any]
+ * = List[T]`) and Go's predeclared types are not types it names. A generic
+ * alias has no rule in tree-sitter-go 0.23: it parses as a `type_spec` whose
+ * `=` is an error, and reads as an alias here too. Undefined for a defined
+ * type (`type WatchChan <-chan Event`), which declares a type of its own.
+ */
+export function goAliasTypeNames(node: SyntaxNode, source: string): SyntaxNode[] | undefined {
+  const isAlias = node.type === 'type_alias' ||
+    (node.type === 'type_spec' && node.children.some((c: SyntaxNode) => c.type === 'ERROR' && getNodeText(c, source).trim() === '='));
+  const type = isAlias ? getChildByField(node, 'type') : null;
+  if (!type) return undefined;
+  const params = new Set<string>();
+  for (const decl of getChildByField(node, 'type_parameters')?.namedChildren ?? []) {
+    for (const c of decl.namedChildren) {
+      if (c.type === 'identifier') params.add(getNodeText(c, source));
+    }
+  }
+  const names: SyntaxNode[] = [];
+  const walk = (n: SyntaxNode): void => {
+    if (n.type === 'type_identifier') {
+      const text = getNodeText(n, source);
+      if (!params.has(text) && !GO_PREDECLARED_TYPES.has(text)) names.push(n);
+      return;
+    }
+    for (const c of n.namedChildren) walk(c);
+  };
+  walk(type);
+  return names;
+}
+
 export const goExtractor: LanguageExtractor = {
   functionTypes: ['function_declaration'],
   classTypes: [], // Go doesn't have classes
@@ -79,7 +113,8 @@ export const goExtractor: LanguageExtractor = {
     return sig;
   },
   resolveTypeAliasKind: (node, _source) => {
-    // Go type_spec: `type Foo struct { ... }` or `type Bar interface { ... }`
+    // Go type_spec: `type Foo struct { ... }` or `type Bar interface { ... }`,
+    // and an alias of a literal (`type Foo = struct { ... }`) alike.
     // The inner type is in the 'type' field of the type_spec node
     const typeChild = getChildByField(node, 'type');
     if (!typeChild) return undefined;

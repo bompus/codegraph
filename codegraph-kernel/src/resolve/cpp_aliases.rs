@@ -151,7 +151,8 @@ impl KernelResolver {
         }
         let mut alias = local.map(|(rhs, node)| (rhs, node, 1usize));
         if alias.is_none() {
-            let scopes: Vec<_> = if raw.trim().starts_with("::") { Vec::new() } else { caller.as_ref().map(|n| n.qualified_name.split("::").map(str::to_string).collect()).unwrap_or_default() };
+            let mut scopes: Vec<_> = if raw.trim().starts_with("::") { Vec::new() } else { caller.as_ref().map(|n| n.qualified_name.split("::").map(str::to_string).collect()).unwrap_or_default() };
+            if is_inheritance_ref(&r.reference_kind) { scopes.pop(); }
             for i in (0..=scopes.len()).rev() {
                 let scope = scopes[..i].join("::");
                 let mut found = None;
@@ -203,9 +204,8 @@ mod tests {
 
 impl KernelResolver {
     /// Only the caller's function or class proves which declaration owns a receiver.
-    pub(super) fn cpp_receiver_alias(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<CppAlias>> {
+    pub(super) fn cpp_owned_receiver_declaration(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<String>> {
         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None); };
-        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
         let mut files = vec![r.file_path.clone()];
         for ext in [".h", ".hpp", ".hxx"] {
             let header = re!(r"(?i)\.(?:c|cc|cpp|cxx)$").replace(&r.file_path, ext).to_string();
@@ -214,25 +214,56 @@ impl KernelResolver {
         let escaped_receiver = regex::escape(receiver);
         for file in files {
             let Some(source) = self.read_file(&file) else { continue; };
-            let indexes: Vec<_> = if file == r.file_path { (0..(r.line.max(0) as usize).min(source.len())).rev().collect() } else { (0..source.len()).collect() };
+            let lines = source.cpp_code_lines();
+            let indexes: Vec<_> = if file == r.file_path { (0..(r.line.max(0) as usize).min(lines.len())).rev().collect() } else { (0..lines.len()).collect() };
+            let classes = self.nodes_in_file(&file)?;
             for i in indexes {
-                let line = &source[i];
+                let line = lines[i].as_str();
                 if !has_word(line, receiver) { continue; }
-                let Some(raw) = self.cpp_declarator_match(line, &escaped_receiver)? else { continue; };
-                let at = line.find(receiver).unwrap_or(line.len());
-                if line[..at].contains("//") || re!(r"^\s*(?://|/\*|\*)").is_match(line) { return Ok(None); }
+                let Some(raw) = self.cpp_declarator_match(line, &escaped_receiver)? else {
+                    let range = shared_regex(&format!(r"\bfor\s*\(.*\b{}\s*:", escaped_receiver))?;
+                    let structured = shared_regex(&format!(r"\bauto\s*&{{0,2}}\s*\[[^\]]*\b{}\b[^\]]*\]", escaped_receiver))?;
+                    if range.find(line).is_some_and(|m| !line[m.end()..].starts_with(':')) || structured.is_match(line) { return Ok(None); }
+                    continue;
+                };
                 let own_function = file == r.file_path && i as i64 + 1 >= caller.start_line;
-                let mut own_class = false;
-                if let Some((scope, _)) = caller.qualified_name.rsplit_once("::") {
-                    own_class = self.nodes_by_qualified_name(scope)?.iter().any(|n| n.file_path == file && matches!(n.kind.as_str(), "class" | "struct" | "union") && i as i64 + 1 >= n.start_line && (i as i64) < n.end_line);
-                }
+                let own_class = caller.qualified_name.rsplit_once("::").is_some_and(|(scope, _)| {
+                    classes.iter().filter(|n| matches!(n.kind.as_str(), "class" | "struct" | "union")
+                        && i as i64 + 1 >= n.start_line && (i as i64) < n.end_line)
+                        .max_by_key(|n| (n.start_line, n.start_column))
+                        .is_some_and(|n| n.qualified_name == scope)
+                });
                 if !own_function && !own_class { return Ok(None); }
-                let mut alias = self.cpp_alias_expansion(&raw, r, 0, &included)?;
-                if let Some(alias) = &mut alias { alias.pointer |= pointer_type(&raw); alias.reference |= reference_type(&raw); }
-                return Ok(alias);
+                return Ok(Some(raw));
             }
         }
         Ok(None)
+    }
+
+    pub(super) fn cpp_receiver_alias(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<Option<CppAlias>> {
+        let Some(raw) = self.cpp_owned_receiver_declaration(receiver, r)? else { return Ok(None); };
+        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
+        let mut alias = self.cpp_alias_expansion(&raw, r, 0, &included)?;
+        if let Some(alias) = &mut alias { alias.pointer |= pointer_type(&raw); alias.reference |= reference_type(&raw); }
+        Ok(alias)
+    }
+
+    pub(super) fn cpp_external_receiver(&mut self, receiver: &str, r: &ResolveRefIn) -> Res<bool> {
+        let Some(raw) = self.cpp_owned_receiver_declaration(receiver, r)? else { return Ok(false); };
+        if raw.chars().filter(|c| *c == '<').count() != raw.chars().filter(|c| *c == '>').count() { return Ok(false); }
+        let Some(parts) = type_segments(&raw) else { return Ok(false); };
+        let Some(name) = parts.last() else { return Ok(false); };
+        if parts.len() < 2 || !name.starts_with(|c: char| c.is_ascii_lowercase()) || name.ends_with("_t") { return Ok(false); }
+        for namespace in &parts[..parts.len()-1] {
+            if self.nodes_by_name(namespace)?.iter().any(|n| matches!(n.language.as_str(), "c" | "cpp")
+                && matches!(n.kind.as_str(), "class" | "struct" | "union" | "enum" | "interface" | "type_alias")) { return Ok(false); }
+        }
+        let spelled = parts.join("::");
+        if self.nodes_by_name(name)?.iter().any(|n| matches!(n.language.as_str(), "c" | "cpp")
+            && matches!(n.kind.as_str(), "class" | "struct" | "union" | "enum" | "interface" | "type_alias")
+            && (parts[0] != "std" || n.qualified_name == spelled || n.qualified_name.ends_with(&format!("::{spelled}")))) { return Ok(false); }
+        Ok(if pointer_type(&raw) { self.cpp_receiver_operator_is(receiver, "->", r) }
+            else { self.cpp_receiver_operator_is(receiver, ".", r) })
     }
 
     /// Only alias dereference or a project template can outgrow the declared owner.

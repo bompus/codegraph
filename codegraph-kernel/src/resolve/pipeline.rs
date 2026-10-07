@@ -243,6 +243,12 @@ impl KernelResolver {
     }
 
     pub(super) fn resolve_nonbare_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        // Vue route imports name a rendered component, never the module's file node.
+        if r.reference_kind == "calls" && r.from_node_id.starts_with("route:")
+            && r.from_node_id.ends_with(":vue") && r.reference_name.starts_with("import:")
+            && r.reference_name.contains('#') && self.framework_claims(&r.reference_name) {
+            return Ok(ResolveOutcome::no_candidates());
+        }
 if super::lang_scope::is_dart_member_read(r) {
     let Some(candidate) = self.match_dart_member_read(r)? else {
         return Ok(ResolveOutcome::unresolved());
@@ -591,6 +597,33 @@ if super::lang_scope::is_dart_member_read(r) {
             return Ok(None);
         }
         let mut cand = cand;
+        if r.language == "go" && cand.node.language == "go" {
+            let is_type = matches!(cand.node.kind.as_str(), "struct" | "interface" | "type_alias");
+            if r.reference_kind == "calls" && is_type && !r.reference_name.contains('.') && !self.is_bare_go_call(r)? {
+                // An expression's member call cannot name a bare type.
+                return Ok(None);
+            }
+            if matches!(r.reference_kind.as_str(), "references" | "instantiates")
+                && !self.node_by_id(&r.from_node_id)?.is_some_and(|n| n.kind == "route") {
+                let name = r.reference_name.rsplit('.').next().unwrap_or(&r.reference_name);
+                let package = if let Some((root, _)) = r.reference_name.rsplit_once('.') {
+                    self.go_imported_package_dir(&r.file_path, root)?
+                } else if let Some(imp) = self.go_ref_qualifier(r)? {
+                    self.go_package_dir(&imp.source, &r.file_path)
+                } else if self.go_written_qualifier(r)?.is_none() {
+                    Some(pos_dirname(&r.file_path).to_string())
+                } else { None };
+                if let Some(package) = package {
+                    let types: Vec<_> = self.nodes_by_name(name)?.iter()
+                        .filter(|n| n.language == "go" && matches!(n.kind.as_str(), "struct" | "interface" | "type_alias")
+                            && pos_dirname(&n.file_path) == package)
+                        .cloned().collect();
+                    if let Some(target) = prefer_call_site_file(types, &r.file_path).first() {
+                        cand.node = target.clone();
+                    } else if !is_type { return Ok(None); }
+                } else if !is_type { return Ok(None); }
+            }
+        }
         self.cap_chain_confidence(&mut cand, r)?;
         if !is_inheritance_ref(&r.reference_kind) {
             return Ok(Some(cand));
@@ -743,6 +776,17 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if let Some(result) = self.cpp_plain_call(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
+        if r.language == "cpp" && r.reference_kind == "calls" {
+            if let McShape::Parsed { receiver, .. } = self.method_call_shape(r)? {
+                if self.cpp_external_receiver(&receiver, r)? { return Ok(ResolveOutcome::unresolved()); }
+            }
+        }
+        if matches!(r.language.as_str(), "c" | "cpp") && is_inheritance_ref(&r.reference_kind) {
+            return self.resolve_cpp_supertype(r);
+        }
         if let Some(outcome) = self.resolve_shopify_file(r)? { return Ok(outcome); }
         if matches!(r.language.as_str(), "lua" | "luau") && r.reference_kind == "imports" {
             return match self.resolve_lua_require(r)? { Some(c) => self.finish_pre_framework(r, c), None => Ok(ResolveOutcome::unresolved()) };

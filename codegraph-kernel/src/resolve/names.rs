@@ -217,6 +217,20 @@ impl KernelResolver {
         Ok(true)
     }
 
+    fn cpp_test_file_in_translation_unit(&mut self, candidate: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        if !matches!(candidate.language.as_str(), "c" | "cpp") || !matches!(r.language.as_str(), "c" | "cpp") { return Ok(false); }
+        let visible = self.namespace_visible_files(&r.file_path, &r.language)?;
+        if visible.contains(&candidate.file_path) { return Ok(true); }
+        // A test-named header can declare methods implemented in its same-stem
+        // source. Including an ordinary header cannot expose its test suite.
+        let stem = re!(r"(?i)\.(?:c|cc|cpp|cxx|c\+\+)$").replace(&candidate.file_path, "").to_string();
+        if stem == candidate.file_path { return Ok(false); }
+        Ok(["h", "hh", "hpp", "hxx"].iter().any(|ext| {
+            let header = format!("{stem}.{ext}");
+            super::resolver_upstream::test_suite_path(&header) && visible.contains(&header)
+        }))
+    }
+
     /// isRustTraitImplMethod (name-matcher.ts) — scan upward for the nearest
     /// `impl` header; `impl Trait for` wins, a top-level item ends the scan.
     pub(super) fn is_rust_trait_impl_method(&mut self, candidate: &KNode) -> Res<bool> {
@@ -291,7 +305,8 @@ impl KernelResolver {
             return Ok(true);
         }
         if self.is_minified_script(&candidate.file_path)
-            || (super::resolver_upstream::test_suite_path(&candidate.file_path) && !is_test_path(&r.file_path))
+            || (super::resolver_upstream::test_suite_path(&candidate.file_path) && !is_test_path(&r.file_path)
+                && !self.cpp_test_file_in_translation_unit(candidate, r)?)
             || self.sfc_private(candidate) || !self.php_class_visible(candidate, r)?
             || !self.language_type_visible(candidate, r)? { return Ok(false); }
         let lang = candidate.language.as_str();
@@ -357,7 +372,12 @@ impl KernelResolver {
         if r.language != "go" {
             return Ok(false);
         }
-        self.is_receiver_less_call(r)
+        if self.is_receiver_less_call(r)? { return Ok(true); }
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(false); };
+        let Some(line) = lines.get((r.line - 1).max(0) as usize) else { return Ok(false); };
+        let at = super::names::js_unit_to_byte(line, r.column.max(0) as usize).min(line.len());
+        let conversion = Self::cached_regex(&format!(r"^\(\s*\*?\s*{}\s*\)\s*\(", regex::escape(&r.reference_name)))?;
+        Ok(conversion.is_match(&line[at..]))
     }
 
     fn is_bare_r_call(&mut self, r: &ResolveRefIn) -> bool {
@@ -1083,7 +1103,65 @@ impl KernelResolver {
         Ok(Some(KCand { node: candidates[0].clone(), confidence: 0.85, resolved_by: "exact-match" }))
     }
 
+    fn go_collapsed_chain_call(&mut self, r: &ResolveRefIn) -> Option<Vec<String>> {
+        if r.language != "go" || r.reference_kind != "calls" || r.reference_name.contains('.') { return None; }
+        let file = self.read_file(&r.file_path)?;
+        let tree = self.parsed_tree(&file, r)?;
+        let mut node = super::iteration::descendant_for_position(tree.root_node(), file.text(),
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        loop {
+            if node.kind() == "call_expression" {
+                if let Some(function) = node.child_by_field_name("function") {
+                    if function.kind() == "selector_expression" {
+                        if let (Some(field), Some(receiver)) = (function.child_by_field_name("field"), function.child_by_field_name("operand")) {
+                            if file.text()[field.byte_range()] == r.reference_name
+                                && receiver.kind() == "call_expression" {
+                                let mut inner = receiver;
+                                let mut chain = Vec::new();
+                                loop {
+                                    let Some(callee) = inner.child_by_field_name("function") else { return Some(Vec::new()); };
+                                    if callee.kind() != "selector_expression" { return Some(Vec::new()); }
+                                    let (Some(member), Some(operand)) = (callee.child_by_field_name("field"), callee.child_by_field_name("operand")) else { return Some(Vec::new()); };
+                                    chain.push(file.text()[member.byte_range()].to_string());
+                                    if operand.kind() == "identifier" {
+                                        chain.push(file.text()[operand.byte_range()].to_string());
+                                        chain.reverse();
+                                        return Some(chain);
+                                    }
+                                    if operand.kind() != "call_expression" { return Some(Vec::new()); }
+                                    inner = operand;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let parent = node.parent()?;
+            if matches!(parent.kind(), "argument_list" | "block" | "source_file") { return None; }
+            node = parent;
+        }
+    }
+
     pub(super) fn match_reference_bare(&mut self, r: &ResolveRefIn) -> Res<Option<KCand>> {
+        // A collapsed Go expression call has no proven receiver. Name-only
+        // fallback must not borrow a method from an unrelated type.
+        if let Some(chain) = self.go_collapsed_chain_call(r) {
+            // Every fluent step must have a declared result in its proven
+            // receiver's package. Unproven steps cannot borrow a name match.
+            if let [receiver, method, rest @ ..] = chain.as_slice() {
+                let mut inner = match self.infer_local_receiver_type(receiver, r, true)? {
+                    Some(raw) => self.go_method_on_declared_type(&raw, &r.file_path, method, r)?,
+                    None => self.match_go_factory_receiver(receiver, method, r)?,
+                };
+                for method in rest.iter().chain(std::iter::once(&r.reference_name)) {
+                    let Some(proven) = inner else { return Ok(None); };
+                    let Some(result) = proven.node.return_type.as_deref() else { return Ok(None); };
+                    inner = self.go_method_on_declared_type(result, &proven.node.file_path, method, r)?;
+                }
+                return Ok(inner);
+            }
+            return Ok(None);
+        }
         if let Some(node) = self.js_typed_destructured_member(r)? {
             return Ok(Some(KCand { node, confidence: 0.9, resolved_by: "exact-match" }));
         }

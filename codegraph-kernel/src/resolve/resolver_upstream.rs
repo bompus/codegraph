@@ -530,7 +530,7 @@ impl KernelResolver {
         let at = super::names::js_unit_to_byte(line, r.column.max(0) as usize)
             .min(line.len());
         let root = if line[at..].starts_with(name) {
-            re!(r"(?:^|[^\w.])([A-Za-z_]\w*)\.$")
+            re!(r"(?:^|[^\w.]|\.{3})([A-Za-z_]\w*)\.$")
                 .captures(&line[..at]).map(|hit| hit[1].to_string())
         } else {
             let bare = Self::cached_regex(&format!(
@@ -538,7 +538,7 @@ impl KernelResolver {
             ))?;
             if bare.is_match(line) { return Ok(None); }
             let qualified = Self::cached_regex(&format!(
-                r"(?:^|[^\w.])([A-Za-z_]\w*)\.{}\b", regex::escape(name)
+                r"(?:^|[^\w.]|\.{{3}})([A-Za-z_]\w*)\.{}\b", regex::escape(name)
             ))?;
             qualified.captures(line).map(|hit| hit[1].to_string())
         };

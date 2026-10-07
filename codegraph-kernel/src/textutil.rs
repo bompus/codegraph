@@ -197,6 +197,12 @@ impl Cols {
         self.starts.len() as u32
     }
 
+    /// The 1-based line and UTF-16 column at a byte offset.
+    pub fn position(&self, src: &str, byte_pos: usize) -> (u32, u32) {
+        let row = self.starts.partition_point(|&start| start <= byte_pos).saturating_sub(1);
+        (row as u32 + 1, self.col(src, row, byte_pos))
+    }
+
     /// Column (UTF-16 units) of `byte_pos` on line `row`.
     pub fn col(&self, src: &str, row: usize, byte_pos: usize) -> u32 {
         let ls = self.starts.get(row).copied().unwrap_or(0);
@@ -405,6 +411,7 @@ mod tests {
                     continue;
                 }
                 assert_eq!(cols.col(src, row, byte), col16(src, &starts, row, byte), "row {row} byte {byte}");
+                assert_eq!(cols.position(src, byte), (row as u32 + 1, col16(src, &starts, row, byte)));
             }
         }
         // ASCII fast path agrees too.
@@ -412,6 +419,8 @@ mod tests {
         let ac = Cols::new(a);
         let astarts = line_starts(a);
         assert_eq!(ac.col(a, 1, 8), col16(a, &astarts, 1, 8));
+        assert_eq!(ac.position(a, 8), (2, 2));
+        assert_eq!(ac.position(a, a.len()), (3, 0));
     }
 
     #[test]
