@@ -457,6 +457,18 @@ function internals(graph: CodeGraph): { queries: QueryBuilder; resolver: Referen
   return graph as unknown as { queries: QueryBuilder; resolver: ReferenceResolver };
 }
 
+const sharedTable = CASES.find((c) => c.name === 'React Router (a table another file hands the router)')!;
+CASES.push({
+  ...sharedTable,
+  name: 'React Router (navigation and an imported table share an unchanged file)',
+  from: 'src/AppRoutes.js',
+  files: {
+    ...sharedTable.files,
+    'src/AppRoutes.js': sharedTable.files['src/AppRoutes.js']! +
+      "\nimport { useNavigate } from 'react-router-dom';\nexport function LocalNav() { const navigate = useNavigate(); return <button onClick={() => navigate('/')}>Home</button>; }\n",
+  },
+});
+
 describe('sync binds a navigation call to a route that appears later', () => {
   it.each(CASES)('$name', async (c) => {
     const root = tempRoot();

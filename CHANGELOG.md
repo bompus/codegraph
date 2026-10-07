@@ -95,6 +95,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Go conventional import names are available before reading chained calls and keep source order; imported types also resolve from a module root.
+- C++ receiver lookup reuses comment-stripped source and refuses outer receiver types hidden by unproven function declarations.
+- React layout links stay with React routes, and navigation in an imported route-table file survives removing and restoring its destination.
+
 - Go chained calls with an unproven receiver no longer link an unrelated method by its name. Longer fluent chains follow each declared return type; typed receivers and package factory chains retain their links.
 - Native Go import-name collection avoids recursively scanning function bodies, so deep expressions retain the existing per-file stack protection.
 - C++ base lookup ignores using-directives in closed sibling scopes. React imported tables bind the exported module declaration rather than an unused local namesake.

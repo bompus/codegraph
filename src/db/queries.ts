@@ -3238,7 +3238,8 @@ export class QueryBuilder {
    * `contains`.
    */
   getCrossFileIncomingEdgesWithTarget(
-    filePath: string
+    filePath: string,
+    includeSameFile = false
   ): Array<Edge & { targetName: string; targetKind: NodeKind; sourceFilePath: string; sourceLanguage: Language }> {
     const sql = `SELECT e.*, tgt.name AS target_name, tgt.kind AS target_kind,
         src.file_path AS source_file_path, src.language AS source_language
@@ -3247,8 +3248,8 @@ export class QueryBuilder {
       JOIN nodes src ON src.id = e.source
       WHERE tgt.file_path = ?
         AND e.kind != 'contains'
-        AND src.file_path != ?`;
-    const rows = this.db.prepare(sql).all(filePath, filePath) as Array<
+        AND (? = 1 OR src.file_path != ?)`;
+    const rows = this.db.prepare(sql).all(filePath, includeSameFile ? 1 : 0, filePath) as Array<
       EdgeRow & { target_name: string; target_kind: NodeKind; source_file_path: string; source_language: Language }
     >;
     return rows.map(row => ({

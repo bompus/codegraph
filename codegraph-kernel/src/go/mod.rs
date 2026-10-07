@@ -107,8 +107,10 @@ pub fn extract(file_path: &str, source: &str) -> Result<EmitOut, String> {
     w.node_ids.push(ids::file_node_id(file_path));
     w.stack.push(Scope { row: 0, kind: "file", name: base_name.to_string() });
 
+    let assumed_imports = w.assumed_imports(tree.root_node());
+    w.imported_names.extend(assumed_imports.iter().map(|(name, _, _)| name.clone()));
     w.visit_node(tree.root_node());
-    w.emit_assumed_import_bindings(tree.root_node());
+    for (name, path, spec) in assumed_imports { w.emit_import_binding(&name, &path, spec); }
     w.flush_fn_ref_candidates();
     w.flush_value_refs(tree.root_node());
     w.stack.pop();
@@ -616,7 +618,7 @@ impl<'t> Walker<'t> {
 
     /// Keep the written/path name and add the conventional package name only
     /// when no other import in the file binds or assumes that name.
-    fn emit_assumed_import_bindings(&mut self, root: Node<'t>) {
+    fn assumed_imports(&self, root: Node<'t>) -> Vec<(String, String, Node<'t>)> {
         let mut imports = Vec::new();
         // Imports are top-level declarations. Do not revisit unrelated deep
         // function bodies after the guarded walker has deferred the file.
@@ -625,7 +627,9 @@ impl<'t> Walker<'t> {
             if node.kind() == "import_spec" { imports.push(node); }
             else { pending.extend(named_kids(node)); }
         }
+        imports.sort_by_key(|node| node.start_byte());
         let mut bound = HashSet::new();
+        let mut order = Vec::new();
         let mut assumed: HashMap<String, Vec<(String, Node<'t>)>> = HashMap::new();
         for spec in imports {
             let Some(lit) = spec.child_by_field_name("path")
@@ -643,15 +647,17 @@ impl<'t> Walker<'t> {
             let base = base.strip_prefix("go-").unwrap_or(base);
             let name: String = base.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             if name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
-                assumed.entry(name).or_default().push((path, spec));
+                let candidates = assumed.entry(name.clone()).or_default();
+                if candidates.is_empty() { order.push(name); }
+                candidates.push((path, spec));
             }
         }
-        for (name, candidates) in assumed {
-            if bound.contains(&name) || candidates.len() != 1 { continue; }
+        order.into_iter().filter_map(|name| {
+            let candidates = &assumed[&name];
+            if bound.contains(&name) || candidates.len() != 1 { return None; }
             let (path, spec) = &candidates[0];
-            self.emit_import_binding(&name, path, *spec);
-            self.imported_names.insert(name);
-        }
+            Some((name, path.clone(), *spec))
+        }).collect()
     }
 
     // --- bindings (resolution-binding-model-plan.md, Phase 3: Go) --------------------

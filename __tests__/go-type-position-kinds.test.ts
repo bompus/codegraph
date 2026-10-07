@@ -17,6 +17,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
+import { goTypePositionTarget } from '../src/resolution/go-type-visibility';
+import type { ResolutionContext, UnresolvedRef } from '../src/resolution/types';
 
 let root = '';
 let cg: CodeGraph;
@@ -242,4 +244,17 @@ describe('A Go type position resolves to a type', () => {
   it('a composite literal of an outside package’s type is no project method of that name', () => {
     expect(typeLinksFrom('storage/remote/client_test.go', 'URL')).toEqual([]);
   });
+});
+
+it('an imported module-root type replaces a namesake function', () => {
+  const wanted = { id: 'root-type', name: 'Widget', kind: 'struct', language: 'go', filePath: 'widget.go' };
+  const functionNode = { ...wanted, id: 'function', kind: 'function', filePath: 'decoy/func.go' };
+  const context = {
+    getNodeById: () => functionNode,
+    getNodesByName: () => [functionNode, wanted],
+    getImportMappings: () => [{ localName: 'kit', source: 'example.com/kit' }],
+    getGoPackageDir: () => '',
+  } as unknown as ResolutionContext;
+  const ref: UnresolvedRef = { fromNodeId: 'caller', referenceName: 'kit.Widget', referenceKind: 'references', filePath: 'app/main.go', language: 'go', line: 1, column: 0 };
+  expect(goTypePositionTarget({ original: ref, targetNodeId: 'function', confidence: 0.7, resolvedBy: 'framework' }, ref, context)?.targetNodeId).toBe('root-type');
 });

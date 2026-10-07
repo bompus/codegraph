@@ -214,12 +214,11 @@ impl KernelResolver {
         let escaped_receiver = regex::escape(receiver);
         for file in files {
             let Some(source) = self.read_file(&file) else { continue; };
-            let code = super::awaited::strip_ts_comments(source.text());
-            let lines: Vec<_> = code.lines().collect();
+            let lines = source.cpp_code_lines();
             let indexes: Vec<_> = if file == r.file_path { (0..(r.line.max(0) as usize).min(lines.len())).rev().collect() } else { (0..lines.len()).collect() };
             let classes = self.nodes_in_file(&file)?;
             for i in indexes {
-                let line = lines[i];
+                let line = lines[i].as_str();
                 if !has_word(line, receiver) { continue; }
                 let Some(raw) = self.cpp_declarator_match(line, &escaped_receiver)? else {
                     let range = shared_regex(&format!(r"\bfor\s*\(.*\b{}\s*:", escaped_receiver))?;

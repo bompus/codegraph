@@ -295,6 +295,8 @@ fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str
                             }
                         }
                     }
+                    // This declaration shadows the receiver even when its type is unproven.
+                    return Some(String::new());
                 }
             }
             let mut cursor = declaration.walk();

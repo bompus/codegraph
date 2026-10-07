@@ -100,8 +100,9 @@ export function goTypePositionTarget(result: ResolvedRef, ref: UnresolvedRef, co
     if (bare) pkgDir = goPackageDir(ref.filePath);
     else if (imported) pkgDir = context.getGoPackageDir?.(imported.source, ref.filePath) ?? null;
   }
+  if (pkgDir === '') pkgDir = '.';
   if (isType && (!bare || goPackageDir(target.filePath) === pkgDir)) return result;
-  const types = pkgDir ? goPackageTypes(name, pkgDir, context) : [];
+  const types = pkgDir != null ? goPackageTypes(name, pkgDir, context) : [];
   if (types.length > 0) return { ...result, targetNodeId: preferCallSiteFile(types, ref.filePath)[0]!.id };
   return isType ? result : null;
 }

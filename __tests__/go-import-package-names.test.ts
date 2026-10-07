@@ -248,3 +248,18 @@ describe('Go references through a versioned or go- import', () => {
     ]);
   });
 });
+
+it('emits assumed imports in source order and encodes their factory chains', () => {
+  const result = tryKernelExtract('x.go', `package p
+import (
+  "go.yaml.in/yaml/v3"
+  "github.com/mattn/go-sqlite3"
+  "k8s.io/api/core/v1"
+)
+func run(r any, v any) { yaml.NewDecoder(r).Decode(v) }
+`, 'go')!;
+  const ordered = (importMappingsFromBindings(result.bindings ?? []) ?? [])
+    .map((m) => m.localName).filter((n) => ['yaml', 'sqlite3', 'core'].includes(n));
+  expect(ordered).toEqual(['yaml', 'sqlite3', 'core']);
+  expect(result.unresolvedReferences.map((ref) => ref.referenceName)).toContain('yaml.NewDecoder().Decode');
+});

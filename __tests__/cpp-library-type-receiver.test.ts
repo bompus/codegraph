@@ -551,3 +551,19 @@ describe('proved receiver types retain their written pointer operation', () => {
     }
   });
 });
+
+it('an unproven parenthesized declaration shadows the outer receiver', async () => {
+  const cg = await indexed({ ...PROJECT, 'shadow.cc': lines(
+    '#include "include/leveldb/slice.h"',
+    'struct Foo {};',
+    'void Bad() {',
+    '  leveldb::Slice key;',
+    '  { std::unique_ptr<Foo> key(Unknown); key.size(); }',
+    '}',
+    'void Good() { leveldb::Slice key; key.size(); }',
+  ) });
+  try {
+    expect(calls(cg, 'Bad')).toEqual([]);
+    expect(calls(cg, 'Good')).toEqual(['leveldb::Slice::size']);
+  } finally { cg.close(); }
+});

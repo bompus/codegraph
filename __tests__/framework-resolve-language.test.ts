@@ -13,6 +13,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
 import { getResolvingFrameworks } from '../src/resolution/frameworks';
+import { reactResolver } from '../src/resolution/frameworks/react';
+import type { ResolutionContext, UnresolvedRef } from '../src/resolution/types';
 import type { FrameworkResolver } from '../src/resolution/types';
 
 function writeProject(prefix: string, files: Record<string, string>): string {
@@ -187,4 +189,16 @@ public class IndexModel : PageModel
     expect(modelOf('Pages/Index.cshtml')).toEqual(['Pages/Index.cshtml.cs']);
     expect(modelOf('Pages/Basket/Index.cshtml')).toEqual(['Pages/Basket/Index.cshtml.cs']);
   });
+});
+
+it('React layout resolution leaves Vue and Angular route ownership intact', () => {
+  const context = {
+    getImportMappings: () => [{ localName: 'Shell', source: './Shell', exportedName: 'Shell' }],
+    resolveImport: () => ({ targetNodeId: 'shell' }),
+  } as unknown as ResolutionContext;
+  const ref: UnresolvedRef = { fromNodeId: 'route:app:/', referenceName: 'layout:Shell', referenceKind: 'calls', filePath: 'app.tsx', language: 'tsx', line: 1, column: 0 };
+  expect(reactResolver.resolve(ref, context)?.targetNodeId).toBe('shell');
+  for (const id of ['route:app:/:vue', 'route:app:/:angular', 'app:function']) {
+    expect(reactResolver.resolve({ ...ref, fromNodeId: id }, context)).toBeNull();
+  }
 });

@@ -288,7 +288,7 @@ export class ReferenceResolver {
     let changed = 0;
     for (const [id, old] of existing) {
       if (wanted.has(id)) continue;
-      const refs = this.queries.getCrossFileIncomingEdgesWithTarget(old.filePath)
+      const refs = this.queries.getCrossFileIncomingEdgesWithTarget(old.filePath, true)
         .filter((e) => e.target === id)
         .map((e) => resurrectRefFromDroppedEdge(e))
         .filter((r): r is UnresolvedReference => r !== null);

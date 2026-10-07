@@ -53,6 +53,7 @@ export const reactResolver: FrameworkResolver = {
     // The layout a route renders inside: what happens in it — its header's
     // links, its logout — happens on the route's screen too.
     if (ref.referenceName.startsWith(LAYOUT_PREFIX)) {
+      if (!ref.fromNodeId.startsWith('route:') || ref.fromNodeId.endsWith(':vue') || ref.fromNodeId.endsWith(':angular')) return null;
       const target = layoutComponent(ref.referenceName.slice(LAYOUT_PREFIX.length), ref, context);
       return target ? { original: ref, targetNodeId: target, confidence: 0.9, resolvedBy: 'framework', metadata: { layout: true } } : null;
     }
