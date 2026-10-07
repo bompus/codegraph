@@ -25,7 +25,7 @@ import { DEFAULT_PARSE_POOL_CAP, FILES_PER_PARSE_WORKER, ParseWorkerPool, isRetr
 import { StoreWriter, StoreBundle, finalizeStoreBundle, attachBindings } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
-import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, isMpegTransportStream, hasMpegTsExtension, MPEG_TS_SNIFF_BYTES, hasGrammarLoadFailure } from './grammars';
+import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, isMpegTransportStream, hasMpegTsExtension, MPEG_TS_SNIFF_BYTES, hasGrammarLoadFailure, isShopifyThemeMarker, shopifyThemeRoot } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
@@ -605,7 +605,7 @@ function collectIncludedFiles(
       if (defaults.ignores(rel)) return;
       if (!include.ignores(rel)) return;
       if (exclude && exclude.ignores(rel)) return;
-      if (!isSourceFile(rel, overrides)) return;
+      if (!isSourceFile(rel, overrides, rootDir)) return;
       out.add(rel);
     }
   };
@@ -814,9 +814,10 @@ function findNestedGitRepos(absDir: string, relPrefix: string): string[] {
  */
 export function preloadLanguagesForFiles(
   files: string[],
-  overrides?: Record<string, Language>
+  overrides?: Record<string, Language>,
+  rootDir?: string
 ): Language[] {
-  const languages = [...new Set(files.map((f) => detectLanguage(f, undefined, overrides)))];
+  const languages = [...new Set(files.map((f) => detectLanguage(f, undefined, overrides, rootDir)))];
   // A Flow-typed `.js` is read with the TSX grammar (see detectLanguage).
   if ((languages.includes('javascript') || languages.includes('jsx')) && !languages.includes('tsx')) languages.push('tsx');
   if (languages.includes('c')) {
@@ -1361,7 +1362,8 @@ export function getGitChangedFiles(rootDir: string, sinceCommit?: string | null)
     // Custom extension → language overrides from the project's codegraph.json,
     // so change detection sees the same custom-extension files the full index does.
     const overrides = loadExtensionOverrides(rootDir);
-    collectGitStatus(rootDir, '', changes, overrides, loadIncludeIgnoredMatcher(rootDir), loadExcludeMatcher(rootDir), sinceCommit ?? undefined);
+    const isSource = (filePath: string): boolean => isSourceFile(filePath, overrides, rootDir);
+    collectGitStatus(rootDir, '', changes, isSource, loadIncludeIgnoredMatcher(rootDir), loadExcludeMatcher(rootDir), sinceCommit ?? undefined);
     return changes;
   } catch {
     return null;
@@ -1433,7 +1435,7 @@ export function canTrustGitFastPath(rootDir: string, sinceCommit?: string | null
   }
 }
 
-function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, overrides?: Record<string, Language>, includeIgnored: Ignore | null = null, exclude: Ignore | null = null, sinceCommit?: string): void {
+function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, isSource: (filePath: string) => boolean, includeIgnored: Ignore | null = null, exclude: Ignore | null = null, sinceCommit?: string): void {
   const output = execFileSync(
     'git',
     // `-uall` lists individual untracked files instead of collapsing an
@@ -1462,7 +1464,8 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
   // filtered by exactly the rules a working-tree change is (#766, #999, #1829).
   const classify = (statusCode: string, rel: string): void => {
     const filePath = normalizePath(prefix + rel);
-    if (!isSourceFile(filePath, overrides)) return;
+    const themeMarker = isShopifyThemeMarker(filePath);
+    if (!themeMarker && !isSource(filePath)) return;
 
     if (statusCode.includes('D')) {
       // Deletions stay unfiltered: getChangedFiles acts on one only when the
@@ -1472,14 +1475,14 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
       return;
     }
 
-    // Added (`??`) / modified files inside an excluded dir must not enter the
-    // index — match against the repo-relative path, same as the full scan. (#766)
-    if (ig.ignores(rel)) return;
+    // Marker candidates only force a scoped full scan; they are not indexed.
+    // Ordinary source candidates retain the full scan's exclusion rules.
+    if (!themeMarker && ig.ignores(rel)) return;
     // User `codegraph.json` `exclude` (#999) is project-root-relative, so it's
     // matched against the full path — sync must not re-add a tracked file the
     // full index now keeps out. Deletions above stay unfiltered so a file that
     // WAS indexed before an exclude was added still cleans itself out.
-    if (exclude && exclude.ignores(filePath)) return;
+    if (!themeMarker && exclude && exclude.ignores(filePath)) return;
 
     if (statusCode === '??') {
       out.added.push(filePath);
@@ -1526,11 +1529,11 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
   // and they are left alone (#970, #976), mirroring the full-index scan.
   for (const rel of untrackedDirs) {
     for (const repoRel of findNestedGitRepos(path.join(repoDir, rel), rel)) {
-      collectGitStatus(path.join(repoDir, repoRel), prefix + repoRel, out, overrides, includeIgnored, exclude);
+      collectGitStatus(path.join(repoDir, repoRel), prefix + repoRel, out, isSource, includeIgnored, exclude);
     }
   }
   for (const rel of findIgnoredEmbeddedRepos(repoDir, includeIgnored, prefix)) {
-    collectGitStatus(path.join(repoDir, rel), prefix + rel, out, overrides, includeIgnored, exclude);
+    collectGitStatus(path.join(repoDir, rel), prefix + rel, out, isSource, includeIgnored, exclude);
   }
 }
 
@@ -1554,7 +1557,7 @@ export function scanDirectory(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath, overrides)) {
+      if (isSourceFile(filePath, overrides, rootDir)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -1605,7 +1608,7 @@ export async function scanDirectoryAsync(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath, overrides)) {
+      if (isSourceFile(filePath, overrides, rootDir)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -1713,7 +1716,7 @@ function scanDirectoryWalk(
             }
           } else if (stat.isFile()) {
             if (!isIgnored(fullPath, false, active)) {
-              if (isSourceFile(relativePath, overrides)) {
+              if (isSourceFile(relativePath, overrides, rootDir)) {
                 files.push(relativePath);
                 count++;
                 onProgress?.(count, relativePath);
@@ -1734,7 +1737,7 @@ function scanDirectoryWalk(
         }
       } else if (entry.isFile()) {
         if (!isIgnored(fullPath, false, active)) {
-          if (isSourceFile(relativePath, overrides)) {
+          if (isSourceFile(relativePath, overrides, rootDir)) {
             files.push(relativePath);
             count++;
             onProgress?.(count, relativePath);
@@ -1883,6 +1886,7 @@ export class ExtractionOrchestrator {
    */
   private detectedFrameworkNames: string[] | null = null;
   private conventionInvalidatedFiles = new Set<string>();
+  private pendingLiquidThemeRoots: Record<string, string | null> | null = null;
   /**
    * Scope matcher for SCOPED syncs, memoized on the mtimes of the two root
    * files it is derived from (`codegraph.json`, `.gitignore`). See
@@ -2154,6 +2158,7 @@ export class ExtractionOrchestrator {
         currentFile: file,
       });
     }, skipStats);
+    this.prepareLiquidThemeRoots(files);
     if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] scan: ${Date.now() - tScan}ms (${files.length} files)`);
     /** Only meaningful when nothing was indexable — see IndexResult (#1502). */
     const skipSummary = (): Pick<IndexResult, 'filesSkippedUnsupported' | 'topUnsupportedExtensions'> => {
@@ -2211,7 +2216,7 @@ export class ExtractionOrchestrator {
     await new Promise(resolve => setImmediate(resolve));
 
     // Detect needed languages and load grammars in the parse worker
-    const neededLanguages = preloadLanguagesForFiles(files, overrides);
+    const neededLanguages = preloadLanguagesForFiles(files, overrides, this.rootDir);
 
     // Parse files on a pool of worker threads (keeps the main thread free for UI
     // and uses every core). Falls back to in-process parsing when the compiled
@@ -2287,7 +2292,7 @@ export class ExtractionOrchestrator {
      * here on the main thread, where the codegraph.json overrides are loaded.
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
-      const language = detectLanguage(filePath, content, overrides);
+      const language = detectLanguage(filePath, content, overrides, this.rootDir);
       const names = this.frameworksForFile(filePath, frameworkNames);
       if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, names));
       return pool.requestParse({ filePath, content, language, frameworkNames: names });
@@ -2339,7 +2344,7 @@ export class ExtractionOrchestrator {
       // Store: on the writer thread when active (fresh DB — bundles applied
       // in the same file order this chain dispatches them), else on the main
       // thread (SQLite connections are per-thread).
-      const language = detectLanguage(filePath, content, overrides);
+      const language = detectLanguage(filePath, content, overrides, this.rootDir);
       if (grammarUnavailable) {
         // Store nothing: a row from an earlier run keeps its data, and with no
         // row (or an older hash) the next sync or index retries the file.
@@ -2383,7 +2388,7 @@ export class ExtractionOrchestrator {
         // Files with no symbols but no errors (yaml, twig, properties) are
         // tracked at the file level — count them as indexed so the CLI doesn't
         // misleadingly report "No files found to index".
-        const lang = detectLanguage(filePath, content, overrides);
+        const lang = detectLanguage(filePath, content, overrides, this.rootDir);
         if (isFileLevelOnlyLanguage(lang)) {
           filesIndexed++;
         } else {
@@ -2664,7 +2669,7 @@ export class ExtractionOrchestrator {
         // so decode here — otherwise a kernel-language retry passes the gate
         // below via `errors.length === 0`, stores nothing, and the file is
         // permanently recorded as "(0 symbols)" with the error erased (#1541).
-        const language = detectLanguage(filePath, content, overrides);
+        const language = detectLanguage(filePath, content, overrides, this.rootDir);
         result = materializeKernelResult(result, filePath, language);
 
         if (result.nodes.length > 0 || result.errors.length === 0) {
@@ -2719,7 +2724,7 @@ export class ExtractionOrchestrator {
           }
 
           // Same undecoded-transport hazard as the first retry pass (#1541).
-          const language = detectLanguage(filePath, fullContent, overrides);
+          const language = detectLanguage(filePath, fullContent, overrides, this.rootDir);
           result = materializeKernelResult(result, filePath, language);
 
           if (result.nodes.length > 0 || result.errors.length === 0) {
@@ -2881,7 +2886,7 @@ export class ExtractionOrchestrator {
       };
     }
 
-    const language = detectLanguage(relativePath, content, loadExtensionOverrides(this.rootDir));
+    const language = detectLanguage(relativePath, content, loadExtensionOverrides(this.rootDir), this.rootDir);
 
     // Check file size
     if (stats.size > MAX_SOURCE_FILE_SIZE_BYTES) {
@@ -3408,7 +3413,7 @@ export class ExtractionOrchestrator {
       const overrides = loadExtensionOverrides(this.rootDir);
       currentFiles = unique.filter(
         (p) =>
-          isSourceFile(p, overrides) &&
+          isSourceFile(p, overrides, this.rootDir) &&
           !scope.ignores(p) &&
           fs.existsSync(path.join(this.rootDir, p))
       );
@@ -3436,6 +3441,8 @@ export class ExtractionOrchestrator {
       trackedFiles = this.queries.getAllFiles();
       if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-tracked-load: ${Date.now() - tTracked}ms (${trackedFiles.length} tracked)`);
     }
+    const previousThemes = this.indexedLiquidThemeRoots();
+    this.prepareLiquidThemeRoots(currentFiles, scopedPaths?.length ? scopedPaths : undefined);
     const currentSet = new Set(currentFiles);
     const trackedMap = new Map<string, FileRecord>();
     for (const f of trackedFiles) {
@@ -3497,13 +3504,16 @@ export class ExtractionOrchestrator {
       // size, mtime and hash all match. Rows with a real parse error are
       // deterministic and are not retried.
       const neverParsed = tracked !== undefined && hasGrammarLoadFailure(tracked.errors);
+      const themeChanged = tracked?.language === 'liquid' &&
+        previousThemes?.[filePath] !== this.liquidThemeRoot(filePath);
+      if (themeChanged) this.conventionInvalidatedFiles.add(filePath);
 
       // Cheap pre-filter: an already-indexed file whose size AND mtime both match
       // the DB is unchanged — skip it without reading or hashing. (A content
       // change that preserves both exactly is the blind spot every mtime-based
       // incremental tool accepts; `index --force` is the escape hatch. Git bumps
       // mtime on every file it writes during checkout/merge, so pulls are caught.)
-      if (tracked && !neverParsed) {
+      if (tracked && !neverParsed && !themeChanged) {
         try {
           const stat = fs.statSync(fullPath);
           if (stat.size === tracked.size && Math.floor(stat.mtimeMs) === Math.floor(tracked.modifiedAt)) {
@@ -3540,7 +3550,7 @@ export class ExtractionOrchestrator {
         changedFilePaths.push(filePath);
         addedFilePaths.push(filePath);
         filesAdded++;
-      } else if (tracked.contentHash !== contentHash || neverParsed) {
+      } else if (tracked.contentHash !== contentHash || neverParsed || themeChanged) {
         onFileChange?.(filePath, content);
         filesToIndex.push(filePath);
         changedFilePaths.push(filePath);
@@ -3601,7 +3611,7 @@ export class ExtractionOrchestrator {
     // Load only grammars needed for changed files
     if (filesToIndex.length > 0) {
       const overrides = loadExtensionOverrides(this.rootDir);
-      await loadGrammarsForLanguages(preloadLanguagesForFiles(filesToIndex, overrides));
+      await loadGrammarsForLanguages(preloadLanguagesForFiles(filesToIndex, overrides, this.rootDir));
     }
 
     // Index changed files
@@ -3671,8 +3681,38 @@ export class ExtractionOrchestrator {
     } catch { return null; }
   }
 
+  private liquidThemeRoot(filePath: string): string | null {
+    return shopifyThemeRoot(filePath, marker => fs.existsSync(path.join(this.rootDir, marker))) ?? null;
+  }
+
+  private indexedLiquidThemeRoots(): Record<string, string | null> | null {
+    try {
+      const roots = JSON.parse(this.queries.getMetadata('indexed_liquid_theme_roots') ?? 'null');
+      if (!roots || typeof roots !== 'object' || Array.isArray(roots)) return null;
+      return Object.values(roots).every(root => root === null || typeof root === 'string') ? roots : null;
+    } catch { return null; }
+  }
+
+  /** Capture context before parsing; a later marker edit must remain pending. */
+  private prepareLiquidThemeRoots(files: string[], scopedPaths?: string[]): void {
+    const previous = this.indexedLiquidThemeRoots();
+    const roots: Record<string, string | null> = Object.create(null);
+    if (scopedPaths && previous) Object.assign(roots, previous);
+    for (const file of scopedPaths ?? []) delete roots[file];
+    const overrides = loadExtensionOverrides(this.rootDir);
+    for (const file of files) {
+      if (detectLanguage(file, undefined, overrides, this.rootDir) !== 'liquid') continue;
+      if (!fs.existsSync(path.join(this.rootDir, file))) continue;
+      roots[file] = this.liquidThemeRoot(file);
+      if (previous?.[file] !== roots[file]) this.conventionInvalidatedFiles.add(file);
+    }
+    // A scoped write cannot certify untouched files from a legacy index.
+    this.pendingLiquidThemeRoots = scopedPaths && previous === null ? null : roots;
+  }
+
   /** Capture before file reads. In-flight/failed full writes must not claim freshness. */
   beginGitIndexState(full: boolean): { head: string; stamp: string; dirty: string[] | null } {
+    this.pendingLiquidThemeRoots = null;
     const head = getGitHeadSha(this.rootDir) ?? '';
     const stamp = this.queries.getMetadata(INDEXED_AT_COMMIT_KEY) ?? '';
     const prior = this.indexedDirtyPaths(stamp);
@@ -3692,6 +3732,16 @@ export class ExtractionOrchestrator {
   }
 
   finishGitIndexState(snapshot: { head: string; stamp: string; dirty: string[] | null }, full: boolean, retries: string[] = []): void {
+    if (this.pendingLiquidThemeRoots) {
+      const roots = this.pendingLiquidThemeRoots;
+      const previous = this.indexedLiquidThemeRoots();
+      for (const file of retries) {
+        if (previous && Object.hasOwn(previous, file)) roots[file] = previous[file]!;
+        else delete roots[file];
+      }
+      this.queries.setMetadata('indexed_liquid_theme_roots', JSON.stringify(roots));
+      this.pendingLiquidThemeRoots = null;
+    }
     const after = getGitChangedFiles(this.rootDir);
     if (!snapshot.dirty || !after) return;
     const commit = full ? snapshot.head : snapshot.stamp;
@@ -3717,8 +3767,13 @@ export class ExtractionOrchestrator {
     const gitChanges = dirtyPaths !== null && canTrustGitFastPath(this.rootDir, sinceCommit)
       ? getGitChangedFiles(this.rootDir, sinceCommit)
       : null;
+    const previousThemes = this.indexedLiquidThemeRoots();
+    const themeChanged = previousThemes === null || Object.entries(previousThemes).some(
+      ([file, root]) => root !== this.liquidThemeRoot(file)
+    );
+    const markerChanged = gitChanges && [...gitChanges.added, ...gitChanges.modified, ...gitChanges.deleted, ...dirtyPaths!].some(isShopifyThemeMarker);
 
-    if (gitChanges) {
+    if (gitChanges && !markerChanged && !themeChanged) {
       // === Git fast path ===
       const added: string[] = [];
       const modified: string[] = [];
@@ -3733,7 +3788,7 @@ export class ExtractionOrchestrator {
       for (const filePath of candidates) {
         const tracked = this.queries.getFileByPath(filePath);
         const fullPath = path.join(this.rootDir, filePath);
-        if (!isSourceFile(filePath, overrides) || scope.ignores(filePath) || !fs.existsSync(fullPath)) {
+        if (!isSourceFile(filePath, overrides, this.rootDir) || scope.ignores(filePath) || !fs.existsSync(fullPath)) {
           if (tracked) removed.push(filePath);
           continue;
         }
@@ -3750,7 +3805,8 @@ export class ExtractionOrchestrator {
           continue;
         }
         if (!tracked) added.push(filePath);
-        else if (tracked.contentHash !== hashContent(content)) modified.push(filePath);
+        else if (tracked.contentHash !== hashContent(content) ||
+          (tracked.language === 'liquid' && previousThemes?.[filePath] !== this.liquidThemeRoot(filePath))) modified.push(filePath);
       }
 
       return { added, modified, removed };
@@ -3798,7 +3854,8 @@ export class ExtractionOrchestrator {
 
       if (!tracked) {
         added.push(filePath);
-      } else if (tracked.contentHash !== contentHash) {
+      } else if (tracked.contentHash !== contentHash ||
+        (tracked.language === 'liquid' && previousThemes?.[filePath] !== this.liquidThemeRoot(filePath))) {
         modified.push(filePath);
       }
     }

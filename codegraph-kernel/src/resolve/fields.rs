@@ -149,6 +149,44 @@ impl KernelResolver {
         Ok(Some((named.to_string(), pos_dirname(file).to_string())))
     }
 
+    /// A named term in an interface is a supertype only if its declaration
+    /// reaches an interface. Named scalar/struct terms constrain a type set.
+    pub(super) fn go_interface_target(&mut self, target: &KNode, r: &ResolveRefIn) -> Res<bool> {
+        let mut target = target.clone();
+        let mut seen = HashSet::new();
+        loop {
+            if target.language != "go" || !seen.insert(target.id.clone()) { return Ok(false); }
+            if target.kind == "interface" { return Ok(true); }
+            if target.kind != "type_alias" { return Ok(false); }
+            let Some(source) = self.read_file(&target.file_path) else { return Ok(false); };
+            let site = r.clone().at(&target);
+            let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(false); };
+            let mut declaration = super::iteration::descendant_for_position(
+                tree.root_node(), source.text(),
+                ((target.start_line - 1).max(0) as usize, target.start_column.max(0) as usize + 1),
+            );
+            while !matches!(declaration.kind(), "type_spec" | "type_alias") {
+                let Some(parent) = declaration.parent() else { return Ok(false); };
+                declaration = parent;
+            }
+            let Some(mut ty) = declaration.child_by_field_name("type") else { return Ok(false); };
+            if ty.kind() == "interface_type" { return Ok(true); }
+            if ty.kind() == "generic_type" {
+                let Some(base) = ty.child_by_field_name("type") else { return Ok(false); };
+                ty = base;
+            }
+            if !matches!(ty.kind(), "type_identifier" | "qualified_type") { return Ok(false); }
+            let raw = &source.text()[ty.start_byte()..ty.end_byte()];
+            let Some((name, dir)) = self.go_type_package(raw, &target.file_path)? else { return Ok(false); };
+            let candidates: Vec<_> = self.nodes_by_name(&name)?.iter()
+                .filter(|n| n.language == "go" && pos_dirname(&n.file_path) == dir
+                    && matches!(n.kind.as_str(), "interface" | "struct" | "type_alias"))
+                .cloned().collect();
+            let [only] = candidates.as_slice() else { return Ok(false); };
+            target = (**only).clone();
+        }
+    }
+
     pub(super) fn go_method_on_declared_type(
         &mut self,
         raw: &str,

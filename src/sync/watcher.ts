@@ -36,6 +36,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSourceFile, buildScopeIgnore, type ScopeIgnore } from '../extraction';
+import { isShopifyThemeMarker } from '../extraction/grammars';
 import { loadExtensionOverrides, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { logDebug, logWarn } from '../errors';
 import { normalizePath } from '../utils';
@@ -639,7 +640,12 @@ export class FileWatcher {
       this.refreshScope(rel);
       return;
     }
-    if (this.ignoreMatcher && this.ignoreMatcher.ignores(rel)) return;
+    const themeMarker = isShopifyThemeMarker(rel);
+    // A file-level marker exclusion does not exclude its theme's source files.
+    // Entire excluded theme trees still stay silent.
+    const themeDir = themeMarker ? path.posix.dirname(path.posix.dirname(rel)) : null;
+    const scopePath = themeDir === '.' ? null : themeDir ? `${themeDir}/` : rel;
+    if (scopePath && this.ignoreMatcher?.ignores(scopePath)) return;
     // A nested `.gitignore` (an embedded child repo's own rules, #514, or a
     // subdirectory rule the git-backed full scan honors) is only a scope
     // change when it sits INSIDE the current scope — checked after the matcher
@@ -650,7 +656,7 @@ export class FileWatcher {
       this.refreshScope(rel);
       return;
     }
-    if (!isSourceFile(rel, loadExtensionOverrides(this.projectRoot))) {
+    if (!themeMarker && !isSourceFile(rel, loadExtensionOverrides(this.projectRoot), this.projectRoot)) {
       this.maybeScheduleForRemovedDir(rel);
       return;
     }
@@ -669,6 +675,7 @@ export class FileWatcher {
       });
     }
 
+    if (themeMarker) this.needsFullScan = true;
     logDebug('File change detected', { file: rel });
     if (this.ready) {
       const now = Date.now();

@@ -33,11 +33,6 @@
 //!    (loses uninit scalars by design); cpp declarations instead take the TS
 //!    GENERIC fallback (direct identifier children only → `int x;` extracts,
 //!    `int x = 5;` does not — bug-for-bug).
-//!  - inheritance quirk: extractInheritance recurses into
-//!    field_declaration_list, where a field_declaration with no DIRECT
-//!    field_identifier child (pointer/array/method members) but a direct
-//!    type_identifier emits an `extends` ref to that type (the Go-embedding
-//!    branch matching c/cpp shapes). Kept: the parity gate pins today's graph.
 //!  - static-member/value-read pass (cpp only): `field_expression` is in
 //!    MEMBER_ACCESS_TYPES (listed for Scala, same node kind in cpp), so
 //!    `Capitalized.member` / `Capitalized->member` VALUE reads emit

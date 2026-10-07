@@ -377,7 +377,11 @@ if super::lang_scope::is_dart_member_read(r) {
             && self.import_mappings(&r.file_path)?.iter().any(|m| m.is_namespace
                 && m.local_name == r.reference_name.split('.').next().unwrap_or(""));
         if is_binding_receiver_call(r) && !namespace_chain && !self.is_component_receiver_out_of_scope(r)? {
-            match probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?) {
+            let mut bound = probe!(r, "bound_receiver_claim", self.bound_receiver_claim(r)?);
+            if bound.is_none() && self.cpp_alias_allows_fallback(r)? {
+                bound = self.match_method_call_free(r)?;
+            }
+            match bound {
                 None => {
                     return Ok(self.refused());
                 }
@@ -739,6 +743,7 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if let Some(outcome) = self.resolve_shopify_file(r)? { return Ok(outcome); }
         if matches!(r.language.as_str(), "lua" | "luau") && r.reference_kind == "imports" {
             return match self.resolve_lua_require(r)? { Some(c) => self.finish_pre_framework(r, c), None => Ok(ResolveOutcome::unresolved()) };
         }
@@ -938,6 +943,9 @@ if super::lang_scope::is_dart_member_read(r) {
         is_final: bool,
     ) -> Res<ResolveOutcome> {
         let mut winner = winner;
+        // Bound receiver calls already prove their value/import owner. A Go
+        // package-level value in another file is not an unknown package name.
+        if r.language == "go" && !is_binding_receiver_call(r) && self.go_written_qualifier(r)?.is_some() && self.go_ref_qualifier(r)?.is_none() { return Ok(ResolveOutcome::unresolved()); }
         if !self.name_post_guard(&winner,r)? { return Ok(ResolveOutcome::unresolved()); }
         if winner.node.id == r.from_node_id && is_inheritance_ref(&r.reference_kind) {
             let Some(other) = self.other_supertype_named(r)? else { return Ok(ResolveOutcome::unresolved()); }; winner=other;
@@ -946,6 +954,12 @@ if r.language == "dart" && r.reference_kind == "references"
     && winner.node.id == r.from_node_id {
     return Ok(ResolveOutcome::unresolved());
 }
+        if r.language == "go" && r.reference_kind == "extends"
+            && self.node_by_id(&r.from_node_id)?.is_some_and(|n| n.kind == "interface")
+            && !self.go_interface_target(&winner.node, r)?
+        {
+            return Ok(ResolveOutcome::unresolved());
+        }
         winner=self.retarget_overload(winner,r)?;
         if r.reference_kind == "calls" {
             // memberName = the last `.` segment — `Cls::member` and bare

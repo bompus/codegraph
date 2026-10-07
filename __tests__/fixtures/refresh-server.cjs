@@ -30,13 +30,17 @@ lines.on("line", (line) => {
     initialized = true;
   } else if (message.method === "tools/list") {
     if (options.crashOnTools) process.exit(9);
-    setTimeout(
-      () =>
-        result(message.id, {
-          tools: [{ name: options.tool || "status", inputSchema: { type: "object" } }],
-        }),
-      options.toolsDelay || 0,
-    );
+    const reply = () => result(message.id, {
+      tools: [{ name: options.tool || "status", inputSchema: { type: "object" } }],
+    });
+    if (options.toolsGate) {
+      fs.writeFileSync(path.join(dist, `tools-waiting-${revision}`), "");
+      const waitForRelease = () => {
+        if (fs.existsSync(path.join(dist, `tools-release-${revision}`))) reply();
+        else setTimeout(waitForRelease, 10);
+      };
+      waitForRelease();
+    } else setTimeout(reply, options.toolsDelay || 0);
   } else if (message.method === "tools/call") {
     const name = message.params.name;
     if (name === "crash") process.exit(9);

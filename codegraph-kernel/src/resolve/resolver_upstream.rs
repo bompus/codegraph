@@ -515,7 +515,7 @@ impl KernelResolver {
         Ok(n.file_path != r.file_path || n.start_line < f.start_line || n.start_line > f.end_line)
     }
 
-    pub(super) fn go_ref_qualifier(&mut self, r: &ResolveRefIn) -> Res<Option<KImport>> {
+    pub(super) fn go_written_qualifier(&mut self, r: &ResolveRefIn) -> Res<Option<String>> {
         if r.language != "go" || r.reference_kind == "imports" {
             return Ok(None);
         }
@@ -544,8 +544,12 @@ impl KernelResolver {
         };
         let Some(root) = root else { return Ok(None) };
         if self.is_shadowed_import(&root, r)? { return Ok(None); }
-        Ok(self.import_mappings(&r.file_path)?.iter()
-            .find(|imp| imp.local_name == root).cloned())
+        Ok(Some(root))
+    }
+
+    pub(super) fn go_ref_qualifier(&mut self, r: &ResolveRefIn) -> Res<Option<KImport>> {
+        let Some(root) = self.go_written_qualifier(r)? else { return Ok(None); };
+        Ok(self.import_mappings(&r.file_path)?.iter().find(|imp| imp.local_name == root).cloned())
     }
 
     pub(super) fn go_external_qualified(&mut self, r: &ResolveRefIn) -> Res<bool> {

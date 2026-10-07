@@ -170,3 +170,52 @@ it('reads a recovered class field after an access macro splits the raw parse', a
   const targets=graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls').map(e=>graph!.getNode(e.target)!.qualifiedName);
   expect(targets).toEqual(['Primitive::check']);
 });
+
+it('keeps reference alias method calls without inventing construction', async () => {
+  root=fs.mkdtempSync(path.join(os.tmpdir(),'cg-cpp-alias-'));
+  fs.writeFileSync(path.join(root,'use.cpp'), `struct Writer { Writer(int) {} void dump() {} };
+using Ref=Writer&; using Other=Ref;
+void run(Writer& original) { Other ref(original); ref.dump(); }
+`);
+  graph=await CodeGraph.init(root,{index:true});
+  const targets=graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls').map(e=>graph!.getNode(e.target)!.qualifiedName);
+  expect(targets).toEqual(['Writer::dump']);
+});
+
+it.each([
+  '// using List = int;',
+  'using Other = Writer; // using List = int;',
+  '/*\nusing List = int;\n*/',
+  'const char* text = "using List = int;";',
+  'const char* text = R"(using List = int;)";',
+])('ignores non-code local aliases: %s', async (noise) => {
+  root=fs.mkdtempSync(path.join(os.tmpdir(),'cg-cpp-alias-'));
+  fs.writeFileSync(path.join(root,'use.cpp'), `struct Writer { void dump() {} };
+void run() {
+ using List = Writer;
+ ${noise}
+ List value;
+ value.dump();
+}
+`);
+  graph=await CodeGraph.init(root,{index:true});
+  const targets=graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls').map(e=>graph!.getNode(e.target)!.qualifiedName);
+  expect(targets).toEqual(['Writer::dump']);
+});
+
+it('resolves base specifiers outside the derived class member scope', async () => {
+  root=fs.mkdtempSync(path.join(os.tmpdir(),'cg-cpp-alias-'));
+  fs.writeFileSync(path.join(root,'use.cpp'), `namespace outer {
+struct Writer { void dump() {} };
+struct ActualBase { using Field=Writer; };
+struct Wrong {};
+struct Derived : ActualBase {
+ using ActualBase=Wrong;
+ void run(Field value) { value.dump(); }
+};
+}
+`);
+  graph=await CodeGraph.init(root,{index:true});
+  const targets=graph.getOutgoingEdgesFrom(graph.getNodesInFile('use.cpp').map(n=>n.id)).filter(e=>e.kind==='calls').map(e=>graph!.getNode(e.target)!.qualifiedName);
+  expect(targets).toEqual(['outer::Writer::dump']);
+});
