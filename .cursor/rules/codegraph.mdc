@@ -13,6 +13,7 @@ Detailed tool behavior, indexed-file coverage, freshness and fallback rules live
 in [`src/mcp/server-instructions.ts`](../../src/mcp/server-instructions.ts).
 Follow [`AGENTS.md`](../../AGENTS.md) for this repository's project safeguards.
 
-If `.codegraph/` does not exist, use built-in tools. Indexing is the user's
-decision; do not run `codegraph init` without their direction.
+For another project, pass its path as `projectPath`. Use built-in tools when
+the queried project has no `.codegraph/` index at or above that path. Indexing
+is the user's decision; do not run `codegraph init` without their direction.
 <!-- CODEGRAPH_END -->
