@@ -362,7 +362,7 @@ describe('SessionsIndex', () => {
     const dir = fixtureDir();
     const file = path.join(dir, 'aaaa-1111.jsonl');
     writeJsonl(file, [user('the pool sees one transcript from two threads')], 1_700_000_000);
-    const dbPath = path.join(fixtureDir(), 'sessions.db');
+    const dbPath = path.join(fixtureDir(), 'sessions-v2.db');
     const index = SessionsIndex.open(dbPath);
     const st = fs.statSync(file);
     const other = new Worker(
@@ -372,8 +372,10 @@ describe('SessionsIndex', () => {
        db.exec('BEGIN IMMEDIATE');
        parentPort.postMessage('locked');
        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
-       db.prepare('INSERT INTO docs (text, file, role, ts) VALUES (?, ?, ?, ?)')
+       const inserted = db.prepare('INSERT INTO docs (text, file, role, ts) VALUES (?, ?, ?, ?)')
          .run('the pool sees one transcript from two threads', workerData.file, 'user', workerData.ts);
+       db.prepare('INSERT INTO doc_sources (doc_rowid, file) VALUES (?, ?)')
+         .run(inserted.lastInsertRowid, workerData.file);
        db.prepare('INSERT OR REPLACE INTO files (path, session, title, mtime, size) VALUES (?, ?, ?, ?, ?)')
          .run(workerData.file, 'aaaa-1111', null, workerData.mtime, workerData.size);
        db.exec('COMMIT');
@@ -390,7 +392,7 @@ describe('SessionsIndex', () => {
   it('opens a fresh database while another connection holds it, converting to WAL once free', async () => {
     // An ordinary lock wait on the conversion is covered by busy_timeout: the
     // holder commits and this open then converts, rather than throwing.
-    const dbPath = path.join(fixtureDir(), 'sessions.db');
+    const dbPath = path.join(fixtureDir(), 'sessions-v2.db');
     const other = new Worker(
       `const { workerData, parentPort } = require('worker_threads');
        const { DatabaseSync } = require('node:sqlite');
@@ -442,7 +444,7 @@ describe('SessionsIndex', () => {
 });
 
 describe('querySessions (project entry point)', () => {
-  it('indexes into .codegraph/sessions.db from CODEGRAPH_SESSIONS_DIR and honors "sessions": false', () => {
+  it('indexes into .codegraph/sessions-v2.db from CODEGRAPH_SESSIONS_DIR and honors "sessions": false', () => {
     const project = fixtureDir();
     fs.mkdirSync(path.join(project, '.codegraph'));
     const transcripts = fixtureDir();
@@ -455,11 +457,11 @@ describe('querySessions (project entry point)', () => {
     // Same reader version: the file is not re-read. An index written by an
     // older reader (user_version behind) is re-read once in full.
     expect(querySessions(project, 'deciding dedupe').index.refreshed).toBe(0);
-    const { db } = createDatabase(path.join(project, '.codegraph', 'sessions.db'));
+    const { db } = createDatabase(path.join(project, '.codegraph', 'sessions-v2.db'));
     db.exec('PRAGMA user_version = 1');
     db.close();
     expect(querySessions(project, 'deciding dedupe').index).toEqual({ files: 1, refreshed: 1, docs: 1 });
-    expect(fs.existsSync(path.join(project, '.codegraph', 'sessions.db'))).toBe(true);
+    expect(fs.existsSync(path.join(project, '.codegraph', 'sessions-v2.db'))).toBe(true);
     expect(formatSessionHits('deciding dedupe', result)).toMatch(/^Sessions matching "deciding dedupe" — 1 hit across 1 transcript:/);
     expect(formatSessionHits('nothing', { index: result.index, hits: [] })).toMatch(/holds any of these words/);
 

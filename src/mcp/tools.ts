@@ -4561,7 +4561,7 @@ export class ToolHandler {
    */
   /**
    * Handle codegraph_sessions: refresh the project's session index (its own
-   * `.codegraph/sessions.db`, see src/sessions) and search it. A project with
+   * `.codegraph/sessions-v2.db`, see src/sessions) and search it. A project with
    * no transcripts, or one that opted out, answers as guidance rather than an
    * error, like an unindexed projectPath does.
    */

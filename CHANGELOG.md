@@ -95,6 +95,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Session search replaces changed transcripts through an indexed source lookup and keeps older executables in a separate store, preserving remembered worktrees while rebuilding transcript content on first use.
+
 - C++ anonymous pointer aggregates and partially qualified owners inside macro-opened namespaces retain their method calls. Pointer-annotation normalization leaves multiplication operands intact. Named-only React components do not invent default exports, and spaced type arguments do not create rendering edges.
 
 - Cross-file route-table reconciliation commits nodes and references together, allowing retry after a failed reference write.

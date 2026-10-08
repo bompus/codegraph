@@ -21,6 +21,8 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 T3-hosted provider transcripts can appear in session search; CodeGraph does not read the T3 database. The source includes a disabled-by-default offline Codex metadata prototype that associates caller-supplied T3 titles and thread links with existing hits. It has no CLI or MCP caller, adds no searchable prose and leaves provider titles, keys and ranking unchanged.
 
+Session history lives in `.codegraph/sessions-v2.db`, separate from the code graph. On first use it imports remembered project roots from the older `sessions.db` and reindexes available transcripts. The older file stays untouched, so older executables keep their own index; retaining both files costs extra disk space. Recognized older indexes that predate remembered roots start with none. A damaged newer roots table stops initialization rather than losing remembered worktrees.
+
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
 Explore reports requested files that did not receive pin priority within the file limit. Those files may still appear through other matches. References beyond the bounded path scan are marked unexamined. When a capped file gather leaves indexed source uncovered, the summary offers continuation ranges for another explore call. Existing file and output limits still apply.
