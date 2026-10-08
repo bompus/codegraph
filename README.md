@@ -76,7 +76,7 @@ Then run `codegraph init` in each project, as in [Get Started](#get-started). In
 
 T3-hosted provider transcripts can appear in session search; CodeGraph does not read the T3 database. A [pure offline Codex metadata prototype](docs/design/t3-session-metadata.md) associates caller-supplied app titles and thread links with existing hits. It has no CLI or MCP caller and adds no searchable prose.
 
-Session search uses a separate storage generation at `.codegraph/sessions-v2.db`. The first query reindexes transcripts and imports remembered project roots from the older `sessions.db`, leaving that file untouched for older executables. Keeping both files uses extra disk space. The graph index and project-local search scope stay unchanged.
+Session search uses `.codegraph/sessions-v2.db`. The first session search imports remembered roots from `sessions.db` and reindexes available transcripts. It leaves the older file untouched for older executables. Session mentions in code answers resume after the new store is populated. Cached passages from unavailable transcripts remain only in the older store. Retaining both files uses extra disk space. The graph index and project-local scope stay unchanged.
 
 ### What the fork adds
 

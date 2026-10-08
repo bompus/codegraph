@@ -28,8 +28,8 @@ const legacyStore = (file: string) => {
   const { db } = createDatabase(file);
   db.exec(`CREATE TABLE roots(path TEXT PRIMARY KEY);
     INSERT INTO roots VALUES ('removed-worktree');
-    CREATE VIRTUAL TABLE docs USING fts5(text, file UNINDEXED);
-    INSERT INTO docs VALUES ('Older writers retain their own transcript passages.', 'old');
+    CREATE VIRTUAL TABLE docs USING fts5(text, file UNINDEXED, role UNINDEXED, ts UNINDEXED);
+    INSERT INTO docs VALUES ('Older writers retain their own transcript passages.', 'old', 'user', '2026-10-07T00:00:00Z');
     PRAGMA user_version = 5;`);
   return db;
 };
@@ -91,7 +91,7 @@ describe('session storage generations', () => {
       try {
         for (const event of sequence) {
           if (event === 'legacy') {
-            old.exec("DELETE FROM docs; INSERT INTO docs VALUES ('Legacy row identifiers may be reused independently.', 'other');");
+            old.exec("DELETE FROM docs; INSERT INTO docs(text, file) VALUES ('Legacy row identifiers may be reused independently.', 'other');");
           } else if (event === 'replace') {
             present = true;
             index.refreshRecords([record('current', ++stamp)]);

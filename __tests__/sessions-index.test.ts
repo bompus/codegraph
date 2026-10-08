@@ -72,7 +72,7 @@ beforeEach(() => {
 afterEach(() => {
   // Under Bun (a contributor running vitest on it), node:sqlite keeps the file
   // handle of a prepared statement until GC even after `close()`, so the temp
-  // dir holding sessions.db is EBUSY without this. A no-op on Node.
+  // dir holding the session database is EBUSY without this. A no-op on Node.
   (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
   for (const k of [
