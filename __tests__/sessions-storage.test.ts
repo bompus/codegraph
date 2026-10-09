@@ -73,6 +73,22 @@ describe('session storage generations', () => {
     expect(fs.readFileSync(legacy)).toEqual(before);
   });
 
+  it('imports remembered roots once; roots an older writer records later stay in the older store', () => {
+    const { legacy, current } = fixture();
+    const old = legacyStore(legacy);
+    try {
+      expect(open(current).rememberRoots([])).toEqual(['removed-worktree']);
+      // An older executable keeps writing its own store after the upgrade.
+      old.exec("INSERT INTO roots VALUES ('later-worktree')");
+      const before = fs.readFileSync(legacy);
+      const reopened = open(current);
+      expect(reopened.rememberRoots([])).toEqual(['removed-worktree']);
+      expect(fs.readFileSync(legacy)).toEqual(before);
+      // A root the new store sees for itself is remembered there.
+      expect(reopened.rememberRoots(['later-worktree']).sort()).toEqual(['later-worktree', 'removed-worktree']);
+    } finally { old.close(); }
+  });
+
   it('keeps legacy writes, replacement, deletion and reopen independent in every three-event ordering', () => {
     const events = ['legacy', 'replace', 'delete', 'reopen'] as const;
     const sequences: Array<Array<typeof events[number]>> = [];

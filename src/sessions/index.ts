@@ -219,6 +219,8 @@ export class SessionsIndex {
               INSERT INTO doc_sources SELECT rowid, file FROM docs;`);
           }
           db.exec('CREATE INDEX IF NOT EXISTS doc_sources_file ON doc_sources(file)');
+          // Roots come over once, when this store is created; roots an older
+          // executable records in sessions.db afterwards stay there.
           if (!hadRoots && legacyPath && fs.existsSync(legacyPath)) {
             const legacy = createDatabase(legacyPath, { readOnly: true }).db;
             try {
