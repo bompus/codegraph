@@ -256,6 +256,18 @@ describe('QueryPool', () => {
     expect(pool.ready).toBe(false); // destroyed pool must not be selected
   });
 
+  it('a pool with no default project starts its first worker on warm()', async () => {
+    let created = 0;
+    const pool = new QueryPool({ root: null, size: 2, createWorker: () => { created++; return new FakeWorker((m) => ({ result: ok(`r:${m.toolName}`) })); } });
+    expect(created).toBe(0);
+    pool.warm();
+    pool.warm(); // one worker, however many calls ask
+    expect(created).toBe(1);
+    await sleep(5);
+    expect(pool.ready).toBe(true);
+    await pool.destroy();
+  });
+
   it('retires a failed cold start and serves queued work on its replacement', async () => {
     const workers: FakeWorker[] = [];
     const pool = new QueryPool({
@@ -395,10 +407,14 @@ describe('MCP query pool with real projects (#1465)', () => {
     fs.mkdirSync(workspace);
     const activeEngine = await start(hasDefault ? alpha : workspace);
     expect(pool).not.toBeNull();
-    await vi.waitFor(() => expect(pool!.ready).toBe(true), { timeout: 15000 });
+    // A rootless pool starts no worker until its first call.
+    expect(pool!.liveWorkers).toBe(hasDefault ? 1 : 0);
     const handler = activeEngine.getToolHandler();
     // Drain catch-up before comparing the worker and in-process paths.
     await handler.execute('codegraph_status', { projectPath: alpha });
+    // The first read call starts the worker and runs in-process meanwhile.
+    await handler.execute('codegraph_explore', { projectPath: alpha, query: 'alphaSymbol' });
+    await vi.waitFor(() => expect(pool!.ready).toBe(true), { timeout: 15000 });
     const session = new ExploreSessionState();
     const calls = Array.from({ length: 6 }, (_, i) => {
       const projectPath = i % 2 ? beta : alpha;

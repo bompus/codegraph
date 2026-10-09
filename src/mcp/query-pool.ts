@@ -210,7 +210,17 @@ export class QueryPool {
       this.retireTimer.unref?.();
     }
     this.startSettleMs = opts.startSettleMs ?? WORKER_START_SETTLE_MS;
-    this.spawnOne(); // one eager warm worker, ready for the first call
+    // One eager warm worker, ready for the first call. A pool with no default
+    // project waits for its first call instead: most such sessions never query.
+    if (this.root !== null) this.spawnOne();
+  }
+
+  /**
+   * Start a worker if none is running. Calls are served in-process until one is
+   * ready, so the call that triggers this does not wait for it.
+   */
+  warm(): void {
+    if (this.workers.size === 0 && this.healthy) this.spawnOne();
   }
 
   /**
