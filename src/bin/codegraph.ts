@@ -41,6 +41,12 @@ import { requestedViewerCommand, viewerEnabled } from './viewer-gate';
   }
 }
 
+// `prompt-hook` runs on every prompt and most prompts are no-ops: answer those
+// before the rest of the CLI loads.
+import { gatePromptHook, precheckPromptHook, promptHookDisabled, recordPromptHookGate, type PromptHookInput } from './prompt-hook-gate';
+const earlyPromptHook: PromptHookInput | null | undefined = process.argv[2] === 'prompt-hook' ? precheckPromptHook() : undefined;
+if (earlyPromptHook === null) process.exit(0);
+
 // Persist V8 compile artifacts across runs (Node ≥22.8). Every invocation —
 // and every worker thread, which re-requires the whole extraction module
 // graph — skips recompiling unchanged sources. Worth hundreds of ms of
@@ -53,8 +59,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, isHostNotification, isAgentMessage, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
-import { extractProseCandidates } from '../search/identifier-segments';
+import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -1606,62 +1611,23 @@ program
   .description('Claude UserPromptSubmit hook: inject CodeGraph context for structural prompts (reads {prompt,cwd} JSON on stdin)')
   .action(async () => {
     try {
-      // Kill-switch: lets a user disable the nudge without uninstalling /
-      // editing settings.json (CI, low-power machines, personal preference).
-      if (process.env.CODEGRAPH_NO_PROMPT_HOOK === '1' || process.env.CODEGRAPH_PROMPT_HOOK === '0') return;
-      if (process.stdin.isTTY) return; // invoked by hand, no piped payload
-
-      const raw = await new Promise<string>((resolve) => {
-        let data = '';
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', (c) => { data += c; });
-        process.stdin.on('end', () => resolve(data));
-        process.stdin.on('error', () => resolve(data));
-      });
-
-      let input: { prompt?: string; cwd?: string } = {};
-      try { input = JSON.parse(raw); } catch { return; }
-      const prompt = String(input.prompt || '');
-      // Gate telemetry: how often each tier fires vs. no-ops — counter names
-      // only, NEVER prompt content (see TELEMETRY.md). This is the data that
-      // turns "is the gate any good" from vibes into a measured recall rate.
-      const gate = (outcome: string): void => {
-        try { getTelemetry().recordUsage('cli_command', `prompt-hook-gate-${outcome}`, true); } catch { /* never break the hook */ }
-      };
-
-      // Gate, tiered by confidence (#994, #1126):
-      //   HIGH   — a structural keyword (any covered language), or a code-shaped
-      //            token verified in the index → full explore injection.
-      //   MEDIUM — no keyword/token, but prose words match indexed symbol-name
-      //            SEGMENTS ("state machine" → OrderStateMachine, in any
-      //            language): inject a short list of the matching symbols and
-      //            let the AGENT write the explore query — the graph-derived
-      //            tier, no vocabulary involved.
-      //   silent — nothing verified. Every other prompt ("fix this typo")
-      //            stays a zero-cost no-op.
-      // Keywords fire on their own; a token or prose word is only a CANDIDATE
-      // verified against the graph below, so a tech brand ("JavaScript") that
-      // merely looks like code doesn't inject spurious context.
-      // Host notifications and subagent hand-backs (#2184) are not user prompts.
-      if (isHostNotification(prompt) || isAgentMessage(prompt)) { gate('noop-notification'); return; }
-      const keyworded = hasStructuralKeyword(prompt);
-      // "review my changes", `main..HEAD`: explore answers these from the diff,
-      // so a confirmed change question gets the full injection like a keyword.
-      const { looksLikeChangeQuestion, collectChanges } = await import('../mcp/explore-changes');
-      const changeShaped = !keyworded && looksLikeChangeQuestion(prompt);
-      const codeTokens = keyworded ? [] : extractCodeTokens(prompt);
-      const proseWords = keyworded ? [] : extractProseCandidates(prompt);
-      if (!keyworded && !changeShaped && codeTokens.length === 0 && proseWords.length === 0) { gate('noop-shape'); return; }
-
-      // Decide what to inject, shaped by WHERE the index(es) are: the nearest
-      // indexed ancestor of cwd, or — when cwd is an un-indexed workspace root
-      // whose indexed project(s) live in sub-dirs (the monorepo case, #964) —
-      // the sub-project the prompt points at, plus a `projectPath` nudge for any
-      // others. Without the down-scan the hook injected nothing at a monorepo
-      // root (it only walked up), so the validated adoption lever never fired
-      // exactly where the agent most needs it.
-      const plan = planFrontload(String(input.cwd || process.cwd()), prompt);
-      if (!plan.exploreRoot && plan.nudgeProjects.length === 0) { gate('noop-no-index'); return; } // nothing reachable — the agent's normal tools apply
+      let input = earlyPromptHook;
+      if (!input) {
+        if (promptHookDisabled()) return;
+        const raw = await new Promise<string>((resolve) => {
+          let data = '';
+          process.stdin.setEncoding('utf8');
+          process.stdin.on('data', (c) => { data += c; });
+          process.stdin.on('end', () => resolve(data));
+          process.stdin.on('error', () => resolve(data));
+        });
+        input = gatePromptHook(raw);
+        if (!input) return;
+      }
+      const { keyworded, changeShaped, codeTokens, proseWords, plan } = input;
+      const prompt = input.prompt;
+      const gate = recordPromptHookGate;
+      const { collectChanges } = await import('../mcp/explore-changes');
 
       // A "pass projectPath" line for indexed sub-projects we did NOT front-load.
       // Follow-up codegraph_explore calls against a sub-project (cwd isn't its
