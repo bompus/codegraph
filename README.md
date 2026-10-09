@@ -74,6 +74,8 @@ Later-exported TypeScript and JavaScript store actions are read from AST export 
 
 Then run `codegraph init` in each project, as in [Get Started](#get-started). Indexes built by upstream releases should be rebuilt (`codegraph index --force`), because the fork writes tables and node kinds that upstream does not.
 
+T3-hosted provider transcripts can appear in session search; CodeGraph does not read the T3 database. A [pure offline Codex metadata prototype](docs/design/t3-session-metadata.md) associates caller-supplied app titles and thread links with existing hits. It has no CLI or MCP caller and adds no searchable prose.
+
 ### What the fork adds
 
 Compared with upstream `main` at `b635dd46` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
