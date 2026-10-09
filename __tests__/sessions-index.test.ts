@@ -900,6 +900,8 @@ describe('querySessions (project entry point)', () => {
     fs.writeFileSync(summary, JSON.stringify({ session_summary: 'bounded ring buffer' }));
     fs.utimesSync(summary, 1_700_000_100, 1_700_000_100);
     expect(querySessions(project, 'flushRingBuffer').hits[0]).toMatchObject({ session: `grok:${sid}`, title: 'bounded ring buffer' });
+    // A passage with no time of its own keeps the transcript's, not the rename's.
+    expect(querySessions(project, 'Refactor').hits[0]!.ts).toBe(new Date(1_700_000_000_000).toISOString());
   });
 
   it('keeps commits to a subdirectory project and needs a transcript to search at all', () => {

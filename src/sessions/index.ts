@@ -178,6 +178,8 @@ type TranscriptRecord = {
   path: string;
   mtime: number;
   size: number;
+  /** Time for passages that carry none of their own, when it differs from `mtime`. */
+  docTime?: number;
   /** Null when the source could not be read now; the record is retried next query. */
   load: () => LoadedTranscript | null;
 };
@@ -383,7 +385,7 @@ export class SessionsIndex {
       this.dropDocs.run(rec.path);
       this.dropSources.run(rec.path);
       for (const d of docs) {
-        const inserted = this.addDoc.run(d.text, rec.path, d.role, d.ts || new Date(rec.mtime).toISOString());
+        const inserted = this.addDoc.run(d.text, rec.path, d.role, d.ts || new Date(rec.docTime ?? rec.mtime).toISOString());
         this.addSource.run(inserted.lastInsertRowid, rec.path);
       }
       this.putFile.run(rec.path, loaded.session, loaded.title, rec.mtime, rec.size);
@@ -589,7 +591,7 @@ function collectRecords(
     }
     // A Grok title lives in its own file; renaming a session touches only that one.
     const mtime = h.host === 'grok' ? Math.max(st.mtimeMs, mtimeOf(grokSummaryFile(h.file))) : st.mtimeMs;
-    records.push({ path: h.file, mtime, size: st.size, load: () => loadHosted(h.file, h.host) });
+    records.push({ path: h.file, mtime, size: st.size, docTime: st.mtimeMs, load: () => loadHosted(h.file, h.host) });
   }
   const head = projectRoot ? gitHead(projectRoot) : null;
   if (head && projectRoot) {
