@@ -268,6 +268,32 @@ describe('QueryPool', () => {
     await pool.destroy();
   });
 
+  it('retires idle workers down to one with a default project, and to none without one', async () => {
+    const make = (root: string | null) => {
+      let created = 0;
+      const pool = new QueryPool({ root, size: 2, idleRetireMs: 1_000, createWorker: () => { created++; return new FakeWorker((m) => ({ result: ok(`r:${m.toolName}`) })); } });
+      return { pool, created: () => created };
+    };
+    const retire = (pool: QueryPool) => (pool as unknown as { retireIdle(now: number): void }).retireIdle(Date.now() + 60_000);
+
+    const rooted = make('/x');
+    await sleep(5);
+    expect(rooted.pool.liveWorkers).toBe(1);
+    retire(rooted.pool);
+    expect(rooted.pool.liveWorkers).toBe(1); // stays warm for the default project
+    await rooted.pool.destroy();
+
+    const rootless = make(null);
+    rootless.pool.warm();
+    await sleep(5);
+    expect(await rootless.pool.run('codegraph_explore', {})).toEqual(ok('r:codegraph_explore'));
+    retire(rootless.pool);
+    expect(rootless.pool.liveWorkers).toBe(0);
+    rootless.pool.warm(); // the next call that names a project starts one again
+    expect(rootless.created()).toBe(2);
+    await rootless.pool.destroy();
+  });
+
   it('retires a failed cold start and serves queued work on its replacement', async () => {
     const workers: FakeWorker[] = [];
     const pool = new QueryPool({
