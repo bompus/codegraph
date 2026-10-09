@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from '../db/sqlite-adapter';
-import { MIN_DOC_CHARS, type SessionDoc, type StoredSession } from './claude-code';
+import { MIN_DOC_CHARS, type SessionDoc, type StoredSession, type UnavailableStores } from './claude-code';
 import { cwdInRoots } from './project-roots';
 
 type Db = ReturnType<typeof createDatabase>['db'];
@@ -64,11 +64,15 @@ const VERSIONS = [
   },
 ];
 
-export function opencodeSessionsForProject(roots: readonly string[]): StoredSession[] {
+export function opencodeSessionsForProject(roots: readonly string[], unavailable?: UnavailableStores): StoredSession[] {
   const dbPath = opencodeDbPath();
   if (!fs.existsSync(dbPath)) return [];
   const db = openStore(dbPath);
-  if (!db) return [];
+  if (!db) {
+    // Present but unreadable (permissions, lock): keep what the index holds.
+    unavailable?.push(`opencode:${dbPath}:`);
+    return [];
+  }
   try {
     // A session present in both versions is read from the copy updated last:
     // OpenCode 2 keeps writing a migrated session to its own tables only.

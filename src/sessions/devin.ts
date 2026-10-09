@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from '../db/sqlite-adapter';
-import { MIN_DOC_CHARS, type SessionDoc, type StoredSession } from './claude-code';
+import { MIN_DOC_CHARS, type SessionDoc, type StoredSession, type UnavailableStores } from './claude-code';
 import { cwdInRoots } from './project-roots';
 
 export function devinDataDir(): string {
@@ -50,11 +50,15 @@ function openStore(dbPath: string): ReturnType<typeof createDatabase>['db'] | nu
   }
 }
 
-export function devinSessionsForProject(roots: readonly string[]): StoredSession[] {
+export function devinSessionsForProject(roots: readonly string[], unavailable?: UnavailableStores): StoredSession[] {
   const out: StoredSession[] = [];
   for (const dbPath of devinDbPaths()) {
     const db = openStore(dbPath);
-    if (!db) continue;
+    if (!db) {
+      // Present but unreadable (permissions, lock): keep what the index holds.
+      unavailable?.push(`devin:${dbPath}:`);
+      continue;
+    }
     try {
       // Row count and total message length: a node rewritten in place (a reply
       // still streaming when first indexed) changes the length.
@@ -95,7 +99,9 @@ export function devinSessionsForProject(roots: readonly string[]): StoredSession
         });
       }
     } catch {
-      // A store whose schema predates these columns contributes nothing.
+      // A store whose schema predates these columns has nothing indexed, and a
+      // read that fails (busy, unreadable) must not forget what it had.
+      unavailable?.push(`devin:${dbPath}:`);
     } finally {
       db.close();
     }

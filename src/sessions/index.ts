@@ -27,6 +27,7 @@ import {
   transcriptDocs,
   transcriptTitle,
   walkJsonl,
+  type UnavailableStores,
 } from './claude-code';
 import { parseCodexTranscript, codexFilesForProject, normalizeRemote } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
@@ -307,7 +308,12 @@ export class SessionsIndex {
     );
   }
 
-  refreshRecords(records: TranscriptRecord[]): SessionsIndexStats {
+  /**
+   * Index `records` and forget indexed paths no longer listed, except those
+   * under an `unavailable` prefix: a store that exists but could not be read
+   * on this query keeps what the index already holds.
+   */
+  refreshRecords(records: TranscriptRecord[], unavailable: readonly string[] = []): SessionsIndexStats {
     const known = new Map(
       (this.db.prepare('SELECT path, mtime, size FROM files').all() as FileRow[]).map((r) => [r.path, r]),
     );
@@ -330,7 +336,9 @@ export class SessionsIndex {
         dropFile.run(file);
       }
     });
-    const gone = [...known.keys()].filter((p) => !present.has(p));
+    const gone = [...known.keys()].filter(
+      (p) => !present.has(p) && !unavailable.some((prefix) => p.startsWith(prefix)),
+    );
     if (gone.length) forget(gone);
     return stats;
   }
@@ -461,24 +469,28 @@ export function sessionsDbPath(projectRoot: string): string {
   return path.join(getCodeGraphDir(projectRoot), SESSIONS_DB_FILENAME);
 }
 
-export function claudeFilesForProject(roots: readonly string[]): string[] {
+export function claudeFilesForProject(roots: readonly string[], unavailable?: UnavailableStores): string[] {
   const files: string[] = [];
   for (const root of roots) {
     const dir = claudeSessionsDir(root);
-    if (dir) files.push(...walkJsonl(dir));
+    if (dir) files.push(...walkJsonl(dir, unavailable));
   }
   return files;
 }
 
 type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' | 'agy' | 'grok' };
 
-function hostedTranscripts(roots: readonly string[], remotes: readonly string[]): HostedTranscript[] {
+function hostedTranscripts(
+  roots: readonly string[],
+  remotes: readonly string[],
+  unavailable: UnavailableStores,
+): HostedTranscript[] {
   const out: HostedTranscript[] = [];
-  for (const file of claudeFilesForProject(roots)) out.push({ file, host: 'claude' });
-  for (const file of codexFilesForProject(roots, remotes)) out.push({ file, host: 'codex' });
-  for (const file of cursorFilesForProject(roots)) out.push({ file, host: 'cursor' });
-  for (const file of agyFilesForProject(roots)) out.push({ file, host: 'agy' });
-  for (const file of grokFilesForProject(roots)) out.push({ file, host: 'grok' });
+  for (const file of claudeFilesForProject(roots, unavailable)) out.push({ file, host: 'claude' });
+  for (const file of codexFilesForProject(roots, remotes, unavailable)) out.push({ file, host: 'codex' });
+  for (const file of cursorFilesForProject(roots, unavailable)) out.push({ file, host: 'cursor' });
+  for (const file of agyFilesForProject(roots, unavailable)) out.push({ file, host: 'agy' });
+  for (const file of grokFilesForProject(roots, unavailable)) out.push({ file, host: 'grok' });
   return out;
 }
 
@@ -513,9 +525,15 @@ function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscr
   };
 }
 
-function collectRecords(roots: readonly string[], remotes: readonly string[], projectRoot?: string): TranscriptRecord[] {
+/** The project's transcripts; stores that exist but cannot be read now go to `unavailable`. */
+function collectRecords(
+  roots: readonly string[],
+  remotes: readonly string[],
+  unavailable: UnavailableStores,
+  projectRoot?: string,
+): TranscriptRecord[] {
   const records: TranscriptRecord[] = [];
-  for (const h of hostedTranscripts(roots, remotes)) {
+  for (const h of hostedTranscripts(roots, remotes, unavailable)) {
     let st: fs.Stats;
     try {
       st = fs.statSync(h.file);
@@ -535,7 +553,7 @@ function collectRecords(roots: readonly string[], remotes: readonly string[], pr
       load: () => ({ session: `git:${path.basename(projectRoot)}`, title: 'commit messages', docs: gitCommitDocs(projectRoot) }),
     });
   }
-  for (const session of [...opencodeSessionsForProject(roots), ...devinSessionsForProject(roots)]) {
+  for (const session of [...opencodeSessionsForProject(roots, unavailable), ...devinSessionsForProject(roots, unavailable)]) {
     records.push({
       path: session.path,
       mtime: session.mtime,
@@ -576,11 +594,15 @@ export function querySessions(
       return result(stats, index.search(query, opts));
     }
     const roots = index.rememberRoots(projectWorktreeRoots(projectRoot));
-    const records = collectRecords(roots, projectRemotes(projectRoot), projectRoot);
+    const unavailable: UnavailableStores = [];
+    const records = collectRecords(roots, projectRemotes(projectRoot), unavailable, projectRoot);
     // Commit messages alone are not session history: without a transcript the
-    // guidance (which hosts, how to opt out) says more than "0 hits".
-    if (records.every((r) => r.path.startsWith('git:'))) throw new NoSessionsError(projectRoot);
-    const stats = index.refreshRecords(records);
+    // guidance (which hosts, how to opt out) says more than "0 hits". A store
+    // that exists but cannot be read now still answers from what is indexed.
+    if (records.every((r) => r.path.startsWith('git:')) && unavailable.length === 0) {
+      throw new NoSessionsError(projectRoot);
+    }
+    const stats = index.refreshRecords(records, unavailable);
     return result(stats, index.search(query, opts));
   } finally {
     index.close();

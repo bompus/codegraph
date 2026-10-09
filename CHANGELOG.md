@@ -95,6 +95,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Session search no longer forgets a transcript store it cannot read right now. An OpenCode or Devin database that will not open, or a session directory that cannot be listed, keeps its already-indexed sessions until it reads again; a store that was removed is still forgotten.
 - Session search replaces changed transcripts through an indexed source lookup. A separate store protects that lookup from older writers. Remembered roots carry forward; available transcript content rebuilds on the first session search.
 
 - C++ anonymous pointer aggregates and partially qualified owners inside macro-opened namespaces retain their method calls. Pointer-annotation normalization leaves multiplication operands intact. Named-only React components do not invent default exports, and spaced type arguments do not create rendering edges.

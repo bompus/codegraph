@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
+import { MIN_DOC_CHARS, type SessionDoc, type UnavailableStores } from './claude-code';
 import { walkSessionJsonl } from './collect';
 
 interface CursorLine {
@@ -26,12 +26,12 @@ export function cursorProjectSlug(projectRoot: string): string {
   return path.resolve(projectRoot).replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
-export function cursorFilesForProject(roots: readonly string[]): string[] {
+export function cursorFilesForProject(roots: readonly string[], unavailable?: UnavailableStores): string[] {
   const projects = path.join(cursorConfigDir(), 'projects');
   const files: string[] = [];
   for (const root of roots) {
     const dir = path.join(projects, cursorProjectSlug(root), 'agent-transcripts');
-    if (fs.existsSync(dir)) files.push(...walkSessionJsonl(dir));
+    if (fs.existsSync(dir)) files.push(...walkSessionJsonl(dir, unavailable));
   }
   return files;
 }

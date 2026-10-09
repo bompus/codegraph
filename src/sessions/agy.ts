@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createDatabase } from '../db/sqlite-adapter';
-import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
+import { MIN_DOC_CHARS, type SessionDoc, type UnavailableStores } from './claude-code';
 import { cwdInRoots } from './project-roots';
 
 const FILE_URI = /file:\/\/(\/[\w./@+\-]+)/g;
@@ -124,12 +124,20 @@ export function parseAgyTranscript(file: string): { session: string; title: stri
   return { session: `agy:${id}`, title: null, docs };
 }
 
-export function agyFilesForProject(roots: readonly string[]): string[] {
+export function agyFilesForProject(roots: readonly string[], unavailable?: UnavailableStores): string[] {
   const root = antigravityDir();
   const brain = path.join(root, 'brain');
   if (!fs.existsSync(brain)) return [];
   const files: string[] = [];
-  for (const dirent of fs.readdirSync(brain, { withFileTypes: true })) {
+  let conversations: fs.Dirent[];
+  try {
+    conversations = fs.readdirSync(brain, { withFileTypes: true });
+  } catch (err) {
+    if (!unavailable) throw err;
+    unavailable.push(brain + path.sep);
+    return files;
+  }
+  for (const dirent of conversations) {
     if (!dirent.isDirectory()) continue;
     const workspaces = conversationWorkspaces(root, dirent.name);
     if (!belongs(roots, workspaces)) continue;
