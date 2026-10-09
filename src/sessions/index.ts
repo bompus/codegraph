@@ -4,13 +4,12 @@
  * query instead of a grep over hundreds of megabytes of JSONL.
  *
  * An FTS5 table (porter stemming, BM25 rank) over the prose of every
- * transcript, stored in its own file, `.codegraph/sessions.db`, beside the
+ * transcript, stored in its own file, `.codegraph/sessions-v2.db`, beside the
  * graph. Its own file on purpose: the graph's schema, migrations and bulk-load
  * FTS rebuild stay untouched, and the two indexes have different lifetimes (a
  * transcript changes while the code does not). Refresh happens on query and
- * re-reads only files whose mtime or size moved, so a call after one live
- * session costs tens of milliseconds; the first index of a few hundred
- * transcripts takes about a second.
+ * re-reads only files whose mtime or size moved. An ordinary indexed table
+ * maps each source to its FTS rows, so replacement does not scan other prose.
  *
  * Readers live beside this file, one per agent host (Claude Code, Codex, Cursor,
  * OpenCode, AGY, Devin, Grok), plus `git-log.ts` for commit messages.
@@ -39,7 +38,8 @@ import { devinSessionsForProject } from './devin';
 import { indexableDocs } from './noise';
 import { projectWorktreeRoots } from './project-roots';
 
-export const SESSIONS_DB_FILENAME = 'sessions.db';
+export const SESSIONS_DB_FILENAME = 'sessions-v2.db';
+const LEGACY_SESSIONS_DB_FILENAME = 'sessions.db';
 
 /** How long a connection waits for another's write before giving up. */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -186,32 +186,83 @@ export class SessionsIndex {
   private readonly putFile: SqliteStatement;
   private readonly dropDocs: SqliteStatement;
   private readonly addDoc: SqliteStatement;
+  private readonly dropSources: SqliteStatement;
+  private readonly addSource: SqliteStatement;
 
-  private constructor(private readonly db: SqliteDatabase) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS files (
-        path TEXT PRIMARY KEY, session TEXT NOT NULL, title TEXT, mtime REAL NOT NULL, size INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS roots (path TEXT PRIMARY KEY);
-      CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(
-        text, file UNINDEXED, role UNINDEXED, ts UNINDEXED, tokenize = 'porter unicode61'
-      );
-    `);
-    // A reader change (what counts as prose) only reaches transcripts that
-    // change afterwards; bumping INDEX_VERSION re-reads every file once.
-    if (db.pragma('user_version', { simple: true }) !== INDEX_VERSION) {
-      db.exec(`DELETE FROM docs; DELETE FROM files; PRAGMA user_version = ${INDEX_VERSION}`);
+  private constructor(private readonly db: SqliteDatabase, legacyPath?: string) {
+    // An older executable can still write sessions.db. Keep its FTS row IDs
+    // separate from the mapping maintained by this storage generation.
+    const schemaReady = (): boolean => {
+      const rows = db.prepare(`SELECT name FROM sqlite_master
+        WHERE (type = 'table' AND name IN ('files', 'roots', 'docs', 'doc_sources'))
+           OR (type = 'index' AND name = 'doc_sources_file')`).all() as Array<{ name: string }>;
+      return rows.length === 5 && db.pragma('user_version', { simple: true }) === INDEX_VERSION;
+    };
+    if (!schemaReady()) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!schemaReady()) {
+          const hadRoots = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roots'").get();
+          db.exec(`
+            CREATE TABLE IF NOT EXISTS files (
+              path TEXT PRIMARY KEY, session TEXT NOT NULL, title TEXT, mtime REAL NOT NULL, size INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS roots (path TEXT PRIMARY KEY);
+            CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(
+              text, file UNINDEXED, role UNINDEXED, ts UNINDEXED, tokenize = 'porter unicode61'
+            );
+          `);
+          const mapped = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'doc_sources'").get();
+          if (!mapped) {
+            db.exec(`CREATE TABLE doc_sources (doc_rowid INTEGER PRIMARY KEY, file TEXT NOT NULL);
+              INSERT INTO doc_sources SELECT rowid, file FROM docs;`);
+          }
+          db.exec('CREATE INDEX IF NOT EXISTS doc_sources_file ON doc_sources(file)');
+          if (!hadRoots && legacyPath && fs.existsSync(legacyPath)) {
+            const legacy = createDatabase(legacyPath, { readOnly: true }).db;
+            try {
+              legacy.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+              // Reader versions 1–4 predate remembered roots. A newer store
+              // missing that table is damaged, so its import must still fail.
+              const version = legacy.pragma('user_version', { simple: true }) as number;
+              const tables = legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('files', 'docs', 'roots')")
+                .all() as Array<{ name: string }>;
+              const preRoots = version >= 1 && version <= 4 && tables.length === 2
+                && tables.some((t) => t.name === 'files') && tables.some((t) => t.name === 'docs');
+              const roots = preRoots ? [] : legacy.prepare('SELECT path FROM roots').all() as Array<{ path: string }>;
+              const put = db.prepare('INSERT OR IGNORE INTO roots (path) VALUES (?)');
+              for (const root of roots) put.run(root.path);
+            } finally {
+              legacy.close();
+            }
+          }
+          // Reader changes rebuild prose, while remembered project roots stay.
+          if (db.pragma('user_version', { simple: true }) !== INDEX_VERSION) {
+            db.exec(`DELETE FROM docs; DELETE FROM doc_sources; DELETE FROM files;
+              PRAGMA user_version = ${INDEX_VERSION}`);
+          }
+        }
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
     }
     this.fileRow = db.prepare('SELECT mtime, size FROM files WHERE path = ?');
     this.putFile = db.prepare(
       'INSERT OR REPLACE INTO files (path, session, title, mtime, size) VALUES (?, ?, ?, ?, ?)',
     );
-    this.dropDocs = db.prepare('DELETE FROM docs WHERE file = ?');
+    this.dropDocs = db.prepare('DELETE FROM docs WHERE rowid IN (SELECT doc_rowid FROM doc_sources WHERE file = ?)');
+    this.dropSources = db.prepare('DELETE FROM doc_sources WHERE file = ?');
+    this.addSource = db.prepare('INSERT INTO doc_sources (doc_rowid, file) VALUES (?, ?)');
     this.addDoc = db.prepare('INSERT INTO docs (text, file, role, ts) VALUES (?, ?, ?, ?)');
   }
 
   /** Open (creating if needed) the index at `dbPath`; `:memory:` for tests. */
   static open(dbPath: string): SessionsIndex {
+    if (path.basename(dbPath) === LEGACY_SESSIONS_DB_FILENAME) {
+      throw new Error(`The legacy sessions.db belongs to older writers; open ${SESSIONS_DB_FILENAME} instead.`);
+    }
     if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const { db } = createDatabase(dbPath);
     // Parallel tool calls run on worker threads, one connection each, and all
@@ -219,9 +270,16 @@ export class SessionsIndex {
     // zero, so without this the losers fail with "database is locked" instead
     // of waiting the few hundred milliseconds the winner's write takes. Set
     // before the constructor's schema and version writes, which race the same way.
-    db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    if (dbPath !== ':memory:') enterWalMode(db);
-    return new SessionsIndex(db);
+    try {
+      db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      if (dbPath !== ':memory:') enterWalMode(db);
+      const legacyPath = path.basename(dbPath) === SESSIONS_DB_FILENAME
+        ? path.join(path.dirname(dbPath), LEGACY_SESSIONS_DB_FILENAME) : undefined;
+      return new SessionsIndex(db, legacyPath);
+    } catch (err) {
+      db.close();
+      throw err;
+    }
   }
 
   private loadClaudeFile(file: string): {
@@ -268,6 +326,7 @@ export class SessionsIndex {
       const dropFile = this.db.prepare('DELETE FROM files WHERE path = ?');
       for (const file of gone) {
         this.dropDocs.run(file);
+        this.dropSources.run(file);
         dropFile.run(file);
       }
     });
@@ -309,8 +368,10 @@ export class SessionsIndex {
       }
       const docs = indexableDocs(loaded.docs);
       this.dropDocs.run(rec.path);
+      this.dropSources.run(rec.path);
       for (const d of docs) {
-        this.addDoc.run(d.text, rec.path, d.role, d.ts || new Date(rec.mtime).toISOString());
+        const inserted = this.addDoc.run(d.text, rec.path, d.role, d.ts || new Date(rec.mtime).toISOString());
+        this.addSource.run(inserted.lastInsertRowid, rec.path);
       }
       this.putFile.run(rec.path, loaded.session, loaded.title, rec.mtime, rec.size);
       this.db.exec('COMMIT');
