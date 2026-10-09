@@ -1034,6 +1034,33 @@ describe('stores that exist but cannot be read', () => {
     });
   });
 
+  it('answers from the index when the only transcript store cannot be read', () => {
+    const root = fixtureDir();
+    fs.mkdirSync(path.join(root, '.codegraph'));
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    process.env.CODEX_HOME = fixtureDir();
+    const sessionsDir = path.join(process.env.CODEX_HOME, 'sessions');
+    writeJsonl(
+      path.join(sessionsDir, 'rollout-a.jsonl'),
+      [
+        { timestamp: at, type: 'session_meta', payload: { session_id: 'codex-a', cwd: root } },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep the write-time dedupe in Codex' }] },
+        },
+      ],
+      1_700_000_000,
+    );
+    expect(sessions(root)).toEqual(['codex:codex-a']);
+    blocked(sessionsDir, 'file', () => {
+      expect(sessions(root)).toEqual(['codex:codex-a']);
+    });
+  });
+
   it('still forgets sessions whose store was removed', () => {
     const root = project();
     const sessionsDir = path.join(process.env.CODEX_HOME!, 'sessions');

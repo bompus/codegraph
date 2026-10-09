@@ -597,8 +597,11 @@ export function querySessions(
     const unavailable: UnavailableStores = [];
     const records = collectRecords(roots, projectRemotes(projectRoot), unavailable, projectRoot);
     // Commit messages alone are not session history: without a transcript the
-    // guidance (which hosts, how to opt out) says more than "0 hits".
-    if (records.every((r) => r.path.startsWith('git:'))) throw new NoSessionsError(projectRoot);
+    // guidance (which hosts, how to opt out) says more than "0 hits". A store
+    // that exists but cannot be read now still answers from what is indexed.
+    if (records.every((r) => r.path.startsWith('git:')) && unavailable.length === 0) {
+      throw new NoSessionsError(projectRoot);
+    }
     const stats = index.refreshRecords(records, unavailable);
     return result(stats, index.search(query, opts));
   } finally {
