@@ -45,4 +45,19 @@ describe('prompt-hook no-op exits before the CLI loads', () => {
     expect(loaded.some((f) => f.includes(`${path.sep}commander${path.sep}`))).toBe(false);
     expect(loaded.some((f) => f.endsWith(`${path.sep}codegraph.js`) && f.includes(`${path.sep}dist${path.sep}`) && !f.includes(`${path.sep}bin${path.sep}`))).toBe(false);
   });
+
+  it("still counts the run, as commander's preAction hook did", () => {
+    const home = path.join(tmp, 'home');
+    fs.mkdirSync(home);
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, CODEGRAPH_TELEMETRY: '1', CODEGRAPH_NO_PROMPT_HOOK: '0', CODEGRAPH_PROMPT_HOOK: '1' };
+    delete env.DO_NOT_TRACK;
+    const result = spawnSync(process.execPath, [BIN, 'prompt-hook'], {
+      cwd: tmp, input: JSON.stringify({ cwd: tmp, prompt: 'yes do it' }), encoding: 'utf8', timeout: 15_000, env,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const queue = fs.readFileSync(path.join(home, '.codegraph', 'telemetry-queue.jsonl'), 'utf8');
+    const names = queue.trim().split('\n').map((line) => (JSON.parse(line) as { n?: string }).n);
+    expect(names).toContain('prompt-hook');
+    expect(names).toContain('prompt-hook-gate-noop-shape');
+  });
 });

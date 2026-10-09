@@ -40,6 +40,14 @@ export function recordPromptHookGate(outcome: string): void {
 }
 
 /**
+ * The `prompt-hook` command count that commander's preAction hook records for
+ * a run that reaches the CLI; a run that exits early records it here instead.
+ */
+export function recordPromptHookRun(): void {
+  try { getTelemetry().recordUsage('cli_command', 'prompt-hook', true); } catch { /* never break the hook */ }
+}
+
+/**
  * Kill-switch, or no piped payload (invoked by hand). The kill-switch lets a
  * user disable the nudge without uninstalling or editing settings.json (CI,
  * low-power machines, personal preference).

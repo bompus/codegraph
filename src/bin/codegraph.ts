@@ -43,9 +43,12 @@ import { requestedViewerCommand, viewerEnabled } from './viewer-gate';
 
 // `prompt-hook` runs on every prompt and most prompts are no-ops: answer those
 // before the rest of the CLI loads.
-import { gatePromptHook, precheckPromptHook, promptHookDisabled, recordPromptHookGate, type PromptHookInput } from './prompt-hook-gate';
+import { gatePromptHook, precheckPromptHook, promptHookDisabled, recordPromptHookGate, recordPromptHookRun, type PromptHookInput } from './prompt-hook-gate';
 const earlyPromptHook: PromptHookInput | null | undefined = process.argv[2] === 'prompt-hook' ? precheckPromptHook() : undefined;
-if (earlyPromptHook === null) process.exit(0);
+if (earlyPromptHook === null) {
+  recordPromptHookRun();
+  process.exit(0);
+}
 
 // Persist V8 compile artifacts across runs (Node ≥22.8). Every invocation —
 // and every worker thread, which re-requires the whole extraction module
