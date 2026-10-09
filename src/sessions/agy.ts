@@ -30,36 +30,61 @@ function pathsFromText(text: string): string[] {
   return out;
 }
 
-function metadataWorkspaces(root: string, id: string): string[] {
+/** Workspace paths per conversation from `cache/conversation_metadata.json`, read once per scan. */
+function metadataWorkspaces(root: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
   const file = path.join(root, 'cache', 'conversation_metadata.json');
-  if (!fs.existsSync(file)) return [];
+  if (!fs.existsSync(file)) return out;
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
       conversations?: Record<string, { summary?: { WorkspaceURIs?: string[] } }>;
     };
-    return (parsed.conversations?.[id]?.summary?.WorkspaceURIs ?? []).map(fileUriToPath);
+    for (const [id, conv] of Object.entries(parsed.conversations ?? {})) {
+      const uris = conv?.summary?.WorkspaceURIs;
+      if (Array.isArray(uris)) out.set(id, uris.filter((u): u is string => typeof u === 'string').map(fileUriToPath));
+    }
   } catch {
-    return [];
+    // Unreadable or malformed: the other sources still apply.
   }
+  return out;
 }
 
-function summariesWorkspaces(root: string, id: string): string[] {
+/**
+ * Workspace paths per conversation from `conversation_summaries.db`, read once
+ * per scan, or null when the database exists but cannot be opened now.
+ */
+function summariesWorkspaces(root: string): Map<string, string[]> | null {
+  const out = new Map<string, string[]>();
   const dbPath = path.join(root, 'conversation_summaries.db');
-  if (!fs.existsSync(dbPath)) return [];
-  const { db } = createDatabase(dbPath, { readOnly: true });
+  if (!fs.existsSync(dbPath)) return out;
+  let db: ReturnType<typeof createDatabase>['db'];
   try {
-    const row = db
-      .prepare('SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ?')
-      .get(id) as { workspace_uris?: string } | undefined;
-    if (!row?.workspace_uris) return [];
-    const uris = JSON.parse(row.workspace_uris) as unknown;
-    if (!Array.isArray(uris)) return [];
-    return uris.filter((u): u is string => typeof u === 'string').map(fileUriToPath);
+    db = createDatabase(dbPath, { readOnly: true }).db;
   } catch {
-    return [];
+    return null;
+  }
+  try {
+    const rows = db.prepare('SELECT conversation_id, workspace_uris FROM conversation_summaries').all() as Array<{
+      conversation_id?: string;
+      workspace_uris?: string;
+    }>;
+    for (const row of rows) {
+      if (!row.conversation_id || !row.workspace_uris) continue;
+      try {
+        const uris = JSON.parse(row.workspace_uris) as unknown;
+        if (Array.isArray(uris)) {
+          out.set(row.conversation_id, uris.filter((u): u is string => typeof u === 'string').map(fileUriToPath));
+        }
+      } catch {
+        // One malformed row does not hide the others.
+      }
+    }
+  } catch {
+    // Missing table or column: the other sources still apply.
   } finally {
     db.close();
   }
+  return out;
 }
 
 function blobWorkspaces(root: string, id: string): string[] {
@@ -80,12 +105,7 @@ function blobWorkspaces(root: string, id: string): string[] {
   }
 }
 
-export function conversationWorkspaces(root: string, id: string): string[] {
-  const found = [...metadataWorkspaces(root, id), ...summariesWorkspaces(root, id), ...blobWorkspaces(root, id)];
-  return [...new Set(found)];
-}
-
-function belongs(roots: readonly string[], workspaces: string[]): boolean {
+function belongs(roots: readonly string[], workspaces: readonly string[]): boolean {
   return workspaces.some((ws) => cwdInRoots(ws, roots));
 }
 
@@ -137,10 +157,22 @@ export function agyFilesForProject(roots: readonly string[], unavailable?: Unava
     unavailable.push(brain + path.sep);
     return files;
   }
+  const metadata = metadataWorkspaces(root);
+  const summaries = summariesWorkspaces(root);
+  if (summaries === null) {
+    // Which conversations it places in the project is unknown until it opens
+    // again; keep whatever the index already holds for AGY.
+    if (!unavailable) throw new Error(`cannot open ${path.join(root, 'conversation_summaries.db')}`);
+    unavailable.push(brain + path.sep);
+    return files;
+  }
   for (const dirent of conversations) {
     if (!dirent.isDirectory()) continue;
-    const workspaces = conversationWorkspaces(root, dirent.name);
-    if (!belongs(roots, workspaces)) continue;
+    const id = dirent.name;
+    // The conversation's own database is opened only when the shared sources
+    // do not already place it in the project.
+    const listed = [...(metadata.get(id) ?? []), ...(summaries.get(id) ?? [])];
+    if (!belongs(roots, listed) && !belongs(roots, blobWorkspaces(root, id))) continue;
     const full = path.join(brain, dirent.name, '.system_generated', 'logs', 'transcript_full.jsonl');
     const short = path.join(brain, dirent.name, '.system_generated', 'logs', 'transcript.jsonl');
     if (fs.existsSync(full)) files.push(full);

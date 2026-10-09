@@ -29,7 +29,7 @@ import {
   walkJsonl,
   type UnavailableStores,
 } from './claude-code';
-import { parseCodexTranscript, codexFilesForProject, normalizeRemote } from './codex';
+import { parseCodexTranscript, codexFilesForProject, normalizeRemote, type CodexMeta } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
 import { parseAgyTranscript, agyFilesForProject } from './agy';
 import { parseGrokTranscript, grokFilesForProject } from './grok';
@@ -195,9 +195,9 @@ export class SessionsIndex {
     // separate from the mapping maintained by this storage generation.
     const schemaReady = (): boolean => {
       const rows = db.prepare(`SELECT name FROM sqlite_master
-        WHERE (type = 'table' AND name IN ('files', 'roots', 'docs', 'doc_sources'))
+        WHERE (type = 'table' AND name IN ('files', 'roots', 'docs', 'doc_sources', 'codex_meta'))
            OR (type = 'index' AND name = 'doc_sources_file')`).all() as Array<{ name: string }>;
-      return rows.length === 5 && db.pragma('user_version', { simple: true }) === INDEX_VERSION;
+      return rows.length === 6 && db.pragma('user_version', { simple: true }) === INDEX_VERSION;
     };
     if (!schemaReady()) {
       db.exec('BEGIN IMMEDIATE');
@@ -209,6 +209,9 @@ export class SessionsIndex {
               path TEXT PRIMARY KEY, session TEXT NOT NULL, title TEXT, mtime REAL NOT NULL, size INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS roots (path TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS codex_meta (
+              path TEXT PRIMARY KEY, ino INTEGER NOT NULL, cwd TEXT, remote TEXT
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(
               text, file UNINDEXED, role UNINDEXED, ts UNINDEXED, tokenize = 'porter unicode61'
             );
@@ -393,6 +396,38 @@ export class SessionsIndex {
   }
 
   /**
+   * Codex rollouts that belong to the project, reading each rollout's first
+   * line only the first time it is seen: the remembered answers live in
+   * `codex_meta`, and rows for rollouts no longer listed are dropped.
+   */
+  codexFiles(roots: readonly string[], remotes: readonly string[], unavailable: UnavailableStores): string[] {
+    const known = new Map(
+      (this.db.prepare('SELECT path, ino, cwd, remote FROM codex_meta').all() as Array<CodexMeta & { path: string; ino: number }>)
+        .map((r) => [r.path, r]),
+    );
+    const seen = new Set<string>();
+    const added: Array<[string, number, CodexMeta]> = [];
+    const files = codexFilesForProject(roots, remotes, unavailable, {
+      get: (file, ino) => {
+        seen.add(file);
+        const row = known.get(file);
+        return row && row.ino === ino ? { cwd: row.cwd, remote: row.remote } : undefined;
+      },
+      set: (file, ino, meta) => added.push([file, ino, meta]),
+    });
+    const gone = [...known.keys()].filter((p) => !seen.has(p) && !unavailable.some((prefix) => p.startsWith(prefix)));
+    if (added.length || gone.length) {
+      const put = this.db.prepare('INSERT OR REPLACE INTO codex_meta (path, ino, cwd, remote) VALUES (?, ?, ?, ?)');
+      const drop = this.db.prepare('DELETE FROM codex_meta WHERE path = ?');
+      this.db.transaction(() => {
+        for (const [file, ino, meta] of added) put.run(file, ino, meta.cwd, meta.remote);
+        for (const file of gone) drop.run(file);
+      })();
+    }
+    return files;
+  }
+
+  /**
    * Remember `roots` and return them with every root remembered before. A
    * removed worktree drops out of `git worktree list`, but its transcripts
    * still belong to the project; the remembered root keeps them matched.
@@ -483,13 +518,14 @@ export function claudeFilesForProject(roots: readonly string[], unavailable?: Un
 type HostedTranscript = { file: string; host: 'claude' | 'codex' | 'cursor' | 'agy' | 'grok' };
 
 function hostedTranscripts(
+  index: SessionsIndex,
   roots: readonly string[],
   remotes: readonly string[],
   unavailable: UnavailableStores,
 ): HostedTranscript[] {
   const out: HostedTranscript[] = [];
   for (const file of claudeFilesForProject(roots, unavailable)) out.push({ file, host: 'claude' });
-  for (const file of codexFilesForProject(roots, remotes, unavailable)) out.push({ file, host: 'codex' });
+  for (const file of index.codexFiles(roots, remotes, unavailable)) out.push({ file, host: 'codex' });
   for (const file of cursorFilesForProject(roots, unavailable)) out.push({ file, host: 'cursor' });
   for (const file of agyFilesForProject(roots, unavailable)) out.push({ file, host: 'agy' });
   for (const file of grokFilesForProject(roots, unavailable)) out.push({ file, host: 'grok' });
@@ -529,13 +565,14 @@ function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscr
 
 /** The project's transcripts; stores that exist but cannot be read now go to `unavailable`. */
 function collectRecords(
+  index: SessionsIndex,
   roots: readonly string[],
   remotes: readonly string[],
   unavailable: UnavailableStores,
   projectRoot?: string,
 ): TranscriptRecord[] {
   const records: TranscriptRecord[] = [];
-  for (const h of hostedTranscripts(roots, remotes, unavailable)) {
+  for (const h of hostedTranscripts(index, roots, remotes, unavailable)) {
     let st: fs.Stats;
     try {
       st = fs.statSync(h.file);
@@ -597,7 +634,7 @@ export function querySessions(
     }
     const roots = index.rememberRoots(projectWorktreeRoots(projectRoot));
     const unavailable: UnavailableStores = [];
-    const records = collectRecords(roots, projectRemotes(projectRoot), unavailable, projectRoot);
+    const records = collectRecords(index, roots, projectRemotes(projectRoot), unavailable, projectRoot);
     // Commit messages alone are not session history: without a transcript the
     // guidance (which hosts, how to opt out) says more than "0 hits". A store
     // that exists but cannot be read now still answers from what is indexed.

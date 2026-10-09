@@ -60,7 +60,11 @@ export function projectWorktreeRoots(projectRoot: string): string[] {
  * transcripts still match a remembered root.
  */
 export function cwdInRoots(cwd: string, roots: readonly string[]): boolean {
-  const resolved = resolveExisting(cwd) ?? path.resolve(cwd);
+  return pathInRoots(resolveExisting(cwd) ?? path.resolve(cwd), roots);
+}
+
+/** True when the already-resolved `resolved` is one of `roots` or inside one. */
+export function pathInRoots(resolved: string, roots: readonly string[]): boolean {
   return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
 }
 
