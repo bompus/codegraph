@@ -1110,3 +1110,110 @@ describe('stores that exist but cannot be read', () => {
     expect(sessions(root)).toEqual([]);
   });
 });
+
+describe('repeat scans', () => {
+  const meta = (cwd: string, id: string) => ({ timestamp: at, type: 'session_meta', payload: { session_id: id, cwd } });
+  const codexStore = (): string => {
+    const home = fixtureDir();
+    process.env.CODEX_HOME = home;
+    return path.join(home, 'sessions');
+  };
+
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)(
+    'matches a Codex rollout seen before without reading it again',
+    () => {
+      const project = fixtureDir();
+      const file = path.join(codexStore(), 'rollout-seen.jsonl');
+      writeJsonl(file, [meta(project, 'codex-seen')], 1_700_000_000);
+      const index = SessionsIndex.open(':memory:');
+      try {
+        expect(index.codexFiles([project], [], [])).toEqual([file]);
+        fs.chmodSync(file, 0o000);
+        const unavailable: string[] = [];
+        expect(index.codexFiles([project], [], unavailable)).toEqual([file]);
+        expect(unavailable).toEqual([]);
+      } finally {
+        fs.chmodSync(file, 0o644);
+        index.close();
+      }
+    },
+  );
+
+  it('reads a Codex rollout again until its first line is complete, and again once it is replaced', () => {
+    const project = fixtureDir();
+    const other = fixtureDir();
+    const file = path.join(codexStore(), 'rollout-growing.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const line = JSON.stringify(meta(project, 'codex-growing'));
+    fs.writeFileSync(file, line.slice(0, 20));
+    const index = SessionsIndex.open(':memory:');
+    try {
+      expect(index.codexFiles([project], [], [])).toEqual([]);
+      fs.appendFileSync(file, `${line.slice(20)}\n`);
+      expect(index.codexFiles([project], [], [])).toEqual([file]);
+      // A new file at the same path is a different session.
+      const replacement = `${file}.new`;
+      writeJsonl(replacement, [meta(other, 'codex-other')], 1_700_000_000);
+      fs.renameSync(replacement, file);
+      expect(index.codexFiles([project], [], [])).toEqual([]);
+    } finally {
+      index.close();
+    }
+  });
+
+  /** An AGY store with three conversations, each placed in `project` by a different source. */
+  const agyStore = (project: string): { root: string; files: string[] } => {
+    const root = fixtureDir();
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = root;
+    const transcript = (id: string): string => {
+      const file = path.join(root, 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl');
+      writeJsonl(file, [{ type: 'USER_INPUT', created_at: at, content: `keep the write-time dedupe in ${id}` }], 1_700_000_000);
+      return file;
+    };
+    const files = ['by-metadata', 'by-summary', 'by-blob', 'elsewhere'].map(transcript);
+    fs.mkdirSync(path.join(root, 'cache'));
+    fs.writeFileSync(
+      path.join(root, 'cache', 'conversation_metadata.json'),
+      JSON.stringify({ conversations: { 'by-metadata': { summary: { WorkspaceURIs: [`file://${project}`] } } } }),
+    );
+    const summaries = createDatabase(path.join(root, 'conversation_summaries.db')).db;
+    summaries.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, workspace_uris TEXT)');
+    const put = summaries.prepare('INSERT INTO conversation_summaries VALUES (?, ?)');
+    put.run('by-summary', JSON.stringify([`file://${project}`]));
+    put.run('elsewhere', JSON.stringify([`file://${fixtureDir()}`]));
+    put.run('malformed', '{not json');
+    summaries.close();
+    fs.mkdirSync(path.join(root, 'conversations'));
+    const blob = createDatabase(path.join(root, 'conversations', 'by-blob.db')).db;
+    blob.exec('CREATE TABLE trajectory_metadata_blob (data BLOB)');
+    blob.prepare('INSERT INTO trajectory_metadata_blob VALUES (?)').run(Buffer.from(`ws file://${project} end`, 'latin1'));
+    blob.close();
+    return { root, files: files.slice(0, 3) };
+  };
+
+  it('places AGY conversations by metadata file, summaries database or conversation database', () => {
+    const project = fixtureDir();
+    const { files } = agyStore(project);
+    expect(agyFilesForProject([project]).sort()).toEqual([...files].sort());
+  });
+
+  it('keeps AGY conversations indexed while the summaries database cannot be opened', () => {
+    const project = fixtureDir();
+    fs.mkdirSync(path.join(project, '.codegraph'));
+    process.env.CLAUDE_CONFIG_DIR = fixtureDir();
+    process.env.CODEX_HOME = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    const { root } = agyStore(project);
+    const found = () => [...new Set(querySessions(project, 'write-time dedupe').hits.map((h) => h.session))].sort();
+    const expected = ['agy:by-blob', 'agy:by-metadata', 'agy:by-summary'];
+    expect(found()).toEqual(expected);
+    const db = path.join(root, 'conversation_summaries.db');
+    fs.renameSync(db, `${db}.aside`);
+    fs.mkdirSync(db);
+    expect(found()).toEqual(expected);
+    const unavailable: string[] = [];
+    expect(agyFilesForProject([project], unavailable)).toEqual([]);
+    expect(unavailable).toEqual([path.join(root, 'brain') + path.sep]);
+  });
+});
