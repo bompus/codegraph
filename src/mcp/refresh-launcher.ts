@@ -96,7 +96,11 @@ class Backend {
         process.stderr.write(`[${new Date().toISOString()}] [CodeGraph refresh] Child ${this.child.pid}: ${notice}\n`);
         this.child.kill("SIGKILL");
       });
-      liveness.on("error", () => monitor.disarm());
+      // A broken channel leaves the child unwatched; replace it.
+      liveness.on("error", () => {
+        monitor.disarm();
+        this.child.kill("SIGKILL");
+      });
       createInterface({ input: liveness }).on("line", (line) => monitor.receive(line));
       this.child.once("close", () => monitor.disarm());
     }

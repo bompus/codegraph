@@ -424,8 +424,9 @@ describe("isolated MCP refresh launcher", () => {
       const first = await server.call(1);
       const pid = first.result.structuredContent.pid;
       // The heartbeat goes to the launcher, so the server starts no child.
-      const children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim();
-      expect(children).toBe("");
+      if (process.platform === "linux") {
+        expect(readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim()).toBe("");
+      }
       // Both the child and its replay wedge, so the call is reported.
       const wedged = await server.call(2, "wedge");
       expect(wedged.error?.message).toContain("not replayed again");

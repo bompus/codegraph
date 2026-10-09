@@ -313,8 +313,15 @@ function launcherWatchdog(arm: LivenessArm, checkMs: number): WatchdogHandle | n
     if (next === undefined) { writing = false; return; }
     writing = true;
     fs.write(LAUNCHER_LIVENESS_FD, next, (err) => {
-      // The launcher is gone; the PPID watchdog shuts this process down.
-      if (err && err.code !== 'EAGAIN') { broken = true; queue.length = 0; writing = false; return; }
+      // The launcher can no longer watch this process (or is gone). Exit so a
+      // launcher that is still running replaces it, rather than leave a wedge unwatched.
+      if (err && err.code !== 'EAGAIN') {
+        broken = true;
+        queue.length = 0;
+        writing = false;
+        process.kill(process.pid, 'SIGKILL');
+        return;
+      }
       flush();
     });
   };
