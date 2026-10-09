@@ -1034,6 +1034,35 @@ describe('stores that exist but cannot be read', () => {
     });
   });
 
+  // File permissions block reads only on POSIX, and not for root.
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)(
+    'keeps a Codex session indexed while its rollout cannot be read',
+    () => {
+      const root = project();
+      const rollout = path.join(process.env.CODEX_HOME!, 'sessions', 'rollout-a.jsonl');
+      writeJsonl(
+        rollout,
+        [
+          { timestamp: at, type: 'session_meta', payload: { session_id: 'codex-a', cwd: root } },
+          {
+            timestamp: at,
+            type: 'response_item',
+            payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep the write-time dedupe in Codex' }] },
+          },
+        ],
+        1_700_000_000,
+      );
+      expect(sessions(root)).toEqual(['codex:codex-a']);
+      fs.chmodSync(rollout, 0o000);
+      try {
+        expect(sessions(root)).toEqual(['codex:codex-a']);
+      } finally {
+        fs.chmodSync(rollout, 0o644);
+      }
+      expect(querySessions(root, 'write-time dedupe').index.refreshed).toBe(0);
+    },
+  );
+
   it('answers from the index when the only transcript store cannot be read', () => {
     const root = fixtureDir();
     fs.mkdirSync(path.join(root, '.codegraph'));

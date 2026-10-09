@@ -85,10 +85,19 @@ function firstLine(file: string): string {
   }
 }
 
-/** A session's cwd and git remote from its `session_meta` line. */
-function sessionMeta(file: string): { cwd: string | null; remote: string | null } {
+/**
+ * A session's cwd and git remote from its `session_meta` line, or null when
+ * the file cannot be read now (permissions, I/O error).
+ */
+function sessionMeta(file: string): { cwd: string | null; remote: string | null } | null {
+  let line: string;
   try {
-    const row = JSON.parse(firstLine(file)) as CodexLine;
+    line = firstLine(file);
+  } catch {
+    return null;
+  }
+  try {
+    const row = JSON.parse(line) as CodexLine;
     if (row.type === 'session_meta') {
       return { cwd: row.payload?.cwd ?? null, remote: row.payload?.git?.repository_url ?? null };
     }
@@ -129,7 +138,14 @@ export function codexFilesForProject(
   if (!fs.existsSync(dir)) return [];
   const wanted = new Set(remotes.map(normalizeRemote));
   return walkSessionJsonl(dir, unavailable).filter((file) => {
-    const { cwd, remote } = sessionMeta(file);
+    const meta = sessionMeta(file);
+    if (meta === null) {
+      // Which project it belongs to is unknown until it reads again; keep
+      // whatever the index already holds for it.
+      unavailable?.push(file);
+      return false;
+    }
+    const { cwd, remote } = meta;
     if (cwd !== null && cwdInRoots(cwd, roots)) return true;
     const gone = cwd === null || resolveExisting(cwd) === null;
     return gone && remote !== null && wanted.has(normalizeRemote(remote));
