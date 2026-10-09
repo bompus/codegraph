@@ -224,22 +224,27 @@ export class QueryPool {
   }
 
   /**
-   * Terminate workers idle for `idleRetireMs`, oldest idle first, keeping one.
+   * Terminate workers idle for `idleRetireMs`, oldest idle first. A pool with a
+   * default project keeps one warm; a pool without one retires them all, since
+   * {@link warm} starts another on the next call that names a project.
    * A retired worker leaves `workers` before it is terminated, so its exit is
    * not counted as a crash (onWorkerGone ignores workers it no longer owns).
    */
   private retireIdle(now = Date.now()): void {
     if (this.destroyed) return;
+    const keep = this.root === null ? 0 : 1;
     const stale = this.idle
       .filter((w) => now - (this.idleSince.get(w) ?? now) >= this.idleRetireMs)
       .sort((a, b) => (this.idleSince.get(a) ?? 0) - (this.idleSince.get(b) ?? 0));
     for (const w of stale) {
-      if (this.workers.size <= 1) break;
+      if (this.workers.size <= keep) break;
       this.workers.delete(w);
       this.idle = this.idle.filter((x) => x !== w);
       this.idleSince.delete(w);
       try { void w.terminate(); } catch { /* already gone */ }
     }
+    // An empty pool is cold again: serve in-process until the next worker is ready.
+    if (this.workers.size === 0) this.everReady = false;
   }
 
   /** Put a worker back on the idle stack and note when it went idle. */
@@ -272,8 +277,8 @@ export class QueryPool {
    * hitting that window was the recurring #662 test flake (and a real
    * first-call stall for agents). The pool exists for CONCURRENT load, which
    * by definition arrives after warm-up; the pre-pool in-process path is
-   * strictly better while nothing is warm. Stays true for the pool's
-   * lifetime — later crash-respawn gaps are covered by retry + backstop.
+   * strictly better while nothing is warm. Stays true until idle retirement
+   * empties the pool — crash-respawn gaps are covered by retry + backstop.
    */
   get ready(): boolean {
     return this.everReady && !this.destroyed;
