@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
+import { MIN_DOC_CHARS, type SessionDoc, type UnavailableStores } from './claude-code';
 import { walkSessionJsonl } from './collect';
 import { cwdInRoots, resolveExisting } from './project-roots';
 
@@ -120,11 +120,15 @@ export function normalizeRemote(url: string): string {
  * directory never matches by remote, so another clone that shares a remote
  * (a fork's upstream) keeps its own sessions.
  */
-export function codexFilesForProject(roots: readonly string[], remotes: readonly string[] = []): string[] {
+export function codexFilesForProject(
+  roots: readonly string[],
+  remotes: readonly string[] = [],
+  unavailable?: UnavailableStores,
+): string[] {
   const dir = codexSessionsDir();
   if (!fs.existsSync(dir)) return [];
   const wanted = new Set(remotes.map(normalizeRemote));
-  return walkSessionJsonl(dir).filter((file) => {
+  return walkSessionJsonl(dir, unavailable).filter((file) => {
     const { cwd, remote } = sessionMeta(file);
     if (cwd !== null && cwdInRoots(cwd, roots)) return true;
     const gone = cwd === null || resolveExisting(cwd) === null;

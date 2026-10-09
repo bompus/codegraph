@@ -82,13 +82,32 @@ export function claudeSessionsDir(projectRoot: string): string | null {
   return null;
 }
 
-/** Every `.jsonl` under `dir`, recursively, skipping `memory/`. */
-export function walkJsonl(dir: string): string[] {
+/**
+ * Path prefixes of stores that exist but could not be read on this query. The
+ * index keeps what it already holds under them instead of treating them as
+ * deleted; see `SessionsIndex.refreshRecords`.
+ */
+export type UnavailableStores = string[];
+
+/**
+ * Every `.jsonl` under `dir`, recursively, skipping `memory/`. With
+ * `unavailable`, a directory that cannot be listed is recorded there and
+ * skipped; without it, the listing error propagates.
+ */
+export function walkJsonl(dir: string, unavailable?: UnavailableStores): string[] {
   const out: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (!unavailable) throw err;
+    unavailable.push(dir + path.sep);
+    return out;
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== 'memory') out.push(...walkJsonl(full));
+      if (entry.name !== 'memory') out.push(...walkJsonl(full, unavailable));
     } else if (entry.name.endsWith('.jsonl')) {
       out.push(full);
     }

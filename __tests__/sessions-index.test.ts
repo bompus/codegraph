@@ -929,3 +929,128 @@ describe('querySessions (project entry point)', () => {
     expect(hits.map((h) => h.snippet)).toEqual([expect.stringMatching(/budget small/)]);
   });
 });
+
+describe('stores that exist but cannot be read', () => {
+  const entry = (text: string) => ({ ...user(text), timestamp: at });
+  /** A project with one Claude transcript, so a refresh runs while another store is unreadable. */
+  const project = (): string => {
+    const root = fixtureDir();
+    fs.mkdirSync(path.join(root, '.codegraph'));
+    const claude = fixtureDir();
+    process.env.CLAUDE_CONFIG_DIR = claude;
+    process.env.CODEX_HOME = fixtureDir();
+    process.env.CURSOR_CONFIG_DIR = fixtureDir();
+    process.env.CODEGRAPH_ANTIGRAVITY_DIR = fixtureDir();
+    process.env.CODEGRAPH_OPENCODE_DB = path.join(fixtureDir(), 'no-opencode.db');
+    writeJsonl(
+      path.join(claude, 'projects', claudeProjectSlug(root), 'c1.jsonl'),
+      [entry('an unrelated prompt about parsing')],
+      1_700_000_000,
+    );
+    return root;
+  };
+  const sessions = (root: string): string[] =>
+    [...new Set(querySessions(root, 'write-time dedupe').hits.map((h) => h.session))].sort();
+  /** Replace `store` with something that exists but cannot be opened as one, run, then restore it. */
+  const blocked = (store: string, as: 'directory' | 'file', run: () => void): void => {
+    const aside = `${store}.aside`;
+    fs.renameSync(store, aside);
+    if (as === 'directory') fs.mkdirSync(store);
+    else fs.writeFileSync(store, '');
+    try {
+      run();
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+      fs.renameSync(aside, store);
+    }
+  };
+
+  it('keeps Devin and OpenCode sessions indexed while their databases cannot be opened', () => {
+    const root = project();
+    const devinRoot = fixtureDir();
+    process.env.CODEGRAPH_DEVIN_DIR = devinRoot;
+    const devinDb = path.join(devinRoot, 'cli-next', 'sessions.db');
+    fs.mkdirSync(path.dirname(devinDb), { recursive: true });
+    const devin = createDatabase(devinDb).db;
+    devin.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT NOT NULL, title TEXT,
+        last_activity_at INTEGER NOT NULL, hidden INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+        node_id INTEGER NOT NULL, chat_message TEXT NOT NULL, created_at INTEGER NOT NULL);
+    `);
+    devin.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, 0)').run('brisk-otter', root, 'devin', 1_700_000_100);
+    devin
+      .prepare('INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES (?, ?, ?, ?)')
+      .run('brisk-otter', 1, JSON.stringify({ role: 'user', content: 'keep the write-time dedupe in Devin' }), 1_700_000_010);
+    devin.close();
+
+    const ocDb = path.join(fixtureDir(), 'opencode.db');
+    process.env.CODEGRAPH_OPENCODE_DB = ocDb;
+    const oc = createDatabase(ocDb).db;
+    oc.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_updated INTEGER);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT, time_updated INTEGER);
+    `);
+    oc.prepare('INSERT INTO session VALUES (?, ?, ?, ?)').run('ses_match', root, 'opencode', 1_700_000_000_000);
+    oc.prepare('INSERT INTO message VALUES (?, ?, ?, ?)').run('msg1', 'ses_match', 1_700_000_000_000, JSON.stringify({ role: 'user' }));
+    oc.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?)').run(
+      'prt1', 'msg1', 'ses_match', JSON.stringify({ type: 'text', text: 'keep the write-time dedupe in OpenCode' }), 1_700_000_000_000,
+    );
+    oc.close();
+    (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+
+    const both = ['devin:brisk-otter', 'opencode:ses_match'];
+    expect(sessions(root)).toEqual(both);
+    blocked(devinDb, 'directory', () => {
+      blocked(ocDb, 'directory', () => {
+        expect(sessions(root)).toEqual(both);
+      });
+    });
+    // Back to readable: nothing was forgotten, so nothing is read again.
+    const again = querySessions(root, 'write-time dedupe');
+    expect(again.index.refreshed).toBe(0);
+    expect([...new Set(again.hits.map((h) => h.session))].sort()).toEqual(both);
+  });
+
+  it('keeps Codex sessions indexed while the sessions directory cannot be listed', () => {
+    const root = project();
+    const sessionsDir = path.join(process.env.CODEX_HOME!, 'sessions');
+    writeJsonl(
+      path.join(sessionsDir, 'rollout-a.jsonl'),
+      [
+        { timestamp: at, type: 'session_meta', payload: { session_id: 'codex-a', cwd: root } },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep the write-time dedupe in Codex' }] },
+        },
+      ],
+      1_700_000_000,
+    );
+    expect(sessions(root)).toEqual(['codex:codex-a']);
+    blocked(sessionsDir, 'file', () => {
+      expect(sessions(root)).toEqual(['codex:codex-a']);
+    });
+  });
+
+  it('still forgets sessions whose store was removed', () => {
+    const root = project();
+    const sessionsDir = path.join(process.env.CODEX_HOME!, 'sessions');
+    writeJsonl(
+      path.join(sessionsDir, 'rollout-a.jsonl'),
+      [
+        { timestamp: at, type: 'session_meta', payload: { session_id: 'codex-a', cwd: root } },
+        {
+          timestamp: at,
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep the write-time dedupe in Codex' }] },
+        },
+      ],
+      1_700_000_000,
+    );
+    expect(sessions(root)).toEqual(['codex:codex-a']);
+    fs.rmSync(sessionsDir, { recursive: true });
+    expect(sessions(root)).toEqual([]);
+  });
+});

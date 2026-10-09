@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MIN_DOC_CHARS, type SessionDoc } from './claude-code';
+import { MIN_DOC_CHARS, type SessionDoc, type UnavailableStores } from './claude-code';
 import { cwdInRoots } from './project-roots';
 
 export function grokSessionsDir(): string {
@@ -25,16 +25,27 @@ function decodeCwd(name: string): string | null {
   }
 }
 
-export function grokFilesForProject(roots: readonly string[]): string[] {
+/** A directory's entries, or null (recorded in `unavailable`) when it cannot be listed. */
+function listDir(dir: string, unavailable?: UnavailableStores): fs.Dirent[] | null {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (!unavailable) throw err;
+    unavailable.push(dir + path.sep);
+    return null;
+  }
+}
+
+export function grokFilesForProject(roots: readonly string[], unavailable?: UnavailableStores): string[] {
   const dir = grokSessionsDir();
   if (!fs.existsSync(dir)) return [];
   const files: string[] = [];
-  for (const cwdDir of fs.readdirSync(dir, { withFileTypes: true })) {
+  for (const cwdDir of listDir(dir, unavailable) ?? []) {
     if (!cwdDir.isDirectory()) continue;
     const cwd = decodeCwd(cwdDir.name);
     if (!cwd || !path.isAbsolute(cwd) || !cwdInRoots(cwd, roots)) continue;
     const base = path.join(dir, cwdDir.name);
-    for (const session of fs.readdirSync(base, { withFileTypes: true })) {
+    for (const session of listDir(base, unavailable) ?? []) {
       const file = path.join(base, session.name, 'updates.jsonl');
       if (session.isDirectory() && fs.existsSync(file)) files.push(file);
     }
