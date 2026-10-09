@@ -87,7 +87,7 @@ Exit met: the gate is green on `fork/consolidated` with no extraction change.
 
 ### Phase 1: error recovery flip, DONE 2026-09-11
 
-- The `defer:` throw for parse errors is removed from all 14 walkers and the `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT` hatch is gone; only the stack-overflow guard defers. The one-slot memo stays until Phase 5 because a stack-guard defer still needs the pre-parsed source for the WASM fallback (a deviation from the original bullet).
+- The `defer:` throw for parse errors is removed from all 14 walkers and the `CODEGRAPH_KERNEL_CCPP_ERROR_EXTRACT` hatch is gone; only the stack-overflow guard defers. The one-slot memo stayed until Phase 5 because a stack-guard defer still needed the pre-parsed source for the WASM fallback (a deviation from the original bullet). Superseded: Phase 5 removed the memo and the WASM fallback, and a stack-guard defer now goes to the generic TypeScript extractor over the kernel's serialized tree (`src/extraction/kernel/index.ts`).
 - The one recovery path that existed only on the WASM side, the Kotlin `fun interface` misparse hook, is ported into `kotlin.rs` (`is_fun_interface_node` and the hook in `try_visit_hook`). The C++ explicit-operator scan that was already in the kernel is now live. Every other "defer-shielded" note was a phantom-error or both-arm-error case with nothing to recover.
 - `EXTRACTION_VERSION` 28 → 29. The golden corpus did not change: no fixture file has a parse error, so the six goldens hold byte-for-byte.
 - `scripts/kernel-parity.mjs` gained `--error-files only|skip|all`. Clean-file parity is still the walker gate (`skip`); `only` is the divergence survey.
@@ -238,7 +238,7 @@ What was added: native grammars for all tail languages, the serialized-tree faca
 - **Source-checkout DX.** Contributors need cargo. Mitigation: `pretest` builds only when the prebuild is missing, and CI publishes prebuilds on every `fork/consolidated` push so most contributors never compile.
 - **Upstream divergence.** Upstream keeps coexistence. This fork's graph output stays byte-identical to upstream's kernel path for the 20 routed languages, so upstream resolution fixes still merge. Extraction changes upstream makes to WASM-only languages will not apply; that is the cost of dropping them.
 - **Read-time consumers.** Phase 3 uses the serialized tree facade; the proposed `walk_guards` port was superseded. Preserve facade and golden-dump coverage when changing it.
-- **Deferred files.** A stack-overflow defer now yields an empty file instead of a WASM parse. Incidence is one known file in clang.
+- **Deferred files.** A stack-overflow defer is extracted by the generic TypeScript extractor over the kernel's serialized tree (the native serialization is iterative) instead of by a WASM parse. Incidence is one known file in clang.
 
 ## 6. Settings after this plan
 
