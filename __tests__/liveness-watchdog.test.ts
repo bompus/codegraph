@@ -1,12 +1,14 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
   parseWatchdogTimeoutMs,
   deriveCheckIntervalMs,
   installMainThreadWatchdog,
   DEFAULT_WATCHDOG_TIMEOUT_MS,
+  LivenessMonitor,
 } from '../src/mcp/liveness-watchdog';
 
 describe('config parsing', () => {
@@ -210,4 +212,52 @@ describe('liveness watchdog (spawned, real watchdog process)', () => {
     expect(signal).toBeNull();
     expect(code).toBe(3);
   }, 12000);
+});
+
+describe('LivenessMonitor (the refresh launcher side)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  function armed(progressPaths: string[] = []) {
+    vi.useFakeTimers();
+    const kills: string[] = [];
+    const monitor = new LivenessMonitor((notice) => kills.push(notice));
+    monitor.receive(JSON.stringify({ timeoutMs: 1000, capMs: 3000, progressPaths }));
+    return { monitor, kills };
+  }
+
+  it('kills after a silent timeout and not while heartbeats arrive', () => {
+    const { monitor, kills } = armed();
+    for (let i = 0; i < 5; i++) { vi.advanceTimersByTime(900); monitor.receive(''); }
+    expect(kills).toEqual([]);
+    vi.advanceTimersByTime(1000);
+    expect(kills).toHaveLength(1);
+    expect(kills[0]).toContain('Main thread unresponsive for ~1s');
+  });
+
+  it('does not kill once disarmed', () => {
+    const { monitor, kills } = armed();
+    monitor.receive('disarm');
+    vi.advanceTimersByTime(5000);
+    expect(kills).toEqual([]);
+  });
+
+  it('defers while the watched file advances, up to the hard cap', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-monitor-'));
+    const db = path.join(dir, 'db');
+    fs.writeFileSync(db, 'a');
+    try {
+      const { kills } = armed([db]);
+      let size = 1;
+      const grow = () => fs.writeFileSync(db, 'a'.repeat(++size));
+      grow(); vi.advanceTimersByTime(1000);
+      expect(kills).toEqual([]);
+      grow(); vi.advanceTimersByTime(1000);
+      expect(kills).toEqual([]);
+      grow(); vi.advanceTimersByTime(1000);
+      expect(kills).toHaveLength(1);
+      expect(kills[0]).toContain('hard cap 3s reached');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
