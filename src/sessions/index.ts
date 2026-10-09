@@ -32,7 +32,7 @@ import {
 import { parseCodexTranscript, codexFilesForProject, normalizeRemote, type CodexMeta } from './codex';
 import { parseCursorTranscript, cursorFilesForProject } from './cursor';
 import { parseAgyTranscript, agyFilesForProject } from './agy';
-import { parseGrokTranscript, grokFilesForProject } from './grok';
+import { parseGrokTranscript, grokFilesForProject, grokSummaryFile } from './grok';
 import { gitCommitDocs, gitHead } from './git-log';
 import { opencodeSessionsForProject } from './opencode';
 import { devinSessionsForProject } from './devin';
@@ -563,6 +563,14 @@ function loadHosted(file: string, host: HostedTranscript['host']): LoadedTranscr
   };
 }
 
+function mtimeOf(file: string): number {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 /** The project's transcripts; stores that exist but cannot be read now go to `unavailable`. */
 function collectRecords(
   index: SessionsIndex,
@@ -579,7 +587,9 @@ function collectRecords(
     } catch {
       continue; // Removed between listing and stat.
     }
-    records.push({ path: h.file, mtime: st.mtimeMs, size: st.size, load: () => loadHosted(h.file, h.host) });
+    // A Grok title lives in its own file; renaming a session touches only that one.
+    const mtime = h.host === 'grok' ? Math.max(st.mtimeMs, mtimeOf(grokSummaryFile(h.file))) : st.mtimeMs;
+    records.push({ path: h.file, mtime, size: st.size, load: () => loadHosted(h.file, h.host) });
   }
   const head = projectRoot ? gitHead(projectRoot) : null;
   if (head && projectRoot) {

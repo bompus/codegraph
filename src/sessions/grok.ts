@@ -85,9 +85,14 @@ function isoFrom(value: unknown): string {
   return new Date(value > 1e11 ? value : value * 1000).toISOString();
 }
 
+/** The `summary.json` beside a session's `updates.jsonl`; it holds the title. */
+export function grokSummaryFile(file: string): string {
+  return path.join(path.dirname(file), 'summary.json');
+}
+
 function titleOf(file: string): string | null {
   try {
-    const summary = JSON.parse(fs.readFileSync(path.join(path.dirname(file), 'summary.json'), 'utf8')) as {
+    const summary = JSON.parse(fs.readFileSync(grokSummaryFile(file), 'utf8')) as {
       session_summary?: unknown;
     };
     return typeof summary.session_summary === 'string' ? summary.session_summary : null;
