@@ -243,6 +243,8 @@ export class QueryPool {
       this.idleSince.delete(w);
       try { void w.terminate(); } catch { /* already gone */ }
     }
+    // An empty pool is cold again: serve in-process until the next worker is ready.
+    if (this.workers.size === 0) this.everReady = false;
   }
 
   /** Put a worker back on the idle stack and note when it went idle. */
@@ -275,8 +277,8 @@ export class QueryPool {
    * hitting that window was the recurring #662 test flake (and a real
    * first-call stall for agents). The pool exists for CONCURRENT load, which
    * by definition arrives after warm-up; the pre-pool in-process path is
-   * strictly better while nothing is warm. Stays true for the pool's
-   * lifetime — later crash-respawn gaps are covered by retry + backstop.
+   * strictly better while nothing is warm. Stays true until idle retirement
+   * empties the pool — crash-respawn gaps are covered by retry + backstop.
    */
   get ready(): boolean {
     return this.everReady && !this.destroyed;

@@ -287,10 +287,14 @@ describe('QueryPool', () => {
     rootless.pool.warm();
     await sleep(5);
     expect(await rootless.pool.run('codegraph_explore', {})).toEqual(ok('r:codegraph_explore'));
+    expect(rootless.pool.ready).toBe(true);
     retire(rootless.pool);
     expect(rootless.pool.liveWorkers).toBe(0);
+    expect(rootless.pool.ready).toBe(false); // calls run in-process again
     rootless.pool.warm(); // the next call that names a project starts one again
     expect(rootless.created()).toBe(2);
+    await sleep(5);
+    expect(rootless.pool.ready).toBe(true);
     await rootless.pool.destroy();
   });
 
