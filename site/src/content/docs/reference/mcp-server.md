@@ -19,6 +19,8 @@ By default the server exposes `codegraph_explore` for code and `codegraph_sessio
 
 `codegraph_sessions` searches this project's earlier agent sessions (Claude Code, Codex, Cursor/T3, OpenCode, AGY, Devin and Grok transcripts, plus git commit messages) for what a previous session asked, decided or tried. It answers "why is X like this" questions, which the code graph cannot. Set `"sessions": false` in `codegraph.json` to turn it off.
 
+T3-hosted provider transcripts can appear in session search; CodeGraph does not read the T3 database. The source includes a disabled-by-default offline Codex metadata prototype that associates caller-supplied T3 titles and thread links with existing hits. It has no CLI or MCP caller, adds no searchable prose and leaves provider titles, keys and ranking unchanged.
+
 Exposing one strong code tool is deliberate. Measured agent behavior showed that one well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code.
 
 Explore reports requested files that did not receive pin priority within the file limit. Those files may still appear through other matches. References beyond the bounded path scan are marked unexamined. When a capped file gather leaves indexed source uncovered, the summary offers continuation ranges for another explore call. Existing file and output limits still apply.
