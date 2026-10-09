@@ -25,10 +25,12 @@ import {
   BuildContextOptions,
   FindRelevantContextOptions,
   UnresolvedReference,
+  IndexHealth,
 } from './types';
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
 import { QueryBuilder } from './db/queries';
+import { importPathKeys, moduleReferenceKeys } from './db/reference-tail';
 import {
   isInitialized,
   createDirectory,
@@ -43,13 +45,16 @@ import {
   extractFromSource,
   initGrammars,
 } from './extraction';
+import { detectLanguage, hasGrammarLoadFailure, isFileLevelOnlyLanguage } from './extraction/grammars';
 import {
   ReferenceResolver,
+  changedRoutes,
   createResolver,
   ResolutionResult,
 } from './resolution';
 import { hasSynthesisPattern } from './resolution/callback-synthesizer';
 import { GraphTraverser, GraphQueryManager } from './graph';
+import { findNamedCopybooks, type NamedCopybook } from './graph/cobol-copybooks';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
@@ -236,6 +241,25 @@ export class CodeGraph {
   }
 
   /**
+   * Set when this instance followed a database replaced on disk (#1902): the
+   * next sync that can run reconciles the whole tree, because whatever the old
+   * handle absorbed since the rebuild never reached the new file.
+   */
+  private pendingFullReconcile = false;
+
+  /** How long a recreated, not-yet-indexed database is treated as a rebuild in progress. */
+  private static readonly RECREATE_GRACE_MS = 120_000;
+
+  /** The database file at the path was written within the recreate grace window. */
+  private isFreshlyRecreated(): boolean {
+    try {
+      return Date.now() - fs.statSync(getDatabasePath(this.projectRoot)).mtimeMs < CodeGraph.RECREATE_GRACE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Heal a stale database handle in place. If `.codegraph/` was removed and
    * recreated at the SAME path while this instance held the DB open — a git
    * worktree removed and re-added, or `rm -rf .codegraph` + `codegraph init` —
@@ -248,8 +272,19 @@ export class CodeGraph {
    *
    * POSIX-only in practice: `isReplacedOnDisk` never fires on Windows (an open
    * file can't be unlinked there, and st_ino is unreliable).
+   *
+   * Refuses (returns false) while an index/sync holds the index mutex: closing
+   * the handle that run is writing through would break it mid-flight. `sync()`
+   * performs the same check itself once it holds the mutex (#1902), so the
+   * replaced file is still picked up — by that sync, or by the caller's retry.
    */
   reopenIfReplaced(): boolean {
+    if (this.indexMutex.isLocked()) return false;
+    return this.reopenReplacedDatabase();
+  }
+
+  /** The body of {@link reopenIfReplaced}, without the in-flight-sync guard. */
+  private reopenReplacedDatabase(): boolean {
     if (!this.db.isReplacedOnDisk()) return false;
     const dbPath = this.db.getPath();
     // Open the live file FIRST — if that throws (e.g. mid-recreate), the old
@@ -260,6 +295,9 @@ export class CodeGraph {
     this.db = fresh;
     this.queries = new QueryBuilder(fresh.getDb());
     this.wireLayers();
+    // Whoever reopened — a sync, or a tool call's self-heal — the next sync
+    // must reconcile the whole tree (#1902).
+    this.pendingFullReconcile = true;
     // Releasing the dead handle also frees the leaked db/-wal/-shm fds that were
     // pinning the unlinked inode (#925).
     try { stale.close(); } catch { /* the old inode is gone; closing just frees fds */ }
@@ -478,6 +516,7 @@ export class CodeGraph {
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
     return this.indexMutex.withLock(async () => {
+      const startedAt = Date.now();
       try {
         this.fileLock.acquire();
       } catch {
@@ -739,6 +778,10 @@ export class CodeGraph {
           }
         } catch { /* metadata is advisory — never fail an index over it */ }
 
+        // The time covers the whole run, like the totals above. The
+        // orchestrator's covers extraction alone, and the summary printed it
+        // as the run's, leaving out resolution and linking (#2334).
+        result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
         // Restore the auto-checkpoint interval AFTER the fold-up above so the
@@ -791,12 +834,46 @@ export class CodeGraph {
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
     return this.indexMutex.withLock(async () => {
+      const startedAt = Date.now();
       try {
         this.fileLock.acquire();
       } catch (err) {
         throw new LockUnavailableError(
           `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
         );
+      }
+      // A full rebuild in another process (`codegraph index` → recreate)
+      // unlinks the database and creates a new file at the same path. A
+      // long-lived instance — the MCP daemon's watcher — would otherwise keep
+      // "syncing" into the dead inode, and nothing it wrote there is visible
+      // to anyone (#1902). Follow the path before writing (one stat), and
+      // widen a scoped sync to a full one: whatever the old handle absorbed
+      // since the rebuild is gone, so the new file has to be reconciled whole.
+      // If the reopen fails (the rebuild is mid-way), report lock contention
+      // so the watcher keeps its pending files and retries.
+      try {
+        this.reopenReplacedDatabase();
+      } catch (err) {
+        this.fileLock.release();
+        throw new LockUnavailableError(
+          `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (this.pendingFullReconcile) {
+        // `codegraph index` recreates the file, THEN takes the write lock in
+        // indexAll. A sync landing in that gap would otherwise run a full
+        // reconcile of the empty file and hold the lock the rebuild is about
+        // to ask for. A fresh file with no index_state yet is that rebuild:
+        // step aside (lock contention, the watcher retries) and reconcile in
+        // full once it is done. Bounded, so a rebuild that died before
+        // indexing does not park the watcher forever.
+        if (this.getIndexState() === null && this.isFreshlyRecreated()) {
+          this.fileLock.release();
+          throw new LockUnavailableError('A rebuild of this index is in progress; retry when it finishes.');
+        }
+        // Cleared only once this run completes (below): a sync that throws
+        // must leave the full catch-up for the next one.
+        options = { ...options, paths: undefined };
       }
       // Defer WAL auto-checkpointing for the whole incremental run, exactly
       // as indexAll does for the bulk path (#1231): sync's store loop and its
@@ -846,8 +923,15 @@ export class CodeGraph {
         let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
           this.queries.getUnresolvedReferencesCount() > 0;
         if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
+        // The route nodes as they were before this sync replaced or removed a
+        // file — read at the first change, so a sync that changes nothing
+        // reads nothing, and only where a router binds navigation calls to
+        // routes. Compared with the routes after runPostExtract below.
+        const watchRoutes = this.resolver.hasNavigationRouters();
+        let routesBefore = null as Node[] | null;
         const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure,
           (filePath, content) => {
+            if (watchRoutes && routesBefore === null) routesBefore = this.queries.getNodesByKind('route');
             if (!refreshSynthesis && (this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
               this.queries.wasSynthesisInput(filePath) ||
               (content !== undefined && hasSynthesisPattern(filePath, content)))) {
@@ -864,18 +948,39 @@ export class CodeGraph {
         // Cross-file finalization (e.g. NestJS RouterModule prefixes). Run on
         // every sync that touched files so edits to `app.module.ts` propagate
         // to controllers in unchanged files. The pass is idempotent and cheap
-        // (regex over *.module.ts only).
-        if (result.filesAdded > 0 || result.filesModified > 0) {
+        // (regex over *.module.ts only). A removal counts too: deleting the
+        // file that hands a React Router table to the router leaves the
+        // table's routes behind unless this pass runs to take them away.
+        // (A pure-removal sync still resolves refs below — the deletion path
+        // resurrects the removed file's incoming edges as pending refs, #1240
+        // removal case — and runPostExtract starts by dropping the resolver's
+        // name caches, which a long-lived daemon warmed against the
+        // pre-removal graph.)
+        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
           this.resolver.runPostExtract();
-        } else if (result.filesRemoved > 0) {
-          // A pure-removal sync still resolves refs below — the deletion path
-          // resurrects the removed file's incoming edges as pending refs
-          // (#1240 removal case) and the orphan sweep consumes them. In a
-          // long-lived process (daemon) the resolver's name caches were
-          // warmed against the pre-removal graph; drop them so resolution
-          // sees the post-removal state. (runPostExtract above clears caches
-          // itself, so the changed-files branch is already covered.)
-          this.resolver.clearCaches();
+        }
+
+        // A route that appeared, went away or was renamed changes what a
+        // navigation call in an UNCHANGED file resolves to: `history.push(
+        // '/login')` binds again once `/login` is back. While the route was
+        // missing the call was parked as failed, or bound to a catch-all, and
+        // nothing below revisits it: the retry keys on the names this sync's
+        // files define, which a call named for the router's method (`push`)
+        // never matches. Put those calls back in the pending set for the sweep
+        // below, and let the synthesizers redraw the links markup makes to
+        // routes. The route table is final here: renames and table routes are
+        // runPostExtract's.
+        if (routesBefore) {
+          const tNav = Date.now();
+          const routes = changedRoutes(routesBefore, this.queries.getNodesByKind('route'));
+          const reopened = this.resolver.reopenNavigationsFor(routes, result.changedFilePaths ?? []);
+          if (routes.length > 0 && !refreshSynthesis) {
+            refreshSynthesis = true;
+            this.queries.setMetadata('synthesis_pending', '1');
+          }
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+            console.error(`[phase-timing] sync-navigation-retry: ${Date.now() - tNav}ms (${routes.length} routes changed, ${reopened} refs re-opened)`);
+          }
         }
 
         // Resolve references if files were updated
@@ -908,12 +1013,40 @@ export class CodeGraph {
             // now resolve, and nothing else ever revisits them (their rows
             // were parked as status='failed' by an earlier completed pass).
             // Look them up by the symbol names the changed files now carry
-            // and re-resolve just that set. On a sync where no failed ref
-            // matches, this is one indexed lookup.
+            // and re-resolve just that set. The names include each file's
+            // own, which a reference written as a path
+            // (`snippets/price.liquid`) waits under, and the keys a route's
+            // lazily loaded module waits under (`module:Team` for
+            // `lazy-import:./pages/Team`), as does a reference through an
+            // import binding the module declares under another name
+            // (`module:tag` for `import tagsController from
+            // './tag/tag.controller'`): each resolves through the module, so
+            // an edit can satisfy it as well as an added file. On a sync
+            // where no failed ref matches, this is one indexed lookup.
             const tRetry = Date.now();
-            const retryable = this.queries.getRetryableFailedReferences(
-              this.queries.getNodeNamesByFiles(result.changedFilePaths)
+            const retryable = this.queries.getRetryableFailedReferences([...new Set([
+              ...this.queries.getNodeNamesByFiles(result.changedFilePaths),
+              ...result.changedFilePaths.flatMap(moduleReferenceKeys),
+            ])]);
+            // A failed import waits for a file, a folder or a namespace, not a
+            // symbol: `package:app/b.dart` for a file named `b.dart`, `./ui`
+            // for `ui/index.ts`, `using Foo.Bar` for that namespace's node.
+            // Look those up by what the ADDED files can be imported as (a
+            // modified file was already there for any import of it), and by
+            // the namespaces and modules the changed files declare.
+            const retryRows = new Set(retryable.map((ref) => ref.rowId));
+            const importRetry = this.queries.getRetryableFailedImports(
+              (result.addedFilePaths ?? []).flatMap(importPathKeys),
+              this.queries.getNodeNamesByFiles(result.changedFilePaths, ['namespace', 'module'])
             );
+            for (const ref of importRetry) {
+              if (!retryRows.has(ref.rowId)) retryable.push(ref);
+            }
+            // In row order, as a full index resolves them: when two refs make
+            // the same edge, such as a route's lazily loaded class that its
+            // layout also renders, the one written first names it, as it
+            // does in a fresh index.
+            retryable.sort((a, b) => (a.rowId ?? 0) - (b.rowId ?? 0));
             if (retryable.length > 0) {
               options.onProgress?.({
                 phase: 'resolving',
@@ -1076,6 +1209,9 @@ export class CodeGraph {
 
         this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
 
+        if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
+        // The whole sync, as for indexAll: resolution and linking included (#2334).
+        result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
         // Mirror indexAll's teardown: stop the valve, then restore the
@@ -1322,7 +1458,9 @@ export class CodeGraph {
    * Extract nodes and edges from source code (without storing)
    */
   extractFromSource(filePath: string, source: string): ExtractionResult {
-    return extractFromSource(filePath, source);
+    // The project root is what tells a Shopify theme's JSON templates (Liquid)
+    // apart from other JSON.
+    return extractFromSource(filePath, source, detectLanguage(filePath, source, undefined, this.projectRoot));
   }
 
   // ===========================================================================
@@ -1368,7 +1506,8 @@ export class CodeGraph {
       // just degrade to scans until the recreate.
       bulkEdgeLoad: {
         begin: () => this.db.beginBulkEdgeLoad(),
-        end: () => this.db.endBulkEdgeLoad(),
+        end: () => this.db.endBulkEdgeLoad({ deferSynthesisSite: true }),
+        deferred: () => this.db.createSynthesisSiteIndex(),
       },
       refIndexLoad: {
         begin: () => this.db.beginBulkRefLoad(),
@@ -1556,6 +1695,24 @@ export class CodeGraph {
   }
 
   /**
+   * The names each of the given symbols refers to, by reference kind, where
+   * the resolver could not follow the reference — a decorator or an interface
+   * from outside the index, which leaves no edge. Ids with none are absent.
+   */
+  getUnresolvedReferenceNamesFrom(nodeIds: Iterable<string>, kinds: readonly Edge['kind'][]): Map<string, string[]> {
+    return this.queries.getUnresolvedReferenceNamesFrom(nodeIds, kinds);
+  }
+
+  /**
+   * Every symbol that refers to each of the given names, by reference kind,
+   * where the resolver could not follow it: for `implements`, every class that
+   * names a given interface from outside the index.
+   */
+  getUnresolvedReferenceSourcesNamed(names: Iterable<string>, kinds: readonly Edge['kind'][]): Map<string, Set<string>> {
+    return this.queries.getUnresolvedReferenceSourcesNamed(names, kinds);
+  }
+
+  /**
    * The symbols with the most distinct dependents, most first — the index's
    * hubs. Distinct dependents, not edges: a helper called forty times from one
    * function has one dependent, and it is dependents a blast radius grows from.
@@ -1713,6 +1870,15 @@ export class CodeGraph {
   /** Lexical evidence for an empty explore result; does not alter retrieval. */
   getExploreMissDiagnostics(query: string) {
     return this.queries.getExploreMissDiagnostics(query);
+  }
+
+  /**
+   * The COBOL copybooks a query names (`CVACT01Y`, `MYCOPYBOOK`): each
+   * member's indexed copybook file(s) and every `COPY` / `EXEC SQL INCLUDE`
+   * statement that includes it. Empty for a query that names none.
+   */
+  findNamedCopybooks(query: string): NamedCopybook[] {
+    return findNamedCopybooks(this.queries, query);
   }
 
   /**
@@ -1952,6 +2118,14 @@ export class CodeGraph {
   }
 
   /**
+   * Whether the index holds any file under `dir`, a project-relative POSIX
+   * directory (e.g. `packages/api`).
+   */
+  hasFilesUnder(dir: string): boolean {
+    return this.queries.hasFilesUnder(dir);
+  }
+
+  /**
    * Get all tracked files
    */
   getFiles(): FileRecord[] {
@@ -1987,6 +2161,34 @@ export class CodeGraph {
   /** How many indexed files are flagged tool-generated. Reported by `status`. */
   getGeneratedFileCount(): number {
     return this.queries.countGeneratedFiles();
+  }
+
+  /**
+   * Indexed files whose symbols are missing although their content is current
+   * — rows a content-hash comparison calls up to date (#2336). Reported by
+   * `status`; `sync` repairs the `needsReindex` group.
+   */
+  getIndexHealth(): IndexHealth {
+    const needsReindex: string[] = [];
+    const parseErrors: string[] = [];
+    for (const file of this.queries.getFilesWithoutNodesOrWithErrors()) {
+      const errors = file.errors ?? [];
+      if (hasGrammarLoadFailure(errors)) {
+        // Stored without being parsed — its grammar could not load (#2335).
+        needsReindex.push(file.path);
+      } else if (file.nodeCount === 0) {
+        // Every parse stores at least the file node, so zero nodes means a
+        // wiped row (#1541) or a recorded failure — except file-level-only
+        // languages and files over the size limit, which are empty on purpose.
+        if (isFileLevelOnlyLanguage(file.language)) continue;
+        if (errors.length === 0) needsReindex.push(file.path);
+        else if (errors.some((e) => e.severity === 'error' || e.code === 'parse_error')) parseErrors.push(file.path);
+      } else if (errors.some((e) => e.code === 'parse_error')) {
+        // Parsed, but the tree had errors and no symbols survived.
+        parseErrors.push(file.path);
+      }
+    }
+    return { needsReindex, parseErrors };
   }
 
   // ===========================================================================
