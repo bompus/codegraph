@@ -14,6 +14,8 @@ import { parseHostPpid, parsePpidPollMs, supervisionLostReason } from "./ppid-wa
 import { HOST_PPID_ENV } from "../extraction/node-runtime-flags";
 import { WRITER_LOCK_DEFER_ENV } from "./writer-lock";
 import { armStartupHandshakeTimeout } from "./startup-handshake";
+import { LAUNCHER_LIVENESS_ENV, LAUNCHER_LIVENESS_FD, LivenessMonitor } from "./liveness-watchdog";
+import type { Readable } from "stream";
 
 type Id = string | number | null;
 type Message = {
@@ -68,10 +70,12 @@ class Backend {
         ...args,
       ],
       {
-        stdio: ["pipe", "pipe", "pipe"],
+        // fd 3 carries the child's liveness heartbeat (see LAUNCHER_LIVENESS_ENV).
+        stdio: ["pipe", "pipe", "pipe", "pipe"],
         windowsHide: true,
         env: {
           ...process.env,
+          ...(process.platform === "win32" ? {} : { [LAUNCHER_LIVENESS_ENV]: String(process.pid) }),
           [HOST_PPID_ENV]: String(parseHostPpid(process.env[HOST_PPID_ENV]) ?? EARLY_PPID),
           // This child may start while the one it replaces still serves, and
           // holds the writer lock. It succeeds that child rather than
@@ -84,6 +88,18 @@ class Backend {
     this.child.once("error", (error) => this.fail(error));
     this.child.stdin.on("error", (error) => this.fail(error));
     this.child.once("close", () => this.fail(new Error("CodeGraph child exited")));
+    // Kill a child whose main thread stops turning; the close above then
+    // replays its calls on a fresh child.
+    const liveness = this.child.stdio[LAUNCHER_LIVENESS_FD] as Readable | null | undefined;
+    if (liveness) {
+      const monitor = new LivenessMonitor((notice) => {
+        process.stderr.write(`[${new Date().toISOString()}] [CodeGraph refresh] Child ${this.child.pid}: ${notice}\n`);
+        this.child.kill("SIGKILL");
+      });
+      liveness.on("error", () => monitor.disarm());
+      createInterface({ input: liveness }).on("line", (line) => monitor.receive(line));
+      this.child.once("close", () => monitor.disarm());
+    }
     const lines = createInterface({ input: this.child.stdout });
     lines.on("line", (line) => {
       const message = parse(line);

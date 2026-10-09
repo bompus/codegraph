@@ -414,6 +414,28 @@ describe("isolated MCP refresh launcher", () => {
     expect(server.messages.filter((message) => message.id === 1)).toHaveLength(1);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "kills a wedged child itself, without a watchdog process, and recovers on a fresh child",
+    async () => {
+      const server = await start({
+        options: { liveness: resolve(__dirname, "../dist/mcp/liveness-watchdog.js") },
+        env: { CODEGRAPH_WATCHDOG_TIMEOUT_MS: "600" },
+      });
+      const first = await server.call(1);
+      const pid = first.result.structuredContent.pid;
+      // The heartbeat goes to the launcher, so the server starts no child.
+      const children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim();
+      expect(children).toBe("");
+      // Both the child and its replay wedge, so the call is reported.
+      const wedged = await server.call(2, "wedge");
+      expect(wedged.error?.message).toContain("not replayed again");
+      expect(server.stderr()).toContain("Main thread unresponsive");
+      const recovered = await server.call(3);
+      expect(recovered.result.structuredContent.pid).not.toBe(pid);
+    },
+    20000,
+  );
+
   it("closes both children and queued requests when the host disconnects during preflight", async () => {
     const server = await start();
     server.deploy(B, { hang: true });

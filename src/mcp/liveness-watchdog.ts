@@ -182,6 +182,158 @@ export interface WatchdogOptions {
 }
 
 /**
+ * The refresh launcher sets this to its own pid and opens a pipe on
+ * {@link LAUNCHER_LIVENESS_FD} for each server it starts. That server sends its
+ * heartbeat there instead of starting a watchdog process, and the launcher (a
+ * separate process, so the wedge cannot reach it either) kills it on silence and
+ * starts a fresh one. A process with any other parent that inherits the variable
+ * (a daemon, a CLI command) starts its own watchdog process as before.
+ */
+export const LAUNCHER_LIVENESS_ENV = 'CODEGRAPH_LAUNCHER_LIVENESS';
+export const LAUNCHER_LIVENESS_FD = 3;
+
+/**
+ * Lines on the launcher pipe: this object as JSON arms the watch, an empty line
+ * is a heartbeat, and `disarm` ends the watch.
+ */
+interface LivenessArm {
+  timeoutMs: number;
+  capMs: number;
+  progressPaths: string[];
+}
+
+/** Size + mtime of each watched file; a change is forward disk progress. */
+function progressSnapshot(paths: string[]): string {
+  let s = '';
+  for (const p of paths) {
+    try { const st = fs.statSync(p); s += st.size + ':' + st.mtimeMs + ';'; } catch { s += 'x;'; }
+  }
+  return s;
+}
+
+/**
+ * The launcher's side of the watch: the same timeout, disk-progress deferral and
+ * hard cap as the watchdog process ({@link CHILD_SOURCE}), driven by lines from
+ * the server's pipe. `kill` gets the notice to log and must end the server.
+ */
+export class LivenessMonitor {
+  private armed: LivenessArm | null = null;
+  private timer: NodeJS.Timeout | null = null;
+  private lastSnap = '';
+  private lastSnapAt = 0;
+  private silentSince: number | null = null;
+
+  constructor(private readonly kill: (notice: string) => void) {}
+
+  receive(line: string): void {
+    if (line === '') return this.beat();
+    if (line === 'disarm') return this.disarm();
+    let arm: Partial<LivenessArm>;
+    try { arm = JSON.parse(line) as Partial<LivenessArm>; } catch { return; }
+    if (!(Number(arm.timeoutMs) > 0) || !(Number(arm.capMs) > 0)) return;
+    const progressPaths = Array.isArray(arm.progressPaths) ? arm.progressPaths.filter((p) => typeof p === 'string') : [];
+    this.armed = { timeoutMs: Math.min(Number(arm.timeoutMs), MAX_TIMER_DELAY_MS), capMs: Number(arm.capMs), progressPaths };
+    this.lastSnap = progressSnapshot(progressPaths);
+    this.lastSnapAt = Date.now();
+    this.silentSince = null;
+    this.schedule();
+  }
+
+  disarm(): void {
+    this.armed = null;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private beat(): void {
+    if (!this.armed) return;
+    this.silentSince = null;
+    // Keep the baseline fresh while healthy (throttled: a stat per second).
+    if (this.armed.progressPaths.length && Date.now() - this.lastSnapAt >= 1000) {
+      this.lastSnap = progressSnapshot(this.armed.progressPaths);
+      this.lastSnapAt = Date.now();
+    }
+    this.schedule();
+  }
+
+  private schedule(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.onTimeout(), this.armed!.timeoutMs);
+    this.timer.unref?.();
+  }
+
+  private onTimeout(): void {
+    const armed = this.armed;
+    if (!armed) return;
+    const notice = (extra: string): string =>
+      `Main thread unresponsive for ~${Math.round(armed.timeoutMs / 1000)}s${extra}; killing the wedged process so a fresh one can start (#850). Disable with CODEGRAPH_NO_WATCHDOG=1.`;
+    if (!armed.progressPaths.length) {
+      this.disarm();
+      return this.kill(notice(''));
+    }
+    const now = Date.now();
+    if (this.silentSince === null) this.silentSince = now - armed.timeoutMs;
+    const cur = progressSnapshot(armed.progressPaths);
+    if (cur !== this.lastSnap && now - this.silentSince < armed.capMs) {
+      // Blocked, but the DB files advance: a long store on slow storage.
+      this.lastSnap = cur;
+      this.schedule();
+      return;
+    }
+    this.disarm();
+    this.kill(notice(cur !== this.lastSnap ? ` despite ongoing disk activity (hard cap ${Math.round(armed.capMs / 1000)}s reached)` : ''));
+  }
+}
+
+/**
+ * Send heartbeats to the refresh launcher that started this process, or return
+ * null when there is none. Writes go through `fs.write` on the descriptor: a
+ * `net.Socket` opened on it delivers nothing under Bun 1.4.
+ */
+function launcherWatchdog(arm: LivenessArm, checkMs: number): WatchdogHandle | null {
+  if (process.platform === 'win32' || process.env[LAUNCHER_LIVENESS_ENV] !== String(process.ppid)) return null;
+  try {
+    const st = fs.fstatSync(LAUNCHER_LIVENESS_FD);
+    if (!st.isSocket() && !st.isFIFO()) return null;
+  } catch {
+    return null;
+  }
+  // One write at a time keeps the lines in order. A heartbeat is dropped while
+  // another line is still being written; that line already shows the loop turns.
+  const queue: string[] = [];
+  let writing = false;
+  let broken = false;
+  const send = (line: string, droppable = false): void => {
+    if (broken || (droppable && (writing || queue.length))) return;
+    queue.push(line + '\n');
+    if (!writing) flush();
+  };
+  const flush = (): void => {
+    const next = queue.shift();
+    if (next === undefined) { writing = false; return; }
+    writing = true;
+    fs.write(LAUNCHER_LIVENESS_FD, next, (err) => {
+      // The launcher is gone; the PPID watchdog shuts this process down.
+      if (err && err.code !== 'EAGAIN') { broken = true; queue.length = 0; writing = false; return; }
+      flush();
+    });
+  };
+  send(JSON.stringify(arm));
+  const heartbeat = setInterval(() => send('', true), checkMs);
+  heartbeat.unref();
+  debug(`armed through launcher ${process.ppid}: timeoutMs=${arm.timeoutMs} checkMs=${checkMs} progressPaths=${arm.progressPaths.length}`);
+  let stopped = false;
+  return {
+    stop(): void {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(heartbeat);
+      send('disarm');
+    },
+  };
+}
+
+/**
  * Install the main-thread liveness watchdog for a long-lived process. Returns a
  * handle to stop it, or `null` when disabled or when the child can't be spawned
  * (degraded, never throws — a missing watchdog must never keep a process from
@@ -194,6 +346,9 @@ export function installMainThreadWatchdog(options: WatchdogOptions = {}): Watchd
   const checkMs = deriveCheckIntervalMs(timeoutMs);
   const capMs = timeoutMs * PROGRESS_CAP_MULTIPLIER;
   const progressPaths = options.progressPaths ?? [];
+
+  const viaLauncher = launcherWatchdog({ timeoutMs, capMs, progressPaths }, checkMs);
+  if (viaLauncher) return viaLauncher;
 
   let child: ChildProcess;
   try {

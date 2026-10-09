@@ -12,6 +12,8 @@ let initialized = false;
 let initializeParams;
 let hostQuestion;
 process.stderr.write(`FIXTURE_PID=${process.pid}\n`);
+// Arms the real liveness watchdog, as `serve --mcp` does.
+if (options.liveness) require(options.liveness).installMainThreadWatchdog();
 const lines = readline.createInterface({ input: process.stdin });
 lines.on("line", (line) => {
   const message = JSON.parse(line);
@@ -44,6 +46,7 @@ lines.on("line", (line) => {
   } else if (message.method === "tools/call") {
     const name = message.params.name;
     if (name === "crash") process.exit(9);
+    if (name === "wedge") for (;;) {}
     // Dies under the first call only, like a daemon restarting mid-request.
     if (name === "exit-once") {
       const marker = path.join(dist, "exit-once.marker");
