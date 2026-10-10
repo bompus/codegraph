@@ -1425,6 +1425,12 @@ describe('large Codex rollouts are scanned, not parsed whole', () => {
     expect(parseCodexTranscript(write('spaced.jsonl', rollout([spaced]))).docs.map((d) => d.text)).toEqual(['a prompt written with spaces after the colons']);
   });
 
+  it('parses the whole file when whitespace separates a key from its colon', () => {
+    const spaced = message('user', 'a prompt whose type key has a space before the colon').replace('"type":"message"', '"type" : "message"');
+    const docs = parseCodexTranscript(write('colon.jsonl', rollout([lines[0]!, spaced]))).docs;
+    expect(docs.map((d) => d.text)).toEqual(['a prompt whose type key has a space before the colon']);
+  });
+
   it('parses the whole file when a large rollout holds no marker at all', () => {
     const parsed = parseCodexTranscript(write('none.jsonl', rollout([])));
     expect(parsed.docs).toEqual([]);

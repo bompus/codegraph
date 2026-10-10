@@ -201,7 +201,7 @@ export function codexFilesForProject(
 }
 
 /** A message (`"type":"message"` stays contiguous in any key order) or the `session_meta` line that names the session. */
-const CODEX_SCAN: LineScan = { markers: bytes('"type":"message"', 'session_meta'), spaced: bytes('"type": "') };
+const CODEX_SCAN: LineScan = { markers: bytes('"type":"message"', 'session_meta'), spaced: bytes('"type": "', '"type" :') };
 
 export function parseCodexTranscript(file: string): { session: string; title: string | null; docs: SessionDoc[] } {
   const docs: SessionDoc[] = [];

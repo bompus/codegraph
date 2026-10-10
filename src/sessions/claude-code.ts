@@ -144,7 +144,7 @@ const PROSE_SCAN: LineScan = {
     marker: Buffer.from('"content":"'),
     keep: (buf, start, end) => !buf.subarray(start, end).includes(TOOL_RESULT),
   },
-  spaced: bytes('"type": "', '"role": "', '"content": "'),
+  spaced: bytes('"type": "', '"type" :', '"role": "', '"content": "'),
 };
 
 export { SCAN_MIN_BYTES };
