@@ -25,7 +25,7 @@ npx vitest run __tests__/installer-targets.test.ts
 npx vitest run __tests__/extraction.test.ts -t "TypeScript"
 ```
 
-Under Bun the suite runs via `__tests__/bun-homedir.setup.ts` (an `os.homedir` shim for oven-sh/bun#29244) plus three test-file adaptations linked to their upstream issues (#42891, #42893, #25498). `npm run test:bun` still fails 19 tests that pass on Node: tests that replace modules or `fs` functions (Bun's `syncBuiltinESMExports` is a no-op and a `vi.mock` of a module loaded through the lazy `require('./extraction')` appears not to apply), one that empties `PATH` (Bun still finds `git`), and a V8-only `gc` test. Do not read those as regressions; a new Bun-only failure is one outside that list.
+Under Bun the suite runs via `__tests__/bun-homedir.setup.ts` (an `os.homedir` shim for oven-sh/bun#29244) plus three test-file adaptations linked to their upstream issues (#42891, #42893, #25498). `npm run test:bun` skips tests that need a runtime capability Bun lacks (patching a builtin so the library sees it, an emptied `PATH` blocking a spawn); `__tests__/helpers/runtime-capabilities.ts` measures each one at run time and `__tests__/runtime-capabilities.test.ts` fails if it goes missing anywhere but Bun. Gate a new test of that kind with the helper rather than `process.versions.bun`. Under Bun, spell a `vi.mock` path as an absolute path (`${__dirname}/…`): a relative one resolves against the project root (oven-sh/bun#43685).
 
 `copy-assets` (called from `build`) copies `src/db/schema.sql` into `dist/`. **Any new SQL asset must be copied or it won't ship.**
 

@@ -22,6 +22,7 @@ import * as daemonRegistry from '../src/mcp/daemon-registry';
 import { getTelemetry } from '../src/telemetry';
 import * as updateCheck from '../src/upgrade/update-check';
 import { getWriterPidPath } from '../src/mcp/writer-lock';
+import { builtinPatchingReachesImporters } from './helpers/runtime-capabilities';
 
 let root: string;
 let server: net.Server | null = null;
@@ -362,7 +363,7 @@ describe('ordinary watcher startup', () => {
     },
   );
 
-  it('initializes an exact child index and refreshes the same daemon after a new edit', async () => {
+  it.skipIf(!builtinPatchingReachesImporters)('initializes an exact child index and refreshes the same daemon after a new edit', async () => {
     vi.stubEnv('CODEGRAPH_WATCH_DEBOUNCE_MS', '60000');
     vi.stubEnv('CODEGRAPH_QUERY_POOL_SIZE', '0');
     await initialize();
@@ -626,7 +627,7 @@ describe('ordinary watcher startup', () => {
     finally { reader.close(); }
   });
 
-  it('converges racing ordinary starters on one real watcher without a promotion lease', async () => {
+  it.skipIf(!builtinPatchingReachesImporters)('converges racing ordinary starters on one real watcher without a promotion lease', async () => {
     await initialize();
     const original = childProcess.spawn;
     const spawned: ChildProcess[] = [];
@@ -647,7 +648,7 @@ describe('ordinary watcher startup', () => {
     await checkRuntimeReady(root, winner, 1000, { requireWatcher: true });
   });
 
-  it.each(['promotion', 'older', 'invalid-writer'].flatMap(event => [true, false].map(initialized => ({ event, initialized }))))(
+  it.skipIf(!builtinPatchingReachesImporters).each(['promotion', 'older', 'invalid-writer'].flatMap(event => [true, false].map(initialized => ({ event, initialized }))))(
     'preserves a $event owner after precheck before election (initialized=$initialized)', async ({ event, initialized }) => {
       if (initialized) await initialize();
       const original = childProcess.spawn;
@@ -677,7 +678,7 @@ describe('ordinary watcher startup', () => {
     },
   );
 
-  it('times out with a disabled real watcher without terminating a possibly shared daemon', async () => {
+  it.skipIf(!builtinPatchingReachesImporters)('times out with a disabled real watcher without terminating a possibly shared daemon', async () => {
     await initialize();
     const original = childProcess.spawn;
     spySpawn().mockImplementation(((command: string, args: string[], spawnOptions: childProcess.SpawnOptions) => {

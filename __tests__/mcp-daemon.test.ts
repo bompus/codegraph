@@ -45,12 +45,33 @@ import { CodeGraphPackageVersion } from '../src/mcp/version';
 import { once } from 'events';
 import { recordSpawns, removeSpawnLog, settleLosingCandidates } from './daemon-candidates';
 
+// Vite strips the `node:` prefix from an import of this builtin; require keeps it.
+const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 interface SpawnedServer {
   child: ChildProcessWithoutNullStreams;
   stdout: string[];
   stderr: string[];
+}
+
+/**
+ * The indexed content of a project's database, read through a read-only
+ * connection. Comparing it instead of the raw file bytes asks "did anything
+ * change the index?" without failing when a checkpoint folds WAL frames left
+ * by a killed writer back into the main file (Bun does that at times; the
+ * rows are identical).
+ */
+function readIndexedContent(root: string): string {
+  const db = new DatabaseSync(path.join(root, '.codegraph', 'codegraph.db'), { readOnly: true });
+  try {
+    const files = db.prepare('SELECT path, content_hash, node_count FROM files ORDER BY path').all();
+    const nodes = db.prepare('SELECT count(*) AS n FROM nodes').get();
+    return JSON.stringify({ files, nodes });
+  } finally {
+    db.close();
+  }
 }
 
 function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}, args: string[] = []): SpawnedServer {
@@ -637,7 +658,7 @@ describe('Shared MCP daemon (issue #411)', () => {
 
     // Make the index stale by changing the source, without opening a new
     // SQLite writer against the database of the daemon we just killed.
-    const before = fs.readFileSync(path.join(realRoot, '.codegraph', 'codegraph.db'));
+    const before = readIndexedContent(realRoot);
     fs.writeFileSync(path.join(realRoot, 'app.ts'), 'export function changedSymbol() {}\n');
     const second = spawnServer(tempDir, env);
     servers.push(second);
@@ -675,7 +696,7 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(fs.readFileSync(daemonPath, 'utf8')).toBe(staleDaemonLock);
     second.child.stdin.end();
     await waitFor(() => second.child.exitCode !== null, 5000);
-    expect(fs.readFileSync(path.join(realRoot, '.codegraph', 'codegraph.db'))).toEqual(before);
+    expect(readIndexedContent(realRoot)).toBe(before);
     expect(fs.readFileSync(writerPath, 'utf8')).toBe(staleWriterLock);
   }, 50000);
 
