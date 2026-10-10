@@ -23,7 +23,7 @@ import {
   CPP_DEFINE_SIGNATURE,
 } from './types';
 import { isBindingReceiverCall,  crossesKnownFamily, crossesCodeBoundary, resolveAmbiguousNameCeiling} from './gates';
-import { extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos } from './import-resolver';
+import { isExternalImport, resolveImportPath, extractImportMappings, importMappingsFromBindings,  loadCppIncludeDirs, isBoundToOutOfRepoImport, importBindingTail, clearImportResolverMemos } from './import-resolver';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility } from './swift-type-visibility';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
 import { gateRustScope, clearRustScopeMemos } from './rust-scope';
@@ -42,6 +42,8 @@ import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packa
 import { logDebug } from '../errors';
 import { lexicalPathWithinRoot, safeJsonParse } from '../utils';
 import { builtinModules } from 'module';
+import { parse as parseJsonc } from 'jsonc-parser';
+const NODE_BUILTINS = new Set(builtinModules);
 import { getKernel, type KernelResolverLike, type ResolveRefIn, type ResolveOutcome } from '../extraction/kernel/loader';
 import { LRUCache } from './lru-cache';
 import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
@@ -411,6 +413,7 @@ export class ReferenceResolver {
     this.goPackageDirs.clear();
     this.goModuleByDir.clear();
     this.allFilesCache = null;
+    this.manifestScopes.clear();
     this.cachesWarmed = false;
     // The import-resolver's per-context memos assume the
     // same stable window as the caches above — drop them together.
@@ -501,6 +504,75 @@ export class ReferenceResolver {
     }
   }
 
+  private isIndexedFile(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    return this.knownFiles ? this.knownFiles.has(normalized) : this.queries.getFileByPath(normalized) !== null;
+  }
+
+  /** The repository's own package name, from its root package.json; null without one. */
+  /** Per directory: the package names its package.json and every enclosing one own and depend on. */
+  private manifestScopes = new Map<string, { own: Set<string>; deps: Set<string> }>();
+
+  /**
+   * Is `source` a package from outside the repository? Only when the importing
+   * file's package.json (or an enclosing one) declares it, or it is a Node
+   * built-in or a runtime's virtual module. A specifier nothing declares is
+   * an alias this resolver does not know — SvelteKit's `$lib/…`, Nuxt's
+   * `~/…`, a nested app's own `@/…` — and stays the project's.
+   */
+  private isDeclaredOutsidePackage(source: string, fromFile: string): boolean {
+    // Deno's standard library is `@std/…` from JSR.
+    if (/^(?:node|bun|jsr|npm|https?):/.test(source) || source.startsWith('@std/') || NODE_BUILTINS.has(source)) return true;
+    const name = source.startsWith('@') ? source.split('/').slice(0, 2).join('/') : source.split('/')[0]!;
+    const normalized = fromFile.replace(/\\/g, '/');
+    const scope = this.manifestScope(normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '');
+    if (scope.own.has(name)) return false;
+    if (scope.deps.has(name)) return true;
+    // SvelteKit's `$app/…` and Astro's `astro:…` belong to the framework —
+    // unless this repository is that framework.
+    const provider = source.startsWith('astro:') ? 'astro' : /^\$(?:app|env|service-worker)(?:\/|$)/.test(source) ? '@sveltejs/kit' : null;
+    return provider !== null && !scope.own.has(provider) && !this.context.getWorkspacePackages?.()?.byName.has(provider);
+  }
+
+  private manifestScope(dir: string): { own: Set<string>; deps: Set<string> } {
+    const memo = this.manifestScopes.get(dir);
+    if (memo) return memo;
+    const parent = dir === '' ? null : this.manifestScope(dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '');
+    let scope = parent ?? { own: new Set<string>(), deps: new Set<string>() };
+    try {
+      const json = JSON.parse(this.context.readFile(dir ? `${dir}/package.json` : 'package.json') ?? 'null') as Record<string, unknown> | null;
+      if (json && typeof json === 'object') {
+        scope = { own: new Set(scope.own), deps: new Set(scope.deps) };
+        if (typeof json.name === 'string' && json.name.length > 0) scope.own.add(json.name);
+        for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+          const deps = json[field];
+          if (!deps || typeof deps !== 'object') continue;
+          for (const [dep, version] of Object.entries(deps)) {
+            // `workspace:*`, `file:../shared`, `link:…`: a package in this repository.
+            if (typeof version === 'string' && /^(?:workspace|file|link|portal):/.test(version)) scope.own.add(dep);
+            else scope.deps.add(dep);
+          }
+        }
+      }
+    } catch { /* no or unreadable package.json */ }
+    // A Deno import map names packages the same way — an entry that maps to a
+    // registry or a URL, not one that maps to a path in the repository.
+    for (const file of ['deno.json', 'deno.jsonc']) {
+      const raw = this.context.readFile(dir ? `${dir}/${file}` : file);
+      if (!raw) continue;
+      const json = parseJsonc(raw) as { imports?: Record<string, unknown> } | undefined;
+      const imports = json && typeof json === 'object' ? json.imports : undefined;
+      if (!imports || typeof imports !== 'object') continue;
+      for (const [key, target] of Object.entries(imports)) {
+        if (typeof target !== 'string' || !/^(?:jsr|npm|https?):/.test(target)) continue;
+        if (scope === parent) scope = { own: new Set(scope.own), deps: new Set(scope.deps) };
+        scope.deps.add(key.replace(/\/$/, ''));
+      }
+    }
+    this.manifestScopes.set(dir, scope);
+    return scope;
+  }
+
   /**
    * Create the resolution context
    */
@@ -529,6 +601,16 @@ export class ReferenceResolver {
           filePath: ref.filePath,
           language: ref.language,
         }));
+      },
+      // A path alias makes an import the project's only when it maps the
+      // import to a file the index holds. Matching its prefix is not enough:
+      // a catch-all `"*": ["./typings/*"]` matches every package, and a path
+      // that exists on disk may lie in `node_modules`.
+      isOutOfRepoImport: (source, fromFile, language) => {
+        if (!isExternalImport(source, language, this.context, fromFile, { aliasPrefixes: false })) return false;
+        const resolved = resolveImportPath(source, fromFile, language, this.context);
+        if (resolved !== null && this.isIndexedFile(resolved)) return false;
+        return this.isDeclaredOutsidePackage(source, fromFile);
       },
       getNodesInFile: (filePath: string) => {
         if (!this.nodeCache.has(filePath)) {
