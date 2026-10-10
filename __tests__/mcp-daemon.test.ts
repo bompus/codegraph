@@ -69,7 +69,7 @@ function snapshotDatabase(root: string): Buffer | string {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const files = db.prepare('SELECT path, content_hash, node_count FROM files ORDER BY path').all();
-    const nodes = db.prepare('SELECT count(*) AS n FROM nodes').get();
+    const nodes = db.prepare('SELECT * FROM nodes ORDER BY id').all();
     return JSON.stringify({ files, nodes });
   } finally {
     db.close();
