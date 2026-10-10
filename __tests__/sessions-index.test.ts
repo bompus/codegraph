@@ -1372,3 +1372,62 @@ describe('large Claude transcripts are scanned, not parsed whole', () => {
     expect(parseEntries(file)).toHaveLength(prose.length - 1);
   });
 });
+
+describe('large Codex rollouts are scanned, not parsed whole', () => {
+  const row = (type: string, payload: Record<string, unknown>) => JSON.stringify({ timestamp: at, type, payload });
+  const message = (role: string, text: string) =>
+    row('response_item', { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] });
+  const call = (i: number) =>
+    row('response_item', { type: 'function_call_output', call_id: `c${i}`, output: `tool output ${i} `.repeat(40) });
+  /** Enough tool traffic to pass SCAN_MIN_BYTES, with `lines` in the middle of it. */
+  const rollout = (lines: string[], gap = '\n'): string => {
+    const bulk = Array.from({ length: Math.ceil(SCAN_MIN_BYTES / 500) + 10 }, (_, i) => call(i));
+    const half = Math.floor(bulk.length / 2);
+    return [...bulk.slice(0, half), ...lines, ...bulk.slice(half)].join(gap) + gap;
+  };
+  const write = (name: string, content: string): string => {
+    const file = path.join(fixtureDir(), name);
+    fs.writeFileSync(file, content);
+    return file;
+  };
+
+  const lines = [
+    row('session_meta', { id: 'sub-1', session_id: 'parent-9', cwd: '/x' }),
+    message('user', 'a prompt long enough to be indexed'),
+    message('assistant', 'a reply long enough to be indexed'),
+    message('developer', 'a developer message that is not prose'),
+    row('response_item', { type: 'function_call', name: 'shell', arguments: '{"cmd":"echo \\"type\\":\\"message\\""}' }),
+    row('response_item', { type: 'reasoning', summary: [] }),
+  ];
+  const expected = parseCodexTranscript(write('small.jsonl', lines.join('\n') + '\n'));
+
+  it('returns the same session and docs as parsing every line', () => {
+    const file = write('big.jsonl', rollout(lines) + '{"timestamp":"' + at + '","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"cut off mid-wri');
+    expect(fs.statSync(file).size).toBeGreaterThanOrEqual(SCAN_MIN_BYTES);
+    const parsed = parseCodexTranscript(file);
+    expect(parsed).toEqual(expected);
+    expect(parsed.session).toBe('codex:parent-9');
+    expect(parsed.docs.map((d) => d.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('reads CRLF line endings the same way', () => {
+    expect(parseCodexTranscript(write('crlf.jsonl', rollout(lines, '\r\n')))).toEqual(expected);
+  });
+
+  it('finds messages whatever the order of the keys', () => {
+    const swapped = JSON.stringify({ payload: { content: [{ text: 'a message with its keys reordered, long enough', type: 'input_text' }], role: 'user', type: 'message' }, type: 'response_item', timestamp: at });
+    const docs = parseCodexTranscript(write('order.jsonl', rollout([...lines, swapped]))).docs;
+    expect(docs.map((d) => d.text)).toEqual(['a prompt long enough to be indexed', 'a reply long enough to be indexed', 'a message with its keys reordered, long enough']);
+  });
+
+  it('parses the whole file when spaced JSON means the byte patterns no longer apply', () => {
+    const spaced = message('user', 'a prompt written with spaces after the colons').replace('"type":"message"', '"type": "message"');
+    expect(parseCodexTranscript(write('spaced.jsonl', rollout([spaced]))).docs.map((d) => d.text)).toEqual(['a prompt written with spaces after the colons']);
+  });
+
+  it('parses the whole file when a large rollout holds no marker at all', () => {
+    const parsed = parseCodexTranscript(write('none.jsonl', rollout([])));
+    expect(parsed.docs).toEqual([]);
+    expect(parsed.session).toBe('codex:none');
+  });
+});
