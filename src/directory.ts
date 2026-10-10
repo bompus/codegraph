@@ -23,7 +23,7 @@ let warnedBadDirName = false;
 
 /**
  * A directory's entries in name order. Node's `readdirSync` returns them sorted
- * (libuv sorts); Bun returns the filesystem's own order. Indexing, resolution
+ * (libuv sorts); Bun returns the filesystem's own order (oven-sh/bun#44947). Indexing, resolution
  * and equal-score tie-breaks follow this order, so every walk that feeds them
  * reads through here and gets the same order on both runtimes.
  */

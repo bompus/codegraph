@@ -57,7 +57,7 @@ describe('terminating a worker once it has started', () => {
 });
 
 describe('collecting garbage before a worker exits', () => {
-  it('runs a full collection in a real worker, and leaves no global gc behind', async () => {
+  it('runs a full collection in a real worker (V8), and leaves no global gc behind', async () => {
     const teardown = path.resolve(__dirname, '../dist/worker-teardown.js');
     const run = (code: string) => new Promise<unknown>((resolve, reject) => {
       const w = new Worker(code, { eval: true });
@@ -73,8 +73,15 @@ describe('collecting garbage before a worker exits', () => {
       const after = process.memoryUsage().heapUsed;
       require('worker_threads').parentPort.postMessage({ collected, freed: before - after, gc: typeof globalThis.gc });
     `) as { collected: boolean; freed: number; gc: string };
-    expect(ran.collected).toBe(true);
-    expect(ran.freed).toBeGreaterThan(0);
+    if (process.versions.bun) {
+      // JavaScriptCore has no V8 `--expose-gc` flag to reach at runtime, so the
+      // collector is unavailable and the worker exits without one. The crash it
+      // guards against is V8's concurrent marker on Windows.
+      expect(ran.collected).toBe(false);
+    } else {
+      expect(ran.collected).toBe(true);
+      expect(ran.freed).toBeGreaterThan(0);
+    }
     expect(ran.gc).toBe('undefined');
     // A worker created afterwards doesn't get a global gc either.
     expect(await run(`require('worker_threads').parentPort.postMessage(typeof globalThis.gc)`)).toBe('undefined');
