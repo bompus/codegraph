@@ -59,18 +59,71 @@ impl KernelResolver {
         let ty = match operator.trim() {
             "." if pointers == 0 => raw.trim_end_matches('&').trim().to_string(),
             "->" if pointers == 1 && !raw.contains('<') => raw.replace(['*', '&'], "").trim().to_string(),
+            // A standard smart pointer or optional: `->` reaches a member of the type it holds.
             "->" if pointers == 0 => {
-                let Some(hit) = re!(r"^std::(?:unique_ptr|shared_ptr)\s*<\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*>\s*&?$").captures(&raw) else { return Ok(Some(None)) };
-                hit[1].to_string()
+                let Some(hit) = re!(r"^(?:const\s+)?(?:::)?std::(?:unique_ptr|shared_ptr|optional)\s*<(.*)>\s*&?$").captures(&raw) else { return Ok(Some(None)) };
+                let Some(held) = cpp_held_type(&hit[1]) else { return Ok(None) };
+                if held.trim_start_matches("::").starts_with("std::") { return Ok(Some(None)); }
+                held
             }
             _ => return Ok(Some(None)),
         };
         let primary = ty.split('<').next().unwrap_or(&ty).trim();
         if let Some(caller) = self.node_by_id(&r.from_node_id)? { if self.cpp_template_parameter(&caller, primary, r)? { return Ok(Some(None)); } }
         if self.cpp_alias_expansion(primary, r, 0, &included)?.is_some_and(|alias| alias.pointer) { return Ok(None); }
-        let Some(owner) = self.cpp_type_owner(primary, r, 0, false)? else { return Ok(None) };
+        let held = operator.trim() == "->" && pointers == 0;
+        let mut owner = if held { self.cpp_class_scope_type(primary, r)? } else { None };
+        if owner.is_none() { owner = self.cpp_type_owner(primary, r, 0, false)?; }
+        if owner.is_none() && held {
+            if let Some(parts) = super::cpp_aliases::type_segments(primary) {
+                // A class template and its specializations share a qualified name, and so their members.
+                let family = self.cpp_scoped_types(primary, &parts.join("::"), r, &included)?;
+                if let Some(first) = family.first().filter(|f| family.len() > 1 && family.iter().all(|n| n.qualified_name == f.qualified_name && matches!(n.kind.as_str(), "class" | "struct"))) { owner = Some(first.clone()); }
+                if owner.is_none() { owner = self.cpp_type_via_using(primary, &parts, r, &included)?; }
+            }
+        }
+        let Some(owner) = owner else {
+            // A held type that is an alias of a library type holds no project class.
+            let aliased_library = held && self.cpp_alias_expansion(primary, r, 0, &included)?
+                .is_some_and(|alias| alias.raw.as_deref().is_some_and(|ty| ty.trim_start_matches("::").starts_with("std::")));
+            return Ok(aliased_library.then_some(None));
+        };
         // Preserve the existing guarded alias and specialization fallback on a miss.
-        Ok(self.match_bound_type_member(&owner.qualified_name, method, r)?.map(Some))
+        let member = self.match_bound_type_member(&owner.qualified_name, method, r)?;
+        // A class that lacks the method, and whose bases lack it too, is called nothing
+        // (but a class template's specialization may declare it).
+        if member.is_none() && held && self.supertypes_complete && !self.cpp_alias_template_owner(&owner, r)? { return Ok(Some(None)); }
+        Ok(member.map(Some))
+    }
+
+    /// A class `ty` names from inside a class that declares or inherits it, which
+    /// C++ looks up before the namespaces around: the scopes of the caller, innermost
+    /// first, each with the classes it derives from.
+    fn cpp_class_scope_type(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        if ty.contains("::") { return Ok(None); }
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
+        let scopes: Vec<_> = caller.qualified_name.split("::").map(str::to_string).collect();
+        let included = self.namespace_visible_files(&r.file_path, "cpp")?;
+        let is_class = |n: &&Arc<KNode>| matches!(n.language.as_str(), "c" | "cpp") && matches!(n.kind.as_str(), "class" | "struct" | "union") && included.contains(&n.file_path);
+        for i in (1..=scopes.len()).rev() {
+            let enclosing = self.nodes_by_qualified_name(&scopes[..i].join("::"))?;
+            let classes: Vec<_> = enclosing.iter().filter(is_class).cloned().collect();
+            let [class] = classes.as_slice() else { continue };
+            let mut frontier = vec![class.clone()];
+            let mut seen = HashSet::new();
+            for _ in 0..4 {
+                let mut next = Vec::new();
+                for c in frontier {
+                    if !seen.insert(c.id.clone()) { continue; }
+                    let nested = self.nodes_by_qualified_name(&format!("{}::{ty}", c.qualified_name))?;
+                    if let [only] = nested.iter().filter(is_class).cloned().collect::<Vec<_>>().as_slice() { return Ok(Some(only.clone())); }
+                    if self.supertypes_complete { next.extend(self.supertype_nodes(&c.id)?.into_iter().filter(|n| matches!(n.kind.as_str(), "class" | "struct" | "union"))); }
+                }
+                if next.is_empty() { break; }
+                frontier = next;
+            }
+        }
+        Ok(None)
     }
 
     pub(super) fn cpp_complex_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
@@ -259,6 +312,28 @@ impl KernelResolver {
         }
         Ok(None)
     }
+}
+
+/// The first template argument of a standard smart pointer or optional, or None when it
+/// is a pointer: `Foo`, `ns::Foo<int, true>`, `const Foo` for `Foo, Deleter`.
+fn cpp_held_type(arguments: &str) -> Option<String> {
+    let mut depth = 0usize;
+    let mut end = arguments.len();
+    for (i, ch) in arguments.char_indices() {
+        match ch {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => { end = i; break; }
+            _ => (),
+        }
+    }
+    let held = arguments[..end].trim();
+    let held = held.strip_prefix("const ").unwrap_or(held).trim();
+    let mut depth = 0usize;
+    for ch in held.chars() {
+        match ch { '<' => depth += 1, '>' => depth = depth.saturating_sub(1), '*' if depth == 0 => return None, _ => () }
+    }
+    (!held.is_empty()).then(|| held.to_string())
 }
 
 fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a SourceFile) -> &'a str {

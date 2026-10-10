@@ -1160,6 +1160,18 @@ export class CodeGraph {
           }
         }
 
+        // The same for a route whose answer is read from a module: one that
+        // renders `const Docs = lazy(() => import('./pages/Docs'))` binds to
+        // the component the module exports, so it moves when the module is
+        // added or edited, though no name it carries changes.
+        if (filesChanged && result.changedFilePaths) {
+          const tModules = Date.now();
+          const reopened = this.resolver.reopenRouteModuleReaders(result.changedFilePaths);
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+            console.error(`[phase-timing] sync-route-modules: ${Date.now() - tModules}ms (${reopened} refs re-opened)`);
+          }
+        }
+
         // Orphan sweep (#1187). A resolution pass that dies mid-run — the #850
         // daemon liveness watchdog's SIGKILL (#1122), Ctrl-C, a crash — leaves
         // the refs it never reached in unresolved_refs, and the git-scoped fast

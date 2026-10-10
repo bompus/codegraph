@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`b635dd46`](https://github.com/colbymchenry/codegraph/commit/b635dd467f0578926a9c01a37b9d28d2b26689f1) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`c0f45c7d`](https://github.com/colbymchenry/codegraph/commit/c0f45c7d) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -80,7 +80,7 @@ Session search uses `.codegraph/sessions-v2.db`. The first session search import
 
 ### What the fork adds
 
-Compared with upstream `main` at `b635dd46` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
+Compared with upstream `main` at `c0f45c7d` (after v1.6.2). Each item here and in the dispatch and framework lists below was checked against upstream's tree at that commit.
 
 | Feature | Upstream | Fork | What it does |
 |---|:-:|:-:|---|
@@ -150,6 +150,7 @@ Call resolution the fork adds:
 - Kotlin chains on instance and extension receivers use the declared return type, including nested and multiline calls; upstream covers class and companion-factory chains. An imported return-type guess for an unknown receiver keeps confidence at most 0.7, and so does a Rust chain match without a proved receiver type.
 - Kotlin multi-dollar strings keep their interpolation threshold.
 - C++ typedef and using aliases follow their declaration scope, including nested owners and inherited aliases. Pointer, array and function members are not supertypes. Visible class-scoped aliases and declared complex receivers keep their method owners; unsubstituted template parameters and ambiguous owners stay unresolved.
+- C++ `->` calls on a `std::unique_ptr`, `std::shared_ptr` or `std::optional` reach the type it holds, looked up through the caller's enclosing classes and their bases, its namespaces, `using` directives and aliases. A held type the project does not declare leaves the call unresolved, as a plain pointer to one does; upstream guesses a callee from the receiver's name there. A partial class template specialization is indexed as an anonymous class, so a call to a member only it declares stays unresolved.
 - C++ namespace aliases and declarations in macro-opened namespaces are looked up only in the caller's include closure; upstream pools them across all files.
 - C# namespace `using` directives and `using` aliases apply only inside their enclosing namespace, not to sibling namespaces in the same file (`using static` is still file-wide, as upstream).
 - A Java field declared with a qualified type (`outside.Repository`) keeps its qualifier, so calls through it never resolve to an unrelated project class with the same simple name.
