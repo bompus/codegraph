@@ -97,7 +97,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
-- The first session search over a large Claude Code history is faster: transcripts of 256 KB and up are scanned for the entries that can hold prose instead of every line being decoded and parsed, since about 95% of a transcript is tool traffic. The indexed passages and titles are identical (checked on 536 real transcripts); spaced JSON or a large file with no match falls back to the whole-file parse. In-process cold build of those 536 transcripts: about 1.0 to 1.3 s before, 0.6 to 0.75 s after.
+- The first session search over a large Claude Code history is faster: transcripts of 256 KB and up are scanned for the entries that can hold prose instead of every line being decoded and parsed, since about 95% of a transcript is tool traffic. The indexed passages and titles are identical (checked on 536 real transcripts); spaced JSON or a large file with no match falls back to the whole-file parse. In-process cold build of those 536 transcripts: about 1.0 s before, 0.7 s after.
 
 - Session search no longer forgets a transcript store it cannot read right now. An OpenCode or Devin database that will not open, a session directory that cannot be listed, or a Codex transcript that cannot be read keeps its already-indexed sessions until it reads again; a store that was removed is still forgotten.
 - Session search replaces changed transcripts through an indexed source lookup. A separate store protects that lookup from older writers. Remembered roots carry forward; available transcript content rebuilds on the first session search.

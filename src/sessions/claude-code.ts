@@ -130,21 +130,17 @@ function parseLines(text: string): Entry[] {
 }
 
 /**
- * The byte patterns of the only entries that can carry prose or a title: a text
- * block, a prompt stored as a plain string, a mid-turn prompt, a compaction
- * summary, a custom title. Claude Code writes compact JSON in this key order.
+ * What can make an entry carry prose in compact JSON, whatever the order of its
+ * keys: a text block (`"type":"text"` stays contiguous), a mid-turn prompt, a
+ * compaction summary flag, a custom title. Plain string `content` is the one
+ * shape without a fixed marker; see {@link STRING_CONTENT}.
  */
-const PROSE_MARKERS = [
-  '"type":"text"',
-  '"message":{"content":"',
-  '"role":"user","content":"',
-  '"role":"assistant","content":"',
-  'queued_command',
-  'isCompactSummary',
-  '"customTitle"',
-].map((m) => Buffer.from(m));
+const PROSE_MARKERS = ['"type":"text"', 'queued_command', 'isCompactSummary', '"customTitle"'].map((m) => Buffer.from(m));
+/** A string `content` holds a prompt or reply, unless the entry is a tool result carrying its output as a string. */
+const STRING_CONTENT = Buffer.from('"content":"');
+const TOOL_RESULT = Buffer.from('"type":"tool_result"');
 /** The same keys written with spaces mean the compact-JSON assumption no longer holds. */
-const SPACED_MARKERS = ['"type": "text"', '"role": "user"', '"role": "assistant"'].map((m) => Buffer.from(m));
+const SPACED_MARKERS = ['"type": "', '"role": "', '"content": "'].map((m) => Buffer.from(m));
 
 /** Transcripts below this are parsed whole: they cost little and the scan saves nothing. */
 export const SCAN_MIN_BYTES = 256 * 1024;
@@ -153,26 +149,32 @@ export const SCAN_MIN_BYTES = 256 * 1024;
  * Only the lines holding a prose marker, parsed. A transcript is mostly tool
  * traffic (95% of entries on a real history), and reading it as bytes and
  * searching with the native `indexOf` costs a third of decoding and parsing
- * every line. Null when the scan cannot be trusted and the caller must parse
- * the whole file: spaced JSON, or a large file with no marker at all.
+ * every line. Every shape `transcriptDocs` reads is covered whatever its key
+ * order. Null when the scan cannot be trusted and the caller must parse the
+ * whole file: spaced JSON, or a large file with no marker at all.
  */
 function scanProseLines(buf: Buffer): Entry[] | null {
   if (SPACED_MARKERS.some((m) => buf.includes(m))) return null;
   const starts = new Set<number>();
-  for (const marker of PROSE_MARKERS) {
+  const collect = (marker: Buffer, keep?: (start: number, end: number) => boolean): void => {
     let at = buf.indexOf(marker);
     while (at !== -1) {
-      starts.add(buf.lastIndexOf(10, at) + 1);
-      const end = buf.indexOf(10, at);
-      at = end === -1 ? -1 : buf.indexOf(marker, end);
+      const start = buf.lastIndexOf(10, at) + 1;
+      let end = buf.indexOf(10, at);
+      if (end === -1) end = buf.length;
+      if (!keep || keep(start, end)) starts.add(start);
+      at = buf.indexOf(marker, end);
     }
-  }
+  };
+  for (const marker of PROSE_MARKERS) collect(marker);
+  collect(STRING_CONTENT, (start, end) => !buf.subarray(start, end).includes(TOOL_RESULT));
   if (starts.size === 0) return null;
   const entries: Entry[] = [];
   for (const start of [...starts].sort((a, b) => a - b)) {
-    const end = buf.indexOf(10, start);
+    let end = buf.indexOf(10, start);
+    if (end === -1) end = buf.length;
     try {
-      entries.push(JSON.parse(buf.toString('utf8', start, end === -1 ? buf.length : end)) as Entry);
+      entries.push(JSON.parse(buf.toString('utf8', start, end)) as Entry);
     } catch {
       // A partially written line from a session still running.
     }

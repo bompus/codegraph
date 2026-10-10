@@ -1343,10 +1343,27 @@ describe('large Claude transcripts are scanned, not parsed whole', () => {
     expect(transcriptDocs(parseEntries(file)).map((d) => d.text)).toEqual(['prose written with spaces after the colons']);
   });
 
-  it('parses the whole file when a large transcript holds none of the patterns', () => {
-    const reordered = JSON.stringify({ message: { role: 'user', extra: 1, content: 'prose with the keys in another order, long enough' }, timestamp: at, type: 'user' });
-    const file = write(transcript([reordered]));
-    expect(transcriptDocs(parseEntries(file)).map((d) => d.text)).toEqual(['prose with the keys in another order, long enough']);
+  it('finds prose whatever the order of the keys, beside entries in the usual order', () => {
+    const usual = JSON.stringify(user('prose in the usual key order, long enough to index'));
+    const swapped = JSON.stringify({ message: { content: 'prose with content before role, long enough', role: 'user' }, timestamp: at, type: 'user' });
+    const extra = JSON.stringify({ message: { role: 'user', extra: 1, content: 'prose with another key between them, long enough' }, timestamp: at, type: 'user' });
+    const block = JSON.stringify({ timestamp: at, message: { content: [{ text: 'a text block with text before type, long enough', type: 'text' }] }, type: 'assistant' });
+    const file = write(transcript([usual, swapped, extra, block]));
+    expect(transcriptDocs(parseEntries(file))).toEqual(whole(file).docs);
+    expect(transcriptDocs(parseEntries(file))).toHaveLength(4);
+  });
+
+  it('does not parse tool results that carry their output as a string', () => {
+    const result = JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'z', content: 'plain string output '.repeat(20) }] } });
+    const file = write(transcript([result, JSON.stringify(user('one real prompt in the middle of tool output'))]));
+    expect(parseEntries(file).length).toBeLessThan(5);
+    expect(transcriptDocs(parseEntries(file)).map((d) => d.text)).toEqual(['one real prompt in the middle of tool output']);
+  });
+
+  it('parses the whole file when a large transcript holds no marker at all', () => {
+    const file = write(transcript([]));
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+    expect(parseEntries(file)).toHaveLength(lines);
   });
 
   it('leaves small transcripts to the whole-file parse', () => {
