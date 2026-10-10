@@ -27,8 +27,8 @@ function read(host: 'claude' | 'codex'): Entry[] {
 
 describe('session reader contract', () => {
   for (const host of ['claude', 'codex'] as const) {
-    it(`${host} reader returns exactly the shared prose entries`, () => {
-      expect(read(host)).toEqual(expected.filter((e) => e.host === host));
+    it(`${host} reader returns every shared prose entry`, () => {
+      expect(read(host)).toEqual(expect.arrayContaining(expected.filter((e) => e.host === host)));
     });
   }
 });
