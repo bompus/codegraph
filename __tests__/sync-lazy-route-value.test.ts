@@ -209,6 +209,25 @@ describe('sync redraws a route that renders a same-file lazy value when its modu
     expect(graphOf(cg!)).toEqual(await freshGraph({ ...files, ...pages }));
   }, 60_000);
 
+  it('when the barrel itself is edited to forward another page', async () => {
+    const files = await indexThenSync(
+      {
+        'package.json': pkg,
+        'src/App.tsx': APP,
+        'src/pages/Team.tsx': page('Team'),
+        'src/pages/Docs/index.ts': "export { default } from './DocsPage';\n",
+        'src/pages/Docs/DocsPage.tsx': page('DocsPage'),
+      },
+      { 'src/pages/Docs/Other.tsx': page('OtherPage') }
+    );
+    expect(routeLinks(cg!)['/docs']).toEqual(['src/pages/Docs/DocsPage.tsx::DocsPage']);
+    const edit = { 'src/pages/Docs/index.ts': "export { default } from './Other';\n" };
+    write(root!, edit);
+    await cg!.sync();
+    expect(routeLinks(cg!)['/docs']).toEqual(['src/pages/Docs/Other.tsx::OtherPage']);
+    expect(graphOf(cg!)).toEqual(await freshGraph({ ...files, ...edit }));
+  }, 60_000);
+
   it('when the page behind a barrel is added, then switches its default export', async () => {
     const files = await indexThenSync(
       {

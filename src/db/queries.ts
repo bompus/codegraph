@@ -4311,11 +4311,13 @@ export class QueryBuilder {
   }
 
   /**
-   * The resolution edges out of route nodes that a change to `filePaths` can
-   * move: from a route in another file, to a node of one of `filePaths`, or to
-   * a value declared beside the route — what a route rendering
-   * `const Docs = lazy(() => import('./pages/Docs'))` binds to while that
-   * module is missing. Returned with the route's file and language, which a
+   * The resolution edges out of route nodes in files other than `filePaths`,
+   * which a change to `filePaths` can move: a route rendering
+   * `const Docs = lazy(() => import('./pages/Docs'))` binds to a value beside
+   * it while that module is missing, to its component once it exists, and to
+   * another component when a barrel the module forwards through is edited, so
+   * the edge's target file says nothing about which change moves it. The
+   * framework's `lazyModules` decides which of them read a changed file. Returned with the route's file and language, which a
    * resurrection needs, in the order they were written, so references put
    * back resolve in that order again. Synthesized edges carry no reference to
    * resurrect and are left out.
@@ -4337,11 +4339,9 @@ export class QueryBuilder {
             AND e.kind != 'contains'
             AND (e.provenance IS NULL OR e.provenance != 'heuristic')
             AND src.file_path NOT IN (SELECT value FROM json_each(?))
-            AND (tgt.file_path IN (SELECT value FROM json_each(?))
-              OR (tgt.file_path = src.file_path AND tgt.kind IN ('constant', 'variable')))
           ORDER BY e.id`
       )
-      .all(files, files) as Array<EdgeRow & { source_file_path: string; source_language: Language }>;
+      .all(files) as Array<EdgeRow & { source_file_path: string; source_language: Language }>;
     return rows.map((row) => ({
       ...rowToEdge(row),
       edgeId: row.id,
