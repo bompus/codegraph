@@ -57,14 +57,16 @@ interface SpawnedServer {
 }
 
 /**
- * The indexed content of a project's database, read through a read-only
- * connection. Comparing it instead of the raw file bytes asks "did anything
- * change the index?" without failing when a checkpoint folds WAL frames left
- * by a killed writer back into the main file (Bun does that at times; the
- * rows are identical).
+ * The database state this test asserts did not change. Node (and Windows, where
+ * a read-only connection cannot recover a killed writer's WAL) compares the raw
+ * file bytes. Under Bun a checkpoint sometimes folds that WAL's frames into the
+ * main file without changing any row, so Bun compares the indexed content
+ * through a read-only connection.
  */
-function readIndexedContent(root: string): string {
-  const db = new DatabaseSync(path.join(root, '.codegraph', 'codegraph.db'), { readOnly: true });
+function snapshotDatabase(root: string): Buffer | string {
+  const dbPath = path.join(root, '.codegraph', 'codegraph.db');
+  if (!process.versions.bun) return fs.readFileSync(dbPath);
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const files = db.prepare('SELECT path, content_hash, node_count FROM files ORDER BY path').all();
     const nodes = db.prepare('SELECT count(*) AS n FROM nodes').get();
@@ -658,7 +660,7 @@ describe('Shared MCP daemon (issue #411)', () => {
 
     // Make the index stale by changing the source, without opening a new
     // SQLite writer against the database of the daemon we just killed.
-    const before = readIndexedContent(realRoot);
+    const before = snapshotDatabase(realRoot);
     fs.writeFileSync(path.join(realRoot, 'app.ts'), 'export function changedSymbol() {}\n');
     const second = spawnServer(tempDir, env);
     servers.push(second);
@@ -696,7 +698,7 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(fs.readFileSync(daemonPath, 'utf8')).toBe(staleDaemonLock);
     second.child.stdin.end();
     await waitFor(() => second.child.exitCode !== null, 5000);
-    expect(readIndexedContent(realRoot)).toBe(before);
+    expect(snapshotDatabase(realRoot)).toEqual(before);
     expect(fs.readFileSync(writerPath, 'utf8')).toBe(staleWriterLock);
   }, 50000);
 
