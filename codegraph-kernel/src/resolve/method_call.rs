@@ -672,6 +672,9 @@ impl KernelResolver {
         }
 
         if inferable {
+            if r.language == "go" {
+                if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? { return Ok(verdict); }
+            }
             // A PHP `instanceof` branch narrows the receiver inside its body.
             if let Some(t) = probe!(r, "mc:guarded", self.infer_guarded_receiver(&object_or_class, r)?) {
                 return self.match_bound_type_member(&t, &method_name, r);
@@ -835,6 +838,9 @@ if inferred.is_none() && r.language == "dart" {
             if let Some(hit) = self.enum_constant_call(&object_or_class, &method_name, r)? { return Ok(Some(hit)); }
         }
         if inferable {
+            if r.language == "go" {
+                if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? { return Ok(verdict); }
+            }
             // No binding anchor under requireReceiverEvidence=false — the
             // inferrers run at the ref's own site with qualified names
             // normalized (preserveQualifiedName=false).

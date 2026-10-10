@@ -51,7 +51,8 @@ impl KernelResolver {
         if r.language == "go" && !is_binding_receiver_call(r) {
             if let Some(dot) = name.find('.') {
                 if dot > 0 && GO_STDLIB_PACKAGES.contains(&name[..dot])
-                    && !self.is_shadowed_import(&name[..dot], r).unwrap_or(false) {
+                    && !self.is_shadowed_import(&name[..dot], r).unwrap_or(false)
+                    && self.go_asserted_local(&name[..dot], r).ok().flatten().is_none() {
                     return true;
                 }
             }
