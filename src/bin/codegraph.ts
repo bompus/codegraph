@@ -1502,8 +1502,9 @@ program
   .option('--since <days>', 'Only docs from the last N days')
   .option('--session <id-prefix>', 'Only one session (id prefix)')
   .option('--any', 'OR the words instead of requiring all of them')
+  .option('--full', 'Show each hit\'s whole passage (16,000 bytes in all) instead of a snippet')
   .option('-j, --json', 'Output as JSON')
-  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; json?: boolean }) => {
+  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; full?: boolean; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
     try {
       if (!isInitialized(projectPath)) {
@@ -1521,6 +1522,7 @@ program
           sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
           session: options.session,
           any: options.any,
+          full: options.full,
         });
       } catch (err) {
         if (err instanceof NoSessionsError) {

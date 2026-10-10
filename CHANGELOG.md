@@ -32,6 +32,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- `codegraph_sessions` and `codegraph sessions` take `full` / `--full` to return each hit's whole stored passage instead of a 24-token snippet, up to 16,000 bytes in all; hits past the budget keep their snippet and the answer says how many. Snippets stay the default.
+
 - Installers can verify daemon readiness and safely hand writer ownership across build promotion and rollback through a supported runtime-control API.
 
 - `codegraph_explore` now finds quoted prose in script strings and template text through a capped source scan, ignoring case and punctuation without requiring a re-index.
