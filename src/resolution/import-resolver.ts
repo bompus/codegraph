@@ -230,11 +230,12 @@ const RUST_STDLIB_ROOTS = new Set(['std', 'core', 'alloc', 'proc_macro']);
  * like `@components/*` would fail the bare-specifier heuristic and
  * be classified as external before alias resolution can run.
  */
-function isExternalImport(
+export function isExternalImport(
   importPath: string,
   language: Language,
   context?: ResolutionContext,
-  fromFile?: string
+  fromFile?: string,
+  options: { aliasPrefixes?: boolean } = {}
 ): boolean {
   // Relative imports are not external
   if (importPath.startsWith('.')) {
@@ -256,8 +257,11 @@ function isExternalImport(
     if (['fs', 'path', 'os', 'crypto', 'http', 'https', 'url', 'util', 'events', 'stream', 'child_process', 'buffer'].includes(importPath)) {
       return true;
     }
-    // Project-defined alias prefix? Treat as local.
-    if (context) {
+    // Project-defined alias prefix? Treat as local. (`aliasPrefixes: false`
+    // skips this, for a caller that has already asked `resolveImportPath`
+    // whether an alias maps the specifier to a file: a catch-all `"*"` pattern
+    // has an empty prefix and matches every package.)
+    if (context && options.aliasPrefixes !== false) {
       const { scoped, root } = aliasMapsFor(context, fromFile);
       for (const aliases of [scoped, root]) {
         if (aliases?.patterns.some(pat => importPath.startsWith(pat.prefix))) return false;
