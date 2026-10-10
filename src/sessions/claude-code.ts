@@ -115,10 +115,10 @@ export function walkJsonl(dir: string, unavailable?: UnavailableStores): string[
   return out;
 }
 
-/** Parse a JSONL transcript; a truncated trailing line from a live session is skipped. */
-export function parseEntries(file: string): Entry[] {
+/** Parse every line of a JSONL transcript; a truncated trailing line from a live session is skipped. */
+function parseLines(text: string): Entry[] {
   const entries: Entry[] = [];
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+  for (const line of text.split('\n')) {
     if (!line) continue;
     try {
       entries.push(JSON.parse(line) as Entry);
@@ -127,6 +127,71 @@ export function parseEntries(file: string): Entry[] {
     }
   }
   return entries;
+}
+
+/**
+ * The byte patterns of the only entries that can carry prose or a title: a text
+ * block, a prompt stored as a plain string, a mid-turn prompt, a compaction
+ * summary, a custom title. Claude Code writes compact JSON in this key order.
+ */
+const PROSE_MARKERS = [
+  '"type":"text"',
+  '"message":{"content":"',
+  '"role":"user","content":"',
+  '"role":"assistant","content":"',
+  'queued_command',
+  'isCompactSummary',
+  '"customTitle"',
+].map((m) => Buffer.from(m));
+/** The same keys written with spaces mean the compact-JSON assumption no longer holds. */
+const SPACED_MARKERS = ['"type": "text"', '"role": "user"', '"role": "assistant"'].map((m) => Buffer.from(m));
+
+/** Transcripts below this are parsed whole: they cost little and the scan saves nothing. */
+export const SCAN_MIN_BYTES = 256 * 1024;
+
+/**
+ * Only the lines holding a prose marker, parsed. A transcript is mostly tool
+ * traffic (95% of entries on a real history), and reading it as bytes and
+ * searching with the native `indexOf` costs a third of decoding and parsing
+ * every line. Null when the scan cannot be trusted and the caller must parse
+ * the whole file: spaced JSON, or a large file with no marker at all.
+ */
+function scanProseLines(buf: Buffer): Entry[] | null {
+  if (SPACED_MARKERS.some((m) => buf.includes(m))) return null;
+  const starts = new Set<number>();
+  for (const marker of PROSE_MARKERS) {
+    let at = buf.indexOf(marker);
+    while (at !== -1) {
+      starts.add(buf.lastIndexOf(10, at) + 1);
+      const end = buf.indexOf(10, at);
+      at = end === -1 ? -1 : buf.indexOf(marker, end);
+    }
+  }
+  if (starts.size === 0) return null;
+  const entries: Entry[] = [];
+  for (const start of [...starts].sort((a, b) => a - b)) {
+    const end = buf.indexOf(10, start);
+    try {
+      entries.push(JSON.parse(buf.toString('utf8', start, end === -1 ? buf.length : end)) as Entry);
+    } catch {
+      // A partially written line from a session still running.
+    }
+  }
+  return entries;
+}
+
+/**
+ * Parse a JSONL transcript; a truncated trailing line from a live session is
+ * skipped. Large files are scanned for the entries that can hold prose instead
+ * of parsed whole; the docs and title come out the same.
+ */
+export function parseEntries(file: string): Entry[] {
+  const buf = fs.readFileSync(file);
+  if (buf.length >= SCAN_MIN_BYTES) {
+    const scanned = scanProseLines(buf);
+    if (scanned) return scanned;
+  }
+  return parseLines(buf.toString('utf8'));
 }
 
 function textBlocks(content: unknown): string {
