@@ -25,7 +25,7 @@ npx vitest run __tests__/installer-targets.test.ts
 npx vitest run __tests__/extraction.test.ts -t "TypeScript"
 ```
 
-Under Bun the suite runs green via `__tests__/bun-homedir.setup.ts` (an `os.homedir` shim for oven-sh/bun#29244) plus three test-file adaptations linked to their upstream issues (#42891, #42893, #25498).
+Under Bun the suite runs via `__tests__/bun-homedir.setup.ts` (an `os.homedir` shim for oven-sh/bun#29244) plus three test-file adaptations linked to their upstream issues (#42891, #42893, #25498). `npm run test:bun` still fails 19 tests that pass on Node: tests that replace modules or `fs` functions (Bun's `syncBuiltinESMExports` is a no-op and a `vi.mock` of a module loaded through the lazy `require('./extraction')` appears not to apply), one that empties `PATH` (Bun still finds `git`), and a V8-only `gc` test. Do not read those as regressions; a new Bun-only failure is one outside that list.
 
 `copy-assets` (called from `build`) copies `src/db/schema.sql` into `dist/`. **Any new SQL asset must be copied or it won't ship.**
 

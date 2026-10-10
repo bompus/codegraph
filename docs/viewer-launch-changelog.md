@@ -121,6 +121,8 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 
 ## Fixes
 
+- **Syntax highlighting works when the server runs on Bun.** The highlighting worker's setup called a method Bun's subprocess channel does not have, so every slice fell back to plain text.
+
 - Steps diagrams retain database operations made through external client chains without inventing internal dependencies.
 
 ## Fixes — Screens, links and navigation

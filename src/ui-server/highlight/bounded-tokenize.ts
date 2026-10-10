@@ -37,7 +37,8 @@ function ensureChild(file: string): ChildProcess {
   // just doesn't declare it, hence the spread.
   const c = fork(file, [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [], ...{ windowsHide: true } });
   c.unref();
-  c.channel?.unref();
+  // Bun's subprocess.channel has no ref/unref (oven-sh/bun#33593).
+  c.channel?.unref?.();
   c.on('message', (msg: { id: number; result: TokenizeResult | null }) => {
     if (child !== c) return;
     const p = pending.get(msg.id);
