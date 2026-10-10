@@ -16,6 +16,8 @@ import { Worker } from 'worker_threads';
 import {
   claudeProjectSlug,
   claudeSessionsDir,
+  parseEntries,
+  SCAN_MIN_BYTES,
   transcriptDocs,
   transcriptTitle,
 } from '../src/sessions/claude-code';
@@ -1275,5 +1277,98 @@ describe('whole passages (full)', () => {
     const hit = querySessions(project, 'write-time dedupe', { full: true, role: 'user' });
     expect(hit.hits).toHaveLength(1);
     expect(querySessions(project, 'write-time dedupe', { full: true, role: 'assistant' }).hits).toEqual([]);
+  });
+});
+
+describe('large Claude transcripts are scanned, not parsed whole', () => {
+  const tool = (i: number) =>
+    JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: `output ${i} `.repeat(40) }] } });
+  /** Enough tool traffic to pass SCAN_MIN_BYTES, with `lines` spread through it. */
+  const transcript = (lines: string[], gap = '\n'): string => {
+    const bulk = Array.from({ length: Math.ceil(SCAN_MIN_BYTES / 500) + 10 }, (_, i) => tool(i));
+    const half = Math.floor(bulk.length / 2);
+    return [...bulk.slice(0, half), ...lines, ...bulk.slice(half)].join(gap) + gap;
+  };
+  const write = (content: string): string => {
+    const file = path.join(fixtureDir(), 's.jsonl');
+    fs.writeFileSync(file, content);
+    return file;
+  };
+  const whole = (file: string) => {
+    const entries = fs
+      .readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l)];
+        } catch {
+          return [];
+        }
+      });
+    return { docs: transcriptDocs(entries), title: transcriptTitle(entries) };
+  };
+
+  const prose = [
+    JSON.stringify(user('a prompt stored as a plain string, long enough to index')),
+    JSON.stringify(user([{ type: 'text', text: 'a prompt stored as a text block, long enough to index' }])),
+    JSON.stringify(assistant([{ type: 'thinking', thinking: 'hidden' }, { type: 'text', text: 'a reply with a text block, long enough to index' }, { type: 'tool_use', id: 'x', name: 'Edit', input: {} }])),
+    JSON.stringify({ type: 'attachment', timestamp: at, attachment: { type: 'queued_command', prompt: 'a prompt sent while the agent was working' } }),
+    JSON.stringify(user('This session is being continued; the summary follows in detail.', { isCompactSummary: true })),
+    JSON.stringify(user('a meta entry that must stay out of the index', { isMeta: true })),
+    JSON.stringify({ type: 'custom-title', customTitle: 'scanned title' }),
+    JSON.stringify(assistant([{ type: 'tool_use', id: 'y', name: 'Bash', input: { command: 'echo "type":"text"' } }])),
+    '{"type":"assistant","timestamp":"2026-09-04T20:00:00.000Z","message":{"content":[{"type":"text","text":"cut off mid-wri',
+  ];
+
+  it('returns the same docs and title as parsing every line', () => {
+    const file = write(transcript(prose.slice(0, -1)) + prose.at(-1));
+    expect(fs.statSync(file).size).toBeGreaterThanOrEqual(SCAN_MIN_BYTES);
+    const entries = parseEntries(file);
+    expect(entries.length).toBeLessThan(40); // the tool traffic was not parsed
+    expect(transcriptDocs(entries)).toEqual(whole(file).docs);
+    expect(transcriptTitle(entries)).toBe('scanned title');
+    expect(transcriptDocs(entries).map((d) => d.role)).toEqual(['user', 'user', 'assistant', 'user', 'summary']);
+  });
+
+  it('reads CRLF line endings the same way', () => {
+    const file = write(transcript(prose.slice(0, -1), '\r\n'));
+    expect(transcriptDocs(parseEntries(file))).toEqual(whole(file).docs);
+    expect(transcriptDocs(parseEntries(file))).toHaveLength(5);
+  });
+
+  it('parses the whole file when spaced JSON means the byte patterns no longer apply', () => {
+    const spaced = JSON.stringify(user([{ type: 'text', text: 'prose written with spaces after the colons' }]), null, 0).replace(/"type":"text"/, '"type": "text"');
+    const file = write(transcript([spaced]));
+    expect(transcriptDocs(parseEntries(file)).map((d) => d.text)).toEqual(['prose written with spaces after the colons']);
+  });
+
+  it('finds prose whatever the order of the keys, beside entries in the usual order', () => {
+    const usual = JSON.stringify(user('prose in the usual key order, long enough to index'));
+    const swapped = JSON.stringify({ message: { content: 'prose with content before role, long enough', role: 'user' }, timestamp: at, type: 'user' });
+    const extra = JSON.stringify({ message: { role: 'user', extra: 1, content: 'prose with another key between them, long enough' }, timestamp: at, type: 'user' });
+    const block = JSON.stringify({ timestamp: at, message: { content: [{ text: 'a text block with text before type, long enough', type: 'text' }] }, type: 'assistant' });
+    const file = write(transcript([usual, swapped, extra, block]));
+    expect(transcriptDocs(parseEntries(file))).toEqual(whole(file).docs);
+    expect(transcriptDocs(parseEntries(file))).toHaveLength(4);
+  });
+
+  it('does not parse tool results that carry their output as a string', () => {
+    const result = JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'z', content: 'plain string output '.repeat(20) }] } });
+    const file = write(transcript([result, JSON.stringify(user('one real prompt in the middle of tool output'))]));
+    expect(parseEntries(file).length).toBeLessThan(5);
+    expect(transcriptDocs(parseEntries(file)).map((d) => d.text)).toEqual(['one real prompt in the middle of tool output']);
+  });
+
+  it('parses the whole file when a large transcript holds no marker at all', () => {
+    const file = write(transcript([]));
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+    expect(parseEntries(file)).toHaveLength(lines);
+  });
+
+  it('leaves small transcripts to the whole-file parse', () => {
+    const file = write(prose.slice(0, -1).join('\n') + '\n');
+    expect(fs.statSync(file).size).toBeLessThan(SCAN_MIN_BYTES);
+    expect(parseEntries(file)).toHaveLength(prose.length - 1);
   });
 });
