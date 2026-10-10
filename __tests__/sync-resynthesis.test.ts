@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { syncBuiltinESMExports } from 'node:module';
 import CodeGraph from '../src/index';
+import { builtinPatchingReachesImporters } from './helpers/runtime-capabilities';
 
 describe('synthesized edges on incremental sync', () => {
   let dir: string;
@@ -151,7 +152,7 @@ describe('synthesized edges on incremental sync', () => {
     expect(callees('loadRepo')).toContain('GET https://api.github.com/repos/${…}');
   });
 
-  it('rejects an unreadable changed file and indexes it when a later refresh can read it', async () => {
+  it.skipIf(!builtinPatchingReachesImporters)('rejects an unreadable changed file and indexes it when a later refresh can read it', async () => {
     const source = path.join(dir, 'src/handlers.ts');
     write('src/handlers.ts', 'export function readableAfterRetry() {}\n');
     const mutableFs = require('fs') as typeof fs;

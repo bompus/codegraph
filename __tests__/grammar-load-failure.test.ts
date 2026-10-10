@@ -23,7 +23,10 @@ import type { Language } from '../src/types';
 
 const { failing, throwing } = vi.hoisted(() => ({ failing: new Set<string>(), throwing: new Set<string>() }));
 
-vi.mock('../src/extraction/parse-tree', async (importOriginal) => {
+// Spelled as an absolute path: vitest finds the test file that called `vi.mock` from a
+// stack frame reading `at Object.mock`, which Bun prints as `at mock`, so under Bun a
+// relative path resolves against the project root (oven-sh/bun#43685).
+vi.mock(`${__dirname}/../src/extraction/parse-tree`, async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/extraction/parse-tree')>();
   const { KernelUnavailableError } = await import('../src/extraction/kernel/loader');
   return {

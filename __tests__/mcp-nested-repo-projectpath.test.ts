@@ -19,6 +19,7 @@ import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
 import { ToolHandler, __setLoadCodeGraphForTests } from '../src/mcp/tools';
+import { emptyPathBlocksSpawn } from './helpers/runtime-capabilities';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
@@ -183,7 +184,7 @@ describe('projectPath inside a nested git repository the ancestor index excludes
     expect(text(res)).toContain('nested-only.ts');
   });
 
-  it('fails open to the ancestor index when git cannot be run', async () => {
+  it.skipIf(!emptyPathBlocksSpawn)('fails open to the ancestor index when git cannot be run', async () => {
     handler = new ToolHandler(cg);
     const savedPath = process.env.PATH;
     process.env.PATH = '';

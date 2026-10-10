@@ -45,12 +45,35 @@ import { CodeGraphPackageVersion } from '../src/mcp/version';
 import { once } from 'events';
 import { recordSpawns, removeSpawnLog, settleLosingCandidates } from './daemon-candidates';
 
+// Vite strips the `node:` prefix from an import of this builtin; require keeps it.
+const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 interface SpawnedServer {
   child: ChildProcessWithoutNullStreams;
   stdout: string[];
   stderr: string[];
+}
+
+/**
+ * The database state this test asserts did not change. Node (and Windows, where
+ * a read-only connection cannot recover a killed writer's WAL) compares the raw
+ * file bytes. Under Bun a checkpoint sometimes folds that WAL's frames into the
+ * main file without changing any row, so Bun compares the indexed content
+ * through a read-only connection.
+ */
+function snapshotDatabase(root: string): Buffer | string {
+  const dbPath = path.join(root, '.codegraph', 'codegraph.db');
+  if (!process.versions.bun) return fs.readFileSync(dbPath);
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const files = db.prepare('SELECT path, content_hash, node_count FROM files ORDER BY path').all();
+    const nodes = db.prepare('SELECT * FROM nodes ORDER BY id').all();
+    return JSON.stringify({ files, nodes });
+  } finally {
+    db.close();
+  }
 }
 
 function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}, args: string[] = []): SpawnedServer {
@@ -637,7 +660,7 @@ describe('Shared MCP daemon (issue #411)', () => {
 
     // Make the index stale by changing the source, without opening a new
     // SQLite writer against the database of the daemon we just killed.
-    const before = fs.readFileSync(path.join(realRoot, '.codegraph', 'codegraph.db'));
+    const before = snapshotDatabase(realRoot);
     fs.writeFileSync(path.join(realRoot, 'app.ts'), 'export function changedSymbol() {}\n');
     const second = spawnServer(tempDir, env);
     servers.push(second);
@@ -675,7 +698,7 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(fs.readFileSync(daemonPath, 'utf8')).toBe(staleDaemonLock);
     second.child.stdin.end();
     await waitFor(() => second.child.exitCode !== null, 5000);
-    expect(fs.readFileSync(path.join(realRoot, '.codegraph', 'codegraph.db'))).toEqual(before);
+    expect(snapshotDatabase(realRoot)).toEqual(before);
     expect(fs.readFileSync(writerPath, 'utf8')).toBe(staleWriterLock);
   }, 50000);
 

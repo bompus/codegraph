@@ -18,6 +18,7 @@ import {
   tryAcquireWriterLock,
   writerLockHeldMessage,
 } from '../src/mcp/writer-lock';
+import { builtinPatchingReachesImporters } from './helpers/runtime-capabilities';
 
 describe('writer lock (#1740)', () => {
   let dir: string;
@@ -73,7 +74,7 @@ describe('writer lock (#1740)', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('uncertain');
   });
 
-  it.each(['uncertain', 'invalid-pid', 'same-pid-successor'])(
+  it.skipIf(!builtinPatchingReachesImporters).each(['uncertain', 'invalid-pid', 'same-pid-successor'])(
     'preserves a %s record arriving during stale-writer cleanup', (successor) => {
       const root = makeProject();
       const file = getWriterPidPath(root);
