@@ -38,7 +38,7 @@ arms disagree unresolved rather than guessed.
 |---|---|---|---|---|
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts`, `monorepo-app-frameworks.test.ts`, `monorepo-app-frameworks-sync.test.ts` | upstream: evanbacon.dev (`+api` endpoints), react-native-true-sheet (nearest manifest decides the app) |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
-| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; upstream route-table and JSX index/layout regressions cover imported route tables, nested layouts and index pages; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations |
+| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; upstream route-table and JSX index/layout regressions cover imported route tables, nested layouts and index pages; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations. Lazy loaders that pick their page (`lazyRouteReference` in `frameworks/react.ts`, trap 18): milo/ui's three tabs (`const { TestTab } = await import('…/tabs')`), 20 apps from a GitHub survey of `createBrowserRouter` + `lazy` (636 picked-page edges, each checked against the target file's own export: 467 by name, 169 as its `export default`; 42 routes written with `async lazy()` now indexed, among them React Router's own `lazy-loading-router-provider` example), an AST oracle on the TypeScript compiler agreeing with the text reader on all 2,538 loaders of 876 surveyed router files, a late-file sync equal to a fresh index on 8 of those apps, and 26 control repos byte-identical, among them ghostfolio, whose 30 Angular lazy routes stay Angular's with React detected in the same project |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` (Nuxt file routes: `nuxtResolver` in `frameworks/vue.ts`) | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges); vue-element-admin (62 routes), vue-admin-template (14), vben (192), halo console (34) — named tables, module files, `children` + layouts; Nuxt: mealie, elk, nuxt/movies |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts`, `sveltekit-route-names.test.ts` | sveltekit-realworld (31 edges); shadcn-svelte and skeleton (`(group)` layouts: 13 and 23 edges), svelte.dev (74), kit's test apps (47) |
@@ -476,6 +476,20 @@ Each of these cost real debugging time; they are not hypothetical.
    route's reference back for its resolution sweep. The same holds for the
    JSX a component renders: a sync that adds a component redraws the
    `jsx-render` edges, since a tag in a file it never touched may name it.
+18. **A lazy loader is code, and its page is what it hands over.** A React
+   Router `lazy` resolves to the route's properties, so `const { TestTab } =
+   await import('./tabs'); return { Component: TestTab }` renders `TestTab`,
+   not the module's default export; reading the first `import('…')` in the
+   loader linked luci-go's tab routes to nothing and other apps' routes to
+   another page of the same module (`lazyRouteReference` in
+   `frameworks/react.ts` follows the loader's bindings to its `Component`, or
+   the one lazily imported export its `element` shows past a guard). The
+   picked export is named the way Vue Router and Angular name a lazy
+   component, `import:<path>#<export>`, so sync's module-tail retry covers it
+   (`MODULE_REFERENCE`), but React is registered before both of them: it
+   answers only references a React route makes (`isReactRouteRef`: tsx or jsx,
+   which Vue's and Angular's route references never are), or it takes theirs
+   first, as an Angular app with React in a `package.json` would let it.
 
 ---
 

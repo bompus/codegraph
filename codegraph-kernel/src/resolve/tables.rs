@@ -119,6 +119,10 @@ pub(super) fn play_claim_re() -> Rc<Regex> {
 pub(super) fn rr_nav_re() -> Rc<Regex> {
     re!(r"^(?:history|navigate|router)\.(?:push|replace|navigate)$|^(?:navigate|redirect)$")
 }
+/// `import:./tabs#TestTab`: the export a React lazy route's loader picks (`PICKED_EXPORT` in `frameworks/react.ts`).
+pub(super) fn react_picked_export_re() -> Rc<Regex> {
+    re!(r"^import:.+#[A-Za-z_$][A-Za-z0-9_$]*$")
+}
 pub(super) fn rails_claim_re() -> Rc<Regex> {
     re!(r"^[A-Za-z0-9_/]+#[A-Za-z0-9_]+$")
 }
@@ -383,7 +387,9 @@ pub(super) fn framework_claims_reference(framework: &str, name: &str) -> bool {
         // react-native-bridge's claimsReference returns false — JS-visible
         // method names reach the resolver through the name-exists arm.
         "react-native-bridge" => false,
-        "react" => name.starts_with("lazy-import:") || name.starts_with("layout:"),
+        "react" => {
+            name.starts_with("lazy-import:") || name.starts_with("layout:") || react_picked_export_re().is_match(name)
+        }
         "react-router" => rr_nav_re().is_match(name) || name.starts_with("react-router-module:"),
         "rails" => rails_claim_re().is_match(name),
         "solid-start" => name.starts_with("solid-start-target:"),

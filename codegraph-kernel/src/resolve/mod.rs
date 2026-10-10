@@ -571,6 +571,7 @@ mod cpp_types;
 mod cpp_aliases;
 mod shopify;
 mod cpp_receivers;
+mod cpp_implicit_this;
 mod cpp_namespace;
 mod inherited_method;
 mod store;
@@ -631,6 +632,8 @@ pub struct KernelResolver {
     sealed_memo: HashMap<String, bool>,
     esm_exports_memo: HashMap<String, (bool, HashSet<String>)>,
     c_static_memo: HashMap<String, bool>,
+    /// cppMemberMacroArguments, by class declaration id.
+    cpp_macro_arguments_memo: HashMap<String, Rc<Vec<String>>>,
     rust_trait_memo: HashMap<String, bool>,
     /// javaSupertypesOf, by type name.
     java_supers_memo: HashMap<String, Rc<Vec<String>>>,
@@ -843,6 +846,7 @@ impl KernelResolver {
             sealed_memo: HashMap::new(),
             esm_exports_memo: HashMap::new(),
             c_static_memo: HashMap::new(),
+            cpp_macro_arguments_memo: HashMap::new(),
             rust_trait_memo: HashMap::new(),
             java_supers_memo: HashMap::new(),
             php_supers_memo: HashMap::new(),
