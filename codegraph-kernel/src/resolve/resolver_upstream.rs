@@ -9,7 +9,7 @@ pub(super) fn test_suite_path(path: &str) -> bool {
         || re!(r"[._-](?:tests?|specs?|unittest)\.[a-z0-9]+$").is_match(name)
         || re!(r"(?:Test|Tests|TestCase)\.(?:java|kt|kts|swift|cs|scala|groovy|m|mm|vb|fs)$")
             .is_match(path)
-        || re!(r"(?:^|/)(?:tests?|__tests__|specs?|e2e)/").is_match(&lower)
+        || re!(r"(?:^|/)(?:tests?|__tests__|specs?|e2e|unittests|[\w.]+[-_]unittests?)/").is_match(&lower)
         || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
 }
 

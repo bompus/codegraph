@@ -1139,6 +1139,9 @@ pub(super) fn is_test_path(path: &str) -> bool {
         || re!(r"(?:^|/)(?:tests?|__tests__|specs?|testlib|testing|e2e)/").is_match(&lower)
         || re!(r"(?:^|/)[A-Za-z0-9]*(?:Test|Tests|Spec)/").is_match(path)
         || re!(r"(?:^|/)(?:[\w.]+[-_]test(?:s|ing)?|testdata|testutils?|test[-_]utils?|fakes?|mocks?|__mocks__|stubs)/").is_match(&lower)
+        // Unit-test trees: LLVM's and Breakpad's `unittests/`, glog's `dcheck_unittest/`. Not a
+        // bare `unittest/`: CPython's `Lib/unittest/` is the framework itself.
+        || re!(r"(?:^|/)(?:unittests|[\w.]+[-_]unittests?)/").is_match(&lower)
 }
 
 #[cfg(test)]
@@ -1151,6 +1154,17 @@ mod tests {
             assert!(is_test_path(path), "{path}");
         }
         for path in ["tools/run_all_unitests.cc", "src/unittests_helper.cc", "src/widget.cc"] {
+            assert!(!is_test_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn unittest_directories_are_test_paths() {
+        for path in ["llvm/unittests/ADT/Foo.cpp", "src/dcheck_unittest/main.cc", "src/foo-unittests/main.cc"] {
+            assert!(is_test_path(path), "{path}");
+            assert!(super::super::resolver_upstream::test_suite_path(path), "{path}");
+        }
+        for path in ["Lib/unittest/case.py", "src/unittesting/a.cc"] {
             assert!(!is_test_path(path), "{path}");
         }
     }
