@@ -1,0 +1,6 @@
+{"timestamp": "2026-01-02T03:04:05.000Z", "type": "session_meta", "payload": {"id": "22222222-2222-4222-8222-222222222222", "session_id": "22222222-2222-4222-8222-222222222222", "cwd": "/home/demo/app", "originator": "codex_cli"}}
+{"timestamp": "2026-01-02T03:04:06.000Z", "type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Follow the repository conventions at all times."}]}}
+{"timestamp": "2026-01-02T03:04:07.000Z", "type": "response_item", "payload": {"type": "message", "id": "x1", "role": "user", "content": [{"type": "input_text", "text": "Run the export tests and report failures."}]}}
+{"timestamp": "2026-01-02T03:04:08.000Z", "type": "response_item", "payload": {"type": "reasoning", "summary": []}}
+{"timestamp": "2026-01-02T03:04:09.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "call_1"}}
+{"timestamp": "2026-01-02T03:04:10.000Z", "type": "response_item", "payload": {"type": "message", "id": "x2", "role": "assistant", "content": [{"type": "output_text", "text": "Two export tests fail on the retry limit."}]}}

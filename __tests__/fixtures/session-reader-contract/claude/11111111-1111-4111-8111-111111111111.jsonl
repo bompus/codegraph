@@ -1,0 +1,6 @@
+{"type": "user", "uuid": "c1", "timestamp": "2026-01-02T03:04:05.000Z", "cwd": "/home/demo/app", "message": {"role": "user", "content": "Please add a retry to the batch export job."}}
+{"type": "assistant", "uuid": "c2", "timestamp": "2026-01-02T03:04:06.000Z", "cwd": "/home/demo/app", "message": {"role": "assistant", "content": [{"type": "text", "text": "I will wrap the export call in a retry."}, {"type": "tool_use", "id": "toolu_1", "name": "Edit", "input": {}}, {"type": "text", "text": "The limit is three attempts."}]}}
+{"type": "user", "uuid": "c3", "timestamp": "2026-01-02T03:04:07.000Z", "cwd": "/home/demo/app", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "edited export.ts"}]}}
+{"type": "assistant", "uuid": "c4", "timestamp": "2026-01-02T03:04:08.000Z", "cwd": "/home/demo/app", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "Weighing backoff options."}]}}
+{"type": "user", "uuid": "c5", "timestamp": "2026-01-02T03:04:09.000Z", "cwd": "/home/demo/app", "message": {"role": "user", "content": [{"type": "text", "text": "Use exponential backoff between attempts."}]}}
+{"type":"assistant","uuid":"c6","timestamp":"2026-01-02T03:04:10.000Z","message":{"role":"assistant","content":"A line cut off mid-wri
