@@ -554,6 +554,7 @@ mod vbnet;
 mod receivers;
 mod bound;
 mod fields;
+mod go_asserted;
 mod method_call;
 mod pipeline;
 mod file_refs;

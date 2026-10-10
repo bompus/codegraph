@@ -16,10 +16,25 @@ impl KernelResolver {
             return Ok(None);
         }
         let (base, field) = (segs[0], segs[1]);
-        let Some(base_type) = self.infer_local_receiver_type(base, r, true)? else {
-            return Ok(None);
+        // A local bound from a type assertion has the asserted type.
+        let asserted = match self.go_asserted_local_type(base, r) {
+            Some(written) => match self.go_written_type(&written, r)? {
+                Some(super::go_asserted::GoAsserted::Project { name, dir }) => Some((name, dir)),
+                Some(super::go_asserted::GoAsserted::Outside) => return Ok(None),
+                None => None,
+            },
+            None => None,
         };
-        let Some((base_type, base_dir)) = self.go_type_package(&base_type, &r.file_path)? else { return Ok(None); };
+        let (base_type, base_dir) = match asserted {
+            Some(found) => found,
+            None => {
+                let Some(base_type) = self.infer_local_receiver_type(base, r, true)? else {
+                    return Ok(None);
+                };
+                let Some(found) = self.go_type_package(&base_type, &r.file_path)? else { return Ok(None); };
+                found
+            }
+        };
         // `\bFIELD\s+\*?\[?\]?TYPE`
         static FIELD_TYPE: LazyLock<Affix> =
             LazyLock::new(|| Affix::new("", r"\s+\*?\[?\]?([A-Za-z_][A-Za-z0-9_.]*)", true, false, false));

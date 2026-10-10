@@ -48,6 +48,8 @@ impl KernelResolver {
         if r.language == "go" {
             let typed = if receiver.contains('.') {
                 Some(self.match_go_field_chain_call(receiver, member, r)?)
+            } else if let Some(verdict) = self.go_asserted_member(receiver, member, r)? {
+                Some(verdict)
             } else if let Some(raw) = self.infer_local_receiver_type(receiver, r, true)? {
                 Some(self.go_method_on_declared_type(&raw, &r.file_path, member, r)?)
             } else {
