@@ -26,7 +26,7 @@ import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, isMpegTransportStream, hasMpegTsExtension, MPEG_TS_SNIFF_BYTES, hasGrammarLoadFailure, isShopifyThemeMarker, shopifyThemeRoot } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
-import { isCodeGraphDataDir } from '../directory';
+import { isCodeGraphDataDir, readDirEntries } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
@@ -622,7 +622,7 @@ function collectIncludedFiles(
 
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(absDir, { withFileTypes: true });
+      entries = readDirEntries(absDir);
     } catch {
       return;
     }
@@ -772,7 +772,7 @@ function findNestedGitRepos(absDir: string, relPrefix: string): string[] {
     if (depth >= EMBEDDED_REPO_SEARCH_DEPTH) continue;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(abs, { withFileTypes: true });
+      entries = readDirEntries(abs);
     } catch {
       continue;
     }
@@ -1692,7 +1692,7 @@ function scanDirectoryWalk(
 
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = readDirEntries(dir);
     } catch (error) {
       logDebug('Skipping unreadable directory', { dir, error: String(error) });
       return;
@@ -1954,8 +1954,7 @@ export class ExtractionOrchestrator {
             ? rootDir
             : path.join(rootDir, relativePath);
         try {
-          return fs
-            .readdirSync(target, { withFileTypes: true })
+          return readDirEntries(target)
             .filter((entry) => entry.isDirectory())
             .map((entry) => entry.name);
         } catch {

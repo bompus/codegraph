@@ -5,6 +5,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseSourceTreeSync, TreeNode } from '../extraction/parse-tree';
+import { readDirEntries } from '../directory';
 
 type Value = string | Value[] | { [key: string]: Value | undefined } | undefined;
 type ObjectValue = { [key: string]: Value | undefined };
@@ -284,7 +285,7 @@ function builtOutputSourceEntries(projectRoot: string, member: string, name: str
     let seen = 0;
     const walk = (rel: string): void => {
       let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(path.join(srcRoot, rel), { withFileTypes: true }); } catch { return; }
+      try { entries = readDirEntries(path.join(srcRoot, rel)); } catch { return; }
       for (const e of entries) {
         if (++seen > WILDCARD_FILE_BUDGET) return;
         const child = rel ? `${rel}/${e.name}` : e.name;

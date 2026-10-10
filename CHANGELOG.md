@@ -97,6 +97,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- **Indexing no longer depends on the runtime's directory order.** Node lists a directory's files alphabetically while Bun lists them in the filesystem's own order, so under Bun files were indexed in a different order and equal-score search and explore results came out differently from Node's. Directories are now read in name order on both.
 - The first session search over a large Claude Code history is faster: transcripts of 256 KB and up are scanned for the entries that can hold prose instead of every line being decoded and parsed, since about 95% of a transcript is tool traffic. The indexed passages and titles are identical (checked on 536 real transcripts); spaced JSON or a large file with no match falls back to the whole-file parse. In-process cold build of those 536 transcripts: about 1.0 s before, 0.7 s after.
 - The first session search over a large Codex history is faster the same way: rollouts of 256 KB and up are scanned for the message lines and the `session_meta` line instead of every line being decoded and parsed, since about 95% of a rollout is tool traffic. The indexed passages and session ids are identical (checked on 297 real rollouts, and the Claude Code reader's output on 1,331 transcripts after the scan moved to a shared helper); spaced JSON or a large file with no match falls back to the whole-file parse. Parsing those 297 rollouts took about 3.6 s before and 1.6 s after.
 

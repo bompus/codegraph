@@ -11,6 +11,7 @@ import { Binding, Language } from '../types';
 import { UnresolvedRef,  ResolutionContext, ImportMapping } from './types';
 import { applyAliases, type AliasMap } from './path-aliases';
 import { resolveWorkspaceImport } from './workspace-packages';
+import { readDirEntries } from '../directory';
 
 /**
  * Extension resolution order by language
@@ -650,7 +651,7 @@ function loadCppIncludeDirsHeuristic(projectRoot: string): string[] {
   const conventionDirs = ['include', 'src', 'lib', 'api', 'inc'];
 
   try {
-    const entries = fs.readdirSync(projectRoot, { withFileTypes: true });
+    const entries = readDirEntries(projectRoot);
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const name = entry.name;

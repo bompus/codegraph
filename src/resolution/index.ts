@@ -47,6 +47,7 @@ const NODE_BUILTINS = new Set(builtinModules);
 import { getKernel, type KernelResolverLike, type ResolveRefIn, type ResolveOutcome } from '../extraction/kernel/loader';
 import { LRUCache } from './lru-cache';
 import { SynthSkips, SYNTH_SKIPS_VERSION } from './synth-skips';
+import { readDirEntries } from '../directory';
 
 // SUPERTYPE_TARGET_KINDS (the kinds an extends/implements edge may TARGET)
 // lives in ./types — the name-matcher needs the same set to restrict its
@@ -709,8 +710,7 @@ export class ReferenceResolver {
           ? this.projectRoot
           : path.join(this.projectRoot, relativePath);
         try {
-          return fs
-            .readdirSync(target, { withFileTypes: true })
+          return readDirEntries(target)
             .filter((entry) => entry.isDirectory())
             .map((entry) => entry.name);
         } catch (error) {

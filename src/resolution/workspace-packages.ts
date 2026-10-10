@@ -29,6 +29,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { logDebug } from '../errors';
 import { loadWorkspaceSourceEntries } from './workspace-source-entries';
+import { readDirEntries } from '../directory';
 
 export interface WorkspacePackages {
   /** Exact public exports mapped through static Rollup/Rolldown bundle entries. */
@@ -178,7 +179,7 @@ function collectOhpmFileDeps(projectRoot: string): Map<string, string> {
 
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(abs, { withFileTypes: true });
+      entries = readDirEntries(abs);
     } catch {
       continue;
     }
@@ -355,7 +356,7 @@ function expandWorkspaceGlob(projectRoot: string, pattern: string): string[] {
   const base = norm.slice(0, star).replace(/\/+$/, '');
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(path.join(projectRoot, base), { withFileTypes: true });
+    entries = readDirEntries(path.join(projectRoot, base));
   } catch {
     return [];
   }

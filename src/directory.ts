@@ -22,6 +22,17 @@ export const WSL_CODEGRAPH_DIR = '.codegraph-wsl';
 let warnedBadDirName = false;
 
 /**
+ * A directory's entries in name order. Node's `readdirSync` returns them sorted
+ * (libuv sorts); Bun returns the filesystem's own order. Indexing, resolution
+ * and equal-score tie-breaks follow this order, so every walk that feeds them
+ * reads through here and gets the same order on both runtimes.
+ */
+export function readDirEntries(dir: string): fs.Dirent[] {
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
  * Resolve the per-project data directory name, honoring the `CODEGRAPH_DIR`
  * environment override (default `.codegraph`). The override is a single path
  * segment that lives in the project root.
@@ -442,7 +453,7 @@ export function findIndexedSubprojectRoots(
   const walk = (dir: string, depth: number): void => {
     if (out.length >= max || depth > maxDepth) return;
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = readDirEntries(dir); } catch { return; }
     for (const e of entries) {
       if (out.length >= max) return;
       if (!e.isDirectory()) continue;
@@ -1019,7 +1030,7 @@ export function listDirectoryContents(projectRoot: string): string[] {
   const files: string[] = [];
 
   function walkDir(dir: string, prefix: string = ''): void {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const entries = readDirEntries(dir);
 
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -1054,7 +1065,7 @@ export function getDirectorySize(projectRoot: string): number {
   let totalSize = 0;
 
   function walkDir(dir: string): void {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const entries = readDirEntries(dir);
 
     for (const entry of entries) {
       // Skip symlinks to prevent following links outside .codegraph
