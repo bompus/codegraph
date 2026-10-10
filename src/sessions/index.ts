@@ -104,7 +104,12 @@ export interface SessionHit {
   score: number;
   /** Holds only some of the query words: the every-word query ran short. */
   partial?: boolean;
+  /** The whole stored passage; set only by a `full` search, within {@link FULL_PASSAGE_BUDGET}. */
+  text?: string;
 }
+
+/** Bytes of passage text one `full` search returns in all; hits past it keep their snippet. */
+export const FULL_PASSAGE_BUDGET = 16_000;
 
 export interface SessionSearchOptions {
   /** Max hits (default 10). */
@@ -117,6 +122,8 @@ export interface SessionSearchOptions {
   session?: string;
   /** OR the words instead of ANDing them. */
   any?: boolean;
+  /** Return each hit's whole passage (see {@link FULL_PASSAGE_BUDGET}) beside its snippet. */
+  full?: boolean;
 }
 
 /**
@@ -490,7 +497,8 @@ export class SessionsIndex {
         if (seen.has(key) || seen.has(`#${id}`)) continue;
         seen.add(key);
         seen.add(`#${id}`);
-        hits.push(any && !opts.any ? { ...hit, partial: true } : hit);
+        const found = opts.full ? { ...hit, text } : hit;
+        hits.push(any && !opts.any ? { ...found, partial: true } : found);
         if (hits.length === limit) break;
       }
     }
@@ -623,6 +631,8 @@ export interface SessionsQueryResult {
   hits: SessionHit[];
   /** True when no passage held every word and the hits match any of them. */
   fallback?: boolean;
+  /** A `full` search: how many hits lost their whole passage to the byte budget and keep only the snippet. */
+  fullCut?: number;
 }
 
 /**
@@ -642,7 +652,7 @@ export function querySessions(
     if (override) {
       if (!fs.existsSync(override)) throw new NoSessionsError(projectRoot);
       const stats = index.refreshListed(walkJsonl(override), (file) => loadHosted(file, 'claude'));
-      return result(stats, index.search(query, opts));
+      return result(stats, index.search(query, opts), opts);
     }
     const roots = index.rememberRoots(projectWorktreeRoots(projectRoot));
     const unavailable: UnavailableStores = [];
@@ -654,15 +664,36 @@ export function querySessions(
       throw new NoSessionsError(projectRoot);
     }
     const stats = index.refreshRecords(records, unavailable);
-    return result(stats, index.search(query, opts));
+    return result(stats, index.search(query, opts), opts);
   } finally {
     index.close();
   }
 }
 
-function result(index: SessionsIndexStats, found: ReturnType<SessionsIndex['search']>): SessionsQueryResult {
+/** Keeps whole passages in rank order until the budget is spent; later hits fall back to their snippet. */
+function withinPassageBudget(hits: SessionHit[]): number {
+  let spent = 0;
+  let cut = 0;
+  for (const hit of hits) {
+    if (hit.text === undefined) continue;
+    spent += Buffer.byteLength(hit.text);
+    if (cut > 0 || spent > FULL_PASSAGE_BUDGET) {
+      delete hit.text;
+      cut++;
+    }
+  }
+  return cut;
+}
+
+function result(
+  index: SessionsIndexStats,
+  found: ReturnType<SessionsIndex['search']>,
+  opts: SessionSearchOptions,
+): SessionsQueryResult {
   const hits = [...found];
-  return found.fallback ? { index, hits, fallback: true } : { index, hits };
+  const out: SessionsQueryResult = found.fallback ? { index, hits, fallback: true } : { index, hits };
+  if (opts.full) out.fullCut = withinPassageBudget(hits);
+  return out;
 }
 
 /**
@@ -752,8 +783,12 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
     const title = h.title ? ` · ${h.title}` : '';
     lines.push(`## ${h.session}${title}`);
     lines.push(`${h.role} · ${h.ts} · ${h.file}${h.partial && !result.fallback ? ' · some words' : ''}`);
-    lines.push(h.snippet.replace(/\s+/g, ' ').trim());
+    if (h.text === undefined) lines.push(h.snippet.replace(/\s+/g, ' ').trim());
+    else lines.push(...h.text.split('\n').map((l) => `> ${l}`));
     lines.push('');
+  }
+  if (result.fullCut) {
+    lines.push(`Whole passages are limited to ${FULL_PASSAGE_BUDGET.toLocaleString('en-US')} bytes in all: the last ${result.fullCut} hit${result.fullCut === 1 ? '' : 's'} show only the matching snippet. Narrow the search (--role, --session, a smaller limit) to read them whole.`, '');
   }
   lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, `devin:`, `grok:`, or `git:` for commit messages); the path after the timestamp is the transcript to read when the snippet is not enough.');
   return lines.join('\n');

@@ -32,6 +32,7 @@ import {
   querySessions,
   NoSessionsError,
   formatSessionHits,
+  FULL_PASSAGE_BUDGET,
 } from '../src/sessions';
 import { clearProjectConfigCache } from '../src/project-config';
 import { isInjectedDoc, slashCommandText, splitPassages, indexableDocs } from '../src/sessions/noise';
@@ -1223,5 +1224,56 @@ describe('repeat scans', () => {
     const unavailable: string[] = [];
     expect(agyFilesForProject([project], unavailable)).toEqual([]);
     expect(unavailable).toEqual([path.join(root, 'brain') + path.sep]);
+  });
+});
+
+describe('whole passages (full)', () => {
+  const store = (texts: string[]): string => {
+    const project = fixtureDir();
+    fs.mkdirSync(path.join(project, '.codegraph'));
+    const transcripts = fixtureDir();
+    writeJsonl(path.join(transcripts, 's1.jsonl'), texts.map((t) => user(t)), 1_700_000_000);
+    process.env.CODEGRAPH_SESSIONS_DIR = transcripts;
+    return project;
+  };
+
+  it('returns the stored passage beside the snippet only when asked, in the printed answer too', () => {
+    const tail = ' the second paragraph line explains the retry budget in detail and names the limit of three attempts.';
+    const project = store([`Decision: keep write-time dedupe.\n\nThe table lists:\n| a | b |\n|---|---|${tail}`]);
+    const plain = querySessions(project, 'write-time dedupe');
+    expect(plain.hits[0]!.text).toBeUndefined();
+    expect(plain.fullCut).toBeUndefined();
+    const full = querySessions(project, 'write-time dedupe', { full: true });
+    expect(full.hits[0]!.text).toContain('| a | b |\n|---|---|');
+    expect(full.hits[0]!.snippet).toBe(plain.hits[0]!.snippet);
+    expect(full.fullCut).toBe(0);
+    const printed = formatSessionHits('write-time dedupe', full);
+    expect(printed).toContain('> | a | b |\n> |---|---|');
+    expect(printed).toContain('> Decision: keep write-time dedupe.');
+    expect(formatSessionHits('write-time dedupe', plain)).not.toContain('> | a | b |');
+  });
+
+  it('spends one byte budget in rank order and says how many hits fell back to the snippet', () => {
+    const body = (i: number) => `Note ${i} on budgetword: ${`alpha${i} beta${i} gamma${i} `.repeat(160)}`.slice(0, 3000);
+    const project = store(Array.from({ length: 7 }, (_, i) => body(i)));
+    const result = querySessions(project, 'budgetword', { full: true });
+    expect(result.hits).toHaveLength(7);
+    const whole = result.hits.filter((h) => h.text !== undefined);
+    const bytes = whole.reduce((n, h) => n + Buffer.byteLength(h.text!), 0);
+    expect(bytes).toBeLessThanOrEqual(FULL_PASSAGE_BUDGET);
+    expect(whole.length).toBeGreaterThan(0);
+    expect(whole.length).toBeLessThan(7);
+    expect(result.fullCut).toBe(7 - whole.length);
+    // Whole passages are a prefix of the ranking: a smaller later hit never jumps the queue.
+    expect(result.hits.slice(0, whole.length).every((h) => h.text !== undefined)).toBe(true);
+    const printed = formatSessionHits('budgetword', result);
+    expect(printed).toContain(`Whole passages are limited to 16,000 bytes in all: the last ${result.fullCut} hits show only the matching snippet.`);
+  });
+
+  it('keeps the role filter and the one-hit wording', () => {
+    const project = store([`Decision: keep write-time dedupe. ${'x'.repeat(2000)}`.replace(/x/g, 'padding ')]);
+    const hit = querySessions(project, 'write-time dedupe', { full: true, role: 'user' });
+    expect(hit.hits).toHaveLength(1);
+    expect(querySessions(project, 'write-time dedupe', { full: true, role: 'assistant' }).hits).toEqual([]);
   });
 });

@@ -2058,6 +2058,11 @@ export const tools: ToolDefinition[] = [
           description: 'OR the words instead of requiring all of them (default: false).',
           default: false,
         },
+        full: {
+          type: 'boolean',
+          description: 'Return each hit\'s whole passage instead of a short snippet, up to 16,000 bytes in all; later hits keep their snippet (default: false).',
+          default: false,
+        },
         projectPath: projectPathProperty,
       },
       required: ['query'],
@@ -4580,6 +4585,7 @@ export class ToolHandler {
         sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
         session,
         any: args.any === true,
+        full: args.full === true,
       });
       return this.textResult(formatSessionHits(query, result));
     } catch (err) {
