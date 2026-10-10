@@ -297,8 +297,8 @@ impl KernelResolver {
             let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
             while let Some(parent) = at.parent() {
                 if let Some(raw) = cpp_binding_type(parent, at, name, &source) {
-                    let Some(capture) = re!(r"^std::(?:vector|array|deque|span)\s*<\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*[,>]").captures(&raw) else { return Ok(None) };
-                    return self.cpp_type_owner(&capture[1], r, 0, false);
+                    let Some(element) = cpp_element_type(&raw) else { return Ok(None) };
+                    return self.cpp_type_owner(&element, r, 0, false);
                 }
                 at = parent;
             }
@@ -306,12 +306,21 @@ impl KernelResolver {
         let start = self.enclosing_scope_start_line(&r.file_path, "cpp", r.line)?.saturating_sub(1).max(0) as usize;
         for line in source.iter().take(r.line.max(0) as usize).skip(start).rev() {
             if let Some(raw) = self.cpp_declarator_match(line, &regex::escape(name))? {
-                let Some(capture) = re!(r"^std::(?:vector|array|deque|span)\s*<\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*[,>]").captures(&raw) else { return Ok(None) };
-                return self.cpp_type_owner(&capture[1], r, 0, false);
+                let Some(element) = cpp_element_type(&raw) else { return Ok(None) };
+                return self.cpp_type_owner(&element, r, 0, false);
             }
         }
         Ok(None)
     }
+}
+
+/// The class a subscript of a local reaches: the element of a standard sequence container, or of a
+/// one-dimensional array of a class (`Item items[2]`, which the declared type reads as `Item[]`).
+fn cpp_element_type(raw: &str) -> Option<String> {
+    re!(r"^std::(?:vector|array|deque|span)\s*<\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*[,>]|^([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\[\]$")
+        .captures(raw)
+        .and_then(|capture| capture.get(1).or_else(|| capture.get(2)))
+        .map(|m| m.as_str().to_string())
 }
 
 /// The first template argument of a standard smart pointer or optional, or None when it
@@ -337,7 +346,7 @@ fn cpp_held_type(arguments: &str) -> Option<String> {
 }
 
 fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a SourceFile) -> &'a str {
-    while matches!(node.kind(), "reference_declarator" | "pointer_declarator" | "parenthesized_declarator" | "init_declarator") {
+    while matches!(node.kind(), "reference_declarator" | "pointer_declarator" | "parenthesized_declarator" | "init_declarator" | "array_declarator") {
         let Some(inner) = node.child_by_field_name("declarator").or_else(|| node.named_child(0)) else { return "" }; node = inner;
     }
     if matches!(node.kind(), "identifier" | "field_identifier") { &source.text()[node.start_byte()..node.end_byte()] } else { "" }
