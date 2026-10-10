@@ -28,43 +28,7 @@ impl KernelResolver {
         let visible: HashSet<_> = files.iter().filter(|file| **file == r.file_path
             || !re!(r"(?i)\.(?:c|cc|cpp|cxx|c\+\+|cu|metal)$").is_match(file)).cloned().collect();
         let mut target = self.cpp_type_owner_visible(&written, r, 0, false, &visible)?;
-        if target.is_none() {
-            if let Some(lines) = self.read_file(&r.file_path) {
-                let mut directives = Vec::new();
-                if let Some(tree) = self.parsed_tree(&lines, r) {
-                    let mut site = super::iteration::descendant_for_position(tree.root_node(), lines.text(),
-                        ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
-                    let before = site.start_byte();
-                    loop {
-                        if matches!(site.kind(), "translation_unit" | "declaration_list" | "field_declaration_list" | "compound_statement") {
-                            let mut cursor = site.walk();
-                            let mut local: Vec<_> = site.named_children(&mut cursor)
-                                .filter(|n| n.end_byte() <= before && matches!(n.kind(), "using_declaration" | "namespace_alias_definition"))
-                                .map(|n| lines.text()[n.byte_range()].to_string()).collect();
-                            local.reverse();
-                            directives.extend(local);
-                        }
-                        let Some(parent) = site.parent() else { break; };
-                        site = parent;
-                    }
-                }
-                for line in &directives {
-                    let spelled = if let Some(hit) = re!(r"\bnamespace\s+([A-Za-z_]\w*)\s*=\s*((?:::)?[\w:]+)\s*;").captures(line) {
-                        (hit[1] == parts[0]).then(|| format!("{}{}", &hit[2], written.trim_start_matches("::").strip_prefix(&parts[0]).unwrap_or("")))
-                    } else if !written.starts_with("::") {
-                        if let Some(hit) = re!(r"\busing\s+namespace\s+((?:::)?[\w:]+)\s*;").captures(line) {
-                            Some(format!("{}::{written}", &hit[1]))
-                        } else if let Some(hit) = re!(r"\busing\s+((?:::)?[\w:]+)::([A-Za-z_]\w*)\s*;").captures(line) {
-                            (hit[2] == parts[0]).then(|| format!("{}::{written}", &hit[1]))
-                        } else { None }
-                    } else { None };
-                    if let Some(spelled) = spelled {
-                        target = self.cpp_type_owner_visible(&spelled, r, 0, false, &visible)?;
-                        if target.is_some() { break; }
-                    }
-                }
-            }
-        }
+        if target.is_none() { target = self.cpp_type_via_using(&written, &parts, r, &visible)?; }
         let mut confidence = 0.9;
         let mut resolved_by = "qualified-name";
         if target.is_none() {
@@ -83,6 +47,68 @@ impl KernelResolver {
         }
     }
 
+    /// The type `written` names through a `using namespace`, `using ns::Name` or
+    /// namespace alias that precedes `r` in an enclosing scope, innermost first.
+    pub(super) fn cpp_type_via_using(&mut self, written: &str, parts: &[String], r: &ResolveRefIn, visible: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
+        let Some(lines) = self.read_file(&r.file_path) else { return Ok(None) };
+        let mut directives = Vec::new();
+        if let Some(tree) = self.parsed_tree(&lines, r) {
+            let mut site = super::iteration::descendant_for_position(tree.root_node(), lines.text(),
+                ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+            let before = site.start_byte();
+            loop {
+                if matches!(site.kind(), "translation_unit" | "declaration_list" | "field_declaration_list" | "compound_statement") {
+                    let mut cursor = site.walk();
+                    let mut local: Vec<_> = site.named_children(&mut cursor)
+                        .filter(|n| n.end_byte() <= before && matches!(n.kind(), "using_declaration" | "namespace_alias_definition"))
+                        .map(|n| lines.text()[n.byte_range()].to_string()).collect();
+                    local.reverse();
+                    directives.extend(local);
+                }
+                let Some(parent) = site.parent() else { break; };
+                site = parent;
+            }
+        }
+        for line in &directives {
+            let spelled = if let Some(hit) = re!(r"\bnamespace\s+([A-Za-z_]\w*)\s*=\s*((?:::)?[\w:]+)\s*;").captures(line) {
+                (hit[1] == parts[0]).then(|| format!("{}{}", &hit[2], written.trim_start_matches("::").strip_prefix(&parts[0]).unwrap_or("")))
+            } else if !written.starts_with("::") {
+                if let Some(hit) = re!(r"\busing\s+namespace\s+((?:::)?[\w:]+)\s*;").captures(line) {
+                    Some(format!("{}::{written}", &hit[1]))
+                } else if let Some(hit) = re!(r"\busing\s+((?:::)?[\w:]+)::([A-Za-z_]\w*)\s*;").captures(line) {
+                    (hit[2] == parts[0]).then(|| format!("{}::{written}", &hit[1]))
+                } else { None }
+            } else { None };
+            if let Some(spelled) = spelled {
+                let target = self.cpp_type_owner_visible(&spelled, r, 0, false, visible)?;
+                if target.is_some() { return Ok(target); }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The visible types `ty` names, found in the scopes around the caller, innermost
+    /// first; the first scope that has any answers, preferring those in the caller's file.
+    pub(super) fn cpp_scoped_types(&mut self, raw: &str, ty: &str, r: &ResolveRefIn, included: &HashSet<String>) -> Res<Vec<Arc<KNode>>> {
+        let mut scopes = if raw.starts_with("::") { Vec::new() } else {
+            self.node_by_id(&r.from_node_id)?.map(|n| n.qualified_name.split("::").map(str::to_string).collect::<Vec<_>>()).unwrap_or_default()
+        };
+        if is_inheritance_ref(&r.reference_kind) { scopes.pop(); }
+        let mut names: Vec<_> = (1..=scopes.len()).rev().map(|i| format!("{}::{ty}", scopes[..i].join("::"))).collect();
+        names.push(ty.to_string());
+        for name in names {
+            let named = self.nodes_by_qualified_name(&name)?;
+            let mut visible = Vec::new();
+            for node in named.iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && matches!(n.kind.as_str(), "class" | "struct" | "union" | "type_alias" | "enum")) {
+                if included.contains(&node.file_path) { visible.push(node.clone()); }
+            }
+            if visible.is_empty() { continue; }
+            let local: Vec<_> = visible.iter().filter(|n| n.file_path == r.file_path).cloned().collect();
+            return Ok(if local.is_empty() { visible } else { local });
+        }
+        Ok(Vec::new())
+    }
+
     pub(super) fn cpp_type_owner(&mut self, raw: &str, r: &ResolveRefIn, depth: u32, constructor: bool) -> Res<Option<Arc<KNode>>> {
         let included = self.namespace_visible_files(&r.file_path, "cpp")?;
         self.cpp_type_owner_visible(raw, r, depth, constructor, &included)
@@ -98,22 +124,9 @@ impl KernelResolver {
         }
         let normalized = super::cpp_aliases::type_segments(raw).map(|p| p.join("::")).unwrap_or_else(|| raw.to_string());
         let ty = normalized.trim();
-        let mut scopes = if raw.starts_with("::") { Vec::new() } else {
-            self.node_by_id(&r.from_node_id)?.map(|n| n.qualified_name.split("::").map(str::to_string).collect::<Vec<_>>()).unwrap_or_default()
-        };
-        if is_inheritance_ref(&r.reference_kind) { scopes.pop(); }
-        let mut names: Vec<_> = (1..=scopes.len()).rev().map(|i| format!("{}::{ty}", scopes[..i].join("::"))).collect();
-        names.push(ty.to_string());
         let simple = ty.rsplit("::").next().unwrap_or(ty);
-        for name in names {
-            let named = self.nodes_by_qualified_name(&name)?;
-            let mut visible = Vec::new();
-            for node in named.iter().filter(|n| matches!(n.language.as_str(), "c" | "cpp") && matches!(n.kind.as_str(), "class" | "struct" | "union" | "type_alias" | "enum")) {
-                if included.contains(&node.file_path) { visible.push(node.clone()); }
-            }
-            if visible.is_empty() { continue; }
-            let local: Vec<_> = visible.iter().filter(|n| n.file_path == r.file_path).cloned().collect();
-            if !local.is_empty() { visible = local; }
+        let visible = self.cpp_scoped_types(raw, ty, r, included)?;
+        if !visible.is_empty() {
             let [owner] = visible.as_slice() else { return Ok(None) };
             return self.cpp_expand_owner(owner, r, depth, constructor, included);
         }
