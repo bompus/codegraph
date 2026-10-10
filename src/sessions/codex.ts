@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { MIN_DOC_CHARS, type SessionDoc, type UnavailableStores } from './claude-code';
+import { transcriptLines, bytes, type LineScan } from './byte-scan';
 import { walkSessionJsonl } from './collect';
 import { pathInRoots, resolveExisting } from './project-roots';
 
@@ -199,10 +200,13 @@ export function codexFilesForProject(
   });
 }
 
+/** A message (`"type":"message"` stays contiguous in any key order) or the `session_meta` line that names the session. */
+const CODEX_SCAN: LineScan = { markers: bytes('"type":"message"', 'session_meta'), spaced: bytes('"type": "', '"type" :') };
+
 export function parseCodexTranscript(file: string): { session: string; title: string | null; docs: SessionDoc[] } {
   const docs: SessionDoc[] = [];
   let session = path.basename(file, '.jsonl');
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+  for (const line of transcriptLines(fs.readFileSync(file), CODEX_SCAN)) {
     if (!line) continue;
     let row: CodexLine;
     try {
