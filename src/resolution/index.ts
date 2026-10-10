@@ -413,6 +413,7 @@ export class ReferenceResolver {
     this.goPackageDirs.clear();
     this.goModuleByDir.clear();
     this.allFilesCache = null;
+    this.manifestScopes.clear();
     this.cachesWarmed = false;
     // The import-resolver's per-context memos assume the
     // same stable window as the caches above — drop them together.

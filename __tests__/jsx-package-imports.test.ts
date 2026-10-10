@@ -88,6 +88,25 @@ export function Settings() {
     expect(renders('Settings')).toEqual([]);
   });
 
+  it('reads package.json again after it is edited, so a dropped dependency makes the tag the project\'s', async () => {
+    write('package.json', JSON.stringify({ dependencies: { react: '^18.0.0', antd: '^5.0.0' } }));
+    write('src/ui/Button.tsx', 'export function Button() {\n  return <button />;\n}\n');
+    write(
+      'src/pages/Settings.tsx',
+      `import { Button } from 'antd';\n\nexport function Settings() {\n  return <Button>Save</Button>;\n}\n`
+    );
+    await index();
+    expect(renders('Settings')).toEqual([]);
+
+    write('package.json', JSON.stringify({ dependencies: { react: '^18.0.0' } }));
+    write(
+      'src/pages/Settings.tsx',
+      `import { Button } from 'antd';\n\nexport function Settings() {\n  return <Button>Save!</Button>;\n}\n`
+    );
+    await cg.sync();
+    expect(renders('Settings')).toEqual(['Button src/ui/Button.tsx:1']);
+  });
+
   it('renders nothing for a default import from a package subpath, or a package import under another name', async () => {
     // mantis/berry: `import Typography from '@mui/material/Typography'` beside
     // the theme's own `Typography` override; a router link renamed on import.
