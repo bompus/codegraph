@@ -110,11 +110,11 @@ Where other tools do something this fork does not, or do it better by a publishe
 | 4 | Edge origin and confidence on every edge | repowise, gortex | Strategy step 2. The resolver already stores `resolvedBy` and `confidence` in each edge's metadata, and the trail and Flow sections of explore label name-only hops `[name match, unverified]` | Done: the Relationships list was the one place still unlabelled (PR #455) |
 | 5 | Memory floor | repowise | repowise builds its graph in about 75 MB. The fork's index run peaked at 208 MB (flask), 310 MB (gin) and 455 MB (vite) in section 5 | Strategy step 3. Set a target before optimizing |
 | 6 | Structural pattern search; index-free live graph | Octocode | Section 5 and candidates S and T | Needs an agent-eval task class first |
-| 7 | Test selection precision | repowise: 97.5% on 47 targets | The fork has `codegraph affected` and named-test output in explore; neither has been measured for precision | Measured on Flask in §6.3. `affected` at its default depth selects almost every test; explore names correct tests but often lists none |
+| 7 | Test selection precision | repowise: 97.5% on 47 targets | The fork has `codegraph affected` and named-test output in explore; neither had been measured for precision before §6.3 | Measured on Flask in §6.3. `affected` at its default depth selects almost every test; explore names correct tests but often lists none |
 | 8 | Commit-history search, branch-delta indexes, one server for several repositories | Octocode | Commit search has no equivalent here. Sibling-worktree index seeding covers part of branch deltas. Several repositories per server is candidate J | Not scored; no measured miss |
 | 9 | Dead code, health score, decision records, generated wiki | repowise | Deferred in the strategy doc; its health score was measured against defect data, the others are capabilities without a measurement | Reopen on a measured miss in our own use |
 
-Items 1 and 3 shared one compiler-oracle experiment (section 6.1) and item 2 used a separate retrieval comparison (section 6.2). Item 7 still needs a corpus with known answers, so it is the next measurement to run. Results go in the survey doc with the date and the build.
+Items 1 and 3 shared one compiler-oracle experiment (section 6.1) and item 2 used a separate retrieval comparison (section 6.2). Item 7 was measured on one repository in section 6.3. Results go in the survey doc with the date and the build.
 
 ### 6.1 Compiler-oracle replay, 2026-10-10
 
@@ -193,9 +193,9 @@ Octocode found one of six needed files where the two CodeGraph builds found none
 
 **Cross-language call edges (candidate C).** On `huggingface/tokenizers` (261 files, Rust core with Python and Node bindings) a fresh index has no call edge between two different languages. The same holds for a fresh full index of this repository (1,685 files, many languages) and after a sync of the files involved. The kernel already refuses a same-name hit across language groups unless there is bridge evidence (`crosses_code_boundary` and `has_bridge_evidence`), so there is nothing to add. A sweep of 52 local indexes found 15 such edges, all in one long-lived index of this repository (name-only matches at confidence 0.3 to 0.5); they do not reproduce on a fresh build and look like leftovers of an older one.
 
-**Test selection (gap 7).** Flask at `d086db8`, Python 3.14, 494 tests. The oracle is line coverage with one context per test; a test counts as exercising a file or function when it ran a line in it. Scored over the 20 source files that any test runs, against 22 test modules:
+**Test selection (gap 7).** Flask at `d086db8`, Python 3.14, 494 tests. The oracle is line coverage with one context per test; a test counts as exercising a file or function when it ran a line in it. Scored over the 20 source files that any test runs, against the 22 test modules (`tests/test_*.py`; the 494 tests live in them). `affected` returns test-file paths, so the unit is a test module paired with a source file: precision is the share of reported pairs the oracle confirms, recall the share of oracle pairs reported. Nothing is expanded to individual test cases:
 
-| `codegraph affected` depth | Tests reported | Precision | Recall |
+| `codegraph affected` depth | Test modules reported, summed over the 20 files | Precision | Recall |
 |---|---|---|---|
 | 1 | 100 | 0.93 | 0.34 |
 | 2 | 345 | 0.71 | 0.90 |
