@@ -1,7 +1,7 @@
 # Call-sequence analysis — why read savings don't convert to wall-clock
 
 **Date:** 2026-05-23 · **Branch:** `architectural-improvements` · **Source data:** the surviving
-stream-json logs from the A/B matrix (`/tmp/ab-matrix/<Cell>/run-headless-{with,without}.jsonl`,
+stream-json logs from the A/B matrix (`~/cg-scratch/ab-matrix/<Cell>/run-headless-{with,without}.jsonl`,
 37 cells × 2 arms). Re-mined — **no re-runs** — with `scripts/agent-eval/seq-matrix.mjs`.
 
 ## Why this exists
@@ -128,7 +128,7 @@ The data says trace is **used 3/37 times**, so completeness is moot until adopti
 ## Reproduce
 
 ```bash
-node scripts/agent-eval/seq-matrix.mjs            # regenerates every table above from /tmp/ab-matrix
+node scripts/agent-eval/seq-matrix.mjs            # regenerates every table above from ~/cg-scratch/ab-matrix
 ```
 
 ---
