@@ -138,6 +138,23 @@ export class Notifier extends Base {
     expect(calls('Notifier::send')).toEqual(['Mailer::send@src/mailer.ts']);
   });
 
+  it.each([
+    ['nothing', 'super();'],
+    ['a member of another value', 'super(options.mailer);'],
+  ])('does not read a field from a constructor parameter the derived class passes %s to super', async (_label, call) => {
+    await project({
+      'src/mailer.ts': mailer,
+      'src/notifier.ts': `import { Mailer } from './mailer';
+export class Base {}
+export class Notifier extends Base {
+  constructor(mailer: Mailer, options: { mailer: Mailer }) { ${call} }
+  send(msg: string): string { return this.mailer.send(msg); }
+}
+`,
+    });
+    expect(calls('Notifier::send')).toEqual([]);
+  });
+
   it('does not bind an array method to the element type', async () => {
     await project({ 'src/mailer.ts': mailer, 'src/notifier.ts': notifier('', 'Mailer[]') });
     expect(calls('Notifier::push')).toEqual([]);
