@@ -96,7 +96,7 @@ The model-load cost does not explain the slow Octocode queries: a long-running M
 
 Reading: this does not support switching. CodeGraph indexes about 140 to 260 times faster in about 15 to 27 times less peak memory, returns verbatim source, and matched or exceeded Octocode on call edges in the small sample. Two findings change the shortlist. First, the vite concept query is a counter-example to row O: an embedding search found the right file where a name-driven search did not, so the "concept tasks were 3 of 3 correct" result should be re-run on natural-language queries in a TypeScript corpus. Second, S and T each have a working reference to compare against; both stay conditional on an agent-eval task class.
 
-Not measured: agent outcomes, upstream CodeGraph, Octocode with a cloud embedder or reranker, repeated runs, and edge precision for Go and TypeScript beyond the one spot check.
+Section 5 did not measure: agent outcomes, upstream CodeGraph, Octocode with a cloud embedder or reranker, repeated runs, and edge precision for Go and TypeScript beyond the one spot check.
 
 ## 6. Gap register, 2026-10-10
 
