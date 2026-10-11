@@ -427,6 +427,6 @@ off this bug; the real figure is ~90%). Sum **per-turn assistant `usage`** for t
 
 Reproduce:
 ```bash
-bash scripts/agent-eval/bench-readme.sh      # 7 repos × with/without × 4 runs (RUNS=4) → /tmp/ab-readme
+bash scripts/agent-eval/bench-readme.sh      # 7 repos × with/without × 4 runs (RUNS=4) → ~/cg-scratch/ab-readme
 node scripts/agent-eval/parse-bench-readme.mjs   # medians + % saved (summed per-turn tokens)
 ```

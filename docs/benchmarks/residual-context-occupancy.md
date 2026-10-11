@@ -32,7 +32,7 @@ What would I change to add a per-route middleware that runs before the global on
 
 # The 7 README repos (default: 3 turns per session, RUNS=4 per arm):
 CORPUS=/tmp/codegraph-corpus RUNS=2 scripts/agent-eval/bench-readme.sh
-node scripts/agent-eval/parse-bench-readme.mjs /tmp/ab-readme
+node scripts/agent-eval/parse-bench-readme.mjs ~/cg-scratch/ab-readme
 ```
 
 `||` separates turns. Turn 1 runs normally; each later turn `--resume`s the same
@@ -190,7 +190,7 @@ Reproduce with:
 
 ```bash
 CORPUS=/tmp/codegraph-corpus scripts/agent-eval/bench-readme.sh   # RUNS=4 CG_TURNS=3
-node scripts/agent-eval/parse-bench-readme.mjs /tmp/ab-readme
+node scripts/agent-eval/parse-bench-readme.mjs ~/cg-scratch/ab-readme
 ```
 
 ### The finding: codegraph's residual is 82% HIGHER, on all seven repos
