@@ -210,6 +210,6 @@ The same trace on two other frameworks, again with no coverage oracle (functions
 | Framework | Entry point | Rest of the request path |
 |---|---|---|
 | FastAPI `f5c6e9b` | `FastAPI.__call__` and the per-request closure have no test | Route registration in tests links `get_request_handler` (1 hop), `solve_dependencies`, `serialize_response` and `run_endpoint_function` (3 hops); `get_dependant` is linked at 4 hops, past the limit |
-| Express `a419aa7` | `app.handle` and `app.init` have no test, and no test file mentions them | `res.send` and `res.json` are linked (1 and 2 hops); `app.render`, `res.render` and `res.sendFile` are not, although 1 to 2 test files call each, through untyped `res` and `app` parameters |
+| Express `a419aa7` | `app.handle` and `app.init` have no test, and no test file mentions them | `res.send` and `res.json` are linked (1 and 2 hops); `app.render`, `res.render` and `res.sendFile` are not, although 1 to 2 test files call each (probably because the receivers are untyped handler parameters; not verified) |
 
 Linking every test that uses a test client to the app entry would not narrow anything: each pipeline function would then list every client-using test, which is what `affected` already does at depth 5 (precision 0.65 against 0.62 for running everything). A useful link would match the request path to the route handler. Nothing is built; whether it saves an agent reads belongs to the diff-impact task class in the shortlist. About eight symbols per framework, so the figures are indicative.
