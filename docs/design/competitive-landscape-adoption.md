@@ -96,4 +96,75 @@ The model-load cost does not explain the slow Octocode queries: a long-running M
 
 Reading: this does not support switching. CodeGraph indexes about 140 to 260 times faster in about 15 to 27 times less peak memory, returns verbatim source, and matched or exceeded Octocode on call edges in the small sample. Two findings change the shortlist. First, the vite concept query is a counter-example to row O: an embedding search found the right file where a name-driven search did not, so the "concept tasks were 3 of 3 correct" result should be re-run on natural-language queries in a TypeScript corpus. Second, S and T each have a working reference to compare against; both stay conditional on an agent-eval task class.
 
-Not measured: agent outcomes, upstream CodeGraph, Octocode with a cloud embedder or reranker, repeated runs, and edge precision for Go and TypeScript beyond the one spot check.
+Section 5 did not measure: agent outcomes, upstream CodeGraph, Octocode with a cloud embedder or reranker, repeated runs, and edge precision for Go and TypeScript beyond the one spot check.
+
+## 6. Gap register, 2026-10-10
+
+Where other tools do something this fork does not, or do it better by a published or measured result, with what is known and what would reopen each item. "Unmeasured on the fork" means the number comes from a build other than this fork (usually 1.5.0) or from a different tool. Sources are repowise's `docs/BENCHMARKS.md` and its compiler-oracle write-up (G4), the Octocode trial in section 5, and [strategy-2026-09.md](strategy-2026-09.md).
+
+| # | Gap or idea | Source | What is known | Status and next measurement |
+|---|---|---|---|---|
+| 1 | Call-edge precision and recall against a compiler, TypeScript first | repowise G4 | On 1.5.0, zod 0.73 precision / 0.37 recall and hono 0.81 precision, against repowise's 0.99 / 0.70 and 0.98 / 0.81. [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) shows the fork keeps fewer TypeScript edges and names recall as the larger problem | Measured in section 6.1. The fork reaches 0.981 precision / 0.694 recall on zod and 0.987 / 0.664 on hono. Hono recall is 0.664 against repowise's 0.81 and is the open gap |
+| 2 | Natural-language file retrieval | repowise ContextBench; section 5 | On Python and Go questions repowise's local search found 0.74 of the needed files (0.88 with a hosted model) against 0.61 for CodeGraph 1.5.0. In the section 5 trial Octocode returned vite's `resolve.ts` at rank 1 for a natural-language query where the fork did not return it. One query, one repository | Measured in section 6.2. The fork finds 0.629 of the needed files on the same 42 questions, about the same as upstream 1.6.2 (0.666) and below repowise's 0.74. On vue core and svelte all builds find under a third of the needed files |
+| 3 | Go precision on a large repository | repowise G4 | syft: CodeGraph 1.5.0 0.87 precision against 0.94 to 0.97 for the best arms; gitleaks within half a point of repowise and cobra about four points behind it (0.93 against 0.97). On interface-dispatch edges CodeGraph found 35 of 3,303 against repowise's 12 | Measured in section 6.1. The fork reaches 0.943 and 0.948 on the two syft cells, inside the 0.94 to 0.97 range of the best arms, and 0.995 on cobra. Syft recall stays low (0.56 and 0.28) |
+| 4 | Edge origin and confidence on every edge | repowise, gortex | Strategy step 2. No shipped entry for a persisted origin or confidence shown in explore in `CHANGELOG.md` | Verify what has landed before scheduling |
+| 5 | Memory floor | repowise | repowise builds its graph in about 75 MB. The fork's index run peaked at 208 MB (flask), 310 MB (gin) and 455 MB (vite) in section 5 | Strategy step 3. Set a target before optimizing |
+| 6 | Structural pattern search; index-free live graph | Octocode | Section 5 and candidates S and T | Needs an agent-eval task class first |
+| 7 | Test selection precision | repowise: 97.5% on 47 targets | The fork has `codegraph affected` and named-test output in explore; neither has been measured for precision | Unmeasured |
+| 8 | Commit-history search, branch-delta indexes, one server for several repositories | Octocode | Commit search has no equivalent here. Sibling-worktree index seeding covers part of branch deltas. Several repositories per server is candidate J | Not scored; no measured miss |
+| 9 | Dead code, health score, decision records, generated wiki | repowise | Deferred in the strategy doc; its health score was measured against defect data, the others are capabilities without a measurement | Reopen on a measured miss in our own use |
+
+Items 1 and 3 shared one compiler-oracle experiment (section 6.1) and item 2 used a separate retrieval comparison (section 6.2). Item 7 still needs a corpus with known answers, so it is the next measurement to run. Results go in the survey doc with the date and the build.
+
+### 6.1 Compiler-oracle replay, 2026-10-10
+
+repowise's compiler-anchored comparison (TypeScript through `tsc` 5.9.3 resolved signatures, Go through the RTA call graph) was rerun on the same pinned repositories with three builds: CodeGraph 1.5.0 (the build repowise published against), upstream 1.6.2, and this fork (1.6.2 plus its own commits, Rust kernel). Precision is matched edges over matched plus contradicted edges. Recall is matched edges over oracle edges. "Unjudged" is the share of the build's edges whose caller the oracle never reached, so they count for neither.
+
+| Cell | 1.5.0 precision / recall | 1.6.2 precision / recall | Fork precision / recall | Fork unjudged |
+|---|---|---|---|---|
+| zod, no tests | 0.729 / 0.373 | 0.961 / 0.702 | 0.981 / 0.694 | 30% |
+| hono, no tests | 0.808 / 0.684 | 0.954 / 0.669 | 0.987 / 0.664 | 30% |
+| cobra, with tests | 0.928 / 0.764 | 0.984 / 0.746 | 0.995 / 0.711 | 0% |
+| gitleaks, no tests | 0.972 / 0.920 | 0.987 / 0.920 | 0.997 / 0.922 | 3% |
+| gitleaks, with tests | 0.971 / 0.895 | 0.986 / 0.895 | 0.995 / 0.891 | 2% |
+| syft, no tests | 0.872 / 0.508 | 0.899 / 0.509 | 0.943 / 0.560 | 11% |
+| syft, with tests | 0.853 / 0.270 | 0.878 / 0.270 | 0.948 / 0.279 | 3% |
+
+What the table shows:
+
+- The TypeScript precision gap on 1.5.0 is closed. Most of the change comes from upstream 1.6.2 (zod 0.729 to 0.961); the fork adds one to seven points on every cell, most on the two syft cells.
+- Against repowise's published figures, the fork is level on zod (0.981 / 0.694 against 0.99 / 0.70) and below on hono recall (0.664 against 0.81). Repowise's published numbers come from its own run, not this one, and I did not rerun its arms.
+- The fork trades recall for precision. It keeps fewer edges than 1.6.2 on six of seven cells, and cobra recall is 0.711 against 0.764 for 1.5.0.
+- Thirty percent of the fork's TypeScript edges sit in callers the oracle never reached, so the TypeScript precision figures describe about 70% of its edges.
+- The oracle is a compiler's view, not ground truth. Both oracles cover Go and TypeScript only; the other languages have no comparable measurement. The syft oracle here covered 1,110 files and 29,408 edges against repowise's 1,107 and 22,590, because the Go toolchain version differs; every other cell matches repowise's analysed-file counts exactly.
+
+### 6.2 Natural-language file retrieval, 2026-10-10
+
+ContextBench asks a natural-language bug description and scores the share of the gold files the tool returns. The first table is repowise's sealed 42 (30 django and 12 cli/cli instances), graded the way ContextBench's own grader does it: only predicted files that exist at the instance's base commit count. The harness reproduces repowise's published 1.5.0 figure exactly (0.6095). The question is the instance's problem statement passed to `codegraph explore`, with the files taken in order of first mention, capped at 50.
+
+| Build | Coverage | django (30) | cli/cli (12) | Mean files returned | Median index time | Median query time |
+|---|---|---|---|---|---|---|
+| 1.5.0 | 0.6095 | 0.587 | 0.667 | 14.4 | 5.6 s | 1.64 s |
+| 1.6.2 | 0.6655 | 0.662 | 0.674 | 19.3 | 15.1 s | 1.44 s |
+| Fork | 0.6290 | 0.644 | 0.590 | 18.4 | 9.4 s | 0.73 s |
+
+Per instance the fork beats 1.6.2 on 5, loses on 5 and ties on 32, so 0.629 against 0.666 is not a clear difference at this sample size. Repowise's published local-search figure on the same set is 0.74.
+
+The second table is exploratory: 39 JavaScript and TypeScript instances from the same benchmark (28 svelte, 11 vue core) that repowise did not publish a result for, run the same way.
+
+| Build | Coverage | svelte (28) | vue core (11) | Mean files returned |
+|---|---|---|---|---|
+| 1.5.0 | 0.306 | 0.237 | 0.481 | 11.1 |
+| 1.6.2 | 0.317 | 0.229 | 0.542 | 13.3 |
+| Fork | 0.281 | 0.214 | 0.451 | 11.2 |
+
+On these instances the fork wins 4, loses 7 and ties 28 against 1.6.2, and 19 of 39 return none of the needed files (17 for 1.6.2). The three builds are within a few points of each other, so the finding is not a difference between builds: free-text bug descriptions retrieve JavaScript and TypeScript files poorly with every build tried, far below the 0.6 to 0.7 on Python and Go. This corpus was chosen after seeing that repowise's figures cover Python and Go only; it has no published comparator and no pre-registered threshold.
+
+A last probe asked whether Octocode's embeddings recover instances the CodeGraph builds miss. I picked the first two vue core instances where both 1.6.2 and the fork found none of the needed files, and ran Octocode 0.26.6 (hybrid search over local embeddings) on them. Octocode rejects queries over 500 characters, so all three tools were rerun with the first 500 characters of the problem statement.
+
+| Instance | Needed files | Octocode | 1.6.2 | Fork |
+|---|---|---|---|---|
+| vue core `ff629f34` | 3 | 1 found (`pluginScoped.ts`), 3 files returned | 0 found, 34 returned | 0 found, 35 returned |
+| vue core `04c51be7` | 3 | 0 found, 7 files returned | 0 found, 11 returned | 0 found, 13 returned |
+
+Octocode found one of six needed files where the two CodeGraph builds found none. That is two instances chosen because CodeGraph missed them, so it shows embeddings can help on a miss but says nothing about how often. It also cost far more: indexing took 8.1 and 9.0 minutes at about 5.8 GB peak, against 3 to 5 seconds for the CodeGraph builds. A svelte instance with 7,348 files took 28 minutes and 6.6 GB to index, and its search failed on the 500-character limit, so no svelte comparison was made.
