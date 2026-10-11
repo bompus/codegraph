@@ -314,4 +314,39 @@ export function viaUnion(s: Service) { s.many.query(); }
       cg.close();
     }
   });
+
+  it('types a property written as a getter by its declared return type', async () => {
+    // `c.req.header()` reaches HonoRequest.header, not Res.header, because
+    // `get req(): Req` types `req`. A getter with no return type says nothing.
+    const cg = await index({
+      'src/req.ts': `export class Req { header(name: string): string { return name; } }
+`,
+      'src/res.ts': `export class Res { header(name: string): string { return name; } }
+`,
+      'src/ctx.ts': `import { Req } from './req';
+import { Res } from './res';
+export class Ctx {
+  #req: Req | undefined;
+  get req(): Req {
+    this.#req ??= new Req();
+    return this.#req;
+  }
+  get res() {
+    return new Res();
+  }
+}
+`,
+      'src/use.ts': `import { Ctx } from './ctx';
+export function fromReq(c: Ctx) { return c.req.header('x'); }
+export function fromRes(c: Ctx) { return c.res.header('x'); }
+`,
+    });
+    try {
+      const calls = callsFrom(cg, 'src/use.ts');
+      expect(calls.filter((c) => c.includes('src/req.ts:Req::header'))).toHaveLength(1);
+      expect(calls.some((c) => c.includes('src/res.ts'))).toBe(false);
+    } finally {
+      cg.close();
+    }
+  });
 });

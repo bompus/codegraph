@@ -380,6 +380,36 @@ impl KernelResolver {
         for (i, raw) in source.get(start..end).unwrap_or_default().iter().enumerate() {
             let line_no = (start + i + 1) as i64;
             let line = strip_line_comments(raw);
+            // `get field(): T` exposes `field` as a property of type `T`.
+            for at in occurrences(&line, field, 0) {
+                let gap = &line[..at];
+                let before = gap.trim_end();
+                let is_getter = gap.len() > before.len()
+                    && before.ends_with("get")
+                    && !before[..before.len() - 3].bytes().next_back().is_some_and(|b| is_word_byte(b) || b == b'.' || b == b'#');
+                if !is_getter || line[at + field.len()..].bytes().next().is_some_and(is_word_byte) {
+                    continue;
+                }
+                let Some(caps) = re!(r"^\s*\(\s*\)\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)").captures(&line[at + field.len()..]) else {
+                    continue;
+                };
+                // The getter's own node starts at `get`; any other method around the line holds a local.
+                let pos = (line_no, at as i64);
+                let methods = match &methods {
+                    Some(v) => v,
+                    None => methods.insert(self.class_methods(owner)?),
+                };
+                if methods.iter().any(|m| pos > (m.start_line, m.start_column) && pos <= (m.end_line, m.end_column) && m.start_line != line_no) {
+                    continue;
+                }
+                let rest = &line[at + field.len() + caps.get(0).map_or(0, |m| m.end())..];
+                return Ok(Some(TsFieldDecl {
+                    ty: caps[1].to_string(),
+                    value_type: false,
+                    typed_collection: guard1_tail_re().is_match(rest),
+                    nullable: nullable_union_tail_re().is_match(rest),
+                }));
+            }
             for (affix, value_type) in TS_FIELD_TYPE_PATTERNS.iter() {
                 let (_, tail) = affix.local();
                 for at in occurrences(&line, field, 0) {
