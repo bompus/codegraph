@@ -73,3 +73,27 @@ Not adopting on current evidence: L through R above, editor-buffer overlays (CLI
 ## 4. What the survey says about the rewrite question
 
 Two data points bear on [greenfield-rust-core-sketch.md](greenfield-rust-core-sketch.md). codebase-memory-mcp is the "single C binary, 162 grammars, one SQLite file" design the sketch describes, and its own benchmark shows the metadata-only answer losing to a plain file explorer on 16 of 31 repos because it does not store line-level source. agentmap went the other way, a real compiler for one language, and refuses to add tree-sitter languages because name matching "will not ship". CodeGraph's position between them, verbatim source over a heuristic graph, is the one that measured best in the only rules-on A/B in the field. The language of the engine did not decide any of these outcomes; what the tool returns did.
+
+## 5. Octocode trial, 2026-10-10
+
+Octocode 0.26.6 (built from source, local embeddings, no API keys, data directory isolated) against this fork's build 1.6.2+a43da4f4, not upstream CodeGraph. Three corpora (flask, gin, vite), one run each, on a shared host whose load average was 5 to 23 from other sessions: timings are indicative, not benchmarks. No agent-outcome arm was run.
+
+| Measure | Octocode | CodeGraph (fork) |
+|---|---|---|
+| Index, flask | 219 files (includes docs), 2m37s, 5.7 GB peak, 13 MB | 97 files, 1.1 s, 208 MB, 6.5 MB |
+| Index, gin | 2m41s, 5.6 GB peak, 16 MB | 119 files, 1.1 s, 310 MB, 10 MB |
+| Index, vite | 2,476 files, 14m28s, 6.7 GB peak, 84 MB | 1,719 files, 3.4 s, 455 MB, 44 MB |
+| Concept query, flask (dispatch flow) | 11 to 12 s, 4.7 KB of 5 chunks; reached the dispatch functions | 0.13 s, 16 KB of verbatim source plus blast radius; reached them |
+| Concept query, gin (path to handler) | 0 of 2 expected symbols; right file (`gin.go`) at rank 1, `tree.go` missing | 2 of 2 |
+| Concept query, vite (bare import to file) | 1 of 2 expected symbols; right file (`plugins/resolve.ts`) at rank 1 | 0 of 2; the file was not returned until the query named a symbol |
+| Callee names, 8 flask functions, ast oracle (36 true) | 31 reported, 28 true, recall 0.78 | 29 reported, 29 true, recall 0.81 |
+
+The model-load cost does not explain the slow Octocode queries: a long-running MCP server was equally slow (10.5 to 11.5 s per query, repeated query included). Its index is dominated by embedding the chunks.
+
+- **Edges.** The oracle matches callee names only. Octocode added dictionary-style names (`get`, `setdefault`, `update`, `close`) that CodeGraph omitted. In vite, Octocode linked `tryNodeResolve` to `optimizer/index.ts::resolveId`, but in the source `resolveId` is a local variable, so that edge is wrong. CodeGraph missed `depsOptimizer.registerMissingImport`. The sample is too small to separate the two tools.
+- **Live graph (candidate T).** Octocode's `graphrag` needs no index. The first call builds the graph from source: 61 ms on flask and 12.3 s on vite (1.7 GB peak), then 2 to 35 ms per query. Its callees for `Flask.full_dispatch_request` matched the source. It costs more than a persisted CodeGraph index, but it is an answer where an un-indexed checkout otherwise sends the agent to Grep.
+- **Structural search (candidate S).** `structural_search` matched call patterns in Rust, JavaScript and TypeScript, with an enclosing-symbol label on each hit, in under 100 ms. In Python and Go, call patterns with metavariables (`abort($A)`, `c.JSON($$$A)`) found no AST matches and fell back to plain-text lines, which the tool labels as not AST-verified; `$X.get($Y)` returned a parse error. Kind-based patterns and `symbol` lookups worked.
+
+Reading: this does not support switching. CodeGraph indexes about 40 to 250 times faster in about 8 to 15 times less memory, returns verbatim source, and matched or exceeded Octocode on call edges in the small sample. Two findings change the shortlist. First, the vite concept query is a counter-example to row O: an embedding search found the right file where a name-driven search did not, so the "concept tasks were 3 of 3 correct" result should be re-run on natural-language queries in a TypeScript corpus. Second, S and T each have a working reference to compare against; both stay conditional on an agent-eval task class.
+
+Not measured: agent outcomes, upstream CodeGraph, Octocode with a cloud embedder or reranker, repeated runs, and edge precision for Go and TypeScript beyond the one spot check.
