@@ -204,7 +204,7 @@ On Node the per-worker WASM grammar heap is about 5 MB per worker, not the 60 MB
 
 ### Windows validation (2026-09-12)
 
-Run on the Windows host itself (Windows-local checkout under `C:\Users\bompus\src\codegraph-win`, Node 26.8.1, MSVC Build Tools 18 / 14.51, cargo 1.98.1, Git Bash for the build script), against `fork/consolidated` at `de37daee` plus the fix below:
+Run on the Windows host itself (Windows-local checkout under `<windows-checkout>\codegraph-win`, Node 26.8.1, MSVC Build Tools 18 / 14.51, cargo 1.98.1, Git Bash for the build script), against `fork/consolidated` at `de37daee` plus the fix below:
 
 | Step | Result |
 |---|---|

@@ -51,16 +51,16 @@ beforeAll(async () => {
   // A field typed as the type OF a value: an object literal used as a namespace.
   w(
     'storage.ts',
-    'export const DraftHubStorage = {\n' +
+    'export const AppStorage = {\n' +
       '  async get(key: string): Promise<string> { return key; },\n' +
       '  async getSettings(): Promise<object> { return {}; },\n' +
       '};\n'
   );
   w(
     'keeper.ts',
-    "import { DraftHubStorage } from './storage';\n" +
+    "import { AppStorage } from './storage';\n" +
       'export class Keeper {\n' +
-      '  constructor(private readonly storage: typeof DraftHubStorage) {}\n' +
+      '  constructor(private readonly storage: typeof AppStorage) {}\n' +
       '  async get(key: string): Promise<string> { return this.storage.get(key); }\n' +
       '  async settings(): Promise<object> { return this.storage.getSettings(); }\n' +
       '}\n'
@@ -116,8 +116,8 @@ describe('this.<field>.<method>() (#1496)', () => {
   it('resolves a field typed `typeof <objectLiteral>` onto the literal\'s member', () => {
     // The members are functions inside the constant's extent (#1573), qualified
     // under it (#2300).
-    expect(calleesOf('Keeper::settings')).toEqual(['DraftHubStorage::getSettings']);
-    expect(calleesOf('Keeper::get')).toEqual(['DraftHubStorage::get']);
+    expect(calleesOf('Keeper::settings')).toEqual(['AppStorage::getSettings']);
+    expect(calleesOf('Keeper::get')).toEqual(['AppStorage::get']);
     const self = cg.getCallers(method('Keeper::get').id).some(({ node }) => node.id === method('Keeper::get').id);
     expect(self).toBe(false);
   });

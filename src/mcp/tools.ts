@@ -1034,12 +1034,12 @@ const SUMMARY_SENTINEL = '[[codegraph-explore-summary]]';
  * tracker, backlog, runbook, readme…) AND matches ≥2 distinct query terms in a
  * markdown file's path or headings — seeds that file's best-matching SECTIONS.
  * Why a separate pass: the general FTS gather spends each term's small result
- * budget on code symbols (`warRoom*` for "War Room"), so the doc never enters
+ * budget on code symbols (`statusBoard*` for "Status Board"), so the doc never enters
  * the candidate pool; and when it does, the ranker's first real key is random-
  * walk mass over call edges, which markdown never has, so a code file sharing
  * one word outranks the named doc. A markdown-scoped search per term keeps code
  * names from crowding the doc out; the doc-word + ≥2-term guard keeps a code
- * question that merely shares a word ("War Room popout") from pulling a plan
+ * question that merely shares a word ("Status Board popout") from pulling a plan
  * file above the code. Sections, not files, are the seeds so the render shows
  * the answer section first instead of a whole 25k-char file.
  */
@@ -1104,8 +1104,8 @@ function collectDocSeeds(cg: CodeGraph, query: string, maxFiles = 2): DocSeed[] 
       .filter((n) => n.kind === 'module' && n.language === 'markdown')
       .sort((a, b) => a.startLine - b.startLine);
     const hits = termScore(lp + ' ' + headings.map((h) => h.name).join(' '));
-    // The two-hit rule keeps a code question that merely shares a word ("War
-    // Room popout") from pulling a plan file above the code. A query with one
+    // The two-hit rule keeps a code question that merely shares a word ("Status
+    // Board popout") from pulling a plan file above the code. A query with one
     // significant term cannot reach 2, and having passed DOC_WORD that term IS
     // the doc word, so there is no code question left to protect against.
     if (!named && !namedStem && hits < Math.min(2, terms.length)) continue;
@@ -1120,10 +1120,10 @@ function collectDocSeeds(cg: CodeGraph, query: string, maxFiles = 2): DocSeed[] 
     try { fileLines = readFileSync(abs, 'utf-8').split('\n'); } catch { continue; }
     const fileSpan = Math.max(1, ...headings.map((h) => h.endLine));
     const isWrapper = (h: Node) => headings.length >= 4 && (h.endLine - h.startLine) > fileSpan * 0.6;
-    // A term is worth its rarity in this file ("room" on every line of a War
-    // Room tracker says nothing; "blocker" on three lines points at the answer),
+    // A term is worth its rarity in this file ("board" on every line of a Status
+    // Board tracker says nothing; "blocker" on three lines points at the answer),
     // and a line counts only when two distinct terms meet on it. A term that
-    // names the file ("war", "sync" against PLAN-war-room-sync-validation.md)
+    // names the file ("status", "sync" against PLAN-status-board-sync-validation.md)
     // located the file and says nothing about which line: agents echo the file
     // name into the query, and those tokens would outvote the one that matters.
     const lower = fileLines.map((l) => l.toLowerCase());

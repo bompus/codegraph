@@ -20,7 +20,7 @@ describe('window-message synthesizer', () => {
 
   it('links a publisher to the listener that checks the same source discriminator', async () => {
     fs.writeFileSync(path.join(dir, 'constants.ts'),
-      'export const MESSAGES = { TTD_AJAX_EVENT: "BOMPUS_TTD_AJAX", OTHER_EVENT: "BOMPUS_OTHER" };\n');
+      'export const MESSAGES = { TTD_AJAX_EVENT: "DEMO_AJAX", OTHER_EVENT: "DEMO_OTHER" };\n');
     fs.writeFileSync(path.join(dir, 'publish.ts'), `import { MESSAGES } from "./constants";
 export function publishTtdLivewire() {
   window.postMessage({ source: MESSAGES.TTD_AJAX_EVENT, payload: {} }, "*");
@@ -56,7 +56,7 @@ export function listenWithoutCheck() {
 
   it('does not pair a string discriminator with a different member name', async () => {
     fs.writeFileSync(path.join(dir, 'a.ts'), `export function send() {
-  window.postMessage({ source: "BOMPUS_TTD_AJAX" }, "*");
+  window.postMessage({ source: "DEMO_AJAX" }, "*");
 }
 `);
     fs.writeFileSync(path.join(dir, 'b.ts'), `export function listen() {

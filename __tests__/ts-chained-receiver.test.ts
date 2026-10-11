@@ -25,7 +25,7 @@ beforeAll(async () => {
   w(
     'storage.ts',
     'declare const chrome: any;\n' +
-      'export const DraftHubStorage = {\n' +
+      'export const AppStorage = {\n' +
       '  async get(key: string): Promise<unknown> {\n' +
       '    const result = await chrome.storage.local.get([key]);\n' +
       '    return result[key];\n' +
