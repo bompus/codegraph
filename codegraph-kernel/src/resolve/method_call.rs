@@ -671,6 +671,14 @@ impl KernelResolver {
             }
         }
 
+        // Python `<local>.<field>.method()`: the local's class settles the
+        // field's type, as it does for `self.<field>`.
+        if r.language == "python" && dotted {
+            if let Some(verdict) = self.python_local_field_call(&object_or_class, &method_name, r)? {
+                return Ok(verdict);
+            }
+        }
+
         if inferable {
             if r.language == "go" {
                 if let Some(verdict) = self.go_asserted_member(&object_or_class, &method_name, r)? { return Ok(verdict); }

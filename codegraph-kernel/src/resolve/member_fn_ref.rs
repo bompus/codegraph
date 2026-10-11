@@ -101,6 +101,34 @@ impl KernelResolver {
             .max_by_key(|n| n.start_line)
             .cloned();
         let Some(owner) = owner else { return Ok(None) };
+        self.python_field_member_call(&owner, field, member, r)
+    }
+
+    /// `<local>.<field>.method()` in Python: the local's class from its
+    /// declaration (`app = Flask()`, `app = pkg.Flask()`, an annotation), then
+    /// the call settles on the field's type as `self.<field>.method()` does.
+    /// `None`: the local or field type is not known here, so the name
+    /// strategies decide as before.
+    pub(super) fn python_local_field_call(&mut self, receiver: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        let Some((root, field)) = receiver.split_once('.').filter(|(a, b)| is_word(a) && is_word(b) && !matches!(*a, "self" | "cls")) else {
+            return Ok(None);
+        };
+        let Some(binding) = self.receiver_binding(root, r)?.filter(|b| b.kind != "import" && b.line <= r.line) else {
+            return Ok(None);
+        };
+        let mut site = r.clone();
+        site.line = binding.line;
+        if let Some(nid) = &binding.node_id {
+            site.from_node_id = nid.clone();
+        }
+        let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else { return Ok(None) };
+        let Some(owner) = self.python_ref_class(&ty, r)? else { return Ok(None) };
+        self.python_field_member_call(&owner, field, member, r)
+    }
+
+    /// The call `<instance of owner>.<field>.<member>()`. `Some(None)`: the
+    /// field's type is known and its member is data or a property.
+    fn python_field_member_call(&mut self, owner: &Arc<KNode>, field: &str, member: &str, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
         // The field's evidence in the class and every base along its MRO,
         // each read in its own file, must name one class: a subclass's
         // `self.cache = Other()` conflicts with the base's `Store()`, and
@@ -108,7 +136,7 @@ impl KernelResolver {
         // (`cache: Base`) may be narrowed to a subclass of it.
         let mut classes: Vec<Arc<KNode>> = vec![owner.clone()];
         if self.supertypes_complete {
-            if let Some(mro) = self.python_mro(&owner, 0)? {
+            if let Some(mro) = self.python_mro(owner, 0)? {
                 classes.extend(mro.iter().skip(1).cloned());
             }
         }

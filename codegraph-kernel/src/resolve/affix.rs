@@ -246,7 +246,11 @@ pub(super) static RECEIVER_TYPE_PATTERNS: LazyLock<HashMap<&'static str, Vec<Rec
         "python",
         vec![
             rp(r"(?m)(?:^|;)\s*", r"\s*=\s*([A-Z]\w*)\.objects\.(?:create|get|first|last|latest|earliest|get_by_natural_key)\s*\(", false, true, false, 4),
-            rp(r"(?m)(?:^|;)\s*", r"\s*=\s*(_*[A-Z][A-Za-z0-9_.]*)\s*\(", false, true, false, 4),
+            // A class named through its module (`pkg.Blueprint(`, `c.Blueprint(`)
+            // types the local like a class imported by name; the type is
+            // resolved against the file's imports, so a call on another local
+            // object (`factory.Blueprint(`) names no project class.
+            rp(r"(?m)(?:^|;)\s*", r"\s*=\s*((?:[A-Za-z_][A-Za-z0-9_]*\.)*_*[A-Z][A-Za-z0-9_.]*)\s*\(", false, true, false, 4),
             both(r#"\s*:\s*["']([A-Z][A-Za-z0-9_.]*)["']"#, b":", 0),
             both(r"\s*:\s*([A-Z][A-Za-z0-9_.]*)", b":", 0),
         ],
