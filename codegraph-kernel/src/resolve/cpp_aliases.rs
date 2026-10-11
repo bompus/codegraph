@@ -119,6 +119,27 @@ impl KernelResolver {
     pub(super) fn cpp_alias_expansion(&mut self, raw: &str, r: &ResolveRefIn, depth: u32, included: &HashSet<String>) -> Res<Option<CppAlias>> {
         if depth > 4 { return Ok(Some(CppAlias { raw: None, site: r.clone(), pointer: false, reference: false })); }
         let Some(parts) = type_segments(raw) else { return Ok(None); };
+        let Some((rhs, declaration, consumed)) = self.cpp_alias_declaration(raw, &parts, r, depth, included)? else { return Ok(None); };
+        let mut site = r.clone().at(&declaration); site.from_node_id = declaration.id.clone(); site.column = declaration.start_column;
+        let pointer = pointer_type(&rhs);
+        let reference = reference_type(&rhs);
+        let target = type_segments(&rhs);
+        let dependent = match &target { Some(target) => !rhs.trim_start().starts_with("::") && self.cpp_template_parameter(&declaration, &target[0], r)?, None => false };
+        if rhs.contains("typename") || dependent {
+            return Ok(Some(CppAlias { raw: None, site, pointer, reference }));
+        }
+        let Some(mut target) = target else { return Ok(Some(CppAlias { raw: None, site, pointer, reference })); };
+        target.extend_from_slice(&parts[consumed..]);
+        let target = format!("{}{}", if rhs.trim_start().starts_with("::") { "::" } else { "" }, target.join("::"));
+        if let Some(mut next) = self.cpp_alias_expansion(&target, &site, depth + 1, included)? { next.pointer |= pointer; next.reference |= reference; return Ok(Some(next)); }
+        Ok(Some(CppAlias { raw: Some(target), site, pointer, reference }))
+    }
+
+    /// The alias `raw` (split into `parts`) names, looked up from `r` as C++ looks a type name up:
+    /// what it is declared as, as written (template arguments and all), the node declaring it (the
+    /// caller, for a typedef local to it) and how many of `parts` name the alias. None when `raw`
+    /// names no alias.
+    pub(super) fn cpp_alias_declaration(&mut self, raw: &str, parts: &[String], r: &ResolveRefIn, depth: u32, included: &HashSet<String>) -> Res<Option<(String, Arc<KNode>, usize)>> {
         let caller = self.node_by_id(&r.from_node_id)?;
         let mut local = None;
         if !raw.trim().starts_with("::") {
@@ -172,20 +193,7 @@ impl KernelResolver {
                 alias = Some((rhs, found, consumed)); break;
             }
         }
-        let Some((rhs, declaration, consumed)) = alias else { return Ok(None); };
-        let mut site = r.clone().at(&declaration); site.from_node_id = declaration.id.clone(); site.column = declaration.start_column;
-        let pointer = pointer_type(&rhs);
-        let reference = reference_type(&rhs);
-        let target = type_segments(&rhs);
-        let dependent = match &target { Some(target) => !rhs.trim_start().starts_with("::") && self.cpp_template_parameter(&declaration, &target[0], r)?, None => false };
-        if rhs.contains("typename") || dependent {
-            return Ok(Some(CppAlias { raw: None, site, pointer, reference }));
-        }
-        let Some(mut target) = target else { return Ok(Some(CppAlias { raw: None, site, pointer, reference })); };
-        target.extend_from_slice(&parts[consumed..]);
-        let target = format!("{}{}", if rhs.trim_start().starts_with("::") { "::" } else { "" }, target.join("::"));
-        if let Some(mut next) = self.cpp_alias_expansion(&target, &site, depth + 1, included)? { next.pointer |= pointer; next.reference |= reference; return Ok(Some(next)); }
-        Ok(Some(CppAlias { raw: Some(target), site, pointer, reference }))
+        Ok(alias)
     }
 }
 
