@@ -122,6 +122,11 @@ impl KernelResolver {
             site.from_node_id = nid.clone();
         }
         let Some(ty) = self.infer_local_receiver_type(root, &site, true)? else { return Ok(None) };
+        // `pkg.Flask()` names the import only while no parameter or local
+        // called `pkg` hides it.
+        if ty.contains('.') && self.is_shadowed_import(ty.split('.').next().unwrap_or(&ty), &site)? {
+            return Ok(None);
+        }
         let Some(owner) = self.python_ref_class(&ty, r)? else { return Ok(None) };
         self.python_field_member_call(&owner, field, member, r)
     }

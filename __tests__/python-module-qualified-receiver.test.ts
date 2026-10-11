@@ -96,6 +96,22 @@ describe('a local typed by a module-qualified constructor', () => {
   });
 });
 
+describe('a parameter that shadows the imported module', () => {
+  it('does not type a local from the shadowed module', async () => {
+    await project(
+      files('import pkg\n\n\ndef t(pkg):\n    bp = pkg.Blueprint()\n    bp.own()\n'),
+    );
+    expect(calls('t')).toEqual([]);
+  });
+
+  it('does not follow a field of a local built from the shadowed module', async () => {
+    await project(
+      files('import pkg\n\n\ndef t(pkg):\n    app = pkg.Flask()\n    app.config.from_mapping({})\n'),
+    );
+    expect(calls('t')).toEqual([]);
+  });
+});
+
 describe('a call through a field of a typed local', () => {
   it.each([
     ['a class imported by name', 'from pkg import Flask\n\n\ndef t():\n    app = Flask()\n    app.config.from_mapping({})\n'],
