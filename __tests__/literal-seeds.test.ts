@@ -25,7 +25,7 @@ describe('literal seeds — index, query, and lifecycle', () => {
     fs.writeFileSync(
       path.join(dir, 'src', 'writer.ts'),
       `export function persistRows(rows: unknown[]) {
-  chrome.storage.local.set({ 'bompus_custom_ds_players': rows });
+  chrome.storage.local.set({ 'demo_custom_players': rows });
 }
 export function unrelatedHelper() { return 'ready'; }
 `,
@@ -33,7 +33,7 @@ export function unrelatedHelper() { return 'ready'; }
     fs.writeFileSync(
       path.join(dir, 'src', 'reader.ts'),
       `export async function readRows() {
-  const got = await chrome.storage.local.get('bompus_custom_ds_players');
+  const got = await chrome.storage.local.get('demo_custom_players');
   return got;
 }
 `,
@@ -57,13 +57,13 @@ function start() { return 1; }
   });
 
   it('resolves a storage key to every symbol whose body holds it', () => {
-    const ids = queries().findNodeIdsByLiteral(['bompus_custom_ds_players']);
+    const ids = queries().findNodeIdsByLiteral(['demo_custom_players']);
     const names = ids.map((id) => cg.getNode(id)?.name).sort();
     expect(names).toEqual(['persistRows', 'readRows']);
   });
 
   it('a quoted key in a prose query puts the writers at the top of the subgraph', async () => {
-    const sub = await cg.findRelevantContext('which modules write "bompus_custom_ds_players" to storage');
+    const sub = await cg.findRelevantContext('which modules write "demo_custom_players" to storage');
     const rootNames = sub.roots.map((id) => sub.nodes.get(id)?.name);
     expect(rootNames.slice(0, 2).sort()).toEqual(['persistRows', 'readRows']);
     expect(rootNames).not.toContain('unrelatedHelper');
@@ -77,7 +77,7 @@ function start() { return 1; }
   it('CODEGRAPH_LITERAL_SEEDS=0 turns the seed off (the ablation switch)', async () => {
     process.env.CODEGRAPH_LITERAL_SEEDS = '0';
     try {
-      const sub = await cg.findRelevantContext('bompus_custom_ds_players');
+      const sub = await cg.findRelevantContext('demo_custom_players');
       const names = [...sub.nodes.values()].map((n) => n.name);
       expect(names).not.toContain('persistRows');
     } finally {
@@ -88,12 +88,12 @@ function start() { return 1; }
   it("a file's rows leave with its nodes on re-index, and a full index clears the table", async () => {
     fs.writeFileSync(path.join(dir, 'src', 'reader.ts'), `export function readRows() { return null; }\n`);
     await cg.indexFiles(['src/reader.ts']);
-    let names = queries().findNodeIdsByLiteral(['bompus_custom_ds_players']).map((id) => cg.getNode(id)?.name);
+    let names = queries().findNodeIdsByLiteral(['demo_custom_players']).map((id) => cg.getNode(id)?.name);
     expect(names).toEqual(['persistRows']);
 
     fs.rmSync(path.join(dir, 'src', 'writer.ts'));
     await cg.indexAll();
-    expect(queries().findNodeIdsByLiteral(['bompus_custom_ds_players'])).toEqual([]);
+    expect(queries().findNodeIdsByLiteral(['demo_custom_players'])).toEqual([]);
   });
 });
 
@@ -113,7 +113,7 @@ describe('literal seeds — explore renders the holder file', () => {
     fs.mkdirSync(path.join(dir, 'callers'), { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'shared', 'bag.ts'),
-      `const BAG_KEY = 'bompus_custom_ds_players';
+      `const BAG_KEY = 'demo_custom_players';
 export function persistBag(rows: unknown[]) {
   chrome.storage.local.set({ [BAG_KEY]: rows });
 }
@@ -153,7 +153,7 @@ export function storageWriter${i}() {
 
   it('the file holding the quoted key takes the first source slot', async () => {
     const res = await handler.execute('codegraph_explore', {
-      query: 'which modules write "bompus_custom_ds_players" to storage',
+      query: 'which modules write "demo_custom_players" to storage',
       maxFiles: 1,
     });
     const text = res.content[0].text as string;
@@ -180,7 +180,7 @@ describe('literal seeds — every holder reaches the subgraph past the entry cap
       fs.writeFileSync(
         path.join(dir, 'src', `holder${i}.ts`),
         `export function write${i}(rows: unknown[]) {
-  chrome.storage.local.set({ 'bompus_custom_ds_players': rows });
+  chrome.storage.local.set({ 'demo_custom_players': rows });
 }
 `,
       );
@@ -195,14 +195,14 @@ describe('literal seeds — every holder reaches the subgraph past the entry cap
   });
 
   it('all holders are roots with the default searchLimit of 3', async () => {
-    const sub = await cg.findRelevantContext('which modules write "bompus_custom_ds_players" to storage');
+    const sub = await cg.findRelevantContext('which modules write "demo_custom_players" to storage');
     const rootFiles = new Set(sub.roots.map((id) => sub.nodes.get(id)?.filePath));
     expect(rootFiles.size).toBe(N);
   });
 
   it('explore renders every holder with the default file cap', async () => {
     const res = await new ToolHandler(cg).execute('codegraph_explore', {
-      query: 'which modules write "bompus_custom_ds_players" to storage',
+      query: 'which modules write "demo_custom_players" to storage',
     });
     const text = res.content[0].text as string;
     const sourced = [...text.matchAll(/^\*\*`(.+?)`\*\* —/gm)].map((m) => m[1]);
