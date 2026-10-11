@@ -45,7 +45,7 @@ import {
   type QuerySetAsideMatch,
 } from '../search/query-paths';
 import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning, MAX_CONTEXT } from '../sessions';
-import { querySessionsAcross, formatCrossProjectHits, type ProjectTarget } from '../sessions/fanout';
+import { querySessionsAcross, formatCrossProjectHits, MAX_PROJECTS, type ProjectTarget } from '../sessions/fanout';
 import {
   existsSync,
   readFileSync,
@@ -2150,7 +2150,8 @@ export const tools: ToolDefinition[] = [
  */
 function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
   return defs.map((tool) => {
-    if (!tool.inputSchema.properties.projectPath) return tool;
+    // A tool that names its own projects (codegraph_sessions `projects`) works without projectPath.
+    if (!tool.inputSchema.properties.projectPath || tool.inputSchema.properties.projects) return tool;
     const required = tool.inputSchema.required ?? [];
     if (required.includes('projectPath')) return tool;
     return {
@@ -3109,10 +3110,12 @@ export class ToolHandler {
     // A cross-project session search (experimental) names its projects itself and
     // needs no default one: anchor the call on the first listed project that has an
     // index, so the shared checks and the worker route behave as for any projectPath.
-    if (toolName === 'codegraph_sessions' && args.projectPath === undefined && Array.isArray(args.projects)) {
-      const listed = args.projects.filter((p): p is string => typeof p === 'string' && p !== '');
-      const anchor = listed.find((p) => findNearestCodeGraphRoot(p)) ?? listed[0];
+    let allProjectsSkipped = false;
+    if (toolName === 'codegraph_sessions' && args.projectPath === undefined && !this.cg && Array.isArray(args.projects)) {
+      const listed = [...new Set(args.projects.filter((p): p is string => typeof p === 'string' && p !== ''))].slice(0, MAX_PROJECTS);
+      const anchor = listed.find((p) => findNearestCodeGraphRoot(p));
       if (anchor) args = { ...args, projectPath: anchor };
+      else allProjectsSkipped = listed.length > 0;
     }
     if (this.closing) return this.textResult('This MCP session is closing; retry with a connected session.');
     this.activeCalls++;
@@ -3134,6 +3137,8 @@ export class ToolHandler {
       if (!this.isToolAllowed(toolName)) {
         return this.errorResult(`Tool ${toolName} is disabled via CODEGRAPH_MCP_TOOLS`);
       }
+      // Nothing to open: every listed project is unindexed, so the answer is the skipped list.
+      if (allProjectsSkipped) return this.handleSessions(args);
       // Cross-cutting input validation. All tools accept an optional
       // `projectPath` and most accept either `query`, `task`, or
       // `symbol` — bound their lengths centrally so individual handlers
@@ -4472,7 +4477,9 @@ export class ToolHandler {
   private handleSessions(args: Record<string, unknown>): ToolResult {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
-    const listed = Array.isArray(args.projects) ? args.projects.filter((p): p is string => typeof p === 'string' && p !== '') : [];
+    const requested = Array.isArray(args.projects) ? [...new Set(args.projects.filter((p): p is string => typeof p === 'string' && p !== ''))] : [];
+    // Bound the list before resolving any path; the cap is applied again, with the omitted count, by the search.
+    const listed = requested.slice(0, MAX_PROJECTS);
     const projectRoot = listed.length > 0 ? '' : this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
     const sinceDays = Number(args.sinceDays);
     const role = typeof args.role === 'string' ? args.role : undefined;
@@ -4495,7 +4502,7 @@ export class ToolHandler {
             return { path: p, skipped: err instanceof Error ? err.message.split('\n')[0]! : 'cannot be opened' };
           }
         });
-        return this.textResult(formatCrossProjectHits(query, querySessionsAcross(targets, query, opts)));
+        return this.textResult(formatCrossProjectHits(query, querySessionsAcross(targets, query, opts, requested.length - listed.length)));
       }
       const result = querySessions(projectRoot, query, opts);
       return this.textResult(formatSessionHits(query, result));

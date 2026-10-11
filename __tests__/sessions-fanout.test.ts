@@ -137,6 +137,30 @@ describe('querySessionsAcross', () => {
   });
 });
 
+describe('querySessionsAcross review cases', () => {
+  it('counts passages cut by the shared budget, not by a per-project one', () => {
+    const config = fixtureDir();
+    process.env.CLAUDE_CONFIG_DIR = config;
+    const long = (n: number) => `sprocket flange ${n} ${'x'.repeat(3500)}`;
+    const a = project(config, 'alpha', [1, 2, 3, 4, 5].map(long));
+    const result = querySessionsAcross(roots(a), 'sprocket flange', { full: true, limit: 5 });
+    expect(result.hits).toHaveLength(5);
+    expect(result.hits.filter((h) => h.text !== undefined)).toHaveLength(4);
+    expect(result.fullCut).toBe(1);
+  });
+
+  it('names a project by its root when two listed projects share a directory name', () => {
+    const config = fixtureDir();
+    process.env.CLAUDE_CONFIG_DIR = config;
+    const a = project(config, 'app', [words(1)]);
+    const b = project(config, 'app', [words(2)]);
+    expect(path.basename(a)).toBe(path.basename(b));
+    const text = formatCrossProjectHits('sprocket flange', querySessionsAcross(roots(a, b), 'sprocket flange'));
+    expect(text).toContain(`## ${a} · claude:app-0`);
+    expect(text).toContain(`## ${b} · claude:app-0`);
+  });
+});
+
 describe('codegraph_sessions projects argument', () => {
   it('searches the listed projects, reports an unindexed one as skipped, and leaves the single-project path alone', async () => {
     const config = fixtureDir();
@@ -164,6 +188,19 @@ describe('codegraph_sessions projects argument', () => {
     const single = await handler.execute('codegraph_sessions', { query: 'sprocket flange', projectPath: a });
     expect(single.content[0]!.text).toMatch(/^Sessions matching "sprocket flange" — 1 hit across 1 transcript/);
     expect(single.content[0]!.text).not.toContain('experimental');
+  });
+  it('answers a projects-only call with no default project, even when none of them is indexed, and bounds the list', async () => {
+    __setLoadCodeGraphForTests(CodeGraph);
+    const handler = new ToolHandler(null);
+    const schema = handler.getTools().find((t) => t.name === 'codegraph_sessions')!;
+    expect(schema.inputSchema.required).toEqual(['query']);
+    const none = Array.from({ length: 7 }, (_, i) => path.join(fixtureDir(), `none-${i}`));
+    const res = await handler.execute('codegraph_sessions', { query: 'sprocket flange', projects: none });
+    const text = res.content[0]!.text;
+    expect(res.isError).toBeFalsy();
+    expect(text).toContain('across 0 projects (experimental) — 0 hits');
+    expect(text.match(/: skipped, /g)).toHaveLength(MAX_PROJECTS);
+    expect(text).toContain('2 more were left out');
   });
 });
 

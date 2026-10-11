@@ -1510,10 +1510,11 @@ program
     const projectPath = resolveProjectPath(options.path);
     try {
       if (options.project && options.project.length > 0) {
-        const { querySessionsAcross, formatCrossProjectHits } = await import('../sessions/fanout');
+        const { querySessionsAcross, formatCrossProjectHits, MAX_PROJECTS } = await import('../sessions/fanout');
         const sinceDays = Number(options.since);
         const query = words.join(' ');
-        const targets = options.project.map((p) => {
+        const requested = [...new Set(options.project)];
+        const targets = requested.slice(0, MAX_PROJECTS).map((p) => {
           const root = resolveProjectPath(p);
           return isInitialized(root) ? { root } : { path: root, skipped: 'CodeGraph is not initialized there' };
         });
@@ -1525,7 +1526,7 @@ program
           any: options.any,
           full: options.full,
           context: parseInt(options.context || '0', 10) || 0,
-        });
+        }, requested.length - targets.length);
         console.log(options.json ? JSON.stringify(result, null, 2) : formatCrossProjectHits(query, result));
         return;
       }

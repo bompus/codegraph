@@ -63,6 +63,8 @@ export function querySessionsAcross(
   targets: readonly ProjectTarget[],
   query: string,
   opts: SessionSearchOptions = {},
+  /** Listed projects the caller left out before resolving them, to keep the count honest. */
+  omitted = 0,
 ): CrossProjectResult {
   const limit = opts.limit ?? 10;
   const seen = new Set<string>();
@@ -82,7 +84,7 @@ export function querySessionsAcross(
       continue;
     }
     try {
-      const r = querySessions(target.root, query, opts);
+      const r = querySessions(target.root, query, { ...opts, unbudgeted: true });
       if (r.fallback) fallback = true;
       projects.push({ root: target.root, name: path.basename(target.root), hits: 0, files: r.index.files });
       perProject.push(r.hits.map((h) => ({ ...h, project: target.root })));
@@ -108,9 +110,10 @@ export function querySessionsAcross(
   }
   const out: CrossProjectResult = { projects, hits };
   if (fallback) out.fallback = true;
-  if (listed.length > MAX_PROJECTS) out.dropped = listed.length - MAX_PROJECTS;
+  const dropped = Math.max(0, listed.length - MAX_PROJECTS) + omitted;
+  if (dropped > 0) out.dropped = dropped;
   if (opts.full || opts.context) {
-    // Each project applied its own byte budget; one budget covers the merged list.
+    // Projects return unbudgeted passages; one budget covers the merged selection.
     const { fullCut, contextCut } = withinPassageBudget(hits);
     out.fullCut = fullCut;
     if (contextCut > 0) out.contextCut = contextCut;
@@ -133,9 +136,12 @@ export function formatCrossProjectHits(query: string, result: CrossProjectResult
     return lines.join('\n');
   }
   if (result.fallback) lines.push('Some projects had no passage holding every word; their hits match some of the words.', '');
+  // The directory name, or the whole root when two listed projects share one.
+  const names = projects.map((p) => p.name);
+  const label = (root: string) => (names.filter((n) => n === path.basename(root)).length > 1 ? root : path.basename(root));
   for (const h of hits) {
     const title = h.title ? ` · ${h.title}` : '';
-    lines.push(`## ${path.basename(h.project)} · ${h.session}${title}`);
+    lines.push(`## ${label(h.project)} · ${h.session}${title}`);
     lines.push(`${h.role} · ${h.ts} · ${h.file}${h.partial ? ' · some words' : ''}`);
     if (h.text === undefined) lines.push(h.snippet.replace(/\s+/g, ' ').trim());
     else if (h.before || h.after) {

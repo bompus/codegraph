@@ -74,7 +74,9 @@ describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
     expect(got.length).toBe(tools.length);
     for (const tool of got) {
       expectReadOnly(tool);
-      // Sanity: this IS the clone path (projectPath got marked required).
+      // Sanity: this IS the clone path (projectPath got marked required) — except
+      // codegraph_sessions, which can name its own `projects` instead.
+      if (tool.name === 'codegraph_sessions') continue;
       expect(tool.inputSchema.required ?? []).toContain('projectPath');
     }
     expectExploreAlwaysLoad(got);

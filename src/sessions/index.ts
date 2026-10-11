@@ -143,6 +143,8 @@ export interface SessionSearchOptions {
    * Implies `full`; neighbours spend the byte budget after every hit's own passage.
    */
   context?: number;
+  /** Internal: leave `full` and `context` passages unbudgeted so a caller merging several searches can apply one budget. */
+  unbudgeted?: boolean;
 }
 
 /**
@@ -765,7 +767,7 @@ function result(
 ): SessionsQueryResult {
   const hits = [...found];
   const out: SessionsQueryResult = found.fallback ? { index, hits, fallback: true } : { index, hits };
-  if (opts.full) {
+  if (opts.full && !opts.unbudgeted) {
     const { fullCut, contextCut } = withinPassageBudget(hits);
     out.fullCut = fullCut;
     if (contextCut > 0) out.contextCut = contextCut;
