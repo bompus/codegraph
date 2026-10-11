@@ -35,6 +35,7 @@ import {
   NoSessionsError,
   formatSessionHits,
   FULL_PASSAGE_BUDGET,
+  MAX_CONTEXT,
 } from '../src/sessions';
 import { clearProjectConfigCache } from '../src/project-config';
 import { isInjectedDoc, slashCommandText, splitPassages, indexableDocs } from '../src/sessions/noise';
@@ -1277,6 +1278,66 @@ describe('whole passages (full)', () => {
     const hit = querySessions(project, 'write-time dedupe', { full: true, role: 'user' });
     expect(hit.hits).toHaveLength(1);
     expect(querySessions(project, 'write-time dedupe', { full: true, role: 'assistant' }).hits).toEqual([]);
+  });
+
+  describe('context', () => {
+    /** Passages under 20 characters are not indexed, so every turn carries a suffix. */
+    const t = (s: string) => `${s}, long enough to be indexed`;
+    const turns = ['first turn', 'second turn', 'third turn', 'the pivotword decision', 'fifth turn', 'sixth turn', 'seventh turn'].map(t);
+
+    it('returns the passages either side of a hit in transcript order, and implies full', () => {
+      const project = store(turns);
+      const { hits } = querySessions(project, 'pivotword', { context: 2 });
+      expect(hits[0]!.text).toBe(t('the pivotword decision'));
+      expect(hits[0]!.before!.map((p) => p.text)).toEqual([t('second turn'), t('third turn')]);
+      expect(hits[0]!.after!.map((p) => p.text)).toEqual([t('fifth turn'), t('sixth turn')]);
+      expect(hits[0]!.before![0]).toMatchObject({ role: 'user' });
+      const printed = formatSessionHits('pivotword', querySessions(project, 'pivotword', { context: 1 }));
+      expect(printed.indexOf(`> ${t('third turn')}`)).toBeLessThan(printed.indexOf(`> ${t('the pivotword decision')}`));
+      expect(printed.indexOf(`> ${t('the pivotword decision')}`)).toBeLessThan(printed.indexOf(`> ${t('fifth turn')}`));
+      expect(printed).not.toContain(`> ${t('second turn')}`);
+    });
+
+    it('stops at the ends of the transcript and never crosses into another transcript', () => {
+      const project = store([t('pivotword opens'), t('second turn')]);
+      writeJsonl(path.join(process.env.CODEGRAPH_SESSIONS_DIR!, 's2.jsonl'), [user(t('other transcript turn'))], 1_700_000_100);
+      const hit = querySessions(project, 'pivotword', { context: 5 }).hits[0]!;
+      expect(hit.before).toBeUndefined();
+      expect(hit.after!.map((p) => p.text)).toEqual([t('second turn')]);
+    });
+
+    it('clamps the request and leaves a plain search alone', () => {
+      const project = store(Array.from({ length: 20 }, (_, i) => (i === 10 ? t('pivotword') : t(`turn ${i}`))));
+      const hit = querySessions(project, 'pivotword', { full: true, context: 99 }).hits[0]!;
+      expect(hit.before).toHaveLength(MAX_CONTEXT);
+      expect(hit.after).toHaveLength(MAX_CONTEXT);
+      expect(querySessions(project, 'pivotword', { full: true }).hits[0]!.before).toBeUndefined();
+      expect(querySessions(project, 'pivotword').hits[0]!.text).toBeUndefined();
+    });
+
+    it('keeps passages in order after the transcript is re-indexed', () => {
+      const project = store(turns);
+      expect(querySessions(project, 'pivotword', { context: 1 }).hits[0]!.after![0]!.text).toBe(t('fifth turn'));
+      const file = path.join(process.env.CODEGRAPH_SESSIONS_DIR!, 's1.jsonl');
+      writeJsonl(file, [...turns.slice(0, 4), t('inserted turn'), ...turns.slice(4), t('a longer tail so the size moves')].map((t) => user(t)), 1_700_000_500);
+      const hit = querySessions(project, 'pivotword', { context: 1 }).hits[0]!;
+      expect(hit.before![0]!.text).toBe(t('third turn'));
+      expect(hit.after![0]!.text).toBe(t('inserted turn'));
+    });
+
+    it('spends the budget on every hit first, then on neighbours nearest first, and says what was left out', () => {
+      const big = (label: string) => `${label} ${'padding '.repeat(500)}`.slice(0, 3500);
+      const project = store([big('before-far'), big('before-near'), t('pivotword decision'), big('after-near'), big('after-far')]);
+      const result = querySessions(project, 'pivotword', { context: 2 });
+      const used = [result.hits[0]!.text!, ...result.hits[0]!.before!.map((p) => p.text), ...result.hits[0]!.after!.map((p) => p.text)];
+      expect(used.reduce((n, t) => n + Buffer.byteLength(t), 0)).toBeLessThanOrEqual(FULL_PASSAGE_BUDGET);
+      const tight = store([t('pivotword decision'), ...Array.from({ length: 12 }, (_, i) => big(`after-${i}`))]);
+      const cut = querySessions(tight, 'pivotword', { context: 5 });
+      expect(cut.contextCut).toBeGreaterThan(0);
+      expect(cut.hits[0]!.text).toBe(t('pivotword decision'));
+      expect(cut.hits[0]!.after![0]!.text).toMatch(/^after-0/);
+      expect(formatSessionHits('pivotword', cut)).toContain('neighbouring passage');
+    });
   });
 });
 

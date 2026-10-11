@@ -44,7 +44,7 @@ import {
   type QueryLineAnchor,
   type QuerySetAsideMatch,
 } from '../search/query-paths';
-import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning } from '../sessions';
+import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning, MAX_CONTEXT } from '../sessions';
 import {
   existsSync,
   readFileSync,
@@ -2063,6 +2063,11 @@ export const tools: ToolDefinition[] = [
           type: 'boolean',
           description: 'Return each hit\'s whole passage instead of a short snippet, up to 16,000 bytes in all; later hits keep their snippet (default: false).',
           default: false,
+        },
+        context: {
+          type: 'number',
+          description: 'With full: also return this many neighbouring passages (0-5) on each side of every hit, from the same transcript; they spend the same 16,000-byte budget after the hits themselves (default: 0).',
+          default: 0,
         },
         projectPath: projectPathProperty,
       },
@@ -4464,6 +4469,7 @@ export class ToolHandler {
         session,
         any: args.any === true,
         full: args.full === true,
+        context: clamp(Math.trunc(Number(args.context)) || 0, 0, MAX_CONTEXT),
       });
       return this.textResult(formatSessionHits(query, result));
     } catch (err) {

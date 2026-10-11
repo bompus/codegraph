@@ -94,6 +94,12 @@ describe('codegraph sessions — CLI command', () => {
     expect(parsed.fullCut).toBe(0);
   });
 
+  it('--context returns neighbouring passages and implies --full', () => {
+    const parsed = JSON.parse(sessions(tempDir, transcripts, ['trailing', 'newlines', '--context', '1', '--json']));
+    expect(parsed.hits[0].text).toBe('Trimming first keeps a trailing newline from failing the signature check.');
+    expect([...(parsed.hits[0].before ?? []), ...(parsed.hits[0].after ?? [])].length).toBeGreaterThan(0);
+  });
+
   it('a project without transcripts gets guidance, not an error', () => {
     const out = sessions(tempDir, undefined, ['anything']);
     expect(out).toMatch(/No agent-session transcripts to index/);
