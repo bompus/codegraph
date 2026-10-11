@@ -8,7 +8,7 @@
 # explore/node vs Read/Grep + the files Read, and whether the build still passes.
 #
 # Usage: ab-impl.sh <indexed-repo> "<task>" [runs] [build-cmd]
-# Env: AGENT_EVAL_OUT (default: /tmp/ab-impl)
+# Env: AGENT_EVAL_OUT (default: ~/cg-scratch/ab-impl)
 set -uo pipefail
 REPO="${1:?usage: ab-impl.sh <indexed-repo> \"<task>\" [runs] [build-cmd]}"
 Q="${2:?task required}"
@@ -16,7 +16,7 @@ RUNS="${3:-2}"
 BUILD_CMD="${4:-}"
 ENGINE="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/ab-impl}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/ab-impl}"
 command -v claude >/dev/null || { echo "claude CLI not on PATH"; exit 1; }
 [ -d "$REPO/.codegraph" ] || { echo "no .codegraph index at $REPO"; exit 1; }
 cleanup(){ pkill -9 -f "serve --mcp --path $OUT/" 2>/dev/null; }

@@ -8,12 +8,14 @@
 // Usage: judge.mjs --results <f> --truth <f> --out <f> [--concurrency 4]
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { execFile } from 'child_process';
+import { join } from 'path';
+import { homedir } from 'os';
 
 const A = {};
 for (let i = 2; i < process.argv.length; i += 2) A[process.argv[i].replace(/^--/, '')] = process.argv[i + 1];
 const results = readFileSync(A.results, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
 const truth = JSON.parse(readFileSync(A.truth, 'utf8'));
-const OUT = A.out || '/tmp/cg-offload-eval/judged.jsonl';
+const OUT = A.out || join(homedir(), 'cg-scratch', 'cg-offload-eval', 'judged.jsonl');
 const CONC = Number(A.concurrency || 4);
 
 function askJudge(prompt) {

@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$(cd "$HERE/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/cg-offload-eval}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/cg-offload-eval}"
 TARGET="${1:?usage: offload-eval-3arm.sh <indexed-repo> <tier> <reps> \"<question>\"}"
 TIER="${2:?tier}"; REPS="${3:?reps}"; Q="${4:?question}"
 RUNS="$OUT/runs"

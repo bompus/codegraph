@@ -10,11 +10,11 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname, join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { execFile } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENGINE = process.env.CG_ENGINE || resolve(HERE, '..', '..');
-const OUT = process.env.AGENT_EVAL_OUT || '/tmp/cg-offload-eval';
+const OUT = process.env.AGENT_EVAL_OUT || join(homedir(), 'cg-scratch', 'cg-offload-eval');
 const REPOS = join(OUT, 'repos');
 const GT = JSON.parse(readFileSync(resolve(HERE, 'offload-eval-ground-truth.json'), 'utf8'));
 const REPS = Number(process.env.REPS || 3);

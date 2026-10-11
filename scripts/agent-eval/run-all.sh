@@ -24,7 +24,7 @@
 # stitches them back into one session.
 #
 # Env:   CG_BIN          codegraph binary (default: command -v codegraph)
-#        AGENT_EVAL_OUT  output dir (default: /tmp/agent-eval)
+#        AGENT_EVAL_OUT  output dir (default: ~/cg-scratch/agent-eval)
 #        MODEL / EFFORT  claude model/effort (default: sonnet / high — the
 #                        standing A/B policy; see CLAUDE.md, don't raise)
 set -euo pipefail
@@ -42,7 +42,7 @@ while [ "$rest" != "${rest#*||}" ]; do
 done
 TURNS+=("$rest")
 CG_BIN="${CG_BIN:-$(command -v codegraph || true)}"
-OUT="${AGENT_EVAL_OUT:-/tmp/agent-eval}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/agent-eval}"
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$OUT"
 

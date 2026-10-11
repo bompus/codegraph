@@ -8,7 +8,7 @@
 # Usage: offload-eval-refs1.sh <indexed-repo> <style> <n> "<question>"
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; ENGINE="$(cd "$HERE/../.." && pwd)"; BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/cg-offload-eval}"; RUNS="$OUT/runs"; EXTRACT="$HERE/offload-eval-metrics.mjs"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/cg-offload-eval}"; RUNS="$OUT/runs"; EXTRACT="$HERE/offload-eval-metrics.mjs"
 TARGET="${1:?repo}"; STYLE="${2:?style}"; N="${3:?run-tag}"; Q="${4:?question}"
 RESULTS="${RESULTS:-$OUT/results-refs.jsonl}"; REPO=$(basename "$TARGET"); TARGET=$(cd "$TARGET" && pwd -P)
 mkdir -p "$RUNS"; command -v claude >/dev/null || { echo "no claude"; exit 1; }

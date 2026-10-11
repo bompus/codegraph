@@ -6,7 +6,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$(cd "$HERE/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/cg-offload-eval}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/cg-offload-eval}"
 ROOT="$OUT/repos"; mkdir -p "$ROOT"
 export CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1
 [ -f "$BIN" ] || { echo "engine not built: run 'npm run build' in $ENGINE first"; exit 1; }

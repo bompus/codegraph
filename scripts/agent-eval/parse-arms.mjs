@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Analyze the tool-surface ablation (/tmp/arms/<repo>/<arm>-r<n>.jsonl).
+// Analyze the tool-surface ablation (~/cg-scratch/arms/<repo>/<arm>-r<n>.jsonl).
 // Compares arms A–E on trace adoption, Read/Grep fallback, codegraph payload,
 // round-trips, and duration — averaged across runs per arm.
 //
@@ -13,11 +13,12 @@
 //   D trace-centric hide explore+context trace-first   (is the survey pair redundant?)
 //   E control-probe hide explore+context trace-first   (NON-flow Q — should degrade)
 //
-// Usage: node scripts/agent-eval/parse-arms.mjs [/tmp/arms]
+// Usage: node scripts/agent-eval/parse-arms.mjs [~/cg-scratch/arms]
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 
-const ROOT = process.argv[2] || '/tmp/arms';
+const ROOT = process.argv[2] || join(homedir(), 'cg-scratch', 'arms');
 const cgShort = (n) => n.replace('mcp__codegraph__codegraph_', '').replace('mcp__codegraph__', '');
 
 function parse(file) {

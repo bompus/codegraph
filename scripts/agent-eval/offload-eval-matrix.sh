@@ -4,7 +4,7 @@
 # Env: REPS (default 3)  AGENT_EVAL_OUT=<scratch dir>
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${AGENT_EVAL_OUT:-/tmp/cg-offload-eval}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/cg-offload-eval}"
 GT="$HERE/offload-eval-ground-truth.json"
 REPS="${REPS:-3}"
 export RESULTS="$OUT/results.jsonl"

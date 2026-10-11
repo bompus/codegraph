@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Mine the surviving A/B stream-json logs (/tmp/ab-matrix/<Cell>/run-headless-*.jsonl)
+// Mine the surviving A/B stream-json logs (~/cg-scratch/ab-matrix/<Cell>/run-headless-*.jsonl)
 // for what the aggregate matrix can't see: the call SEQUENCE and per-call output SIZE.
 // These May 2026 logs predate removal of codegraph_trace/codegraph_context; references
 // to those tools below intentionally describe the historical data.
@@ -10,11 +10,12 @@
 //      explore is breadth-scoped (grows with the repo / over-returns on small repos)?
 //   3. Round-trips — num_turns with vs without (the real wall-clock driver).
 //
-// Usage: node scripts/agent-eval/seq-matrix.mjs [/tmp/ab-matrix]
+// Usage: node scripts/agent-eval/seq-matrix.mjs [~/cg-scratch/ab-matrix]
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 
-const AB = process.argv[2] || '/tmp/ab-matrix';
+const AB = process.argv[2] || join(homedir(), 'cg-scratch', 'ab-matrix');
 const MD = new URL('../../docs/benchmarks/codegraph-ab-matrix.md', import.meta.url).pathname;
 
 // repo -> {lang,size,files} from the published matrix table

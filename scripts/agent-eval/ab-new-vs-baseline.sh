@@ -39,7 +39,7 @@
 #   "<task>"        an implementation task, e.g. "Add X to Y and wire it through"
 #   [baseline-ref]  git ref for the BEFORE build (default: HEAD~1)
 # Env:
-#   AGENT_EVAL_OUT  output dir (default: /tmp/ab-new-vs-baseline)
+#   AGENT_EVAL_OUT  output dir (default: ~/cg-scratch/ab-new-vs-baseline)
 #   RUNS            runs per arm (default 1). Run-to-run variance is large —
 #                   use >=2 and report the range, never a single run. Both arms
 #                   build/index ONCE and then run RUNS times, so raising this is
@@ -68,7 +68,7 @@ BASE_REF="${3:-HEAD~1}"
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$(cd "$HARNESS/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/ab-new-vs-baseline}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/ab-new-vs-baseline}"
 PARSE="$HARNESS/parse-run.mjs"
 
 command -v claude >/dev/null || { echo "claude CLI not on PATH"; exit 1; }

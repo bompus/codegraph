@@ -6,12 +6,12 @@
 # To force the Explore path, ask for it in the prompt.
 #
 # Usage: run-agent.sh <repo-path> <label> "<prompt>"
-# Env: AGENT_EVAL_OUT (default /tmp/agent-eval), CG_BIN (codegraph dist binary)
+# Env: AGENT_EVAL_OUT (default ~/cg-scratch/agent-eval), CG_BIN (codegraph dist binary)
 set -uo pipefail
 
 REPO="$1"; LABEL="$2"; PROMPT="$3"
 CG_BIN="${CG_BIN:-$(command -v codegraph || echo /usr/local/bin/codegraph)}"
-OUT_DIR="${AGENT_EVAL_OUT:-/tmp/agent-eval}"; mkdir -p "$OUT_DIR"
+OUT_DIR="${AGENT_EVAL_OUT:-$HOME/cg-scratch/agent-eval}"; mkdir -p "$OUT_DIR"
 OUT="$OUT_DIR/run-${LABEL}.jsonl"
 
 MCP_CONFIG=$(cat <<JSON

@@ -16,7 +16,7 @@
 #   <indexed-repo>  a repo with a .codegraph index (copied per arm; never mutated)
 #   "<task>"        a GENUINELY-NEW implementation task (verify it isn't already done)
 #   [runs-per-arm]  default 2 (n=1 is noisy — the doctrine says >=2)
-# Env: AGENT_EVAL_OUT (default: /tmp/ab-hook)
+# Env: AGENT_EVAL_OUT (default: ~/cg-scratch/ab-hook)
 set -uo pipefail
 
 TARGET="${1:?usage: ab-hook.sh <indexed-repo> \"<task>\" [runs-per-arm]}"
@@ -25,7 +25,7 @@ RUNS="${3:-2}"
 ENGINE="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
 HOOK="$ENGINE/scripts/agent-eval/redirect-read-hook.sh"
-OUT="${AGENT_EVAL_OUT:-/tmp/ab-hook}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/ab-hook}"
 PARSE="$ENGINE/scripts/agent-eval/parse-run.mjs"
 
 command -v claude >/dev/null || { echo "claude CLI not on PATH"; exit 1; }

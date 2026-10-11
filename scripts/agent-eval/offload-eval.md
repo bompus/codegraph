@@ -6,7 +6,7 @@ on **time · main-session tokens/cost · CodeGraph-AI tokens/cost · accuracy**.
 
 All agent arms run `claude -p --model sonnet --effort high` (the deliberate floor model — an
 affordance that lands on Sonnet generalizes up). Everything writes to a scratch dir
-(`AGENT_EVAL_OUT`, default `/tmp/cg-offload-eval`); nothing here is shipped to users.
+(`AGENT_EVAL_OUT`, default `~/cg-scratch/cg-offload-eval`); nothing here is shipped to users.
 
 ## Repos (selected via a memory-probe gate — NOT trained on)
 
@@ -35,7 +35,7 @@ Verified ground-truth flows (the judge's reference) live in `offload-eval-ground
 ```bash
 npm run build                       # the harness shells out to dist/
 codegraph login                     # only needed for the offload arm
-export AGENT_EVAL_OUT=/tmp/cg-offload-eval
+export AGENT_EVAL_OUT=~/cg-scratch/cg-offload-eval
 
 bash scripts/agent-eval/offload-eval-setup.sh            # clone + index the 4 repos
 bash scripts/agent-eval/offload-eval-matrix.sh           # 3 arms × 4 tiers × REPS (default 3)

@@ -9,12 +9,12 @@
 # technique borrowed from devpit's WaitForIdle.)
 #
 # Usage: itrun.sh <repo-path> <label> "<prompt>"
-# Output dir: $AGENT_EVAL_OUT (default /tmp/agent-eval)
+# Output dir: $AGENT_EVAL_OUT (default ~/cg-scratch/agent-eval)
 # Requires: tmux 3.0+, a logged-in `claude` CLI, codegraph MCP configured.
 set -uo pipefail
 REPO="$1"; LABEL="$2"; PROMPT="$3"
 SESSION="cgt_${LABEL}"
-OUT_DIR="${AGENT_EVAL_OUT:-/tmp/agent-eval}"; mkdir -p "$OUT_DIR"
+OUT_DIR="${AGENT_EVAL_OUT:-$HOME/cg-scratch/agent-eval}"; mkdir -p "$OUT_DIR"
 OUT="$OUT_DIR/itrun-${LABEL}.txt"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 

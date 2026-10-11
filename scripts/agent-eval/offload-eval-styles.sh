@@ -14,7 +14,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$(cd "$HERE/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/cg-offload-eval}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/cg-offload-eval}"
 TARGET="${1:?usage: offload-eval-styles.sh <indexed-repo> <reps> \"<question>\"}"
 REPS="${2:?reps}"; Q="${3:?question}"
 RUNS="$OUT/runs"; EXTRACT="$HERE/offload-eval-metrics.mjs"

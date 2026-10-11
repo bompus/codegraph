@@ -14,12 +14,13 @@
 // of the window each arm's tool output STILL OCCUPIES when the run ends. Under
 // multi-turn rows that residual is charged against every following turn.
 //
-// Usage: node parse-bench-readme.mjs [/tmp/ab-readme]
+// Usage: node parse-bench-readme.mjs [~/cg-scratch/ab-readme]
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { parseSession, SUFFICIENCY } from './parse-run.mjs';
 
-const ROOT = process.argv[2] || '/tmp/ab-readme';
+const ROOT = process.argv[2] || join(homedir(), 'cg-scratch', 'ab-readme');
 const REPOS = ['vscode', 'excalidraw', 'django', 'tokio', 'okhttp', 'gin', 'alamofire'];
 
 /** All segment files of one arm's session, in turn order (t1, t2, t3, …). */

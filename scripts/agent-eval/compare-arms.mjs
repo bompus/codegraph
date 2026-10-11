@@ -9,8 +9,8 @@
 //   allocation efficiency       what share of returned bytes the answer used
 //
 // Usage: compare-arms.mjs <out-dir> <label> [<label> ...]
-//   e.g.  compare-arms.mjs /tmp/ab-new-vs-baseline new baseline
-//         compare-arms.mjs /tmp/agent-eval headless-with headless-without
+//   e.g.  compare-arms.mjs ~/cg-scratch/ab-new-vs-baseline new baseline
+//         compare-arms.mjs ~/cg-scratch/agent-eval headless-with headless-without
 //
 // Run discovery handles both shapes the harnesses write, per label:
 //   run-<label>-<i>.jsonl        N independent runs   (ab-new-vs-baseline, RUNS=N)
