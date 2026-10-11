@@ -356,4 +356,32 @@ export function fromRes(c: Ctx) { return c.res.header('x'); }
       cg.close();
     }
   });
+
+  it('does not treat a plain constructor parameter as a field', async () => {
+    const cg = await index({
+      'src/req.ts': `export class Req { header(name: string): string { return name; } }
+`,
+      'src/plain.ts': `import { Req } from './req';
+export class Plain {
+  constructor(req: Req) {
+    void req;
+  }
+}
+export class Held {
+  constructor(private req: Req) {}
+}
+`,
+      'src/use.ts': `import { Plain, Held } from './plain';
+export function viaPlain(p: Plain) { return p.req.header('x'); }
+export function viaHeld(h: Held) { return h.req.header('x'); }
+`,
+    });
+    try {
+      const calls = callsFrom(cg, 'src/use.ts');
+      // Only the parameter property `private req` makes `req` a field.
+      expect(calls.filter((c) => c.includes('src/req.ts:Req::header'))).toHaveLength(1);
+    } finally {
+      cg.close();
+    }
+  });
 });
