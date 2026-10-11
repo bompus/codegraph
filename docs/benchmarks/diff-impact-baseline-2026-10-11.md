@@ -61,10 +61,13 @@ sessions can show, so they are no clear change.
 - It does not show that CodeGraph helps or does not help on this task. With the
   question text pointing at `git diff`, a repository this small is solved without
   a code graph, so both arms hit the ceiling.
-- It does show an adoption gap: told there were uncommitted changes, the agent
-  rarely reached for the tool whose diff-seeded path was built for exactly that.
-  Whether the cause is the question wording or the tool description is not
-  separated here.
+- It does show low tool usage: told there were uncommitted changes, the agent
+  rarely called the tool whose diff-seeded path was built for exactly that. The
+  session start event listed the CodeGraph server as connected with both tools
+  in all 18 sessions, but `run-all.sh` does not pre-warm the server, and that
+  start event is not reliable evidence of when the tools became usable (see the
+  MCP attach note in `docs/AGENTS.md`). Startup latency, the question wording
+  and the tool description are therefore not separated here.
 
 ## Next experiments this baseline points to
 
@@ -72,5 +75,7 @@ sessions can show, so they are no clear change.
   some route.
 - Add a larger repository, where grep over a changed symbol returns too many
   candidates to read, and a case whose truth set has more than three files.
+- Pre-warm the server (as `ab-new-vs-baseline.sh` does) and rerun, to rule out
+  startup latency.
 - Compare the forced path (a prompt that names `codegraph_explore`) against the
   default, to separate tool quality from tool adoption.
