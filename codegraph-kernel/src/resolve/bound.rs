@@ -1422,6 +1422,8 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             let name = caps[2].to_string();
             let mut factory_site = site.clone();
             factory_site.line = binding.line;
+            // The call sits on the declaration line, at the factory's name.
+            factory_site.column = declaration[..caps.get(2).map_or(0, |m| m.start())].encode_utf16().count() as i64;
             factory_site.reference_name = name.clone();
             // `log := log.G(ctx)`, `logger, log := log.G(ctx), 0`: on the
             // right of `:=`, a name the line declares is what it named before.

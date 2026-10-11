@@ -211,6 +211,10 @@ func Handle(ctx context.Context) {
 	_ = log.G(ctx)
 }
 
+func Later(ctx context.Context) {
+	log := log.G(ctx); log.Errorf("later")
+}
+
 func Pair(ctx context.Context) {
 	logger, log := log.G(ctx), 0
 	logger.Errorf("pair %d", log)
@@ -445,6 +449,8 @@ describe('a Go parameter or local named like a standard-library package', () => 
     expect(reachedAt('quota/util.go', 'log.Errorf(')).toEqual(['lib/log/log.go:Logger::Errorf']);
     // Nothing shadows it in `Handle`, and the import is the project's, not the standard library's.
     expect(reachedAt('quota/util.go', '_ = log.G(')).toEqual(['lib/log/log.go:G']);
+    // After the `;` the line is a later statement: `log` is the local there.
+    expect(reachedAt('quota/util.go', 'log.Errorf("later")').sort()).toEqual(['lib/log/log.go:G', 'lib/log/log.go:Logger::Errorf']);
     // A name the line declares beside the receiver is shadowed from its line too.
     expect(reachedAt('quota/util.go', 'logger.Errorf(')).toEqual(['lib/log/log.go:Logger::Errorf']);
   });

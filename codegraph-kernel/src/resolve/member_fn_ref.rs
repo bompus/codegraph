@@ -212,15 +212,22 @@ impl KernelResolver {
         Ok(innermost_binding_unless(&rows, name, Some(r.line), before).is_some_and(|b| b.kind != "import"))
     }
 
-    /// Go: does `r` sit on the line that declares `name` with `:=`? The name
-    /// there, on the right of the declaration, is not yet the new local.
+    /// Go: does `r` sit on the right of a `:=` that declares `name`? The name
+    /// there is not yet the new local. The right side runs to the next `;`:
+    /// a call after it is a later statement and sees the local.
     pub(super) fn go_declares_on_line(&mut self, name: &str, r: &ResolveRefIn, rows: &[KBinding]) -> bool {
         let declared = r.language == "go"
             && innermost_binding(rows, name, Some(r.line)).is_some_and(|b| b.kind == "local" && b.line == r.line);
-        declared
-            && self.read_file(&r.file_path)
-                .and_then(|ls| ls.get((r.line - 1).max(0) as usize).cloned())
-                .is_some_and(|text| text.split_once(":=").is_some_and(|(names, _)| names.split(',').any(|n| n.trim() == name)))
+        let Some(text) = declared
+            .then(|| self.read_file(&r.file_path).and_then(|ls| ls.get((r.line - 1).max(0) as usize).cloned()))
+            .flatten()
+        else {
+            return false;
+        };
+        let Some(at) = text.find(":=") else { return false };
+        let end = text[at..].find(';').map_or(text.len(), |i| at + i);
+        let col = super::names::js_unit_to_byte(&text, r.column.max(0) as usize);
+        text[..at].split(',').any(|n| n.trim() == name) && col > at && col < end
     }
 
     /// The Python receiver arms: `self`/`cls`, `self.field`, a local or
