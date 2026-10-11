@@ -1160,39 +1160,73 @@ pub(super) struct TsFieldDecl {
 }
 
 /// Whether the class's constructor passes `field` as an argument of `super(...)`,
-/// the only way a plain constructor parameter names an inherited field. An
-/// argument that merely contains the name (`options.field`) does not count.
+/// the only way a plain constructor parameter names an inherited field. Only a
+/// bare top-level argument counts: `options.field`, `wrap(field)`, `{ field }`
+/// and a `super(field)` inside a string literal do not.
 fn ctor_forwards_to_super(source: &SourceFile, methods: &[Arc<KNode>], field: &str) -> bool {
     let Some(ctor) = methods.iter().find(|m| m.name == "constructor") else { return false };
     let from = (ctor.start_line - 1).max(0) as usize;
     let to = (ctor.end_line as usize).min(source.len());
-    let body = source.get(from..to).unwrap_or_default().iter().map(|l| strip_line_comments(l)).collect::<Vec<_>>().join("\n");
+    let lines: Vec<String> = source.get(from..to).unwrap_or_default().iter().map(|l| strip_line_comments(l)).collect();
+    let body = blank_string_literals(&lines.join("\n"));
     let forwarded = occurrences(&body, "super", 0).any(|at| {
         if at > 0 && is_word_byte(body.as_bytes()[at - 1]) {
             return false;
         }
         let Some(rest) = body[at + 5..].trim_start().strip_prefix('(') else { return false };
         let mut depth = 1;
-        let mut end = rest.len();
+        let mut arg_start = 0;
         for (i, c) in rest.char_indices() {
             match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = i;
-                        break;
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 1 => {
+                    if rest[arg_start..i].trim() == field {
+                        return true;
                     }
+                    arg_start = i + 1;
                 }
                 _ => {}
             }
+            if depth == 0 {
+                return rest[arg_start..i].trim() == field;
+            }
         }
-        let args = &rest[..end];
-        occurrences(args, field, 0).any(|p| {
-            word_boundary_at(args, p) && word_boundary_at(args, p + field.len()) && !args[..p].trim_end().ends_with('.')
-        })
+        false
     });
     forwarded
+}
+
+/// `text` with the contents of every quoted string and template literal
+/// replaced by spaces, so a `super(` or a parameter name inside one is not
+/// read as code. An unterminated quote blanks to the end.
+fn blank_string_literals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in text.chars() {
+        match quote {
+            None => {
+                if matches!(c, '\'' | '"' | '`') {
+                    quote = Some(c);
+                }
+                out.push(c);
+            }
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                    out.push(c);
+                    continue;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+        }
+    }
+    out
 }
 
 /// Whether a match at byte `at` of line `line_no` declares the class field

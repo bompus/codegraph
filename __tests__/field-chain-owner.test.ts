@@ -141,6 +141,9 @@ export class Notifier extends Base {
   it.each([
     ['nothing', 'super();'],
     ['a member of another value', 'super(options.mailer);'],
+    ['inside a call', 'super(wrap(mailer));'],
+    ['as an object property', 'super({ mailer });'],
+    ['only inside a string', "console.log('super(mailer)'); super();"],
   ])('does not read a field from a constructor parameter the derived class passes %s to super', async (_label, call) => {
     await project({
       'src/mailer.ts': mailer,
