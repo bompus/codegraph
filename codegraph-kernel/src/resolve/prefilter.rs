@@ -52,6 +52,7 @@ impl KernelResolver {
             if let Some(dot) = name.find('.') {
                 if dot > 0 && GO_STDLIB_PACKAGES.contains(&name[..dot])
                     && !self.is_shadowed_import(&name[..dot], r).unwrap_or(false)
+                    && self.go_imported_package_dir(&r.file_path, &name[..dot]).ok().flatten().is_none()
                     && self.go_asserted_local(&name[..dot], r).ok().flatten().is_none() {
                     return true;
                 }
@@ -592,9 +593,26 @@ pub(super) fn innermost_binding<'a>(
     name: &str,
     line: Option<i64>,
 ) -> Option<&'a KBinding> {
+    innermost_binding_unless(rows, name, line, false)
+}
+
+/// `innermost_binding` that, when `before_declaration`, passes over a local
+/// declared on `line` itself. A local's scope spans its whole block, so on
+/// its own line the narrowest row is the new local, while the right of a Go
+/// `:=` still sees what the name meant before: `log := log.G(ctx)` calls the
+/// imported package's `G`.
+pub(super) fn innermost_binding_unless<'a>(
+    rows: &'a [KBinding],
+    name: &str,
+    line: Option<i64>,
+    before_declaration: bool,
+) -> Option<&'a KBinding> {
     let mut best: Option<&KBinding> = None;
     for r in rows {
         if r.name != name {
+            continue;
+        }
+        if before_declaration && r.kind == "local" && Some(r.line) == line {
             continue;
         }
         if let Some(l) = line {
@@ -614,7 +632,8 @@ impl KernelResolver {
     /// not replace a value; a future local still supplies shadowing evidence.
     pub(super) fn receiver_binding(&mut self, name: &str, site: &ResolveRefIn) -> Res<Option<KBinding>> {
         let rows = self.bindings(&site.file_path)?;
-        let Some(binding) = innermost_binding(&rows, name, Some(site.line)) else { return Ok(None) };
+        let before = self.go_declares_on_line(name, site, &rows);
+        let Some(binding) = innermost_binding_unless(&rows, name, Some(site.line), before) else { return Ok(None) };
         if site.language != "python" {
             return Ok(Some(binding.clone()));
         }

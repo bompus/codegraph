@@ -208,7 +208,19 @@ impl KernelResolver {
     /// parameter, a local)? Files without binding rows keep the import.
     pub(super) fn is_shadowed_import(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
         let rows = self.bindings(&r.file_path)?;
-        Ok(innermost_binding(&rows, name, Some(r.line)).is_some_and(|b| b.kind != "import"))
+        let before = self.go_declares_on_line(name, r, &rows);
+        Ok(innermost_binding_unless(&rows, name, Some(r.line), before).is_some_and(|b| b.kind != "import"))
+    }
+
+    /// Go: does `r` sit on the line that declares `name` with `:=`? The name
+    /// there, on the right of the declaration, is not yet the new local.
+    pub(super) fn go_declares_on_line(&mut self, name: &str, r: &ResolveRefIn, rows: &[KBinding]) -> bool {
+        let declared = r.language == "go"
+            && innermost_binding(rows, name, Some(r.line)).is_some_and(|b| b.kind == "local" && b.line == r.line);
+        declared
+            && self.read_file(&r.file_path)
+                .and_then(|ls| ls.get((r.line - 1).max(0) as usize).cloned())
+                .is_some_and(|text| text.split_once(":=").is_some_and(|(names, _)| names.split(',').any(|n| n.trim() == name)))
     }
 
     /// The Python receiver arms: `self`/`cls`, `self.field`, a local or
