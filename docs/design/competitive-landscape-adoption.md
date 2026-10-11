@@ -23,7 +23,7 @@
 | Sourcegraph Code Finder | SCIP precise plus cloud search; LLM sub-search | paths and line ranges | ~8 | server | time 1.00 vs 2.19x local search, quality unquantified |
 | Cursor | Merkle tree, server-side embeddings, team index reuse by simhash | chunks | built-in | Merkle diff | "12.5% more accurate", no method |
 | Augment | proprietary embeddings, per-developer real-time index | snippets | 1 to 2 | seconds | 900 attempts: +71% to +80% with vs without; code leaves host |
-| Octocode 0.26 | Rust, tree-sitter in 17 languages; live symbol graph built lazily from source with no index; optional index with embeddings (local fastembed by default), BM25, rerank and LLM file descriptions | signatures, graph relationships, ranked hits, optional LSP answers; no verbatim bodies | 4 plus 6 LSP tools behind `--with-lsp` | on-demand for the live graph; index re-run for search | 127 self-written queries against its own source: Hit@5 0.73 local, 0.99 with the cloud stack; retrieval only, no agent arm |
+| Octocode 0.26 | Rust, tree-sitter in 16 languages; live symbol graph built lazily from source with no index; optional index with embeddings (local fastembed by default), BM25, rerank and LLM file descriptions | signatures, graph relationships, ranked hits, optional LSP answers; no verbatim bodies | 4 plus 6 LSP tools behind `--with-lsp` | on-demand for the live graph; index re-run for search | 127 self-written queries against its own source: Hit@5 0.73 local (its `benchmark/RESULTS.md`, measured on binary 0.17.1, 2026-06-21, not on 0.26); the README's 0.99 cloud-stack figure has no matching results file; retrieval only, no agent arm |
 
 Continue.dev was acquired by Cursor in June 2026 and is read-only. Cline still indexes nothing by design.
 
@@ -66,7 +66,7 @@ Each row: does it help the agent stop reading, cost, and whether the downstream 
 8. **Package indexing (I).** Only when a flow leaves the repo.
 9. **Structural pattern search (S).** Add a pattern-style task class to the agent-eval harness first. If agents ask such questions and fall back to Grep, ship it; if not, drop it. The live graph (T) is compared against D when D is scoped.
 
-Octocode's own benchmark supports two existing stances rather than adding a candidate. Weighting fusion toward BM25 over dense vectors raised Hit@5 from 0.60 to 0.73 on its corpus, in line with FTS-first retrieval. A generic local cross-encoder reranker lowered Hit@5 from 0.73 to 0.60, so reranking is not a free addition.
+Octocode's own benchmark (binary 0.17.1, 2026-06-21) supports two existing stances rather than adding a candidate. Weighting fusion toward BM25 over dense vectors raised Hit@5 from 0.60 to 0.73 on its corpus, in line with FTS-first retrieval. A generic local cross-encoder reranker lowered Hit@5 from 0.73 to 0.60, so reranking is not a free addition.
 
 Not adopting on current evidence: L through R above, editor-buffer overlays (CLI hosts write to disk), and Vue template edges (sized as Grep-scale in the downstream project).
 
