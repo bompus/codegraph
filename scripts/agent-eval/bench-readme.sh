@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Re-run the README "Benchmark Results" A/B (with vs without codegraph) on the
 # current build: the 7 README repos, same queries, RUNS per arm (default 4).
-# Output → /tmp/ab-readme/<repo>/run<n>/run-headless-{with,without}[.tN].jsonl
+# Output → ~/cg-scratch/ab-readme/<repo>/run<n>/run-headless-{with,without}[.tN].jsonl
 # Aggregate with parse-bench-readme.mjs. Repos must be cloned + indexed under
 # $CORPUS (default ~/codegraph-corpora) by the build under test.
 #
@@ -38,7 +38,7 @@ for row in "${ROWS[@]}"; do
   done
   echo "===== $repo ($n turns) ====="
   for run in $(seq "$RUN_FROM" "$RUNS"); do
-    out="/tmp/ab-readme/$repo/run$run"
+    out="$HOME/cg-scratch/ab-readme/$repo/run$run"
     mkdir -p "$out"
     AGENT_EVAL_OUT="$out" bash "$H/run-all.sh" "$C/$repo" "$q" headless > "$out/console.log" 2>&1
     grep -E "^exit [0-9]" "$out/console.log" | sed 's/^/  /' || echo "  run$run: (no exit line)"

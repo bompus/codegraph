@@ -10,14 +10,14 @@
 # (configs, docs, a file codegraph didn't index).
 #
 # Usage: ab-sufficiency.sh <indexed-repo> "<question>" [runs-per-arm]
-# Env: AGENT_EVAL_OUT (default: /tmp/ab-sufficiency)
+# Env: AGENT_EVAL_OUT (default: ~/cg-scratch/ab-sufficiency)
 set -uo pipefail
 REPO="${1:?usage: ab-sufficiency.sh <indexed-repo> \"<question>\" [runs]}"
 Q="${2:?question required}"
 RUNS="${3:-2}"
 ENGINE="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/ab-sufficiency}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/ab-sufficiency}"
 TGT="$OUT/target"
 command -v claude >/dev/null || { echo "claude CLI not on PATH"; exit 1; }
 [ -d "$REPO/.codegraph" ] || { echo "no .codegraph index at $REPO"; exit 1; }

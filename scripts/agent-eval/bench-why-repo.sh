@@ -2,14 +2,14 @@
 # One README repo, WITH-codegraph only, N runs. Each run appends a why-Read
 # diagnostic so the agent explains any Read/Grep. (The WITHOUT baseline is
 # codegraph-independent and already in the README — no point re-running it.)
-# Output -> /tmp/ab-why/<repo>/with<n>.jsonl
+# Output -> ~/cg-scratch/ab-why/<repo>/with<n>.jsonl
 # Usage: bench-why-repo.sh <repo-path> "<query>" [N]
 set -uo pipefail
 REPO="$1"; Q="$2"; N="${3:-4}"
 NAME="$(basename "$REPO")"
 ENGINE="$(cd "$(dirname "$0")/../.." && pwd)"
 CG="${CG_BIN:-$ENGINE/dist/bin/codegraph.js}"
-OUT="/tmp/ab-why/$NAME"; mkdir -p "$OUT"
+OUT="$HOME/cg-scratch/ab-why/$NAME"; mkdir -p "$OUT"
 [ -x "$CG" ] || { echo "codegraph binary is not executable: $CG (build first or set CG_BIN)"; exit 1; }
 WHY=$'\n\nIMPORTANT — diagnostic: if you use the Read or Grep tool at ANY point, for EACH such call explain why codegraph_explore / codegraph_node did not already give you what you needed. End your entire answer with a section titled exactly "## Why I read" listing every Read and Grep you made and the precise reason codegraph fell short for it. If you used neither, write "## Why I read" then "none — codegraph was sufficient."'
 printf '{"mcpServers":{"codegraph":{"command":"%s","args":["serve","--mcp","--path","%s"]}}}' "$CG" "$REPO" > "$OUT/cg.json"

@@ -20,7 +20,7 @@
 // summed per-model from modelUsage for the separate "tokens" story.
 //
 // Usage: offload-eval-cost.mjs <runs-dir> <repo> [reps]
-//   e.g. offload-eval-cost.mjs /tmp/cg-offload-eval/runs trezor 3
+//   e.g. offload-eval-cost.mjs ~/cg-scratch/cg-offload-eval/runs trezor 3
 import { readFileSync, existsSync } from 'fs';
 
 const MAIN_TIER = /sonnet/;   // main agent

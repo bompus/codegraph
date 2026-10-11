@@ -5,7 +5,7 @@
 # metric is tool CHOICE: Read calls vs codegraph_node[file] calls per run.
 #
 # Usage: ab-adoption.sh <indexed-repo> "<task>" [runs-per-arm] [baseline-ref]
-# Env: AGENT_EVAL_OUT (default: /tmp/ab-adoption)
+# Env: AGENT_EVAL_OUT (default: ~/cg-scratch/ab-adoption)
 set -uo pipefail
 TARGET="${1:?usage: ab-adoption.sh <indexed-repo> \"<task>\" [runs] [baseline-ref]}"
 TASK="${2:?task required}"
@@ -13,7 +13,7 @@ RUNS="${3:-2}"
 BASE_REF="${4:-HEAD~1}"
 ENGINE="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$ENGINE/dist/bin/codegraph.js"
-OUT="${AGENT_EVAL_OUT:-/tmp/ab-adoption}"
+OUT="${AGENT_EVAL_OUT:-$HOME/cg-scratch/ab-adoption}"
 
 command -v claude >/dev/null || { echo "claude CLI not on PATH"; exit 1; }
 [ -d "$TARGET/.codegraph" ] || { echo "target not indexed: run 'codegraph init $TARGET' first"; exit 1; }
