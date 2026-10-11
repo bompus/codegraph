@@ -19,7 +19,8 @@ function mentions(text, name) {
 }
 
 /** Repo files the answer names. `files` are repo-relative paths. */
-export function namedFiles(answer, files, primary) {
+export function namedFiles(rawAnswer, files, primary) {
+  const answer = rawAnswer.replace(/(^|[^\w.])\.\//g, '$1'); // `./lib/a.js` names `lib/a.js`
   const byBase = new Map();
   for (const f of files) byBase.set(basename(f), (byBase.get(basename(f)) ?? 0) + 1);
   return files

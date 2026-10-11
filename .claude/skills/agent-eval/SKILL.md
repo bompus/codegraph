@@ -101,8 +101,9 @@ changed. That is a co-change proxy: a file can depend on the edit without having
 been changed with it, so recall is the main score and precision is a floor.
 
 ```bash
-# Full-history clones of the case repos (gin/, express/) in an owned disk directory.
-CG_BIN=/absolute/path/to/codegraph AGENT_EVAL_OUT=... \
+# CLONES holds full-history clones of the case repos (gin/, express/); OUT is an
+# owned disk directory. Both are created or read by the script.
+CLONES=/path/to/clones OUT=/path/to/out CG_BIN=/path/to/dist/bin/codegraph.js \
   bash scripts/agent-eval/run-diff-impact.sh "$CLONES" "$OUT" 1 gin-keys-type
 ```
 

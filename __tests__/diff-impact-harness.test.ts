@@ -43,6 +43,10 @@ describe('diff-impact answer scoring', () => {
     expect(namedFiles(answer, files, 'context.go')).toEqual(['a/util.go', 'logger.go', 'render/render_test.go']);
   });
 
+  it('reads a ./ prefix as the same path', () => {
+    expect(namedFiles('see ./logger.go and ./render/render_test.go', files, 'context.go')).toEqual(['logger.go', 'render/render_test.go']);
+  });
+
   it('never counts the primary file and does not match inside a longer name', () => {
     expect(namedFiles('context.go and my_logger.go.bak', files, 'context.go')).toEqual([]);
   });
@@ -84,6 +88,7 @@ describe('diff-impact fixture', () => {
     writeFileSync(join(clone, 'lib/a.js'), 'exports.a = 2;\n');
     writeFileSync(join(clone, 'lib/b.js'), 'exports.b = 2;\n');
     writeFileSync(join(clone, 'test/b.js'), 'exports.b = 2;\n');
+    writeFileSync(join(clone, 'lib/new.js'), 'exports.n = 1;\n');
     git(clone, 'add', '-A');
     git(clone, 'commit', '-q', '-m', 'change');
     const sha = git(clone, 'rev-parse', 'HEAD').trim();
@@ -97,7 +102,7 @@ describe('diff-impact fixture', () => {
     );
 
     expect(truth.source).toEqual(['lib/b.js']);
-    expect(truth.tests).toEqual(['test/b.js']);
+    expect(truth.tests).toEqual(['test/b.js']); // lib/new.js was added by the commit, so it is not expected
     expect(readFileSync(join(repo, 'lib/a.js'), 'utf8')).toBe('exports.a = 2;\n');
     expect(readFileSync(join(repo, 'lib/b.js'), 'utf8')).toBe('exports.b = 1;\n');
     expect(git(repo, 'status', '--short').trim()).toBe('M lib/a.js');

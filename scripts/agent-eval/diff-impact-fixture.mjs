@@ -11,7 +11,8 @@
 // edit. Without history the agent cannot read the answer out of `git log` or
 // `git show`. truth.json lists the other code files the real commit changed,
 // split into source and tests: the files a change to `primary` is expected to
-// pull along. See diff-impact-cases.json for what that proxy does and does not
+// pull along. Files the commit added are left out, since the fixture does not
+// contain them for an agent to name. See diff-impact-cases.json for what that proxy does and does not
 // mean.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -57,7 +58,7 @@ export function buildFixture(spec, codePatterns, cloneDir, outDir) {
     maxBuffer: 64 * 1024 * 1024,
   }));
 
-  const changed = git(cloneDir, ['diff', '--name-only', '--no-renames', parent, full]).split('\n').filter(Boolean);
+  const changed = git(cloneDir, ['diff', '--name-only', '--no-renames', '--diff-filter=MD', parent, full]).split('\n').filter(Boolean);
   const truth = {
     id: spec.id,
     sha: full,

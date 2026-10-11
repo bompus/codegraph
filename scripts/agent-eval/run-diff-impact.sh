@@ -30,6 +30,9 @@ mkdir -p "$OUT"
 # run-all.sh changes into the fixture, so every path it is given must be absolute.
 OUT="$(cd "$OUT" && pwd)"
 CLONES="$(cd "$CLONES" && pwd)"
+CG_BIN="$(cd "$(dirname "$CG_BIN")" && pwd)/$(basename "$CG_BIN")"
+[ -f "$CG_BIN" ] || { echo "CG_BIN is not a file: $CG_BIN" >&2; exit 2; }
+export CG_BIN
 : > "$OUT/scores.jsonl"   # scores belong to this invocation only
 
 QUESTION='I have uncommitted changes in this repository (see git diff). Which other files are affected by this change: callers and dependents in the source, and tests that cover the changed code? List the file paths, source files first and then tests, with one line on why each is affected. Do not edit anything.'
@@ -46,6 +49,7 @@ for id in "${ids[@]}"; do
   ( cd "$fx/repo" && "$CG_BIN" init -i >/dev/null )
   for run in $(seq 1 "$RUNS"); do
     dir="$OUT/$id/run-$run"
+    rm -rf "$dir"   # no artifacts from an earlier invocation may be scored
     mkdir -p "$dir"
     AGENT_EVAL_OUT="$dir" bash "$HARNESS/run-all.sh" "$fx/repo" "$QUESTION" headless > "$dir/run-all.log" 2>&1 \
       || echo "run-all failed for $id run $run (see $dir/run-all.log)" >&2
