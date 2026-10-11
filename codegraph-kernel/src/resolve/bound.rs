@@ -1423,14 +1423,14 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             let mut factory_site = site.clone();
             factory_site.line = binding.line;
             factory_site.reference_name = name.clone();
-            // `log := log.G(ctx)`: on the right of `:=`, `log` is what it
-            // named before the new local.
+            // `log := log.G(ctx)`, `logger, log := log.G(ctx), 0`: on the
+            // right of `:=`, a name the line declares is what it named before.
             let factory_root = name.split('.').next().unwrap_or(&name);
             let factory_binding = innermost_binding_unless(
                 &site_bindings,
                 factory_root,
                 Some(binding.line),
-                factory_root == receiver,
+                names.iter().any(|n| n == factory_root),
             )
             .cloned();
             let mut callee: Option<Arc<KNode>> = None;

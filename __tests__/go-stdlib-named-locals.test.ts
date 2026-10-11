@@ -210,6 +210,11 @@ func Refresh(ctx context.Context) {
 func Handle(ctx context.Context) {
 	_ = log.G(ctx)
 }
+
+func Pair(ctx context.Context) {
+	logger, log := log.G(ctx), 0
+	logger.Errorf("pair %d", log)
+}
 `,
   // kubernetes' post-start hooks: the hook context gets Done from the
   // standard library's context it embeds, not from a project type.
@@ -440,6 +445,8 @@ describe('a Go parameter or local named like a standard-library package', () => 
     expect(reachedAt('quota/util.go', 'log.Errorf(')).toEqual(['lib/log/log.go:Logger::Errorf']);
     // Nothing shadows it in `Handle`, and the import is the project's, not the standard library's.
     expect(reachedAt('quota/util.go', '_ = log.G(')).toEqual(['lib/log/log.go:G']);
+    // A name the line declares beside the receiver is shadowed from its line too.
+    expect(reachedAt('quota/util.go', 'logger.Errorf(')).toEqual(['lib/log/log.go:Logger::Errorf']);
   });
 
   it('takes the type named like the variable among that package\'s', () => {
