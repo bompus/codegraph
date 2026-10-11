@@ -394,6 +394,7 @@ impl KernelResolver {
             head.push(' ');
         }
         let inherits = re!(r"\bextends\b").is_match(&head);
+        let mut forwarded: Option<bool> = None;
         for (i, raw) in source.get(start..end).unwrap_or_default().iter().enumerate() {
             let line_no = (start + i + 1) as i64;
             let line = strip_line_comments(raw);
@@ -441,7 +442,8 @@ impl KernelResolver {
                         Some(v) => v,
                         None => methods.insert(self.class_methods(owner)?),
                     };
-                    if !ts_declares_field(methods, affix, field, FieldSite { line: &line, line_no, at }, &line[gs..ge], inherits) {
+                    let hands_to_super = inherits && *forwarded.get_or_insert_with(|| ctor_forwards_to_super(&source, methods, field));
+                    if !ts_declares_field(methods, affix, field, FieldSite { line: &line, line_no, at }, &line[gs..ge], hands_to_super) {
                         continue;
                     }
                     let rest = &line[m.end..];
@@ -1157,6 +1159,76 @@ pub(super) struct TsFieldDecl {
     pub(super) nullable: bool,
 }
 
+/// Whether the class's constructor passes `field` as an argument of `super(...)`,
+/// the only way a plain constructor parameter names an inherited field. Only a
+/// bare top-level argument counts: `options.field`, `wrap(field)`, `{ field }`
+/// and a `super(field)` inside a string literal do not.
+fn ctor_forwards_to_super(source: &SourceFile, methods: &[Arc<KNode>], field: &str) -> bool {
+    let Some(ctor) = methods.iter().find(|m| m.name == "constructor") else { return false };
+    let from = (ctor.start_line - 1).max(0) as usize;
+    let to = (ctor.end_line as usize).min(source.len());
+    let lines: Vec<String> = source.get(from..to).unwrap_or_default().iter().map(|l| strip_line_comments(l)).collect();
+    let body = blank_string_literals(&lines.join("\n"));
+    let forwarded = occurrences(&body, "super", 0).any(|at| {
+        if at > 0 && is_word_byte(body.as_bytes()[at - 1]) {
+            return false;
+        }
+        let Some(rest) = body[at + 5..].trim_start().strip_prefix('(') else { return false };
+        let mut depth = 1;
+        let mut arg_start = 0;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 1 => {
+                    if rest[arg_start..i].trim() == field {
+                        return true;
+                    }
+                    arg_start = i + 1;
+                }
+                _ => {}
+            }
+            if depth == 0 {
+                return rest[arg_start..i].trim() == field;
+            }
+        }
+        false
+    });
+    forwarded
+}
+
+/// `text` with the contents of every quoted string and template literal
+/// replaced by spaces, so a `super(` or a parameter name inside one is not
+/// read as code. An unterminated quote blanks to the end.
+fn blank_string_literals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in text.chars() {
+        match quote {
+            None => {
+                if matches!(c, '\'' | '"' | '`') {
+                    quote = Some(c);
+                }
+                out.push(c);
+            }
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                    out.push(c);
+                    continue;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+        }
+    }
+    out
+}
+
 /// Whether a match at byte `at` of line `line_no` declares the class field
 /// `field` with type `ty`: outside every method of the class, a
 /// `this.field = new T` assignment, or a constructor parameter (read back
@@ -1190,7 +1262,7 @@ fn ts_declares_field(
                 }
                 // A parameter property (`private x: T`) declares a field. A plain
                 // `x: T` parameter is a local, unless the class extends another
-                // and may hand it to `super` for an inherited field.
+                // and hands it to `super` for an inherited field (`inherits`).
                 let head = sig[..s].rfind(field).map(|at| &sig[..at])?;
                 let param = head.rsplit([',', '(']).next().unwrap_or("");
                 Some(inherits || re!(r"(?:^|\s)(?:public|private|protected|readonly)\s+(?:(?:public|private|protected|readonly|override)\s+)*$").is_match(param))
