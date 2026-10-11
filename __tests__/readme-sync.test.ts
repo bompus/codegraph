@@ -107,7 +107,7 @@ describe('README and docs site list what the code offers', () => {
     const linked = new Set<string>();
     const unlinked: string[] = [];
     for (const line of README.split('\n')) {
-      const links = [...line.matchAll(/docs\/design\/open-questions\.md#([\w-]+)/g)].map((m) => m[1]!);
+      const links = [...line.matchAll(/\]\(docs\/design\/open-questions\.md#([\w-]+)\)/g)].map((m) => m[1]!);
       links.forEach((a) => linked.add(a));
       if (unknownCause.test(line) && !links.some((a) => anchors.includes(a))) unlinked.push(line.trim().slice(0, 80));
     }
