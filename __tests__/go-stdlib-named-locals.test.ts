@@ -206,6 +206,19 @@ func Refresh(ctx context.Context) {
 	log := log.G(ctx)
 	log.Errorf("refresh quota: %v", ctx)
 }
+
+func Handle(ctx context.Context) {
+	_ = log.G(ctx)
+}
+
+func Later(ctx context.Context) {
+	log := log.G(ctx); log.Errorf("later")
+}
+
+func Pair(ctx context.Context) {
+	logger, log := log.G(ctx), 0
+	logger.Errorf("pair %d", log)
+}
 `,
   // kubernetes' post-start hooks: the hook context gets Done from the
   // standard library's context it embeds, not from a project type.
@@ -427,11 +440,19 @@ describe('a Go parameter or local named like a standard-library package', () => 
     expect(reachedAt('etcdmain/grpc_proxy.go', 'tls.ClientConfig()')).toEqual(['transport/tls.go:TLSInfo::ClientConfig']);
   });
 
-  // Not ported to the native resolver: a local declared as `log := log.G(ctx)`
-  // shadows the imported `log` package from its own line, and `log.G` and the
-  // later `log.Errorf` both stay unresolved. `it.fails` turns red once they resolve.
-  it.fails('calls the Logger method of a local that takes the name of the project package that hands it out', () => {
+  // `log := log.G(ctx)`: the new local takes the name of the imported project
+  // package from its own line, but the right of `:=` still means the package,
+  // so `log.G` calls the package's function and the later `log.Errorf` calls the
+  // method of the `*Logger` it returns.
+  it('calls the Logger method of a local that takes the name of the project package that hands it out', () => {
+    expect(reachedAt('quota/util.go', 'log := log.G(')).toEqual(['lib/log/log.go:G']);
     expect(reachedAt('quota/util.go', 'log.Errorf(')).toEqual(['lib/log/log.go:Logger::Errorf']);
+    // Nothing shadows it in `Handle`, and the import is the project's, not the standard library's.
+    expect(reachedAt('quota/util.go', '_ = log.G(')).toEqual(['lib/log/log.go:G']);
+    // After the `;` the line is a later statement: `log` is the local there.
+    expect(reachedAt('quota/util.go', 'log.Errorf("later")').sort()).toEqual(['lib/log/log.go:G', 'lib/log/log.go:Logger::Errorf']);
+    // A name the line declares beside the receiver is shadowed from its line too.
+    expect(reachedAt('quota/util.go', 'logger.Errorf(')).toEqual(['lib/log/log.go:Logger::Errorf']);
   });
 
   it('takes the type named like the variable among that package\'s', () => {
