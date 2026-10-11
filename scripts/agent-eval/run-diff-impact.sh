@@ -27,6 +27,9 @@ HARNESS="$(cd "$(dirname "$0")" && pwd)"
 CASES="$HARNESS/diff-impact-cases.json"
 : "${CG_BIN:?set CG_BIN to the codegraph binary under test}"
 mkdir -p "$OUT"
+# run-all.sh changes into the fixture, so every path it is given must be absolute.
+OUT="$(cd "$OUT" && pwd)"
+CLONES="$(cd "$CLONES" && pwd)"
 : > "$OUT/scores.jsonl"   # scores belong to this invocation only
 
 QUESTION='I have uncommitted changes in this repository (see git diff). Which other files are affected by this change: callers and dependents in the source, and tests that cover the changed code? List the file paths, source files first and then tests, with one line on why each is affected. Do not edit anything.'

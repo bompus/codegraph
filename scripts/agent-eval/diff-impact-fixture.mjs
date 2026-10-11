@@ -16,8 +16,9 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const here = dirname(new URL(import.meta.url).pathname);
+const here = dirname(fileURLToPath(import.meta.url));
 
 function git(cwd, args, opts = {}) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...opts });
@@ -68,7 +69,7 @@ export function buildFixture(spec, codePatterns, cloneDir, outDir) {
   return { repo, truth };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [id, cloneDir, outDir, casesPath = join(here, 'diff-impact-cases.json')] = process.argv.slice(2);
   if (!id || !cloneDir || !outDir) {
     console.error('usage: diff-impact-fixture.mjs <case-id> <clone-dir> <out-dir> [cases.json]');

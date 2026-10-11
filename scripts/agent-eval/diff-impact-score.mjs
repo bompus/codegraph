@@ -9,7 +9,8 @@
 // that base name. The primary file is the edit itself and is never counted.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /** True when `name` appears in `text` as its own token, not inside a longer name. */
 function mentions(text, name) {
@@ -54,7 +55,7 @@ export function finalAnswer(jsonl) {
   return answer;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [runPath, truthPath, repoDir] = process.argv.slice(2);
   if (!runPath || !truthPath || !repoDir) {
     console.error('usage: diff-impact-score.mjs <run.jsonl> <truth.json> <repo-dir>');

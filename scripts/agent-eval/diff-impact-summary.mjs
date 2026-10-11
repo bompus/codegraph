@@ -9,6 +9,8 @@
 // here. A mean over a handful of cases with one to three expected files each is
 // coarse: report the per-case table, not just the mean.
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export function summarize(rows) {
   const mean = (xs) => (xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length);
@@ -39,7 +41,7 @@ export function summarize(rows) {
   return { arms, cases };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const path = process.argv[2];
   if (!path) {
     console.error('usage: diff-impact-summary.mjs <scores.jsonl>');
