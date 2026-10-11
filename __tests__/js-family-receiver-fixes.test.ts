@@ -328,6 +328,8 @@ export function viaUnion(s: Service) { s.many.query(); }
 import { Res } from './res';
 export class Ctx {
   #req: Req | undefined;
+  // An object literal's getter inside a one-line method is not the class's.
+  probe() { return { get req(): Res { return new Res(); } }; }
   // A plain constructor parameter named like the getter is a local, not the field.
   constructor(req: Request) {
     void req;

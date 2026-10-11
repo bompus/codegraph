@@ -410,13 +410,13 @@ impl KernelResolver {
                 let Some(caps) = re!(r"^\s*\(\s*\)\s*:\s*(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_.$]*)").captures(&line[at + field.len()..]) else {
                     continue;
                 };
-                // The getter's own node starts at `get`; any other method around the line holds a local.
+                // The getter's own node starts at `get` on this line; any other method around it holds a local.
                 let pos = (line_no, at as i64);
                 let methods = match &methods {
                     Some(v) => v,
                     None => methods.insert(self.class_methods(owner)?),
                 };
-                if methods.iter().any(|m| pos > (m.start_line, m.start_column) && pos <= (m.end_line, m.end_column) && m.start_line != line_no) {
+                if methods.iter().any(|m| pos > (m.start_line, m.start_column) && pos <= (m.end_line, m.end_column) && !(m.name == field && m.start_line == line_no)) {
                     continue;
                 }
                 let rest = &line[at + field.len() + caps.get(0).map_or(0, |m| m.end())..];
