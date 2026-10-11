@@ -104,7 +104,7 @@ Where other tools do something this fork does not, or do it better by a publishe
 
 | # | Gap or idea | Source | What is known | Status and next measurement |
 |---|---|---|---|---|
-| 1 | Call-edge precision and recall against a compiler, TypeScript first | repowise G4 | On 1.5.0, zod 0.73 precision / 0.37 recall and hono 0.81 precision, against repowise's 0.99 / 0.70 and 0.98 / 0.81. [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) shows the fork keeps fewer TypeScript edges and names recall as the larger problem | Measured in section 6.1. The fork reaches 0.981 precision / 0.694 recall on zod and 0.987 / 0.664 on hono. Hono recall is 0.664 against repowise's 0.81 and is the open gap |
+| 1 | Call-edge precision and recall against a compiler, TypeScript first | repowise G4 | On 1.5.0, zod 0.73 precision / 0.37 recall and hono 0.81 precision, against repowise's 0.99 / 0.70 and 0.98 / 0.73. [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) shows the fork keeps fewer TypeScript edges and names recall as the larger problem | Measured in section 6.1. The fork reaches 0.981 precision / 0.694 recall on zod and 0.987 / 0.664 on hono. Hono recall is 0.664 against repowise's 0.731 and 0.684 for 1.5.0; section 6.1 breaks down the misses |
 | 2 | Natural-language file retrieval | repowise ContextBench; section 5 | On Python and Go questions repowise's local search found 0.74 of the needed files (0.88 with a hosted model) against 0.61 for CodeGraph 1.5.0. In the section 5 trial Octocode returned vite's `resolve.ts` at rank 1 for a natural-language query where the fork did not return it. One query, one repository | Measured in section 6.2. The fork finds 0.629 of the needed files on the same 42 questions, about the same as upstream 1.6.2 (0.666) and below repowise's 0.74. On vue core and svelte all builds find under a third of the needed files |
 | 3 | Go precision on a large repository | repowise G4 | syft: CodeGraph 1.5.0 0.87 precision against 0.94 to 0.97 for the best arms; gitleaks within half a point of repowise and cobra about four points behind it (0.93 against 0.97). On interface-dispatch edges CodeGraph found 35 of 3,303 against repowise's 12 | Measured in section 6.1. The fork reaches 0.943 and 0.948 on the two syft cells, inside the 0.94 to 0.97 range of the best arms, and 0.995 on cobra. Syft recall stays low (0.56 and 0.28) |
 | 4 | Edge origin and confidence on every edge | repowise, gortex | Strategy step 2. No shipped entry for a persisted origin or confidence shown in explore in `CHANGELOG.md` | Verify what has landed before scheduling |
@@ -133,10 +133,21 @@ repowise's compiler-anchored comparison (TypeScript through `tsc` 5.9.3 resolved
 What the table shows:
 
 - The TypeScript precision gap on 1.5.0 is closed. Most of the change comes from upstream 1.6.2 (zod 0.729 to 0.961); the fork adds one to seven points on every cell, most on the two syft cells.
-- Against repowise's published figures, the fork is level on zod (0.981 / 0.694 against 0.99 / 0.70) and below on hono recall (0.664 against 0.81). Repowise's published numbers come from its own run, not this one, and I did not rerun its arms.
+- Against repowise's published figures, the fork is level on zod (0.981 / 0.694 against 0.99 / 0.70) and below on hono recall (0.664 against 0.731, and below the 0.684 that repowise measured for 1.5.0). Repowise's published numbers come from its own run, not this one, and I did not rerun its arms.
 - The fork trades recall for precision. It keeps fewer edges than 1.6.2 on six of seven cells, and cobra recall is 0.711 against 0.764 for 1.5.0.
 - Thirty percent of the fork's TypeScript edges sit in callers the oracle never reached, so the TypeScript precision figures describe about 70% of its edges.
 - The oracle is a compiler's view, not ground truth. Both oracles cover Go and TypeScript only; the other languages have no comparable measurement. The syft oracle here covered 1,110 files and 29,408 edges against repowise's 1,107 and 22,590, because the Go toolchain version differs; every other cell matches repowise's analysed-file counts exactly.
+
+Where the 237 missed hono edges go (the fork's 469 of 706 matches reproduce on a rerun; 1.6.2 matches 472). Both ends of 191 of the 237 (81%) exist as nodes in the fork's index, so most of these are edges the fork did not draw, not code it failed to parse.
+
+| Kind of missed call | Edges | Share | What the fork has |
+|---|---|---|---|
+| Named function or method call (for example `c.req.header()`) | 104 | 44% | No edge of any kind between the two nodes |
+| `new X(...)` constructor call | 70 | 30% | A separate `instantiates` edge for 55 of the 70; none for 15 |
+| JSX helpers and hooks (`useContext`, `useCallback` and similar) | 47 | 20% | No edge of any kind |
+| Anonymous callback | 16 | 7% | No edge of any kind |
+
+The oracle counts a constructor call as a call, and this comparison reads only the fork's `calls` edges. Counting the 55 constructor calls the fork stores as `instantiates` edges would lift hono recall from 0.664 to 0.742, above repowise's 0.731. Whether repowise counted constructors the same way in its published figure is not checked. The 182 other misses are real gaps in call resolution; this analysis does not say why.
 
 ### 6.2 Natural-language file retrieval, 2026-10-10
 
@@ -159,6 +170,8 @@ The second table is exploratory: 39 JavaScript and TypeScript instances from the
 | Fork | 0.281 | 0.214 | 0.451 | 11.2 |
 
 On these instances the fork wins 4, loses 7 and ties 28 against 1.6.2, and 19 of 39 return none of the needed files (17 for 1.6.2). The three builds are within a few points of each other, so the finding is not a difference between builds: free-text bug descriptions retrieve JavaScript and TypeScript files poorly with every build tried, far below the 0.6 to 0.7 on Python and Go. This corpus was chosen after seeing that repowise's figures cover Python and Go only; it has no published comparator and no pre-registered threshold.
+
+Where the JavaScript and TypeScript misses sit (fork, 133 needed files across the 39 instances): the fork returned 31, and of the other 102, 22 had a different file from the same directory in its results, 16 had one from the parent directory, and 64 (48% of all needed files) had nothing nearby. The needed files are source files (121 of 133) and the median instance needs 3 of them, against 1 on the Python and Go set. About 29% of the files the fork returned were tests, docs or the svelte website. This analysis uses the saved results only and does not show why the ranking misses.
 
 A last probe asked whether Octocode's embeddings recover instances the CodeGraph builds miss. I picked the first two vue core instances where both 1.6.2 and the fork found none of the needed files, and ran Octocode 0.26.6 (hybrid search over local embeddings) on them. Octocode rejects queries over 500 characters, so all three tools were rerun with the first 500 characters of the problem statement.
 
