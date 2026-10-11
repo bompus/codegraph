@@ -1504,10 +1504,32 @@ program
   .option('--any', 'OR the words instead of requiring all of them')
   .option('--full', 'Show each hit\'s whole passage (16,000 bytes in all) instead of a snippet')
   .option('--context <n>', 'Also show n passages (0-5) before and after each hit; implies --full', '0')
+  .option('--project <path...>', 'Experimental: search these projects instead (at most 5); hits name their project')
   .option('-j, --json', 'Output as JSON')
-  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; full?: boolean; context?: string; json?: boolean }) => {
+  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; full?: boolean; context?: string; project?: string[]; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
     try {
+      if (options.project && options.project.length > 0) {
+        const { querySessionsAcross, formatCrossProjectHits, MAX_PROJECTS } = await import('../sessions/fanout');
+        const sinceDays = Number(options.since);
+        const query = words.join(' ');
+        const requested = [...new Set(options.project)];
+        const targets = requested.slice(0, MAX_PROJECTS).map((p) => {
+          const root = resolveProjectPath(p);
+          return isInitialized(root) ? { root } : { path: root, skipped: 'CodeGraph is not initialized there' };
+        });
+        const result = querySessionsAcross(targets, query, {
+          limit: parseInt(options.limit || '10', 10),
+          role: options.role,
+          sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
+          session: options.session,
+          any: options.any,
+          full: options.full,
+          context: parseInt(options.context || '0', 10) || 0,
+        }, requested.length - targets.length);
+        console.log(options.json ? JSON.stringify(result, null, 2) : formatCrossProjectHits(query, result));
+        return;
+      }
       if (!isInitialized(projectPath)) {
         error(`CodeGraph not initialized in ${projectPath}`);
         process.exit(1);

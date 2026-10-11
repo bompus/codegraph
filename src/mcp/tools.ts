@@ -45,6 +45,7 @@ import {
   type QuerySetAsideMatch,
 } from '../search/query-paths';
 import { querySessions, formatSessionHits, NoSessionsError, sessionsMentioning, MAX_CONTEXT } from '../sessions';
+import { querySessionsAcross, formatCrossProjectHits, MAX_PROJECTS, type ProjectTarget } from '../sessions/fanout';
 import {
   existsSync,
   readFileSync,
@@ -1799,6 +1800,7 @@ interface PropertySchema {
   type: string;
   description: string;
   enum?: string[];
+  items?: { type: string };
   default?: unknown;
 }
 
@@ -2069,6 +2071,11 @@ export const tools: ToolDefinition[] = [
           description: 'With full: also return this many neighbouring passages (0-5) on each side of every hit, from the same transcript; they spend the same 16,000-byte budget after the hits themselves (default: 0).',
           default: 0,
         },
+        projects: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Experimental: search these projects\' session histories in one call instead of one project (at most 5 absolute paths, each inside a project that has a .codegraph/). Hits name their project and are interleaved by each project\'s own ranking. Leave projectPath out when you use it. A project that has no transcripts, or has turned sessions off, is listed as skipped.',
+        },
         projectPath: projectPathProperty,
       },
       required: ['query'],
@@ -2143,7 +2150,8 @@ export const tools: ToolDefinition[] = [
  */
 function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
   return defs.map((tool) => {
-    if (!tool.inputSchema.properties.projectPath) return tool;
+    // A tool that names its own projects (codegraph_sessions `projects`) works without projectPath.
+    if (!tool.inputSchema.properties.projectPath || tool.inputSchema.properties.projects) return tool;
     const required = tool.inputSchema.required ?? [];
     if (required.includes('projectPath')) return tool;
     return {
@@ -3099,6 +3107,16 @@ export class ToolHandler {
     args: Record<string, unknown>,
     sessionState?: ExploreSessionState,
   ): Promise<ToolResult> {
+    // A cross-project session search (experimental) names its projects itself and
+    // needs no default one: anchor the call on the first listed project that has an
+    // index, so the shared checks and the worker route behave as for any projectPath.
+    let allProjectsSkipped = false;
+    if (toolName === 'codegraph_sessions' && args.projectPath === undefined && !this.cg && Array.isArray(args.projects)) {
+      const listed = [...new Set(args.projects.filter((p): p is string => typeof p === 'string' && p !== ''))].slice(0, MAX_PROJECTS);
+      const anchor = listed.find((p) => findNearestCodeGraphRoot(p));
+      if (anchor) args = { ...args, projectPath: anchor };
+      else allProjectsSkipped = listed.length > 0;
+    }
     if (this.closing) return this.textResult('This MCP session is closing; retry with a connected session.');
     this.activeCalls++;
     try {
@@ -3119,6 +3137,8 @@ export class ToolHandler {
       if (!this.isToolAllowed(toolName)) {
         return this.errorResult(`Tool ${toolName} is disabled via CODEGRAPH_MCP_TOOLS`);
       }
+      // Nothing to open: every listed project is unindexed, so the answer is the skipped list.
+      if (allProjectsSkipped) return this.handleSessions(args);
       // Cross-cutting input validation. All tools accept an optional
       // `projectPath` and most accept either `query`, `task`, or
       // `symbol` — bound their lengths centrally so individual handlers
@@ -4457,12 +4477,15 @@ export class ToolHandler {
   private handleSessions(args: Record<string, unknown>): ToolResult {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
-    const projectRoot = this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
+    const requested = Array.isArray(args.projects) ? [...new Set(args.projects.filter((p): p is string => typeof p === 'string' && p !== ''))] : [];
+    // Bound the list before resolving any path; the cap is applied again, with the omitted count, by the search.
+    const listed = requested.slice(0, MAX_PROJECTS);
+    const projectRoot = listed.length > 0 ? '' : this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
     const sinceDays = Number(args.sinceDays);
     const role = typeof args.role === 'string' ? args.role : undefined;
     const session = typeof args.session === 'string' ? args.session : undefined;
     try {
-      const result = querySessions(projectRoot, query, {
+      const opts = {
         limit: clamp(Number(args.limit) || 10, 1, 100),
         role,
         sinceIso: sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000).toISOString() : undefined,
@@ -4470,7 +4493,18 @@ export class ToolHandler {
         any: args.any === true,
         full: args.full === true,
         context: clamp(Math.trunc(Number(args.context)) || 0, 0, MAX_CONTEXT),
-      });
+      };
+      if (listed.length > 0) {
+        const targets = listed.map((p): ProjectTarget => {
+          try {
+            return { root: this.getCodeGraph(p).getProjectRoot() };
+          } catch (err) {
+            return { path: p, skipped: err instanceof Error ? err.message.split('\n')[0]! : 'cannot be opened' };
+          }
+        });
+        return this.textResult(formatCrossProjectHits(query, querySessionsAcross(targets, query, opts, requested.length - listed.length)));
+      }
+      const result = querySessions(projectRoot, query, opts);
       return this.textResult(formatSessionHits(query, result));
     } catch (err) {
       if (err instanceof NoSessionsError) return this.textResult(err.message);
