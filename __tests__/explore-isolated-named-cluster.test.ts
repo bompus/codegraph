@@ -255,7 +255,6 @@ describe('a named cluster with nothing named below it keeps its incidental conte
   afterAll(() => teardown(run));
 
   it('renders the helper merged in above renderView, not just renderView', () => {
-    require('fs').writeFileSync('/home/bompus/.local/share/agent-documents/tmp/reconcile-0928/resp-reconcile-0928.txt', run.response + '\n\n' + JSON.stringify(run.report.files, null, 1));
     const view = coverage(run, 'renderView');
     expect(view.got).toBe(view.of);
     const target = defOf(run, 'renderView');
