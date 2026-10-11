@@ -314,4 +314,74 @@ export function viaUnion(s: Service) { s.many.query(); }
       cg.close();
     }
   });
+
+  it('types a property written as a getter by its declared return type', async () => {
+    // `c.req.header()` reaches Req.header, not Res.header, because `get req(): Req`
+    // types `req` even though the constructor has an untyped-as-field `req: Request`
+    // parameter. A getter with no return type says nothing.
+    const cg = await index({
+      'src/req.ts': `export class Req { header(name: string): string { return name; } }
+`,
+      'src/res.ts': `export class Res { header(name: string): string { return name; } }
+`,
+      'src/ctx.ts': `import { Req } from './req';
+import { Res } from './res';
+export class Ctx {
+  #req: Req | undefined;
+  // An object literal's getter inside a one-line method is not the class's.
+  probe() { return { get req(): Res { return new Res(); } }; }
+  // A plain constructor parameter named like the getter is a local, not the field.
+  constructor(req: Request) {
+    void req;
+  }
+  get req(): Req {
+    this.#req ??= new Req();
+    return this.#req;
+  }
+  get res() {
+    return new Res();
+  }
+}
+`,
+      'src/use.ts': `import { Ctx } from './ctx';
+export function fromReq(c: Ctx) { return c.req.header('x'); }
+export function fromRes(c: Ctx) { return c.res.header('x'); }
+`,
+    });
+    try {
+      const calls = callsFrom(cg, 'src/use.ts');
+      expect(calls.filter((c) => c.includes('src/req.ts:Req::header'))).toHaveLength(1);
+      expect(calls.some((c) => c.includes('src/res.ts'))).toBe(false);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('does not treat a plain constructor parameter as a field', async () => {
+    const cg = await index({
+      'src/req.ts': `export class Req { header(name: string): string { return name; } }
+`,
+      'src/plain.ts': `import { Req } from './req';
+export class Plain {
+  constructor(req: Req) {
+    void req;
+  }
+}
+export class Held {
+  constructor(private req: Req) {}
+}
+`,
+      'src/use.ts': `import { Plain, Held } from './plain';
+export function viaPlain(p: Plain) { return p.req.header('x'); }
+export function viaHeld(h: Held) { return h.req.header('x'); }
+`,
+    });
+    try {
+      const calls = callsFrom(cg, 'src/use.ts');
+      // Only the parameter property `private req` makes `req` a field.
+      expect(calls.filter((c) => c.includes('src/req.ts:Req::header'))).toHaveLength(1);
+    } finally {
+      cg.close();
+    }
+  });
 });
