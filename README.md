@@ -865,8 +865,8 @@ the graph API. Its functions are also exported from the package entry point.
 reports stop outcomes, and reserves the writer slot for a live updater. A
 replacement bootstrap claims that reservation before running its CLI in the same
 process. Keep the coordination module available separately from the executable
-being replaced, including during rollback. Live legacy writers require explicit
-session quiescence before cutover. See the [runtime control contract](site/src/content/docs/reference/api.md#installer-runtime-control).
+being replaced, including during rollback. Live old-version writers require explicit
+confirmation that every other such server is stopped before cutover. See the [runtime control contract](site/src/content/docs/reference/api.md#installer-runtime-control).
 
 For ordinary checkout startup, `startRuntimeWatcher(root, { expectedVersion,
 cliPath, runtimePath?, timeoutMs? })` reuses or elects a shared daemon without

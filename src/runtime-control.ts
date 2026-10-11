@@ -32,18 +32,24 @@ export async function getRuntimeIdentity(projectRoot: string, options: { timeout
   return { pid: info.pid, version: info.version };
 }
 
-/** Refuse live uncoordinated writers unless the caller has explicitly quiesced legacy sessions. */
+/**
+ * Refuse live writers that predate the coordination protocol unless the caller
+ * confirms every other old-version server for the project has been stopped. The
+ * daemon this call stops is not part of that confirmation.
+ * `legacyQuiescent` is the earlier name for `oldServersStopped`.
+ */
 export async function stopRuntime(
   projectRoot: string,
-  options: { legacyQuiescent?: boolean } = {},
+  options: { oldServersStopped?: boolean; legacyQuiescent?: boolean } = {},
 ): Promise<StopResult> {
   projectRoot = canonicalProjectRoot(projectRoot);
   return stopDaemonAt(projectRoot, {
-    preserveUnverified: true, requireWriterProtocol: !options.legacyQuiescent,
+    preserveUnverified: true,
+    requireWriterProtocol: !(options.oldServersStopped ?? options.legacyQuiescent),
   });
 }
 
-/** Claim a free or stale slot for a live updater, after terminal stop and legacy-session quiescence. */
+/** Claim a free or stale slot for a live updater, after a terminal stop and with every old-version server stopped. */
 export function reserveRuntimeWriter(projectRoot: string, holderPid: number): WriterReservation | null {
   projectRoot = canonicalProjectRoot(projectRoot);
   const result = reserveWriterLock(projectRoot, holderPid);

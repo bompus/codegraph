@@ -121,10 +121,12 @@ standing down. A successful stop does not itself reserve the slot. Reserve
 before moving artifacts, and stand down if another writer has claimed it.
 
 By default, stop preserves a live daemon without writer coordination protocol
-`1`. Set `{legacyQuiescent: true}` only after confirming all legacy MCP sessions
-and direct or fallback writers for that project are stopped. Daemon death alone
-does not establish that quiescence. A restored legacy daemon needs the same
-explicit cutover before another promotion.
+`1`. Set `{oldServersStopped: true}` only after confirming every other
+old-version MCP session and every direct or fallback writer for that project is
+stopped. The daemon serving the project is excluded because `stopRuntime` stops
+it. Daemon death alone does not establish that. A restored old-version daemon needs the
+same explicit confirmation before another promotion. `{legacyQuiescent: true}`
+is the earlier spelling of the same option.
 
 Keep the reservation value unchanged. Its generation distinguishes successive
 reservations held by one PID. Claim it in the daemon bootstrap, then run the
