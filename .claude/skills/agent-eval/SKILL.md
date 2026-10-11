@@ -110,6 +110,8 @@ Each run is a real model session, so fix the cases, runs and arms before
 launching. `diff-impact-summary.mjs` prints recall per arm and per case; cost and
 tool counts stay in each run's `run-all.log`.
 
+First baseline and its limits: `docs/benchmarks/diff-impact-baseline-2026-10-11.md`.
+
 ## Notes
 - The index is rebuilt every run (`audit.sh` wipes `.codegraph`) — different
   versions extract differently, so an index must be served by the same binary
