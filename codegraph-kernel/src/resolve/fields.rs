@@ -377,6 +377,23 @@ impl KernelResolver {
         let start = (owner.start_line - 1).max(0) as usize;
         let end = (owner.end_line as usize).min(source.len());
         let mut methods: Option<Vec<Arc<KNode>>> = None;
+        // The class heading up to its body, type parameters removed: `class A<T extends X>`
+        // does not extend anything, `class A extends B` does.
+        let mut head = String::new();
+        let mut depth = 0usize;
+        'heading: for raw in source.get(start..end).unwrap_or_default() {
+            for c in strip_line_comments(raw).chars() {
+                match c {
+                    '{' if depth == 0 => break 'heading,
+                    '<' => depth += 1,
+                    '>' if depth > 0 => depth -= 1,
+                    _ if depth == 0 => head.push(c),
+                    _ => {}
+                }
+            }
+            head.push(' ');
+        }
+        let inherits = re!(r"\bextends\b").is_match(&head);
         for (i, raw) in source.get(start..end).unwrap_or_default().iter().enumerate() {
             let line_no = (start + i + 1) as i64;
             let line = strip_line_comments(raw);
@@ -424,7 +441,7 @@ impl KernelResolver {
                         Some(v) => v,
                         None => methods.insert(self.class_methods(owner)?),
                     };
-                    if !ts_declares_field(methods, affix, field, &line, line_no, at, &line[gs..ge]) {
+                    if !ts_declares_field(methods, affix, field, FieldSite { line: &line, line_no, at }, &line[gs..ge], inherits) {
                         continue;
                     }
                     let rest = &line[m.end..];
@@ -1120,6 +1137,14 @@ impl KernelResolver {
     }
 }
 
+/// Where a candidate field declaration sits: its line text, line number and byte offset.
+#[derive(Clone, Copy)]
+struct FieldSite<'a> {
+    line: &'a str,
+    line_no: i64,
+    at: usize,
+}
+
 /// A TypeScript class-field declaration found by `ts_field_decl`.
 pub(super) struct TsFieldDecl {
     /// The declared type text (`Mailer`, `ns.Mailer`, the `typeof` operand).
@@ -1143,11 +1168,11 @@ fn ts_declares_field(
     methods: &[Arc<KNode>],
     affix: &'static Affix,
     field: &str,
-    line: &str,
-    line_no: i64,
-    at: usize,
+    site: FieldSite,
     ty: &str,
+    inherits: bool,
 ) -> bool {
+    let FieldSite { line, line_no, at } = site;
     let pos = (line_no, at as i64);
     let inside = methods.iter().find(|m| {
         pos > (m.start_line, m.start_column) && pos <= (m.end_line, m.end_column)
@@ -1158,7 +1183,18 @@ fn ts_declares_field(
         Some(m) if m.name == "constructor" => m
             .signature
             .as_deref()
-            .and_then(|sig| affix.find_from(sig, field, 0).and_then(|hit| hit.group.map(|(s, e)| &sig[s..e] == ty)))
+            .and_then(|sig| {
+                let (s, e) = affix.find_from(sig, field, 0)?.group?;
+                if &sig[s..e] != ty {
+                    return None;
+                }
+                // A parameter property (`private x: T`) declares a field. A plain
+                // `x: T` parameter is a local, unless the class extends another
+                // and may hand it to `super` for an inherited field.
+                let head = sig[..s].rfind(field).map(|at| &sig[..at])?;
+                let param = head.rsplit([',', '(']).next().unwrap_or("");
+                Some(inherits || re!(r"(?:^|\s)(?:public|private|protected|readonly)\s+(?:(?:public|private|protected|readonly|override)\s+)*$").is_match(param))
+            })
             .unwrap_or(false),
         Some(_) => false,
     }

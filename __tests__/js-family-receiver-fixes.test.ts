@@ -316,8 +316,9 @@ export function viaUnion(s: Service) { s.many.query(); }
   });
 
   it('types a property written as a getter by its declared return type', async () => {
-    // `c.req.header()` reaches HonoRequest.header, not Res.header, because
-    // `get req(): Req` types `req`. A getter with no return type says nothing.
+    // `c.req.header()` reaches Req.header, not Res.header, because `get req(): Req`
+    // types `req` even though the constructor has an untyped-as-field `req: Request`
+    // parameter. A getter with no return type says nothing.
     const cg = await index({
       'src/req.ts': `export class Req { header(name: string): string { return name; } }
 `,
@@ -327,6 +328,10 @@ export function viaUnion(s: Service) { s.many.query(); }
 import { Res } from './res';
 export class Ctx {
   #req: Req | undefined;
+  // A plain constructor parameter named like the getter is a local, not the field.
+  constructor(req: Request) {
+    void req;
+  }
   get req(): Req {
     this.#req ??= new Req();
     return this.#req;
