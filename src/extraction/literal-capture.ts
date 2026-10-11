@@ -18,7 +18,7 @@ const MAX_LITERALS_PER_NODE = 32;
  * A value qualifies when it looks like an identifier an agent would quote
  * back verbatim: leading letter or underscore (or a `-`/`--` flag prefix),
  * only identifier, path, and namespace characters, and at least one
- * separator — `bompus_draft_state`, `--start`, `draft.pick`, `api/v1/users`.
+ * separator — `demo_draft_state`, `--start`, `draft.pick`, `api/v1/users`.
  * A plain word (`ready`, `Error`) has no separator and stays out: it would
  * seed on every function that logs it.
  */

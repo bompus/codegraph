@@ -11,7 +11,7 @@ function node(id: string, kind: Node['kind'], startLine: number, endLine: number
 
 describe('seedLiteralsInQuery', () => {
   it('keeps storage keys, flags, dotted names and paths', () => {
-    for (const v of ['bompus_custom_ds_players', '--start', 'draft.pick', 'api/v1/users', 'ns:event'])
+    for (const v of ['demo_custom_players', '--start', 'draft.pick', 'api/v1/users', 'ns:event'])
       expect(seedLiteralsInQuery(`who uses "${v}"`), v).toEqual([v]);
   });
   it('drops plain words, prose, short flags and values that start with a separator', () => {
@@ -19,8 +19,8 @@ describe('seedLiteralsInQuery', () => {
       expect(seedLiteralsInQuery(`who uses "${v}"`), v).toEqual([]);
   });
   it('finds quoted spans and bare runs, stripping surrounding punctuation', () => {
-    expect(seedLiteralsInQuery('who writes "bompus_custom_ds_players" (via --start)?'))
-      .toEqual(['bompus_custom_ds_players', '--start']);
+    expect(seedLiteralsInQuery('who writes "demo_custom_players" (via --start)?'))
+      .toEqual(['demo_custom_players', '--start']);
   });
   it('returns nothing for a symbol-anchored question', () => {
     expect(seedLiteralsInQuery('callers of resolvePlayerKey in shared')).toEqual([]);
@@ -51,9 +51,9 @@ describe('seedRouteNamesInQuery', () => {
 describe('captureLiterals', () => {
   const source = [
     `import { x } from './utils/helpers';`,            // 1: path starts with '.', never qualifies
-    `const KEY = 'bompus_custom_ds_players';`,          // 2: top level → file node
+    `const KEY = 'demo_custom_players';`,          // 2: top level → file node
     `export function save() {`,                         // 3
-    `  storage.set('bompus_custom_ds_players', 1);`,    // 4
+    `  storage.set('demo_custom_players', 1);`,    // 4
     `  log('ready');`,                                  // 5: plain word
     `  emit(\`draft.pick\`); emit(\`draft.\${n}\`);`,    // 6: second one interpolates
     `}`,                                                // 7
@@ -68,8 +68,8 @@ describe('captureLiterals', () => {
     const imp = node('./utils/helpers', 'import', 1, 1);
     const nodes = [file, imp, save, boot, start];
     captureLiterals(source, nodes);
-    expect(file.literals).toEqual(['bompus_custom_ds_players']);
-    expect(save.literals).toEqual(['bompus_custom_ds_players', 'draft.pick']);
+    expect(file.literals).toEqual(['demo_custom_players']);
+    expect(save.literals).toEqual(['demo_custom_players', 'draft.pick']);
     expect(start.literals).toEqual(['--start']);
     expect(boot.literals).toBeUndefined();
     expect(imp.literals).toBeUndefined();

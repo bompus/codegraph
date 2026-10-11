@@ -68,7 +68,7 @@ describe.skipIf(!kernelBuilt)("kernel buffer-transport storage (#1541)", () => {
     async (store) => {
       const source =
         "def target_fn(root, mission_path):\n" +
-        "    return (root, mission_path, 'bompus_custom_ds_players')\n" +
+        "    return (root, mission_path, 'demo_custom_players')\n" +
         "\n" +
         "class Adapter:\n" +
         "    def adapt(self):\n" +
@@ -147,7 +147,7 @@ describe.skipIf(!kernelBuilt)("kernel buffer-transport storage (#1541)", () => {
       expect(nodes.map((n) => n.name)).toContain("target_fn");
       expect(nodes.map((n) => n.name)).toContain("Adapter");
       const queries = (cg as unknown as { queries: QueryBuilder }).queries;
-      const holders = queries.findNodeIdsByLiteral(["bompus_custom_ds_players"]);
+      const holders = queries.findNodeIdsByLiteral(["demo_custom_players"]);
       expect(holders.map((id) => cg.getNode(id)?.name)).toEqual(["target_fn"]);
     },
   );

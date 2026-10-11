@@ -33,11 +33,11 @@ n8n (Vue and TypeScript) and re-measures every corpus on one newer fork build.
   - n8n (Vue and TypeScript) `7cc0450a`
 
   Shallow clones, no dependencies installed.
-- **Discarded runs.** Runs that a live draft room on the host refused or
+- **Discarded runs.** Runs that another job on the host refused or
   contended were thrown away and re-run. The first n8n runs came from an
   incomplete clone (about 7.5% of files missing) and were discarded; every n8n
-  number below comes from a verified complete checkout. n8n was measured while a
-  draft room was active, and its pairs vary by about 10% (upstream 99.8 and
+  number below comes from a verified complete checkout. n8n was measured while another
+  job was active, and its pairs vary by about 10% (upstream 99.8 and
   111.7 s, fork 103.8 and 92.8 s).
 
 ## Full index: fork vs upstream (Node 24)
@@ -151,7 +151,7 @@ in the README.
 | supabase | 3.88 s, 973 MiB | 3.48 s, 977 MiB |
 | n8n | 6.66 s, 1,230 MiB | 6.24 s, 1,236 MiB |
 
-A live draft room paused the run after CPython; the last three corpora ran
+Another job on the host paused the run after CPython; the last three corpora ran
 once it ended, at a 1-minute load of 2–4 from other sessions. Supabase's base
 syncs spread from 3.55 s to 4.37 s, so its difference is mostly noise. The
 base column also sits below the second round's right-hand figures (pretix 1.85
