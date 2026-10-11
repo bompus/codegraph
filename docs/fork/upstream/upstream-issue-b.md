@@ -18,7 +18,7 @@ Claude Code has two opt-outs, and CodeGraph sets neither:
 
 ## Reproduction
 
-Claude Code 2.1.261, Opus, headless, `--strict-mcp-config` with only `{"mcpServers":{"codegraph":{"command":"codegraph","args":["serve","--mcp"]}}}` (what `codegraph install` writes today), prompt "Use codegraph_explore to find which function defines clearExtensionStorage":
+Claude Code 2.1.261, Opus, headless, `--strict-mcp-config` with only `{"mcpServers":{"codegraph":{"command":"codegraph","args":["serve","--mcp"]}}}` (what `codegraph install` writes today), prompt "Use codegraph_explore to find which function defines `<function>`" (one named function in the measured repo):
 
 | server                                       | tool calls in order               |
 | -------------------------------------------- | --------------------------------- |
