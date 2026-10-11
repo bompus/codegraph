@@ -33,8 +33,8 @@ n8n (Vue and TypeScript) and re-measures every corpus on one newer fork build.
   - n8n (Vue and TypeScript) `7cc0450a`
 
   Shallow clones, no dependencies installed.
-- **Discarded runs.** Runs that another job on the host refused or
-  contended were thrown away and re-run. The first n8n runs came from an
+- **Discarded runs.** Runs disrupted by another job on the host were
+  thrown away and re-run. The first n8n runs came from an
   incomplete clone (about 7.5% of files missing) and were discarded; every n8n
   number below comes from a verified complete checkout. n8n was measured while another
   job was active, and its pairs vary by about 10% (upstream 99.8 and

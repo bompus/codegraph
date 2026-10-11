@@ -11,8 +11,9 @@
 # case is absent from the report) ABORTS the bisect with 255 rather than
 # skipping with 125: a systematic failure otherwise skips every commit and the
 # bisect ends with nothing learned. Step logs go to $BISECT_LOGS (default:
-# codegraph-bisect-<corpus> under $TMPDIR, or /tmp). Run the precision runner
-# once first so the corpus is already checked out.
+# bisect-<corpus> under ${XDG_STATE_HOME:-$HOME/.local/state}/codegraph, a
+# per-user folder that stays the same from step to step). Run the precision
+# runner once first so the corpus is already checked out.
 #
 # `git bisect run` exports GIT_DIR naming this repository; the runner (and the
 # indexer under it) would then run every corpus git command against the engine.
@@ -24,7 +25,7 @@ case_id="${2:?usage: bisect-case.sh <corpus> <case-id>}"
 : "${EVAL_REPOS:?set EVAL_REPOS to the directory holding the corpus checkout}"
 engine="$(git rev-parse --show-toplevel)"
 sha="$(git rev-parse --short HEAD)"
-logs="${BISECT_LOGS:-${TMPDIR:-/tmp}/codegraph-bisect-$corpus}"
+logs="${BISECT_LOGS:-${XDG_STATE_HOME:-$HOME/.local/state}/codegraph/bisect-$corpus}"
 mkdir -p "$logs"
 log="$logs/$sha.log"
 for v in $(git rev-parse --local-env-vars); do unset "$v"; done
