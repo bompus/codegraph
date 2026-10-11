@@ -1,6 +1,6 @@
 # What to adopt from competing code indexes, and what to skip
 
-**Status:** assessment, 2026-09-11. Extends a private downstream project's landscape survey of 2026-09-03 (its code-index research, which carries the measured A/B numbers this document leans on) with a September 2026 re-survey of every tool it listed plus the entrants since June. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) and [resolution-binding-model-plan.md](resolution-binding-model-plan.md).
+**Status:** assessment, 2026-09-11, with Octocode added 2026-10-10 from its README and package pages only (no source read, nothing run). Extends a private downstream project's landscape survey of 2026-09-03 (its code-index research, which carries the measured A/B numbers this document leans on) with a September 2026 re-survey of every tool it listed plus the entrants since June. Companion to [kernel-only-extraction-plan.md](kernel-only-extraction-plan.md) and [resolution-binding-model-plan.md](resolution-binding-model-plan.md).
 
 **Judging rule.** CodeGraph optimizes one thing: the agent stops reading files because the answer was sufficient. Every candidate feature is scored on whether it moves that, what it costs, and whether it has already been measured. Vendor "N× fewer tokens" claims are almost all measured against reading whole files or the whole corpus; only trace-mcp (60 PRs scored blind against the diff), codebase-memory-mcp (author-graded, with a no-tool arm), Augment (900 judged PR attempts), Sourcegraph (time and cost only), CodeGraph's README A/B and the downstream project rules-on A/B have an agent-level arm at all. The the downstream project one is the only baseline that is a rules-on agent already using `Grep -n` and `Read` with offsets.
 
@@ -23,6 +23,7 @@
 | Sourcegraph Code Finder | SCIP precise plus cloud search; LLM sub-search | paths and line ranges | ~8 | server | time 1.00 vs 2.19x local search, quality unquantified |
 | Cursor | Merkle tree, server-side embeddings, team index reuse by simhash | chunks | built-in | Merkle diff | "12.5% more accurate", no method |
 | Augment | proprietary embeddings, per-developer real-time index | snippets | 1 to 2 | seconds | 900 attempts: +71% to +80% with vs without; code leaves host |
+| Octocode 0.26 | Rust, tree-sitter in 17 languages; live symbol graph built lazily from source with no index; optional index with embeddings (local fastembed by default), BM25, rerank and LLM file descriptions | signatures, graph relationships, ranked hits, optional LSP answers; no verbatim bodies | 4 plus 6 LSP tools behind `--with-lsp` | on-demand for the live graph; index re-run for search | 127 self-written queries against its own source: Hit@5 0.73 local, 0.99 with the cloud stack; retrieval only, no agent arm |
 
 Continue.dev was acquired by Cursor in June 2026 and is read-only. Cline still indexes nothing by design.
 
@@ -50,6 +51,8 @@ Each row: does it help the agent stop reading, cost, and whether the downstream 
 | P. Graph database engines | GitNexus, CodeGraphContext | No: sub-millisecond SQLite reads; 1.6M nodes already handled | | Yes |
 | Q. LLM sub-search inside the tool | Sourcegraph, chunkhound | The only vendor result faster than local search on fuzzy tasks, but it breaks the deterministic no-LLM design | | Product stance; skip |
 | R. Large tool catalogues with presets and lazy search | gortex, roam, trace-mcp, tokensave | No: the agent under-picks even a second tool | | Yes |
+| **S. Structural pattern search** (AST patterns such as `.unwrap()` calls or `new X(...)`) | Octocode `structural_search` | Unknown. Symbol and call-path answers cannot find a syntactic pattern, so those tasks fall back to Grep. Whether agents ask such questions is not known | Moderate: the repository uses ast-grep only as a development lint (`check:kernel-rules`), so a shipped pattern engine, the tool, its output shape and per-language scope are all new work. Octocode's engine is unread | No. The agent-eval bank has no pattern-style task |
+| **T. Live graph without an index** | Octocode `graphrag` | Targets the adoption hole in D: 9 of 11 worktrees had no index. A per-call parse cost is unmeasured, and indexing stays the user's decision | Moderate | No. Treat as a variant of D to compare, not a new direction |
 
 ## 3. Ranked shortlist
 
@@ -61,6 +64,9 @@ Each row: does it help the agent stop reading, cost, and whether the downstream 
 6. **Compiler overlay (G).** Keep the gate: no code until a resolver-versus-SCIP precision gap is measured.
 7. **Symbol-linked rationale memory (F).** Only when the rationale trigger fires.
 8. **Package indexing (I).** Only when a flow leaves the repo.
+9. **Structural pattern search (S).** Add a pattern-style task class to the agent-eval harness first. If agents ask such questions and fall back to Grep, ship it; if not, drop it. The live graph (T) is compared against D when D is scoped.
+
+Octocode's own benchmark supports two existing stances rather than adding a candidate. Weighting fusion toward BM25 over dense vectors raised Hit@5 from 0.60 to 0.73 on its corpus, in line with FTS-first retrieval. A generic local cross-encoder reranker lowered Hit@5 from 0.73 to 0.60, so reranking is not a free addition.
 
 Not adopting on current evidence: L through R above, editor-buffer overlays (CLI hosts write to disk), and Vue template edges (sized as Grep-scale in the downstream project).
 
