@@ -12,7 +12,9 @@
  * declarations for the languages listed below.
  *
  * Each case runs with the decoy package sorting before and after the real
- * one, since ties between same-named candidates fell to index order.
+ * one, since ties between same-named candidates fell to index order. Swift's
+ * decoy is a same-named type in another file, not another module: the index
+ * does not model Swift modules.
  * Java and Kotlin reach the declaration through their bound-type path when a
  * parameter or local holds the receiver, and are kept as guards there; a
  * factory call's return type reaches the fallback. Scala and Swift keep a separate
@@ -139,7 +141,11 @@ const languages: Lang[] = [
     },
   },
   {
-    name: 'swift',
+    // Swift has no package in the extractor's model (a directory does not make
+    // a module, and SwiftPM targets are not read), so the "decoy" is a second
+    // `Base` declared in another file. This shows the lookup follows the
+    // declaration the `extends` edge names, not module separation.
+    name: 'swift (same-named type in another file)',
     method: 'm',
     scenarios: ['direct', 'grand'],
     caller: () => 'main/Use.swift',
@@ -162,27 +168,31 @@ function expectedFile(l: Layout, lang: Lang): string | null {
   return `${l.real}/${l.scenario === 'grand' ? 'Root' : 'Base'}.${ext}`;
 }
 
-async function callTargets(lang: Lang, l: Layout): Promise<string[]> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `cg-supertype-${lang.name}-`));
+async function callsFrom(name: string, files: Record<string, string>, callerFile: string, method: string): Promise<string[]> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `cg-supertype-${name.replace(/\W+/g, '-')}-`));
   roots.push(root);
-  for (const [rel, content] of Object.entries(lang.build(l))) {
+  for (const [rel, content] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
     fs.writeFileSync(path.join(root, rel), content);
   }
   const cg = await CodeGraph.init(root, { index: true });
   try {
     const out: string[] = [];
-    for (const n of cg.getNodesInFile(lang.caller(l))) {
+    for (const n of cg.getNodesInFile(callerFile)) {
       for (const e of cg.getOutgoingEdges(n.id)) {
         if (e.kind !== 'calls') continue;
         const t = cg.getNode(e.target)!;
-        if (t.name === lang.method) out.push(t.filePath);
+        if (t.name === method) out.push(`${t.filePath}:${t.startLine}`);
       }
     }
     return out.sort();
   } finally {
     cg.close();
   }
+}
+
+async function callTargets(lang: Lang, l: Layout): Promise<string[]> {
+  return (await callsFrom(lang.name, lang.build(l), lang.caller(l), lang.method)).map((t) => t.replace(/:\d+$/, ''));
 }
 
 // The decoy package sorts before the real one in one layout and after it in the other.
@@ -209,5 +219,42 @@ describe('inherited method calls follow the declared supertype', () => {
         }
       }
     }
+  }
+});
+
+/**
+ * Scala qualified names omit the package, so two `Base` types share `Base::m`.
+ * What tells them apart is the declaration: its file, or its lines when
+ * Scala 2 package blocks put both in one file.
+ */
+describe('Scala types that share a qualified name', () => {
+  const use = 'package main\nimport real.Child\nclass Use { def f(c: Child): Unit = { c.m() } }\n';
+  const orders = [
+    { real: 'zreal', decoy: 'adecoy' },
+    { real: 'areal', decoy: 'zdecoy' },
+  ];
+
+  for (const order of orders) {
+    it(`an object of the same name in another package is not the parent (${order.real} vs ${order.decoy})`, async () => {
+      const files = {
+        [`${order.real}/Base.scala`]: `package ${order.real}\nclass Root {\n  def m(): Unit = {}\n}\nclass Base extends Root\n`,
+        [`${order.real}/Child.scala`]: `package ${order.real}\nclass Child extends Base\n`,
+        [`${order.decoy}/Base.scala`]: `package ${order.decoy}\nobject Base {\n  def m(): Unit = {}\n}\n`,
+        'main/Use.scala': use.replace('real.Child', `${order.real}.Child`),
+      };
+      expect(await callsFrom('scala-object', files, 'main/Use.scala', 'm')).toEqual([`${order.real}/Base.scala:3`]);
+    });
+
+    it(`package blocks in one file keep the declared parent's members (${order.real} vs ${order.decoy})`, async () => {
+      const real = `package ${order.real} {\n  class Root {\n    def m(): Unit = {}\n  }\n  class Base extends Root\n  class Child extends Base\n}\n`;
+      const decoy = `package ${order.decoy} {\n  class Base {\n    def m(): Unit = {}\n  }\n}\n`;
+      for (const [first, second, rootLine] of [[real, decoy, 3], [decoy, real, 8]] as const) {
+        const files = {
+          'lib/All.scala': first + second,
+          'main/Use.scala': use.replace('real.Child', `${order.real}.Child`),
+        };
+        expect(await callsFrom('scala-blocks', files, 'main/Use.scala', 'm')).toEqual([`lib/All.scala:${rootLine}`]);
+      }
+    });
   }
 });

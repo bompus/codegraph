@@ -1380,9 +1380,10 @@ Ok(self.dart_member_of(type_name, method, r, false)?
 
     /// The methods named `method` that `ty` declares. Where qualified names
     /// leave out the package (Scala, Swift), a second type of the same
-    /// qualified name elsewhere is a different type, so only the members in
-    /// `ty`'s own file count; with no such twin a member in another file is
-    /// an extension or companion of `ty` and counts.
+    /// qualified name in another file is a different type, so only the members
+    /// in `ty`'s own file count, and one in the same file (a Scala package
+    /// block) leaves only the members inside `ty`'s lines; with no such twin a
+    /// member in another file is an extension or companion of `ty` and counts.
     fn type_node_methods(&mut self, ty: &KNode, method: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
         let mut members: Vec<Arc<KNode>> = self
             .nodes_by_qualified_name(&format!("{}::{}", ty.qualified_name, method))?
@@ -1411,19 +1412,28 @@ Ok(self.dart_member_of(type_name, method, r, false)?
                 members.extend(extension);
             }
         }
-        if members.iter().any(|m| m.file_path != ty.file_path) && qualified_names_omit_package(&ty.language) {
-            let mut twins = 0;
+        if !members.is_empty() && qualified_names_omit_package(&ty.language) {
+            let mut other_file = false;
+            let mut same_file = false;
             let same_named: Vec<Arc<KNode>> = self.nodes_by_qualified_name(&ty.qualified_name)?.iter().cloned().collect();
             for n in same_named {
-                if n.language == ty.language
-                    && is_supertype_bearing_kind(&n.kind)
-                    && n.file_path != ty.file_path
-                    && !self.is_swift_extension(&n)
-                {
-                    twins += 1;
+                // A Scala singleton of the same name is a twin too, unless it
+                // is the companion beside `ty`.
+                let type_like = is_supertype_bearing_kind(&n.kind) || (n.language == "scala" && n.kind == "module");
+                if n.id == ty.id || n.language != ty.language || !type_like || self.is_swift_extension(&n) {
+                    continue;
+                }
+                if n.file_path != ty.file_path {
+                    other_file = true;
+                } else if n.kind == ty.kind {
+                    same_file = true;
                 }
             }
-            if twins > 0 {
+            if same_file {
+                // Scala package blocks put same-named types in one file, with
+                // the same qualified name: only the lines of `ty` are its own.
+                members.retain(|m| m.file_path == ty.file_path && m.start_line >= ty.start_line && m.end_line <= ty.end_line);
+            } else if other_file {
                 members.retain(|m| m.file_path == ty.file_path);
             }
         }
