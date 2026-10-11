@@ -202,3 +202,14 @@ Octocode found one of six needed files where the two CodeGraph builds found none
 | 5 (default) | 421 | 0.65 | 1.00 |
 
 Running every test has precision 0.62, so the default depth narrows almost nothing on a tightly coupled package. Explore's per-symbol test list was scored on every sixth executed function (57). Twenty-seven were not in its short blast-radius list, so they could not be scored. Of the other 30, twelve list direct tests (17 names, all correct, recall 0.31 where the list was not truncated), six list tests reached through callers (10 names, 7 correct) and twelve print "no tests found" although about nine test modules run each of them (for example `handle_http_exception`, `finalize_request`, `preprocess_request` and `from_mapping`). This is one repository and one language, and line coverage says a test ran the code, not that it would fail if the code broke. The definition behind repowise's 97.5% was not found, so the figures are not comparable with it.
+
+The twelve Flask symbols with no tests fall into three groups. Three (`handle_http_exception`, `finalize_request`, `preprocess_request`) sit behind `Flask.__call__`, which nothing in the project calls, because tests reach it through the test client and werkzeug. Eight are hooks that library code calls or methods applied as decorators. One (`stream_with_context`) has a path to a test past explore's 3-hop limit. No group is a resolver mis-wire; the graph has no edge for a test driving the app through its framework entry.
+
+The same trace on two other frameworks, again with no coverage oracle (functions chosen because any request test runs them), shows the entry-point gap is general and the rest is not:
+
+| Framework | Entry point | Rest of the request path |
+|---|---|---|
+| FastAPI `f5c6e9b` | `FastAPI.__call__` and the per-request closure have no test | Route registration in tests links `get_request_handler` (1 hop), `solve_dependencies`, `serialize_response` and `run_endpoint_function` (3 hops); `get_dependant` is linked at 4 hops, past the limit |
+| Express `a419aa7` | `app.handle` and `app.init` have no test, and no test file mentions them | `res.send` and `res.json` are linked (1 and 2 hops); `app.render`, `res.render` and `res.sendFile` are not, although 1 to 2 test files call each, through untyped `res` and `app` parameters |
+
+Linking every test that uses a test client to the app entry would not narrow anything: each pipeline function would then list every client-using test, which is what `affected` already does at depth 5 (precision 0.65 against 0.62 for running everything). A useful link would match the request path to the route handler. Nothing is built; whether it saves an agent reads belongs to the diff-impact task class in the shortlist. About eight symbols per framework, so the figures are indicative.
