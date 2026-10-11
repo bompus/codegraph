@@ -67,7 +67,7 @@ What it did not buy:
 
 - **Answer quality or precision.** The kernel resolver is a bug-for-bug mirror of the TypeScript one, so it reproduces the 58.6%. The survey's conclusion still holds: "The language of the engine did not decide any of these outcomes; what the tool returns did."
 - **Memory.** Our index run peaks near 400 MB even on a repository of 1,200–1,500 nodes (os-lib, lazy.nvim in the ledger's A/B), so the floor is Node plus the worker pool, not the kernel. repowise builds its graph in 75 MB. On a host that has been OOM-killed by aggregate pressure, this matters more to us than seconds do.
-- **One implementation.** Every kernel punt still runs the TypeScript resolver, so there are two resolvers to keep in step, and a parity bug the dump gate cannot see (a language no corpus contains) ships silently.
+- **One implementation (as of 2026-09-25; #192 has since removed the TypeScript resolver spine).** Every kernel punt then ran the TypeScript resolver, so there were two resolvers to keep in step, and a parity bug the dump gate could not see (a language no corpus contains) could ship silently. `import-resolver.ts` remains as an import-path helper for synthesizers and framework resolvers.
 
 The greenfield sketch's reopen conditions are close to met: both incremental plans have landed and resolution runs in the kernel with golden-dump parity. Its third condition, "a memory ceiling the daemon cannot meet", now has outside evidence behind it. That argues for measuring the memory floor before deciding anything larger, not for a rewrite.
 
