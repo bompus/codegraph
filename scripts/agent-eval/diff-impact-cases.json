@@ -1,0 +1,63 @@
+{
+  "_comment": "Diff-impact cases. Each is a real commit: the fixture is the commit's parent as a single-commit repo, with only the `primary` file brought to its post-commit state as an uncommitted edit. The other source and test files the real commit changed are the expected answer. That is a co-change proxy: a file can depend on the edit without having been changed with it, so recall is the primary score and precision against these files is a floor.",
+  "codeExtensions": {
+    "go": ["\\.go$"],
+    "javascript": ["\\.js$"]
+  },
+  "cases": [
+    {
+      "id": "gin-keys-type",
+      "repo": "gin",
+      "url": "https://github.com/gin-gonic/gin",
+      "language": "go",
+      "sha": "41d8591",
+      "primary": "context.go",
+      "testPattern": "_test\\.go$"
+    },
+    {
+      "id": "gin-trusted-proxies",
+      "repo": "gin",
+      "url": "https://github.com/gin-gonic/gin",
+      "language": "go",
+      "sha": "0be805a",
+      "primary": "gin.go",
+      "testPattern": "_test\\.go$"
+    },
+    {
+      "id": "gin-json-render",
+      "repo": "gin",
+      "url": "https://github.com/gin-gonic/gin",
+      "language": "go",
+      "sha": "0c96a20",
+      "primary": "render/json.go",
+      "testPattern": "_test\\.go$"
+    },
+    {
+      "id": "gin-test-context",
+      "repo": "gin",
+      "url": "https://github.com/gin-gonic/gin",
+      "language": "go",
+      "sha": "55e27f1",
+      "primary": "gin.go",
+      "testPattern": "_test\\.go$"
+    },
+    {
+      "id": "express-sync-stack",
+      "repo": "express",
+      "url": "https://github.com/expressjs/express",
+      "language": "javascript",
+      "sha": "708ac4cd",
+      "primary": "lib/router/route.js",
+      "testPattern": "^test/"
+    },
+    {
+      "id": "express-merge-dep",
+      "repo": "express",
+      "url": "https://github.com/expressjs/express",
+      "language": "javascript",
+      "sha": "246f6f5a",
+      "primary": "lib/application.js",
+      "testPattern": "^test/"
+    }
+  ]
+}

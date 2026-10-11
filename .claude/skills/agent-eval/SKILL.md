@@ -89,6 +89,27 @@ Lead with cost + tool/Read counts — they are the reliable signals; raw token
 in/out are confounded by subagent delegation and prompt caching. State whether
 codegraph reduced effort and whether both arms reached a correct answer.
 
+## Diff-impact task class
+
+Asks "what does my uncommitted change affect?" instead of a discovery question,
+so the diff-seeded `codegraph_explore` path (change questions answered from the
+diff) has an eval of its own. Each case in `scripts/agent-eval/diff-impact-cases.json`
+is a real commit: the fixture is its parent exported without history, with one
+file brought to its post-commit state as an uncommitted edit. The answer is
+scored on whether it names the other source and test files the real commit
+changed. That is a co-change proxy: a file can depend on the edit without having
+been changed with it, so recall is the main score and precision is a floor.
+
+```bash
+# Full-history clones of the case repos (gin/, express/) in an owned disk directory.
+CG_BIN=/absolute/path/to/codegraph AGENT_EVAL_OUT=... \
+  bash scripts/agent-eval/run-diff-impact.sh "$CLONES" "$OUT" 1 gin-keys-type
+```
+
+Each run is a real model session, so fix the cases, runs and arms before
+launching. `diff-impact-summary.mjs` prints recall per arm and per case; cost and
+tool counts stay in each run's `run-all.log`.
+
 ## Notes
 - The index is rebuilt every run (`audit.sh` wipes `.codegraph`) — different
   versions extract differently, so an index must be served by the same binary
