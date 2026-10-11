@@ -106,7 +106,21 @@ export interface SessionHit {
   partial?: boolean;
   /** The whole stored passage; set only by a `full` search, within {@link FULL_PASSAGE_BUDGET}. */
   text?: string;
+  /** With `context`: the passages just before the hit in its transcript, oldest first. */
+  before?: SessionPassage[];
+  /** With `context`: the passages just after the hit in its transcript, in order. */
+  after?: SessionPassage[];
 }
+
+/** A passage next to a hit in the same transcript. */
+export interface SessionPassage {
+  role: string;
+  ts: string;
+  text: string;
+}
+
+/** The most passages `context` returns on each side of a hit. */
+export const MAX_CONTEXT = 5;
 
 /** Bytes of passage text one `full` search returns in all; hits past it keep their snippet. */
 export const FULL_PASSAGE_BUDGET = 16_000;
@@ -124,6 +138,11 @@ export interface SessionSearchOptions {
   any?: boolean;
   /** Return each hit's whole passage (see {@link FULL_PASSAGE_BUDGET}) beside its snippet. */
   full?: boolean;
+  /**
+   * Passages to return on each side of a hit, 0 to {@link MAX_CONTEXT} (default 0).
+   * Implies `full`; neighbours spend the byte budget after every hit's own passage.
+   */
+  context?: number;
 }
 
 /**
@@ -460,6 +479,7 @@ export class SessionsIndex {
    */
   search(raw: string, opts: SessionSearchOptions = {}): SessionHit[] & { fallback?: boolean } {
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 100));
+    const context = opts.full ? Math.max(0, Math.min(Math.trunc(opts.context ?? 0), MAX_CONTEXT)) : 0;
     const stems = [...new Set(queryWords(raw).map(stem))];
     const where: string[] = [];
     const params: string[] = [];
@@ -497,13 +517,32 @@ export class SessionsIndex {
         if (seen.has(key) || seen.has(`#${id}`)) continue;
         seen.add(key);
         seen.add(`#${id}`);
-        const found = opts.full ? { ...hit, text } : hit;
+        const found = opts.full ? { ...hit, text, ...(context > 0 ? this.neighbours(hit.file, id, context) : {}) } : hit;
         hits.push(any && !opts.any ? { ...found, partial: true } : found);
         if (hits.length === limit) break;
       }
     }
     if (hits.length > 0 && hits.every((h) => h.partial)) hits.fallback = true;
     return hits;
+  }
+
+  /**
+   * The passages up to `n` rows either side of row `id` in the same transcript.
+   * `replaceRecord` writes one transcript's passages in one transaction, so its
+   * rows are consecutive and in transcript order.
+   */
+  private neighbours(file: string, id: number, n: number): Pick<SessionHit, 'before' | 'after'> {
+    const rows = this.db
+      .prepare(
+        `SELECT rowid AS id, role, ts, text FROM docs
+         WHERE rowid BETWEEN ? AND ? AND file = ? AND rowid != ? ORDER BY rowid`,
+      )
+      .all(id - n, id + n, file, id) as Array<SessionPassage & { id: number }>;
+    const pick = (wanted: Array<SessionPassage & { id: number }>): SessionPassage[] | undefined =>
+      wanted.length > 0 ? wanted.map(({ role, ts, text }) => ({ role, ts, text })) : undefined;
+    const before = pick(rows.filter((r) => r.id < id));
+    const after = pick(rows.filter((r) => r.id > id));
+    return { ...(before ? { before } : {}), ...(after ? { after } : {}) };
   }
 
   close(): void {
@@ -633,6 +672,8 @@ export interface SessionsQueryResult {
   fallback?: boolean;
   /** A `full` search: how many hits lost their whole passage to the byte budget and keep only the snippet. */
   fullCut?: number;
+  /** A `context` search: how many neighbouring passages the byte budget left out. */
+  contextCut?: number;
 }
 
 /**
@@ -646,6 +687,7 @@ export function querySessions(
   opts: SessionSearchOptions = {},
 ): SessionsQueryResult {
   if (!loadSessionsEnabled(projectRoot)) throw new NoSessionsError(projectRoot);
+  if (opts.context) opts = { ...opts, full: true };
   const override = process.env.CODEGRAPH_SESSIONS_DIR;
   const index = SessionsIndex.open(sessionsDbPath(projectRoot));
   try {
@@ -670,19 +712,50 @@ export function querySessions(
   }
 }
 
-/** Keeps whole passages in rank order until the budget is spent; later hits fall back to their snippet. */
-function withinPassageBudget(hits: SessionHit[]): number {
+/**
+ * Keeps whole passages in rank order until the budget is spent; later hits fall
+ * back to their snippet. Neighbours then spend what is left, rank by rank and
+ * nearest first, so context never costs a hit its own passage.
+ */
+function withinPassageBudget(hits: SessionHit[]): { fullCut: number; contextCut: number } {
   let spent = 0;
-  let cut = 0;
+  let fullCut = 0;
   for (const hit of hits) {
     if (hit.text === undefined) continue;
     spent += Buffer.byteLength(hit.text);
-    if (cut > 0 || spent > FULL_PASSAGE_BUDGET) {
+    if (fullCut > 0 || spent > FULL_PASSAGE_BUDGET) {
       delete hit.text;
-      cut++;
+      delete hit.before;
+      delete hit.after;
+      fullCut++;
     }
   }
-  return cut;
+  let contextCut = 0;
+  let full = fullCut > 0;
+  for (const hit of hits) {
+    const before = hit.before ?? [];
+    const after = hit.after ?? [];
+    const keptBefore: SessionPassage[] = [];
+    const keptAfter: SessionPassage[] = [];
+    for (let i = 0; i < Math.max(before.length, after.length); i++) {
+      for (const [from, kept] of [[before[before.length - 1 - i], keptBefore], [after[i], keptAfter]] as const) {
+        if (!from) continue;
+        const size = Buffer.byteLength(from.text);
+        if (full || spent + size > FULL_PASSAGE_BUDGET) {
+          full = true;
+          contextCut++;
+        } else {
+          spent += size;
+          kept.push(from);
+        }
+      }
+    }
+    delete hit.before;
+    delete hit.after;
+    if (keptBefore.length > 0) hit.before = keptBefore.reverse();
+    if (keptAfter.length > 0) hit.after = keptAfter;
+  }
+  return { fullCut, contextCut };
 }
 
 function result(
@@ -692,7 +765,11 @@ function result(
 ): SessionsQueryResult {
   const hits = [...found];
   const out: SessionsQueryResult = found.fallback ? { index, hits, fallback: true } : { index, hits };
-  if (opts.full) out.fullCut = withinPassageBudget(hits);
+  if (opts.full) {
+    const { fullCut, contextCut } = withinPassageBudget(hits);
+    out.fullCut = fullCut;
+    if (contextCut > 0) out.contextCut = contextCut;
+  }
   return out;
 }
 
@@ -784,11 +861,20 @@ export function formatSessionHits(query: string, result: SessionsQueryResult): s
     lines.push(`## ${h.session}${title}`);
     lines.push(`${h.role} · ${h.ts} · ${h.file}${h.partial && !result.fallback ? ' · some words' : ''}`);
     if (h.text === undefined) lines.push(h.snippet.replace(/\s+/g, ' ').trim());
-    else lines.push(...h.text.split('\n').map((l) => `> ${l}`));
+    else if (h.before || h.after) {
+      const quote = (p: { text: string }) => p.text.split('\n').map((l) => `> ${l}`);
+      const label = (what: string, p: { role: string; ts: string }) => `${what} · ${p.role} · ${p.ts}`;
+      for (const p of h.before ?? []) lines.push(label('before', p), ...quote(p), '');
+      lines.push('match', ...quote(h as { text: string }));
+      for (const p of h.after ?? []) lines.push('', label('after', p), ...quote(p));
+    } else lines.push(...h.text.split('\n').map((l) => `> ${l}`));
     lines.push('');
   }
   if (result.fullCut) {
     lines.push(`Whole passages are limited to ${FULL_PASSAGE_BUDGET.toLocaleString('en-US')} bytes in all: the last ${result.fullCut} hit${result.fullCut === 1 ? '' : 's'} show only the matching snippet. Narrow the search (--role, --session, a smaller limit) to read them whole.`, '');
+  }
+  if (result.contextCut) {
+    lines.push(`The byte budget left out ${result.contextCut} neighbouring passage${result.contextCut === 1 ? '' : 's'}; the nearest ones are shown. Lower \`context\` or narrow the search to see more.`, '');
   }
   lines.push('A hit names its session id (`claude:`, `codex:`, `cursor:`, `opencode:`, `agy:`, `devin:`, `grok:`, or `git:` for commit messages); the path after the timestamp is the transcript to read when the snippet is not enough.');
   return lines.join('\n');

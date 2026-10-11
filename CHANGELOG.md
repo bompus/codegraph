@@ -33,6 +33,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### New Features
 
 - `codegraph_sessions` and `codegraph sessions` take `full` / `--full` to return each hit's whole stored passage instead of a 24-token snippet, up to 16,000 bytes in all; hits past the budget keep their snippet and the answer says how many. Snippets stay the default.
+- `codegraph_sessions` and `codegraph sessions` take `context` / `--context <n>` (0 to 5, implies `full`) to return the passages either side of each hit from the same transcript. Neighbours spend the same byte budget after every hit's own passage, nearest first, and the answer says how many it left out. Passages are returned as stored, including any credentials a transcript holds.
 
 - Installers can verify daemon readiness and safely hand writer ownership across build promotion and rollback through a supported runtime-control API.
 

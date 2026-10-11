@@ -1503,8 +1503,9 @@ program
   .option('--session <id-prefix>', 'Only one session (id prefix)')
   .option('--any', 'OR the words instead of requiring all of them')
   .option('--full', 'Show each hit\'s whole passage (16,000 bytes in all) instead of a snippet')
+  .option('--context <n>', 'Also show n passages (0-5) before and after each hit; implies --full', '0')
   .option('-j, --json', 'Output as JSON')
-  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; full?: boolean; json?: boolean }) => {
+  .action(async (words: string[], options: { path?: string; limit?: string; role?: string; since?: string; session?: string; any?: boolean; full?: boolean; context?: string; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
     try {
       if (!isInitialized(projectPath)) {
@@ -1523,6 +1524,7 @@ program
           session: options.session,
           any: options.any,
           full: options.full,
+          context: parseInt(options.context || '0', 10) || 0,
         });
       } catch (err) {
         if (err instanceof NoSessionsError) {
