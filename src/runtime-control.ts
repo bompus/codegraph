@@ -36,16 +36,15 @@ export async function getRuntimeIdentity(projectRoot: string, options: { timeout
  * Refuse live writers that predate the coordination protocol unless the caller
  * confirms every other old-version server for the project has been stopped. The
  * daemon this call stops is not part of that confirmation.
- * `legacyQuiescent` is the earlier name for `oldServersStopped`.
  */
 export async function stopRuntime(
   projectRoot: string,
-  options: { oldServersStopped?: boolean; legacyQuiescent?: boolean } = {},
+  options: { oldServersStopped?: boolean } = {},
 ): Promise<StopResult> {
   projectRoot = canonicalProjectRoot(projectRoot);
   return stopDaemonAt(projectRoot, {
     preserveUnverified: true,
-    requireWriterProtocol: !(options.oldServersStopped ?? options.legacyQuiescent),
+    requireWriterProtocol: !options.oldServersStopped,
   });
 }
 

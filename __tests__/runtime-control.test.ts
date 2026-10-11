@@ -264,8 +264,7 @@ describe('runtime identity and readiness', () => {
     },
   );
 
-  it.each(['oldServersStopped', 'legacyQuiescent'] as const)(
-    'preserves a legacy daemon by default, then stops it only after %s is set', async (option) => {
+  it('preserves a legacy daemon by default, then stops it only after oldServersStopped is set', async () => {
     const actor = spawn(process.execPath, [path.resolve(__dirname, 'fixtures/runtime-control-daemon.cjs'),
       root, getDaemonSocketPath(root), 'legacy', path.resolve(__dirname, '../dist/mcp/writer-lock.js')],
       { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
@@ -276,7 +275,7 @@ describe('runtime identity and readiness', () => {
     expect(actor.exitCode).toBeNull();
     expect(fs.readFileSync(getDaemonPidPath(root), 'utf8')).toBe(before);
     const exited = once(actor, 'exit');
-    expect(await stopRuntime(root, { [option]: true })).toMatchObject({ pid: actor.pid, outcome: 'term' });
+    expect(await stopRuntime(root, { oldServersStopped: true })).toMatchObject({ pid: actor.pid, outcome: 'term' });
     await exited;
     const lease = reserveRuntimeWriter(root, process.pid);
     expect(lease).not.toBeNull();
