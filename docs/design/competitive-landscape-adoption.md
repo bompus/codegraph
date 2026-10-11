@@ -97,3 +97,21 @@ The model-load cost does not explain the slow Octocode queries: a long-running M
 Reading: this does not support switching. CodeGraph indexes about 140 to 260 times faster in about 15 to 27 times less peak memory, returns verbatim source, and matched or exceeded Octocode on call edges in the small sample. Two findings change the shortlist. First, the vite concept query is a counter-example to row O: an embedding search found the right file where a name-driven search did not, so the "concept tasks were 3 of 3 correct" result should be re-run on natural-language queries in a TypeScript corpus. Second, S and T each have a working reference to compare against; both stay conditional on an agent-eval task class.
 
 Not measured: agent outcomes, upstream CodeGraph, Octocode with a cloud embedder or reranker, repeated runs, and edge precision for Go and TypeScript beyond the one spot check.
+
+## 6. Gap register, 2026-10-10
+
+Where other tools do something this fork does not, or do it better by a published or measured result, with what is known and what would reopen each item. "Unmeasured on the fork" means the number comes from a build other than this fork (usually 1.5.0) or from a different tool. Sources are repowise's `docs/BENCHMARKS.md` and its compiler-oracle write-up (G4), the Octocode trial in section 5, and [strategy-2026-09.md](strategy-2026-09.md).
+
+| # | Gap or idea | Source | What is known | Status and next measurement |
+|---|---|---|---|---|
+| 1 | Call-edge precision and recall against a compiler, TypeScript first | repowise G4 | On 1.5.0, zod 0.73 precision / 0.37 recall and hono 0.81 precision, against repowise's 0.99 / 0.70 and 0.98 / 0.81. [precision-replay-2026-09.md](../benchmarks/precision-replay-2026-09.md) shows the fork keeps fewer TypeScript edges and names recall as the larger problem | Unmeasured on the fork. Run the G4 oracle cells against the fork build |
+| 2 | Natural-language file retrieval | repowise ContextBench; section 5 | On Python and Go questions repowise's local search found 0.74 of the needed files (0.88 with a hosted model) against 0.61 for CodeGraph 1.5.0. In the section 5 trial Octocode returned vite's `resolve.ts` at rank 1 for a natural-language query where the fork did not return it. One query, one repository | Unmeasured on the fork; runs against row O of section 2 ("concept tasks were 3 of 3 correct") |
+| 3 | Go precision on a large repository | repowise G4 | syft: CodeGraph 1.5.0 0.87 precision against 0.94 to 0.97 for the best arms; gitleaks and cobra within about one to three points. On interface-dispatch edges CodeGraph found 35 of 3,303 against repowise's 12 | Unmeasured on the fork. Part of the same oracle run as item 1 |
+| 4 | Edge origin and confidence on every edge | repowise, gortex | Strategy step 2. No shipped entry for a persisted origin or confidence shown in explore in `CHANGELOG.md` | Verify what has landed before scheduling |
+| 5 | Memory floor | repowise | repowise builds its graph in about 75 MB. The fork's index run peaked at 208 MB (flask), 310 MB (gin) and 455 MB (vite) in section 5 | Strategy step 3. Set a target before optimizing |
+| 6 | Structural pattern search; index-free live graph | Octocode | Section 5 and candidates S and T | Needs an agent-eval task class first |
+| 7 | Test selection precision | repowise: 97.5% on 47 targets | The fork has `codegraph affected` and named-test output in explore; neither has been measured for precision | Unmeasured |
+| 8 | Commit-history search, branch-delta indexes, one server for several repositories | Octocode | Commit search has no equivalent here. Sibling-worktree index seeding covers part of branch deltas. Several repositories per server is candidate J | Not scored; no measured miss |
+| 9 | Dead code, health score, decision records, generated wiki | repowise | Deferred in the strategy doc; its health score was measured against defect data, the others are capabilities without a measurement | Reopen on a measured miss in our own use |
+
+Items 1 to 3 share one experiment and items 2 and 7 each need a corpus with known answers, so those are the first measurements to run. Results go in the survey doc with the date and the build.
