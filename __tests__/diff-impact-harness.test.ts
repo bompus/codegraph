@@ -74,13 +74,16 @@ describe('diff-impact fixture', () => {
     roots.push(root);
     const clone = join(root, 'clone');
     mkdirSync(join(clone, 'lib'), { recursive: true });
+    mkdirSync(join(clone, 'test'), { recursive: true });
     git(clone, 'init', '-q');
     writeFileSync(join(clone, 'lib/a.js'), 'exports.a = 1;\n');
     writeFileSync(join(clone, 'lib/b.js'), 'exports.b = 1;\n');
+    writeFileSync(join(clone, 'test/b.js'), 'exports.b = 1;\n');
     git(clone, 'add', '-A');
     git(clone, 'commit', '-q', '-m', 'parent');
     writeFileSync(join(clone, 'lib/a.js'), 'exports.a = 2;\n');
     writeFileSync(join(clone, 'lib/b.js'), 'exports.b = 2;\n');
+    writeFileSync(join(clone, 'test/b.js'), 'exports.b = 2;\n');
     git(clone, 'add', '-A');
     git(clone, 'commit', '-q', '-m', 'change');
     const sha = git(clone, 'rev-parse', 'HEAD').trim();
@@ -94,6 +97,7 @@ describe('diff-impact fixture', () => {
     );
 
     expect(truth.source).toEqual(['lib/b.js']);
+    expect(truth.tests).toEqual(['test/b.js']);
     expect(readFileSync(join(repo, 'lib/a.js'), 'utf8')).toBe('exports.a = 2;\n');
     expect(readFileSync(join(repo, 'lib/b.js'), 'utf8')).toBe('exports.b = 1;\n');
     expect(git(repo, 'status', '--short').trim()).toBe('M lib/a.js');

@@ -7,7 +7,8 @@
 # Usage: run-diff-impact.sh <clones-dir> <out-dir> [runs-per-case] [case-id ...]
 #   <clones-dir>  holds a full-history clone per repo named in the cases file
 #                 (for example gin/ and express/)
-#   <out-dir>     owned disk directory; one subdirectory per case and run
+#   <out-dir>     owned disk directory; one subdirectory per case and run.
+#                 scores.jsonl in it is reset at the start of each invocation.
 #   [runs]        repetitions per case (default 1)
 #   [case-id ..]  limit to these cases (default: all)
 # Env: CG_BIN (codegraph binary, required), MODEL / EFFORT (as run-all.sh),
@@ -26,6 +27,7 @@ HARNESS="$(cd "$(dirname "$0")" && pwd)"
 CASES="$HARNESS/diff-impact-cases.json"
 : "${CG_BIN:?set CG_BIN to the codegraph binary under test}"
 mkdir -p "$OUT"
+: > "$OUT/scores.jsonl"   # scores belong to this invocation only
 
 QUESTION='I have uncommitted changes in this repository (see git diff). Which other files are affected by this change: callers and dependents in the source, and tests that cover the changed code? List the file paths, source files first and then tests, with one line on why each is affected. Do not edit anything.'
 
@@ -46,7 +48,13 @@ for id in "${ids[@]}"; do
       || echo "run-all failed for $id run $run (see $dir/run-all.log)" >&2
     for arm in headless-with headless-without; do
       [ -s "$dir/run-$arm.jsonl" ] || continue
-      node "$HARNESS/diff-impact-score.mjs" "$dir/run-$arm.jsonl" "$fx/truth.json" "$fx/repo" \
+      # A run with no successful answer is recorded unscored (recall null) so one
+      # failed arm neither stops the loop nor drops out of the run count.
+      if ! score="$(node "$HARNESS/diff-impact-score.mjs" "$dir/run-$arm.jsonl" "$fx/truth.json" "$fx/repo")"; then
+        echo "no scorable answer for $id run $run $arm (see $dir/run-$arm.jsonl)" >&2
+        score="$(node -e 'console.log(JSON.stringify({id:process.argv[1], recall:null, precisionFloor:null, missed:[]}))' "$id")"
+      fi
+      echo "$score" \
         | node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(JSON.stringify({...s, arm:process.argv[1], run:Number(process.argv[2])}))' "$arm" "$run" \
         >> "$OUT/scores.jsonl"
     done

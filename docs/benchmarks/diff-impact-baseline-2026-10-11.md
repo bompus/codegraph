@@ -3,8 +3,8 @@
 **Question:** When an agent is asked which other files an uncommitted change
 affects, does having CodeGraph help it name them?
 
-**Short answer:** This set of cases cannot tell yet. Both arms named the other
-changed files in 35 of 36 sessions, and the arm with CodeGraph called
+**Short answer:** This set of cases cannot tell yet. Both arms named every other
+changed file in 34 of 36 sessions (each arm missed one test file once), and the arm with CodeGraph called
 `codegraph_explore` in only 3 of its 18 sessions. The agent read `git diff` and
 used grep instead, which is enough on repositories the size of gin and express.
 The result is a ceiling, not evidence for or against the diff-seeded explore path.
