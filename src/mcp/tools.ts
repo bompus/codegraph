@@ -6117,14 +6117,14 @@ export class ToolHandler {
       lines.push('');
 
       // Group edges by kind for readability
-      const byKind = new Map<string, Array<{ source: string; target: string }>>();
+      const byKind = new Map<string, Array<{ source: string; target: string; guess: boolean }>>();
       for (const edge of significantEdges) {
         const sourceNode = subgraph.nodes.get(edge.source);
         const targetNode = subgraph.nodes.get(edge.target);
         if (!sourceNode || !targetNode) continue;
 
         const group = byKind.get(edge.kind) || [];
-        group.push({ source: sourceNode.name, target: targetNode.name });
+        group.push({ source: sourceNode.name, target: targetNode.name, guess: isNameGuess(edge) });
         byKind.set(edge.kind, group);
       }
 
@@ -6133,7 +6133,7 @@ export class ToolHandler {
         const shown = edges.slice(0, cap);
         lines.push(`**${kind}:**`);
         for (const e of shown) {
-          lines.push(`- ${e.source} → ${e.target}`);
+          lines.push(`- ${e.source} → ${e.target}${e.guess ? ' [name match, unverified]' : ''}`);
         }
         if (edges.length > cap) {
           lines.push(`- ... and ${edges.length - cap} more`);

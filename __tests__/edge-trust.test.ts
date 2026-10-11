@@ -73,3 +73,37 @@ describe('codegraph_node trail labels name-only hops', () => {
     expect(calls).toMatch(/proven \([^)]*\)(?! \[name match)/);
   });
 });
+
+describe('explore\'s Relationships list labels name-only hops', () => {
+  let dir: string;
+  let cg: CodeGraph;
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-edge-trust-rel-'));
+    const write = (rel: string, body: string) => {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), body);
+    };
+    write('pkg_a/tools.py', 'def helper():\n    return 1\n');
+    write('pkg_b/other.py', 'def helper():\n    return 2\n');
+    write('pkg_c/util.py', 'def proven():\n    return 3\n');
+    write('app/main.py', 'from pkg_c.util import proven\n\n\ndef run():\n    helper()\n    proven()\n');
+    // The Relationships section is only rendered for repositories of 500 files or more.
+    for (let i = 0; i < 520; i++) write(`pad/f${i}.py`, `def pad_${i}():\n    return ${i}\n`);
+    cg = CodeGraph.initSync(dir, { config: { include: ['**/*.py'], exclude: [] } });
+    await cg.indexAll();
+  });
+
+  afterEach(() => {
+    try { cg.close(); } catch { /* ignore */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('marks the name-matched hop and leaves the imported one plain', async () => {
+    const result = await new ToolHandler(cg).execute('codegraph_explore', { query: 'run helper proven' });
+    const text = result.content?.[0]?.type === 'text' ? result.content[0].text : '';
+    const rels = text.split('\n').filter((l) => l.startsWith('- run → '));
+    expect(rels).toContain('- run → helper [name match, unverified]');
+    expect(rels).toContain('- run → proven');
+  });
+});
