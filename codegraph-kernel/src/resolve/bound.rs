@@ -757,31 +757,8 @@ if site.language == "dart" && site.reference_kind == "calls" {
     /// class's parent is the one its declaration resolved to, never every
     /// same-named class in other namespaces.
     fn supertype_names(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<String>> {
-        let named = if qualified { self.nodes_by_qualified_name(type_name)? } else { self.nodes_by_name(type_name)? };
-        let mut type_nodes: Vec<Arc<KNode>> = named
-            .iter()
-            // Scala singletons can inherit members even though they cannot be parents.
-            .filter(|n| {
-                n.language == r.language
-                    && (is_supertype_bearing_kind(&n.kind) || (n.language == "scala" && n.kind == "module"))
-            })
-            .cloned()
-            .collect();
-        // A name the site binds to one type keeps that type's declarations
-        // (partial or extended parts) and drops a same-named type in another
-        // namespace, package or module.
-        if from_site && type_nodes.len() > 1 {
-            if let Some(owner) = self.resolve_bound_type(type_name, r, 0)? {
-                if type_nodes.iter().any(|n| n.id == owner.id) {
-                    type_nodes.retain(|n| same_declared_type(n, &owner));
-                }
-            }
-        }
         let mut names: Vec<String> = Vec::new();
-        for tn in type_nodes {
-            if from_site && r.language == "java" && !self.java_type_visible(&tn, r)? {
-                continue;
-            }
+        for tn in self.supertype_type_nodes(type_name, r, from_site, qualified)? {
             // Ruby and PHP look in mixins before the parent class.
             let mut targets = self.mixin_nodes(&tn)?;
             for n in self.supertype_nodes(&tn.id)? {
@@ -813,6 +790,40 @@ if site.language == "dart" && site.reference_kind == "calls" {
             }
         }
         Ok(names)
+    }
+
+    /// The type declarations `type_name` names for the supertype walk: every
+    /// same-language, supertype-bearing node of that name (or qualified
+    /// name), narrowed as `supertype_names` describes.
+    fn supertype_type_nodes(&mut self, type_name: &str, r: &ResolveRefIn, from_site: bool, qualified: bool) -> Res<Vec<Arc<KNode>>> {
+        let named = if qualified { self.nodes_by_qualified_name(type_name)? } else { self.nodes_by_name(type_name)? };
+        let mut type_nodes: Vec<Arc<KNode>> = named
+            .iter()
+            // Scala singletons can inherit members even though they cannot be parents.
+            .filter(|n| {
+                n.language == r.language
+                    && (is_supertype_bearing_kind(&n.kind) || (n.language == "scala" && n.kind == "module"))
+            })
+            .cloned()
+            .collect();
+        // A name the site binds to one type keeps that type's declarations
+        // (partial or extended parts) and drops a same-named type in another
+        // namespace, package or module.
+        if from_site && type_nodes.len() > 1 {
+            if let Some(owner) = self.resolve_bound_type(type_name, r, 0)? {
+                if type_nodes.iter().any(|n| n.id == owner.id) {
+                    type_nodes.retain(|n| same_declared_type(n, &owner));
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(type_nodes.len());
+        for tn in type_nodes {
+            if from_site && r.language == "java" && !self.java_type_visible(&tn, r)? {
+                continue;
+            }
+            out.push(tn);
+        }
+        Ok(out)
     }
 
     /// swiftExtendedConformances (swift-type-visibility.ts): the types a
@@ -1233,6 +1244,22 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             // The conformance fallback: the method may live on a supertype
             // (transitively, depth-capped), still validated by name.
             if depth < 4 {
+                // A type in a language whose supertypes are told apart by
+                // their declaration is walked along its extends/implements
+                // edges, not by the bare names they carry.
+                if !qualified && walks_supertype_nodes(&r.language) {
+                    let mut items: Vec<SupertypeItem> = Vec::new();
+                    for tn in self.supertype_type_nodes(type_name, r, depth == 0, false)? {
+                        let own = self.supertype_items(&tn)?;
+                        for item in own {
+                            if matches!(&item, SupertypeItem::Node(n) if n.id == tn.id) {
+                                continue;
+                            }
+                            items.push(item);
+                        }
+                    }
+                    return self.resolve_method_on_supertype_items(items, method, r, confidence, resolved_by, preferred_fqn, depth + 1);
+                }
                 // PHP supertypes, and Ruby ones from a qualified start, come
                 // back by qualified name.
                 let php = r.language == "php" || (qualified && r.language == "ruby");
@@ -1246,29 +1273,161 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             }
             return Ok(None);
         }
+        Ok(Self::pick_method_match(matches, r, confidence, resolved_by, preferred_fqn))
+    }
+
+    /// The method a non-empty set of same-named members settles on: the one
+    /// the call site's import names, else the one in its own file, else the
+    /// first.
+    fn pick_method_match(
+        matches: Vec<Arc<KNode>>,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+        preferred_fqn: Option<&str>,
+    ) -> Option<KCand> {
         // A method value (#1820) never breaks a tie by call-site file.
         if r.reference_kind == "function_ref" && matches.len() != 1 {
-            return Ok(None);
+            return None;
         }
         if matches.len() > 1 {
             if let Some(fqn) = preferred_fqn {
                 let ext = if r.language == "kotlin" { ".kt" } else { ".java" };
                 let fqn_path = format!("{}{}", fqn.replace('.', "/"), ext);
                 if let Some(chosen) = matches.iter().find(|m| m.file_path.ends_with(&fqn_path)) {
-                    return Ok(Some(KCand {
+                    return Some(KCand {
                         node: chosen.clone(),
                         confidence,
                         resolved_by,
-                    }));
+                    });
                 }
             }
         }
         let ordered = prefer_call_site_file(matches, &r.file_path);
-        Ok(Some(KCand {
+        Some(KCand {
             node: ordered[0].clone(),
             confidence,
             resolved_by,
-        }))
+        })
+    }
+
+    /// What a type's own declaration hands the supertype walk: the types its
+    /// `extends`/`implements` edges point at (mixins first), then, for Swift,
+    /// the conformances the project only extends, which have no node.
+    fn supertype_items(&mut self, tn: &KNode) -> Res<Vec<SupertypeItem>> {
+        let mut targets = self.mixin_nodes(tn)?;
+        for n in self.supertype_nodes(&tn.id)? {
+            if !targets.iter().any(|t| t.id == n.id) {
+                targets.push(n);
+            }
+        }
+        let mut items: Vec<SupertypeItem> = targets.into_iter().map(SupertypeItem::Node).collect();
+        if tn.language == "swift" {
+            for name in self.swift_extended_conformances(tn)?.iter() {
+                if *name != tn.name && !items.iter().any(|i| matches!(i, SupertypeItem::Name(n) if n == name)) {
+                    items.push(SupertypeItem::Name(name.clone()));
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    /// resolveMethodOnType's conformance fallback along the supertype nodes
+    /// themselves. A supertype is the declaration the edge points at, so a
+    /// same-named type in another package or namespace contributes neither
+    /// its members nor its own supertypes.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_method_on_supertype_items(
+        &mut self,
+        items: Vec<SupertypeItem>,
+        method: &str,
+        r: &ResolveRefIn,
+        confidence: f64,
+        resolved_by: &'static str,
+        preferred_fqn: Option<&str>,
+        depth: u32,
+    ) -> Res<Option<KCand>> {
+        let mut tried: Vec<String> = Vec::new();
+        for item in items {
+            let node = match item {
+                SupertypeItem::Name(name) => {
+                    if let Some(via) = self.resolve_method_on_type_at(&name, method, r, confidence, resolved_by, preferred_fqn, depth, false)? {
+                        return Ok(Some(via));
+                    }
+                    continue;
+                }
+                SupertypeItem::Node(n) => n,
+            };
+            if tried.contains(&node.id) {
+                continue;
+            }
+            tried.push(node.id.clone());
+            let own = self.type_node_methods(&node, method, r)?;
+            if !own.is_empty() {
+                return Ok(Self::pick_method_match(own, r, confidence, resolved_by, preferred_fqn));
+            }
+            let inherits = node.language == r.language
+                && (is_supertype_bearing_kind(&node.kind) || (node.language == "scala" && node.kind == "module"));
+            if depth < 4 && inherits {
+                let next = self.supertype_items(&node)?;
+                if let Some(via) = self.resolve_method_on_supertype_items(next, method, r, confidence, resolved_by, preferred_fqn, depth + 1)? {
+                    return Ok(Some(via));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The methods named `method` that `ty` declares. Where qualified names
+    /// leave out the package (Scala, Swift), a second type of the same
+    /// qualified name elsewhere is a different type, so only the members in
+    /// `ty`'s own file count; with no such twin a member in another file is
+    /// an extension or companion of `ty` and counts.
+    fn type_node_methods(&mut self, ty: &KNode, method: &str, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        let mut members: Vec<Arc<KNode>> = self
+            .nodes_by_qualified_name(&format!("{}::{}", ty.qualified_name, method))?
+            .iter()
+            .filter(|m| m.kind == "method" && same_language_family(&m.language, &r.language))
+            .cloned()
+            .collect();
+        // An extension member is qualified by its receiver type's written
+        // name (`Expression::castTo`), without the package. It is `ty`'s
+        // when no other declaration of that name could be the receiver.
+        if ty.qualified_name != ty.name {
+            let mut sole = true;
+            for n in self.nodes_by_name(&ty.name)?.iter() {
+                if n.language == ty.language && is_supertype_bearing_kind(&n.kind) && n.qualified_name != ty.qualified_name {
+                    sole = false;
+                    break;
+                }
+            }
+            if sole {
+                let extension: Vec<Arc<KNode>> = self
+                    .nodes_by_qualified_name(&format!("{}::{}", ty.name, method))?
+                    .iter()
+                    .filter(|m| m.kind == "method" && same_language_family(&m.language, &r.language))
+                    .cloned()
+                    .collect();
+                members.extend(extension);
+            }
+        }
+        if members.iter().any(|m| m.file_path != ty.file_path) && qualified_names_omit_package(&ty.language) {
+            let mut twins = 0;
+            let same_named: Vec<Arc<KNode>> = self.nodes_by_qualified_name(&ty.qualified_name)?.iter().cloned().collect();
+            for n in same_named {
+                if n.language == ty.language
+                    && is_supertype_bearing_kind(&n.kind)
+                    && n.file_path != ty.file_path
+                    && !self.is_swift_extension(&n)
+                {
+                    twins += 1;
+                }
+            }
+            if twins > 0 {
+                members.retain(|m| m.file_path == ty.file_path);
+            }
+        }
+        Ok(members)
     }
 
     /// inferJavaFieldReceiverType — the declared type of a `field` node in
@@ -1492,6 +1651,25 @@ Ok(self.dart_member_of(type_name, method, r, false)?
         }
         Ok(None)
     }
+}
+
+/// One step of the supertype walk: the type an edge points at, or a Swift
+/// conformance the project only extends and so has no declaration to point at.
+enum SupertypeItem {
+    Node(Arc<KNode>),
+    Name(String),
+}
+
+/// Languages whose conformance fallback follows the edges' target nodes. The
+/// rest still walk by bare type name.
+fn walks_supertype_nodes(lang: &str) -> bool {
+    matches!(lang, "java" | "kotlin" | "csharp" | "scala" | "swift")
+}
+
+/// Whether a type's qualified name leaves out its package or namespace, so
+/// two types in different packages can share it.
+fn qualified_names_omit_package(lang: &str) -> bool {
+    matches!(lang, "scala" | "swift")
 }
 
 /// Whether `n` declares the same type as `owner`: the same qualified name
