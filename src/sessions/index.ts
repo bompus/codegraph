@@ -717,7 +717,7 @@ export function querySessions(
  * back to their snippet. Neighbours then spend what is left, rank by rank and
  * nearest first, so context never costs a hit its own passage.
  */
-function withinPassageBudget(hits: SessionHit[]): { fullCut: number; contextCut: number } {
+export function withinPassageBudget(hits: SessionHit[]): { fullCut: number; contextCut: number } {
   let spent = 0;
   let fullCut = 0;
   for (const hit of hits) {
