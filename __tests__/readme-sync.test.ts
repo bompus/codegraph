@@ -18,6 +18,7 @@ const README = read('README.md');
 const SITE_CLI = read('site/src/content/docs/reference/cli.md');
 const SITE_MCP = read('site/src/content/docs/reference/mcp-server.md');
 const SITE_INTEGRATIONS = read('site/src/content/docs/reference/integrations.md');
+const OPEN_QUESTIONS = read('docs/design/open-questions.md');
 
 /** The body of the README section under `heading`, up to the next `## `. */
 function section(doc: string, heading: string): string {
@@ -94,5 +95,23 @@ describe('README and docs site list what the code offers', () => {
       ...(named(SITE_INTEGRATIONS, t) ? [] : [`site integrations.md: ${t.id}`]),
     ]);
     expect(missing).toEqual([]);
+  });
+
+  it('every README sentence that says a cause is unknown links an open question, and every open question is linked', () => {
+    // GitHub's heading anchor: lower case, punctuation dropped, spaces to hyphens.
+    const anchors = [...OPEN_QUESTIONS.matchAll(/^## (.+)$/gm)].map((m) =>
+      m[1]!.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-'),
+    );
+    const unknownCause =
+      /cause (?:has|have|is|was) not (?:yet )?(?:been )?(?:found|identified|known|determined)|unexplained|not yet (?:explained|understood)|unknown cause/i;
+    const linked = new Set<string>();
+    const unlinked: string[] = [];
+    for (const line of README.split('\n')) {
+      const links = [...line.matchAll(/\]\(docs\/design\/open-questions\.md#([\w-]+)\)/g)].map((m) => m[1]!);
+      links.forEach((a) => linked.add(a));
+      if (unknownCause.test(line) && !links.some((a) => anchors.includes(a))) unlinked.push(line.trim().slice(0, 80));
+    }
+    const orphaned = anchors.filter((a) => !linked.has(a));
+    expect({ unlinked, orphaned }).toEqual({ unlinked: [], orphaned: [] });
   });
 });

@@ -255,7 +255,7 @@ The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kerne
 
 - **Larger database:** 11–21% bigger on six of the seven corpora above, and 37% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
 - **Fewer edges on some projects:** 3–5% fewer on pretix and CPython, because the fork declines links it cannot confirm. Some of those were correct links.
-- **Slower full index on small projects:** on Node, gin and Alamofire take 0.14–0.43 s longer to index than on upstream. The cause has not been found.
+- **Slower full index on small projects:** on Node, gin and Alamofire take 0.14–0.43 s longer to index than on upstream. The cause has not been found ([open question](docs/design/open-questions.md#slower-full-index-on-small-projects)).
 - **On Bun:** slower concurrent explores and higher idle CPU, as above.
 
 ---
