@@ -19,7 +19,7 @@ single-token form everywhere (`csharp`, not `c#`).
 - Run from the codegraph repo root. `node`, `git`, `gh`, and a logged-in
   `claude` CLI (the benchmark spawns real `claude -p` runs).
 - Read the `codegraph-build-validation` skill for the supported runtime and product gates. Local builds and corpus checks follow the active host's resource admission and limits.
-- Use an owned task checkout and task-owned corpus/output directories. Keep paid runs within the user's selected scope; the checklist does not authorize global installation or runtime activation.
+- Use an owned task checkout and task-owned corpus/output directories. Keep model runs that use the usage allowance within the user's selected scope; the checklist does not authorize global installation or runtime activation.
 
 ## Workflow
 
@@ -188,7 +188,7 @@ mkdir -p "$EVAL_ROOT/tmp" "$EVAL_ROOT/results"
 CG_BIN="$CG_BUILD/dist/bin/codegraph.js" \
   node scripts/add-lang/verify-extraction.mjs "$CORPUS_REPO" "$LANGUAGE"
 ```
-Continue to the paid A/B only after extraction passes, paid calls are selected,
+Continue to the model-run A/B only after extraction passes, the model runs are selected,
 and the needed host admission is obtained. Do not override broken extraction.
 For each selected repo/run, use a separate output directory and the same build
 that indexed it:
@@ -236,7 +236,7 @@ the PR body. Do not publish or tag: this fork publishes no releases (AGENTS.md
 § Releases).
 
 ## Notes
-- Selected A/B comparisons spawn real paid `claude -p` runs. Model policy is
+- Selected A/B comparisons spawn real `claude -p` runs that use the usage allowance. Model policy is
   in `docs/AGENTS.md`; count arms, harnesses and confirmation repetitions in the
   selected plan. Reuse only task-owned corpus clones.
 - An index must be served by the **same** binary/native build that built it. Step 8 selects it explicitly without a global link.

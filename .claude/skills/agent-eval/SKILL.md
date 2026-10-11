@@ -51,8 +51,8 @@ Each entry carries the `repo` URL and a representative `question`.
 
 **Step 5 — run.** Record the selected arms, corpora, controls, run count and
 correctness criteria before launching. Follow the host's admission and benchmark
-policy when available; no personal skill installation is required. Paid calls
-must fit the user's selected scope. A single exploratory pair supports no
+policy when available; no personal skill installation is required. Model runs
+must fit the user's selected scope, including their allowance impact. A single exploratory pair supports no
 performance claim; set repetitions and variation criteria before confirmation.
 
 Run from an owned task checkout. Use a task-owned corpus: `audit.sh` deletes its
