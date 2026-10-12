@@ -27,11 +27,23 @@ impl KernelResolver {
         if receiver.kind() != "identifier" { return Ok(None); }
         let name = &source.text()[receiver.start_byte()..receiver.end_byte()];
         let mut raw = None;
+        // Where the declared type is written, which its names are looked up from: the call, or for
+        // an `auto` loop's element, where its range's type is declared.
+        let mut site = r.clone();
+        let mut element = false;
         let mut scope = receiver;
         while let Some(parent) = scope.parent() {
             if let Some(ty) = cpp_binding_type(parent, scope, name, &source) { raw = Some(ty); break; }
             if parent.kind() == "for_range_loop" && parent.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_name(n, &source) == name) {
                 raw = parent.child_by_field_name("type").zip(parent.child_by_field_name("declarator")).map(|(ty, declarator)| cpp_ast_declared_type(ty, declarator, &source));
+                // A loop over `auto` elements has the element type of its range.
+                if raw.as_deref().is_some_and(super::cpp_range_for::is_cpp_auto) {
+                    if let Some(written) = self.cpp_range_for_element(parent, &source, r, 0)? {
+                        raw = Some(super::cpp_range_for::cpp_plain_type(&written.text));
+                        site = written.site;
+                        element = true;
+                    }
+                }
                 break;
             }
             scope = parent;
@@ -47,10 +59,10 @@ impl KernelResolver {
             }
         }
         let Some(raw) = raw else { return Ok(None) };
-        if raw.trim_end_matches('&').trim() == "auto" { return Ok(None); }
+        if super::cpp_range_for::is_cpp_auto(&raw) { return Ok(None); }
         if raw.contains('[') { return Ok(Some(None)); }
         let included = self.namespace_visible_files(&r.file_path, "cpp")?;
-        if self.cpp_alias_expansion(&raw, r, 0, &included)?.is_some_and(|alias| alias.pointer || (operator.trim() == "->" && alias.raw.as_deref().is_some_and(|ty| ty.ends_with("::iterator") || ty.ends_with("::const_iterator")))) { return Ok(None); }
+        if self.cpp_alias_expansion(&raw, &site, 0, &included)?.is_some_and(|alias| alias.pointer || (operator.trim() == "->" && alias.raw.as_deref().is_some_and(|ty| ty.ends_with("::iterator") || ty.ends_with("::const_iterator")))) { return Ok(None); }
         let mut depth = 0usize;
         let mut pointers = 0usize;
         for ch in raw.chars() {
@@ -59,6 +71,8 @@ impl KernelResolver {
         let ty = match operator.trim() {
             "." if pointers == 0 => raw.trim_end_matches('&').trim().to_string(),
             "->" if pointers == 1 && !raw.contains('<') => raw.replace(['*', '&'], "").trim().to_string(),
+            // An element that points at a class template (`const autovector<MemTable*>*`).
+            "->" if pointers == 1 && element => super::cpp_range_for::cpp_pointee(&raw).unwrap_or_default(),
             // A standard smart pointer or optional: `->` reaches a member of the type it holds.
             "->" if pointers == 0 => {
                 let Some(hit) = re!(r"^(?:const\s+)?(?:::)?std::(?:unique_ptr|shared_ptr|optional)\s*<(.*)>\s*&?$").captures(&raw) else { return Ok(Some(None)) };
@@ -69,37 +83,42 @@ impl KernelResolver {
             _ => return Ok(Some(None)),
         };
         let primary = ty.split('<').next().unwrap_or(&ty).trim();
-        if let Some(caller) = self.node_by_id(&r.from_node_id)? { if self.cpp_template_parameter(&caller, primary, r)? { return Ok(Some(None)); } }
-        if self.cpp_alias_expansion(primary, r, 0, &included)?.is_some_and(|alias| alias.pointer) { return Ok(None); }
+        // A standard type's own member (`iter.reset()` on a `std::unique_ptr` element) is no project method.
+        if element && re!(r"^(?:::)?(?:std|absl)::").is_match(primary) { return Ok(Some(None)); }
+        if let Some(caller) = self.node_by_id(&site.from_node_id)? { if self.cpp_template_parameter(&caller, primary, &site)? { return Ok(Some(None)); } }
+        if self.cpp_alias_expansion(primary, &site, 0, &included)?.is_some_and(|alias| alias.pointer) { return Ok(None); }
         let held = operator.trim() == "->" && pointers == 0;
-        let mut owner = if held { self.cpp_class_scope_type(primary, r)? } else { None };
-        if owner.is_none() { owner = self.cpp_type_owner(primary, r, 0, false)?; }
+        // C++ looks a type name up in the classes around the code and their bases before the
+        // namespaces: `Iterator` in a class deriving `MemTableRep` is `MemTableRep::Iterator`.
+        let mut owner = self.cpp_class_scope_type(primary, &site)?;
+        if owner.is_none() { owner = self.cpp_type_owner_visible(primary, &site, 0, false, &included)?; }
         if owner.is_none() && held {
             if let Some(parts) = super::cpp_aliases::type_segments(primary) {
                 // A class template and its specializations share a qualified name, and so their members.
-                let family = self.cpp_scoped_types(primary, &parts.join("::"), r, &included)?;
+                let family = self.cpp_scoped_types(primary, &parts.join("::"), &site, &included)?;
                 if let Some(first) = family.first().filter(|f| family.len() > 1 && family.iter().all(|n| n.qualified_name == f.qualified_name && matches!(n.kind.as_str(), "class" | "struct"))) { owner = Some(first.clone()); }
-                if owner.is_none() { owner = self.cpp_type_via_using(primary, &parts, r, &included)?; }
+                if owner.is_none() { owner = self.cpp_type_via_using(primary, &parts, &site, &included)?; }
             }
         }
         let Some(owner) = owner else {
             // A held type that is an alias of a library type holds no project class.
-            let aliased_library = held && self.cpp_alias_expansion(primary, r, 0, &included)?
+            let aliased_library = held && self.cpp_alias_expansion(primary, &site, 0, &included)?
                 .is_some_and(|alias| alias.raw.as_deref().is_some_and(|ty| ty.trim_start_matches("::").starts_with("std::")));
             return Ok(aliased_library.then_some(None));
         };
         // Preserve the existing guarded alias and specialization fallback on a miss.
         let member = self.match_bound_type_member(&owner.qualified_name, method, r)?;
-        // A class that lacks the method, and whose bases lack it too, is called nothing
-        // (but a class template's specialization may declare it).
-        if member.is_none() && held && self.supertypes_complete && !self.cpp_alias_template_owner(&owner, r)? { return Ok(Some(None)); }
+        // A class that lacks the method, and whose bases lack it too, is called nothing (but a
+        // class template's specialization may declare it, and so may a base the index doesn't link).
+        if member.is_none() && self.supertypes_complete && !self.cpp_alias_template_owner(&owner, r)?
+            && (held || (self.cpp_methods_named(&owner, method, r)?.is_empty() && self.cpp_bases_known(&owner, 0, &mut HashSet::new())?)) { return Ok(Some(None)); }
         Ok(member.map(Some))
     }
 
     /// A class `ty` names from inside a class that declares or inherits it, which
     /// C++ looks up before the namespaces around: the scopes of the caller, innermost
     /// first, each with the classes it derives from.
-    fn cpp_class_scope_type(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+    pub(super) fn cpp_class_scope_type(&mut self, ty: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         if ty.contains("::") { return Ok(None); }
         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
         let scopes: Vec<_> = caller.qualified_name.split("::").map(str::to_string).collect();
@@ -256,7 +275,7 @@ impl KernelResolver {
         self.cpp_type_owner_visible(primary, &site, 0, false, &included)
     }
 
-    fn cpp_field_type(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Option<String>> {
+    pub(super) fn cpp_field_type(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Option<String>> {
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
         let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
         let Some(tree) = self.cpp_field_tree(&source, &site) else { return Ok(None) };
@@ -325,7 +344,7 @@ fn cpp_element_type(raw: &str) -> Option<String> {
 
 /// The first template argument of a standard smart pointer or optional, or None when it
 /// is a pointer: `Foo`, `ns::Foo<int, true>`, `const Foo` for `Foo, Deleter`.
-fn cpp_held_type(arguments: &str) -> Option<String> {
+pub(super) fn cpp_held_type(arguments: &str) -> Option<String> {
     let mut depth = 0usize;
     let mut end = arguments.len();
     for (i, ch) in arguments.char_indices() {
@@ -345,14 +364,14 @@ fn cpp_held_type(arguments: &str) -> Option<String> {
     (!held.is_empty()).then(|| held.to_string())
 }
 
-fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a SourceFile) -> &'a str {
+pub(super) fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a SourceFile) -> &'a str {
     while matches!(node.kind(), "reference_declarator" | "pointer_declarator" | "parenthesized_declarator" | "init_declarator" | "array_declarator") {
         let Some(inner) = node.child_by_field_name("declarator").or_else(|| node.named_child(0)) else { return "" }; node = inner;
     }
     if matches!(node.kind(), "identifier" | "field_identifier") { &source.text()[node.start_byte()..node.end_byte()] } else { "" }
 }
 
-fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str, source: &SourceFile) -> Option<String> {
+pub(super) fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str, source: &SourceFile) -> Option<String> {
     if matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit") {
         for declaration in named_children(parent).into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
             // C++ parses a parenthesized initializer as a function declarator.
@@ -403,7 +422,7 @@ fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str
     None
 }
 
-fn cpp_ast_declared_type(ty: tree_sitter::Node, mut declarator: tree_sitter::Node, source: &SourceFile) -> String {
+pub(super) fn cpp_ast_declared_type(ty: tree_sitter::Node, mut declarator: tree_sitter::Node, source: &SourceFile) -> String {
     let type_node = if matches!(ty.kind(), "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier") {
         ty.child_by_field_name("name").unwrap_or_else(|| {
             let first = ty.parent().and_then(|p| p.child_by_field_name("declarator")).unwrap_or(declarator);

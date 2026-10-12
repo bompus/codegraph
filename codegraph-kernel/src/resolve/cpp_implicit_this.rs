@@ -166,7 +166,7 @@ impl KernelResolver {
     /// class's own, for code in its body. A function node counts only when its definition is
     /// written `Class::name(…)`. None for a free function, and for one defined through a namespace
     /// (`void detail::helper() {}` is a method node of no class).
-    fn cpp_member_owner(&mut self, caller: &KNode) -> Res<Option<String>> {
+    pub(super) fn cpp_member_owner(&mut self, caller: &KNode) -> Res<Option<String>> {
         if class_kind(&caller.kind) { return Ok(Some(caller.qualified_name.clone())); }
         if caller.kind != "method" && caller.kind != "function" { return Ok(None); }
         let Some(cut) = caller.qualified_name.rfind("::").filter(|c| *c > 0) else { return Ok(None) };
@@ -299,7 +299,7 @@ impl KernelResolver {
 
     /// C++ class `cls`'s method `name`: its own, else the nearest one of a class it derives from,
     /// through the base edges every declaration of `cls` has.
-    fn cpp_method_of(&mut self, cls: &KNode, name: &str, r: &ResolveRefIn, depth: usize, seen: &mut HashSet<String>) -> Res<Option<Arc<KNode>>> {
+    pub(super) fn cpp_method_of(&mut self, cls: &KNode, name: &str, r: &ResolveRefIn, depth: usize, seen: &mut HashSet<String>) -> Res<Option<Arc<KNode>>> {
         let own: Vec<_> = self.nodes_by_qualified_name(&format!("{}::{name}", cls.qualified_name))?
             .iter().filter(|n| n.kind == "method" && c_family(&n.language)).cloned().collect();
         if !own.is_empty() { return Ok(prefer_call_site_file(own, &r.file_path).into_iter().next()); }
@@ -359,7 +359,7 @@ impl KernelResolver {
 
     /// The base specifiers a C or C++ class declaration writes (`public Base<T>`, `private
     /// Mixin`), read from its own head; none for a forward declaration.
-    fn cpp_base_specifiers(&mut self, decl: &KNode) -> Vec<String> {
+    pub(super) fn cpp_base_specifiers(&mut self, decl: &KNode) -> Vec<String> {
         let Some(source) = self.read_file(&decl.file_path) else { return Vec::new() };
         let lines = source.cpp_code_lines();
         let first = (decl.start_line - 1).max(0) as usize;

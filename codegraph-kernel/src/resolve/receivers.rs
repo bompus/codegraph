@@ -690,6 +690,13 @@ impl KernelResolver {
             if line.is_empty() || !has_word(line, receiver) {
                 continue;
             }
+            // `for (auto cfd : cfds)` around the call: the element type of its range, when
+            // that can be read; when it can't, the scan goes on as before.
+            if line.contains("for") {
+                if let Some(class) = self.cpp_enclosing_range_element(receiver, i, r)? {
+                    return self.normalize_cpp_type_name(&class.qualified_name, preserve);
+                }
+            }
             if let Some(decl) = self.cpp_declarator_match(line, &escaped)? {
                 match self.normalize_cpp_type_name(&decl, preserve)? {
                     Some(t) if t == "auto" || t.ends_with("::auto") => {
