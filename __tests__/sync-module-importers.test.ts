@@ -72,6 +72,20 @@ const TS: Files = {
 };
 const TS_BARRELS = ['src/components/index.ts'];
 
+/**
+ * ES modules: one name through two routes. `c.ts` re-exports `Button` from
+ * the barrel itself and `Btn`, the same function renamed, through `a.ts`,
+ * which re-exports the barrel; `d.ts` imports `Btn` from `c.ts`.
+ */
+const TS_TWO_ROUTES: Files = {
+  'package.json': '{"name":"app"}',
+  'src/core/Button.ts': 'export function Button() { return 1; }\n',
+  'src/core/index.ts': "export { Button } from './Button';\n",
+  'src/a.ts': "export { Button as Btn } from './core';\n",
+  'src/c.ts': "export { Button } from './core';\nexport { Btn } from './a';\n",
+  'src/d.ts': "import { Btn } from './c';\nexport function d() { return Btn(); }\n",
+};
+
 let roots: string[] = [];
 let graphs: CodeGraph[] = [];
 
@@ -128,6 +142,7 @@ const only = (files: Files, kept: string[]): Files =>
 describe.each([
   ['Python package and module', PYTHON, PYTHON_BARRELS],
   ['ES module barrel', TS, TS_BARRELS],
+  ['ES module reached by two routes', TS_TWO_ROUTES, ['src/core/index.ts']],
 ])('sync re-resolves the imports through a re-exporting file: %s', (_label, files, barrels) => {
   it('when it is deleted', async () => {
     const root = tempRoot();

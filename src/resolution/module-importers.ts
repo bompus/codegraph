@@ -190,7 +190,11 @@ function importersOf(
 ): Importers {
   const importers: Importers = new Map();
   const changed = new Set(files.map((file) => file.path));
-  const seen = new Set(changed);
+  // The names each re-exporting importer has been followed with so far (null:
+  // all of them). A module reached again by another path is followed again
+  // for the names that path adds, so one passing a name on under two routes
+  // loses neither.
+  const followed = new Map<string, Set<string> | null>();
   let level: Module[] = files.filter((file) => BINDING_LANGUAGES.has(file.language)).map((file) => ({ ...file, passes: null }));
   for (let depth = 1; level.length > 0; depth++) {
     // Per importer found here, its statements naming each module of the level.
@@ -218,11 +222,15 @@ function importersOf(
     // The next level: the importers that pass on what they import from these.
     const next: Module[] = [];
     for (const [importer, { language, statements }] of naming) {
-      if (seen.has(importer) || depth > reExportDepth(language)) continue;
+      if (depth > reExportDepth(language)) continue;
       const passes = passedOn(importer, language, statements, reader);
       if (passes === undefined) continue;
-      seen.add(importer);
-      next.push({ path: importer, language, passes });
+      const before = followed.get(importer);
+      if (before === null) continue;
+      const added = before === undefined || passes === null ? passes : new Set([...passes].filter((name) => !before.has(name)));
+      if (added !== null && added.size === 0) continue;
+      followed.set(importer, before === undefined || passes === null ? passes : new Set([...before, ...passes]));
+      next.push({ path: importer, language, passes: added });
     }
     level = next;
   }
