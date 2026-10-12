@@ -177,9 +177,10 @@ the suspected cause, not confirmed
 ([oven-sh/bun#44187](https://github.com/oven-sh/bun/issues/44187)). On the fork,
 Bun's idle CPU is 0.27 points of one core above Node's on gin (0.43% against
 0.16%) and 0.15 points above on n8n (0.48% against 0.33%): a few milliseconds
-of CPU per second, under 0.5% of one core on every arm. It is a small
-difference, and [the idle profile below](#idle-cpu-profile) did not reproduce
-its order on n8n.
+of CPU per second, and under 0.5% of one core on both fork arms (upstream on
+Bun reads 0.51% and 0.73%). It is a small difference, and
+[the idle profile below](#idle-cpu-profile) did not reproduce its order on
+n8n.
 
 ### Idle CPU profile
 
