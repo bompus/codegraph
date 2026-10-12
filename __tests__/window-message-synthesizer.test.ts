@@ -20,23 +20,23 @@ describe('window-message synthesizer', () => {
 
   it('links a publisher to the listener that checks the same source discriminator', async () => {
     fs.writeFileSync(path.join(dir, 'constants.ts'),
-      'export const MESSAGES = { TTD_AJAX_EVENT: "DEMO_AJAX", OTHER_EVENT: "DEMO_OTHER" };\n');
+      'export const MESSAGES = { DEMO_AJAX_EVENT: "DEMO_AJAX", OTHER_EVENT: "DEMO_OTHER" };\n');
     fs.writeFileSync(path.join(dir, 'publish.ts'), `import { MESSAGES } from "./constants";
-export function publishTtdLivewire() {
-  window.postMessage({ source: MESSAGES.TTD_AJAX_EVENT, payload: {} }, "*");
+export function publishDemoLivewire() {
+  window.postMessage({ source: MESSAGES.DEMO_AJAX_EVENT, payload: {} }, "*");
 }
 export function publishOther() {
   window.postMessage({ source: MESSAGES.OTHER_EVENT, payload: {} }, "*");
 }
 `);
     fs.writeFileSync(path.join(dir, 'listen.ts'), `import { MESSAGES } from "./constants";
-export function listenForTtdLivewireAjax() {
+export function listenForDemoLivewireAjax() {
   window.addEventListener("message", (ev) => {
-    if (ev.data.source !== MESSAGES.TTD_AJAX_EVENT) return;
-    receiveTtdSnapshot(ev.data.payload);
+    if (ev.data.source !== MESSAGES.DEMO_AJAX_EVENT) return;
+    receiveDemoSnapshot(ev.data.payload);
   });
 }
-export function receiveTtdSnapshot(payload: unknown) { return payload; }
+export function receiveDemoSnapshot(payload: unknown) { return payload; }
 export function listenWithoutCheck() {
   window.addEventListener("message", (ev) => { console.log(ev.data); });
 }
@@ -46,11 +46,11 @@ export function listenWithoutCheck() {
     await cg.indexAll();
     const edges = synthEdges(cg);
     expect(edges).toEqual([
-      expect.objectContaining({ source: 'publishTtdLivewire', target: 'listenForTtdLivewireAjax', event: 'TTD_AJAX_EVENT' }),
+      expect.objectContaining({ source: 'publishDemoLivewire', target: 'listenForDemoLivewireAjax', event: 'DEMO_AJAX_EVENT' }),
     ]);
     expect(edges.some((e) => e.source === 'publishOther')).toBe(false);
     expect(edges.some((e) => e.target === 'listenWithoutCheck')).toBe(false);
-    expect(edges.some((e) => e.target === 'receiveTtdSnapshot')).toBe(false);
+    expect(edges.some((e) => e.target === 'receiveDemoSnapshot')).toBe(false);
     cg.close?.();
   });
 
@@ -61,7 +61,7 @@ export function listenWithoutCheck() {
 `);
     fs.writeFileSync(path.join(dir, 'b.ts'), `export function listen() {
   window.addEventListener("message", (ev) => {
-    if (ev.data.source !== OtherHub.TTD_OTHER_EVENT) return;
+    if (ev.data.source !== OtherHub.DEMO_OTHER_EVENT) return;
   });
 }
 `);

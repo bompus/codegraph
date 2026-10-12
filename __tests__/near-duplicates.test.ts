@@ -42,7 +42,7 @@ const unrelated = [
 describe('signature', () => {
   it('matches copies that differ only in names and literals, not unrelated code', () => {
     const a = signature(urlOf('fpUrlOf', 'fp'), 'fpUrlOf')!;
-    const b = signature(urlOf('ttdUrlOf', 'ttd'), 'ttdUrlOf')!;
+    const b = signature(urlOf('webUrlOf', 'web'), 'webUrlOf')!;
     expect(similarity(a, b)).toBeGreaterThanOrEqual(0.8);
     expect(similarity(a, signature(unrelated)!)).toBeLessThan(0.3);
   });
@@ -71,7 +71,7 @@ describe('near-duplicates in the index', () => {
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-near-dups-'));
     write('src/fp.ts', urlOf('fpUrlOf', 'fp'));
-    write('src/ttd.ts', urlOf('ttdUrlOf', 'ttd'));
+    write('src/web.ts', urlOf('webUrlOf', 'web'));
     write('src/ds.ts', urlOf('dsUrlOf', 'ds'));
     write('src/points.ts', unrelated);
     // Copies in tests and vendored code are expected and stay out.
@@ -87,7 +87,7 @@ describe('near-duplicates in the index', () => {
   });
 
   it('pairs the copies and leaves out tests, vendored code and unrelated functions', () => {
-    expect(dupsOf('fpUrlOf')).toEqual(['dsUrlOf', 'ttdUrlOf']);
+    expect(dupsOf('fpUrlOf')).toEqual(['dsUrlOf', 'webUrlOf']);
     expect(dupsOf('totalPoints')).toEqual([]);
   });
 
@@ -95,7 +95,7 @@ describe('near-duplicates in the index', () => {
     const explore = await tool('codegraph_explore', { query: 'fpUrlOf' });
     expect(explore).toMatch(/- `fpUrlOf` \(src\/fp\.ts:1\) — no callers; near-duplicates \(update together\): .*`dsUrlOf` \(src\/ds\.ts:1, \d+% similar\)/);
     const node = await tool('codegraph_node', { symbol: 'fpUrlOf', includeCode: false });
-    expect(node).toMatch(/\*\*Near-duplicates \(update together\) ≈\*\* .*`ttdUrlOf` \(src\/ttd\.ts:1/);
+    expect(node).toMatch(/\*\*Near-duplicates \(update together\) ≈\*\* .*`webUrlOf` \(src\/web\.ts:1/);
   });
 
   it('re-scores only the pairs a changed body is in, and matches a full recompute', async () => {
@@ -114,7 +114,7 @@ describe('near-duplicates in the index', () => {
       },
       isExcluded: (p: string) => p.startsWith('test/') || p.startsWith('vendor/'),
     };
-    const snapshot = () => ['fpUrlOf', 'ttdUrlOf', 'dsUrlOf', 'totalPoints', 'totalPoints2'].map((n) => [n, dupsOf(n)]);
+    const snapshot = () => ['fpUrlOf', 'webUrlOf', 'dsUrlOf', 'totalPoints', 'totalPoints2'].map((n) => [n, dupsOf(n)]);
     const before = snapshot();
     expect(dupsOf('totalPoints')).toEqual(['totalPoints2']);
 
@@ -171,13 +171,13 @@ describe('near-duplicates in the index', () => {
     cg = await CodeGraph.open(dir);
     write('src/ds.ts', unrelated.replace('totalPoints', 'dsTotals'));
     await cg.sync();
-    expect(dupsOf('fpUrlOf')).toEqual(['ttdUrlOf']);
+    expect(dupsOf('fpUrlOf')).toEqual(['webUrlOf']);
     expect(dupsOf('totalPoints')).toEqual(['dsTotals']);
   });
 
   it('follows edits and deletions on sync', async () => {
     write('src/ds.ts', unrelated.replace('totalPoints', 'dsTotals'));
-    fs.rmSync(path.join(dir, 'src/ttd.ts'));
+    fs.rmSync(path.join(dir, 'src/web.ts'));
     await cg.sync();
     expect(dupsOf('fpUrlOf')).toEqual([]);
     expect(dupsOf('totalPoints')).toEqual(['dsTotals']);
