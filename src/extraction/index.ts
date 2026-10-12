@@ -41,6 +41,7 @@ import { extractAnalogRoutes, isAnalogPage } from '../resolution/frameworks/anal
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 import { resurrectRefFromDroppedEdge } from '../resolution/resurrect-ref';
+import { createImportReader, reopenReferencesThroughRemovedFiles } from '../resolution/module-importers';
 import { MAX_SOURCE_FILE_SIZE_BYTES, oversizeStamp, readBoundedSource, readBoundedSourceSync } from '../file-limits';
 export { oversizeStamp };
 
@@ -3343,6 +3344,8 @@ export class ExtractionOrchestrator {
     // BEFORE their nodes are replaced/deleted. Compared against the post-store
     // pairs below to derive `definitionDelta` (CG-33).
     const pairsBefore = new Set<string>();
+    // Importers' import statements, read once per sync for the files it removes.
+    const importReader = createImportReader(this.rootDir, this.queries);
 
     onProgress?.({
       phase: 'scanning',
@@ -3448,10 +3451,27 @@ export class ExtractionOrchestrator {
       removedFilePaths.push(tracked.path);
       filesRemoved++;
     };
+    const removed: FileRecord[] = [];
     for (const tracked of trackedFiles) {
       if (!currentSet.has(tracked.path) || !fs.existsSync(path.join(this.rootDir, tracked.path))) {
-        removeTracked(tracked);
+        removed.push(tracked);
       }
+      if (++reconcileChecks % SYNC_RECONCILE_YIELD_INTERVAL === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+    // The references other files make THROUGH the removed ones to files that
+    // stay (a package `__init__.py` or an `index.ts` re-exporting what it
+    // imports) go back to pending too: the cascade keeps their edges, and a
+    // fresh index of the tree without these files binds them differently or
+    // not at all. Before any of them is deleted, and for all of them at once.
+    if (removed.length > 0) {
+      const tImporters = Date.now();
+      const reopened = reopenReferencesThroughRemovedFiles(this.queries, importReader, removed);
+      if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-removed-module-importers: ${Date.now() - tImporters}ms (${reopened} refs re-opened)`);
+    }
+    for (const tracked of removed) {
+      removeTracked(tracked);
       if (++reconcileChecks % SYNC_RECONCILE_YIELD_INTERVAL === 0) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
@@ -3507,7 +3527,10 @@ export class ExtractionOrchestrator {
       // Not source after all — an MPEG transport stream named `.ts` (#1910):
       // a new one is ignored, a tracked file that became one is removed.
       if (content === null) {
-        if (tracked) removeTracked(tracked);
+        if (tracked) {
+          reopenReferencesThroughRemovedFiles(this.queries, importReader, [tracked]);
+          removeTracked(tracked);
+        }
         continue;
       }
       const contentHash = hashContent(content);
