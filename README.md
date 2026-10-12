@@ -255,7 +255,7 @@ The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kerne
 
 - **Larger database:** 11–21% bigger on six of the seven corpora above, and 37% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
 - **Fewer edges on some projects:** 3–5% fewer on pretix and CPython, because the fork declines links it cannot confirm. Some of those were correct links.
-- **Slower full index on small projects:** on Node, gin and Alamofire take 0.14–0.43 s longer to index than on upstream. The cause has not been found ([open question](docs/design/open-questions.md#slower-full-index-on-small-projects)).
+- **Slower full index on small projects:** at `34cc55e` (the measured build), on Node, gin and Alamofire took 0.14–0.43 s longer to index than on upstream. Two causes were found and fixed afterwards: the resolver walked a minified one-line JavaScript file's text from its start for every reference in it (Alamofire's bundled jQuery was 40% of its resolution time), and a project under about 15,000 references looked nodes up by query where loading the table is faster. In a profiling run, not the benchmark, Alamofire's resolution step fell from a median of 1.25 s to 0.93 s with the same graph. The benchmark has not been re-run.
 - **On Bun:** slower concurrent explores and higher idle CPU, as above.
 
 ---

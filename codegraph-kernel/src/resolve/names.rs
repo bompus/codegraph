@@ -1652,6 +1652,12 @@ pub(super) fn js_prefix(s: &str, end: usize) -> &str {
 
 /// UTF-16 unit offset → byte offset (clamped to the next char boundary).
 pub(super) fn js_unit_to_byte(s: &str, units: usize) -> usize {
+    // ASCII up to the offset: one byte per unit. A column far into a minified
+    // one-line file would otherwise walk every char before it, per lookup.
+    let reach = units.min(s.len());
+    if s.as_bytes()[..reach].is_ascii() {
+        return reach;
+    }
     let mut seen = 0usize;
     for (byte_idx, ch) in s.char_indices() {
         if seen >= units {
@@ -1758,4 +1764,30 @@ fn stripped_text(src: &SourceFile) -> String {
 fn imports_cgo(src: &SourceFile) -> bool {
     !src.lines_containing("\"C\"").is_empty()
         && re!(r#"(?-u:\b)import\s+(?:\(\s*)?"C""#).is_match(&stripped_text(src))
+}
+
+#[cfg(test)]
+mod js_unit_tests {
+    use super::js_unit_to_byte;
+
+    /// The char-by-char walk the ASCII fast path replaced.
+    fn walk(s: &str, units: usize) -> usize {
+        let mut seen = 0usize;
+        for (byte_idx, ch) in s.char_indices() {
+            if seen >= units {
+                return byte_idx;
+            }
+            seen += ch.len_utf16();
+        }
+        s.len()
+    }
+
+    #[test]
+    fn matches_the_char_walk_at_every_offset() {
+        for s in ["", "abc", "a\u{e9}b", "x😀y", "😀😀", "plain ascii line", "é", "ab\u{2028}cd"] {
+            for units in 0..s.len() + 4 {
+                assert_eq!(js_unit_to_byte(s, units), walk(s, units), "{s:?} at {units}");
+            }
+        }
+    }
 }
