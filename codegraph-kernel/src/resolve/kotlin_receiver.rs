@@ -133,6 +133,13 @@ impl KernelResolver {
 
     fn kotlin_receiver_member(&mut self, hit: &KotlinReceiverHit, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         if let Some(member) = self.match_bound_type_member(&hit.ty, name, &hit.site)? { return Ok(Some(member.node)); }
+        self.kotlin_extension_member(hit, name, r)
+    }
+
+    /// The one visible extension function `name` whose receiver type accepts `hit`'s type: its
+    /// qualified name carries the receiver as written (`Foo::shout`, never `pkg::Foo::shout`), so
+    /// it cannot be found as a member of the receiver's class by qualified name.
+    pub(super) fn kotlin_extension_member(&mut self, hit: &KotlinReceiverHit, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         let candidates: Vec<_> = self.nodes_by_name(name)?.iter().filter(|n| n.language == "kotlin" && n.kind == "method").cloned().collect();
         let mut matching = Vec::new();
         for candidate in candidates {
