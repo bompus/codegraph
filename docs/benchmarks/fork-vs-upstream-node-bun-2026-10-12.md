@@ -59,9 +59,9 @@ corpus.
 ### Quiet-host rule
 
 A run started only when swap in use was at most 64 MiB, the 1-minute load
-average was under 2, no other session's memory-capped job was running, and
-Windows CPU, read from the Windows side, was under 20% for three samples 20 s
-apart. An attempt was rejected as suspect when the command exited non-zero or
+average was under 2 and no other session's memory-capped job was running.
+Windows CPU, read from the Windows side, also had to be under 20% for three
+samples 20 s apart. An attempt was rejected as suspect when the command exited non-zero or
 a Windows CPU sample before or after it exceeded 30%. Each corpus had one retry; the first accepted
 attempt is the one reported. The two runs per arm are the spread this page
 offers; no wider variation criterion was set before the run, so a difference
