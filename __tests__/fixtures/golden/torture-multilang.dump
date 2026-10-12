@@ -4753,7 +4753,7 @@
 {"from_node_id":"file:torture.py","reference_name":"sys","reference_kind":"imports","line":2,"col":11,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"sys"}
 {"from_node_id":"file:torture.py","reference_name":"target_cb","reference_kind":"function_ref","line":48,"col":20,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"target_cb"}
 {"from_node_id":"file:torture.py","reference_name":"target_cb","reference_kind":"imports","line":6,"col":27,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"target_cb"}
-{"from_node_id":"file:torture.py","reference_name":"thing","reference_kind":"imports","line":5,"col":22,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"thing"}
+{"from_node_id":"file:torture.py","reference_name":"thing","reference_kind":"imports","line":5,"col":22,"candidates":null,"file_path":"torture.py","language":"python","status":"failed","name_tail":"module:relative"}
 {"from_node_id":"file:torture.rb","reference_name":"../shared/helper","reference_kind":"imports","line":4,"col":0,"candidates":null,"file_path":"torture.rb","language":"ruby","status":"failed","name_tail":"helper"}
 {"from_node_id":"file:torture.rb","reference_name":"../shared/helper.rb","reference_kind":"imports","line":4,"col":0,"candidates":null,"file_path":"torture.rb","language":"ruby","status":"failed","name_tail":"helper"}
 {"from_node_id":"file:torture.rb","reference_name":"interp/","reference_kind":"imports","line":8,"col":0,"candidates":null,"file_path":"torture.rb","language":"ruby","status":"failed","name_tail":"interp/"}
