@@ -109,19 +109,21 @@ pub(super) fn cpp_pointee(text: &str) -> Option<String> {
     cpp_held_type(&held[1])
 }
 
-/// Whether a declarator declares a function (`f()`, `*f()`, `&f()`), not a variable.
-fn declares_function(mut declarator: TsNode) -> bool {
+/// The function declarator of a declarator that declares a function (`f()`, `*f()`, `&f()`), not
+/// a variable.
+fn declared_function(mut declarator: TsNode) -> Option<TsNode> {
     loop {
         match declarator.kind() {
-            "function_declarator" => return true,
+            "function_declarator" => return Some(declarator),
             "pointer_declarator" | "reference_declarator" | "parenthesized_declarator" => {
-                let Some(inner) = declarator.child_by_field_name("declarator").or_else(|| declarator.named_child(0)) else { return false };
-                declarator = inner;
+                declarator = declarator.child_by_field_name("declarator").or_else(|| declarator.named_child(0))?;
             }
-            _ => return false,
+            _ => return None,
         }
     }
 }
+
+fn without_spaces(text: &str) -> String { text.chars().filter(|c| !c.is_whitespace()).collect() }
 
 /// The initializer of `name`'s declaration in the block `parent`, before `at`: `vstorage->
 /// GetBlobFiles()` in `const auto& blob_files = vstorage->GetBlobFiles();`. The same declarations
@@ -174,6 +176,8 @@ impl KernelResolver {
         let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
         let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
         while let Some(parent) = at.parent() {
+            // A nearer declaration of the name, `{ Gadget* w = g; w->Self(); }` in the body, hides the loop's.
+            if cpp_binding_type(parent, at, receiver, &source).is_some() { return Ok(None); }
             if parent.kind() == "for_range_loop" && parent.start_position().row == line
                 && parent.child_by_field_name("body").is_some_and(|body| body.id() == at.id())
                 && parent.child_by_field_name("declarator").is_some_and(|d| cpp_declarator_name(d, &source) == receiver) {
@@ -222,10 +226,11 @@ impl KernelResolver {
         let Some(written) = self.cpp_follow_written_aliases(written.clone(), r)? else { return Ok(None) };
         if top_level_pointer(&written.text) || self.cpp_written_template_parameter(&written)? { return Ok(None); }
         let Some(parts) = type_segments(&written.text) else { return Ok(None) };
-        let mut owner = if parts.len() == 1 { self.cpp_class_scope_type(&parts[0], &written.site)? } else { None };
+        let plain = cpp_plain_type(&written.text);
+        let primary = plain.split('<').next().unwrap_or(&plain).trim_end_matches('&').trim();
+        // `::Registry` is the global one, never one nested in the classes around it.
+        let mut owner = if parts.len() == 1 && !primary.starts_with("::") { self.cpp_class_scope_type(&parts[0], &written.site)? } else { None };
         if owner.is_none() {
-            let plain = cpp_plain_type(&written.text);
-            let primary = plain.split('<').next().unwrap_or(&plain).trim_end_matches('&').trim();
             let included = self.namespace_visible_files(&r.file_path, "cpp")?;
             owner = self.cpp_type_owner_visible(primary, &written.site, 0, false, &included)?;
         }
@@ -243,20 +248,25 @@ impl KernelResolver {
     }
 
     /// What one of `functions` (overloads, a declaration and its definition) returns, as written
-    /// where it is declared.
+    /// where it is declared. None when overloads taking different parameters return different
+    /// types, since which one a call picks is not read; a `const` and a non-`const` overload with
+    /// the same parameters (`items()`, `items() const`) give the first one's.
     fn cpp_return_type_of(&mut self, functions: &[Arc<KNode>], r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let mut first: Option<(CppWritten, String)> = None;
         for function in functions {
-            if let Some(text) = self.cpp_written_return_type(function, r)? {
-                return Ok(Some(CppWritten { text, site: site_at(r, function) }));
+            let Some((text, parameters)) = self.cpp_written_return_type(function, r)? else { continue };
+            match &first {
+                None => first = Some((CppWritten { text, site: site_at(r, function) }, parameters)),
+                Some((seen, seen_parameters)) => if without_spaces(&seen.text) != without_spaces(&text) && *seen_parameters != parameters { return Ok(None); },
             }
         }
-        Ok(None)
+        Ok(first.map(|(written, _)| written))
     }
 
     /// The return type of a C or C++ function as its declaration writes it: `std::vector<const
-    /// FieldDescriptor*>` (the index keeps only `vector`). None for a constructor, `void`, `auto`
-    /// or `decltype(…)`.
-    fn cpp_written_return_type(&mut self, function: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<String>> {
+    /// FieldDescriptor*>` (the index keeps only `vector`), and its parameter list without spaces.
+    /// None for a constructor, `void`, `auto` or `decltype(…)`.
+    fn cpp_written_return_type(&mut self, function: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<(String, String)>> {
         let Some(source) = self.read_file(&function.file_path) else { return Ok(None) };
         let site = site_at(r, function);
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(None) };
@@ -274,10 +284,11 @@ impl KernelResolver {
             node = parent;
         };
         let (Some(ty), Some(declarator)) = (declaration.child_by_field_name("type"), declaration.child_by_field_name("declarator")) else { return Ok(None) };
-        if !declares_function(declarator) { return Ok(None); }
+        let Some(function_declarator) = declared_function(declarator) else { return Ok(None) };
         let raw = cpp_plain_type(&cpp_ast_declared_type(ty, declarator, &source));
         if raw.is_empty() || raw == "void" || is_cpp_auto(&raw) || raw.contains("decltype") { return Ok(None); }
-        Ok(Some(raw))
+        let parameters = function_declarator.child_by_field_name("parameters").map(|p| without_spaces(&source.text()[p.byte_range()])).unwrap_or_default();
+        Ok(Some((raw, parameters)))
     }
 
     /// The type the C++ class `cls` declares its data member `field` with, as written in the class.

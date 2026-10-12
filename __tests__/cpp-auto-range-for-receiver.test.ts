@@ -558,3 +558,101 @@ describe('an `auto` element that points at a class template', () => {
     }
   });
 });
+
+describe('an `auto` element read through a lookup that has to pick one declaration', () => {
+  it('a type written `::Registry` is the global class, not one nested in the caller\'s class', async () => {
+    const cg = await indexed({
+      'ui/screen.h': lines(
+        '#include <vector>',
+        'struct Widget { void Draw() {} };',
+        'struct Registry { std::vector<Widget*> items() { return {}; } };',
+        'namespace app {',
+        'struct Gadget { void Draw() {} };',
+        'class Screen {',
+        ' public:',
+        '  struct Registry { std::vector<Gadget*> items() { return {}; } };',
+        '  void DrawAll();',
+        '  ::Registry registry_;',
+        '};',
+        '}  // namespace app',
+      ),
+      'ui/screen.cc': lines(
+        '#include "ui/screen.h"',
+        'namespace app {',
+        'void Screen::DrawAll() {',
+        '  for (auto w : registry_.items()) {',
+        '    w->Draw();',
+        '  }',
+        '}',
+        '}  // namespace app',
+      ),
+    });
+    try {
+      const drawn = calls(cg, 'app::Screen::DrawAll').filter((c) => c.includes('Draw @'));
+      expect(drawn).toEqual(['Widget::Draw @0.9']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('overloads that return different types give no element type', async () => {
+    const cg = await indexed({
+      'ui/registry.h': lines(
+        '#include <vector>',
+        'namespace app {',
+        'struct Widget { void Draw() {} };',
+        'struct Gadget { void Draw() {} };',
+        'class Registry {',
+        ' public:',
+        '  const std::vector<Gadget*>& items(int kind) const { return gadgets_; }',
+        '  const std::vector<Widget*>& items() const { return widgets_; }',
+        '  std::vector<Gadget*> gadgets_;',
+        '  std::vector<Widget*> widgets_;',
+        '};',
+        '}  // namespace app',
+      ),
+      'ui/draw.cc': lines(
+        '#include "ui/registry.h"',
+        'namespace app {',
+        'void DrawAll(const Registry& registry) {',
+        '  for (auto w : registry.items()) {',
+        '    w->Draw();',
+        '  }',
+        '}',
+        '}  // namespace app',
+      ),
+    });
+    try {
+      // Which overload the call picks is not read, so neither return type is taken for it.
+      expect(calls(cg, 'app::DrawAll')).toEqual(['app::Registry::items @0.9']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('a name the loop body declares again hides the loop\'s variable', async () => {
+    const cg = await indexed({
+      'ui/draw.h': lines(
+        '#include <vector>',
+        'namespace app {',
+        'struct Gadget { Gadget* Self() { return this; } void Draw() {} };',
+        'struct Widget { Widget* Self() { return this; } void Draw() {} };',
+        '}  // namespace app',
+      ),
+      'ui/draw.cc': lines(
+        '#include "ui/draw.h"',
+        'namespace app {',
+        'void DrawAll(const std::vector<Widget*>& widgets, Gadget* g) {',
+        '  for (auto w : widgets) { { Gadget* w = g; w->Self()->Draw(); } }',
+        '}',
+        '}  // namespace app',
+      ),
+    });
+    try {
+      // The inner `w` is a `Gadget*`: the chained call is no `Widget`'s.
+      expect(calls(cg, 'app::DrawAll').filter((c) => c.startsWith('app::Widget::'))).toEqual([]);
+    } finally {
+      cg.close();
+    }
+  });
+});
