@@ -178,7 +178,7 @@ impl KernelResolver {
             let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(false); };
             let mut declaration = super::iteration::descendant_for_position(
                 tree.root_node(), source.text(),
-                ((target.start_line - 1).max(0) as usize, target.start_column.max(0) as usize + 1),
+                ((target.start_line - 1).max(0) as usize, target.start_column.max(0) as usize),
             );
             while !matches!(declaration.kind(), "type_spec" | "type_alias") {
                 let Some(parent) = declaration.parent() else { return Ok(false); };
@@ -231,7 +231,7 @@ impl KernelResolver {
                 if let Some(tree) = self.parsed_tree(&lines, &site) {
                     let mut declaration = super::iteration::descendant_for_position(
                         tree.root_node(), lines.text(),
-                        ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize + 1),
+                        ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize),
                     );
                     while !matches!(declaration.kind(), "type_alias" | "type_spec") {
                         let Some(parent) = declaration.parent() else { break; };

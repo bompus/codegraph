@@ -152,7 +152,7 @@ impl KernelResolver {
                             let Some(tree) = self.parsed_tree(&source, r) else { continue; };
                             for keyword in re!(r"\b(?:using|typedef)\b").find_iter(line) {
                                 let column = line[..keyword.start()].encode_utf16().count();
-                                let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), (i, column + 1));
+                                let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), (i, column));
                                 let mut code = true;
                                 loop {
                                     if matches!(node.kind(), "comment" | "string_literal" | "raw_string_literal" | "char_literal") { code = false; break; }
@@ -312,7 +312,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(false); };
         let site = r.clone().at(owner);
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(false); };
-        let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize + 1));
+        let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize));
         while let Some(parent) = node.parent() {
             if parent.kind() == "template_declaration" { return Ok(true); }
             node = parent;

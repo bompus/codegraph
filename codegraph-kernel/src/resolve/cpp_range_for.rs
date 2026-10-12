@@ -174,7 +174,7 @@ impl KernelResolver {
         if r.language != "cpp" { return Ok(None); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
         let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
-        let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         while let Some(parent) = at.parent() {
             // A nearer declaration of the name, `{ Gadget* w = g; w->Self(); }` in the body, hides the loop's.
             if cpp_binding_type(parent, at, receiver, &source).is_some() { return Ok(None); }
@@ -270,7 +270,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(&function.file_path) else { return Ok(None) };
         let site = site_at(r, function);
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(None) };
-        let mut node = descendant_for_position(tree.root_node(), source.text(), ((function.start_line - 1).max(0) as usize, function.start_column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), source.text(), ((function.start_line - 1).max(0) as usize, function.start_column.max(0) as usize));
         let declaration = loop {
             match node.kind() {
                 "function_definition" | "field_declaration" | "declaration" => break node,

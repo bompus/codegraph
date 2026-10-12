@@ -10,7 +10,7 @@ impl KernelResolver {
         if !re!(r"^[A-Za-z_]\w*$").is_match(method) { return Ok(None); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
         let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
-        let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         while at.kind() != "call_expression" {
             let Some(parent) = at.parent() else { return Ok(None) }; at = parent;
         }
@@ -149,7 +149,7 @@ impl KernelResolver {
         if r.language != "cpp" || r.reference_kind != "calls" || !re!(r"^[A-Za-z_]\w*$").is_match(&r.reference_name) { return Ok(None); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
         let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
-        let mut node = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         loop {
             if node.kind() == "call_expression" {
                 if let Some(function) = node.child_by_field_name("function").filter(|n| n.kind() == "field_expression") {
@@ -240,7 +240,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(&method.file_path) else { return Ok(None) };
         let mut site = r.clone().at(method); site.from_node_id = method.id.clone(); site.column = method.start_column;
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(None) };
-        let mut node = descendant_for_position(tree.root_node(), source.text(), ((method.start_line - 1).max(0) as usize, method.start_column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), source.text(), ((method.start_line - 1).max(0) as usize, method.start_column.max(0) as usize));
         loop {
             if matches!(node.kind(), "function_definition" | "field_declaration" | "declaration") {
                 return Ok(node.child_by_field_name("type").map(|ty| source.text()[ty.start_byte()..ty.end_byte()].to_string()));
@@ -279,7 +279,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
         let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
         let Some(tree) = self.cpp_field_tree(&source, &site) else { return Ok(None) };
-        let mut node = descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize));
         while !matches!(node.kind(), "class_specifier" | "struct_specifier" | "union_specifier") {
             let Some(parent) = node.parent() else { break }; node = parent;
         }
@@ -313,7 +313,7 @@ impl KernelResolver {
     fn cpp_container_element(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
         if let Some(tree) = self.parsed_tree(&source, r) {
-            let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+            let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
             while let Some(parent) = at.parent() {
                 if let Some(raw) = cpp_binding_type(parent, at, name, &source) {
                     let Some(element) = cpp_element_type(&raw) else { return Ok(None) };

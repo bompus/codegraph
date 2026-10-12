@@ -267,7 +267,7 @@ impl KernelResolver {
         let text = file.text();
         let row = (site.line - 1).max(0) as usize;
         let column = site.column.max(0) as usize;
-        let call = descendant_for_position(tree.root_node(), text, (row, column + 1));
+        let call = descendant_for_position(tree.root_node(), text, (row, column));
         let contains_receiver = |pattern: tree_sitter::Node<'_>| {
             let mut pending = vec![pattern];
             while let Some(name) = pending.pop() {

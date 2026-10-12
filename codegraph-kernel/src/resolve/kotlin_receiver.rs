@@ -23,7 +23,7 @@ impl KernelResolver {
         if r.language != "kotlin" || r.reference_kind != "calls" { return Ok(None); }
         let Some(file) = self.read_file(&r.file_path) else { return Ok(None) };
         let Some(tree) = self.parsed_tree(&file, r) else { return Ok(None) };
-        let mut node = descendant_for_position(tree.root_node(), file.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), file.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         if node.kind() != "simple_identifier" { return Ok(None); }
         while let Some(parent) = node.parent() {
             if parent.kind() == "navigation_expression" {
@@ -99,7 +99,7 @@ impl KernelResolver {
     fn kotlin_property_chain_receiver(&mut self,r:&ResolveRefIn)->bool {
         let Some(file)=self.read_file(&r.file_path) else {return false};
         let Some(tree)=self.parsed_tree(&file,r) else {return false};
-        let mut node=descendant_for_position(tree.root_node(),file.text(),((r.line-1).max(0) as usize,r.column.max(0) as usize+1));
+        let mut node=descendant_for_position(tree.root_node(),file.text(),((r.line-1).max(0) as usize,r.column.max(0) as usize));
         while let Some(parent)=node.parent() {
             if parent.kind()=="navigation_expression" {
                 let Some(receiver)=parent.named_child(0) else {return false};
@@ -144,7 +144,7 @@ impl KernelResolver {
     }
 
     fn kotlin_decl_tree_node<'t>(tree: &'t tree_sitter::Tree, source: &str, decl: &KNode, kind: &str) -> Option<Node<'t>> {
-        let mut node=descendant_for_position(tree.root_node(),source,((decl.start_line-1).max(0) as usize,decl.start_column.max(0) as usize+1));
+        let mut node=descendant_for_position(tree.root_node(),source,((decl.start_line-1).max(0) as usize,decl.start_column.max(0) as usize));
         while node.kind()!=kind {node=node.parent()?;}
         Some(node)
     }
@@ -468,7 +468,7 @@ impl KernelResolver {
         let Some(file) = self.read_file(&decl.file_path) else { return Ok(None) };
         let site = r.clone().at(decl);
         let Some(tree) = self.parsed_tree(&file, &site) else { return Ok(None) };
-        let mut node = descendant_for_position(tree.root_node(), file.text(), ((decl.start_line - 1).max(0) as usize, decl.start_column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), file.text(), ((decl.start_line - 1).max(0) as usize, decl.start_column.max(0) as usize));
         while node.kind() != "property_declaration" {
             let Some(parent) = node.parent() else { return Ok(None) }; node = parent;
         }
@@ -481,7 +481,7 @@ impl KernelResolver {
         let Some(file) = self.read_file(&decl.file_path) else { return Ok(false) };
         let site = r.clone().at(decl);
         let Some(tree) = self.parsed_tree(&file, &site) else { return Ok(false) };
-        let mut node = descendant_for_position(tree.root_node(), file.text(), ((decl.start_line - 1).max(0) as usize, decl.start_column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), file.text(), ((decl.start_line - 1).max(0) as usize, decl.start_column.max(0) as usize));
         while node.kind() != "function_declaration" {
             let Some(parent) = node.parent() else { return Ok(false) }; node = parent;
         }

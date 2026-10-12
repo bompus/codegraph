@@ -390,7 +390,7 @@ impl KernelResolver {
                     declaration_source.text(),
                     (
                         (method.start_line - 1).max(0) as usize,
-                        method.start_column.max(0) as usize + 1,
+                        method.start_column.max(0) as usize,
                     ),
                 );
                 loop {
@@ -611,7 +611,7 @@ impl KernelResolver {
         let mut call = super::iteration::descendant_for_position(
             tree.root_node(),
             source.text(),
-            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1),
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize),
         );
         let callee_pattern = Self::cached_regex(&format!(
             r"(?:^|[.:>])\s*{}(?:\s*<.*>)?\s*$",

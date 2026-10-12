@@ -1109,7 +1109,7 @@ impl KernelResolver {
         let Some(file) = self.read_file(&r.file_path) else { return Ok(None); };
         let Some(tree) = self.parsed_tree(&file, r) else { return Ok(None); };
         let mut node = super::iteration::descendant_for_position(tree.root_node(), file.text(),
-            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         let mut call = None;
         loop {
             if node.kind() == "call_expression" {
@@ -1170,7 +1170,7 @@ impl KernelResolver {
         let file = self.read_file(&r.file_path)?;
         let tree = self.parsed_tree(&file, r)?;
         let mut node = super::iteration::descendant_for_position(tree.root_node(), file.text(),
-            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         loop {
             if node.kind() == "call_expression" {
                 if let Some(function) = node.child_by_field_name("function") {
