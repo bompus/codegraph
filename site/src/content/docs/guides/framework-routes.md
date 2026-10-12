@@ -30,7 +30,7 @@ CodeGraph detects web-framework routing files and emits `route` nodes linked by 
 | **Axum / actix / Rocket** | `.route("/x", get(handler))` |
 | **ASP.NET** | `[HttpGet("/x")]` attributes on action methods and FastEndpoints `Configure()` verb calls |
 | **Vapor** | `app.get("x", use: handler)` and route-owned closure body calls; `use: Controller.show` links to that type's `show` (nested types and extensions included), `use: self.index` to the collection's own |
-| **React Router / Remix** | JSX/data-router pages with nested children, constant paths, `Component` and lazy module exports; literal framework-mode arrays; default Remix and registered `flatRoutes()` file pages, linked to named default components |
+| **React Router / Remix** | JSX/data-router pages with nested children, constant paths, `Component` and lazy module exports; literal framework-mode arrays; default Remix and registered `flatRoutes()` file pages, linked to named default components (or an RSC route module's `ServerComponent`) |
 | **SvelteKit** | Route component nodes, named by URL: `(group)` folders dropped, `[id=matcher]` read as `:id` |
 | **TanStack Router / Start** | Page routes plus literal `server.handlers` method tables and `createHandlers` callbacks on exported file routes; middleware is excluded from handler links |
 | **Next.js** | App Router and Pages Router pages; `app/api/**/route.ts` method exports and `pages/api/**` default handlers |
@@ -74,7 +74,7 @@ Astro supports default roots, `[param]`/`[...rest]` filenames and exported handl
 
 React Router framework mode assumes the default `app/` directory. Computed arrays, custom app directories, `relative` helpers, anonymous defaults, and re-exports remain unsupported. Layout helpers contribute nesting without creating extra pages; an index page takes precedence over its parent layout.
 
-Remix default `app/routes/` filenames and React Router configs registering an imported, option-free `flatRoutes()` call support JS/TS pages, immediate `folder/route` modules, dot nesting, index/pathless segments, parameters, optional segments, splats, and bracket escapes. Resource-only and direct `Outlet`-only defaults are excluded. Custom configuration, folder `index` fallback, and Markdown/MDX are unsupported.
+Remix default `app/routes/` filenames and React Router configs registering an imported, option-free `flatRoutes()` call (optionally `satisfies RouteConfig` or `as RouteConfig`, as the official template writes it) support JS/TS pages, immediate `folder/route` modules, dot nesting, index/pathless segments, parameters, optional segments, splats, and bracket escapes. In RSC framework mode, a route module without a default export is linked to its `ServerComponent` export (a function, class or constant declared in the module, or a local name exported as `ServerComponent`; re-exports from another module and type-only exports are not followed); a module with both keeps its default. Resource-only and direct `Outlet`-only defaults are excluded. Custom configuration, folder `index` fallback, and Markdown/MDX are unsupported.
 
 The JavaScript HTTP readers require a recognized package import (ES modules or CommonJS), except for the global `Bun.serve`. They follow immutable local router bindings and literal declarations, without executing your application. Named handlers produce references; direct calls inside inline handlers produce call edges. Static responses have an endpoint without an invented handler. Member handlers remain unresolved by this reader.
 

@@ -183,6 +183,25 @@ export default () => <div/>;`,
     await cg.sync();
     expect(cg.getNodesByKind('route')).toEqual([]);
   });
+  it('binds an RSC route module that exports ServerComponent instead of a default', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rr-rsc-config-'));
+    write('package.json', JSON.stringify({ dependencies: { 'react-router': '*' } }));
+    write(
+      'app/routes.ts',
+      `import {type RouteConfig, route, index} from '@react-router/dev/routes';
+export default [index('./home.tsx'), route('both', './both.tsx')] satisfies RouteConfig;`,
+    );
+    write('app/home.tsx', 'export async function ServerComponent() { return <div/>; }');
+    write(
+      'app/both.tsx',
+      'export function ServerComponent() { return <div/>; }\nexport default function Client() { return <div/>; }',
+    );
+    cg = await CodeGraph.init(dir, { index: true });
+    const routes = cg.getNodesByKind('route');
+    const roots = routeRoots(cg, routes);
+    expect(roots.get(routes.find((n) => n.name === '/')!.id)?.node.name).toBe('ServerComponent');
+    expect(roots.get(routes.find((n) => n.name === '/both')!.id)?.node.name).toBe('Client');
+  });
   it('uses the nested index as a navigation destination and discovers newly added config', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rr-added-'));
     write('package.json', JSON.stringify({ dependencies: { 'react-router': '*' } }));
