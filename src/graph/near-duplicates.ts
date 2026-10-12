@@ -76,7 +76,7 @@ export function tokenize(body: string): string[] {
 /**
  * A body's shingle hashes, or null when it is too small to compare. The
  * function's own name is masked: copies are usually renamed (`fpUrlOf`,
- * `ttdUrlOf`), and the name alone moves several shingles.
+ * `webUrlOf`), and the name alone moves several shingles.
  */
 export function shingles(body: string, ownName?: string): Set<number> | null {
   const tokens = tokenize(body).map((t) => (t === ownName ? '\u0000self' : t));
