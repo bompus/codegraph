@@ -17,18 +17,21 @@ jobs:
     if: github.repository == 'bompus/codegraph'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: fork/consolidated
-          fetch-depth: 0
-
+      # This repository allows only local actions, so the checkout is plain git
+      # (as the other workflows do); `actions/checkout` would fail at startup.
       - name: Mirror upstream main
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::${auth#AUTHORIZATION: basic }"
+          git init .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
           git remote add canonical https://github.com/colbymchenry/codegraph.git
-          git fetch origin main:refs/remotes/origin/main
-          git fetch canonical main:refs/remotes/canonical/main
+          git -c "http.extraheader=$auth" fetch --no-tags origin main:refs/remotes/origin/main
+          git fetch --no-tags canonical main:refs/remotes/canonical/main
           expected=$(git rev-parse refs/remotes/origin/main)
-          git push "--force-with-lease=refs/heads/main:${expected}" \
+          git -c "http.extraheader=$auth" push "--force-with-lease=refs/heads/main:${expected}" \
             origin refs/remotes/canonical/main:refs/heads/main
