@@ -1,7 +1,7 @@
 # Runtime benchmark
 
 These scripts produced the README's "Measured results" and the tables in
-[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-03.md).
+[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-12.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-12.md).
 Each arm is a runtime (a `node` or `bun` executable) running a built checkout.
 The arms can differ in build, in runtime, or in both.
 
@@ -11,6 +11,7 @@ The arms can differ in build, in runtime, or in both.
 | `run-mcp.sh <list>` | MCP server: start to first explore answer, warm explore median and p90, 8 explores at once, watcher sync, idle memory and CPU | `mcp.jsonl` |
 | `run-cli.sh <corpus> <query>` | CLI start: `--version`, `status`, one `explore` (hyperfine, 20 runs) | `cli-*.json`, `cli.txt` |
 | `summarize.py $BENCH_OUT` | Medians per corpus and arm from `index-sync.tsv`, and from `mcp.jsonl` when present | stdout |
+| `render-charts.mjs $BENCH_OUT --date D --upstream SHA --fork SHA --node V --bun V` | The README chart (`--cards`), the benchmark doc's heatmap (`--heatmap`) and the current run's result tables as Markdown (`--tables`; the benchmark doc's comparison with an earlier run is written by hand), from the accepted attempts in `$BENCH_OUT` (directories `index-<corpus>-aN`, `mcp-<corpus>-aN` and `cli-gin-aN` whose `status` file reads `accepted`) | SVG and Markdown files |
 
 Every run needs a quiet host. Each runner waits before a corpus until no
 `capped-*` scope runs and the 1-minute load is under 2, and each arm runs twice
@@ -23,9 +24,12 @@ The 2026-10-03 run behind the README took 1 h 47 min (17:09 to 18:56):
 `run-mcp.sh` on gin and n8n and `run-cli.sh` on gin took 48 min, with four arms
 (upstream and fork, each on Node and Bun). That includes the idle-host waits.
 The n8n MCP runs took about 4 min each. Building the two worktrees took 4 min
-before it. The 2026-09-28 run of the same steps took 1 h 26 min. Start a re-run
-estimate from these numbers, and update them here after a run that takes much
-longer or shorter.
+before it. The 2026-09-28 run of the same steps took 1 h 26 min. The
+2026-10-12 run took 3 h 2 min (00:16 to 03:18), most of it waiting for the host
+to go quiet and re-running attempts it rejected. Its measuring time per corpus
+was about 5 min for discourse and supabase, 18 min for n8n index and sync, and
+26 min for the n8n MCP run. Start a re-run estimate from these numbers, and
+update them here after a run that takes much longer or shorter.
 
 ## Arms
 
