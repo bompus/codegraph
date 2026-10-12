@@ -141,6 +141,59 @@ describe('flatRoutes registration', () => {
   });
 });
 
+describe('spreads in a Vite config', () => {
+  const detects = (viteConfig: string): boolean => {
+    const files = new Map<string, string>([
+      ['app/routes.ts', imports + 'export default files();'],
+      ['vite.config.ts', viteConfig],
+    ]);
+    return reactRouterFilesResolver.detect({
+      readFile: (f: string) => files.get(f) ?? null,
+    } as ResolutionContext);
+  };
+  const wrap = (body: string): string =>
+    `import { defineConfig } from "vite";\nexport default defineConfig({\n${body}\n});\n`;
+
+  it("keeps file routes for a plugin object that spreads a plugin call (React Router's RSC playground)", () => {
+    expect(
+      detects(
+        wrap(`build: { minify: false },
+  plugins: [
+    {
+      enforce: "pre",
+      ...mdx({ remarkPlugins: [remarkFrontmatter] }),
+    },
+    // @ts-ignore
+    reactRouterRSC({ __runningWithinTheReactRouterMonoRepo: true }),
+    react(),
+  ],`),
+      ),
+    ).toBe(true);
+    expect(detects(wrap('"plugins": [...createPlugins({ mode: "dev" }), react()],'))).toBe(true);
+    // A spread written only in a comment or a string is not a spread.
+    expect(detects(wrap('/* ...routes */ plugins: [react()], base: "/...",'))).toBe(true);
+  });
+
+  it('still turns file routes off for a spread that could carry route settings', () => {
+    for (const body of [
+      '...shared,\nplugins: [react()],',
+      '...makeConfig(),\nplugins: [react()],',
+      'plugins: [...plugins],',
+      'plugins: [{ ...pluginOptions }],',
+      'plugins: [reactRouterRSC({ ...rscOptions })],',
+      'plugins: [react()],\nserver: { ...serverOptions() },',
+      'plugins: [reactRouter({ appDirectory: "src" })],',
+    ]) {
+      expect(detects(wrap(body)), body).toBe(false);
+    }
+    expect(
+      detects(
+        'import { defineConfig } from "vite";\nexport default defineConfig(({ mode }) => ({ ...base(mode), plugins: [react()] }));\n',
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('file-route apps through indexing', () => {
   let cg: CodeGraph | undefined;
   let dir: string;
