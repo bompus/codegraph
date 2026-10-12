@@ -58,6 +58,11 @@ import { readDirEntries } from '../directory';
  *  loading the whole node table: the load is a fixed cost that per-name
  *  queries only overtake near 16k refs (measured on ktor, ledger §5.74). */
 const SYNC_NODE_TABLE_MIN_REFS = 15_000;
+/** The load costs per node and the queries per ref, so the crossover scales
+ *  with the graph: ktor's 49.7k nodes cross near 16k refs (0.32 refs per
+ *  node). A small project's full index (gin: 3k nodes, 13.6k refs) is far
+ *  past it and loads the table. */
+const SYNC_NODE_TABLE_REFS_PER_NODE = 0.3;
 /** Refs per kernel `resolveChunk` call on the list paths. */
 const KERNEL_CHUNK = 500;
 
@@ -922,13 +927,20 @@ export class ReferenceResolver {
     this.kernelResolver = this.openKernelResolver(dbPath, generation, supertypesComplete, snapshot, queryLookups);
   }
 
+  /** Whether a kernel over the live db answers node lookups by query rather
+   *  than loading the node table, for `refCount` pending refs. */
+  private shouldQueryLookups(refCount: number): boolean {
+    return refCount < SYNC_NODE_TABLE_MIN_REFS
+      && refCount < this.queries.getNodeCount() * SYNC_NODE_TABLE_REFS_PER_NODE;
+  }
+
   /** The open kernel resolver, or the live db's opened on demand. */
   private liveKernel(refCount: number): KernelResolverLike {
     if (!this.kernelResolver) {
       // The live db: prerequisites persist before the rest resolves, so every
       // supertype edge the walks read is already written. A small list looks
       // nodes up by query: loading the whole node table costs more than it.
-      this.initKernelResolver(undefined, undefined, true, false, refCount < SYNC_NODE_TABLE_MIN_REFS);
+      this.initKernelResolver(undefined, undefined, true, false, this.shouldQueryLookups(refCount));
     }
     return this.kernelResolver!;
   }
@@ -1811,7 +1823,7 @@ export class ReferenceResolver {
       if (kernel) return kernel;
       await quiesceValveForKernel();
       // A sync's few pending refs look nodes up by query, as in liveKernel.
-      this.initKernelResolver(parallel?.dbPath, undefined, true, false, total < SYNC_NODE_TABLE_MIN_REFS);
+      this.initKernelResolver(parallel?.dbPath, undefined, true, false, this.shouldQueryLookups(total));
       kernel = this.kernelResolver!;
       return kernel;
     };

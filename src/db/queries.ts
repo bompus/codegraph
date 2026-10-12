@@ -4488,6 +4488,12 @@ export class QueryBuilder {
     return filesByLanguage;
   }
 
+  /** Total node count: the whole graph's size, without the per-kind breakdown. */
+  getNodeCount(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM nodes').get() as { count: number };
+    return row.count;
+  }
+
   /**
    * Get graph statistics
    */
