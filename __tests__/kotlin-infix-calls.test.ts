@@ -127,11 +127,14 @@ it.each([
 infix fun Int.and(other: Int): Int = this
 fun numeric(value: Int, mask: Int) = (value) and mask
 `, 'numeric', []],
+  // A parenthesized receiver is typed like a bare one, and an extension on a
+  // project class is not linked through a typed receiver (`value and mask`
+  // gives the same result), so no edge is better than a guess by name.
   ['project numeric extension', `package project
 class Int
 infix fun Int.and(other: Int): Int = this
 fun custom(value: Int, mask: Int) = (value) and mask
-`, 'custom', ['Int::and']],
+`, 'custom', []],
   ['nested-comment this receiver', `package app
 class Spec {
   infix fun apply(other: Spec): Spec = this
@@ -153,6 +156,28 @@ class Spec {
     const caller = graph.getNodesInFile('Ops.kt').find((n) => n.name === name)!;
     const targets = graph.getOutgoingEdges(caller.id).filter((e) => e.kind === 'calls').map((e) => graph!.getNode(e.target)!.qualifiedName);
     expect(targets).toEqual(expected);
+  } finally {
+    graph?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('types a parenthesized infix receiver by what it holds, not by the method name', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-kotlin-infix-paren-'));
+  let graph: CodeGraph | undefined;
+  try {
+    fs.writeFileSync(path.join(dir, 'Ops.kt'), `package app
+class A { infix fun put(v: Int): A = this }
+class B { infix fun put(v: Int): B = this }
+fun plain(b: A) = b put 1
+fun paren(b: A) = (b) put 1
+fun parenTight(b: A) = (b)put(1)
+fun parenArg(b: A) = ((b)) put (1)
+`);
+    graph = await CodeGraph.init(dir, { index: true });
+    const targets = (name: string) => graph!.getOutgoingEdges(graph!.getNodesInFile('Ops.kt').find((n) => n.name === name)!.id)
+      .filter((e) => e.kind === 'calls').map((e) => graph!.getNode(e.target)!.qualifiedName);
+    for (const name of ['plain', 'paren', 'parenTight', 'parenArg']) expect(targets(name), name).toEqual(['app::A::put']);
   } finally {
     graph?.close();
     fs.rmSync(dir, { recursive: true, force: true });

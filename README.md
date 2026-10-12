@@ -145,7 +145,7 @@ Dispatch and framework coverage the fork adds, by kind:
 
 Call resolution the fork adds:
 
-- Kotlin infix calls keep their call edge when a comment sits inside the expression.
+- Kotlin infix calls keep their call edge when a comment sits inside the expression, and a parenthesized receiver (`(b) put 1`) is typed like a bare one.
 - Kotlin receiver inference follows bounded chains of declared returns and verified receiver-preserving methods. Properties initialized by typed factory calls keep compatible imported extensions. Explicit casts, single-type `when` branches, filtered collection elements and bound generic factory arguments also supply receiver types.
 - Kotlin chains on instance and extension receivers use the declared return type, including nested and multiline calls; upstream covers class and companion-factory chains. An imported return-type guess for an unknown receiver keeps confidence at most 0.7, and so does a Rust chain match without a proved receiver type.
 - Kotlin multi-dollar strings keep their interpolation threshold.
