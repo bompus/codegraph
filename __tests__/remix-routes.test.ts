@@ -55,6 +55,11 @@ describe('flatRoutes registration', () => {
     'files(); const unrelated = 1',
     '[...(await files())]',
     '[route("extra","./extra.tsx"), ...files()] satisfies RouteConfig',
+    // The official framework-mode template: `export default flatRoutes() satisfies RouteConfig;`
+    'files() satisfies RouteConfig',
+    'files() as RouteConfig',
+    'await files() satisfies RouteConfig',
+    '[...files()] as RouteConfig',
   ])('accepts %s', (expression) => {
     expect(usesDefaultFlatRoutes(imports + 'export default ' + expression + ';')).toBe(true);
   });
@@ -66,6 +71,11 @@ describe('flatRoutes registration', () => {
     '[layout("./layout.tsx", [...files()])]',
     '[files()]',
     'dynamic',
+    'files(options) satisfies RouteConfig',
+    'files().map(change) satisfies RouteConfig',
+    'files() satisfies RouteConfig ? a : b',
+    'files() as unknown as RouteConfig',
+    'files() satisfies',
   ])('rejects %s', (expression) => {
     expect(usesDefaultFlatRoutes(imports + 'export default ' + expression + ';')).toBe(false);
   });
@@ -84,6 +94,11 @@ describe('flatRoutes registration', () => {
     expect(usesDefaultFlatRoutes(imports + '// export default files();')).toBe(false);
     expect(
       usesDefaultFlatRoutes(imports + 'const text=`export default files()`;\nexport default [];'),
+    ).toBe(false);
+    expect(
+      usesDefaultFlatRoutes(
+        imports + 'const dir=`routes`;\nexport default files() satisfies RouteConfig;',
+      ),
     ).toBe(false);
   });
   it("accepts Remix's generated remix.config.js, which only ignores dotfiles", () => {
@@ -110,6 +125,9 @@ describe('flatRoutes registration', () => {
     const context = { readFile: (f: string) => files.get(f) ?? null } as ResolutionContext;
     expect(reactRouterFilesResolver.detect(context)).toBe(false);
     files.set('app/routes.ts', imports + 'export default files();');
+    expect(reactRouterFilesResolver.detect(context)).toBe(true);
+    // The template form still yields to a config that moves or overrides routes.
+    files.set('app/routes.ts', imports + 'export default files() satisfies RouteConfig;');
     expect(reactRouterFilesResolver.detect(context)).toBe(true);
     for (const config of [
       'export default {appDirectory:"src"}',
@@ -166,6 +184,67 @@ describe('file-route apps through indexing', () => {
       expect(cg.getNodesByKind('route')).toHaveLength(0);
     },
   );
+  // React Router RSC framework mode: a route module renders its `ServerComponent`
+  // export when it has no default (remix-run/react-router playground/rsc-vite-framework).
+  it('binds RSC route modules that export ServerComponent from the official routes.ts template', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rr-rsc-'));
+    write(
+      'package.json',
+      JSON.stringify({
+        dependencies: { 'react-router': '7', '@react-router/dev': '7', '@react-router/fs-routes': '7' },
+      }),
+    );
+    write(
+      'app/routes.ts',
+      `import { type RouteConfig } from "@react-router/dev/routes";
+import { flatRoutes } from "@react-router/fs-routes";
+
+export default flatRoutes() satisfies RouteConfig;
+`,
+    );
+    write(
+      'app/routes/_index/route.tsx',
+      'export function loader(){return 1;}\nexport function ServerComponent(){return <div/>;}',
+    );
+    write('app/routes/arrow.tsx', 'export const ServerComponent = async () => <div/>;');
+    write(
+      'app/routes/listed.tsx',
+      'function Listed(){return <div/>;}\nexport { Listed as ServerComponent };',
+    );
+    write(
+      'app/routes/both.tsx',
+      'export function ServerComponent(){return <div/>;}\nexport default function Client(){return <div/>;}',
+    );
+    write('app/routes/plain.tsx', 'export default function Plain(){return <div/>;}');
+    write(
+      'app/routes/neither.tsx',
+      'export type ServerComponent = () => null;\nexport function loader(){return 1;}',
+    );
+    write('app/routes/shell.tsx', 'export function ServerComponent(){return <Outlet/>;}');
+    write('app/server.tsx', 'export function ServerComponent(){return <div/>;}');
+    write('app/routes/forwarded.tsx', "export { ServerComponent } from '../server';");
+    cg = await CodeGraph.init(dir, { index: true });
+    const routes = cg.getNodesByKind('route');
+    const rendered = Object.fromEntries(
+      routes.map((route) => [
+        route.name,
+        cg!
+          .getOutgoingEdges(route.id)
+          .filter((e) => e.kind === 'references')
+          .map((e) => {
+            const target = cg!.getNode(e.target)!;
+            return `${target.filePath}:${target.name}`;
+          }),
+      ]),
+    );
+    expect(rendered).toEqual({
+      '/': ['app/routes/_index/route.tsx:ServerComponent'],
+      '/arrow': ['app/routes/arrow.tsx:ServerComponent'],
+      '/listed': ['app/routes/listed.tsx:Listed'],
+      '/both': ['app/routes/both.tsx:Client'],
+      '/plain': ['app/routes/plain.tsx:Plain'],
+    });
+  });
   it.runIf(fs.existsSync(path.resolve('dist/index.js')))(
     'indexes file conventions in fresh compiled workers',
     () => {

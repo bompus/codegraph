@@ -150,14 +150,17 @@ export function usesDefaultFlatRoutes(content: string): boolean {
     .slice(exported.index + exported[0].length)
     .split(';', 1)[0]!
     .trim();
+  // One type assertion changes no value: the official template writes
+  // `export default flatRoutes() satisfies RouteConfig;`.
+  const typed = '(?:\\s*\\b(?:satisfies|as)\\s+[A-Za-z_$][\\w$]*)?';
   for (const alias of aliases) {
     const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`^(?:await\\s+)?${escaped}\\s*\\(\\s*\\)\\s*;?\\s*$`).test(expression))
+    if (new RegExp(`^(?:await\\s+)?${escaped}\\s*\\(\\s*\\)${typed}\\s*;?\\s*$`).test(expression))
       return true;
     if (!expression.startsWith('[')) continue;
     const end = matchBracket(expression, 0);
     if (end < 0) continue;
-    if (!/^\s*(?:satisfies\s+[A-Za-z_$][\w$]*)?\s*;?\s*$/.test(expression.slice(end + 1))) continue;
+    if (!new RegExp(`^${typed}\\s*;?\\s*$`).test(expression.slice(end + 1))) continue;
     let i = 1;
     while (i < end) {
       while (/[\s,]/.test(expression[i] ?? '')) i++;
@@ -178,6 +181,64 @@ export function usesDefaultFlatRoutes(content: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * The component a route module renders and the export statement naming it:
+ * its default export, or, in RSC framework mode, where a route module exports
+ * `ServerComponent` in its place, that export when the module has no default.
+ * A local name (`export default Page`, `export { Page as ServerComponent }`)
+ * is followed to its top-level declaration. Re-exports from another module
+ * are not followed.
+ */
+function routeModuleComponent(
+  root: SyntaxNode,
+): { exported: SyntaxNode; declaration: SyntaxNode | null } | null {
+  const local = (name: string): SyntaxNode | null =>
+    root.namedChildren
+      .map((n) => (n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n))
+      .flatMap((n) => (n.type === 'lexical_declaration' ? n.namedChildren : [n]))
+      .find((n) => n.childForFieldName('name')?.text === name) ?? null;
+  const statements = root.namedChildren.filter((n) => n.type === 'export_statement');
+  const byDefault = statements.find((n) => n.children.some((c) => c.type === 'default'));
+  if (byDefault) {
+    const declaration =
+      byDefault.childForFieldName('declaration') ?? byDefault.childForFieldName('value');
+    return {
+      exported: byDefault,
+      declaration: declaration?.type === 'identifier' ? local(declaration.text) : declaration,
+    };
+  }
+  const listed = (n: SyntaxNode) =>
+    n.namedChildren
+      .filter((c) => c.type === 'export_clause')
+      .flatMap((c) => c.namedChildren.filter((s) => s.type === 'export_specifier'));
+  const exportedName = (s: SyntaxNode) =>
+    (s.childForFieldName('alias') ?? s.childForFieldName('name'))?.text;
+  // `export { Page as default }` is a default too, just not one read here.
+  if (statements.some((n) => listed(n).some((s) => exportedName(s) === 'default'))) return null;
+  for (const statement of statements) {
+    const declaration = statement.childForFieldName('declaration');
+    if (
+      ['function_declaration', 'generator_function_declaration', 'class_declaration'].includes(
+        declaration?.type ?? '',
+      ) &&
+      declaration!.childForFieldName('name')?.text === 'ServerComponent'
+    )
+      return { exported: statement, declaration: declaration! };
+    const declarator =
+      declaration?.type === 'lexical_declaration'
+        ? declaration.namedChildren.find(
+            (n) => n.childForFieldName('name')?.text === 'ServerComponent',
+          )
+        : undefined;
+    if (declarator) return { exported: statement, declaration: declarator };
+    if (statement.childForFieldName('source')) continue;
+    const specifier = listed(statement).find((s) => exportedName(s) === 'ServerComponent');
+    const name = specifier?.childForFieldName('name')?.text;
+    if (name) return { exported: statement, declaration: local(name) };
+  }
+  return null;
 }
 
 /** Root-level default conventions; custom roots and route overrides are not inferred. */
@@ -232,22 +293,9 @@ export const reactRouterFilesResolver: FrameworkResolver = {
     const tree = parseSourceTreeSync(content, language);
     if (!tree) return { nodes: [], references: [] };
     try {
-      const exported = tree.rootNode.namedChildren.find(
-        (n) => n.type === 'export_statement' && n.children.some((c) => c.type === 'default'),
-      );
-      if (!exported) return { nodes: [], references: [] };
-      let declaration =
-        exported.childForFieldName('declaration') ?? exported.childForFieldName('value');
-      if (declaration?.type === 'identifier') {
-        const name = declaration.text;
-        declaration =
-          tree.rootNode.namedChildren
-            .map((n) =>
-              n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n,
-            )
-            .flatMap((n) => (n.type === 'lexical_declaration' ? n.namedChildren : [n]))
-            .find((n) => n.childForFieldName('name')?.text === name) ?? null;
-      }
+      const rendered = routeModuleComponent(tree.rootNode);
+      if (!rendered) return { nodes: [], references: [] };
+      const { exported, declaration } = rendered;
       const component =
         declaration?.type === 'variable_declarator'
           ? declaration.childForFieldName('value')
@@ -453,20 +501,7 @@ export const reactRouterResolver: FrameworkResolver = {
       if (!tree) return null;
       let target: Node | undefined;
       try {
-        const exported = tree.rootNode.namedChildren.find(
-          (n) => n.type === 'export_statement' && n.children.some((c) => c.type === 'default'),
-        );
-        let declaration =
-          exported?.childForFieldName('declaration') ?? exported?.childForFieldName('value');
-        if (declaration?.type === 'identifier') {
-          const name = declaration.text;
-          declaration = tree.rootNode.namedChildren
-            .map((n) =>
-              n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n,
-            )
-            .flatMap((n) => (n.type === 'lexical_declaration' ? n.namedChildren : [n]))
-            .find((n) => n.childForFieldName('name')?.text === name);
-        }
+        const declaration = routeModuleComponent(tree.rootNode)?.declaration;
         const name = declaration?.childForFieldName('name')?.text;
         if (name && declaration) {
           const line = declaration.startPosition.row + 1;
