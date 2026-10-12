@@ -77,7 +77,7 @@ impl KernelResolver {
                 source.text(),
                 (
                     (declaration.start_line - 1).max(0) as usize,
-                    declaration.start_column.max(0) as usize + 1,
+                    declaration.start_column.max(0) as usize,
                 ),
             );
             while node.kind() != "function_declaration" {

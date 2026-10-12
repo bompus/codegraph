@@ -27,7 +27,10 @@ fn before(a: (usize, usize), b: (usize, usize)) -> bool {
 }
 
 /// descendantForPosition (tree.ts): descend into the first child, named or
-/// not, whose span contains the point, until none does.
+/// not, whose span contains the point, until none does. A child must end
+/// after the point, so where one token ends and the next begins (`)` then
+/// `Foo` in `if(ok)Foo f;`) the next one is found: pass a token's start to
+/// find that token.
 pub(super) fn descendant_for_position<'t>(root: TsNode<'t>, text: &str, at: (usize, usize)) -> TsNode<'t> {
     let mut node = root;
     'down: loop {
@@ -35,7 +38,7 @@ pub(super) fn descendant_for_position<'t>(root: TsNode<'t>, text: &str, at: (usi
         for c in node.children(&mut cursor) {
             let start = point16(text, c.start_byte(), c.start_position());
             let end = point16(text, c.end_byte(), c.end_position());
-            if before(start, at) && before(at, end) {
+            if before(start, at) && !before(end, at) {
                 node = c;
                 continue 'down;
             }
@@ -266,7 +269,7 @@ impl KernelResolver {
     pub(super) fn kotlin_chain_receiver_call(&mut self, r: &ResolveRefIn) -> Option<String> {
         let file = self.read_file(&r.file_path)?;
         let tree = self.parsed_tree(&file, r)?;
-        let mut node = descendant_for_position(tree.root_node(), file.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+        let mut node = descendant_for_position(tree.root_node(), file.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         if node.kind() != "simple_identifier" { return None; }
         while let Some(parent) = node.parent() {
             if parent.kind() == "navigation_expression" {
@@ -752,6 +755,27 @@ impl KernelResolver {
 #[cfg(test)]
 mod tests {
     use super::kotlin_takes_trailing_lambda as trailing;
+
+    /// The node `descendant_for_position` finds at (0, `column`) of `code`.
+    fn token_at(code: &str, language: &str, column: usize) -> (String, String) {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::langs::grammar_for(language).unwrap()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let node = super::descendant_for_position(tree.root_node(), code, (0, column));
+        (node.kind().to_string(), code[node.start_byte()..node.end_byte()].to_string())
+    }
+
+    #[test]
+    fn a_point_where_one_token_ends_and_the_next_begins_finds_the_next() {
+        // `)` ends where the name starts; the name is the token at that point.
+        let code = "void g(){if(ok)Foo f;}";
+        assert_eq!(token_at(code, "cpp", code.find("Foo").unwrap()).1, "Foo");
+        let code = "void g(){if(ok)target();}";
+        assert_eq!(token_at(code, "cpp", code.find("target").unwrap()), ("identifier".into(), "target".into()));
+        // A one-character name followed by `(`: its start finds the name.
+        let code = "void g(){f(x);}";
+        assert_eq!(token_at(code, "cpp", code.find("f(").unwrap()), ("identifier".into(), "f".into()));
+    }
 
     #[test]
     fn a_trailing_lambda_needs_a_function_typed_last_parameter() {

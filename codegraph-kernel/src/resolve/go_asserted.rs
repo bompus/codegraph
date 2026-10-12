@@ -151,7 +151,7 @@ impl KernelResolver {
         if !text.contains(".(") { return None; }
         let tree = self.parsed_tree(&file, r)?;
         let site = super::iteration::descendant_for_position(tree.root_node(), text,
-            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
         let at = site.start_byte();
         let mut scope = Some(site);
         while let Some(node) = scope {

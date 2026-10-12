@@ -24,7 +24,7 @@ impl KernelResolver {
         let decl = self.lua_local_decl(&r.reference_name, r)?;
         if let Some(source) = self.read_file(&r.file_path) {
             if let Some(tree) = self.parsed_tree(&source, r) {
-                let mut node = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+                let mut node = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
                 while let Some(parent) = node.parent() {
                     if parent.kind() == "for_statement" && node.kind() == "block" {
                         let clause = named_children(parent).into_iter().find(|n| matches!(n.kind(), "for_generic_clause" | "for_numeric_clause"));

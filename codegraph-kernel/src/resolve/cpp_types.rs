@@ -54,7 +54,7 @@ impl KernelResolver {
         let mut directives = Vec::new();
         if let Some(tree) = self.parsed_tree(&lines, r) {
             let mut site = super::iteration::descendant_for_position(tree.root_node(), lines.text(),
-                ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1));
+                ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
             let before = site.start_byte();
             loop {
                 if matches!(site.kind(), "translation_unit" | "declaration_list" | "field_declaration_list" | "compound_statement") {
@@ -174,7 +174,7 @@ impl KernelResolver {
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(false) };
         let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
         let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(false) };
-        let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize + 1));
+        let mut node = super::iteration::descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize));
         while let Some(parent) = node.parent() {
             if parent.kind() == "template_declaration" {
                 if let Some(parameters) = parent.child_by_field_name("parameters") {

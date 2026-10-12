@@ -158,7 +158,7 @@ impl KernelResolver {
         let mut at = super::iteration::descendant_for_position(
             tree.root_node(),
             source.text(),
-            ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1),
+            ((r.line - 1).max(0) as usize, r.column.max(0) as usize),
         );
         let mut scopes = Vec::new();
         loop {
@@ -200,7 +200,7 @@ impl KernelResolver {
                     super::iteration::descendant_for_position(
                         tree.root_node(),
                         source.text(),
-                        ((r.line - 1).max(0) as usize, r.column.max(0) as usize + 1),
+                        ((r.line - 1).max(0) as usize, r.column.max(0) as usize),
                     )
                     .end_byte(),
                 );

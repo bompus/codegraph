@@ -208,7 +208,7 @@ impl KernelResolver {
         let lines = self.read_file(&r.file_path)?;
         if r.language=="rust" && r.reference_kind=="calls" {
             if let Some(tree)=self.parsed_tree(&lines,r) {
-                let mut node=super::iteration::descendant_for_position(tree.root_node(),lines.text(),((r.line-1).max(0) as usize,r.column.max(0) as usize+1));
+                let mut node=super::iteration::descendant_for_position(tree.root_node(),lines.text(),((r.line-1).max(0) as usize,r.column.max(0) as usize));
                 loop {
                     if node.kind()=="field_expression" {
                         if let (Some(field),Some(value))=(node.child_by_field_name("field"),node.child_by_field_name("value")) {
