@@ -6,13 +6,13 @@
 
 ## 1. What we need from a code index
 
-Our use comes first; "best all-around" is the second test. From our private downstream project's code-index research and the fork's own history:
+Our use comes first; "best all-around" is the second test. From code-index research done for a downstream application and the fork's own history:
 
-- **Agent-driven work on a shared host.** Many sessions across Claude Code, Codex, Cursor, OpenCode, AGY and Devin, most of them in their own git worktrees, on one WSL machine that has been OOM-killed by aggregate memory pressure.
+- **Agent-driven work on a shared machine.** Many sessions across Claude Code, Codex, Cursor, OpenCode, AGY and Devin, most of them in their own git worktrees, share one machine, so aggregate memory pressure is a real constraint.
 - **One call that answers.** The measured win is an agent that stops reading files because the answer came back complete: verbatim, line-numbered source plus the flow between the named symbols. In the rules-on A/B (Opus, headless, 6 discovery + 3 concept tasks) CodeGraph cut 2 to 2.5 calls per task and kept 6 of 6 correct. Two shapes that return less than source measured worse: a symbols-only answer lost 2 of 18 cells, and gortex's budgeted outline answered 3 of 6.
 - **The index has to be right.** A wrong caller or a wrong edge is what sends the agent back to Grep; a missing one mostly costs a follow-up call.
 - **Local, deterministic, no LLM in the index.** Answers must be reproducible, and nothing leaves the machine.
-- **Fresh in every checkout.** Worktrees had no index in 9 of 11 cases in the downstream audit; an un-indexed root routes the agent to Grep.
+- **Fresh in every checkout.** Worktrees had no index in 9 of 11 cases in an audit of a downstream setup; an un-indexed root routes the agent to Grep.
 - **Also used:** string literals and storage keys (the `literals` table), Markdown sections, and transcript search across hosts (`codegraph_sessions`).
 
 What we do not need, on current evidence: embeddings, LLM-written documentation, large tool catalogues, compact wire formats, PreToolUse hooks. Each was measured null or negative, or has no use here (see the survey's rows L–R).
@@ -49,7 +49,7 @@ repowise's [BENCHMARKS.md](https://github.com/repowise-dev/repowise/blob/main/do
 | Graph build, 35 repositories | 3.65 s median, **757 MB** peak, fastest on 16 | 2.77 s, **75 MB**, fastest on 14 | speed level, memory 10× theirs |
 | Full index, django | **16.4 s** | 367 s (1,058 s with prose) | our clearest win |
 
-The TypeScript result matters most to us: TypeScript is our downstream project's language and the language of most of the README corpora.
+The TypeScript result matters most to us: TypeScript is the language of the downstream application this fork serves and of most of the README corpora.
 
 The precision gap has a likely shape. repowise types a receiver from its declaration where it can, and stores every weaker binding under a named origin with a lower confidence (its cross-file "global unique" match is recorded at 0.50 as a guess); CodeGraph's exact-name and fuzzy strategies bind a call to a same-named definition that passes the gates, with nothing marking it as a guess. The fork already found one instance while writing this: the kernel bound a Python call to a same-named Nix binding, which the TypeScript resolver rejects (fix pending). The 1.5.0 numbers predate the fork's binding model (#27–#38) and the member-access kernel work, so some of the 116 wrong rows may already be fixed. That has to be measured, not assumed (§6, step 1).
 
@@ -66,7 +66,7 @@ What it bought, all measured in the ledger (§5.38–5.43):
 What it did not buy:
 
 - **Answer quality or precision.** The kernel resolver is a bug-for-bug mirror of the TypeScript one, so it reproduces the 58.6%. The survey's conclusion still holds: "The language of the engine did not decide any of these outcomes; what the tool returns did."
-- **Memory.** Our index run peaks near 400 MB even on a repository of 1,200–1,500 nodes (os-lib, lazy.nvim in the ledger's A/B), so the floor is Node plus the worker pool, not the kernel. repowise builds its graph in 75 MB. On a host that has been OOM-killed by aggregate pressure, this matters more to us than seconds do.
+- **Memory.** Our index run peaks near 400 MB even on a repository of 1,200–1,500 nodes (os-lib, lazy.nvim in the ledger's A/B), so the floor is Node plus the worker pool, not the kernel. repowise builds its graph in 75 MB. On a machine shared by many agent sessions, memory matters more than seconds do.
 - **One implementation (as of 2026-09-25; #192 has since removed the TypeScript resolver spine).** Every kernel punt then ran the TypeScript resolver, so there were two resolvers to keep in step, and a parity bug the dump gate could not see (a language no corpus contains) could ship silently. `import-resolver.ts` remains as an import-path helper for synthesizers and framework resolvers.
 
 The greenfield sketch's reopen conditions are close to met: both incremental plans have landed and resolution runs in the kernel with golden-dump parity. Its third condition, "a memory ceiling the daemon cannot meet", now has outside evidence behind it. That argues for measuring the memory floor before deciding anything larger, not for a rewrite.
@@ -98,7 +98,7 @@ Take option B:
 2. **Keep an upstream channel for small fixes only.** Of the fork's 205 non-merge first-parent commits since the merge-base, about 67 are independent TypeScript fixes or features, and 25 of those cherry-pick onto `upstream/main` without conflict. Send those as goodwill in the shape the maintainer actually merges: one concern, under ~600 lines, a fail-to-pass test, no CHANGELOG hunk. Do not wait on them; nothing in our plan depends on them landing.
 3. **Close or re-cut the stalled large PRs** (#1699, #1867, #1737, #1702, #1841) so they stop costing rebases.
 
-This also changes the downstream project's stated goal of keeping the fork thin so that retiring it stays a one-line swap. That goal assumed upstream would absorb our work; the numbers above say it will not. The downstream kernel entry should name the fork as the served engine on purpose, not as a temporary divergence.
+This also changes a downstream consumer's stated goal of keeping the fork thin so that retiring it stays a one-line swap. That goal assumed upstream would absorb our work; the numbers above say it will not. The consumer's kernel entry should name the fork as the served engine on purpose, not as a temporary divergence.
 
 ## 6. Priorities for the engine
 
@@ -109,7 +109,7 @@ Ordered by what moves "the agent stops reading" and by what the outside benchmar
    - Tighten the strategies that bind by name alone (exact-name across files, fuzzy) where the precision replay shows them wrong, starting with TypeScript: decline when the receiver's type is unknown rather than pick a same-named method.
    - Persist a resolution origin with a confidence on every edge, like repowise's 29 origins or gortex's tiers, and show it in explore's flow so the agent verifies the uncertain hop instead of re-reading the neighbourhood. Add the cross-language mis-wire guard with it (survey item C; the Nix bug is this class).
    Gate: the precision replay improves, the golden dumps change only where intended, and the agent A/B shows no recall loss that costs answers.
-3. **Measure and cut the memory floor.** Profile a small-repo index and the idle daemon: Node heap, per-worker node tables and caches, SQLite page cache. Set a target (for example, under 200 MB for a small repository) before optimizing. This is the one cost where we measured 10× worse than a competitor, and it is the one our host actually suffers from. **Done 2026-09-25:** metrics ledger §5.45 (parse pool sized to the project, idle query workers retired; a 3-file project's index run peaked at 176 MB, down from 358 MB).
+3. **Measure and cut the memory floor.** Profile a small-repo index and the idle daemon: Node heap, per-worker node tables and caches, SQLite page cache. Set a target (for example, under 200 MB for a small repository) before optimizing. This is the one cost where we measured 10× worse than a competitor, and it is the one a shared machine feels first. **Done 2026-09-25:** metrics ledger §5.45 (parse pool sized to the project, idle query workers retired; a 3-file project's index run peaked at 176 MB, down from 358 MB).
 4. **Diff-seeded impact in explore** (survey item A). Every review-oriented competitor ships it; we have the impact machinery and no entry point. Add a "what does this diff break" task class to the agent-eval harness first. **Done 2026-09-25:** explore answers change questions from the diff (#125); the diff-impact task class and its first baseline in the agent-eval harness followed in #460.
 5. **Index artifacts for worktrees** (survey item D). Copy an index into a new worktree and catch up by file hash, so a fresh worktree answers from the first call. **Done 2026-09-26:** `codegraph init` seeds from the closest compatible sibling worktree index and syncs (ledger 5.58).
 6. **Finish the resolver port, then delete the TypeScript resolver.** Only after steps 1–2, so the kernel moves one design forward instead of two mirrors in step. This removes the dual-maintenance cost for good. **Done 2026-09-26:** the TypeScript resolver spine is deleted; the kernel resolver is the only one (#192). This went ahead of the "only after steps 1–2" order: step 1 was done, and step 2 is still open.
@@ -126,6 +126,6 @@ Explicitly deferred: git-history and code-health layers (repowise's strengths, b
 - CodeGraph upstream releases: https://github.com/colbymchenry/codegraph/releases
 - codebase-memory-mcp: https://github.com/DeusData/codebase-memory-mcp
 - Upstream PR and merge statistics: `gh pr list -R colbymchenry/codegraph --state all --limit 200`, 90 days to 2026-09-25; divergence from `git diff --shortstat upstream/main...origin/fork/consolidated` at merge-base `ba3c21e5`.
-- Our own measurements: [metrics-ledger.md](metrics-ledger.md) §5.38–5.43; the rules-on A/B in the downstream project's code-index research.
+- Our own measurements: [metrics-ledger.md](metrics-ledger.md) §5.38–5.43; the rules-on A/B in a downstream application's code-index research (not published).
 
 Limits: competitor facts are from their own documentation except where repowise measured them; the precision and retrieval figures are for CodeGraph 1.5.0, not this fork; the 67 / 25 upstream-able counts come from a path-and-subject classification and a patch-level apply check, with no build or tests run.

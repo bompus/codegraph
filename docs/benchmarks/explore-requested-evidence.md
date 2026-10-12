@@ -12,7 +12,7 @@ Measured 2026-09-10 (America/Denver). This change fixes omissions of requested s
 
 ## Controlled comparison
 
-The 16 queries and expected source ranges come from the private reproduction fixture (private checkout at `74fcd4e`). All 13 referenced source files were checked against their recorded SHA-256 hashes at downstream commit `c570e32b22177ab59d3fa8f4c162419bac196422`.
+The 16 queries and expected source ranges come from a private reproduction fixture taken from a downstream application. All 13 referenced source files were checked against the SHA-256 hashes recorded for the pinned downstream revision.
 
 Three engines queried the same checkout-local index, with a fresh ToolHandler per query and no explicit `maxFiles` override:
 
@@ -30,15 +30,15 @@ Each cell counts returned / expected nonblank source lines across the fixture's 
 | 2 | Named normalization body | 9/9 | 9/9 | 9/9 |
 | 3 | Prop wiring and table selectors | 0/24 | 0/24 | 2/24 |
 | 4 | Cache key and consensus evaluation | 52/123 | 52/123 | 73/123 |
-| 5 | Draft identity test | 0/31 | 0/31 | 30/31 |
+| 5 | Identity-assertion test | 0/31 | 0/31 | 30/31 |
 | 6 | Named interface | 0/132 | 0/132 | 132/132 |
 | 7 | Priority stamping body | 0/33 | 12/33 | 33/33 |
-| 8 | ADP mappers and secondary test | 97/117 | 97/117 | 97/117 |
-| 9 | TTD receiver/storage, prose query | 0/78 | 0/78 | 0/78 |
-| 10 | TTD receiver/storage, event query | 0/78 | 0/78 | 0/78 |
+| 8 | Mapper bodies and secondary test | 97/117 | 97/117 | 97/117 |
+| 9 | Receiver/storage, prose query | 0/78 | 0/78 | 0/78 |
+| 10 | Receiver/storage, event query | 0/78 | 0/78 | 0/78 |
 | 11 | Hover-related cache key | 0/50 | 0/50 | 0/50 |
 | 12 | Vue cells and column styles | 0/22 | 0/22 | 18/22 |
-| 13 | Draft identity test, broad path control | 0/31 | 0/31 | 23/31 |
+| 13 | Identity-assertion test, broad path control | 0/31 | 0/31 | 23/31 |
 | 14 | Focused stamping control | 33/33 | 33/33 | 33/33 |
 | 15 | Exact Vue column literal and CSS | 0/4 | 0/4 | 4/4 |
 | 16 | Explicit sender/receiver/storage bodies | 113/128 | 113/128 | 128/128 |
@@ -49,9 +49,9 @@ The decisive assertions are present in cases 1 and 5, including the identity che
 
 - Cases 3, 4 and 11 still omit table selectors or the cache key. Case 4's evaluation body is now complete; losing the two formerly returned closing lines of the cache-key range does not establish that the key was previously usable.
 - Cases 9 and 10 still omit the receiver file unless the query explicitly names its endpoints. Selecting that file and synthesizing the actual message boundary are separate future changes.
-- Case 12 returns the survival tag and requested CSS ranges, but still omits the column declaration and ADP/FP cells in that broad query. The exact column-literal control, case 15, is complete.
+- Case 12 returns the survival tag and requested CSS ranges, but still omits the column declaration and the remaining column cells in that broad query. The exact column-literal control, case 15, is complete.
 - Case 13 improves selected test source but still omits the identity assertion. Its broad path-and-function query has less discriminating information than case 5. Do not score it as solved from its filename or partial line count.
-- The ADP question remains helpful without the secondary test; no test-inclusion improvement is claimed for case 8.
+- The mapper question remains helpful without the secondary test; no test-inclusion improvement is claimed for case 8.
 
 ## Validation and reproduction
 
@@ -68,7 +68,7 @@ For a source probe, build the intended engine's TypeScript and copy its assets, 
 ```bash
 fnm exec --using codegraph node scripts/agent-eval/probe-explore.mjs \
   <fixture-checkout> \
-  'src/components/DraftTable.vue "col-w-survival"'
+  '<vue-component-path> "<column-class-literal>"'
 ```
 
 Use the fixture's exact queries for the other cases. Match numbered lines inside each file's fenced Source section, not occurrences in the blast-radius header or omitted-symbol pointers. Recheck fixture hashes first. The direct harness binds the project through `CodeGraph.openSync`; it is not a deployed MCP or agent A/B run.

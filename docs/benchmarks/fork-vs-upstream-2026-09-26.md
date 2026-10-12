@@ -13,9 +13,8 @@ n8n (Vue and TypeScript) and re-measures every corpus on one newer fork build.
   in their own worktrees.
 - **Host.** WSL2 Ubuntu, 16 vCPUs, 47 GiB RAM, ext4. No swap in use. Each batch
   started with a 1-minute load average under 2 and Windows under 5% CPU.
-- **Commands.** Every run was capped with
-  `nice -n 10 ~/.local/bin/run-capped 16G` and timed with `/usr/bin/time -v`,
-  with `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_NO_DAEMON=1` and
+- **Commands.** Every run used `nice -n 10` under a 16 GiB memory cap and was
+  timed with `/usr/bin/time -v`, with `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_NO_DAEMON=1` and
   `CODEGRAPH_TELEMETRY=0`. The index directory started empty for every run.
   - Index: `codegraph init --yes .`
   - One-file sync: an untimed `init`, then a one-line edit to one source file,
@@ -98,7 +97,7 @@ README lists as the fork's largest.
 
 ## One-file sync: fork vs upstream (Node 24)
 
-Re-measured later the same day on an idle host (no other session's capped jobs
+Re-measured later the same day on an idle host (no other memory-capped jobs
 running, 1-minute load 1.5–4 from the benchmark's own workers), with the fork at
 `perf/incremental-sync` (the sync skip cache, [`docs/design/incremental-synthesis.md`](../design/incremental-synthesis.md)).
 Each arm indexes once, then times two one-file syncs, each adding a line to the

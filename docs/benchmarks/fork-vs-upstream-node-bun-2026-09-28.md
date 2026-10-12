@@ -36,11 +36,11 @@ The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runt
   fork needs no override.
 - **Host.** WSL2 Ubuntu, 16 vCPUs, 47 GiB RAM, ext4. Swap was cycled before
   the run and stayed at 0 B. Before each corpus the runner waited until no
-  other session held a capped job and the 1-minute load average was under 2.
+  other memory-capped job was running and the 1-minute load average was under 2.
   Windows-side CPU was about 9%.
 - **Environment.** `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_TELEMETRY=0`, and
   `CODEGRAPH_NO_DAEMON=1` for the CLI runs. Every CLI run used
-  `nice -n 10 ~/.local/bin/run-capped 16G` and `/usr/bin/time -v`. Peak memory
+  `nice -n 10` under a 16 GiB memory cap and `/usr/bin/time -v`. Peak memory
   is MaxRSS. Database size is `codegraph.db` after a WAL checkpoint.
 - **Order.** Per corpus the arms ran in the order upstream Node, fork Node,
   fork Bun, upstream Bun, then the reverse. Each run did a full index

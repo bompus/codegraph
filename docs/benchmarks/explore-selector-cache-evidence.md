@@ -12,17 +12,17 @@ The existing guards for stale source, file admission, oversized containers, flow
 
 ## Fixed-source comparison
 
-The exact 16 queries and 13 source-file hashes are from the private fixture (private checkout at `74fcd4e`), pinned to downstream source `c570e32b22177ab59d3fa8f4c162419bac196422`. Both engines used the same existing index and a fresh ToolHandler per call. Baseline results are the retained `22ae167837e174fa623dc77c2c4435ecadbc37d0` comparison; candidate results were rerun with each referenced source hash checked. This compares source completeness, not agent answer quality or independently rebuilt indexes.
+The exact 16 queries and 13 source-file hashes are from the private fixture described in the first report, pinned to a downstream application's source revision. Both engines used the same existing index and a fresh ToolHandler per call. Baseline results are the retained `22ae167837e174fa623dc77c2c4435ecadbc37d0` comparison; candidate results were rerun with each referenced source hash checked. This compares source completeness, not agent answer quality or independently rebuilt indexes.
 
 | Case | Evidence | 22ae1678 | Candidate |
 | --- | --- | --- | --- |
 | 3 | Popout prop wiring | 2/2 | 2/2 |
-| 3 | DraftTable selectors | 0/22 | 22/22 |
+| 3 | Table selectors | 0/22 | 22/22 |
 | 4 | Cache key | 0/50 | 50/50 |
 | 4 | Consensus evaluator | 73/73 | 73/73 |
 | 11 | Cache key from broad hover/invalidation query | 0/50 | 50/50 |
 
-All other fixture ranges retain their baseline completeness. The snapshot assertion, draft identity assertion, named interface, stamping body, ADP mapper bodies, exact Vue column/CSS, and explicit TTD endpoint bodies remain passing controls. Cases 9/10 still omit the broad-query receiver; case 12 still omits the column declaration and ADP/FP cells; case 13 still omits the identity assertion. No sender-to-listener edge was added.
+All other fixture ranges retain their baseline completeness. The snapshot assertion, identity assertion, named interface, stamping body, mapper bodies, exact Vue column/CSS, and explicit endpoint bodies remain passing controls. Cases 9/10 still omit the broad-query receiver; case 12 still omits the column declaration and the remaining column cells; case 13 still omits the identity assertion. No sender-to-listener edge was added.
 
 The candidate's maximum response was 24,989 characters; all 16 responses totalled 392,850 characters. Single-pass median latency was 197.5 ms, range 69–268 ms. The earlier baseline was 202 ms, range 65–258 ms. Runs were not interleaved: these timings do not establish a speedup or regression.
 
