@@ -11,7 +11,7 @@ Shared brief for a worker fixing reproduced resolution or extraction bugs in its
 - Release the local reservation only after the command and its children exit. Remote review and CI waits hold no local reservation.
 - A targeted vitest run rebuilds the kernel first when its sources changed (`scripts/ensure-kernel.mjs`), which makes it a heavy step. Build under the lock before running targeted tests after a kernel edit.
 - Kernel build: `npm run -s build:kernel`. Full suite: `npx vitest run --minWorkers=1 --maxWorkers="$CG_WORKERS"` (set `CG_WORKERS` to the host-approved worker count for this run), then read raw stderr for `Native stack trace` or `Worker exited unexpectedly`; a green summary alone is not proof.
-- Put scratch in the task-owned disk location required by the active host, never shared tmpfs. Precision corpora may use `~/cg-scratch/` under the repository guard. Never kill processes by pattern.
+- Keep scratch off `/tmp`, per `AGENTS.md`: use a task-owned disk location, or `~/cg-scratch/` for precision corpora. Never kill processes by pattern.
 - Precision: `EVAL_REPOS=~/cg-scratch/eval-repos npm run -s eval:precision -- <corpus>`. The run writes a tracked report under `__tests__/evaluation/results/`; delete exactly the files your run created, by name, before committing.
 
 ## Method per bug

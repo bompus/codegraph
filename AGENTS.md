@@ -14,7 +14,7 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 - Do not run `npm publish` without explicit authorization.
 - Fork GitHub release policy is defined under Releases below.
 
-**Personal rules:** this file adds to the always-on rules your agent already loads and wins for this repository's commands, branches and checks. The maintainer's own rules are [house-rules](https://github.com/bompus/house-rules).
+**Agent rules:** [House Rules](https://github.com/bompus/house-rules) is an optional, portable rule set that works well with this repository; nothing here requires it. If your agent loads it or similar always-on rules, this file adds to them and wins for this repository's commands, branches and checks.
 
 **Public repository:** never name private projects, their repositories, source paths or home directories in commits, docs, tests or fixtures; write "a private downstream project" instead.
 
@@ -39,7 +39,7 @@ These stay here because breaking them is silent. The full procedures are in `cod
 - Any extraction, resolution or synthesis change re-baselines the kernel golden dumps (`UPDATE_GOLDEN=1`, `__tests__/kernel-golden-dumps.test.ts`); the `.dump` diff is the review artifact. A resolution change is also gated by `EVAL_REPOS=~/cg-scratch/eval-repos npm run eval:precision -- <corpus>`.
 - Gate platform-dependent assertions with `it.runIf(process.platform === 'win32')` or `!== 'win32'`; never merge a Windows-gated test you haven't seen run.
 - A new SQL asset must be copied into `dist/` by `copy-assets`, or it won't ship.
-- Real corpora and `VACUUM INTO` snapshots never go on `/tmp` (shared tmpfs; it fills and OOMs the host). Use `~/cg-scratch/` or the corpus tree and delete them when done.
+- Scratch, real corpora and `VACUUM INTO` snapshots stay off `/tmp`. Use `~/cg-scratch/` (this repository's convention) or the corpus tree, and delete them when done.
 
 ## Retrieval performance (do not regress)
 
@@ -112,12 +112,11 @@ Full methodology (feedback metrics, CLI contamination guard, Sonnet/`--effort hi
 
 **Fork policy:** `bompus/codegraph` does not publish GitHub releases. Do not prepare or create fork GitHub releases, create release tags, or dispatch `.github/workflows/release.yml` on this fork. Missing release credentials or upstream publishing targets are not fork setup tasks. Authorized fork work completes on remote `fork/consolidated`; validation must not depend on publishing a release.
 
-## House rules
+## Repository rules
 
 - Any change to `src/installer/` (especially `targets/`) needs matching `__tests__/installer-targets.test.ts` coverage and a CHANGELOG entry: installer regressions break every new install silently. Details: `codegraph-installer`.
 - Before agreeing that a reported problem is unfixed, anchor the report's date to released (`CHANGELOG.md` top), merged-but-unreleased (`origin/fork/consolidated`) or in-progress (this branch) state; a comment made before a release reacts to released state. Details: `codegraph-issue-triage`.
 - Changelog or release-format work: read `codegraph-release` first.
-
 - **Keep README.md and the docs site current in the same PR.** A change that adds, removes or renames a user-visible feature, CLI command, MCP tool, language, framework, agent target or config key updates README.md (including the "About this fork" tables) and the matching `site/src/content/docs/` page. A change that moves a number the README quotes updates that row and its source. Before each commit, check the "About this fork" section against the change. This covers resolution and extraction fixes, ported upstream features, and upstream merges: update the upstream merge point, any fork-vs-upstream row the change makes wrong, and the measured results it moves. If a number is stale but re-measuring is heavy, record the re-run in the plan and say so in the PR body. Every PR body states which README rows it checked. `__tests__/readme-sync.test.ts` gates the lists; tables and numbers are on the author.
 - When changing MCP tool behavior or usage, edit `src/mcp/server-instructions.ts`, the single source of truth for detailed guidance. If a command or available surface changes, also update the short subagent/non-MCP pointer in `src/installer/instructions-template.ts`. Claude, Codex, opencode, and Gemini install that pointer; Cursor and Kiro do not. (The repo's own checked-in `.cursor/rules/codegraph.mdc` is dogfooding config — update it too if you use Cursor on this repo, but it ships nowhere.)
 - CodeGraph provides **code context**, not product requirements. For new features, ask the user about UX, edge cases, and acceptance criteria — the graph won't tell you.

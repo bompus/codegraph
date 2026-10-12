@@ -68,7 +68,7 @@ Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They w
 
 Every engine test file runs in a throwaway home dir (`__tests__/setup-home-sandbox.ts`, a `setupFiles` entry): `HOME`/`USERPROFILE` (+ Windows vars), `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` point into it, and `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/… are cleared; spawned children inherit it. It's a backstop — still inject writes to global state (e.g. `UpgradeDeps.wirePromptHook`, #2275).
 
-Working copies of the real corpora (e.g. `~/codegraph-corpora/linux`, multi-GB SQLite DBs) must live on the workspace disk, never on `/tmp` — that is a shared tmpfs and a handful of `VACUUM INTO` snapshots will fill it and OOM the host. Put snapshots under `~/cg-scratch/` or the corpus tree and delete them when done.
+Working copies of the real corpora (e.g. `~/codegraph-corpora/linux`, multi-GB SQLite DBs) follow the scratch rule in `AGENTS.md`: off `/tmp`, under `~/cg-scratch/` or the corpus tree.
 
 Before pushing a branch meant for upstream, run `node <fork checkout>/scripts/pr-guard.mjs` from the branch: it fails when the branch adds a `bun.lock`, `yarn.lock` or `pnpm-lock.yaml` (upstream tracks only `package-lock.json`). To check what a change does to the graph, index a corpus with each build and compare them with `node scripts/index-metrics.mjs <before.db> <after.db>`: counts plus the call edges lost or gained, keyed by qualified name so shifted lines do not count. `CHANGELOG.md` merges with git's `union` driver (`.gitattributes`), so an upstream merge keeps both sides' bullets. Union misfiles, doubles and drops fork entries when the merge brings in an upstream release, so after every upstream merge run `node scripts/changelog-reconcile.mjs`. It rebuilds the file from the merge's parents and lists the fork entries that read like a newly released upstream entry; decide each one by hand, keeping only the fork-only part. `--check` exits 1 when the file differs from the rebuild.
 
@@ -76,7 +76,7 @@ A worker dispatched to fix reproduced resolution or extraction bugs gets [`worke
 
 ### Measured step times
 
-Base effort quotes on these rather than on how heavy a step sounds. Measured on the WSL development host (16 vCPU, heavy steps serialized under one lock) in September 2026; when a run lands more than 2x off a row, replace the row with the new measurement.
+Base effort quotes on these rather than on how heavy a step sounds. Measured on one development machine (16 vCPUs, one heavy step at a time) in September 2026, so times on other machines will differ; when a run lands more than 2x off a row, replace the row with the new measurement.
 
 | Step | Measured wall-clock |
 |---|---|
@@ -87,7 +87,7 @@ Base effort quotes on these rather than on how heavy a step sounds. Measured on 
 | Worker upstream reconcile with conflict resolution and full verification | 15–28 min |
 | Upstream reconcile to a reviewed PR: worker, review, review fixes | 38–52 min |
 | Stacked landing: stack suite, squash-merge each PR, tree check | ~5 min |
-| Deploy gate: `codegraph-fork-sync merge` (build, kernel, suite, source probes, promote) | 2.5 min |
+| Pre-deploy gate: build, kernel, suite and source probes must all pass before a build is promoted (run by a maintainer-local helper that is not part of this repository) | 2.5 min |
 
 `eval:precision` per corpus is not recorded yet; add it the next time one is timed.
 
