@@ -27,7 +27,8 @@ const BAND = 0.03;
 const median = (a) => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const seconds = (t) => { const p = t.split(':'); return parseFloat(p.at(-1)) + 60 * parseFloat(p.at(-2)); };
 const accepted = (prefix) => {
-  const dir = readdirSync(root).filter((d) => d.startsWith(prefix + '-a')).sort()
+  const attempt = (d) => +d.slice(d.lastIndexOf('-a') + 2);
+  const dir = readdirSync(root).filter((d) => d.startsWith(prefix + '-a') && Number.isInteger(attempt(d))).sort((x, y) => attempt(x) - attempt(y))
     .find((d) => existsSync(join(root, d, 'status')) && readFileSync(join(root, d, 'status'), 'utf8').trim() === 'accepted');
   if (!dir) throw new Error(`no accepted attempt for ${prefix}`);
   return join(root, dir);
@@ -55,7 +56,11 @@ for (const key of ['gin', 'n8n']) {
   mcp[key] = {};
   for (const arm of ARMS) {
     const x = runs.filter((r) => r.arm === arm);
-    const g = (k) => median(x.map((r) => r[k]).filter((v) => v != null));
+    const g = (k) => {
+      // A timed-out watcher sync is recorded as null; publishing the other run alone would mislead.
+      if (x.length === 0 || x.some((r) => r[k] == null)) throw new Error(`mcp ${key} ${arm}: ${k} is missing in ${x.length} run(s)`);
+      return median(x.map((r) => r[k]));
+    };
     mcp[key][arm] = {
       initMs: g('initMs'), firstMs: g('coldToFirstAnswerMs'), warmMs: g('warmMedianMs'), p90Ms: g('warmP90Ms'),
       wave8Ms: g('wave8Ms'), watchMs: g('watchSyncMs'), busyMiB: g('busy_totalMB'), idleMiB: g('idle_totalMB'), idleCpu: g('idleCpuPct'),
@@ -80,7 +85,7 @@ const fSec = (v) => `${v < 10 ? v.toFixed(2) : v.toFixed(1)} s`;
 const fMem = (miB) => (miB >= 1024 ? `${(miB / 1024).toFixed(2)} GiB` : miB < 100 ? `${miB.toFixed(1)} MiB` : `${Math.round(miB)} MiB`);
 const fMs = (v) => (v >= 1000 ? fSec(v / 1000) : `${Math.round(v)} ms`);
 const fPct = (v) => `${v.toFixed(2)}%`;
-const pctChange = (r) => { const d = Math.round((r - 1) * 100); return (d > 0 ? '+' : d < 0 ? '−' : '') + Math.abs(d) + '%'; };
+const pctChange = (r) => { if (!Number.isFinite(r)) return 'n/a'; const d = Math.round((r - 1) * 100); return (d > 0 ? '+' : d < 0 ? '−' : '') + Math.abs(d) + '%'; };
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 // ---- every comparison: [group, label, {arm: value}, formatter]
@@ -94,7 +99,11 @@ for (const key of ['n8n', 'gin']) for (const [k, label, f] of MCP_ROWS) metrics.
 for (const n of ['version', 'status', 'explore']) metrics.push(['Command-line startup on gin', cli[n].label, Object.fromEntries(ARMS.map((a) => [a, cli[n][a].mean])), fMs]);
 function pick(o, k) { return Object.fromEntries(ARMS.map((a) => [a, o[a][k]])); }
 
-const ratio = (m, rt) => (rt === 'Node' ? m[2].forknode / m[2].upnode : m[2].forkbun / m[2].upbun);
+// Two zero measurements are equal; a zero baseline with a positive fork value is Infinity.
+const ratio = (m, rt) => {
+  const [up, fk] = rt === 'Node' ? [m[2].upnode, m[2].forknode] : [m[2].upbun, m[2].forkbun];
+  return up === 0 ? (fk === 0 ? 1 : Infinity) : fk / up;
+};
 const cmp = [];
 for (const m of metrics) for (const rt of ['Node', 'Bun']) cmp.push({ m, rt, r: ratio(m, rt) });
 const nBetter = cmp.filter((c) => c.r < 1 - BAND).length;

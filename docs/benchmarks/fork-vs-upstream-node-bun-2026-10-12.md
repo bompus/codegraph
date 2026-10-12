@@ -5,7 +5,8 @@ sections. Each build runs on Node.js 24 and on Bun, so one table covers both
 the fork-versus-upstream comparison and the runtime comparison. This
 supersedes [`fork-vs-upstream-node-bun-2026-10-03.md`](fork-vs-upstream-node-bun-2026-10-03.md),
 which measured the same upstream build (`6560052a`) against fork `34cc55e2`
-with the same method and corpora. [Since 2026-10-03](#since-2026-10-03)
+with the same arms, corpora and measured steps, under a looser host-quiet rule
+than the [one below](#quiet-host-rule). [Since 2026-10-03](#since-2026-10-03)
 compares the two runs.
 
 ## Method
@@ -40,8 +41,9 @@ The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runt
 - **Order.** Per corpus the arms ran in the order upstream Node, fork Node,
   fork Bun, upstream Bun, then the reverse. Each run did a full index
   (`codegraph init --yes .` into an empty directory) and then two one-file
-  syncs (a one-line edit to the same file, then `codegraph sync .`). Index
-  figures are the median of two runs; sync figures are the median of four.
+  syncs (each appends a comment line and a one-line symbol to the same file,
+  then runs `codegraph sync .`). Index figures are the median of two runs; sync
+  figures are the median of four.
 - **Corpora**, pinned to the same commits as on 2026-09-28 and 2026-10-03,
   shallow, no dependencies installed:
   - gin (Go) `1bd0ecf`

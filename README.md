@@ -255,7 +255,7 @@ The [benchmark](#benchmark-results) and [speed](#built-for-speed--the-rust-kerne
 
 ### What it costs
 
-- **Larger database:** 12–22% bigger on six of the seven corpora above, and 38% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
+- **Larger database:** 12–22% bigger on the other six corpora above, and 38% on supabase, which has 1,978 Markdown files. It holds Markdown, binding rows and more nodes.
 - **Fewer edges on some projects:** 8% fewer on pretix and 3% fewer on CPython, because the fork declines links it cannot confirm. Some of those were correct links.
 - **A little slower on the smallest projects, on Node:** Alamofire took 1.81 s to index against upstream's 1.73 s (+5%, and the two runs per arm overlap), and gin 1.15 s against 1.13 s (within 3%). On Bun the fork is faster on both. A warm question on gin takes 26 ms against 24 ms on Node and 25 ms against 24 ms on Bun.
 - **On Bun:** slower concurrent explores on small projects and higher idle CPU, as above.

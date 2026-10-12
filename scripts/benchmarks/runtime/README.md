@@ -11,7 +11,7 @@ The arms can differ in build, in runtime, or in both.
 | `run-mcp.sh <list>` | MCP server: start to first explore answer, warm explore median and p90, 8 explores at once, watcher sync, idle memory and CPU | `mcp.jsonl` |
 | `run-cli.sh <corpus> <query>` | CLI start: `--version`, `status`, one `explore` (hyperfine, 20 runs) | `cli-*.json`, `cli.txt` |
 | `summarize.py $BENCH_OUT` | Medians per corpus and arm from `index-sync.tsv`, and from `mcp.jsonl` when present | stdout |
-| `render-charts.mjs $BENCH_OUT --date D --upstream SHA --fork SHA --node V --bun V` | The README chart (`--cards`), the benchmark doc's heatmap (`--heatmap`) and every Markdown table (`--tables`), from the accepted attempts in `$BENCH_OUT` (directories `index-<corpus>-aN`, `mcp-<corpus>-aN` and `cli-gin-aN` whose `status` file reads `accepted`) | SVG and Markdown files |
+| `render-charts.mjs $BENCH_OUT --date D --upstream SHA --fork SHA --node V --bun V` | The README chart (`--cards`), the benchmark doc's heatmap (`--heatmap`) and the current run's result tables as Markdown (`--tables`; the benchmark doc's comparison with an earlier run is written by hand), from the accepted attempts in `$BENCH_OUT` (directories `index-<corpus>-aN`, `mcp-<corpus>-aN` and `cli-gin-aN` whose `status` file reads `accepted`) | SVG and Markdown files |
 
 Every run needs a quiet host. Each runner waits before a corpus until no
 `capped-*` scope runs and the 1-minute load is under 2, and each arm runs twice
