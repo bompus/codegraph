@@ -4,7 +4,7 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 
 **Instruction budget:** Keep this root file below 32,768 UTF-8 bytes; `npm run check:agent-docs` enforces the limit. Put conditional procedures, evidence, and worked examples in linked documents. Codex user configuration may set `project_doc_max_bytes = 65536` as a safety margin, but the larger limit does not replace the repository guard.
 
-**Branch:** this repository's default integration branch is `fork/consolidated`, and pull requests go to the fork, never to the upstream repository or `main`. Do not run `npm publish` without explicit authorization; fork release policy is under Releases below.
+**Branch:** this repository's default integration branch is `fork/consolidated`; fork work goes there through a pull request to the fork, never to `main`, and focused upstream contributions follow Branch roles below. Do not run `npm publish` without explicit authorization; fork release policy is under Releases below.
 
 **Agent rules:** [House Rules](https://github.com/bompus/house-rules) is an optional, portable rule set that works well with this repository; nothing here requires it. If your agent loads it or similar always-on rules, this file adds to them and wins for this repository's commands, branches and checks.
 

@@ -19,8 +19,8 @@ runtime comparison (Node 24, Node 26, Bun), which was not re-run.
   `npm run build` in their own worktrees.
 - **Host.** WSL2 Ubuntu, 16 vCPUs, 47 GiB RAM, ext4, Node 24.21.0. No swap in
   use. Before each corpus's index step and again before its sync step, the
-  runner waited until no other memory-capped job was running and the 1-minute
-  load average was under 2.
+  runner waited until no other session's memory-capped job was running and the
+  1-minute load average was under 2.
 - **Commands.** Every run used `nice -n 10` under a memory cap (16 GiB for
   index, 13 GiB for sync) and was timed with `/usr/bin/time -v`, with
   `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_NO_DAEMON=1` and

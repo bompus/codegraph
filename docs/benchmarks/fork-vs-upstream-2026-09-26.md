@@ -97,7 +97,7 @@ README lists as the fork's largest.
 
 ## One-file sync: fork vs upstream (Node 24)
 
-Re-measured later the same day on an idle host (no other memory-capped jobs
+Re-measured later the same day on an idle host (no other session's memory-capped jobs
 running, 1-minute load 1.5–4 from the benchmark's own workers), with the fork at
 `perf/incremental-sync` (the sync skip cache, [`docs/design/incremental-synthesis.md`](../design/incremental-synthesis.md)).
 Each arm indexes once, then times two one-file syncs, each adding a line to the

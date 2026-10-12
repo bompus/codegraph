@@ -31,8 +31,8 @@ The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runt
   `Unsupported Node.js version`. The fork needs no override. The previous run
   used Bun 1.4.2.
 - **Host.** WSL2 Ubuntu, 16 vCPUs, 62 GiB RAM, ext4. Each run waited until
-  the host was quiet (below), and no other heavy job ran on the host while it
-  ran.
+  the host was quiet (below), and the benchmark held a lock that other sessions
+  on the host respect before starting heavy jobs.
 - **Environment.** `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_TELEMETRY=0`, and
   `CODEGRAPH_NO_DAEMON=1` for the CLI runs. Every timed command ran at normal
   priority under a 16 GiB memory cap and `/usr/bin/time -v`. Peak memory is
@@ -59,10 +59,10 @@ corpus.
 ### Quiet-host rule
 
 A run started only when swap in use was at most 64 MiB, the 1-minute load
-average was under 2, no other memory-capped job was running, and Windows CPU,
-read from the Windows side, was under 20% for three samples 20 s apart. An attempt was
-rejected as suspect when the command exited non-zero or a Windows CPU sample
-before or after it exceeded 30%. Each corpus had one retry; the first accepted
+average was under 2, no other session's memory-capped job was running, and
+Windows CPU, read from the Windows side, was under 20% for three samples 20 s
+apart. An attempt was rejected as suspect when the command exited non-zero or
+a Windows CPU sample before or after it exceeded 30%. Each corpus had one retry; the first accepted
 attempt is the one reported. The two runs per arm are the spread this page
 offers; no wider variation criterion was set before the run, so a difference
 near the 3% reporting band is labelled no clear change.

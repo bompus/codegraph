@@ -28,8 +28,8 @@ The scripts are in [`scripts/benchmarks/runtime/`](../../scripts/benchmarks/runt
   Node 25 and newer, so without the override upstream exits with
   `Unsupported Node.js version: 26.3.0`. The fork needs no override.
 - **Host.** WSL2 Ubuntu, 16 vCPUs, 47 GiB RAM, ext4. Before each corpus the
-  runner waited until no other memory-capped job was running and the 1-minute
-  load average was under 2. Unlike the 2026-09-28 run, swap was not cycled
+  runner waited until no other session's memory-capped job was running and the
+  1-minute load average was under 2. Unlike the 2026-09-28 run, swap was not cycled
   first: 2.1 GiB of swap was in use, with about 35 GiB of memory available.
 - **Environment.** `CODEGRAPH_DIR=.cg-bench`, `CODEGRAPH_TELEMETRY=0`, and
   `CODEGRAPH_NO_DAEMON=1` for the CLI runs. Every CLI run used
