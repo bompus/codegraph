@@ -265,6 +265,43 @@ function routeModuleComponent(
   return null;
 }
 
+/**
+ * Whether a build config spreads something that could carry route settings.
+ * A spread of a call inside the config's own `plugins` list (`...mdx({...})` merged into a
+ * plugin object) only builds a plugin; the plugin options that move routes are
+ * checked separately. Every other spread, including one inside a call's
+ * arguments, is unknown content. Unparsable configs count as spreading.
+ */
+function spreadsConfig(config: string, fileName: string): boolean {
+  const language = detectLanguage(fileName);
+  const tree = language ? parseSourceTreeSync(config, language) : null;
+  if (!tree) return config.includes('...');
+  try {
+    // Error recovery can keep a spread that sat in a broken part of the file.
+    if (tree.rootNode.hasError) return true;
+    const spreads: SyntaxNode[] = [];
+    const walk = (node: SyntaxNode): void => {
+      if (node.type === 'spread_element') spreads.push(node);
+      for (const child of node.namedChildren) walk(child);
+    };
+    walk(tree.rootNode);
+    return spreads.some((spread) => {
+      let operand = spread.namedChildren[0];
+      while (operand?.type === 'parenthesized_expression') operand = operand.namedChildren[0];
+      if (operand?.type !== 'call_expression') return true;
+      let up = spread.parent;
+      while (up && (up.type === 'object' || up.type === 'array')) up = up.parent;
+      const key = up?.type === 'pair' ? up.childForFieldName('key') : null;
+      if (!key || key.text.replace(/^['"]|['"]$/g, '') !== 'plugins') return true;
+      // Only the config's own `plugins`, not one under another key (`server: { plugins }`).
+      for (let outer = up!.parent; outer; outer = outer.parent) if (outer.type === 'pair') return true;
+      return false;
+    });
+  } finally {
+    tree.delete();
+  }
+}
+
 /** Root-level default conventions; custom roots and route overrides are not inferred. */
 export const reactRouterFilesResolver: FrameworkResolver = {
   name: 'react-router-files',
@@ -281,9 +318,10 @@ export const reactRouterFilesResolver: FrameworkResolver = {
             '',
           );
           if (
-            /\b(?:appDirectory|rootDirectory|ignoredRouteFiles|v3_routeConfig|routes)['"]?\s*:|\.\.\./.test(
+            /\b(?:appDirectory|rootDirectory|ignoredRouteFiles|v3_routeConfig|routes)['"]?\s*:/.test(
               safe,
-            )
+            ) ||
+            spreadsConfig(config, `${name}.${extension}`)
           )
             return false;
           if (
