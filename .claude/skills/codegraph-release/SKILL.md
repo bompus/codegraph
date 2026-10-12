@@ -23,3 +23,15 @@ Multi-word headings like `### New Features` are safe on the normal release path:
 ### Upstream release flow (reference only)
 
 Upstream runs releases through `.github/workflows/release.yml`; do not publish the root package manually. Agents do not bump versions unless explicitly asked. A requested release normally needs only the target version in `package.json`, plus the same version in `ui/package.json` (the component package is versioned with the engine, `ui-package.test.ts` pins it, and the workflow does not sync it); the workflow synchronizes the lock file, promotes `[Unreleased]`, builds the platform bundles, creates the GitHub Release, and publishes through npm trusted publishing. Read the workflow before changing or describing this process.
+
+### Final review before the first publish step
+
+Before the first publish step of any release (tag, npm publish, registry push), review everything public-facing against the version being released, and land any correction first:
+
+- the README and its version-bearing sentences;
+- benchmark and comparison text, and the numbers it quotes;
+- graphics and visuals, with their alt text (banners, charts, demo recordings);
+- the package README and the metadata `scripts/pack-npm.sh` writes into the published packages (review the README and the script, since the staged packages do not exist before the release is cut), and registry and marketplace listing text;
+- the release announcement.
+
+Record the pass as done, with what it changed, where the release is prepared. A release is not ready while any of these is stale. The maintainer's house rules call the same requirement "Release batching".
