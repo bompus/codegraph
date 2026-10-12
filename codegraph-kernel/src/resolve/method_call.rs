@@ -773,7 +773,15 @@ if inferred.is_none() && r.language == "dart" {
                 if let Some(b) = &binding {
                     bsite.line = b.line;
                 }
-                return self.match_bound_type_member(&t, &method_name, &bsite);
+                let member = self.match_bound_type_member(&t, &method_name, &bsite)?;
+                if member.is_none() && r.language == "kotlin" {
+                    // An extension function is no member of the receiver's class, and in a
+                    // package its qualified name does not say which class it extends.
+                    let hit = super::kotlin_receiver::KotlinReceiverHit { ty: t.clone(), site: bsite, heuristic: false };
+                    return Ok(self.kotlin_extension_member(&hit, &method_name, r)?
+                        .map(|node| KCand { node, confidence: 0.9, resolved_by: "instance-method" }));
+                }
+                return Ok(member);
             }
         }
 

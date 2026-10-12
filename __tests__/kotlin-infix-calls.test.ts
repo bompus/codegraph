@@ -128,13 +128,13 @@ infix fun Int.and(other: Int): Int = this
 fun numeric(value: Int, mask: Int) = (value) and mask
 `, 'numeric', []],
   // A parenthesized receiver is typed like a bare one, and an extension on a
-  // project class is not linked through a typed receiver (`value and mask`
-  // gives the same result), so no edge is better than a guess by name.
+  // project class links through the typed receiver (`value and mask` gives
+  // the same result): the extension is named `Int::and` whatever its package.
   ['project numeric extension', `package project
 class Int
 infix fun Int.and(other: Int): Int = this
 fun custom(value: Int, mask: Int) = (value) and mask
-`, 'custom', []],
+`, 'custom', ['Int::and']],
   ['nested-comment this receiver', `package app
 class Spec {
   infix fun apply(other: Spec): Spec = this
