@@ -277,6 +277,8 @@ function spreadsConfig(config: string, fileName: string): boolean {
   const tree = language ? parseSourceTreeSync(config, language) : null;
   if (!tree) return config.includes('...');
   try {
+    // Error recovery can keep a spread that sat in a broken part of the file.
+    if (tree.rootNode.hasError) return true;
     const spreads: SyntaxNode[] = [];
     const walk = (node: SyntaxNode): void => {
       if (node.type === 'spread_element') spreads.push(node);
@@ -284,7 +286,9 @@ function spreadsConfig(config: string, fileName: string): boolean {
     };
     walk(tree.rootNode);
     return spreads.some((spread) => {
-      if (spread.namedChildren[0]?.type !== 'call_expression') return true;
+      let operand = spread.namedChildren[0];
+      while (operand?.type === 'parenthesized_expression') operand = operand.namedChildren[0];
+      if (operand?.type !== 'call_expression') return true;
       let up = spread.parent;
       while (up && (up.type === 'object' || up.type === 'array')) up = up.parent;
       const key = up?.type === 'pair' ? up.childForFieldName('key') : null;

@@ -170,6 +170,7 @@ describe('spreads in a Vite config', () => {
       ),
     ).toBe(true);
     expect(detects(wrap('"plugins": [...createPlugins({ mode: "dev" }), react()],'))).toBe(true);
+    expect(detects(wrap('plugins: [{ enforce: "pre", ...(mdx()) }, react()],'))).toBe(true);
     expect(
       detects(
         'export default { plugins: [...createPlugins(), react()] };',
@@ -189,6 +190,9 @@ describe('spreads in a Vite config', () => {
       'plugins: [react()],\nserver: { ...serverOptions() },',
       'plugins: [reactRouter({ appDirectory: "src" })],',
       'plugins: [react()],\nserver: { plugins: [...makeOptions()] },',
+      // Error recovery keeps the plugin spread of a file that does not parse.
+      'plugins: [{ ...mdx() }, react(],\nbase: ;',
+      'plugins: [{ ...mdx() } react()],',
     ]) {
       expect(detects(wrap(body)), body).toBe(false);
     }
