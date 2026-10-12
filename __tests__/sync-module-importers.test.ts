@@ -53,15 +53,38 @@ const PYTHON: Files = {
 };
 const PYTHON_BARRELS = ['app/shop/__init__.py', 'lib/api.py', 'app/orm/__init__.py'];
 
-/** ES modules: an `index.ts` re-exporting under the same name and under another. */
+/**
+ * ES modules: an `index.ts` re-exporting under the same name and under
+ * another, and modules re-exporting it in turn — an outer `index.ts`, all of
+ * it and one name renamed, and a module passing on one name, read through a
+ * namespace import — imported in its stead.
+ */
 const TS: Files = {
   'package.json': '{"name":"app"}',
   'src/components/Button.ts': 'export function Button() { return 1; }\n',
   'src/components/Icon.ts': 'export function BaseIcon() { return 2; }\n',
   'src/components/index.ts': "export { Button } from './Button';\nexport { BaseIcon as Icon } from './Icon';\n",
   'src/app.ts': "import { Button, Icon } from './components';\nexport function render() { return [Button(), Icon()]; }\n",
+  'src/ui/index.ts': "export * from '../components';\nexport { Icon as UiIcon } from '../components';\n",
+  'src/page.ts': "import { Button, UiIcon } from './ui';\nexport function page() { return [Button(), UiIcon()]; }\n",
+  'src/kit.ts': "export { Button as KitButton } from './components';\n",
+  'src/screen.ts': "import * as kit from './kit';\nexport function screen() { return kit.KitButton(); }\n",
 };
 const TS_BARRELS = ['src/components/index.ts'];
+
+/**
+ * ES modules: one name through two routes. `c.ts` re-exports `Button` from
+ * the barrel itself and `Btn`, the same function renamed, through `a.ts`,
+ * which re-exports the barrel; `d.ts` imports `Btn` from `c.ts`.
+ */
+const TS_TWO_ROUTES: Files = {
+  'package.json': '{"name":"app"}',
+  'src/core/Button.ts': 'export function Button() { return 1; }\n',
+  'src/core/index.ts': "export { Button } from './Button';\n",
+  'src/a.ts': "export { Button as Btn } from './core';\n",
+  'src/c.ts': "export { Button } from './core';\nexport { Btn } from './a';\n",
+  'src/d.ts': "import { Btn } from './c';\nexport function d() { return Btn(); }\n",
+};
 
 let roots: string[] = [];
 let graphs: CodeGraph[] = [];
@@ -119,6 +142,7 @@ const only = (files: Files, kept: string[]): Files =>
 describe.each([
   ['Python package and module', PYTHON, PYTHON_BARRELS],
   ['ES module barrel', TS, TS_BARRELS],
+  ['ES module reached by two routes', TS_TWO_ROUTES, ['src/core/index.ts']],
 ])('sync re-resolves the imports through a re-exporting file: %s', (_label, files, barrels) => {
   it('when it is deleted', async () => {
     const root = tempRoot();

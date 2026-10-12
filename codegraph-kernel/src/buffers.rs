@@ -365,6 +365,9 @@ pub struct Tables {
     pub edge_count: u32,
     pub ref_count: u32,
     pub binding_count: u32,
+    /// Import nodes made for `export … from` statements: no symbols of the
+    /// file's own, so they do not count against a collapsed parse.
+    pub reexport_imports: u32,
 }
 
 impl Default for Tables {
@@ -378,6 +381,7 @@ impl Default for Tables {
             edge_count: 0,
             ref_count: 0,
             binding_count: 0,
+            reexport_imports: 0,
         }
     }
 }
@@ -521,6 +525,7 @@ impl EmitOut {
             edge_count: 0,
             ref_count: 0,
             binding_count,
+            reexport_imports: 0,
         };
         EmitOut {
             meta: build_meta(&tables, self.arena.len() as u32, NONE_STR, duration_ms),
@@ -552,7 +557,9 @@ pub fn parse_collapse_warning(
         .chunks(NODE_ROW_SIZE)
         .filter(|row| row.first().copied() != Some(file_kind))
         .count();
-    if symbols > 0 {
+    // (A re-export's import of its module is none: a barrel whose other lines
+    // failed to parse has lost what it passes on.)
+    if symbols > tables.reexport_imports as usize {
         return NONE_STR;
     }
     let mut path_json = String::with_capacity(file_path.len());
