@@ -198,7 +198,20 @@ function routeModuleComponent(
     root.namedChildren
       .map((n) => (n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n))
       .flatMap((n) => (n.type === 'lexical_declaration' ? n.namedChildren : [n]))
-      .find((n) => n.childForFieldName('name')?.text === name) ?? null;
+      .find(
+        (n) =>
+          n.childForFieldName('name')?.text === name &&
+          n.type !== 'type_alias_declaration' &&
+          n.type !== 'interface_declaration',
+      ) ?? null;
+  const typeOnly = (name: string): boolean =>
+    root.namedChildren
+      .map((n) => (n.type === 'export_statement' ? (n.childForFieldName('declaration') ?? n) : n))
+      .some(
+        (n) =>
+          (n.type === 'type_alias_declaration' || n.type === 'interface_declaration') &&
+          n.childForFieldName('name')?.text === name,
+      );
   const statements = root.namedChildren.filter((n) => n.type === 'export_statement');
   const byDefault = statements.find((n) => n.children.some((c) => c.type === 'default'));
   if (byDefault) {
@@ -209,10 +222,17 @@ function routeModuleComponent(
       declaration: declaration?.type === 'identifier' ? local(declaration.text) : declaration,
     };
   }
+  // `export type { X }` and `export { type X }` export no value.
   const listed = (n: SyntaxNode) =>
-    n.namedChildren
-      .filter((c) => c.type === 'export_clause')
-      .flatMap((c) => c.namedChildren.filter((s) => s.type === 'export_specifier'));
+    n.children.some((c) => c.type === 'type')
+      ? []
+      : n.namedChildren
+          .filter((c) => c.type === 'export_clause')
+          .flatMap((c) =>
+            c.namedChildren.filter(
+              (s) => s.type === 'export_specifier' && !s.children.some((t) => t.type === 'type'),
+            ),
+          );
   const exportedName = (s: SyntaxNode) =>
     (s.childForFieldName('alias') ?? s.childForFieldName('name'))?.text;
   // `export { Page as default }` is a default too, just not one read here.
@@ -236,7 +256,11 @@ function routeModuleComponent(
     if (statement.childForFieldName('source')) continue;
     const specifier = listed(statement).find((s) => exportedName(s) === 'ServerComponent');
     const name = specifier?.childForFieldName('name')?.text;
-    if (name) return { exported: statement, declaration: local(name) };
+    if (!name) continue;
+    const named = local(name);
+    // A name only a type or interface declares exports no component.
+    if (!named && typeOnly(name)) continue;
+    return { exported: statement, declaration: named };
   }
   return null;
 }

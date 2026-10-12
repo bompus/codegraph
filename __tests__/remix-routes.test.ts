@@ -220,6 +220,18 @@ export default flatRoutes() satisfies RouteConfig;
       'app/routes/neither.tsx',
       'export type ServerComponent = () => null;\nexport function loader(){return 1;}',
     );
+    write(
+      'app/routes/typed-specifier.tsx',
+      'type Page = () => null;\nexport { type Page as ServerComponent };',
+    );
+    write(
+      'app/routes/typed-clause.tsx',
+      'type Page = () => null;\nexport type { Page as ServerComponent };',
+    );
+    write(
+      'app/routes/typed-local.tsx',
+      'interface Page { x: number }\nexport { Page as ServerComponent };',
+    );
     write('app/routes/shell.tsx', 'export function ServerComponent(){return <Outlet/>;}');
     write('app/server.tsx', 'export function ServerComponent(){return <div/>;}');
     write('app/routes/forwarded.tsx', "export { ServerComponent } from '../server';");
