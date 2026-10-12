@@ -174,8 +174,34 @@ Bun's concurrent explores on gin are slower than the fork on Node (227 ms
 against 172 ms) and 3% slower on n8n (2.43 s against 2.35 s), which is inside
 the 3% band. Contention between worker threads reading through Bun's SQLite is
 the suspected cause, not confirmed
-([oven-sh/bun#44187](https://github.com/oven-sh/bun/issues/44187)). Bun's idle
-CPU is 1.4 to 2.7 times Node's, still under 1% of one core.
+([oven-sh/bun#44187](https://github.com/oven-sh/bun/issues/44187)). On the fork,
+Bun's idle CPU is 0.27 points of one core above Node's on gin (0.43% against
+0.16%) and 0.15 points above on n8n (0.48% against 0.33%): a few milliseconds
+of CPU per second, under 0.5% of one core on every arm. It is a small
+difference, and [the idle profile below](#idle-cpu-profile) did not reproduce
+its order on n8n.
+
+### Idle CPU profile
+
+A separate profile of the fork build `055b2daa`, after the benchmark, read
+`/proc` per process and thread over one 60 s window, 70 s after a single
+explore with no edit (the benchmark's idle window follows 12 explores, 8
+concurrent ones and a file edit). Ticks are 10 ms, so one tick over the window
+is 0.17 ms of CPU per second.
+
+| Corpus | Node, whole process tree | Bun, whole process tree |
+|---|---|---|
+| gin | 0.13% (1.3 ms/s) | 0.17% (1.7 ms/s) |
+| n8n | 0.22% (2.2 ms/s) | 0.12% (1.2 ms/s) |
+
+The server's own main-thread timers used 0.3 to 0.5 ms/s of that on Node. The
+rest was runtime threads (V8 workers on Node, the mimalloc scavenger on Bun)
+and the two small watchdog processes (about 0.17 ms/s each). Each cell is one
+window, so a difference of one or two ticks is not a ranking. The host was
+not controlled: the Node n8n window started right after the index build for
+that run (1-minute load 3.4), and the other three windows started at load 1.0
+to 2.1. The counters are per process, so that load does not enter them.
+Nothing in the profile points at a timer or watchdog worth changing.
 
 ## CLI startup
 
