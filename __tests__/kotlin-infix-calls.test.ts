@@ -167,8 +167,9 @@ it('types a parenthesized infix receiver by what it holds, not by the method nam
   let graph: CodeGraph | undefined;
   try {
     fs.writeFileSync(path.join(dir, 'Ops.kt'), `package app
+class Before { infix fun put(v: Int): Before = this }
 class A { infix fun put(v: Int): A = this }
-class B { infix fun put(v: Int): B = this }
+class After { infix fun put(v: Int): After = this }
 fun plain(b: A) = b put 1
 fun paren(b: A) = (b) put 1
 fun parenTight(b: A) = (b)put(1)
