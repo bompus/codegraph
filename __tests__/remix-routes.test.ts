@@ -170,6 +170,11 @@ describe('spreads in a Vite config', () => {
       ),
     ).toBe(true);
     expect(detects(wrap('"plugins": [...createPlugins({ mode: "dev" }), react()],'))).toBe(true);
+    expect(
+      detects(
+        'export default { plugins: [...createPlugins(), react()] };',
+      ),
+    ).toBe(true);
     // A spread written only in a comment or a string is not a spread.
     expect(detects(wrap('/* ...routes */ plugins: [react()], base: "/...",'))).toBe(true);
   });
@@ -183,6 +188,7 @@ describe('spreads in a Vite config', () => {
       'plugins: [reactRouterRSC({ ...rscOptions })],',
       'plugins: [react()],\nserver: { ...serverOptions() },',
       'plugins: [reactRouter({ appDirectory: "src" })],',
+      'plugins: [react()],\nserver: { plugins: [...makeOptions()] },',
     ]) {
       expect(detects(wrap(body)), body).toBe(false);
     }

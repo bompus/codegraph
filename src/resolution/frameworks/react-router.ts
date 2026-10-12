@@ -267,7 +267,7 @@ function routeModuleComponent(
 
 /**
  * Whether a build config spreads something that could carry route settings.
- * A spread of a call inside a `plugins` list (`...mdx({...})` merged into a
+ * A spread of a call inside the config's own `plugins` list (`...mdx({...})` merged into a
  * plugin object) only builds a plugin; the plugin options that move routes are
  * checked separately. Every other spread, including one inside a call's
  * arguments, is unknown content. Unparsable configs count as spreading.
@@ -288,7 +288,10 @@ function spreadsConfig(config: string, fileName: string): boolean {
       let up = spread.parent;
       while (up && (up.type === 'object' || up.type === 'array')) up = up.parent;
       const key = up?.type === 'pair' ? up.childForFieldName('key') : null;
-      return !key || key.text.replace(/^['"]|['"]$/g, '') !== 'plugins';
+      if (!key || key.text.replace(/^['"]|['"]$/g, '') !== 'plugins') return true;
+      // Only the config's own `plugins`, not one under another key (`server: { plugins }`).
+      for (let outer = up!.parent; outer; outer = outer.parent) if (outer.type === 'pair') return true;
+      return false;
     });
   } finally {
     tree.delete();
