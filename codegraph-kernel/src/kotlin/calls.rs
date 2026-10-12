@@ -13,7 +13,15 @@ impl<'t> Walker<'t> {
         if func.kind() != "simple_identifier" || is_literal_receiver(lhs.kind()) { return; }
         let caller = self.top_row();
         let name = self.text(func);
-        let receiver = if lhs.kind() == "simple_identifier" { self.text(lhs) } else { "" };
+        // `(b) put 1` calls `put` on what `b` holds, as `b put 1` does.
+        let mut receiver_node = lhs;
+        while receiver_node.kind() == "parenthesized_expression" {
+            match named_kids(receiver_node).filter(|n| !n.is_extra()).collect::<Vec<_>>().as_slice() {
+                [inner] => receiver_node = *inner,
+                _ => break,
+            }
+        }
+        let receiver = if receiver_node.kind() == "simple_identifier" { self.text(receiver_node) } else { "" };
         let callee = if !receiver.is_empty() && receiver != "this" && receiver != "super" {
             format!("{receiver}.{name}")
         } else { name.to_string() };
