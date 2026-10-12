@@ -31,7 +31,7 @@ Before the first publish step of any release (tag, npm publish, registry push), 
 - the README and its version-bearing sentences;
 - benchmark and comparison text, and the numbers it quotes;
 - graphics and visuals, with their alt text (banners, charts, demo recordings);
-- the package README, and registry and marketplace listing text;
+- the package README and the metadata `scripts/pack-npm.sh` writes into the published packages (review the README and the script, since the staged packages do not exist before the release is cut), and registry and marketplace listing text;
 - the release announcement.
 
 Record the pass as done, with what it changed, where the release is prepared. A release is not ready while any of these is stale. The maintainer's house rules call the same requirement "Release batching".
