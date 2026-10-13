@@ -54,10 +54,10 @@ const CHUNK_SIZE = 500;
  * workers) costs real CPU that CONTENDS with sequential resolution on the
  * same cores, and every worker holds its own caches: forcing the pool on
  * raised peak memory by 53-108% in a 2026-10-12 sweep on a 16-vCPU host.
- * The same sweep found it faster in wall time from about 20k pending refs
- * up (6-62% at 37k-111k refs) and not clearly different below that, so the
- * crossover depends on the host's cores and on how much memory the run may
- * use. Override: CODEGRAPH_PARALLEL_RESOLVE_MIN=<refs> (0 forces the pool on).
+ * The same sweep (corpora of 13.9k-111k refs) found it faster in wall time
+ * from 22.7k refs up (6-62% at 37k-111k) and not clearly different at
+ * 13.9k; 111k-150k refs was not measured. The crossover depends on the
+ * host's cores and on how much memory the run may use. Override: CODEGRAPH_PARALLEL_RESOLVE_MIN=<refs> (0 forces the pool on).
  */
 export function minRefsForPool(): number {
   const raw = process.env.CODEGRAPH_PARALLEL_RESOLVE_MIN;

@@ -135,8 +135,9 @@ runs of each arm do not overlap, `ove` that they do):
 | firefly-iii (106k) | +42% sep | -23% sep | +9% ove | +108% sep |
 | Exposed (111k, Kotlin) | +533% sep (38.5 s against 6.1 s) | -58% sep (16.1 s) | +164% sep | +152% sep |
 
-From about 20k pending references up, the fork's default was 6 to 51% slower
-than upstream on wall time (Exposed aside) while using 11 to 71% less peak
+In the corpora tested, from Alamofire (22.7k pending references) up to Exposed
+(111k), the fork's default was 6 to 51% slower than upstream on wall time
+(Exposed aside) while using 11 to 71% less peak
 memory. Forcing the pool brought wall time to within -15% and +17% of upstream
 (Exposed aside) at 53 to 108% more peak memory. Exposed is a separate case: 6
 times slower than upstream by default and still 2.6 times with the pool. Bun
