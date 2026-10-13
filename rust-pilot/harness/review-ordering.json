@@ -1,0 +1,59 @@
+[
+  {
+    "name": "min",
+    "context": {
+      "files": {
+        "src/server.js": "NestFactory.create.enableVersioning(",
+        "libs/x/main.ts": "NestFactory.create.setGlobalPrefix(\"x\"}",
+        "src/h.controller.js": "@Controller()@Delete()"
+      },
+      "manifests": {},
+      "nodes": [],
+      "refs": [],
+      "now": 12345
+    },
+    "_cls": true
+  },
+  {
+    "name": "min",
+    "context": {
+      "files": {
+        "libs/x/main.ts": "NestFactory.create.setGlobalPrefix(\"x\"}",
+        "src/h.controller.js": "@Controller()@Delete()",
+        "src/server.js": "NestFactory.create.enableVersioning("
+      },
+      "manifests": {},
+      "nodes": [],
+      "refs": [],
+      "now": 12345
+    },
+    "_cls": true
+  },
+  {
+    "name": "k",
+    "context": {
+      "files": {
+        "src/ｚ.ts": "@Get('a') x() {}",
+        "src/😀.ts": "@Get('b') y() {}"
+      },
+      "manifests": {},
+      "nodes": [],
+      "refs": [],
+      "now": 1
+    }
+  },
+  {
+    "name": "integer-keys",
+    "context": {
+      "files": {
+        "10": "",
+        "2": ""
+      },
+      "manifests": {},
+      "nodes": [],
+      "refs": [],
+      "now": 12345
+    },
+    "_cls": true
+  }
+]

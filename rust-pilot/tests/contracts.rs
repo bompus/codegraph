@@ -115,3 +115,204 @@ fn dependency_detection_cache_invalidates_on_file_count_change() {
         .insert("src/plain.ts".into(), "const x = 1;".into());
     assert!(nestjs::detect(&ctx));
 }
+
+#[test]
+fn unicode_categories_match_node_over_entire_code_space() {
+    let result = std::process::Command::new("fnm")
+        .args(["exec", "--using", "codegraph", "node"])
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("harness/generate-unicode.cjs"))
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    for c in [
+        '\u{088f}', '\u{0c5c}', '\u{0cdc}', '\u{a7ce}', '\u{a7cf}', '\u{a7d2}', '\u{a7d4}',
+        '\u{a7f1}',
+    ] {
+        assert_eq!(
+            dead_code::mention_count(&format!("{c}foo foo{c}"), "foo", 2),
+            0
+        );
+    }
+}
+
+#[test]
+fn collation_matches_node_for_every_unicode_scalar() {
+    let result = std::process::Command::new("fnm")
+        .args(["exec", "--using", "codegraph", "node"])
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("harness/collation-oracle.cjs"))
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(result.stdout.len(), (0x110000 - 0x800) * 5);
+    let collator = codegraph_rust_pilot::collation::Collator::default();
+    let mut previous: Option<char> = None;
+    for entry in result.stdout.as_chunks::<5>().0 {
+        let c = char::from_u32(u32::from_le_bytes(entry[..4].try_into().unwrap())).unwrap();
+        if let Some(p) = previous {
+            assert_eq!(
+                collator.compare(p.encode_utf8(&mut [0; 4]), c.encode_utf8(&mut [0; 4])),
+                (entry[4] as i32 - 1).cmp(&0),
+                "U+{:04X}, U+{:04X}",
+                p as u32,
+                c as u32
+            );
+        }
+        previous = Some(c);
+    }
+}
+
+#[test]
+fn relative_root_rejects_parent_escape() {
+    // Resolving a relative root must not turn it into an empty containment prefix.
+    assert!(dead_code::default_source_reader(std::path::Path::new("."), "../Cargo.toml").is_none());
+}
+
+#[test]
+fn large_regex_scans_do_not_collect_unneeded_tail_matches() {
+    let text = format!("NestFactory.create {}", "class A {} ".repeat(200_000));
+    assert!(codegraph_rust_pilot::text::test(
+        r"\bNestFactory\s*\.\s*create",
+        &text
+    ));
+    assert_eq!(
+        codegraph_rust_pilot::text::first(r"\bclass\b", &text)
+            .unwrap()
+            .start,
+        19
+    );
+    assert!(!codegraph_rust_pilot::text::test(
+        r"\bRouterModule\b",
+        &text
+    ));
+}
+
+#[test]
+fn stored_json_uses_js_numbers_keys_and_length_coercion() {
+    use codegraph_rust_pilot::json::{canonical, has_positive_length};
+    let value =
+        serde_json::from_str(r#"{"10":1.0,"9":2e0,"small":0.0000001,"large":1e21,"negzero":-0.0}"#)
+            .unwrap();
+    assert_eq!(
+        canonical(&value),
+        r#"{"9":2,"10":1,"large":1e+21,"negzero":0,"small":1e-7}"#
+    );
+    for text in [
+        r#"{"length":2}"#,
+        r#"{"length":"2"}"#,
+        r#"{"length":true}"#,
+        r#"{"length":[2]}"#,
+    ] {
+        assert!(
+            has_positive_length(&serde_json::from_str(text).unwrap()),
+            "{text}"
+        );
+    }
+    for text in [
+        r#"{"length":0}"#,
+        r#"{"length":null}"#,
+        r#"{"length":"no"}"#,
+        r#"{"length":{}}"#,
+    ] {
+        assert!(
+            !has_positive_length(&serde_json::from_str(text).unwrap()),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn reviewer_nest_fixtures_match_real_typescript() {
+    let crate_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for name in ["review-ordering.json", "review-nest-regressions.json"] {
+        let input = crate_path.join("harness").join(name);
+        let ts = std::process::Command::new("fnm")
+            .args(["exec", "--using", "codegraph", "node"])
+            .arg(crate_path.join("harness/run-ts.cjs"))
+            .arg(crate_path.join("harness/nest.ts"))
+            .arg(&input)
+            .output()
+            .unwrap();
+        let rust = std::process::Command::new(env!("CARGO_BIN_EXE_codegraph-rust-pilot"))
+            .arg("nestjs")
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(
+            ts.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ts.stderr)
+        );
+        assert!(
+            rust.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rust.stderr)
+        );
+        assert!(ts.stdout == rust.stdout, "differential fixture {name}");
+    }
+}
+
+#[test]
+fn json_metadata_retains_surrogates_and_number_overflow() {
+    use codegraph_rust_pilot::json::{canonical_text, raw_has_positive_length};
+    assert_eq!(
+        canonical_text(r#"{"10":1.0,"9":2e0,"\ud800":"\udc00","text":"𝄞\u2028","n":1e999}"#)
+            .unwrap(),
+        "{\"9\":2,\"10\":1,\"n\":null,\"text\":\"𝄞\u{2028}\",\"\\ud800\":\"\\udc00\"}"
+    );
+    assert!(raw_has_positive_length(r#"{"length":2,"other":"\ud800"}"#));
+    assert!(raw_has_positive_length(r#"{"length":1e999}"#));
+    assert!(raw_has_positive_length(r#""\ud800""#));
+    assert!(!raw_has_positive_length(r#"{"length":"\ud800"}"#));
+}
+
+#[test]
+fn raw_json_matches_node_for_nested_metadata_and_utf16_keys() {
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+    let deep = format!("{}1e999{}", "[".repeat(200), "]".repeat(200));
+    let input = format!(
+        r#"[{{"\ud800":"\udfff","😀":0,"ｚ":0,"10":2e0,"9":1.0,"huge":9007199254740993,"tiny":5e-324,"decimal":0.100000000000000005,"pair":"\ud834\udd1e","repeat":1,"repeat":2}},{}]"#,
+        deep
+    );
+    let crate_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut child = Command::new("fnm")
+        .args(["exec", "--using", "codegraph", "node"])
+        .arg(crate_path.join("harness/run-ts.cjs"))
+        .arg(crate_path.join("harness/json-oracle.ts"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        format!(
+            "{}\n",
+            codegraph_rust_pilot::json::canonical_text(&input).unwrap()
+        )
+        .as_bytes(),
+        result.stdout
+    );
+}

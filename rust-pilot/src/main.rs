@@ -1,3 +1,4 @@
+use codegraph_rust_pilot::json::{canonical, canonical_text, enumeration_order};
 use codegraph_rust_pilot::{nestjs, types::MemoryContext};
 use serde_json::{Value, json};
 use std::{env, fs};
@@ -8,20 +9,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let store =
             codegraph_rust_pilot::store::Store::open(&root.join(".codegraph/codegraph.db"))?;
         let queries: Vec<Value> = serde_json::from_slice(&fs::read(&args[3])?)?;
+        #[derive(serde::Serialize)]
+        struct Outcome {
+            query: Value,
+            report: codegraph_rust_pilot::dead_code::Report,
+        }
         let mut results = vec![];
         for query in queries {
             let parsed = serde_json::from_value(query.clone())?;
             let report =
                 codegraph_rust_pilot::dead_code::build_dead_code_report(&store, root, &parsed)?;
-            results.push(json!({"query": query, "report": report}));
+            results.push(Outcome { query, report });
         }
-        println!("{}", serde_json::to_string(&results)?);
+        println!("{}", canonical_text(&serde_json::to_string(&results)?)?);
         return Ok(());
     }
     if args.get(1).map(String::as_str) != Some("nestjs") {
         return Err("usage: codegraph-rust-pilot nestjs INPUT.json".into());
     }
-    let input: Value = serde_json::from_slice(&fs::read(&args[2])?)?;
+    let mut input: Value = serde_json::from_slice(&fs::read(&args[2])?)?;
+    enumeration_order(&mut input);
     let mut results = vec![];
     for case in input.as_array().ok_or("expected cases")? {
         let mut ctx: MemoryContext = serde_json::from_value(case["context"].clone())?;
@@ -42,6 +49,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let post_again = nestjs::post_extract(&ctx);
         results.push(json!({"name": case["name"], "extract": extracts, "detect": detected, "resolve": resolved, "postExtract": post, "postAgain": post_again}));
     }
-    println!("{}", serde_json::to_string(&results)?);
+    println!("{}", canonical(&serde_json::to_value(results)?));
     Ok(())
 }

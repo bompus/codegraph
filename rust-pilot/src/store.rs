@@ -2,7 +2,7 @@
 use crate::types::Node;
 use indexmap::{IndexMap, IndexSet};
 use rusqlite::{Connection, OpenFlags, Result, Row, params_from_iter};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value, json, value::RawValue};
 use std::{cell::RefCell, path::Path, time::Duration};
 
 pub type Set = IndexSet<String>;
@@ -49,15 +49,16 @@ fn node_row(row: &Row<'_>) -> Result<Node> {
     ] {
         extra.insert(key.into(), json!(row.get::<_, Option<i64>>(db)? == Some(1)));
     }
+    let mut raw_extra = IndexMap::new();
     for (db, key) in [
         ("decorators", "decorators"),
         ("type_parameters", "typeParameters"),
     ] {
         if let Some(v) = row.get::<_, Option<String>>(db)?
             && !v.is_empty()
-            && let Ok(v) = serde_json::from_str::<Value>(&v)
+            && let Ok(v) = serde_json::from_str::<Box<RawValue>>(&v)
         {
-            extra.insert(key.into(), v);
+            raw_extra.insert(key.into(), v);
         }
     }
     Ok(Node {
@@ -73,6 +74,7 @@ fn node_row(row: &Row<'_>) -> Result<Node> {
         end_column: row.get("end_column")?,
         updated_at: row.get("updated_at")?,
         extra,
+        raw_extra,
     })
 }
 impl Store {

@@ -3,7 +3,7 @@ use crate::text::{capture, first, js_len, js_trim, line_at, matches, strip_comme
 use crate::types::{Node, ResolutionContext, ResolvedRef, UnresolvedRef};
 use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Map;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const NAME: &str = "nestjs";
@@ -74,20 +74,28 @@ pub fn declared_dependencies(context: &impl ResolutionContext) -> IndexSet<Strin
         let Some(content) = context.read_file(&manifest) else {
             continue;
         };
-        let Ok(pkg) = serde_json::from_str::<Value>(content) else {
-            continue;
-        };
-        for group in ["dependencies", "devDependencies", "peerDependencies"] {
-            if let Some(obj) = pkg[group].as_object() {
-                names.extend(obj.keys().cloned());
-            }
-            // Object.keys also accepts an array in a malformed dependency group.
-            if let Some(arr) = pkg[group].as_array() {
-                names.extend((0..arr.len()).map(|i| i.to_string()));
-            }
-        }
+        names.extend(manifest_dependencies(content));
     }
     *context.dependency_cache().borrow_mut() = Some((files.len(), names.clone()));
+    names
+}
+/// Raw values validate JSON without materializing unused numbers, strings or nesting.
+fn manifest_dependencies(content: &str) -> IndexSet<String> {
+    use serde_json::value::RawValue;
+    let Ok(pkg) = serde_json::from_str::<crate::json::RawObject>(content) else {
+        return IndexSet::new();
+    };
+    let mut names = IndexSet::new();
+    for group in ["dependencies", "devDependencies", "peerDependencies"] {
+        let Some(raw) = pkg.get(&crate::json::JsonString(group.encode_utf16().collect())) else {
+            continue;
+        };
+        if let Ok(obj) = serde_json::from_str::<crate::json::RawObject>(raw.get()) {
+            names.extend(obj.into_keys().map(|s| String::from_utf16_lossy(&s.0)));
+        } else if let Ok(arr) = serde_json::from_str::<Vec<Box<RawValue>>>(raw.get()) {
+            names.extend((0..arr.len()).map(|i| i.to_string()));
+        }
+    }
     names
 }
 fn deep_script_directories(files: &[&str]) -> Vec<String> {
@@ -214,6 +222,7 @@ pub fn extract(file_path: &str, content: &str, now: i64) -> Extraction {
             let line = line_at(&safe, hit.index);
             let id = format!("route:{file_path}:{line}:{method}:{path}");
             output.nodes.push(Node {
+                raw_extra: IndexMap::new(),
                 id: id.clone(),
                 kind: "route".into(),
                 name: format!("{method} {path}"),
@@ -417,11 +426,19 @@ pub fn post_extract(context: &impl ResolutionContext) -> Vec<Node> {
             let safe = strip_comments(content);
             let scopes = build_class_scopes(&safe);
             let hits = find_decorators(&safe, HTTP);
+            let mut hits_by_line = BTreeMap::new();
+            let mut previous = 0;
+            let mut line = 1;
+            for hit in &hits {
+                line += safe[previous..hit.index]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count() as i64;
+                previous = hit.index;
+                hits_by_line.entry(line).or_insert(hit);
+            }
             for route in routes {
-                let Some(hit) = hits
-                    .iter()
-                    .find(|h| line_at(&safe, h.index) == route.start_line)
-                else {
+                let Some(hit) = hits_by_line.get(&route.start_line) else {
                     continue;
                 };
                 let Some(scope) = scope_for(&scopes, hit.index).filter(|s| s.kind == "controller")
@@ -453,13 +470,7 @@ pub fn post_extract(context: &impl ResolutionContext) -> Vec<Node> {
                 p.version.as_ref(),
                 context.now(),
             )
-        })
-        .filter(|n| {
-            context
-                .nodes_in_file(&n.file_path)
-                .iter()
-                .find(|r| r.id == n.id)
-                .is_some_and(|r| r.name != n.name)
+            .filter(|updated| updated.name != p.route.name)
         })
         .collect()
 }

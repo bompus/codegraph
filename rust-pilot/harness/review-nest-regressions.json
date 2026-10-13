@@ -1,0 +1,69 @@
+[
+  {
+    "name": "surrogate-manifest",
+    "context": {
+      "files": {
+        "src/a.ts": "x"
+      },
+      "manifests": {
+        "package.json": "{\"description\":\"\\ud800\",\"dependencies\":{\"@nestjs/core\":\"1\"}}"
+      },
+      "nodes": [],
+      "refs": [],
+      "now": 1000
+    }
+  },
+  {
+    "name": "huge-number-manifest",
+    "context": {
+      "files": {
+        "src/a.ts": "x"
+      },
+      "manifests": {
+        "package.json": "{\"v\":1e999,\"dependencies\":{\"@nestjs/core\":\"1\"}}"
+      },
+      "nodes": [],
+      "refs": [],
+      "now": 1000
+    }
+  },
+  {
+    "name": "deep-manifest",
+    "context": {
+      "files": {
+        "src/a.ts": "x"
+      },
+      "manifests": {
+        "package.json": "{\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]],\"dependencies\":{\"@nestjs/core\":\"1\"}}"
+      },
+      "nodes": [],
+      "refs": [],
+      "now": 1000
+    }
+  },
+  {
+    "name": "dup",
+    "context": {
+      "files": {
+        "src/main.ts": "NestFactory.create(A); app.setGlobalPrefix('api');",
+        "src/a.controller.ts": "@Controller('x') class C { @Get('a') p() {} @Get('a') q() {} }"
+      },
+      "manifests": {},
+      "nodes": [],
+      "refs": [],
+      "now": 1
+    }
+  },
+  {
+    "name": "surrogate-manifest-property-names",
+    "context": {
+      "files": {},
+      "manifests": {
+        "package.json": "{\"\\ud800\":0,\"dependencies\":{\"@nestjs/\\ud800\":\"*\"}}"
+      },
+      "nodes": [],
+      "refs": [],
+      "now": 1
+    }
+  }
+]

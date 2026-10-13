@@ -19,6 +19,8 @@ pub struct Node {
     pub updated_at: i64,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+    #[serde(flatten, skip_deserializing)]
+    pub raw_extra: IndexMap<String, Box<serde_json::value::RawValue>>,
 }
 impl Node {
     pub fn flag(&self, name: &str) -> bool {

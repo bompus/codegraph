@@ -1,11 +1,10 @@
 //! Port of the query-time derivation in src/graph/dead-code.ts.
+use crate::collation::Collator;
 use crate::{
     store::{Candidate, Names, Set, Store, unique},
     text::test,
     types::Node,
 };
-use icu_collator::{Collator, options::CollatorOptions};
-use icu_locale::locale;
 use indexmap::IndexMap;
 use rusqlite::Result;
 use serde::{Deserialize, Serialize};
@@ -107,16 +106,21 @@ const VENDOR: &[&str] = &[
 #[serde(rename_all = "camelCase")]
 pub struct DeadCodeQuery {
     pub kinds: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "strict_true")]
     pub include_exported: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "strict_true")]
     pub include_tests: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "strict_true")]
     pub include_generated: bool,
     pub limit: Option<f64>,
     // Retains whether readSource was supplied as null, distinct from absent.
     #[serde(flatten)]
     pub options: serde_json::Map<String, Value>,
+}
+fn strict_true<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<bool, D::Error> {
+    Ok(Value::deserialize(deserializer)? == Value::Bool(true))
 }
 #[derive(Serialize)]
 pub struct Entry {
@@ -351,8 +355,7 @@ pub fn build_with_reader(
             entry.members.push(node.clone());
         }
     }
-    let collator = Collator::try_new(locale!("en-US").into(), CollatorOptions::default())
-        .expect("built-in English collation");
+    let collator = Collator::default();
     for entry in entries.values_mut() {
         entry.members.sort_by(|a, b| {
             a.start_line
@@ -396,7 +399,7 @@ pub fn default_source_reader(root: &Path, file_path: &str) -> Option<String> {
         }
         out
     };
-    let root = normalize(root);
+    let root = normalize(&std::env::current_dir().ok()?.join(root));
     let absolute = normalize(&root.join(file_path));
     if absolute != root && !absolute.starts_with(&root) {
         return None;
@@ -429,9 +432,12 @@ pub fn mention_count(source: &str, name: &str, stop_at: usize) -> usize {
 }
 fn is_identifier_char(c: Option<char>) -> bool {
     // JS indexes a single UTF-16 unit, so an adjacent surrogate is not a letter.
-    c.is_some_and(|c| {
-        c == '_' || c == '$' || c.len_utf16() == 1 && test(r"[\p{L}\p{N}]", &c.to_string())
-    })
+    c.is_some_and(|c| c == '_' || c == '$' || c.len_utf16() == 1 && unicode_letter_or_number(c))
+}
+pub fn unicode_letter_or_number(c: char) -> bool {
+    const TABLE: &[u8; 0x110000 / 8] = include_bytes!("unicode-ln.bin");
+    let cp = c as usize;
+    TABLE[cp >> 3] & (1 << (cp & 7)) != 0
 }
 fn files_nothing_reaches(store: &Store, files: &[String]) -> Result<Set> {
     let files = unique(files.iter().cloned());
@@ -691,9 +697,15 @@ fn carries_decorator(store: &Store, nodes: &[&Node]) -> Result<Set> {
         .collect();
     found.extend(store.unresolved_from(&ids, &["decorates"])?.into_keys());
     for node in nodes {
-        if node.extra.get("decorators").is_some_and(|v| {
-            v.as_array().is_some_and(|a| !a.is_empty()) || v.as_str().is_some_and(|s| !s.is_empty())
-        }) {
+        if node
+            .raw_extra
+            .get("decorators")
+            .is_some_and(|v| crate::json::raw_has_positive_length(v.get()))
+            || node
+                .extra
+                .get("decorators")
+                .is_some_and(crate::json::has_positive_length)
+        {
             found.insert(node.id.clone());
         }
     }

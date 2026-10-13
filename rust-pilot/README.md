@@ -10,7 +10,8 @@ TypeScript compiler on Node 24. No compiled production tree is required.
 with the TypeScript AST, adds the edge cases, and selects real corpus files.
 Both implementations receive the same source text, class spans, references,
 file order, package manifests, and fixed clock (`1700000000000`). Canonical
-JSON sorts object keys and preserves array order. No result fields are removed.
+JSON sorts string keys by UTF-16, emits array-index keys numerically first,
+and preserves array order. Input objects retain JavaScript enumeration order. No result fields are removed.
 A second post-extraction call checks idempotence.
 
 For dead code, `copy-indexes.py` uses SQLite's backup API with the original
@@ -55,20 +56,58 @@ silently replace the inputs.
 - The store implements the SQL, row mapping, query chunking, and node cache
   used by the report. It is not a replacement for CodeGraph's complete store.
   Source corroboration and a custom reader are supported.
-- Rust uses `fancy-regex` with ECMAScript whitespace and ASCII word classes,
-  `IndexMap` for insertion order, and ICU4X for English collation. The measured
-  Node environment uses `en-US` and ICU 78.3. Other default locales and arbitrary
-  Unicode collation differences between ICU versions remain unverified.
+- Regexes use the linear `regex` engine where possible, with `fancy-regex`
+  for lookaround and backreferences. First-match calls stop immediately.
+  ECMAScript whitespace and ASCII word boundaries are explicit.
+- Collation links the host's ICU4C 78 (`libicui18n.so.78`), replacing ICU4X's
+  different Han ordering. This host has ICU 78.2; Node 24.21.0 has ICU 78.3.
+  The test compares ordering and equality for every Unicode scalar with Node's
+  `en-US` collator. Other locales and platforms are unverified. This system
+  library is now a build/runtime requirement; SQLite remains bundled.
+- `harness/generate-unicode.cjs` generates `src/unicode-ln.bin` from Node's
+  Unicode 17 letter/number categories over all 1,114,112 code points.
+  `--check` verifies every byte; Cargo tests run that check through Node 24.
+  The 139,264-byte generated table is data, reported separately from Rust lines.
+- JSON output uses JavaScript number formatting (`ryu-js`), numeric property
+  enumeration, and UTF-16 key sorting. Manifest values use serde's raw JSON
+  scanner so unused lone-surrogate values, large exponents and deep nesting
+  do not prevent dependency detection.
 - Rust strings contain valid Unicode scalar values. Synthetic JavaScript
-  strings with lone UTF-16 surrogates are outside this input format. Source
+  source/name strings with lone UTF-16 surrogates are outside this input format.
+  Manifest contents and raw JSON metadata support escaped lone surrogates. Source
   files are decoded as UTF-8 by the TypeScript input builder; dead-code source
   reads replace invalid UTF-8 bytes as Node does.
-- This proves equality for the recorded inputs. It does not measure Rust
-  execution speed, exercise every exclusion branch on every corpus, or prove
-  equality for all possible programs. No production files, goldens, docs-site
+- The fix-round harness measures the named route-heavy and corroboration
+  workloads in debug and release builds. Those timings include process startup,
+  TypeScript transpilation and canonical serialization. They are not isolated
+  module timings or general runtime performance claims.
+- This proves equality for the recorded inputs. It does not exercise every
+  exclusion branch on every corpus or prove equality for all possible programs. No production files, goldens, docs-site
   pages, release material, or installed tool are changed.
 
 The two reference module files contain 993 and 1,114 physical lines, including
 comments and blanks. See the local report for the separate Rust module,
 shared support, executable, and test counts. The full helper source files
 are not silently added to that denominator.
+
+## Review regressions
+
+`cargo test` compares the committed ordering and manifest/duplicate-ID fixtures
+with the real TypeScript resolver. It also checks large-file regex scans,
+relative-root containment, Unicode categories, collation, number formatting
+and decorator-length coercion.
+
+`review-parity.py FIX_ROUND_DIRECTORY` replays copies of the reviewer's scripts,
+inputs, queries and indexes. `--performance` runs three samples of each of six
+workloads, comparing both Rust profiles with TypeScript each time. Its generous
+fixed debug budgets detect the four measured performance regressions; use
+`--performance --rounds 1 --baseline PRE_FIX_BINARY` to demonstrate failure.
+The scripts record exact commands and statuses in JSONL. This pilot retains
+its input and output receipts in the parent-provided scratch directory.
+
+The additional review probes confirmed limits for malformed SQLite data:
+non-UTF-8 TEXT and NULL node IDs are rejected by the Rust row mapper, while
+Node accepts them. Stored JSON now retains lone surrogates, overflow numbers,
+and deep values as raw JSON until canonical serialization. U+2028, tested SQL
+ties, and non-boolean include flags match. The row-mapping limits are recorded
+explicitly in the fix-round report.

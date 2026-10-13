@@ -1,7 +1,11 @@
 //! Regex and string operations with the JavaScript semantics used by the port.
-use fancy_regex::Regex;
+use fancy_regex::{Regex, RegexBuilder};
+enum Compiled {
+    Linear(regex::Regex),
+    Backtracking(Regex),
+}
 use std::{cell::RefCell, collections::HashMap};
-thread_local! { static REGEXES: RefCell<HashMap<String, Regex>> = RefCell::new(HashMap::new()); }
+thread_local! { static REGEXES: RefCell<HashMap<String, Compiled>> = RefCell::new(HashMap::new()); }
 #[derive(Debug)]
 pub struct Match {
     pub start: usize,
@@ -13,7 +17,7 @@ impl Match {
         self.groups[index].as_deref().unwrap_or("")
     }
 }
-fn js_pattern(pattern: &str) -> String {
+fn js_pattern(pattern: &str, linear: bool) -> String {
     let mut out = String::new();
     let mut in_class = false;
     let mut chars = pattern.chars();
@@ -24,6 +28,7 @@ fn js_pattern(pattern: &str) -> String {
                 's' => out.push_str(r"[\t\n\x0b\x0c\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]"),
                 'w' if in_class => out.push_str("A-Za-z0-9_"),
                 'w' => out.push_str("[A-Za-z0-9_]"),
+                'b' if !in_class && linear => out.push_str(r"(?-u:\b)"),
                 'b' if !in_class => out.push_str(
                     r"(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))",
                 ),
@@ -44,32 +49,73 @@ fn js_pattern(pattern: &str) -> String {
     }
     out
 }
-pub fn matches(pattern: &str, text: &str) -> Vec<Match> {
+fn with_regex<T>(pattern: &str, f: impl FnOnce(&Compiled) -> T) -> T {
     REGEXES.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let re = cache
-            .entry(pattern.to_owned())
-            .or_insert_with(|| Regex::new(&js_pattern(pattern)).unwrap());
-        re.captures_iter(text)
+        let re = cache.entry(pattern.to_owned()).or_insert_with(|| {
+            if let Ok(re) = regex::Regex::new(&js_pattern(pattern, true)) {
+                Compiled::Linear(re)
+            } else {
+                Compiled::Backtracking(
+                    RegexBuilder::new(&js_pattern(pattern, false))
+                        .backtrack_limit(usize::MAX)
+                        .build()
+                        .expect("port regex"),
+                )
+            }
+        });
+        f(re)
+    })
+}
+fn owned_match<'a>(groups: impl Iterator<Item = Option<(usize, usize, &'a str)>>) -> Match {
+    let mut groups = groups.peekable();
+    let (start, end, _) = groups.peek().unwrap().unwrap();
+    Match {
+        start,
+        end,
+        groups: groups.map(|g| g.map(|(_, _, s)| s.to_owned())).collect(),
+    }
+}
+pub fn matches(pattern: &str, text: &str) -> Vec<Match> {
+    with_regex(pattern, |re| match re {
+        Compiled::Linear(re) => re
+            .captures_iter(text)
+            .map(|c| {
+                owned_match(
+                    c.iter()
+                        .map(|m| m.map(|m| (m.start(), m.end(), m.as_str()))),
+                )
+            })
+            .collect(),
+        Compiled::Backtracking(re) => re
+            .captures_iter(text)
             .map(|c| {
                 let c = c.expect("regex execution");
-                let m = c.get(0).unwrap();
-                Match {
-                    start: m.start(),
-                    end: m.end(),
-                    groups: (0..c.len())
-                        .map(|i| c.get(i).map(|m| m.as_str().to_owned()))
-                        .collect(),
-                }
+                owned_match(
+                    (0..c.len()).map(|i| c.get(i).map(|m| (m.start(), m.end(), m.as_str()))),
+                )
             })
-            .collect()
+            .collect(),
     })
 }
 pub fn first(pattern: &str, text: &str) -> Option<Match> {
-    matches(pattern, text).into_iter().next()
+    with_regex(pattern, |re| match re {
+        Compiled::Linear(re) => re.captures(text).map(|c| {
+            owned_match(
+                c.iter()
+                    .map(|m| m.map(|m| (m.start(), m.end(), m.as_str()))),
+            )
+        }),
+        Compiled::Backtracking(re) => re.captures(text).expect("regex execution").map(|c| {
+            owned_match((0..c.len()).map(|i| c.get(i).map(|m| (m.start(), m.end(), m.as_str()))))
+        }),
+    })
 }
 pub fn test(pattern: &str, text: &str) -> bool {
-    first(pattern, text).is_some()
+    with_regex(pattern, |re| match re {
+        Compiled::Linear(re) => re.is_match(text),
+        Compiled::Backtracking(re) => re.is_match(text).expect("regex execution"),
+    })
 }
 pub fn capture(pattern: &str, text: &str, index: usize) -> Option<String> {
     first(pattern, text).and_then(|m| m.groups[index].clone())
