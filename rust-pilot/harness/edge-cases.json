@@ -1,0 +1,56 @@
+[
+  {
+    "name": "transports-and-router",
+    "files": {
+      "src/main.ts": "NestFactory.create(AppModule); app.setGlobalPrefix('/api/', {exclude: ['health', {path: 'metrics/(.*)'}]}); app.enableVersioning({defaultVersion:['1','2'], prefix:false});",
+      "src/app.module.ts": "@Module({controllers: [RootController]}) export class AppModule {}\nRouterModule.register([{path:'admin',module:AppModule,children:[{path:'users', module:UsersModule}]}]);\nRouterModule.forChild([{path:'ignored', module:UsersModule}]);",
+      "src/users.module.ts": "@Module({controllers:[UsersController, ...dynamic]}) @Other({a:[]}) export default abstract class UsersModule {}",
+      "src/root.controller.ts": "@Controller() export class RootController {\n@Get() root() {}\n@Get('health') @Version(VERSION_NEUTRAL) health() {}\n@Query('rest-param') parameter() {}\n}\n@Resolver(() => User) export class GqlResolver {\n@Query(() => [User], {description:'not the name'}) async users() {}\n@Mutation(() => User, {name:'makeUser'}) @UseGuards('x') public create() {}\n@Subscription('updates') subscribe() {}\n}\n@Injectable() class Other { @Query('not-graphql') nope() {} }",
+      "src/users.controller.ts": "// @Get('fake')\n@Version('3')\n@ApiTags({name:'t'})\n@Controller({path:'users',version:'2'})\nexport class UsersController {\n@Version(['4','5']) @Get(':id') read() {}\n@Post('😀') @Version(unknownVersion) async add() {}\n@Put() put() {}\n@Patch() patch() {}\n@Delete() del() {}\n@Head() head() {}\n@Options() options() {}\n@All() all() {}\n}",
+      "src/chat.gateway.ts": "@WebSocketGateway(81, {namespace:'/chat'}) class ChatGateway {\n@SubscribeMessage('message') send() {}\n@SubscribeMessage() receive() {}\n}\n@MessagePattern({cmd:'sum'}) sum() {}\n@EventPattern() signal() {}",
+      "src/plain.jsx": "@Get('ignored') ignored() {}",
+      "src/plain.mjs": "/* @Get('fake') */ @Get(`ok`) real() {}",
+      "src/local.service.ts": "class LocalService {} class AnotherRepository {} class ScopeGuard {} class ScopeInterceptor {} class ScopePipe {}",
+      "other/dupe.service.ts": "class LocalService {}"
+    }
+  },
+  {
+    "name": "single-app-library",
+    "files": {
+      "apps/a/src/main.ts": "NestFactory.create(A); app.enableVersioning({type:VersioningType.URI, prefix:'ver', defaultVersion:'9'});",
+      "libs/x/thing.ts": "@Controller('x') class XController { @Get() method() {} }"
+    }
+  },
+  {
+    "name": "non-uri-and-dynamic-prefix",
+    "files": {
+      "src/main.js": "NestFactory.create(A); app.setGlobalPrefix(config.get('prefix')); app.enableVersioning({type:VersioningType.HEADER});",
+      "src/a.controller.js": "@Controller('x') class XController { @Get() method() {} }"
+    }
+  },
+  {
+    "name": "deep-dependency-detection",
+    "files": {
+      "src/Web/ClientApp/a.ts": "const a = 1;"
+    },
+    "manifests": {
+      "src/Web/ClientApp/package.json": "{\"peerDependencies\":{\"@nestjs/common\":\"*\"}}"
+    }
+  },
+  {
+    "name": "no-nest",
+    "files": {
+      "plain.ts": "class Ordinary {}",
+      "broken.ts": "@Get(\"unterminated"
+    },
+    "manifests": {
+      "package.json": "not json"
+    }
+  },
+  {
+    "name": "js-whitespace",
+    "files": {
+      "unicode.controller.ts": "@Controller﻿('bom') class BomController {\n@Get﻿('ok') run() {}\n}\n@Controller('not-whitespace') class OtherController { @Get('bare') method() {} }"
+    }
+  }
+]
