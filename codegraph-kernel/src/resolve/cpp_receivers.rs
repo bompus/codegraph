@@ -109,9 +109,11 @@ impl KernelResolver {
         // Preserve the existing guarded alias and specialization fallback on a miss.
         let member = self.match_bound_type_member(&owner.qualified_name, method, r)?;
         // A class that lacks the method, and whose bases lack it too, is called nothing (but a
-        // class template's specialization may declare it, and so may a base the index doesn't link).
+        // class template's specialization may declare it, and so may a base the index doesn't link,
+        // held in a smart pointer or not).
         if member.is_none() && self.supertypes_complete && !self.cpp_alias_template_owner(&owner, r)?
-            && (held || (self.cpp_methods_named(&owner, method, r)?.is_empty() && self.cpp_bases_known(&owner, 0, &mut HashSet::new())?)) { return Ok(Some(None)); }
+            && (held || self.cpp_methods_named(&owner, method, r)?.is_empty())
+            && self.cpp_bases_known(&owner, 0, &mut HashSet::new())? { return Ok(Some(None)); }
         Ok(member.map(Some))
     }
 

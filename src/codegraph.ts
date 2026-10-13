@@ -29,6 +29,7 @@ import {
   FindRelevantContextOptions,
   UnresolvedReference,
   IndexHealth,
+  Language,
 } from './types';
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
@@ -1069,12 +1070,31 @@ export class CodeGraph {
               ...this.queries.getNodeNamesByFiles(result.changedFilePaths),
               ...result.changedFilePaths.flatMap(moduleReferenceKeys),
             ])]);
+            // A scoped package that a `tsconfig` path or a workspace package maps
+            // to an added file (`@excalidraw/common` to `packages/common/src/
+            // index.ts`) waits under its last segment, which that file's keys
+            // never give: look its failed imports up by the specifier itself.
+            // An import of the importer's own folder or the one above (`.`,
+            // `..`) waits under no key at all, so each is tried where written.
+            const addedFiles = new Set(result.addedFilePaths ?? []);
+            const resolvesToAdded = (specifier: string, fromFile: string, language: Language): boolean => {
+              const file = this.resolver.resolveModuleFile(specifier, fromFile, language);
+              return file !== null && addedFiles.has(file);
+            };
+            const resolvedModules = addedFiles.size === 0 ? [] : this.queries.getFailedScopedImports()
+              .filter((s) => resolvesToAdded(s.name, s.filePath, s.language))
+              .map((s) => s.name);
+            const folderImports = addedFiles.size === 0 ? [] : this.queries.getFailedFolderImports()
+              .filter((ref) => ref.filePath !== undefined && ref.language !== undefined &&
+                resolvesToAdded(ref.referenceName, ref.filePath, ref.language));
             const retryRows = new Set(retryable.map(ref => ref.rowId));
             const importRetry = this.queries.getRetryableFailedImports(
               (result.addedFilePaths ?? []).flatMap(importPathKeys),
-              this.queries.getNodeNamesByFiles(result.changedFilePaths, ['namespace', 'module'])
+              this.queries.getNodeNamesByFiles(result.changedFilePaths, ['namespace', 'module']),
+              undefined,
+              resolvedModules
             );
-            for (const ref of importRetry) {
+            for (const ref of [...importRetry, ...folderImports]) {
               if (!retryRows.has(ref.rowId)) { retryable.push(ref); retryRows.add(ref.rowId); }
             }
             retryable.sort((a, b) => (a.rowId ?? 0) - (b.rowId ?? 0));
@@ -1104,7 +1124,10 @@ export class CodeGraph {
                 const file = this.queries.getFileByPath(filePath);
                 return file ? [{ path: filePath, language: file.language }] : [];
               });
-              const reopened = reopenReferencesThroughAddedFiles(this.queries, createImportReader(this.projectRoot, this.queries), added, edgesBeforeResolution);
+              const reopened = reopenReferencesThroughAddedFiles(
+                this.queries, createImportReader(this.projectRoot, this.queries), added, edgesBeforeResolution,
+                (specifier, fromFile, language) => this.resolver.resolveModuleFile(specifier, fromFile, language)
+              );
               if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-added-module-importers: ${Date.now() - tAdded}ms (${reopened} refs re-opened)`);
             }
           } else {
