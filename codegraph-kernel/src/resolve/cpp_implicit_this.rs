@@ -91,7 +91,7 @@ fn argument_list_follows(text: &str, from: usize) -> bool {
 }
 
 /// stripCppTemplateArguments: the text with every `<…>` span removed.
-fn strip_template_arguments(text: &str) -> String {
+pub(super) fn strip_template_arguments(text: &str) -> String {
     let mut out = String::new();
     let mut depth = 0usize;
     for c in text.chars() {
@@ -105,7 +105,7 @@ fn strip_template_arguments(text: &str) -> String {
     out
 }
 
-fn contains_word(text: &str, word: &str) -> bool {
+pub(super) fn contains_word(text: &str, word: &str) -> bool {
     text.match_indices(word).any(|(at, _)| {
         !text[..at].chars().next_back().is_some_and(word_char) && !text[at + word.len()..].chars().next().is_some_and(word_char)
     })
@@ -157,7 +157,7 @@ impl KernelResolver {
         at(column)
     }
 
-    fn cpp_class_decls(&mut self, qualified_name: &str) -> Res<Vec<Arc<KNode>>> {
+    pub(super) fn cpp_class_decls(&mut self, qualified_name: &str) -> Res<Vec<Arc<KNode>>> {
         Ok(self.nodes_by_qualified_name(qualified_name)?.iter().filter(|n| class_kind(&n.kind) && c_family(&n.language)).cloned().collect())
     }
 
@@ -382,7 +382,7 @@ impl KernelResolver {
     /// Whether `base`, a base of the C++ class declaration `decl`, depends on the template
     /// parameters of `decl` or a class around it: `template <class T> class Foo : public Base<T>`.
     /// A bare name is not looked up in such a base.
-    fn cpp_dependent_base(&mut self, decl: &KNode, base: &KNode) -> Res<bool> {
+    pub(super) fn cpp_dependent_base(&mut self, decl: &KNode, base: &KNode) -> Res<bool> {
         let parameters = self.cpp_template_parameter_names(decl)?;
         if parameters.is_empty() { return Ok(false); }
         let spec = self.cpp_base_specifiers(decl).into_iter().find(|s| cpp_last_segment(strip_template_arguments(s).trim()) == base.name);
@@ -391,7 +391,7 @@ impl KernelResolver {
 
     /// The template parameters in scope where `node` is declared: its own `template <…>` header
     /// and those of the class templates around it.
-    fn cpp_template_parameter_names(&mut self, node: &KNode) -> Res<HashSet<String>> {
+    pub(super) fn cpp_template_parameter_names(&mut self, node: &KNode) -> Res<HashSet<String>> {
         let mut names = HashSet::new();
         let Some(source) = self.read_file(&node.file_path) else { return Ok(names) };
         collect_template_header(&source, node.start_line, node.start_column, &mut names);
@@ -440,7 +440,9 @@ fn collect_template_header(source: &SourceFile, start_line: i64, start_column: i
     before.push(&current[..names::js_unit_to_byte(current, start_column.max(0) as usize)]);
     let before = before.join("\n");
     let Some(at) = before.rfind("template") else { return };
-    let Some(header) = re!(r"(?s)^template\s*<(.*)>\s*$").captures(&before[at..]) else { return };
+    // Specifiers, attributes and macros may come between the header and where the declaration
+    // starts: protobuf's `template <typename T, typename... Args>` / `PROTOBUF_NDEBUG_INLINE static T* Create(…)`.
+    let Some(header) = re!(r"(?s)^template\s*<(.*)>(?:\s*(?:\[\[[^\]]*\]\]|(?:static|inline|constexpr|consteval|virtual|explicit|friend|extern)\b|[A-Z][A-Z0-9]*_[A-Z0-9_]*\b(?:\s*\([^()]*\))?))*\s*$").captures(&before[at..]) else { return };
     for item in split_top_level(&header[1]) {
         // `typename T = int`, `template <typename> class Policy`, `typename... Ts`, `int N`.
         let stripped = strip_template_arguments(&item);
