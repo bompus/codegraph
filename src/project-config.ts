@@ -337,11 +337,21 @@ function extractInclude(parsed: object, file: string): string[] {
 function loadParsedConfig(rootDir: string): ParsedConfig {
   const file = path.join(rootDir, PROJECT_CONFIG_FILENAME);
 
+  // `throwIfNoEntry: false` returns undefined for the common no-config case
+  // instead of building and catching an ENOENT error. The deprioritized-path
+  // matcher reaches this once per result path, so a throw each time was 5-15%
+  // of query CPU on projects with no `codegraph.json`.
   let mtimeMs: number;
   try {
-    mtimeMs = fs.statSync(file).mtimeMs;
+    const st = fs.statSync(file, { throwIfNoEntry: false });
+    if (!st) {
+      // No config file — drop any stale cache entry and return the default.
+      cache.delete(rootDir);
+      return EMPTY_CONFIG;
+    }
+    mtimeMs = st.mtimeMs;
   } catch {
-    // No config file — drop any stale cache entry and return the default.
+    // Unreadable (permissions, ENOTDIR) — treat like no config.
     cache.delete(rootDir);
     return EMPTY_CONFIG;
   }

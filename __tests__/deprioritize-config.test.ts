@@ -108,6 +108,21 @@ describe('codegraph.json deprioritize — parsing', () => {
     expect(loadDeprioritizePatterns(sub)).toEqual([]);
   });
 
+  it('drops cached patterns when the config file is deleted, and reads one that reappears', () => {
+    const sub = write({ deprioritize: ['optional-skills/'] });
+    expect(loadDeprioritizePatterns(sub)).toEqual(['optional-skills/']);
+    fs.rmSync(path.join(sub, 'codegraph.json'));
+    expect(loadDeprioritizePatterns(sub)).toEqual([]);
+    fs.writeFileSync(path.join(sub, 'codegraph.json'), JSON.stringify({ deprioritize: ['scripts/'] }));
+    expect(loadDeprioritizePatterns(sub)).toEqual(['scripts/']);
+  });
+
+  it('treats a root whose parent is a file (ENOTDIR) as having no config', () => {
+    const file = path.join(dir, 'not-a-dir');
+    fs.writeFileSync(file, 'x');
+    expect(loadDeprioritizePatterns(file)).toEqual([]);
+  });
+
   it('keeps gitignore-style patterns verbatim, trimmed', () => {
     const sub = write({ deprioritize: ['optional-skills/', '  tools/gen  ', 'vendor/**'] });
     expect(loadDeprioritizePatterns(sub)).toEqual(['optional-skills/', 'tools/gen', 'vendor/**']);
