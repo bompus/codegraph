@@ -605,6 +605,64 @@ describe('what keeps the call as it was', () => {
   });
 });
 
+describe('a chained call keeps the operator it was written with, and a loop variable its own type', () => {
+  it('`.` on a returned std::optional is the optional\'s member; `->` reaches what it holds', async () => {
+    const cg = await indexed({
+      'src/widget.cc': lines(
+        '#include <optional>',
+        'class Widget {',
+        ' public:',
+        '  int value() { return 1; }',
+        '};',
+        'std::optional<Widget> MakeWidget() { return std::nullopt; }',
+        'void Dot() { MakeWidget().value(); }',
+        'void Arrow() { MakeWidget()->value(); }',
+      ),
+    });
+    try {
+      expect(calls(cg, 'Dot').filter((c) => c.includes('value'))).toEqual([]);
+      expect(calls(cg, 'Arrow').filter((c) => c.includes('value'))).toEqual(['Widget::value @0.85']);
+    } finally {
+      cg.close();
+    }
+  });
+
+  it('an `auto` or declared variable of a `for` initializer shadows a member of a base class', async () => {
+    const cg = await indexed({
+      'src/loop.cc': lines(
+        'class Widget {',
+        ' public:',
+        '  void spin() {}',
+        '};',
+        'class Gadget {',
+        ' public:',
+        '  void spin() {}',
+        '};',
+        'Gadget* MakeGadget() { return nullptr; }',
+        'class Base {',
+        ' protected:',
+        '  Widget* cursor;',
+        '};',
+        'class Derived : public Base {',
+        ' public:',
+        '  void Run() {',
+        '    for (auto cursor = MakeGadget(); cursor != nullptr; cursor = nullptr) cursor->spin();',
+        '  }',
+        '  void RunDeclared() {',
+        '    for (Gadget* cursor = MakeGadget(); cursor != nullptr; cursor = nullptr) cursor->spin();',
+        '  }',
+        '};',
+      ),
+    });
+    try {
+      expect(calls(cg, 'Derived::Run').filter((c) => c.includes('spin'))).toEqual(['Gadget::spin @0.9']);
+      expect(calls(cg, 'Derived::RunDeclared').filter((c) => c.includes('spin'))).toEqual(['Gadget::spin @0.9']);
+    } finally {
+      cg.close();
+    }
+  });
+});
+
 describe('a type from outside the project reaches none of its classes', () => {
   it('one under a namespace the project declares nothing in', async () => {
     const cg = await indexed({

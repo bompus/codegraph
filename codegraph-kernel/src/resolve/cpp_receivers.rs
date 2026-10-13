@@ -406,8 +406,12 @@ pub(super) fn cpp_declarator_name<'a>(mut node: tree_sitter::Node, source: &'a S
 }
 
 pub(super) fn cpp_binding_type(parent: tree_sitter::Node, at: tree_sitter::Node, name: &str, source: &SourceFile) -> Option<String> {
-    if matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit") {
-        for declaration in named_children(parent).into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
+    // A `for` or `if` statement's initializer declares a name for the statement, as a block's declaration does.
+    let block = matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit");
+    let initializer = super::cpp_range_for::statement_initializer(parent);
+    if block || initializer.is_some() {
+        let children = if block { named_children(parent) } else { initializer.into_iter().collect() };
+        for declaration in children.into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
             // C++ parses a parenthesized initializer as a function declarator.
             // Recognize only a standard smart pointer initialized from a known pointer value.
             if let Some(declarator) = declaration.child_by_field_name("declarator").filter(|n| n.kind() == "function_declarator") {

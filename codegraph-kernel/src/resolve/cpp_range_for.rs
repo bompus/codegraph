@@ -130,8 +130,12 @@ fn without_spaces(text: &str) -> String { text.chars().filter(|c| !c.is_whitespa
 /// GetBlobFiles()` in `const auto& blob_files = vstorage->GetBlobFiles();`. The same declarations
 /// `cpp_binding_type` reads.
 pub(super) fn binding_initializer<'t>(parent: TsNode<'t>, at: TsNode<'t>, name: &str, source: &SourceFile) -> Option<TsNode<'t>> {
-    if !matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit") { return None; }
-    for declaration in named_children(parent).into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
+    let children = match parent.kind() {
+        "compound_statement" | "declaration_list" | "translation_unit" => named_children(parent),
+        _ => statement_initializer(parent).into_iter().collect(),
+    };
+    if children.is_empty() { return None; }
+    for declaration in children.into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
         let mut cursor = declaration.walk();
         let declarators: Vec<_> = declaration.children_by_field_name("declarator", &mut cursor).collect();
         if let Some(declarator) = declarators.into_iter().find(|d| cpp_declarator_name(*d, source) == name) {
@@ -140,6 +144,16 @@ pub(super) fn binding_initializer<'t>(parent: TsNode<'t>, at: TsNode<'t>, name: 
         }
     }
     None
+}
+
+/// The declaration a `for`, `if`, `switch` or `while` statement (or its condition) opens with,
+/// which names variables for the statement as a block's declarations do for the block.
+pub(super) fn statement_initializer(node: TsNode<'_>) -> Option<TsNode<'_>> {
+    match node.kind() {
+        "for_statement" | "condition_clause" => node.child_by_field_name("initializer"),
+        "if_statement" | "switch_statement" | "while_statement" => node.child_by_field_name("condition").and_then(|c| c.child_by_field_name("initializer")),
+        _ => None,
+    }.filter(|n| n.kind() == "declaration")
 }
 
 /// Whether the written type `text` is a template parameter of `parameters`, or a library template
@@ -437,7 +451,7 @@ impl KernelResolver {
         // The call expression the reference names: the one calling `method` on a call spelled `inner()`.
         let wanted: String = format!("{}()", chain.0).split_whitespace().collect();
         let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
-        let receiver = loop {
+        let (receiver, arrow) = loop {
             if at.kind() == "call_expression" {
                 let function = at.child_by_field_name("function").filter(|f| f.kind() == "field_expression");
                 let field = function.and_then(|f| f.child_by_field_name("field"));
@@ -448,7 +462,8 @@ impl KernelResolver {
                             receiver = match named_children(inner).as_slice() { [only] => Some(*only), _ => None };
                         }
                         if let Some(receiver) = receiver.filter(|n| n.kind() == "call_expression" && chain_spelling(&source.text()[n.byte_range()]) == wanted) {
-                            break receiver;
+                            let arrow = function.child_by_field_name("operator").is_some_and(|op| &source.text()[op.byte_range()] == "->");
+                            break (receiver, arrow);
                         }
                     }
                 }
@@ -458,9 +473,10 @@ impl KernelResolver {
         let Some(written) = self.cpp_expression_written(receiver, &source, r, 1)? else { return Ok(None) };
         let Some(followed) = self.cpp_follow_written_aliases(written, r)? else { return Ok(None) };
         if self.cpp_written_template_dependent(&followed)? { return Ok(None); }
-        // (`->` on a pointer or a smart pointer reaches what it points at; the chain is spelled with
-        // `.` for either.)
-        let object = match cpp_pointee(&followed.text) { Some(text) => CppWritten { text, site: followed.site }, None => followed };
+        // `->` on a pointer or a smart pointer reaches what it points at; `.` on a smart pointer or
+        // an optional is its own member (`optional.value()`), no method of what it holds. The chain
+        // is spelled with `.` for either, so the operator is the AST's.
+        let object = match cpp_pointee(&followed.text).filter(|_| arrow) { Some(text) => CppWritten { text, site: followed.site }, None => followed };
         let plain = cpp_plain_type(&object.text);
         if let Some(parts) = type_segments(&plain) {
             let last = parts.last().map(String::as_str).unwrap_or("");
