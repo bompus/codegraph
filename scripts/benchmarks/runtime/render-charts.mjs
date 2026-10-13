@@ -3,9 +3,9 @@
 // heatmap and the Markdown tables both pages quote, so no figure is typed by hand.
 //
 //   node scripts/benchmarks/runtime/render-charts.mjs $BENCH_OUT \
-//     --date 2026-10-12 --upstream 6560052 --fork ce6120be --node 24.21.0 --bun 1.4.3 \
+//     --date 2026-10-13 --upstream 34dd3d2f --fork f045e5f7 --node 24.21.0 --bun 1.4.3 \
 //     [--cards assets/fork-vs-upstream-performance.svg] \
-//     [--heatmap docs/benchmarks/fork-vs-upstream-heatmap-2026-10-12.svg] [--tables tables.md]
+//     [--heatmap docs/benchmarks/fork-vs-upstream-heatmap-2026-10-13.svg] [--tables tables.md]
 //
 // Per corpus the accepted attempt is the first `index-<corpus>-aN` directory whose
 // `status` file reads `accepted`; the same goes for `mcp-<corpus>-aN` and `cli-gin-aN`.
