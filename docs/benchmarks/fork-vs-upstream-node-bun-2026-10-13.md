@@ -121,7 +121,7 @@ Median of four.
 
 ## Every result at a glance
 
-![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, on Node and on Bun. Lower is better; cells within 3% are marked no clear change.](fork-vs-upstream-heatmap-2026-10-13.svg?v=1)
+![Heatmap of the fork's change against upstream for index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup, on Node and on Bun. Lower is better; cells within 3% are marked no clear change.](fork-vs-upstream-heatmap-2026-10-13.svg?v=1)
 
 ## Since 2026-10-12
 
