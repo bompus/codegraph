@@ -110,6 +110,16 @@ enum Shape { Bare, Path, SelfCall, SuperCall, Chain }
 pub(super) enum KotlinChainEvidence { Bound, Heuristic }
 struct CallSite { shape: Shape, receiver: String, label: String, subscript: bool, constructed: Option<String> }
 
+/// What `call_shape_target` reads about the ref alone, filled on first use so
+/// the candidates of one ref share it instead of each recomputing it.
+#[derive(Default)]
+pub(super) struct RefFacts {
+    site: Option<Option<CallSite>>,
+    unknown_receiver_allowed: Option<bool>,
+    infix_site: Option<bool>,
+    receiver_type: Option<Option<super::kotlin_receiver::KotlinReceiverHit>>,
+}
+
 /// Drop balanced call, subscript and literal arguments while walking back to the receiver.
 pub(super) fn receiver_name(text: &str) -> String {
     let text = text.trim_end().trim_end_matches('.').trim_end();
@@ -365,9 +375,10 @@ impl KernelResolver {
     }
 
     /// Scope predicates only eliminate candidates, never select one.
-    pub(super) fn call_shape_target(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
+    pub(super) fn call_shape_target(&mut self, n: &KNode, r: &ResolveRefIn, facts: &mut RefFacts) -> Res<bool> {
         if self.kotlin_number_bitwise(n, r) { return Ok(false); }
-        let Some(site) = self.call_site(r) else { return Ok(true) };
+        if facts.site.is_none() { facts.site = Some(self.call_site(r)); }
+        let Some(site) = facts.site.as_ref().and_then(Option::as_ref) else { return Ok(true) };
         if r.language=="rust" && site.shape==Shape::Chain && n.kind=="method" {
             if let Some(member)=self.rust_chain_member(&site.receiver,&n.name,r)? {return Ok(member.node.id==n.id);}
             if is_std_method("rust",&n.name) {
@@ -399,13 +410,16 @@ impl KernelResolver {
                 _ => !is_std_method(&n.language, &n.name) || matches!(site.receiver.as_str(), "self" | "Self")
                     || (!site.receiver.is_empty() && shares_receiver_word(&site.receiver, n)),
             }),
-            "swift" => self.swift_call_target(n, r, &site),
-            "scala" => self.scala_call_target(n, r, &site),
+            "swift" => self.swift_call_target(n, r, site),
+            "scala" => self.scala_call_target(n, r, site),
             "kotlin" if site.shape == Shape::Chain => {
-                if !self.kotlin_unknown_receiver_allowed(r)? {return Ok(false);}
-                if self.kotlin_infix_site(r).is_some() && !is_std_method("kotlin",&r.reference_name) {return Ok(true);}
-                if let Some(receiver) = self.kotlin_call_receiver_type(r)? {
-                    return self.kotlin_receiver_accepts(n, &receiver, r);
+                if facts.unknown_receiver_allowed.is_none() { facts.unknown_receiver_allowed = Some(self.kotlin_unknown_receiver_allowed(r)?); }
+                if facts.unknown_receiver_allowed == Some(false) {return Ok(false);}
+                if facts.infix_site.is_none() { facts.infix_site = Some(self.kotlin_infix_site(r).is_some()); }
+                if facts.infix_site == Some(true) && !is_std_method("kotlin",&r.reference_name) {return Ok(true);}
+                if facts.receiver_type.is_none() { facts.receiver_type = Some(self.kotlin_call_receiver_type(r)?); }
+                if let Some(receiver) = facts.receiver_type.as_ref().and_then(Option::as_ref) {
+                    return self.kotlin_receiver_accepts(n, receiver, r);
                 }
                 Ok(!matches!(n.kind.as_str(), "method" | "function") || site.receiver == "this"
                     || (is_std_method("kotlin",&r.reference_name) && !site.receiver.is_empty() && shares_receiver_word(&site.receiver, n))

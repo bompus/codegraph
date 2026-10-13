@@ -131,9 +131,10 @@ impl KernelResolver {
         }
         let mut shrank = false;
         let mut kept = Vec::with_capacity(candidates.len());
+        let mut facts = super::call_shape::RefFacts::default();
         for n in candidates {
             if solidity_bare && !self.solidity_member_in_scope(&n,r)? { shrank = true; continue; }
-            if shape_call && !self.call_shape_target(&n, r)? { shrank = true; continue; }
+            if shape_call && !self.call_shape_target(&n, r, &mut facts)? { shrank = true; continue; }
             if let Some(site) = &member_site {
                 if !self.is_member_in_reach(&n, site, r)? {
                     shrank = true;
