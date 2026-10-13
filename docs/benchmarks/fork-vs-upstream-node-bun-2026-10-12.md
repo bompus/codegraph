@@ -112,6 +112,51 @@ Markdown, route and dispatch links, and declines call links it cannot confirm.
 The timings compare the cost of building each build's own graph, not the same
 graph.
 
+## Mid-size projects and the resolver pool
+
+The corpora above sit at the two ends: gin and Alamofire are small, and pretix
+and up are past the 150,000 pending references at which the fork starts its
+resolver pool. Below that threshold the fork resolves on one thread. A separate
+sweep (2026-10-12, 15:13 to 17:46 MDT, upstream `4f3eaf33` against the fork at
+`ba4f7e38`, Node 24.21.0 and Bun 1.4.3, same host, 4 runs per arm) covered seven
+corpora from 13.9k to 111k pending references, with the fork's default, the
+fork with the pool forced on (`CODEGRAPH_PARALLEL_RESOLVE_MIN=0`) and upstream.
+
+Wall time for a full index, fork against upstream, on Node (`sep` means the 4
+runs of each arm do not overlap, `ove` that they do):
+
+| Corpus (pending refs) | Fork default vs upstream | Pool forced vs fork default | Pool forced vs upstream | Peak memory, pool vs default |
+|---|---|---|---|---|
+| gin (13.9k) | -2% ove | -0% ove | -2% ove | +74% sep |
+| Alamofire (22.7k) | +16% ove | -14% sep | +0% ove | +57% sep |
+| bloc (37k) | +25% sep | -6% ove | +17% ove | +53% sep |
+| nocodb (78k) | +45% sep | -32% sep | -2% ove | +105% sep |
+| koel (85k) | +32% sep | -24% sep | -0% ove | +79% sep |
+| firefly-iii (106k) | +42% sep | -23% sep | +9% ove | +108% sep |
+| Exposed (111k, Kotlin) | +533% sep (38.5 s against 6.1 s) | -58% sep (16.1 s) | +164% sep | +152% sep |
+
+In the corpora tested, from Alamofire (22.7k pending references) up to Exposed
+(111k), the fork's default was 6 to 51% slower than upstream on wall time
+(Exposed aside) while using 11 to 71% less peak
+memory. Forcing the pool brought wall time to within -15% and +17% of upstream
+(Exposed aside) at 53 to 108% more peak memory. Exposed is a separate case: 6
+times slower than upstream by default and still 2.6 times with the pool. Bun
+rows are in the raw results and move the same way.
+
+How to read it. The pre-declared rule (a median difference above 3% with a
+permutation p below 0.05) cannot be met with 4 runs against 4 (the smallest
+possible p is 0.057), so by that rule no cell is clear. The table reports
+whether the run ranges are disjoint, a reading chosen after the data; a rank
+test on disjoint ranges gives p = 0.029. Not measured: hosts with fewer cores,
+corpora between 111k and 150k beyond Exposed and firefly-iii, and thresholds
+between 0 and 150,000 (a run uses the pool or does not; the threshold decides
+which side a corpus falls on).
+
+These timings predate two fixes that cut the fork's default index time on
+Exposed in separate runs: the JavaScript column fix (#488, 37.0 s to 25.7 s) and
+the Kotlin call-shape fix (#489, 37.3 s to 31.2 s). Their combined effect, and
+the other rows of this sweep, were not measured again.
+
 ## One-file sync
 
 Median of four syncs.
