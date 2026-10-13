@@ -1658,10 +1658,33 @@ pub(super) fn js_unit_to_byte(s: &str, units: usize) -> usize {
     if s.as_bytes()[..reach].is_ascii() {
         return reach;
     }
+    // Non-ASCII before the offset: count UTF-16 units a block at a time (a
+    // char adds one unit at its lead byte, two for a 4-byte char) and walk
+    // chars only inside the block that holds the offset. Every lookup on a
+    // long minified line with one non-ASCII char otherwise walks all of them.
+    const BLOCK: usize = 64;
+    let bytes = s.as_bytes();
+    let mut pos = 0usize;
     let mut seen = 0usize;
-    for (byte_idx, ch) in s.char_indices() {
+    while pos + BLOCK <= bytes.len() {
+        // u8 sums (at most 64) vectorize; a usize sum of the same does not.
+        let block = &bytes[pos..pos + BLOCK];
+        let leads: u8 = block.iter().map(|&b| u8::from(b as i8 >= -0x40)).sum();
+        let wide: u8 = block.iter().map(|&b| u8::from(b >= 0xF0)).sum();
+        let block_units = usize::from(leads) + usize::from(wide);
+        if seen + block_units >= units {
+            break;
+        }
+        seen += block_units;
+        pos += BLOCK;
+    }
+    // The block may start inside a char whose lead byte was counted above.
+    while pos < bytes.len() && bytes[pos] & 0xC0 == 0x80 {
+        pos += 1;
+    }
+    for (byte_idx, ch) in s[pos..].char_indices() {
         if seen >= units {
-            return byte_idx;
+            return pos + byte_idx;
         }
         seen += ch.len_utf16();
     }
@@ -1789,5 +1812,23 @@ mod js_unit_tests {
                 assert_eq!(js_unit_to_byte(s, units), walk(s, units), "{s:?} at {units}");
             }
         }
+    }
+
+    /// Lines past the 64-byte block, with multi-byte chars on and around the
+    /// block edges, so the block counter and the char walk hand over mid-char.
+    #[test]
+    fn matches_the_char_walk_across_block_edges() {
+        for shift in 0..9 {
+            for unit in ["é", "€", "😀", "a"] {
+                let s = format!("{}{}", "x".repeat(60 + shift), unit.repeat(80) + "tail😀é");
+                for units in 0..utf16_total(&s) + 4 {
+                    assert_eq!(js_unit_to_byte(&s, units), walk(&s, units), "shift {shift} unit {unit:?} at {units}");
+                }
+            }
+        }
+    }
+
+    fn utf16_total(s: &str) -> usize {
+        s.chars().map(char::len_utf16).sum()
     }
 }
