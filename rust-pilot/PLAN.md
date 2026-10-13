@@ -1,18 +1,18 @@
 Owner: rust-pilot-20261013 implementation author; parent CalmPike
-Status: active
+Status: completed
 Purpose: Port the NestJS resolver and dead-code report to standalone Rust and prove byte-level parity.
 Start: 2026-10-12 23:42:08 MDT, first host timestamp. The milestone log opened at 23:42:16 MDT.
 
 ## Tasks
 - completed: Port NestJS and compare existing fixture sources, six added edge-case sets, and the NestJS corpus.
 - completed: Port dead code and compare seven queries on each of four copied indexes.
-- in_progress: Finish the local commit and measurement report. Tests, Clippy, and final comparisons have passed.
+- completed: Tests, Clippy, final comparisons, line counts, local implementation commit, and retained receipts.
 
 ## Ledger
 - [x] Module A parity; evidence: final cmp exit 0 for four fixture file sets, six added edge-case sets, and 1,301 selected files from nest 4514623. One parity fix corrected ECMAScript whitespace.
 - [x] Module B parity; evidence: final cmp exit 0 on flask, svelte, vite, and vitest, seven queries each. No reindex or parity fix.
 - [x] Tests and Clippy; evidence: six Rust tests pass; clippy --all-targets -- -D warnings exits 0. No compiler, test, or Clippy fix rounds.
-- [ ] Local commit and final report; authorized by the pilot brief; next: commit this directory and give the parent the receipts.
+- [x] Local implementation commit and retained receipts; evidence: c9a5156ab7d18da90cbc90f83ec8d9ab3cc4df21 contains all 23 created files; commands.jsonl and final-parity.log record every comparison. The final reply reports the commit and linked receipts.
 - [x] Owned checkout rust-pilot-20261013 on pilot/rust-port-nestjs-deadcode-20261013; outcome: retained for the parent, with local commits only. The existing dependency symlinks are parent-owned and unchanged.
 - [x] Parent-supplied scratch directory rust-pilot-20261013; outcome: snapshots, canonical inputs/outputs, logs, and hashes retained for the parent's measurements.
 - [-] NocoDB real-corpus run; by: parent, replaced with nest 4514623 after confirming that the supplied sparse checkout lacks NestJS source.
@@ -42,3 +42,5 @@ Count matching inputs before treating a corpus comparison as evidence. The
 original NocoDB selection found zero; the replacement selected 1,301 files.
 JavaScript whitespace differs from Rust regex whitespace at U+FEFF and U+0085.
 The added differential fixture failed before the translation and passes after it.
+
+Completed: 2026-10-13 00:11:18 MDT. All requested comparisons pass; local-only scope is retained.
