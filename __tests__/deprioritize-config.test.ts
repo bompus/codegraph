@@ -16,12 +16,13 @@
  * paths stay indexed and findable; they just stop winning. Locked below.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
 import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
+import * as projectConfig from '../src/project-config';
 import { loadDeprioritizePatterns } from '../src/project-config';
 import { nameMatchBonus, scorePathRelevance } from '../src/search/query-utils';
 import { DEPRIORITIZED_NAME_BONUS_SCALE } from '../src/db/queries';
@@ -181,6 +182,20 @@ describe('#982 minimal repro — ranking with and without deprioritize', () => {
     const results = baseCg.searchNodes(QUERY, { limit: 20 });
     expect(results.length).toBeGreaterThanOrEqual(2);
     expect(results.slice(0, 2).every(isHelper)).toBe(true);
+  });
+
+  it('reads the config once per search, not once per result path', () => {
+    const configReads = (cg: CodeGraph): number => {
+      const spy = vi.spyOn(projectConfig, 'loadDeprioritizePatterns');
+      try {
+        expect(cg.searchNodes(QUERY, { limit: 20 }).length).toBeGreaterThanOrEqual(4);
+        return spy.mock.calls.length;
+      } finally {
+        spy.mockRestore();
+      }
+    };
+    expect(configReads(cfgCg)).toBe(1);
+    expect(configReads(baseCg)).toBe(1);
   });
 
   it('with deprioritize, product code outranks the peripheral helpers', () => {

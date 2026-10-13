@@ -302,7 +302,7 @@ export class QueryBuilder {
   // whole project, not a symbol, so it carries no discriminative signal (#720).
   // Set once by the CodeGraph instance; empty by default (no down-weighting).
   private projectNameTokens: Set<string> = new Set();
-  private isDeprioritizedPath: ((filePath: string) => boolean) | undefined;
+  private deprioritizedPathProvider: (() => ((filePath: string) => boolean) | undefined) | undefined;
 
   // FTS5 availability flag — detected once at construction time (#1532)
   private _fts5Available: boolean | undefined;
@@ -489,18 +489,26 @@ export class QueryBuilder {
   }
 
   /**
-   * Set the predicate that marks a path as de-prioritized by the project's
-   * `codegraph.json` `deprioritize` patterns (#982). Ranking-only: those paths
-   * stay indexed and findable, they just stop outranking first-party code.
-   * Called once when the project opens; undefined disables the lever.
+   * Set the provider of the predicate that marks a path as de-prioritized by
+   * the project's `codegraph.json` `deprioritize` patterns (#982). Ranking-only:
+   * those paths stay indexed and findable, they just stop outranking
+   * first-party code. Called once when the project opens; undefined disables
+   * the lever. A provider, not a predicate, so the config is read once per
+   * ranking pass (see `getDeprioritizedPathMatcher`) and never once per path.
    */
-  setDeprioritizedPathMatcher(matcher: ((filePath: string) => boolean) | undefined): void {
-    this.isDeprioritizedPath = matcher;
+  setDeprioritizedPathMatcher(
+    provider: (() => ((filePath: string) => boolean) | undefined) | undefined
+  ): void {
+    this.deprioritizedPathProvider = provider;
   }
 
-  /** The `deprioritize` predicate (#982), so other rankers apply the same lever. */
+  /**
+   * The `deprioritize` predicate (#982), so other rankers apply the same lever.
+   * Reads the config now, so call it once per ranking pass and reuse the result
+   * for every path in it; undefined when nothing is de-prioritized.
+   */
   getDeprioritizedPathMatcher(): ((filePath: string) => boolean) | undefined {
-    return this.isDeprioritizedPath;
+    return this.deprioritizedPathProvider?.();
   }
 
   // ===========================================================================
@@ -1842,6 +1850,7 @@ export class QueryBuilder {
     // Apply multi-signal scoring
     if (results.length > 0 && (text || query)) {
       const scoringQuery = text || query;
+      const isDeprioritizedPath = this.getDeprioritizedPathMatcher();
       results = results.map(r => {
         // A path the project de-prioritized is saying its symbol NAMES are not
         // the answer, so the exact-name bonus has to be damped too. The -15 path
@@ -1849,8 +1858,7 @@ export class QueryBuilder {
         // on #982's repro, a `usage()` helper sat at 74.8 vs 51.2 for the top
         // product symbol — -15 lands at 59.8, still ahead). Damped, not zeroed,
         // so the tree stays findable when it genuinely is what you asked for.
-        // Evaluated once and reused: the predicate stats the config file.
-        const deprioritized = this.isDeprioritizedPath?.(r.node.filePath) ?? false;
+        const deprioritized = isDeprioritizedPath?.(r.node.filePath) ?? false;
         const nameBonus = nameMatchBonus(r.node.name, scoringQuery);
         return {
           ...r,
