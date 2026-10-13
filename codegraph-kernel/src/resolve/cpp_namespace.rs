@@ -49,6 +49,26 @@ impl KernelResolver {
         let values:HashSet<_>=self.cpp_namespaces.replacements.iter().filter(|((f,n),_)|visible.contains(f) && n==name).map(|(_,v)|v.clone()).collect();
         Ok(if values.len()==1 {values.into_iter().next().unwrap()} else {name.to_string()})
     }
+    /// cppProjectScopeNames (name-matcher.ts): every name a qualifier may start with from some
+    /// scope in this project — each segment of the qualified names of the types its C and C++ code
+    /// declares, the outermost namespaces its namespace-opening macros open (`fmt` for
+    /// `FMT_BEGIN_NAMESPACE`, which no qualified name shows), and its namespace aliases. Not the
+    /// names of functions: protobuf's conversion operators read as methods named
+    /// `google::protobuf::absl::Cord`.
+    pub(super) fn cpp_project_scope_names(&mut self) -> Res<Rc<HashSet<String>>> {
+        if let Some(hit) = &self.cpp_scope_names { return Ok(hit.clone()); }
+        self.prepare_namespace_macros()?;
+        let mut names: HashSet<String> = self.cpp_namespaces.openers.values().filter_map(|path| path.first().cloned()).collect();
+        names.extend(self.cpp_namespaces.aliases.values().flat_map(|aliases| aliases.keys().cloned()));
+        for node in self.table()?.nodes.iter() {
+            if matches!(node.language.as_str(), "c" | "cpp") && matches!(node.kind.as_str(), "class" | "struct" | "union" | "enum" | "type_alias") {
+                names.extend(node.qualified_name.split("::").filter(|s| !s.is_empty()).map(str::to_string));
+            }
+        }
+        let names = Rc::new(names);
+        self.cpp_scope_names = Some(names.clone());
+        Ok(names)
+    }
     pub(super) fn namespace_frames(&mut self,file:&str)->Res<Vec<(i64,i64,Vec<String>)>> {
         self.prepare_namespace_macros()?;
         if let Some(hit)=self.cpp_namespaces.frames.get(file) {return Ok(hit.clone());}

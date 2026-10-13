@@ -6,6 +6,8 @@ impl KernelResolver {
     /// Plain receivers use lexical AST declarations before any backward text scan.
     pub(super) fn cpp_plain_call(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
         if r.language != "cpp" || r.reference_kind != "calls" { return Ok(None); }
+        // `a->b()->c()`: the class `b` is declared to return, not a namesake of it.
+        if r.reference_name.contains("()") { return self.cpp_chain_on_written_type(r); }
         let method = r.reference_name.rsplit(['.', '>']).next().unwrap_or(&r.reference_name);
         if !re!(r"^[A-Za-z_]\w*$").is_match(method) { return Ok(None); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
@@ -32,8 +34,14 @@ impl KernelResolver {
         let mut site = r.clone();
         let mut element = false;
         let mut scope = receiver;
+        // The initializer of an `auto` local, which gives it its type.
+        let mut initializer = None;
         while let Some(parent) = scope.parent() {
-            if let Some(ty) = cpp_binding_type(parent, scope, name, &source) { raw = Some(ty); break; }
+            if let Some(ty) = cpp_binding_type(parent, scope, name, &source) {
+                if super::cpp_range_for::is_cpp_auto(&ty) { initializer = super::cpp_range_for::binding_initializer(parent, scope, name, &source); }
+                raw = Some(ty);
+                break;
+            }
             if parent.kind() == "for_range_loop" && parent.child_by_field_name("declarator").is_some_and(|n| cpp_declarator_name(n, &source) == name) {
                 raw = parent.child_by_field_name("type").zip(parent.child_by_field_name("declarator")).map(|(ty, declarator)| cpp_ast_declared_type(ty, declarator, &source));
                 // A loop over `auto` elements has the element type of its range.
@@ -57,6 +65,24 @@ impl KernelResolver {
                     if let [owner] = owners.as_slice() { raw = self.cpp_field_type(owner, name, r)?; }
                 }
             }
+        }
+        // A member the class gets from a class it derives from, or a gtest fixture's: where the
+        // function lacks the name, C++ looks in its class and the classes it derives from.
+        if raw.is_none() {
+            if let Some(member) = self.cpp_caller_member(name, r)? {
+                raw = Some(member.text);
+                site = member.site;
+            }
+        }
+        // An `auto` local has the type its initializer has where that is written: the cast or smart
+        // pointer, the class it constructs, or what the function or method called is declared to
+        // return. The index keeps only a return type's last name, which a namesake shares.
+        if raw.as_deref().is_some_and(super::cpp_range_for::is_cpp_auto) && !element {
+            let Some(value) = initializer else { return Ok(None) };
+            let Some(written) = self.cpp_initializer_written(value, &source, r)? else { return Ok(None) };
+            raw = Some(super::cpp_range_for::cpp_plain_type(&written.text));
+            site = written.site;
+            element = true;
         }
         let Some(raw) = raw else { return Ok(None) };
         if super::cpp_range_for::is_cpp_auto(&raw) { return Ok(None); }
@@ -278,9 +304,15 @@ impl KernelResolver {
     }
 
     pub(super) fn cpp_field_type(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Option<String>> {
-        let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
+        Ok(match self.cpp_field_types(owner, field, r)?.as_slice() { [only] => Some(only.clone()), _ => None })
+    }
+
+    /// Every type `owner`'s own declaration writes for its data member `field`: one for a member the
+    /// class declares, none for a name it doesn't, several for one it declares more than once.
+    pub(super) fn cpp_field_types(&mut self, owner: &Arc<KNode>, field: &str, r: &ResolveRefIn) -> Res<Vec<String>> {
+        let Some(source) = self.read_file(&owner.file_path) else { return Ok(Vec::new()) };
         let mut site = r.clone().at(owner); site.from_node_id = owner.id.clone(); site.column = owner.start_column;
-        let Some(tree) = self.cpp_field_tree(&source, &site) else { return Ok(None) };
+        let Some(tree) = self.cpp_field_tree(&source, &site) else { return Ok(Vec::new()) };
         let mut node = descendant_for_position(tree.root_node(), source.text(), ((owner.start_line - 1).max(0) as usize, owner.start_column.max(0) as usize));
         while !matches!(node.kind(), "class_specifier" | "struct_specifier" | "union_specifier") {
             let Some(parent) = node.parent() else { break }; node = parent;
@@ -299,7 +331,7 @@ impl KernelResolver {
                 }
             }
         }
-        Ok(match types.as_slice() { [only] => Some(only.clone()), _ => None })
+        Ok(types)
     }
 
     fn cpp_range_binding(&self, node: tree_sitter::Node, source: &SourceFile) -> bool {

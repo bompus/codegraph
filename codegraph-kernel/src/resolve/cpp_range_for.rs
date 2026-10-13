@@ -16,6 +16,7 @@
 //! looked up where it is written. A type a template parameter decides, or one that can't be read,
 //! gives no element, and the call resolves as it did before.
 use super::cpp_aliases::type_segments;
+use super::cpp_implicit_this::strip_template_arguments;
 use super::cpp_receivers::{cpp_ast_declared_type, cpp_binding_type, cpp_declarator_name, cpp_held_type};
 use super::iteration::{descendant_for_position, named_children};
 use super::*;
@@ -128,7 +129,7 @@ fn without_spaces(text: &str) -> String { text.chars().filter(|c| !c.is_whitespa
 /// The initializer of `name`'s declaration in the block `parent`, before `at`: `vstorage->
 /// GetBlobFiles()` in `const auto& blob_files = vstorage->GetBlobFiles();`. The same declarations
 /// `cpp_binding_type` reads.
-fn binding_initializer<'t>(parent: TsNode<'t>, at: TsNode<'t>, name: &str, source: &SourceFile) -> Option<TsNode<'t>> {
+pub(super) fn binding_initializer<'t>(parent: TsNode<'t>, at: TsNode<'t>, name: &str, source: &SourceFile) -> Option<TsNode<'t>> {
     if !matches!(parent.kind(), "compound_statement" | "declaration_list" | "translation_unit") { return None; }
     for declaration in named_children(parent).into_iter().rev().filter(|n| n.kind() == "declaration" && n.end_byte() <= at.start_byte()) {
         let mut cursor = declaration.walk();
@@ -139,6 +140,36 @@ fn binding_initializer<'t>(parent: TsNode<'t>, at: TsNode<'t>, name: &str, sourc
         }
     }
     None
+}
+
+/// Whether the written type `text` is a template parameter of `parameters`, or a library template
+/// of one (`std::shared_ptr<T>`, `std::vector<T>`).
+fn type_depends_on(text: &str, parameters: &HashSet<String>, depth: u32) -> bool {
+    if depth > 3 { return false; }
+    let plain = cpp_plain_type(text);
+    let primary = plain.split('<').next().unwrap_or("").trim().trim_start_matches("::").trim_end_matches(['*', '&', ' ']);
+    if parameters.contains(primary.split("::").next().unwrap_or("").trim()) { return true; }
+    if let Some(held) = re!(r"^(?:::)?std::(?:unique_ptr|shared_ptr|optional)\s*<(.*)>[\s*&]*$").captures(&plain).and_then(|c| cpp_held_type(&c[1])) {
+        return type_depends_on(&held, parameters, depth + 1);
+    }
+    re!(r"^(?:::)?(?:std|absl)::").is_match(&plain) && re!(r"[A-Za-z_]\w*").find_iter(&plain).any(|word| parameters.contains(word.as_str()))
+}
+
+/// A call expression's text as the extractor spells a chain: no spaces, `.` for `->`, and the
+/// arguments of each call left out (`factory.NewEnumGenerator()`).
+fn chain_spelling(text: &str) -> String {
+    let text: String = text.split_whitespace().collect::<String>().replace("->", ".");
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '(' => { if depth == 0 { out.push('('); } depth += 1; }
+            ')' => { depth = depth.saturating_sub(1); if depth == 0 { out.push(')'); } }
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn site_at(r: &ResolveRefIn, node: &KNode) -> ResolveRefIn {
@@ -291,15 +322,157 @@ impl KernelResolver {
         Ok(Some((raw, parameters)))
     }
 
-    /// The type the C++ class `cls` declares its data member `field` with, as written in the class.
-    fn cpp_data_member_written(&mut self, cls: &str, field: &str, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+    /// The type the C++ class `cls` declares its data member `field` with, as written in the class,
+    /// or in the nearest class it derives from that declares it. A base that depends on the
+    /// template's parameters is not looked in: a bare name is not looked up there.
+    pub(super) fn cpp_data_member_written(&mut self, cls: &str, field: &str, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        self.cpp_member_written_in(cls, field, r, 0, &mut HashSet::new())
+    }
+
+    fn cpp_member_written_in(&mut self, cls: &str, field: &str, r: &ResolveRefIn, depth: usize, seen: &mut HashSet<String>) -> Res<Option<CppWritten>> {
+        if !seen.insert(cls.to_string()) { return Ok(None); }
         let visible = self.namespace_visible_files(&r.file_path, "cpp")?;
         let decls: Vec<_> = self.nodes_by_qualified_name(cls)?.iter().filter(|n| cpp_class_node(n) && visible.contains(&n.file_path)).cloned().collect();
-        for decl in decls {
-            if let Some(text) = self.cpp_field_type(&decl, field, r)? {
-                return Ok(Some(CppWritten { text, site: site_at(r, &decl) }));
+        // Classes that share a name each write their own: the first one that declares the member
+        // decides, unless another writes it differently.
+        let mut found: Option<CppWritten> = None;
+        for decl in &decls {
+            match self.cpp_field_types(decl, field, r)?.as_slice() {
+                [] => {}
+                [text] => match &found {
+                    None => found = Some(CppWritten { text: text.clone(), site: site_at(r, decl) }),
+                    Some(first) if without_spaces(&first.text) == without_spaces(text) => {}
+                    Some(_) => return Ok(None),
+                },
+                // Declared more than once: not one of them is the member's.
+                _ => return Ok(None),
             }
         }
+        if found.is_some() { return Ok(found); }
+        if depth >= 4 || !self.supertypes_complete { return Ok(None); }
+        for decl in &decls {
+            for base in self.supertype_nodes(&decl.id)? {
+                if !cpp_class_node(&base) || self.cpp_dependent_base(decl, &base)? { continue; }
+                if let Some(member) = self.cpp_member_written_in(&base.qualified_name, field, r, depth + 1, seen)? { return Ok(Some(member)); }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The data member `name` of the class the caller's body is in, or of its gtest fixture: where
+    /// the scan leaves the calling function, C++ looks a name up in its class and the classes that
+    /// class derives from.
+    pub(super) fn cpp_caller_member(&mut self, name: &str, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
+        let owner = match self.cpp_member_owner(&caller)? {
+            Some(owner) => Some(owner),
+            None => self.cpp_gtest_fixture(&caller, r)?,
+        };
+        match owner {
+            Some(owner) => self.cpp_data_member_written(&owner, name, r),
+            None => Ok(None),
+        }
+    }
+
+    /// The fixture class of a gtest `TEST_F(Fixture, Name)` / `TEST_P(Fixture, Name)` body, which is
+    /// a method of a class derived from it.
+    fn cpp_gtest_fixture(&mut self, caller: &KNode, r: &ResolveRefIn) -> Res<Option<String>> {
+        if !matches!(caller.name.as_str(), "TEST_F" | "TEST_P") || !matches!(caller.kind.as_str(), "function" | "method") { return Ok(None); }
+        let Some(source) = self.read_file(&caller.file_path) else { return Ok(None) };
+        let from = (caller.start_line - 1).max(0) as usize;
+        let head = (from..from + 3).filter_map(|i| source.get(i).map(String::as_str)).collect::<Vec<_>>().join(" ");
+        let Some(fixture) = re!(r"\bTEST_[FP]\s*\(\s*((?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*,").captures(&head).map(|m| m[1].to_string()) else { return Ok(None) };
+        Ok(self.cpp_type_owner(&fixture, r, 0, false)?.filter(|n| cpp_class_node(n)).map(|n| n.qualified_name.clone()))
+    }
+
+    /// Whether `written` is a template parameter's type where it is written (`T*`, `const T&`), or
+    /// a library template of one (`std::shared_ptr<T>`, `std::vector<T>`), whose members are the
+    /// parameter's. A class template of the project's is that class, whatever its arguments:
+    /// `std::unique_ptr<ExternalTableReaderBase<Mode>>` holds one.
+    fn cpp_written_template_dependent(&mut self, written: &CppWritten) -> Res<bool> {
+        let Some(node) = self.node_by_id(&written.site.from_node_id)? else { return Ok(false) };
+        let parameters = self.cpp_template_parameter_names(&node)?;
+        Ok(!parameters.is_empty() && type_depends_on(&written.text, &parameters, 0))
+    }
+
+    /// Whether the type `raw`, which nothing the file sees declares, is written under a namespace
+    /// the project declares nothing in (`absl::Status`, `grpc::ServerContext`), so that it is from
+    /// outside the project. Not when its first name is a template parameter, a namespace alias or a
+    /// namespace a macro opens. A lowercase name, and anything of `std`, is the library type check's:
+    /// a trait or a member type may name one of the project's.
+    pub(super) fn cpp_outside_qualified_type(&mut self, raw: &str, site: &ResolveRefIn) -> Res<bool> {
+        let Some(parts) = type_segments(&cpp_plain_type(raw)) else { return Ok(false) };
+        if parts.len() < 2 { return Ok(false); }
+        let head = &parts[0];
+        if head == "std" || !parts[parts.len() - 1].starts_with(|c: char| c.is_ascii_uppercase()) { return Ok(false); }
+        if let Some(node) = self.node_by_id(&site.from_node_id)? {
+            if self.cpp_template_parameter_names(&node)?.contains(head) { return Ok(false); }
+        }
+        if self.namespace_frames(&site.file_path)?.iter().any(|(_, _, path)| path.contains(head)) { return Ok(false); }
+        Ok(!self.cpp_project_scope_names()?.contains(head))
+    }
+
+    /// The type of the initializer `value` of an `auto` local, as written where it is declared, with
+    /// its aliases followed. None when it can't be read reliably, or what a template parameter
+    /// decides: protobuf's `DownCastMessage<T>` returns a `const T&`, a `T*` or a
+    /// `std::shared_ptr<T>`, by its argument.
+    pub(super) fn cpp_initializer_written(&mut self, value: TsNode, source: &Rc<SourceFile>, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let Some(written) = self.cpp_expression_written(value, source, r, 0)? else { return Ok(None) };
+        let Some(followed) = self.cpp_follow_written_aliases(written, r)? else { return Ok(None) };
+        if self.cpp_written_template_dependent(&followed)? { return Ok(None); }
+        Ok(Some(followed))
+    }
+
+    /// A chained call `inner().method` whose inner call's return type is read as its declaration
+    /// writes it: `method` is that class's, looked up as C++ looks the type up there, or no project
+    /// method's. By the type's last name, protobuf's `factory->NewEnumGenerator(…)->Generate(…)` in
+    /// the Java generator reached `csharp::EnumGenerator`.
+    ///  - `Some(Some(_))`: the method of that class or of a class it derives from.
+    ///  - `Some(None)`: the type is from outside the project, or a class that surely lacks the method.
+    ///  - `None`: the type can't be read or placed; the last-name path decides, as before.
+    pub(super) fn cpp_chain_on_written_type(&mut self, r: &ResolveRefIn) -> Res<Option<Option<KCand>>> {
+        let Some(chain) = call_chain_re().captures(&r.reference_name).map(|m| (m[1].to_string(), m[2].to_string())) else { return Ok(None) };
+        let Some(source) = self.read_file(&r.file_path) else { return Ok(None) };
+        let Some(tree) = self.parsed_tree(&source, r) else { return Ok(None) };
+        // The call expression the reference names: the one calling `method` on a call spelled `inner()`.
+        let wanted: String = format!("{}()", chain.0).split_whitespace().collect();
+        let mut at = descendant_for_position(tree.root_node(), source.text(), ((r.line - 1).max(0) as usize, r.column.max(0) as usize));
+        let receiver = loop {
+            if at.kind() == "call_expression" {
+                let function = at.child_by_field_name("function").filter(|f| f.kind() == "field_expression");
+                let field = function.and_then(|f| f.child_by_field_name("field"));
+                if let (Some(function), Some(field)) = (function, field) {
+                    if source.text()[field.byte_range()] == chain.1 {
+                        let mut receiver = function.child_by_field_name("argument");
+                        while let Some(inner) = receiver.filter(|n| n.kind() == "parenthesized_expression") {
+                            receiver = match named_children(inner).as_slice() { [only] => Some(*only), _ => None };
+                        }
+                        if let Some(receiver) = receiver.filter(|n| n.kind() == "call_expression" && chain_spelling(&source.text()[n.byte_range()]) == wanted) {
+                            break receiver;
+                        }
+                    }
+                }
+            }
+            match at.parent() { Some(parent) => at = parent, None => return Ok(None) }
+        };
+        let Some(written) = self.cpp_expression_written(receiver, &source, r, 1)? else { return Ok(None) };
+        let Some(followed) = self.cpp_follow_written_aliases(written, r)? else { return Ok(None) };
+        if self.cpp_written_template_dependent(&followed)? { return Ok(None); }
+        // (`->` on a pointer or a smart pointer reaches what it points at; the chain is spelled with
+        // `.` for either.)
+        let object = match cpp_pointee(&followed.text) { Some(text) => CppWritten { text, site: followed.site }, None => followed };
+        let plain = cpp_plain_type(&object.text);
+        if let Some(parts) = type_segments(&plain) {
+            let last = parts.last().map(String::as_str).unwrap_or("");
+            if parts[0] == "std" || (parts[0] == "absl" && last.starts_with(|c: char| c.is_ascii_lowercase())) { return Ok(Some(None)); }
+        }
+        let Some(cls) = self.cpp_written_class(&object, r)? else {
+            return Ok(if self.cpp_outside_qualified_type(&object.text, &object.site)? { Some(None) } else { None });
+        };
+        if let Some(method) = self.cpp_methods_named(&cls, &chain.1, r)?.into_iter().next() {
+            return Ok(Some(Some(KCand { node: method, confidence: 0.85, resolved_by: "instance-method" })));
+        }
+        if self.supertypes_complete && !self.cpp_alias_template_owner(&cls, r)? && self.cpp_bases_known(&cls, 0, &mut HashSet::new())? { return Ok(Some(None)); }
         Ok(None)
     }
 
@@ -329,8 +502,33 @@ impl KernelResolver {
                 let Some((cls, field)) = self.cpp_member_of_expression(node, source, r, depth)? else { return Ok(None) };
                 self.cpp_data_member_written(&cls.qualified_name, &field, r)
             }
+            // `new Foo(…)`: a pointer to what it constructs.
+            "new_expression" => {
+                let Some(ty) = node.child_by_field_name("type") else { return Ok(None) };
+                let text = source.text()[ty.byte_range()].split_whitespace().collect::<Vec<_>>().join(" ");
+                Ok(Some(CppWritten { text: format!("{text}*"), site: r.clone() }))
+            }
+            // `(Foo*)arg`: the type it casts to.
+            "cast_expression" => {
+                let Some(ty) = node.child_by_field_name("type") else { return Ok(None) };
+                let text = source.text()[ty.byte_range()].split_whitespace().collect::<Vec<_>>().join(" ");
+                Ok(Some(CppWritten { text, site: r.clone() }))
+            }
             "call_expression" => {
                 let Some(function) = node.child_by_field_name("function") else { return Ok(None) };
+                let callee = source.text()[function.byte_range()].trim();
+                // `static_cast<Foo*>(…)`: the type it casts to.
+                if let Some(cast) = re!(r"^(?:static|dynamic|const|reinterpret)_cast\s*<([\s\S]+)>$").captures(callee) {
+                    return Ok(Some(CppWritten { text: cast[1].trim().to_string(), site: r.clone() }));
+                }
+                // `std::make_unique<Foo>(…)`: the smart pointer it makes.
+                if let Some(made) = re!(r"^(?:::\s*)?(?:std|absl)\s*::\s*make_(unique|shared)\s*<([\s\S]+)>$").captures(callee) {
+                    return Ok(Some(CppWritten { text: format!("std::{}_ptr<{}>", &made[1], made[2].trim()), site: r.clone() }));
+                }
+                // `std::unique_ptr<Iterator>(…)`: the smart pointer or optional it makes.
+                if re!(r"^(?:::\s*)?std\s*::\s*(?:unique_ptr|shared_ptr|optional)\s*<[\s\S]+>$").is_match(callee) {
+                    return Ok(Some(CppWritten { text: callee.to_string(), site: r.clone() }));
+                }
                 match function.kind() {
                     // `recv.method(…)`, `recv->method(…)`: the method of the receiver's class.
                     "field_expression" => {
@@ -338,11 +536,21 @@ impl KernelResolver {
                         let methods = self.cpp_methods_named(&cls, &method, r)?;
                         self.cpp_return_type_of(&methods, r)
                     }
-                    // `f(…)`, `ns::f(…)`, `Class::f(…)`: looked up from the caller's scope outwards.
-                    "identifier" | "qualified_identifier" => {
-                        let spelled: String = source.text()[function.byte_range()].split_whitespace().collect();
+                    // `f(…)`, `ns::f(…)`, `Class::f(…)`, `Foo<int>(…)`: the caller's class's own or
+                    // inherited method first, then the function looked up from the caller's scope
+                    // outwards, then the class it constructs.
+                    "identifier" | "qualified_identifier" | "template_function" => {
+                        let spelled: String = strip_template_arguments(callee).split_whitespace().collect();
                         if !re!(r"^(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*$").is_match(&spelled) { return Ok(None); }
                         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
+                        if !spelled.contains("::") {
+                            if let Some(owner) = self.cpp_member_owner(&caller)? {
+                                if let Some(cls) = self.cpp_class_decls(&owner)?.into_iter().next() {
+                                    let own = self.cpp_methods_named(&cls, &spelled, r)?;
+                                    if !own.is_empty() { return self.cpp_return_type_of(&own, r); }
+                                }
+                            }
+                        }
                         let scopes: Vec<String> = caller.qualified_name.split("::").map(str::to_string).collect();
                         for i in (0..scopes.len()).rev() {
                             let qualified = if i == 0 { spelled.clone() } else { format!("{}::{spelled}", scopes[..i].join("::")) };
@@ -350,7 +558,9 @@ impl KernelResolver {
                                 .filter(|n| matches!(n.kind.as_str(), "method" | "function") && matches!(n.language.as_str(), "c" | "cpp")).cloned().collect();
                             if !functions.is_empty() { return self.cpp_return_type_of(&functions, r); }
                         }
-                        Ok(None)
+                        // `Foo(…)`, `Foo<int>(…)`: what it constructs, when C++ lookup finds the class.
+                        let constructed = CppWritten { text: callee.split_whitespace().collect::<Vec<_>>().join(" "), site: r.clone() };
+                        Ok(self.cpp_written_class(&constructed, r)?.map(|_| constructed))
                     }
                     _ => Ok(None),
                 }
@@ -388,8 +598,10 @@ impl KernelResolver {
                 if raw.is_empty() || raw.contains('[') { return Ok(None); }
                 if !is_cpp_auto(&raw) { return Ok(Some(CppWritten { text: raw, site: r.clone() })); }
                 // `const auto& blob_files = vstorage->GetBlobFiles();`: what its initializer is.
+                // (Read with a depth budget of its own: a chain of calls on the local, whose own
+                // initializer is a chain, gets no shorter for how it was reached.)
                 let Some(value) = binding_initializer(parent, at, name, source) else { return Ok(None) };
-                return self.cpp_expression_written(value, source, r, depth + 1);
+                return self.cpp_expression_written(value, source, r, 0);
             }
             if parent.kind() == "for_range_loop" && parent.child_by_field_name("body").is_some_and(|body| body.id() == at.id())
                 && parent.child_by_field_name("declarator").is_some_and(|d| cpp_declarator_name(d, source) == name) {
@@ -402,9 +614,7 @@ impl KernelResolver {
         }
         // Declared nowhere in the calling function (`versions_` in db_impl_write.cc, whose class is
         // declared in db_impl.h): a data member of its class.
-        let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
-        let Some(owner) = self.cpp_member_owner(&caller)? else { return Ok(None) };
-        self.cpp_data_member_written(&owner, name, r)
+        self.cpp_caller_member(name, r)
     }
 
     /// The element type of a range of the type `range`, as written: a container's first template
