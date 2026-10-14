@@ -37,6 +37,14 @@ impl KernelResolver {
         // The initializer of an `auto` local, which gives it its type.
         let mut initializer = None;
         while let Some(parent) = scope.parent() {
+            // `for (auto& [cfh, iter] : pairs)`, `auto [status, iter] = Open();`: the pair or tuple element.
+            if let Some(bound) = self.cpp_structured_binding_written(parent, scope, name, &source, r)? {
+                let Some(written) = bound else { return Ok(Some(None)) };
+                raw = Some(super::cpp_range_for::cpp_plain_type(&written.text));
+                site = written.site;
+                element = true;
+                break;
+            }
             if let Some(ty) = cpp_binding_type(parent, scope, name, &source) {
                 if super::cpp_range_for::is_cpp_auto(&ty) { initializer = super::cpp_range_for::binding_initializer(parent, scope, name, &source); }
                 raw = Some(ty);
@@ -100,9 +108,11 @@ impl KernelResolver {
             // An element that points at a class template (`const autovector<MemTable*>*`).
             "->" if pointers == 1 && element => super::cpp_range_for::cpp_pointee(&raw).unwrap_or_default(),
             // A standard smart pointer or optional: `->` reaches a member of the type it holds.
+            // So does an `absl::StatusOr`, `absl::optional` or `absl::NoDestructor` of the library's.
             "->" if pointers == 0 => {
-                let Some(hit) = re!(r"^(?:const\s+)?(?:::)?std::(?:unique_ptr|shared_ptr|optional)\s*<(.*)>\s*&?$").captures(&raw) else { return Ok(Some(None)) };
-                let Some(held) = cpp_held_type(&hit[1]) else { return Ok(None) };
+                let Some(hit) = re!(r"^(?:const\s+)?(?:::)?((?:std|absl)::[A-Za-z_]\w*)\s*<(.*)>\s*&?$").captures(&raw) else { return Ok(Some(None)) };
+                if !CPP_HOLDERS.contains(&&hit[1]) || !self.cpp_library_holder(&hit[1])? { return Ok(Some(None)); }
+                let Some(held) = cpp_held_type(&hit[2]) else { return Ok(None) };
                 if held.trim_start_matches("::").starts_with("std::") { return Ok(Some(None)); }
                 held
             }
@@ -280,7 +290,8 @@ impl KernelResolver {
     fn cpp_field_tree(&mut self, source: &Rc<SourceFile>, r: &ResolveRefIn) -> Option<Rc<tree_sitter::Tree>> {
         let normalized = source.cpp_field_tree.get_or_init(|| {
             // Match extraction's padded access-macro rewrite; byte offsets stay fixed.
-            let text = re!(r"(?m)^([ \t]*)([A-Z][A-Z0-9]*_[A-Z0-9_]*)([ \t]*):([ \t]*(?://[^\n]*)?\r?$)").replace_all(source.text(), |m: &regex::Captures| {
+            let blanked = super::cpp_annotations::cpp_without_annotations(source.text());
+            let text = re!(r"(?m)^([ \t]*)([A-Z][A-Z0-9]*_[A-Z0-9_]*)([ \t]*):([ \t]*(?://[^\n]*)?\r?$)").replace_all(&blanked, |m: &regex::Captures| {
                 let name = &m[2];
                 let keyword = if name.contains("PRIVATE") { "private" } else if name.contains("PROTECTED") { "protected" }
                     else if name.contains("PUBLIC") || matches!(name, "Q_SIGNALS" | "Q_SLOTS") { "public" } else { return m[0].to_string(); };
@@ -288,7 +299,7 @@ impl KernelResolver {
                 if keyword.len() > width { return m[0].to_string(); }
                 format!("{}{}{}:{}", &m[1], keyword, " ".repeat(width - keyword.len()), &m[4])
             });
-            if text.as_ref() == source.text() { return None; }
+            if text.as_ref() == blanked.as_ref() { return None; }
             crate::tree::parse_with_cached_parser(text.as_ref(), "cpp").ok().map(Rc::new)
         }).clone();
         normalized.or_else(|| self.parsed_tree(source, r))
@@ -364,6 +375,27 @@ impl KernelResolver {
             }
         }
         Ok(None)
+    }
+}
+
+/// Library types whose `->` reaches the value they hold.
+pub(super) const CPP_HOLDERS: &[&str] = &["std::unique_ptr", "std::shared_ptr", "std::optional", "absl::optional", "absl::StatusOr", "absl::NoDestructor"];
+
+/// The template arguments of a holder `raw` writes (CPP_HOLDERS): `Iterator` of
+/// `std::unique_ptr<Iterator>`, `FeatureResolver` of `absl::StatusOr<FeatureResolver>`.
+pub(super) fn cpp_holder_arguments(raw: &str) -> Option<&str> {
+    let hit = re!(r"^(?:::)?((?:std|absl)::[A-Za-z_]\w*)\s*<(.*)>$").captures(raw)?;
+    CPP_HOLDERS.contains(&hit.get(1)?.as_str()).then(|| hit.get(2).map(|m| m.as_str())).flatten()
+}
+
+impl KernelResolver {
+    /// Whether the holder `spelled` names is the library's: no type of the project's has its name
+    /// (isCppLibraryHolder).
+    pub(super) fn cpp_library_holder(&mut self, spelled: &str) -> Res<bool> {
+        let last = spelled.rsplit("::").next().unwrap_or(spelled);
+        let suffix = format!("::{spelled}");
+        Ok(!self.nodes_by_name(last)?.iter().any(|n| matches!(n.language.as_str(), "c" | "cpp")
+            && matches!(n.kind.as_str(), "class" | "struct" | "union" | "type_alias") && (n.qualified_name == spelled || n.qualified_name.ends_with(&suffix))))
     }
 }
 
