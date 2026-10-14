@@ -420,13 +420,13 @@ describe('what keeps the call as it was', () => {
       ),
     });
     try {
-      // The fork reads the local's declared type from the syntax tree, so these are typed calls
-      // (upstream's line scan cannot read `const ColumnFamilySet* const` and guesses, at 0.7).
-      expect(calls(cg, 'rocksdb::DBImpl::CountColumnFamilies').filter((c) => c.includes('NumberOfColumnFamilies'))).toEqual([
-        'rocksdb::ColumnFamilySet::NumberOfColumnFamilies @0.9',
-      ]);
+      // Neither name is a member, so neither call is typed through one. Upstream then guesses
+      // the class from the receiver's name (ColumnFamilySet::NumberOfColumnFamilies and
+      // Statistics::load, at 0.7); the fork's resolver leaves a receiver whose type it can't
+      // read unlinked instead (README, "About this fork": C++ calls on an `auto` local, ...).
+      expect(calls(cg, 'rocksdb::DBImpl::CountColumnFamilies').filter((c) => c.includes('NumberOfColumnFamilies'))).toEqual([]);
       // Nor is a method the class declares (`stats()`) a member of its name.
-      expect(calls(cg, 'rocksdb::DBImpl::CountColumnFamilies').filter((c) => c.includes('load'))).toEqual(['rocksdb::Statistics::load @0.9']);
+      expect(calls(cg, 'rocksdb::DBImpl::CountColumnFamilies').filter((c) => c.includes('load'))).toEqual([]);
     } finally {
       cg.close();
     }

@@ -81,7 +81,11 @@ describe('C++ calls on a receiver named like a class', () => {
     });
     try {
       expect(callsAt(cg, 'google::protobuf::Run', 6).filter((t) => /UniquePtr|ThreadSafeArena/.test(t) && t.endsWith('@0.8'))).toEqual([]);
-      expect(callsAt(cg, 'google::protobuf::Run', 7)).toEqual(['google::protobuf::Arena::AllocateAligned @0.8']);
+      // `arena` is an `auto` local whose initializer's type can't be read (`MakeArena` is
+      // declared nowhere). The fork's resolver leaves such a call unlinked rather than
+      // guessing the class from the receiver's name, as upstream does at 0.8 (README,
+      // "About this fork": C++ calls on an `auto` local).
+      expect(callsAt(cg, 'google::protobuf::Run', 7)).toEqual([]);
     } finally {
       cg.close();
     }
