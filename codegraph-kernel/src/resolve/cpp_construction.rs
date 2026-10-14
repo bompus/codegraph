@@ -131,14 +131,14 @@ impl KernelResolver {
     /// and every header, but for a header of a test tree, which code outside one sees only by
     /// including it.
     fn cpp_construction_visible_files(&mut self, file: &str) -> Res<Rc<HashSet<String>>> {
-        if let Some(hit) = self.cpp_visible_memo.get(file) { return Ok(hit.clone()); }
+        if let Some((memo_file, hit)) = &self.cpp_visible_memo { if memo_file == file { return Ok(hit.clone()); } }
         let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
         let mut visible = HashSet::new();
         for f in files.iter().filter(|f| *f == file || !source_file(f)) {
             if !self.cpp_unincluded_test_header(f, file)? { visible.insert(f.clone()); }
         }
         let visible = Rc::new(visible);
-        self.cpp_visible_memo.insert(file.to_string(), visible.clone());
+        self.cpp_visible_memo = Some((file.to_string(), visible.clone()));
         Ok(visible)
     }
 

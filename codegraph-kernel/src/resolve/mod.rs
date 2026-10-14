@@ -688,9 +688,9 @@ pub struct KernelResolver {
     /// A Python class's resolved bases, by class id: they depend on the class's
     /// own header and file, so every scan over the same classes shares them.
     py_bases_memo: HashMap<String, Rc<Vec<Arc<KNode>>>>,
-    /// The files a C or C++ file sees without knowing its includes, by file: every
-    /// construction in the file shares them.
-    cpp_visible_memo: HashMap<String, Rc<HashSet<String>>>,
+    /// The files a C or C++ file sees without knowing its includes, for the file last asked:
+    /// every construction in a file shares them. (One entry: a set holds nearly every header.)
+    cpp_visible_memo: Option<(String, Rc<HashSet<String>>)>,
     /// Assignments and annotations typing a Python class's `self.<field>`,
     /// by (class id, field).
     py_field_facts_memo: HashMap<(String, String), Rc<Vec<member_fn_ref::PyFieldFact>>>,
@@ -895,7 +895,7 @@ impl KernelResolver {
             kotlin_supers_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),
             py_bases_memo: HashMap::new(),
-            cpp_visible_memo: HashMap::new(),
+            cpp_visible_memo: None,
             py_field_facts_memo: HashMap::new(),
             py_globals: Default::default(),
             ruby_ancestry_memo: HashMap::new(),
