@@ -489,14 +489,23 @@ export class QueryBuilder {
   }
 
   /**
-   * Set the provider of the predicate that marks a path as de-prioritized by
-   * the project's `codegraph.json` `deprioritize` patterns (#982). Ranking-only:
-   * those paths stay indexed and findable, they just stop outranking
-   * first-party code. Called once when the project opens; undefined disables
-   * the lever. A provider, not a predicate, so the config is read once per
-   * ranking pass (see `getDeprioritizedPathMatcher`) and never once per path.
+   * Set the predicate that marks a path as de-prioritized by the project's
+   * `codegraph.json` `deprioritize` patterns (#982). Ranking-only: those paths
+   * stay indexed and findable, they just stop outranking first-party code.
+   * undefined disables the lever. A predicate that reads live state per call
+   * should use `setDeprioritizedPathProvider` instead.
    */
-  setDeprioritizedPathMatcher(
+  setDeprioritizedPathMatcher(matcher: ((filePath: string) => boolean) | undefined): void {
+    this.deprioritizedPathProvider = matcher && (() => matcher);
+  }
+
+  /**
+   * Like `setDeprioritizedPathMatcher`, but takes a provider of the predicate.
+   * Called once when the project opens. The provider runs once per ranking pass
+   * (see `getDeprioritizedPathMatcher`), so the config is read once per pass
+   * and never once per path.
+   */
+  setDeprioritizedPathProvider(
     provider: (() => ((filePath: string) => boolean) | undefined) | undefined
   ): void {
     this.deprioritizedPathProvider = provider;

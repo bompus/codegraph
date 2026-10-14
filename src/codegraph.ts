@@ -234,7 +234,7 @@ export class CodeGraph {
     // the cache keeps stable. No patterns yields no predicate at all.
     let cachedPatterns: string[] | undefined;
     let cachedMatcher: ReturnType<typeof ignore> | undefined;
-    this.queries.setDeprioritizedPathMatcher(() => {
+    this.queries.setDeprioritizedPathProvider(() => {
       try {
         const patterns = loadDeprioritizePatterns(this.projectRoot);
         if (patterns.length === 0) return undefined;

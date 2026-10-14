@@ -242,6 +242,27 @@ describe('#982 minimal repro — ranking with and without deprioritize', () => {
     expect(matcher!('apps/desktop/statusbar/StatusBar.ts')).toBe(false);
   });
 
+  it('keeps the exported QueryBuilder setter that takes a plain path predicate', () => {
+    // SDK callers pass a (filePath) => boolean to setDeprioritizedPathMatcher;
+    // the provider form is a separate setter.
+    type Q = {
+      setDeprioritizedPathMatcher(m: ((p: string) => boolean) | undefined): void;
+      getDeprioritizedPathMatcher(): ((p: string) => boolean) | undefined;
+    };
+    const queries = (baseCg as unknown as { queries: Q & { deprioritizedPathProvider: unknown } }).queries;
+    const provider = queries.deprioritizedPathProvider;
+    try {
+      queries.setDeprioritizedPathMatcher((p) => p.startsWith('gateway/'));
+      const matcher = queries.getDeprioritizedPathMatcher();
+      expect(matcher!('gateway/x.ts')).toBe(true);
+      expect(matcher!('packages/x.ts')).toBe(false);
+      queries.setDeprioritizedPathMatcher(undefined);
+      expect(queries.getDeprioritizedPathMatcher()).toBeUndefined();
+    } finally {
+      queries.deprioritizedPathProvider = provider;
+    }
+  });
+
   it('picks up a config written after the project was opened', async () => {
     // wireLayers runs once per open, so a matcher captured there would freeze
     // at open time — and the MCP server keeps one CodeGraph per root alive for
