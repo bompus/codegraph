@@ -229,8 +229,9 @@ export class ContextBuilder {
    * content, and `deprioritize` is a ranking lever by definition — `exclude` is
    * the lever for taking things out of reach.
    */
-  private isDeprioritized(filePath: string): boolean {
-    return this.queries.getDeprioritizedPathMatcher()?.(filePath) ?? false;
+  private deprioritizedPathMatcher(): (filePath: string) => boolean {
+    // Reads the config, so take it once per call and reuse it for every path.
+    return this.queries.getDeprioritizedPathMatcher() ?? (() => false);
   }
 
   /**
@@ -477,6 +478,8 @@ export class ContextBuilder {
     if (!query || query.trim().length === 0) {
       return { nodes, edges, roots };
     }
+
+    const isDeprioritized = this.deprioritizedPathMatcher();
 
     // === HYBRID SEARCH ===
 
@@ -943,7 +946,7 @@ export class ContextBuilder {
             r.node.filePath,
             query,
             undefined,
-            this.isDeprioritized(r.node.filePath),
+            isDeprioritized(r.node.filePath),
           );
           const brevityBonus = Math.max(0, 6 - (name.length - titleCased.length) / 4);
           termCandidates.push({ node: r.node, score: 8 + brevityBonus + pathScore });
@@ -1035,7 +1038,7 @@ export class ContextBuilder {
               entry.node.filePath,
               query,
               undefined,
-              this.isDeprioritized(entry.node.filePath),
+              isDeprioritized(entry.node.filePath),
             );
             const brevityBonus = Math.max(0, 6 - entry.node.name.length / 8);
             compoundResults.push({

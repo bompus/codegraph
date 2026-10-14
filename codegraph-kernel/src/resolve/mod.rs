@@ -685,6 +685,9 @@ pub struct KernelResolver {
     /// Python methods named `member` on classes deriving from a class, by
     /// (class id, member).
     py_descendants_memo: HashMap<(String, String), Rc<Vec<Arc<KNode>>>>,
+    /// A Python class's resolved bases, by class id: they depend on the class's
+    /// own header and file, so every scan over the same classes shares them.
+    py_bases_memo: HashMap<String, Rc<Vec<Arc<KNode>>>>,
     /// Assignments and annotations typing a Python class's `self.<field>`,
     /// by (class id, field).
     py_field_facts_memo: HashMap<(String, String), Rc<Vec<member_fn_ref::PyFieldFact>>>,
@@ -888,6 +891,7 @@ impl KernelResolver {
             kotlin_scope_memo: HashMap::new(),
             kotlin_supers_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),
+            py_bases_memo: HashMap::new(),
             py_field_facts_memo: HashMap::new(),
             py_globals: Default::default(),
             ruby_ancestry_memo: HashMap::new(),

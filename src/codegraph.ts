@@ -227,27 +227,36 @@ export class CodeGraph {
     // the config said when the project opened. The MCP server caches one
     // CodeGraph per root for its whole lifetime, so editing `codegraph.json`
     // would appear to do nothing until the process restarted — `exclude` and
-    // `include` do not behave that way. `loadDeprioritizePatterns` is
-    // mtime-cached, so this costs one `stat`; the compiled matcher is memoized
-    // on the pattern array's identity, which the cache keeps stable.
+    // `include` do not behave that way. The provider runs once per ranking
+    // pass (callers reuse the predicate for every path in it), and
+    // `loadDeprioritizePatterns` is mtime-cached, so a pass costs one `stat`;
+    // the compiled matcher is memoized on the pattern array's identity, which
+    // the cache keeps stable. No patterns yields no predicate at all.
     let cachedPatterns: string[] | undefined;
     let cachedMatcher: ReturnType<typeof ignore> | undefined;
-    this.queries.setDeprioritizedPathMatcher((filePath: string): boolean => {
+    this.queries.setDeprioritizedPathProvider(() => {
       try {
         const patterns = loadDeprioritizePatterns(this.projectRoot);
-        if (patterns.length === 0) return false;
+        if (patterns.length === 0) return undefined;
         if (patterns !== cachedPatterns) {
           cachedPatterns = patterns;
           cachedMatcher = ignore().add(patterns);
         }
-        const rel = path.isAbsolute(filePath)
-          ? path.relative(this.projectRoot, filePath)
-          : filePath;
-        if (!rel || rel.startsWith('..')) return false;
-        return cachedMatcher!.ignores(rel.split(path.sep).join('/'));
+        const matcher = cachedMatcher!;
+        return (filePath: string): boolean => {
+          try {
+            const rel = path.isAbsolute(filePath)
+              ? path.relative(this.projectRoot, filePath)
+              : filePath;
+            if (!rel || rel.startsWith('..')) return false;
+            return matcher.ignores(rel.split(path.sep).join('/'));
+          } catch {
+            // Ranking must never take the search down with it.
+            return false;
+          }
+        };
       } catch {
-        // Ranking must never take the search down with it.
-        return false;
+        return undefined;
       }
     });
 

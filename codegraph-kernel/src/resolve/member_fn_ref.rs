@@ -361,6 +361,9 @@ impl KernelResolver {
     /// The classes a Python class header names as bases, each resolved from
     /// the class's own file.
     pub(super) fn python_bases(&mut self, cls: &KNode, r: &ResolveRefIn) -> Res<Vec<Arc<KNode>>> {
+        if let Some(hit) = self.py_bases_memo.get(&cls.id) {
+            return Ok(hit.as_ref().clone());
+        }
         let Some(lines) = self.read_file(&cls.file_path) else {
             return Ok(Vec::new());
         };
@@ -371,6 +374,7 @@ impl KernelResolver {
                 out.push(base);
             }
         }
+        self.py_bases_memo.insert(cls.id.clone(), Rc::new(out.clone()));
         Ok(out)
     }
 
