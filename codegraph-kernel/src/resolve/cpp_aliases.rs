@@ -11,7 +11,11 @@ pub(super) struct CppAlias {
 pub(super) fn type_segments(raw: &str) -> Option<Vec<String>> {
     let mut text = String::new();
     let mut depth = 0usize;
+    let mut parens = 0usize;
     for c in raw.chars() {
+        // (In template arguments, a `<` or `>` in parentheses compares: `Bits<(N > 8)>`.)
+        if depth > 0 && matches!(c, '(' | ')') { parens = if c == '(' { parens + 1 } else { parens.saturating_sub(1) }; continue; }
+        if parens > 0 { continue; }
         match c {
             '<' => depth += 1,
             '>' => depth = depth.saturating_sub(1),

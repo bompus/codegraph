@@ -582,6 +582,7 @@ mod cpp_range_for;
 mod cpp_implicit_this;
 mod cpp_namespace;
 mod cpp_annotations;
+mod cpp_construction;
 mod cpp_overloads;
 mod cpp_translation_unit;
 mod inherited_method;

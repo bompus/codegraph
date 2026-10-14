@@ -776,6 +776,9 @@ if super::lang_scope::is_dart_member_read(r) {
 
     /// The per-ref pipeline: the Rust `::`-path arm, then one route.
     pub(super) fn resolve_ref(&mut self, r: &ResolveRefIn) -> Res<ResolveOutcome> {
+        if let Some(result) = self.cpp_construction(r)? {
+            return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
+        }
         if let Some(result) = self.cpp_plain_call(r)? {
             return match result { Some(candidate) => self.finish_pre_framework(r, candidate), None => Ok(self.refused()) };
         }
