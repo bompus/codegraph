@@ -67,7 +67,7 @@ import { CodeGraphPackageVersion } from './mcp/version';
 import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
 import { seedLiteralsInQuery, seedRouteNamesInQuery } from './extraction/literal-capture';
 import { createYielder } from './resolution/cooperative-yield';
-import { createImportReader, reopenReferencesThroughAddedFiles } from './resolution/module-importers';
+import { createImportReader, reopenReferencesThroughAddedFiles, reopenReferencesThroughBarrels } from './resolution/module-importers';
 import { minRefsForPool } from './resolution/resolver-pool';
 
 /** The extraction, resolution and watcher modules, loaded on first use. */
@@ -1127,18 +1127,40 @@ export class CodeGraph {
             // it bound by name in its absence, or failed, goes back to pending
             // for the sweep below, which binds it through the module as a fresh
             // index does. (The removal half runs before removed files are deleted.)
-            if (result.addedFilePaths && result.addedFilePaths.length > 0) {
+            const importReader = createImportReader(this.projectRoot, this.queries);
+            const added = (result.addedFilePaths ?? []).flatMap((filePath) => {
+              const file = this.queries.getFileByPath(filePath);
+              return file ? [{ path: filePath, language: file.language }] : [];
+            });
+            if (added.length > 0) {
               const tAdded = Date.now();
-              const added = result.addedFilePaths.flatMap((filePath) => {
-                const file = this.queries.getFileByPath(filePath);
-                return file ? [{ path: filePath, language: file.language }] : [];
-              });
               const reopened = reopenReferencesThroughAddedFiles(
-                this.queries, createImportReader(this.projectRoot, this.queries), added, edgesBeforeResolution,
+                this.queries, importReader, added, edgesBeforeResolution,
                 (specifier, fromFile, language) => this.resolver.resolveModuleFile(specifier, fromFile, language)
               );
               if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-added-module-importers: ${Date.now() - tAdded}ms (${reopened} refs re-opened)`);
             }
+
+            // A failed reference that waits for a module through a barrel —
+            // React Router's `import:@/pages#HomePage`, parked under
+            // `module:pages` — waits for a file below the barrel too
+            // (`pages/Home/index.tsx`), whose own keys name its folder and
+            // stem. Those parked under the keys of the barrels that pass on a
+            // file this sync adds, or one whose definitions it changed, go
+            // back to pending for the sweep; a body-only edit satisfies none.
+            const tBarrels = Date.now();
+            const delta = new Set(result.definitionDelta ?? []);
+            const seeds = new Map<string, Language>(added.map((file) => [file.path, file.language]));
+            const modified = (result.changedFilePaths ?? []).filter((filePath) => !seeds.has(filePath));
+            if (delta.size > 0 && modified.length > 0) {
+              for (const node of this.queries.getNodesByFiles(modified)) {
+                if (delta.has(node.name)) seeds.set(node.filePath, node.language);
+              }
+            }
+            const throughBarrels = reopenReferencesThroughBarrels(
+              this.queries, importReader, [...seeds].map(([path, language]) => ({ path, language }))
+            );
+            if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] sync-barrel-modules: ${Date.now() - tBarrels}ms (${throughBarrels} refs re-opened)`);
           } else {
             // No git info — use batched resolution to avoid OOM
             const unresolvedCount = this.queries.getUnresolvedReferencesCount();
