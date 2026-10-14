@@ -40,6 +40,9 @@ pub(super) fn type_segments(raw: &str) -> Option<Vec<String>> {
     (!parts.is_empty() && parts.iter().all(|p| re!(r"^[A-Za-z_]\w*$").is_match(p))).then_some(parts)
 }
 
+/// Whether `raw` is a pointer or a reference to something (`Widget*`, `const Widget&`).
+pub(super) fn indirect_type(raw: &str) -> bool { pointer_type(raw) || reference_type(raw) }
+
 fn pointer_type(raw: &str) -> bool { indirection_type(raw, '*') }
 
 fn reference_type(raw: &str) -> bool { indirection_type(raw, '&') }

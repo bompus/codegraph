@@ -404,7 +404,7 @@ impl KernelResolver {
         let from = (decl.start_line - 1).max(0) as usize;
         let to = (decl.end_line.max(decl.start_line) as usize).min(lines.len());
         if from >= to { return false; }
-        let body = lines[from..to].join("\n");
+        let body = cpp_own_scope(&lines[from..to].join("\n"));
         re!(r"\busing\s+((?:::\s*)?[A-Za-z_][\w:]*(?:\s*<[^;{}]*>)?)\s*::\s*([A-Za-z_]\w*)\s*;").captures_iter(&body).any(|m| {
             &m[2] == name && !m[1].trim_start().starts_with("namespace") && cpp_last_segment(strip_template_arguments(&m[1]).trim()) == base.name
         })
@@ -483,4 +483,17 @@ fn collect_template_header(source: &SourceFile, start_line: i64, start_column: i
             if name != "typename" && name != "class" { names.insert(name); }
         }
     }
+}
+
+/// The text of a class declaration at its own brace depth: what a nested class, a member
+/// function body or an initializer braces holds is blanked, so a `using Base<T>::foo;` of a
+/// nested class is not the outer class's.
+fn cpp_own_scope(text: &str) -> String {
+    let mut depth = 0usize;
+    text.chars().map(|c| match c {
+        '{' => { depth += 1; if depth > 1 { ' ' } else { c } }
+        '}' => { let was = depth; depth = depth.saturating_sub(1); if was > 1 { ' ' } else { c } }
+        '\n' => c,
+        _ => if depth > 1 { ' ' } else { c },
+    }).collect()
 }

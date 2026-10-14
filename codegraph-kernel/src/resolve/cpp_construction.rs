@@ -137,6 +137,8 @@ impl KernelResolver {
         for f in files.iter().filter(|f| *f == file || !source_file(f)) {
             if !self.cpp_unincluded_test_header(f, file)? { visible.insert(f.clone()); }
         }
+        // (A source file it includes is its own: a test that includes the `.cc` it tests.)
+        for f in self.namespace_visible_files(file, "cpp")? { if source_file(&f) { visible.insert(f); } }
         let visible = Rc::new(visible);
         self.cpp_visible_memo = Some((file.to_string(), visible.clone()));
         Ok(visible)
@@ -161,12 +163,17 @@ impl KernelResolver {
     /// that function (the index names it after the function, and every gtest `TEST_F` body in a
     /// namespace is `ns::TEST_F`).
     fn cpp_construction_sees(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
-        if n.file_path != r.file_path && source_file(&n.file_path) { return Ok(false); }
+        if n.file_path != r.file_path && source_file(&n.file_path) && !self.namespace_visible_files(&r.file_path, &r.language)?.contains(&n.file_path) { return Ok(false); }
         if self.cpp_unincluded_test_header(&n.file_path, &r.file_path)? { return Ok(false); }
-        let Some((scope, _)) = n.qualified_name.rsplit_once("::") else { return Ok(true) };
-        let around = self.nodes_by_qualified_name(scope)?.iter().find(|f| matches!(f.kind.as_str(), "function" | "method")
-            && f.file_path == n.file_path && f.start_line <= n.start_line && f.end_line >= n.start_line).cloned();
-        Ok(around.is_none_or(|f| f.file_path == r.file_path && f.start_line <= r.line && r.line <= f.end_line))
+        // A class declared in a function, or in a class declared there, is the function's.
+        let mut scope = n.qualified_name.as_str();
+        while let Some((outer, _)) = scope.rsplit_once("::") {
+            scope = outer;
+            let around = self.nodes_by_qualified_name(scope)?.iter().find(|f| matches!(f.kind.as_str(), "function" | "method")
+                && f.file_path == n.file_path && f.start_line <= n.start_line && f.end_line >= n.start_line).cloned();
+            if let Some(f) = around { return Ok(f.file_path == r.file_path && f.start_line <= r.line && r.line <= f.end_line); }
+        }
+        Ok(true)
     }
 
     /// The types named `name` in the scope `scope` that code at `r` sees, else in the classes a
@@ -176,6 +183,12 @@ impl KernelResolver {
         let mut found = Vec::new();
         for n in self.nodes_by_qualified_name(&qualified)?.iter().filter(|n| type_kind(n)) {
             if self.cpp_construction_sees(n, r)? { found.push(n.clone()); }
+        }
+        // Of one class declared in several files, those the code includes, when there are any.
+        if found.len() > 1 && found.iter().any(|n| n.file_path != found[0].file_path) {
+            let included = self.namespace_visible_files(&r.file_path, &r.language)?;
+            let seen: Vec<_> = found.iter().filter(|n| n.file_path == r.file_path || included.contains(&n.file_path)).cloned().collect();
+            if !seen.is_empty() { found = seen; }
         }
         if !found.is_empty() || scope.is_empty() || depth >= 4 { return Ok(found); }
         let classes: Vec<_> = self.nodes_by_qualified_name(scope)?.iter().filter(|n| class_like(n)).cloned().collect();
@@ -226,6 +239,8 @@ impl KernelResolver {
                 current = next;
             }
             if current.kind == "type_alias" {
+                // (A pointer or reference alias names no class to construct: `Ptr p(0);`.)
+                if self.cpp_alias_indirect(&current) { return Ok(Lookup::NoClass); }
                 if let Some(class) = self.cpp_expand_owner(&current, r, 0, false, visible)? { current = class; }
             }
             return Ok(Lookup::Found(current, true));

@@ -191,18 +191,29 @@ impl KernelResolver {
         Ok(false)
     }
 
-    pub(super) fn cpp_expand_owner(&mut self, owner: &Arc<KNode>, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
-        if owner.kind != "type_alias" { return Ok((owner.kind != "enum").then(|| owner.clone())); }
-        let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
+    /// Whether the alias `owner` names a pointer or a reference (`using Ptr = Widget*;`).
+    pub(super) fn cpp_alias_indirect(&mut self, owner: &KNode) -> bool {
+        self.cpp_alias_rhs(owner).is_some_and(|rhs| super::cpp_aliases::indirect_type(&rhs))
+    }
+
+    /// What the alias `owner` is declared as: the text after its `=`.
+    fn cpp_alias_rhs(&mut self, owner: &KNode) -> Option<String> {
+        let source = self.read_file(&owner.file_path)?;
         let mut lines = source.get((owner.start_line - 1).max(0) as usize..owner.end_line.max(0) as usize).unwrap_or(&[]).to_vec();
-        if lines.is_empty() { return Ok(None); }
+        if lines.is_empty() { return None; }
         let last = lines.len() - 1;
         let end = super::names::js_unit_to_byte(&lines[last], owner.end_column.max(0) as usize);
         lines[last].truncate(end);
         lines[0] = lines[0].get(super::names::js_unit_to_byte(&lines[0], owner.start_column.max(0) as usize)..).unwrap_or("").to_string();
         let text = lines.join("\n");
-        let Some((_, rhs)) = text.split_once('=') else { return Ok(None) };
-        let rhs = rhs.trim().trim_end_matches(';').trim();
+        let (_, rhs) = text.split_once('=')?;
+        Some(rhs.trim().trim_end_matches(';').trim().to_string())
+    }
+
+    pub(super) fn cpp_expand_owner(&mut self, owner: &Arc<KNode>, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
+        if owner.kind != "type_alias" { return Ok((owner.kind != "enum").then(|| owner.clone())); }
+        let Some(rhs) = self.cpp_alias_rhs(owner) else { return Ok(None) };
+        let rhs = rhs.as_str();
         if constructor && rhs.contains(['*', '&']) { return Ok(None); }
         let rhs = re!(r"^(?:const|volatile)\s+").replace(rhs, "");
         let rhs = rhs.trim_end_matches(['&', '*']).trim();

@@ -343,7 +343,7 @@ pub(super) struct SourceFile {
     php_file_scope: OnceCell<php_scope::PhpFileScope>,
     rust_code_lines: OnceCell<Vec<String>>,
     cpp_code_lines: OnceCell<Vec<String>>,
-    cpp_unnamed_namespaces: OnceCell<Vec<(i64, i64)>>,
+    cpp_unnamed_namespaces: OnceCell<Vec<(cpp_translation_unit::Position, cpp_translation_unit::Position)>>,
     python_file: OnceCell<bound::PyFile>,
     python_field_file: OnceCell<bound::PyFile>,
     cpp_field_tree: OnceCell<Option<Rc<tree_sitter::Tree>>>,
@@ -419,7 +419,7 @@ impl SourceFile {
     }
 
     /// The line spans of the file's unnamed namespaces (cpp_translation_unit).
-    pub(super) fn cpp_unnamed_namespaces(&self) -> &[(i64, i64)] {
+    pub(super) fn cpp_unnamed_namespaces(&self) -> &[(cpp_translation_unit::Position, cpp_translation_unit::Position)] {
         self.cpp_unnamed_namespaces.get_or_init(|| cpp_translation_unit::unnamed_namespace_spans(self.text()))
     }
 
