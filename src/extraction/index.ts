@@ -2444,44 +2444,51 @@ export class ExtractionOrchestrator {
       }
     };
 
+    // Read one batch of files in parallel (with path validation before any I/O).
+    // Never rejects: every per-file failure is returned as that file's `error`.
+    const readBatch = (batch: string[]) => Promise.all(
+      batch.map(async (fp) => {
+        try {
+          // Indexing read: follow in-root symlinks the directory walk already
+          // descended into (the `../` guard still applies) so files reached
+          // via an in-root symlink-to-outside still index (#935).
+          const fullPath = validatePathWithinRoot(this.rootDir, fp, { allowSymlinkEscape: true });
+          if (!fullPath) {
+            logWarn('Path traversal blocked in batch reader', { filePath: fp });
+            return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
+          }
+          // Stat first: a file over the size limit is stored as skipped
+          // without ever being read or decoded (#1910), so ten oversize
+          // fixtures in one I/O batch no longer cost their size in RSS.
+          const { stats, bytes } = await readBoundedSource(fullPath);
+          if (bytes === null) {
+            return { filePath: fp, content: oversizeStamp(stats.size), stats, error: null as Error | null };
+          }
+          // Read bytes, not text: a `.ts` that is really an MPEG transport
+          // stream (#1910) is recognised from its head here, at no extra I/O,
+          // and never decoded or parsed.
+          if (isMpegTsBytes(fp, bytes)) {
+            return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: null as Error | null, skipped: true };
+          }
+          const content = bytes.toString('utf-8');
+          return { filePath: fp, content, stats, error: null as Error | null };
+        } catch (err) {
+          return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
+        }
+      })
+    );
+
     const tParseLoop = Date.now();
+    let nextRead = files.length > 0 ? readBatch(files.slice(0, FILE_IO_BATCH_SIZE)) : null;
     for (let i = 0; i < files.length; i += FILE_IO_BATCH_SIZE) {
       if (signal?.aborted) { aborted = true; break; }
 
-      const batch = files.slice(i, i + FILE_IO_BATCH_SIZE);
-
-      // Read files in parallel (with path validation before any I/O)
-      const fileContents = await Promise.all(
-        batch.map(async (fp) => {
-          try {
-            // Indexing read: follow in-root symlinks the directory walk already
-            // descended into (the `../` guard still applies) so files reached
-            // via an in-root symlink-to-outside still index (#935).
-            const fullPath = validatePathWithinRoot(this.rootDir, fp, { allowSymlinkEscape: true });
-            if (!fullPath) {
-              logWarn('Path traversal blocked in batch reader', { filePath: fp });
-              return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
-            }
-            // Stat first: a file over the size limit is stored as skipped
-            // without ever being read or decoded (#1910), so ten oversize
-            // fixtures in one I/O batch no longer cost their size in RSS.
-            const { stats, bytes } = await readBoundedSource(fullPath);
-            if (bytes === null) {
-              return { filePath: fp, content: oversizeStamp(stats.size), stats, error: null as Error | null };
-            }
-            // Read bytes, not text: a `.ts` that is really an MPEG transport
-            // stream (#1910) is recognised from its head here, at no extra I/O,
-            // and never decoded or parsed.
-            if (isMpegTsBytes(fp, bytes)) {
-              return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: null as Error | null, skipped: true };
-            }
-            const content = bytes.toString('utf-8');
-            return { filePath: fp, content, stats, error: null as Error | null };
-          } catch (err) {
-            return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
-          }
-        })
-      );
+      const fileContents = await nextRead!;
+      // Start reading the next batch before dispatching this one, so file I/O
+      // overlaps the parse window instead of idling the pool during each read.
+      // Holds at most one extra batch of file contents in memory.
+      const nextStart = i + FILE_IO_BATCH_SIZE;
+      nextRead = nextStart < files.length ? readBatch(files.slice(nextStart, nextStart + FILE_IO_BATCH_SIZE)) : null;
 
       // Dispatch each readable file into the bounded parse window; the window
       // stores results on the main thread as they arrive.
