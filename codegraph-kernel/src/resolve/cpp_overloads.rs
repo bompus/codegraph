@@ -224,8 +224,9 @@ impl KernelResolver {
         Ok(match node.kind() {
             "char_literal" => Some(CppArgument::Char),
             "true" | "false" => Some(CppArgument::Bool),
+            // `NULL` is an integer zero (a null pointer constant); only `nullptr` is a nullptr_t.
+            "null" | "identifier" if text == "NULL" => Some(CppArgument::Zero),
             "null" | "nullptr" => Some(CppArgument::Null),
-            "identifier" if text == "NULL" => Some(CppArgument::Null),
             "number_literal" if re!(r"^0+[uUlL]*$").is_match(text) => Some(CppArgument::Zero),
             "number_literal" => Some(CppArgument::Number),
             "unary_expression" if re!(r"^[-+]\s*[0-9.]").is_match(text) => Some(CppArgument::Number),

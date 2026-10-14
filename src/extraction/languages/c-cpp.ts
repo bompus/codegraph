@@ -791,11 +791,19 @@ function followsDeclaredName(code: string, last: number): boolean {
   if (!c || !/\w/.test(c)) return false;
   let j = i;
   while (j > 0 && /\w/.test(code[j - 1] as string)) j--;
-  const before = code.slice(j, i + 1);
-  if (before === 'const' || before === 'volatile') {
+  let before = code.slice(j, i + 1);
+  // Qualifiers after the type read through: `int const volatile value_`, `Foo* const value_`.
+  while (before === 'const' || before === 'volatile') {
     let k = j - 1;
     while (k >= 0 && /\s/.test(code[k] as string)) k--;
-    return code[k] === '*' || code[k] === '&';
+    const p = code[k];
+    if (p === '*' || p === '&') return true;
+    if (p === '>') return code[k - 1] !== '-';
+    if (!p || !/\w/.test(p)) return false;
+    i = k;
+    j = k;
+    while (j > 0 && /\w/.test(code[j - 1] as string)) j--;
+    before = code.slice(j, i + 1);
   }
   if (CPP_TYPE_KEYWORDS.has(before)) return true;
   return /^[A-Za-z_]\w*$/.test(before) && !CPP_KEYWORDS.has(before);

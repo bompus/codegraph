@@ -191,18 +191,54 @@ impl KernelResolver {
         Ok(false)
     }
 
-    pub(super) fn cpp_expand_owner(&mut self, owner: &Arc<KNode>, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
-        if owner.kind != "type_alias" { return Ok((owner.kind != "enum").then(|| owner.clone())); }
-        let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
-        let mut lines = source.get((owner.start_line - 1).max(0) as usize..owner.end_line.max(0) as usize).unwrap_or(&[]).to_vec();
-        if lines.is_empty() { return Ok(None); }
+    /// Whether the alias `owner` names a pointer or a reference (`using Ptr = Widget*;`), itself or
+    /// through the aliases it names (`using Ptr2 = Ptr;`).
+    pub(super) fn cpp_alias_indirect(&mut self, owner: &KNode, r: &ResolveRefIn) -> bool {
+        let mut current = owner.clone();
+        for _ in 0..8 {
+            let Some(rhs) = self.cpp_alias_rhs(&current) else { return false };
+            if super::cpp_aliases::indirect_type(&rhs) { return true; }
+            let named = re!(r"^(?:const|volatile)\s+").replace(&rhs, "").to_string();
+            if !re!(r"^(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$").is_match(&named) { return false; }
+            // The alias it names, looked up from where this one is declared outward (a name
+            // written with a leading `::` only from the global scope).
+            let global = named.starts_with("::");
+            let named = named.trim_start_matches("::");
+            let mut scopes: Vec<String> = Vec::new();
+            if !global {
+                let mut scope = current.qualified_name.as_str();
+                while let Some(cut) = scope.rfind("::") { scope = &scope[..cut]; scopes.push(scope.to_string()); }
+            }
+            scopes.push(String::new());
+            let mut next = None;
+            for scope in &scopes {
+                let Ok(found) = self.cpp_scope_types(scope, named, r, 0) else { return false };
+                if let Some(hit) = super::cpp_construction::pick(found, &r.file_path) { next = Some(hit); break; }
+            }
+            match next { Some(n) if n.kind == "type_alias" => current = (*n).clone(), _ => return false }
+        }
+        false
+    }
+
+    /// What the alias `owner` is declared as: the text after its `=`.
+    fn cpp_alias_rhs(&mut self, owner: &KNode) -> Option<String> {
+        let source = self.read_file(&owner.file_path)?;
+        // (From the code with comments masked: `using Plain = Widget /* an object * */;`.)
+        let mut lines = source.cpp_code_lines().get((owner.start_line - 1).max(0) as usize..owner.end_line.max(0) as usize).unwrap_or(&[]).to_vec();
+        if lines.is_empty() { return None; }
         let last = lines.len() - 1;
         let end = super::names::js_unit_to_byte(&lines[last], owner.end_column.max(0) as usize);
         lines[last].truncate(end);
         lines[0] = lines[0].get(super::names::js_unit_to_byte(&lines[0], owner.start_column.max(0) as usize)..).unwrap_or("").to_string();
         let text = lines.join("\n");
-        let Some((_, rhs)) = text.split_once('=') else { return Ok(None) };
-        let rhs = rhs.trim().trim_end_matches(';').trim();
+        let (_, rhs) = text.split_once('=')?;
+        Some(rhs.trim().trim_end_matches(';').trim().to_string())
+    }
+
+    pub(super) fn cpp_expand_owner(&mut self, owner: &Arc<KNode>, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
+        if owner.kind != "type_alias" { return Ok((owner.kind != "enum").then(|| owner.clone())); }
+        let Some(rhs) = self.cpp_alias_rhs(owner) else { return Ok(None) };
+        let rhs = rhs.as_str();
         if constructor && rhs.contains(['*', '&']) { return Ok(None); }
         let rhs = re!(r"^(?:const|volatile)\s+").replace(rhs, "");
         let rhs = rhs.trim_end_matches(['&', '*']).trim();

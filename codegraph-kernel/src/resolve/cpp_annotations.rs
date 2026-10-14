@@ -89,7 +89,58 @@ fn arguments_end(code: &[u8], open: usize) -> Option<usize> {
 }
 
 const ALTERNATIVE_OPERATORS: &[&str] = &["and", "and_eq", "bitand", "bitor", "compl", "not", "not_eq", "or", "or_eq", "xor", "xor_eq"];
-const NOT_A_TYPE: &[&str] = &["return", "throw", "co_return", "case", "goto", "else", "do", "new", "delete", "sizeof", "typedef", "using"];
+const TYPE_KEYWORDS: &[&str] = &["void", "bool", "char", "char8_t", "char16_t", "char32_t", "wchar_t", "short", "int", "long", "float", "double", "signed", "unsigned", "auto"];
+const OTHER_KEYWORDS: &[&str] = &[
+    "if", "while", "for", "switch", "catch", "return", "sizeof", "alignof", "alignas", "decltype", "typeid", "noexcept", "throw",
+    "static_assert", "new", "delete", "case", "requires", "co_await", "co_yield", "co_return", "asm", "__asm__", "__attribute__",
+    "__attribute", "__declspec", "_Pragma", "else", "do", "constexpr", "consteval", "explicit", "typeof", "__typeof__", "__typeof",
+    "_Alignof", "__alignof__", "volatile", "__volatile__", "const", "static", "extern", "inline", "virtual", "constinit", "friend",
+    "mutable", "thread_local", "register", "typedef", "using", "template", "typename", "class", "struct", "union", "enum",
+    "namespace", "operator", "goto", "break", "continue", "default", "public", "private", "protected", "this", "true", "false",
+    "nullptr", "and", "or", "not", "xor", "bitand", "bitor", "compl", "and_eq", "or_eq", "xor_eq", "not_eq",
+];
+
+fn is_keyword(word: &str) -> bool { TYPE_KEYWORDS.contains(&word) || OTHER_KEYWORDS.contains(&word) }
+
+/// Whether the identifier ending at `code[last]` is a name a declaration declares: it has a
+/// lowercase letter, is no keyword, and follows a type (a `*`, `&`, `>` that is no arrow, a type
+/// keyword or another name; `const` and `volatile` only after a `*` or `&`). So in `const int
+/// FOO_BAR = 1;` the name before `FOO_BAR` is `int`, a type, and `FOO_BAR` is the declared name.
+fn follows_declared_name(code: &[u8], last: usize) -> bool {
+    if !is_word(code[last]) { return false; }
+    let mut start = last;
+    while start > 0 && is_word(code[start - 1]) { start -= 1; }
+    let name = std::str::from_utf8(&code[start..=last]).unwrap_or("");
+    if name.as_bytes()[0].is_ascii_digit() || !name.bytes().any(|b| b.is_ascii_lowercase()) || is_keyword(name) { return false; }
+    let mut i = start;
+    while i > 0 && code[i - 1].is_ascii_whitespace() { i -= 1; }
+    let Some(c) = i.checked_sub(1).map(|p| code[p]) else { return false };
+    if c == b'*' || c == b'&' { return true; }
+    if c == b'>' { return i < 2 || code[i - 2] != b'-'; }
+    if !is_word(c) { return false; }
+    let mut j = i;
+    while j > 0 && is_word(code[j - 1]) { j -= 1; }
+    let mut before = std::str::from_utf8(&code[j..i]).unwrap_or("");
+    // Qualifiers after the type read through: `int const volatile value_`, `Foo* const value_`.
+    while before == "const" || before == "volatile" {
+        let mut k = j;
+        while k > 0 && code[k - 1].is_ascii_whitespace() { k -= 1; }
+        if k == 0 { return false; }
+        match code[k - 1] {
+            b'*' | b'&' => return true,
+            b'>' => return k < 2 || code[k - 2] != b'-',
+            c if is_word(c) => {
+                i = k;
+                j = k;
+                while j > 0 && is_word(code[j - 1]) { j -= 1; }
+                before = std::str::from_utf8(&code[j..i]).unwrap_or("");
+            }
+            _ => return false,
+        }
+    }
+    if TYPE_KEYWORDS.contains(&before) { return true; }
+    !before.as_bytes()[0].is_ascii_digit() && !is_keyword(before)
+}
 
 /// The spans of the macros right after a `*` or `&` and before the name it declares (or another
 /// `*`): `Arena* PROTOBUF_NULLABLE arena`, `const FieldDescriptor* PROTOBUF_NULLABLE* PROTOBUF_NONNULL
@@ -101,10 +152,11 @@ fn pointer_annotation_spans(code: &[u8], text: &str, spans: &mut Vec<(usize, usi
         let mut at = skip_space(code, star + 1);
         let mut run = Vec::new();
         while let Some(end) = macro_name_end(code, at) {
-            run.push((at, end));
             let next = skip_space(code, end);
-            at = next;
+            // (A macro stands apart from what follows it: `n * FOO_BAR::VALUE` is a product.)
             if next == end && code.get(end) != Some(&b'*') { break; }
+            run.push((at, end));
+            at = next;
         }
         if run.is_empty() { continue; }
         let after = at;
@@ -132,7 +184,7 @@ fn pointer_annotation_spans(code: &[u8], text: &str, spans: &mut Vec<(usize, usi
 /// `versions_ GUARDED_BY(mutex_);`, `cord ABSL_ATTRIBUTE_LIFETIME_BOUND)`. The macro is followed by
 /// `;`, `=`, `,` or `)`, and stands after `]` or after a name with a lowercase letter that itself
 /// follows a type (a name, `*`, `&` or `>`), so a variable named in capitals stays.
-fn declarator_attribute_spans(code: &[u8], text: &str, spans: &mut Vec<(usize, usize)>) {
+fn declarator_attribute_spans(code: &[u8], spans: &mut Vec<(usize, usize)>) {
     let mut i = 0;
     while i < code.len() {
         let Some(mut end) = macro_name_end(code, i) else { i += 1; continue };
@@ -155,24 +207,7 @@ fn declarator_attribute_spans(code: &[u8], text: &str, spans: &mut Vec<(usize, u
         let space_end = k;
         while k > 0 && code[k - 1].is_ascii_whitespace() { k -= 1; }
         if k == space_end || k == 0 { continue; }
-        let declares = if code[k - 1] == b']' { true } else {
-            let name_end = k;
-            while k > 0 && is_word(code[k - 1]) { k -= 1; }
-            let name = &text[k..name_end];
-            if name.is_empty() || !name.bytes().any(|b| b.is_ascii_lowercase()) || name.as_bytes()[0].is_ascii_digit() { false } else {
-                let mut t = k;
-                while t > 0 && code[t - 1].is_ascii_whitespace() { t -= 1; }
-                match t.checked_sub(1).map(|p| code[p]) {
-                    Some(b'*' | b'&' | b'>') => true,
-                    Some(c) if is_word(c) => {
-                        let word_end = t;
-                        while t > 0 && is_word(code[t - 1]) { t -= 1; }
-                        !NOT_A_TYPE.contains(&&text[t..word_end])
-                    }
-                    _ => false,
-                }
-            }
-        };
+        let declares = code[k - 1] == b']' || follows_declared_name(code, k - 1);
         if declares { spans.extend(run); }
     }
 }
@@ -183,7 +218,7 @@ pub(super) fn cpp_without_annotations(text: &str) -> Cow<'_, str> {
     let code = masked_code(text);
     let mut spans = Vec::new();
     pointer_annotation_spans(&code, text, &mut spans);
-    declarator_attribute_spans(&code, text, &mut spans);
+    declarator_attribute_spans(&code, &mut spans);
     if spans.is_empty() { return Cow::Borrowed(text); }
     let mut out = text.as_bytes().to_vec();
     for (from, to) in spans {
@@ -210,5 +245,23 @@ mod tests {
         let expected = format!("Printer* {} printer_;\nVersionSet* const versions_ {};\n", blank("PROTOBUF_NONNULL"), blank("GUARDED_BY(mutex_)"));
         assert!(out.starts_with(&expected), "{out}");
         assert!(out.contains("a * MAX_LEN + 1") && out.contains("Foo DEFAULT_OPTIONS;") && out.contains("x * FOO_BAR") && out.contains("Foo* PROTOBUF_NONNULL c;"));
+    }
+
+    #[test]
+    fn leaves_a_capitalized_constant_and_a_qualified_name_after_a_product() {
+        for text in ["const int FOO_BAR = 1;\n", "static constexpr unsigned MAX_LEN = 4;\n", "consume(n * FOO_BAR::VALUE);\n", "volatile long RETRY_LIMIT = 3;\n"] {
+            assert_eq!(cpp_without_annotations(text), text);
+        }
+        let text = "Printer* PROTOBUF_NONNULL printer_;\nconst Foo* PROTOBUF_NULLABLE ns::Bar::run();\nstd::vector<int> items_ GUARDED_BY(mu_);\n";
+        let out = cpp_without_annotations(text);
+        assert!(!out.contains("PROTOBUF_NONNULL") && !out.contains("PROTOBUF_NULLABLE") && !out.contains("GUARDED_BY"), "{out}");
+    }
+
+    #[test]
+    fn a_const_qualified_type_precedes_a_declared_name() {
+        let blanked = |text: &str| cpp_without_annotations(text).into_owned();
+        assert_eq!(blanked("int const value_ GUARDED_BY(mu_);\n"), format!("int const value_ {};\n", " ".repeat("GUARDED_BY(mu_)".len())));
+        assert_eq!(blanked("Foo const volatile value_ GUARDED_BY(mu_);\n"), format!("Foo const volatile value_ {};\n", " ".repeat("GUARDED_BY(mu_)".len())));
+        assert_eq!(blanked("const int FOO_BAR = 1;\n"), "const int FOO_BAR = 1;\n");
     }
 }

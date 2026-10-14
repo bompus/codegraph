@@ -22,25 +22,26 @@ fn cpp_class_kind(kind: &str) -> bool {
     matches!(kind, "class" | "struct" | "union")
 }
 
-/// The line spans (1-based, inclusive) of the unnamed namespaces `text` writes, the outermost of
-/// nested ones: what one declares has internal linkage, so no other translation unit names it.
-/// Comments, preprocessor lines and string, character and raw string literals are skipped.
-pub(super) fn unnamed_namespace_spans(text: &str) -> Vec<(i64, i64)> {
+/// A position in a file: its line (1-based) and its column (UTF-16 units from the line's start, 0-based).
+pub(super) type Position = (i64, i64);
+
+/// The spans of the unnamed namespaces `text` writes, the outermost of nested ones, from their
+/// `{` to their `}`: what one declares has internal linkage, so no other translation unit names
+/// it. Comments, preprocessor lines and string, character and raw string literals are skipped.
+pub(super) fn unnamed_namespace_spans(text: &str) -> Vec<(Position, Position)> {
     let mut spans = Vec::new();
     if !re!(r"\bnamespace\s*\{").is_match(text) { return spans; }
     let bytes = text.as_bytes();
-    // Each open brace: the line it opens on, and whether it opens an unnamed namespace.
-    let mut open: Vec<(i64, bool)> = Vec::new();
-    let mut line = 1i64;
+    // Each open brace: where it is, and whether it opens an unnamed namespace.
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    let mut offsets: Vec<(usize, usize)> = Vec::new();
     let mut line_start = true;
     // The code since the last brace or `;`, without comments and literals.
     let mut code = String::new();
     let mut i = 0;
-    let count_lines = |from: usize, to: usize| bytes[from..to.min(bytes.len())].iter().filter(|&&b| b == b'\n').count() as i64;
     while i < bytes.len() {
         let c = bytes[i];
         if c == b'\n' {
-            line += 1;
             line_start = true;
             code.push(' ');
             i += 1;
@@ -50,29 +51,27 @@ pub(super) fn unnamed_namespace_spans(text: &str) -> Vec<(i64, i64)> {
             // A preprocessor line, continued by a trailing backslash.
             let mut end = i;
             while end < bytes.len() && (bytes[end] != b'\n' || (end > 0 && bytes[end - 1] == b'\\') || (end > 1 && bytes[end - 1] == b'\r' && bytes[end - 2] == b'\\')) {
-                if bytes[end] == b'\n' { line += 1; }
                 end += 1;
             }
             i = end;
             continue;
         }
-        if !c.is_ascii_whitespace() { line_start = false; }
+        // (A comment is a space: a directive may follow one that starts its line.)
         if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
             i = text[i..].find('\n').map_or(bytes.len(), |n| i + n);
             continue;
         }
         if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
-            let stop = text[i + 2..].find("*/").map_or(bytes.len(), |n| i + 2 + n + 2);
-            line += count_lines(i, stop);
-            i = stop;
+            i = text[i + 2..].find("*/").map_or(bytes.len(), |n| i + 2 + n + 2);
             continue;
         }
+        if !c.is_ascii_whitespace() { line_start = false; }
         if c == b'"' && {
             let from = (i.saturating_sub(4)..i).find(|&k| text.is_char_boundary(k)).unwrap_or(i);
             re!(r"(?:^|[^\w$])(?:u8|[uUL])?R$").is_match(&text[from..i])
         } {
             // `R"delim( … )delim"`.
-            let stop = match text[i..].find('(') {
+            i = match text[i..].find('(') {
                 Some(p) => {
                     let paren = i + p;
                     let closing = format!("){}\"", &text[i + 1..paren]);
@@ -80,8 +79,6 @@ pub(super) fn unnamed_namespace_spans(text: &str) -> Vec<(i64, i64)> {
                 }
                 None => bytes.len(),
             };
-            line += count_lines(i, stop);
-            i = stop;
             continue;
         }
         if c == b'"' || c == b'\'' {
@@ -94,12 +91,12 @@ pub(super) fn unnamed_namespace_spans(text: &str) -> Vec<(i64, i64)> {
         }
         match c {
             b'{' => {
-                open.push((line, re!(r"(?:^|[^\w$])namespace\s*$").is_match(&code)));
+                open.push((i, re!(r"(?:^|[^\w$])namespace\s*$").is_match(&code)));
                 code.clear();
             }
             b'}' => {
                 if let Some((start, unnamed)) = open.pop() {
-                    if unnamed && !open.iter().any(|(_, u)| *u) { spans.push((start, line)); }
+                    if unnamed && !open.iter().any(|(_, u)| *u) { offsets.push((start, i)); }
                 }
                 code.clear();
             }
@@ -112,6 +109,14 @@ pub(super) fn unnamed_namespace_spans(text: &str) -> Vec<(i64, i64)> {
         }
         i += 1;
     }
+    if offsets.is_empty() { return spans; }
+    let mut line_starts = vec![0usize];
+    line_starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
+    let position = |offset: usize| -> Position {
+        let line = line_starts.partition_point(|&s| s <= offset) - 1;
+        (line as i64 + 1, text[line_starts[line]..offset].encode_utf16().count() as i64)
+    };
+    spans.extend(offsets.into_iter().map(|(from, to)| (position(from), position(to))));
     spans
 }
 
@@ -142,15 +147,25 @@ impl KernelResolver {
                 return Ok(true);
             }
         }
-        if self.cpp_seen_from(candidate, &r.file_path)? { return Ok(false); }
+        // A source file's unnamed namespace is its own and its includers'; a header's is the
+        // includers' of that header, so another file's `Helper` is not the includer's.
+        if c_source_ext_re().is_match(&candidate.file_path) && self.cpp_seen_from(candidate, &r.file_path)? { return Ok(false); }
         let Some(source) = self.read_file(&candidate.file_path) else { return Ok(false) };
-        Ok(source.cpp_unnamed_namespaces().iter().any(|&(start, end)| candidate.start_line >= start && candidate.start_line <= end))
+        let at = (candidate.start_line, candidate.start_column);
+        if !source.cpp_unnamed_namespaces().iter().any(|&(open, close)| at > open && at < close) { return Ok(false); }
+        Ok(!self.cpp_file_reaches(candidate, &r.file_path)?)
     }
 
     /// Whether the declaration `decl` is seen from `file`: it is no source file's, or `file` is its
     /// own, includes its file, or is a header its file includes below it.
     fn cpp_seen_from(&mut self, decl: &KNode, file: &str) -> Res<bool> {
-        if !c_source_ext_re().is_match(&decl.file_path) || decl.file_path == file { return Ok(true); }
+        if !c_source_ext_re().is_match(&decl.file_path) { return Ok(true); }
+        self.cpp_file_reaches(decl, file)
+    }
+
+    /// Whether `file` is the file of `decl`, includes it, or is a header it includes below it.
+    fn cpp_file_reaches(&mut self, decl: &KNode, file: &str) -> Res<bool> {
+        if decl.file_path == file { return Ok(true); }
         if self.namespace_visible_files(file, &decl.language)?.contains(&decl.file_path) { return Ok(true); }
         self.cpp_includes_after(&decl.file_path, decl.start_line, file, &decl.language)
     }
@@ -197,7 +212,14 @@ mod tests {
     #[test]
     fn unnamed_namespaces_past_comments_and_literals() {
         let text = "namespace a {\nnamespace {\nint f();\nnamespace {\n}\n}\n// namespace {\n/* namespace { */\n#define X namespace {\nconst char* s = \"namespace {\";\nconst char* r = R\"(a \"namespace {\" b)\";\n}\n";
-        assert_eq!(unnamed_namespace_spans(text), vec![(2, 6)]);
-        assert_eq!(unnamed_namespace_spans("#define B \\\n  namespace {\nint g();\n"), Vec::<(i64, i64)>::new());
+        assert_eq!(unnamed_namespace_spans(text), vec![((2, 10), (6, 0))]);
+        assert_eq!(unnamed_namespace_spans("#define B \\\n  namespace {\nint g();\n"), vec![]);
+    }
+
+    #[test]
+    fn a_directive_follows_a_comment_and_a_span_ends_at_its_brace() {
+        assert_eq!(unnamed_namespace_spans("/* note */ #define X namespace {\nclass A {};\n"), vec![]);
+        assert_eq!(unnamed_namespace_spans("namespace { class A {}; } class B {};\n"), vec![((1, 10), (1, 24))]);
+        assert_eq!(unnamed_namespace_spans("// é\nnamespace { int é; }\n"), vec![((2, 10), (2, 19))]);
     }
 }
