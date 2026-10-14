@@ -49,6 +49,10 @@ pub(super) fn cpp_plain_type(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The class a member expression reads from, the member's name, and its explicit template
+/// arguments (`<…>` as written).
+type CppMemberRead = (Arc<KNode>, String, Option<String>);
+
 /// A type written `auto`, `auto&`, `const auto*`.
 pub(super) fn is_cpp_auto(raw: &str) -> bool {
     type_segments(raw).is_some_and(|parts| parts.len() == 1 && parts[0] == "auto")
@@ -518,7 +522,7 @@ impl KernelResolver {
             }
             // `compact_->sub_compact_states`: a data member of the object's class.
             "field_expression" => {
-                let Some((cls, field)) = self.cpp_member_of_expression(node, source, r, depth)? else { return Ok(None) };
+                let Some((cls, field, None)) = self.cpp_member_of_expression(node, source, r, depth)? else { return Ok(None) };
                 self.cpp_data_member_written(&cls.qualified_name, &field, r)
             }
             // `new Foo(…)`: a pointer to what it constructs.
@@ -549,11 +553,21 @@ impl KernelResolver {
                     return Ok(Some(CppWritten { text: callee.to_string(), site: r.clone() }));
                 }
                 match function.kind() {
-                    // `recv.method(…)`, `recv->method(…)`: the method of the receiver's class.
+                    // `recv.method(…)`, `recv->method(…)`, `recv->method<T>(…)`: the method of the
+                    // receiver's class.
                     "field_expression" => {
-                        let Some((cls, method)) = self.cpp_member_of_expression(function, source, r, depth)? else { return Ok(None) };
+                        let Some((cls, method, template_arguments)) = self.cpp_member_of_expression(function, source, r, depth)? else { return Ok(None) };
                         let methods = self.cpp_methods_named(&cls, &method, r)?;
-                        self.cpp_return_type_of(&methods, r)
+                        let Some(arguments) = template_arguments else { return self.cpp_return_type_of(&methods, r) };
+                        // Explicit template arguments call a template, never an overload that is none.
+                        let mut templates = Vec::new();
+                        for function in methods {
+                            if !self.cpp_own_template_parameters(&function, r)?.is_empty() { templates.push(function); }
+                        }
+                        match self.cpp_member_template_return(&templates, &arguments, r)? {
+                            Some(returned) => Ok(Some(returned)),
+                            None => self.cpp_return_type_of(&templates, r),
+                        }
                     }
                     // `f(…)`, `ns::f(…)`, `Class::f(…)`, `Foo<int>(…)`: the caller's class's own or
                     // inherited method first, then the function looked up from the caller's scope
@@ -611,8 +625,16 @@ impl KernelResolver {
     }
 
     /// The class of the object a member expression `x.m` or `x->m` names a member of, and `m`.
-    fn cpp_member_of_expression(&mut self, member: TsNode, source: &Rc<SourceFile>, r: &ResolveRefIn, depth: u32) -> Res<Option<(Arc<KNode>, String)>> {
-        let (Some(argument), Some(field)) = (member.child_by_field_name("argument"), member.child_by_field_name("field")) else { return Ok(None) };
+    /// The class of the object a member expression `recv.name`, `recv->name` or `recv->name<…>`
+    /// reads from, with the member's name and its explicit template arguments (`<…>` as written).
+    fn cpp_member_of_expression(&mut self, member: TsNode, source: &Rc<SourceFile>, r: &ResolveRefIn, depth: u32) -> Res<Option<CppMemberRead>> {
+        let (Some(argument), Some(mut field)) = (member.child_by_field_name("argument"), member.child_by_field_name("field")) else { return Ok(None) };
+        let mut template_arguments = None;
+        if field.kind() == "template_method" {
+            let (Some(name), Some(arguments)) = (field.child_by_field_name("name"), field.child_by_field_name("arguments")) else { return Ok(None) };
+            template_arguments = Some(source.text()[arguments.byte_range()].to_string());
+            field = name;
+        }
         let name = source.text()[field.byte_range()].to_string();
         if !re!(r"^[A-Za-z_]\w*$").is_match(&name) { return Ok(None); }
         let operator = super::awaited::strip_ts_comments(&source.text()[argument.end_byte()..field.start_byte()]);
@@ -626,7 +648,54 @@ impl KernelResolver {
             "." if !top_level_pointer(&object.text) => object,
             _ => return Ok(None),
         };
-        Ok(self.cpp_written_class(&object, r)?.map(|cls| (cls, name)))
+        Ok(self.cpp_written_class(&object, r)?.map(|cls| (cls, name, template_arguments)))
+    }
+
+    /// The names of the template parameters a C++ function template's own `template <…>` header
+    /// declares, in order, without their defaults: `["Type"]` for protobuf's `template <typename
+    /// Type> const Type& GetRaw(…)`. Empty for a function that is no template.
+    fn cpp_own_template_parameters(&mut self, function: &Arc<KNode>, r: &ResolveRefIn) -> Res<Vec<String>> {
+        let Some(source) = self.read_file(&function.file_path) else { return Ok(Vec::new()) };
+        let site = site_at(r, function);
+        let Some(tree) = self.parsed_tree(&source, &site) else { return Ok(Vec::new()) };
+        let mut node = descendant_for_position(tree.root_node(), source.text(), ((function.start_line - 1).max(0) as usize, function.start_column.max(0) as usize));
+        loop {
+            if node.kind() == "template_declaration" { break; }
+            if matches!(node.kind(), "field_declaration_list" | "compound_statement" | "translation_unit" | "namespace_definition") { return Ok(Vec::new()); }
+            let Some(parent) = node.parent() else { return Ok(Vec::new()) };
+            node = parent;
+        }
+        let Some(list) = node.child_by_field_name("parameters") else { return Ok(Vec::new()) };
+        Ok(named_children(list).into_iter().filter(|p| !p.kind().contains("comment")).map(|p| {
+            let name = p.child_by_field_name("name").or_else(|| p.child_by_field_name("declarator"))
+                .or_else(|| named_children(p).into_iter().rev().find(|c| matches!(c.kind(), "type_identifier" | "identifier")));
+            name.map(|n| source.text()[n.byte_range()].trim_start_matches("...").trim().to_string()).unwrap_or_default()
+        }).collect())
+    }
+
+    /// What a call of the C++ member template whose overloads are `templates`, with the explicit
+    /// template arguments `arguments` (`<…>` as written), returns when every overload is declared
+    /// to return the same one of its own template parameters, perhaps const, a pointer or a
+    /// reference: that argument, so qualified, as written at the call. protobuf's `template
+    /// <typename Type> const Type& GetRaw(…)` called as `GetRaw<RepeatedPtrField<int>>(…)` returns
+    /// a `RepeatedPtrField<int>&`. None otherwise: then the return type is read as written.
+    ///
+    /// Port of upstream's `cppMemberTemplateReturn` (name-matcher.ts at 1753472a, #2556).
+    fn cpp_member_template_return(&mut self, templates: &[Arc<KNode>], arguments: &str, r: &ResolveRefIn) -> Res<Option<CppWritten>> {
+        let mut slot: Option<(usize, String, String)> = None;
+        for function in templates {
+            let Some((written, _)) = self.cpp_written_return_type(function, r)? else { continue };
+            let param = re!(r"(?:const|volatile)|[*&]").replace_all(&written, " ").trim().to_string();
+            let index = if param.is_empty() { None } else { self.cpp_own_template_parameters(function, r)?.iter().position(|p| *p == param) };
+            let Some(index) = index else { return Ok(None) };
+            if slot.as_ref().is_some_and(|(seen, _, _)| *seen != index) { return Ok(None); }
+            slot.get_or_insert((index, written, param));
+        }
+        let Some((index, written, param)) = slot else { return Ok(None) };
+        let inner = arguments.trim().strip_prefix('<').and_then(|a| a.strip_suffix('>')).unwrap_or("");
+        let Some(argument) = super::overloads_upstream::split_top_level(inner).into_iter().nth(index).map(|a| a.trim().to_string()).filter(|a| !a.is_empty()) else { return Ok(None) };
+        let Ok(word) = shared_regex(&format!(r"\b{}\b", regex::escape(&param))) else { return Ok(None) };
+        Ok(Some(CppWritten { text: word.replace(&written, regex::NoExpand(&argument)).into_owned(), site: r.clone() }))
     }
 
     /// The declared type of the name `node` in `r`'s caller: a parameter or local (an `auto` local
