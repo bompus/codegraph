@@ -1354,13 +1354,26 @@ if inferred.is_none() && r.language == "dart" {
             if !class_like || c.language != r.language {
                 continue;
             }
+            // C++'s `Outer::Count()` is the member C++ looks up in `Outer`: its own, else one a
+            // base declares, never one of a class nested in it, like `Outer::Inner::Count` beside
+            // an inherited `Base::Count`.
+            if c.language == "cpp" && resolved_by == "qualified-name" {
+                let Some(found) = self.cpp_method_of(c, method, r, 0, &mut HashSet::new())? else { continue };
+                let own = found.qualified_name == format!("{}::{method}", c.qualified_name);
+                return Ok(Some(KCand { node: found, confidence: if own { 0.85 } else { 0.8 }, resolved_by }));
+            }
             let in_file = self.nodes_in_file(&c.file_path)?;
             if let Some(mn) = in_file
                 .iter()
                 // An owner segment equal to the class name: `Loud` is not
-                // `Loudspeaker`.
+                // `Loudspeaker`. In C and C++, only a method of exactly that
+                // class: protobuf's `arena.get()` is not `Arena::UniquePtr::get`.
                 .find(|n| {
-                    n.kind == "method" && n.name == method && n.qualified_name.split([':', '.']).any(|s| s == c.name)
+                    n.kind == "method" && n.name == method && if matches!(c.language.as_str(), "c" | "cpp") {
+                        n.qualified_name == format!("{}::{method}", c.qualified_name)
+                    } else {
+                        n.qualified_name.split([':', '.']).any(|s| s == c.name)
+                    }
                 })
             {
                 return Ok(Some(KCand { node: mn.clone(), confidence, resolved_by }));
