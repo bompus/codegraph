@@ -26,8 +26,10 @@ export function __setLoadCodeGraphForTests(cls: typeof import('../index').defaul
 }
 import {
   detectWorktreeIndexMismatch,
+  nestedRepositoryBelow,
   worktreeMismatchWarning,
   worktreeMismatchNotice,
+  type NestedRepository,
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
@@ -51,6 +53,8 @@ import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, C
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
+import { describeSynthesizedHop } from '../graph/synthesized-hop';
+import { isCopybookInclude, MAX_COPYBOOK_INCLUDES, type NamedCopybook } from '../graph/cobol-copybooks';
 import {
   findAllSymbols,
   resolveNamedSymbolFlow,
@@ -1538,7 +1542,6 @@ export interface ToolResult {
   _cgExploreEmission?: ExploreEmission;
   /** Internal structured provenance, preserved by query workers and stripped by execute. */
   _cgAnswerFiles?: AnswerFile[];
-  structuredContent?: Record<string, unknown>;
 }
 
 /**
@@ -1868,6 +1871,23 @@ function canonicalPath(p: string): string {
 export const MAX_CACHED_PROJECTS = 8;
 
 /**
+ * How long an explicit-`projectPath` project may go unused before the handler
+ * releases it (#2087). Releasing frees its SQLite handle, its watcher and the
+ * writer lock the engine may hold on that project — which otherwise stays held
+ * for the whole life of this daemon, locking the project's own daemon and
+ * `codegraph index` out. The next call reopens it and catches up.
+ * `CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS` overrides it; `0` never releases.
+ */
+const DEFAULT_PROJECT_IDLE_TIMEOUT_MS = 600_000;
+function resolveProjectIdleTimeoutMs(): number {
+  const raw = process.env.CODEGRAPH_PROJECT_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_PROJECT_IDLE_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PROJECT_IDLE_TIMEOUT_MS;
+  return Math.floor(n);
+}
+
+/**
  * Engine-side lifecycle for a project the ToolHandler opened for an explicit
  * `projectPath` (#1835). `activate` gives it the same treatment the default
  * project gets — a file watcher while it stays open and a catch-up sync — and
@@ -1892,6 +1912,10 @@ export class ToolHandler {
   // CANONICAL (realpath) index root. Map insertion order doubles as LRU order:
   // a hit re-inserts, and `MAX_CACHED_PROJECTS` bounds the size (#1835).
   private projectCache: Map<string, CodeGraph> = new Map();
+  // When each cached root was last handed to a call, and the one timer that
+  // releases the oldest once it has been idle long enough (#2087).
+  private projectUsedAt: Map<string, number> = new Map();
+  private idleReleaseTimer: NodeJS.Timeout | null = null;
   // Engine hook that watches + catches up an explicit project (null for the
   // CLI and worker-thread handlers, which never own a watcher).
   private projectLifecycle: ProjectLifecycle | null = null;
@@ -1921,6 +1945,10 @@ export class ToolHandler {
   // once and every later tool call reuses the result — never shelling out to
   // git on the hot path. `undefined` = not computed yet; `null` = no mismatch.
   private worktreeMismatchCache: Map<string, WorktreeIndexMismatch | null> = new Map();
+  // Per-(projectPath, index root) cache of the different git repository the
+  // path sits in below that root, if any (#2110) — the git half of
+  // `uncoveredNestedRepo`, memoized like the mismatch above.
+  private nestedRepoCache: Map<string, NestedRepository | null> = new Map();
   // Gate that the MCP engine pokes after `cg.open()` so the first tool call
   // blocks on the post-open filesystem reconcile (catch-up sync). Without
   // this, a tool call that races past `catchUpSync()` serves rows for files
@@ -2240,6 +2268,30 @@ export class ToolHandler {
       );
     }
 
+    const cg = this.openProjectRoot(resolvedRoot, canonicalRoot);
+    // The walk above crosses git boundaries. A nested repository the ancestor
+    // index leaves out (typically gitignored) would otherwise be answered from
+    // the ancestor's code, looking like an answer about the requested project
+    // (#2110) — so it gets the same guidance as a project with no index at all.
+    const nested = this.uncoveredNestedRepo(projectPath, canonicalRoot, cg);
+    if (nested) {
+      throw new NotIndexedError(
+        `The project at ${projectPath} isn't indexed with codegraph: it is its own git repository ` +
+        `(${nested.root}), and the nearest index, at ${canonicalRoot}, holds none of its files ` +
+        '(that repository is excluded from it, e.g. by a .gitignore), so codegraph cannot query it. ' +
+        "Use your built-in tools (Read/Grep/Glob) for that codebase instead, and don't call codegraph " +
+        "for it again this session. Indexing is the user's decision — they can run 'codegraph init' " +
+        `in ${nested.root} to enable it.`
+      );
+    }
+    return cg;
+  }
+
+  /**
+   * The open CodeGraph for an index root the up-walk resolved: the default
+   * instance, a cached one, or a newly opened (and cached) one.
+   */
+  private openProjectRoot(resolvedRoot: string, canonicalRoot: string): CodeGraph {
     // If the path resolves to the default project, reuse the already-open
     // default instance rather than opening a SECOND connection to the same DB.
     // A duplicate connection serializes reads against the watcher's auto-sync
@@ -2260,6 +2312,7 @@ export class ToolHandler {
       // Refresh LRU position.
       this.projectCache.delete(canonicalRoot);
       this.projectCache.set(canonicalRoot, cached);
+      this.projectUsedAt.set(canonicalRoot, Date.now());
       return this.freshen(cached);
     }
 
@@ -2269,6 +2322,7 @@ export class ToolHandler {
       if (isSameIndexRoot(root, resolvedRoot)) {
         this.projectCache.delete(root);
         this.projectCache.set(root, open);
+        this.projectUsedAt.set(root, Date.now());
         return this.freshen(open);
       }
     }
@@ -2276,8 +2330,37 @@ export class ToolHandler {
     const open = () => loadCodeGraph().openSync(canonicalRoot);
     const cg = this.projectLifecycle?.open(canonicalRoot, open) ?? open();
     this.projectCache.set(canonicalRoot, cg);
+    this.projectUsedAt.set(canonicalRoot, Date.now());
     this.trimProjects();
     return cg;
+  }
+
+  /**
+   * The nested git repository `projectPath` lives in when the index the
+   * up-walk reached (`indexRoot`'s, open as `cg`) holds none of its files; null
+   * when that index covers it — an ordinary subdirectory, a submodule or
+   * embedded clone the ancestor indexes, a linked worktree (#155) — or when git
+   * can't tell (#2110).
+   *
+   * The git half is memoized per (projectPath, index root), keyed on both for
+   * the reason `worktreeMismatchCache` is (#926). The index half is one
+   * primary-key probe per call, so a sync that brings the repository into the
+   * index is honored without a restart.
+   */
+  private uncoveredNestedRepo(projectPath: string, indexRoot: string, cg: CodeGraph): NestedRepository | null {
+    const cacheKey = `${projectPath}\u0000${indexRoot}`;
+    let nested = this.nestedRepoCache.get(cacheKey);
+    if (nested === undefined) {
+      nested = nestedRepositoryBelow(projectPath, indexRoot);
+      this.nestedRepoCache.set(cacheKey, nested);
+    }
+    if (!nested) return null;
+    try {
+      return cg.hasFilesUnder(nested.relPath) ? null : nested;
+    } catch {
+      // An index we can't read is no evidence the repository is excluded.
+      return null;
+    }
   }
 
   private async awaitProjectGate(projectPath: string): Promise<void> {
@@ -2295,13 +2378,21 @@ export class ToolHandler {
     await this.awaitCatchUpGate(gate);
   }
 
-  /** Never evict a graph while a tool call or its timed-out reconcile uses it. */
+  /**
+   * Never evict a graph while a tool call or its timed-out reconcile uses it.
+   * Evicts over the LRU bound, on close, and once idle past the timeout
+   * (#2087). The cache is in last-use order, so idle entries lead it.
+   */
   private trimProjects(): void {
     if (this.activeCalls > 0) return;
+    const idleMs = resolveProjectIdleTimeoutMs();
+    const now = Date.now();
     for (const [root, cg] of this.projectCache) {
-      if (!this.closing && this.projectCache.size <= MAX_CACHED_PROJECTS) break;
+      const idle = idleMs > 0 && now - (this.projectUsedAt.get(root) ?? now) >= idleMs;
+      if (!this.closing && this.projectCache.size <= MAX_CACHED_PROJECTS && !idle) break;
       if (this.projectGates.has(cg)) continue;
       this.projectCache.delete(root);
+      this.projectUsedAt.delete(root);
       if (this.projectLifecycle) {
         this.pendingCloses++;
         void Promise.resolve(this.projectLifecycle.release(cg)).finally(() => {
@@ -2312,6 +2403,26 @@ export class ToolHandler {
     }
     if (this.closing && this.projectCache.size === 0 && this.pendingCloses === 0) {
       for (const resolve of this.closeWaiters.splice(0)) resolve();
+    }
+    this.scheduleIdleRelease(idleMs);
+  }
+
+  /**
+   * Arm one unref'd timer for the oldest project a trim could release. A
+   * project whose catch-up is still running is trimmed when that settles; the
+   * 1s floor keeps a project a trim must skip from re-arming in a tight loop.
+   */
+  private scheduleIdleRelease(idleMs: number): void {
+    if (this.idleReleaseTimer || this.closing || idleMs <= 0) return;
+    for (const [root, cg] of this.projectCache) {
+      if (this.projectGates.has(cg)) continue;
+      const due = (this.projectUsedAt.get(root) ?? Date.now()) + idleMs - Date.now();
+      this.idleReleaseTimer = setTimeout(() => {
+        this.idleReleaseTimer = null;
+        this.trimProjects();
+      }, Math.min(Math.max(due, 1000), 0x7fffffff)); // setTimeout's 32-bit cap
+      this.idleReleaseTimer.unref();
+      return;
     }
   }
 
@@ -2347,6 +2458,9 @@ export class ToolHandler {
   closeAll(): Promise<void> {
     this.closing = true;
     this.worktreeMismatchCache.clear();
+    if (this.idleReleaseTimer) clearTimeout(this.idleReleaseTimer);
+    this.idleReleaseTimer = null;
+    this.nestedRepoCache.clear();
     this.trimProjects();
     if (this.projectCache.size === 0 && this.activeCalls === 0 && this.pendingCloses === 0) return Promise.resolve();
     return new Promise((resolve) => this.closeWaiters.push(resolve));
@@ -2757,7 +2871,10 @@ export class ToolHandler {
             if (validation.unchecked.length > 20) lines.push(`- … ${validation.unchecked.length - 20} more (narrow the query)`);
           }
           lines.push('Retry after a successful codegraph sync, or narrow the query.');
-          return { ...this.textResult(lines.join('\n')), structuredContent: { freshness: validation } };
+          // Text only: Claude Code shows the model a result's structuredContent
+          // in place of its text (#2088). The text names every stale file and
+          // the first unchecked ones; the rest only need a narrower query.
+          return this.textResult(lines.join('\n'));
         }
       }
       // Record + STRIP before anything else touches the result: the emission is
@@ -3189,12 +3306,6 @@ export class ToolHandler {
   }
 
   /**
-   * Describe a synthesized (dynamic-dispatch) edge for human output: how the
-   * callback was wired up — the bridge static parsing can't see. Returns null
-   * for ordinary static edges. Used by trace + the node trail so a synthesized
-   * hop reads as "registered via onUpdate at App.tsx:3148", not a bare arrow.
-   */
-  /**
    * The branch conditions a flow hop's call site runs under, read from the
    * caller's source now (`graph/branch-guards.ts`); '' when unconditional,
    * unreadable, or the grammar for that language is not loaded.
@@ -3217,117 +3328,17 @@ export class ToolHandler {
     }
   }
 
-  private synthEdgeNote(edge: Edge | null): { label: string; compact: string; registeredAt?: string } | null {
-    if (!edge || edge.provenance !== 'heuristic') return null;
-    const m = edge.metadata as Record<string, unknown> | undefined;
-    const registeredAt = typeof m?.registeredAt === 'string' ? m.registeredAt : undefined;
-    const at = registeredAt ? ` @${registeredAt}` : '';
-    if (m?.synthesizedBy === 'callback') {
-      const via = m.via ? `\`${String(m.via)}\`` : 'a registrar';
-      const field = m.field ? ` on .${String(m.field)}` : '';
-      return {
-        label: `callback — registered via ${via}${field} (dynamic dispatch)`,
-        compact: `dynamic: callback via ${via}${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'http-client') {
-      const req = `${String(m.method ?? 'GET')} ${String(m.href ?? '')}`.trim();
-      return {
-        label: `HTTP request \`${req}\` — the client's call onto its own route (cross-tier)`,
-        compact: `dynamic: HTTP ${req}${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'queue-job') {
-      const job = m.event ? `\`${String(m.event)}\`` : 'a job';
-      const queue = m.queue ? ` on queue \`${String(m.queue)}\`` : '';
-      return {
-        label: `queue job ${job}${queue} — producer → consumer (cross-tier)`,
-        compact: `dynamic: queue job ${job}${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'event-bus') {
-      const ev = m.event ? `\`${String(m.event)}\`` : 'an event';
-      const what = m.channel === 'socket' ? 'socket message' : 'bus event';
-      const dir = m.tier === 'client→server' ? ', client → server' : m.tier === 'server→client' ? ', server → client' : '';
-      return {
-        label: `${what} ${ev} — emit → handler${dir} (dynamic dispatch)`,
-        compact: `dynamic: ${what} ${ev}${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'event-emitter') {
-      const ev = m.event ? `\`${String(m.event)}\`` : 'an event';
-      return {
-        label: `event ${ev} — emit → handler (dynamic dispatch)`,
-        compact: `dynamic: event ${ev}${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'react-render') {
-      return {
-        label: `React re-render — \`setState\` re-runs render() (dynamic dispatch)`,
-        compact: `dynamic: React re-render via setState${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'jsx-render') {
-      const child = m.via ? `<${String(m.via)}>` : 'a child component';
-      return {
-        label: `renders ${child} (JSX child — dynamic dispatch)`,
-        compact: `dynamic: renders ${child}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'vue-handler') {
-      const ev = m.event ? `@${String(m.event)}` : 'a template event';
-      return {
-        label: `Vue template handler — bound to ${ev} (dynamic dispatch)`,
-        compact: `dynamic: Vue ${ev} handler`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'interface-impl') {
-      return {
-        label: `interface/abstract dispatch — runs the implementation override (dynamic dispatch)`,
-        compact: `dynamic: interface → impl${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'closure-collection') {
-      const field = m.field ? `\`${String(m.field)}\`` : 'a collection';
-      return {
-        label: `closure collection — runs handlers appended to ${field} (dynamic dispatch)`,
-        compact: `dynamic: runs ${field} handlers${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'fn-pointer-dispatch') {
-      const via = m.via ? `\`${String(m.via)}\`` : 'a function pointer';
-      return {
-        label: `function-pointer dispatch via ${via} (dynamic dispatch)`,
-        compact: `dynamic: fn-pointer ${m.via ? String(m.via) : ''}${at}`,
-        registeredAt,
-      };
-    }
-    if (m?.synthesizedBy === 'goframe-route') {
-      const route = m.route ? `\`${String(m.route)}\`` : 'a route';
-      return {
-        label: `GoFrame route ${route} — reflective Bind → controller method (dynamic dispatch)`,
-        compact: `dynamic: GoFrame route ${m.route ? String(m.route) : ''}${at}`,
-        registeredAt,
-      };
-    }
-    // Generic fallback for any other synthesizer (redux-thunk, gin-middleware-chain,
-    // flutter-build, …): a synthesized hop must never read as a bare static `calls`.
-    // It's a dynamic-dispatch bridge — label it as one and keep its wiring site.
-    if (typeof m?.synthesizedBy === 'string') {
-      const kind = m.synthesizedBy.replace(/-/g, ' ');
-      return { label: `${kind} (dynamic dispatch)`, compact: `dynamic: ${kind}${at}`, registeredAt };
-    }
-    return null;
+  /**
+   * The tag a synthesized (dynamic-dispatch) hop carries in explore's Flow and
+   * dynamic-dispatch links and in the codegraph_node trail, so it reads as
+   * "dynamic: callback via `onUpdate` @App.tsx:3148", not a bare arrow. Null
+   * for an ordinary static edge. The wording is `graph/synthesized-hop.ts`'s,
+   * shared with ContextBuilder's call paths.
+   */
+  private synthEdgeNote(edge: Edge | null): string | null {
+    const hop = describeSynthesizedHop(edge);
+    if (!hop) return null;
+    return `dynamic: ${hop.summary}${hop.registeredAt ? ` @${hop.registeredAt}` : ''}`;
   }
 
   /**
@@ -3382,8 +3393,7 @@ export class ToolHandler {
             const key = `${src.name}>${tgt.name}`;
             if (synthSeen.has(key)) continue;
             synthSeen.add(key);
-            const note = this.synthEdgeNote(edge);
-            synthLines.push(`- ${src.name} → ${tgt.name}   [${note ? note.compact : edge.kind}]`);
+            synthLines.push(`- ${src.name} → ${tgt.name}   [${this.synthEdgeNote(edge) ?? edge.kind}]`);
           }
         }
         return synthLines;
@@ -3516,9 +3526,8 @@ export class ToolHandler {
         for (let i = 0; i < best!.length; i++) {
           const step = best![i]!;
           if (step.edge) {
-            const sy = this.synthEdgeNote(step.edge);
             const when = i > 0 ? this.whenLabel(cg, best![i - 1]!.node, step.edge) : '';
-            out.push(`   ↓ ${sy ? sy.compact : step.edge.kind}${when ? ` (when ${when})` : ''}`);
+            out.push(`   ↓ ${this.synthEdgeNote(step.edge) ?? step.edge.kind}${when ? ` (when ${when})` : ''}`);
           }
           out.push(`${i + 1}. ${step.node.name} (${step.node.filePath}:${step.node.startLine})`);
         }
@@ -3820,6 +3829,46 @@ export class ToolHandler {
   }
 
   /**
+   * The COBOL copybooks an explore query named (#2342): where each one's source
+   * lives, and every `COPY` / `EXEC SQL INCLUDE` statement that pulls it in —
+   * locations only, one per line. The source section can afford a few include
+   * windows; this list is what answers "what includes X / what does changing X
+   * touch" without a grep for `COPY X`. A member whose source is not indexed
+   * says so, so nobody goes hunting for a copybook file that is not here.
+   */
+  private buildCopybookSection(copybooks: NamedCopybook[]): string {
+    const MAX_LISTED_SITES = 25;
+    const blocks: string[] = [];
+    for (const copybook of copybooks) {
+      // Spelled as the code spells it — an include's member, else the file's
+      // stem — not as the query happened to type it.
+      const name = copybook.includes[0]?.name
+        ?? copybook.files[0]?.name.replace(/\.[^.]*$/, '')
+        ?? copybook.member;
+      const source = copybook.files.length > 0
+        ? `source ${copybook.files.map((f) => `\`${f.filePath}\``).join(', ')}`
+        : 'no indexed source (typically a DB2 DCLGEN member, a compiler-supplied copybook such as SQLCA, or one kept outside this project)';
+      const count = copybook.includes.length;
+      if (count === 0) {
+        blocks.push(`**COBOL copybook \`${name}\`** — ${source}; nothing indexed includes it (no \`COPY\` or \`EXEC SQL INCLUDE\` of it).`, '');
+        continue;
+      }
+      const sites = `${count}${count >= MAX_COPYBOOK_INCLUDES ? '+' : ''} site${count === 1 ? '' : 's'}`;
+      blocks.push(`**COBOL copybook \`${name}\`** — ${source}; included at ${sites}:`, '');
+      for (const include of copybook.includes.slice(0, MAX_LISTED_SITES)) {
+        const statement = /^\s*EXEC\b/i.test(include.signature ?? '') ? 'EXEC SQL INCLUDE' : 'COPY';
+        blocks.push(`- \`${include.filePath}:${include.startLine}\` — ${statement}`);
+      }
+      if (count > MAX_LISTED_SITES) {
+        const files = new Set(copybook.includes.slice(MAX_LISTED_SITES).map((n) => n.filePath)).size;
+        blocks.push(`- … +${count - MAX_LISTED_SITES} more site${count - MAX_LISTED_SITES === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'}`);
+      }
+      blocks.push('');
+    }
+    return blocks.join('\n');
+  }
+
+  /**
    * Test-coverage note for a blast-radius entry whose DIRECT callers include no
    * test file. A helper called only by production code can still be exercised
    * by tests further up the caller chain (#1475: 40% of directly-unflagged
@@ -4004,6 +4053,22 @@ export class ToolHandler {
           matchQuery = normalizeQuerySpelling(extraction.strippedQuery);
         }
       } catch { /* path pinning must never fail an explore call */ }
+    }
+    // A COBOL copybook the query names (`CVACT01Y`) names its FILE as surely as
+    // `app/cpy/CVACT01Y.cpy` would (#2342), so it is pinned the same way: the
+    // copybook's own source is admitted, ranked first and funded first. Looked
+    // up on the path-stripped query — a query that already pinned the file by
+    // path gets exactly the answer it got before. The include sites are listed
+    // in their own section below.
+    let namedCopybooks: NamedCopybook[] = [];
+    try {
+      namedCopybooks = cg.findNamedCopybooks(matchQuery);
+    } catch { /* copybook pinning must never fail an explore call */ }
+    for (const copybook of namedCopybooks) {
+      for (const file of copybook.files) {
+        if (pinnedFiles.length >= maxFiles) break;
+        if (!pinnedFiles.includes(file.filePath)) pinnedFiles = [...pinnedFiles, file.filePath];
+      }
     }
     // A same-named file the span did not pin is named in the summary line, so
     // an agent that did mean it sees where it went instead of a silent drop.
@@ -4539,9 +4604,20 @@ export class ToolHandler {
       }
     }
 
+    // Import/export nodes add noise without information — except a COBOL
+    // include the query named (#2342). `COPY CVACT01Y` is where the copybook is
+    // pulled in, half of what a question about the copybook asks, so it is
+    // grouped, rendered (a window around the statement) and listed like any
+    // symbol. The context builder makes one an entry point only when the query
+    // names its member, so no other import ever passes this test.
+    const namedIncludeIds = new Set(subgraph.roots.filter((id) => {
+      const root = subgraph.nodes.get(id);
+      return root !== undefined && isCopybookInclude(root);
+    }));
+    const isListedSymbol = (n: Node): boolean =>
+      n.kind !== 'export' && (n.kind !== 'import' || namedIncludeIds.has(n.id));
     for (const node of subgraph.nodes.values()) {
-      // Skip import/export nodes — they add noise without information
-      if (node.kind === 'import' || node.kind === 'export') continue;
+      if (!isListedSymbol(node)) continue;
       // SECURITY (#383): never render the on-disk source of a config-leaf
       // (Spring application.{yml,properties} key) — its line is `key = <secret>`,
       // so whole-file/cluster rendering here would push secrets into context
@@ -4583,25 +4659,18 @@ export class ToolHandler {
     // Test/spec/icon/i18n file detector — used by the pre-floor hard filter, the
     // rank penalty, and the comparator deprioritization.
     //
-    // The directory pattern is anchored at `^` as well as `/`: a repo-ROOT
-    // `test/` or `spec/` directory (express, cobra, and most of npm/Go) produced
-    // paths like `test/express.raw.js`, which the old leading-`/` form could
-    // never match — so express's routing question spent 59% of its envelope on
-    // three test files while `lib/router/index.js` never rendered.
+    // Tests are the engine's own reading (`isTestFile`), the one the gather
+    // above already dampened them by: every ecosystem's test names and folders —
+    // a repo-ROOT `test/` (express's routing question once spent 59% of its
+    // envelope on three test files), LLVM's `unittests/`, Google's
+    // `foo_unittest.cc`, a C++ `FooTest.cpp`, `testing/`, `e2e/` — and the
+    // examples, samples, fixtures and benchmarks around a project. A list of
+    // its own here missed every one of those it hadn't been taught.
     const isLowValue = (p: string) => {
       const lp = p.toLowerCase();
       return (
-        /(?:^|\/)(tests?|__tests?__|specs?)\//.test(lp) ||
-        /_test\.go$/.test(lp) ||
-        /(?:^|\/)test_[^/]+\.py$/.test(lp) ||
-        /_test\.py$/.test(lp) ||
-        /_spec\.rb$/.test(lp) ||
-        /_test\.rb$/.test(lp) ||
-        /\.(test|spec)\.[jt]sx?$/.test(lp) ||
-        /(test|spec|tests)\.(java|kt|scala)$/.test(lp) ||
-        /(tests?|spec)\.cs$/.test(lp) ||
-        /tests?\.swift$/.test(lp) ||
-        /_test\.dart$/.test(lp) ||
+        isTestFile(p) ||
+        /(?:^|\/)__test__\//.test(lp) ||
         /\bicons?\b/.test(lp) ||
         /\bi18n\b/.test(lp)
       );
@@ -4957,6 +5026,12 @@ export class ToolHandler {
       '',
     ];
     const summaryLineIdx = 2;
+
+    // A named COBOL copybook's include sites, ALL of them (#2342) — the source
+    // below has room for a few include windows, and "what includes X" is the
+    // question a copybook name asks.
+    const copybookSection = this.buildCopybookSection(namedCopybooks);
+    if (copybookSection) lines.push(copybookSection);
 
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent
@@ -5325,7 +5400,7 @@ export class ToolHandler {
       const hit = overheadCache.get(filePath);
       if (hit !== undefined) return hit;
       const names = [...new Set(
-        nodes.filter((n) => n.kind !== 'import' && n.kind !== 'export')
+        nodes.filter(isListedSymbol)
           .map((n) => `${n.name}(${n.kind})`),
       )].slice(0, budget.maxSymbolsInFileHeader);
       // header + blank, then ```lang / body / ``` / blank around the source.
@@ -5863,7 +5938,7 @@ export class ToolHandler {
       // The file node is not one of them: no section delivers "the file" as a
       // symbol, and it spans trailing lines no render prints.
       const wantedFrom = (nodes: readonly Node[]): ExploreWantedSpan[] => nodes
-        .filter((n) => n.kind !== 'import' && n.kind !== 'export' && n.kind !== 'file' && n.startLine > 0)
+        .filter((n) => isListedSymbol(n) && n.kind !== 'file' && n.startLine > 0)
         .map((n) => ({
           name: n.name,
           kind: n.kind,
@@ -5900,7 +5975,7 @@ export class ToolHandler {
           && !anchorSpans.has(filePath)
           && (onSpineGodFile || (!hasSpineNode && isPolymorphicSibling(group.nodes) && !spared))) {
         const syms = group.nodes
-          .filter(n => n.kind !== 'import' && n.kind !== 'export' && n.startLine > 0)
+          .filter(n => isListedSymbol(n) && n.startLine > 0)
           .sort((a, b) => a.startLine - b.startLine);
         // Pass 1: choose which symbols get a FULL body, by priority, greedily within
         // a per-file body cap — so one huge family file can't body every named method
@@ -6043,7 +6118,7 @@ export class ToolHandler {
           }
         }
         if (skel.length > 0) {
-          const names = [...new Set(group.nodes.filter(n => n.kind !== 'import' && n.kind !== 'export').map(n => n.name))]
+          const names = [...new Set(group.nodes.filter(isListedSymbol).map(n => n.name))]
             .slice(0, budget.maxSymbolsInFileHeader).join(', ');
           // Steer the agent to codegraph_explore for an elided body — NEVER to
           // Read. The old "Read for more" / "Read for a full body" tags invited
@@ -6202,7 +6277,7 @@ export class ToolHandler {
         const wholeSection = ddWhole.parts.map((p) => p.text).join(GAP_MARKER);
         const uniqSymbols = [...new Set(
           group.nodes
-            .filter(n => n.kind !== 'import' && n.kind !== 'export')
+            .filter(isListedSymbol)
             .map(n => `${n.name}(${n.kind})`)
         )];
         const headerNames = uniqSymbols.slice(0, budget.maxSymbolsInFileHeader);
@@ -7381,7 +7456,7 @@ export class ToolHandler {
       const g = fileGroups.get(fp);
       if (!g) return sum;
       return sum + new Set(
-        g.nodes.filter((n) => n.kind !== 'import' && n.kind !== 'export').map((n) => n.id),
+        g.nodes.filter(isListedSymbol).map((n) => n.id),
       ).size;
     }, 0);
     let summaryLine = survivors.length > 0
@@ -7845,7 +7920,7 @@ export class ToolHandler {
     const fmt = (e: { node: Node; edge: Edge }) => {
       const base = `${e.node.name} (${e.node.filePath}:${e.node.startLine})`;
       const synth = this.synthEdgeNote(e.edge);
-      return synth ? `${base} [${synth.compact}]` : base;
+      return synth ? `${base} [${synth}]` : base;
     };
     const collect = (edges: Array<{ node: Node; edge: Edge }>): Array<{ node: Node; edge: Edge }> => {
       const seen = new Set<string>([node.id]);
@@ -8006,9 +8081,8 @@ export class ToolHandler {
       }
     }
 
-    return { ...this.textResult(lines.join('\n')), structuredContent: {
-      freshness: { lastIndexedAt, changes, complete: changes !== null },
-    } };
+    // Text only, for the same reason as the stale-answer path (#2088).
+    return this.textResult(lines.join('\n'));
   }
 
   /**
