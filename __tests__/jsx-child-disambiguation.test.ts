@@ -580,12 +580,10 @@ export function AuthShell() {
     expect(renders('AuthShell')).toEqual(['function Register vite/src/pages/auth/Register.jsx']);
   });
 
-  it('renders the declaration itself when the module it loads is out of reach', async () => {
+  // `before` is the text in front of the tag in the shell's JSX.
+  const declarationWhenOutOfReach = async (before: string) => {
     write('next/src/app/(auth)/login/page.jsx', 'export default function LoginPage() {\n  return <div />;\n}\n');
     write('vite/src/components/Loadable.jsx', LOADABLE);
-    // Fork: `opensTag` skips the whitespace before `<` and reads a word there
-    // as a type or comparison (`count < Max`), so the text ends in a colon:
-    // upstream's `Sign in <LoginPage />` is no tag on this fork.
     write(
       'vite/src/layout/AuthShell.jsx',
       `import { lazy } from 'react';
@@ -595,13 +593,20 @@ import Loadable from '../components/Loadable';
 const LoginPage = Loadable(lazy(() => import('pages/auth/Login')));
 
 export function AuthShell() {
-  return <main>Sign in: <LoginPage /></main>;
+  return <main>${before}<LoginPage /></main>;
 }
 `
     );
     await index();
     expect(renders('AuthShell')).toEqual(['constant LoginPage vite/src/layout/AuthShell.jsx']);
-  });
+  };
+
+  it('renders the declaration itself when the module it loads is out of reach', () => declarationWhenOutOfReach('Sign in: '));
+
+  // Known limit of the fork: `opensTag` skips the whitespace before `<` and reads a word there
+  // as a type or comparison (`count < Max`), so upstream's `Sign in <LoginPage />` is no tag
+  // here. `it.fails` keeps this red-by-design case visible and turns the suite red once fixed.
+  it.fails('renders the declaration itself when a word precedes the tag (upstream fixture)', () => declarationWhenOutOfReach('Sign in '));
 
   it('reads next/dynamic’s `(await import(…)).default` and a `.then` that picks a named export', async () => {
     // excalidraw's docs site has a component of the same name.

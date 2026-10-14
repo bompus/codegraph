@@ -503,8 +503,9 @@ Each of these cost real debugging time; they are not hypothetical.
    JavaScript scoping makes `<RegisterPage />`, a route's `element:
    <RegisterPage />`, a `layout:` and a TSX type all the `const` the file
    declares under that name, so every one of them asks `declaredComponent`
-   first (Pattern 1 of `reactResolver.resolve` for any PascalCase reference,
-   `layoutComponent`, and the `jsx-render` synthesizer's `jsxChild`), and the
+   first (Pattern 1 of `reactResolver.resolve` for any PascalCase reference in
+   a `.tsx` or `.jsx` file, `layoutComponent`, and the `jsx-render`
+   synthesizer's `jsxChild`), and the
    lookup by name runs only for a file that declares no such value. A value is
    no component node: the lookup by kind skipped it and took a lone
    same-named component anywhere, so mantis's vite app rendered its Next.js
@@ -521,7 +522,10 @@ Each of these cost real debugging time; they are not hypothetical.
    binding rows. A tag's edge depends on the modules the file's lazy values
    load; the fork re-runs synthesis on every sync that changes a file, so a
    sync that gives one its default export redraws the tag, as a fresh index
-   would draw it.
+   would draw it. Known limit: TypeScript keeps types and values in separate
+   namespaces, but the resolver does not, so a `.tsx` type reference to a name
+   the file also declares as a lazy value (`type User = …; const User =
+   lazy(…)`) binds to the loaded page, not to the type.
 
 ---
 
