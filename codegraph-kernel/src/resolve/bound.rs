@@ -1273,6 +1273,7 @@ Ok(self.dart_member_of(type_name, method, r, false)?
             }
             return Ok(None);
         }
+        let matches = self.cpp_visible_first(matches, r)?;
         Ok(Self::pick_method_match(matches, r, confidence, resolved_by, preferred_fqn))
     }
 

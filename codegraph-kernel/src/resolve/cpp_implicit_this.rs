@@ -302,7 +302,10 @@ impl KernelResolver {
     pub(super) fn cpp_method_of(&mut self, cls: &KNode, name: &str, r: &ResolveRefIn, depth: usize, seen: &mut HashSet<String>) -> Res<Option<Arc<KNode>>> {
         let own: Vec<_> = self.nodes_by_qualified_name(&format!("{}::{name}", cls.qualified_name))?
             .iter().filter(|n| n.kind == "method" && c_family(&n.language)).cloned().collect();
-        if !own.is_empty() { return Ok(prefer_call_site_file(own, &r.file_path).into_iter().next()); }
+        if !own.is_empty() {
+            let own = self.cpp_visible_first(own, r)?;
+            return Ok(prefer_call_site_file(own, &r.file_path).into_iter().next());
+        }
         seen.insert(cls.qualified_name.clone());
         if depth >= 4 || !self.supertypes_complete { return Ok(None); }
         for decl in self.cpp_class_decls(&cls.qualified_name)? {
