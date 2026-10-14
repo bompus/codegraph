@@ -726,6 +726,26 @@ if site.language == "dart" && site.reference_kind == "calls" {
             })
             .cloned()
             .collect();
+        if members.len() > 1 && site.language == "cpp" && site.reference_kind == "calls" && !site.reference_name.contains("().") {
+            // A C++ call on a typed receiver takes the overload its arguments fit, not the first
+            // one declared (a chained call `inner(…).name(…)` keeps the first: the arguments at
+            // its position are the inner call's).
+            // When other classes share the owner's qualified name, its own overloads are the ones
+            // defined in its body, else in its file or a file that file is included by (leveldb's
+            // db_bench.cc and db_bench_sqlite3.cc each declare a `RandomGenerator`).
+            let ordered = prefer_call_site_file(self.cpp_visible_first(members, site)?, &site.file_path);
+            let defined: Vec<_> = if self.cpp_class_decls(&owner.qualified_name)?.len() > 1 {
+                let in_body: Vec<_> = ordered.iter().filter(|n| n.file_path == owner.file_path && n.start_line >= owner.start_line && n.end_line <= owner.end_line).cloned().collect();
+                if in_body.is_empty() {
+                    let mut near = Vec::new();
+                    for n in &ordered {
+                        if n.file_path == owner.file_path || self.namespace_visible_files(&n.file_path, "cpp")?.contains(&owner.file_path) { near.push(n.clone()); }
+                    }
+                    near
+                } else { in_body }
+            } else { ordered.clone() };
+            return self.cpp_overload_for(if defined.is_empty() { ordered } else { defined }, method, site).map(Some);
+        }
         Ok(if members.len() == 1 {
             members.into_iter().next()
         } else {
@@ -1272,6 +1292,15 @@ Ok(self.dart_member_of(type_name, method, r, false)?
                 }
             }
             return Ok(None);
+        }
+        let matches = self.cpp_visible_first(matches, r)?;
+        // A C++ call on a typed receiver takes the overload its arguments fit, not the first one
+        // declared (a chained call `inner(…).name(…)` keeps the first: the arguments at its
+        // position are the inner call's).
+        if r.language == "cpp" && r.reference_kind == "calls" && matches.len() > 1 && !r.reference_name.contains("().") {
+            let ordered = prefer_call_site_file(matches, &r.file_path);
+            let node = self.cpp_overload_for(ordered, method, r)?;
+            return Ok(Some(KCand { node, confidence, resolved_by }));
         }
         Ok(Self::pick_method_match(matches, r, confidence, resolved_by, preferred_fqn))
     }

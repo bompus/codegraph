@@ -311,12 +311,15 @@ impl KernelResolver {
             || !self.language_type_visible(candidate, r)? { return Ok(false); }
         let lang = candidate.language.as_str();
         if lang == "c" || lang == "cpp" {
-            return Ok(candidate.kind != "function"
+            let static_seen = candidate.kind != "function"
                 || !c_source_ext_re().is_match(&candidate.file_path)
                 || !self.is_static_c_function(candidate)?
                 || (matches!(r.language.as_str(), "c" | "cpp")
                     && (self.c_includes(&r.file_path, &candidate.file_path)?
-                        || self.c_sole_includer(candidate, &r.file_path)?)));
+                        || self.c_sole_includer(candidate, &r.file_path)?));
+            // So is what a source file's unnamed namespace declares, and a type only source files
+            // declare, with its members (cpp_translation_unit).
+            return Ok(static_seen && !self.cpp_translation_unit_local(candidate, r)?);
         }
         if lang == "go" {
             let first = candidate.name.chars().next().unwrap_or('_');

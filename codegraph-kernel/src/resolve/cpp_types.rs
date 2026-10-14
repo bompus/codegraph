@@ -130,6 +130,10 @@ impl KernelResolver {
             let [owner] = visible.as_slice() else { return Ok(None) };
             return self.cpp_expand_owner(owner, r, depth, constructor, included);
         }
+        // A name C++ finds in a class's base: `Derived::Nested` for a `Nested` the base declares.
+        if let Some(found) = self.cpp_type_through_bases(raw, r, included)? {
+            return self.cpp_expand_owner(&found, r, depth, constructor, included);
+        }
         // Namespace-opening macros can leave a header's indexed owner unqualified.
         if ty.contains("::") {
             let named = self.nodes_by_name(simple)?;
@@ -187,7 +191,7 @@ impl KernelResolver {
         Ok(false)
     }
 
-    fn cpp_expand_owner(&mut self, owner: &Arc<KNode>, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
+    pub(super) fn cpp_expand_owner(&mut self, owner: &Arc<KNode>, r: &ResolveRefIn, depth: u32, constructor: bool, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
         if owner.kind != "type_alias" { return Ok((owner.kind != "enum").then(|| owner.clone())); }
         let Some(source) = self.read_file(&owner.file_path) else { return Ok(None) };
         let mut lines = source.get((owner.start_line - 1).max(0) as usize..owner.end_line.max(0) as usize).unwrap_or(&[]).to_vec();

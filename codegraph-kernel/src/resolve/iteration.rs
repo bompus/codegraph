@@ -247,7 +247,9 @@ impl KernelResolver {
                 return tree.clone();
             }
         }
-        let tree = crate::tree::parse_with_cached_parser(file.text(), &r.language).ok().map(Rc::new);
+        // C++ is parsed as extraction parses it, with its declarations' annotation macros blanked.
+        let text = if r.language == "cpp" { super::cpp_annotations::cpp_without_annotations(file.text()) } else { std::borrow::Cow::Borrowed(file.text()) };
+        let tree = crate::tree::parse_with_cached_parser(&text, &r.language).ok().map(Rc::new);
         self.tree_cache.put(key, (file.clone(), tree.clone()));
         tree
     }

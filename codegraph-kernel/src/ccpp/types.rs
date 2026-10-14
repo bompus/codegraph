@@ -13,13 +13,18 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
+        let scoped = self.written_scope_qualified_name(node, &name);
         let extra = Extra {
             docstring: self.class_like_docstring(node),
             visibility: self.visibility_of(node),
             end: self.brace_body_end(body),
+            qualified_name: scoped.clone(),
             ..Extra::default()
         };
         let Some(row) = self.create_node("class", &name, node, extra) else { return };
+        if let Some(q) = scoped {
+            self.written_scope_rows.insert(row, q);
+        }
         self.extract_inheritance(node, row);
         let scope = Scope { row, kind: "class", name };
         self.open_class_scope(&scope, body);
@@ -35,13 +40,18 @@ impl<'t> Walker<'t> {
         stack_guard!();
         let Some(body) = node.child_by_field_name("body") else { return };
         let name = self.extract_name(node);
+        let scoped = self.written_scope_qualified_name(node, &name);
         let extra = Extra {
             docstring: self.class_like_docstring(node),
             visibility: if self.variant == Variant::Cpp { self.visibility_of(node) } else { None },
             end: self.brace_body_end(body),
+            qualified_name: scoped.clone(),
             ..Extra::default()
         };
         let Some(row) = self.create_node(kind, &name, node, extra) else { return };
+        if let Some(q) = scoped {
+            self.written_scope_rows.insert(row, q);
+        }
         self.extract_inheritance(node, row);
         let scope = Scope { row, kind, name };
         self.open_class_scope(&scope, body);

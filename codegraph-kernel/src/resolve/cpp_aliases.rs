@@ -11,7 +11,22 @@ pub(super) struct CppAlias {
 pub(super) fn type_segments(raw: &str) -> Option<Vec<String>> {
     let mut text = String::new();
     let mut depth = 0usize;
+    let mut parens = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut prev = ' ';
     for c in raw.chars() {
+        let before = std::mem::replace(&mut prev, c);
+        // (A quoted character or string in a template argument holds no grouping: `Bits<('(' == c)>`.)
+        if let Some(open) = quote {
+            if escaped { escaped = false; } else if c == '\\' { escaped = true; } else if c == open { quote = None; }
+            continue;
+        }
+        // (A `'` after a digit or letter separates digits: `1'000`.)
+        if depth > 0 && (c == '"' || (c == '\'' && !before.is_alphanumeric())) { quote = Some(c); continue; }
+        // (In template arguments, a `<` or `>` in parentheses compares: `Bits<(N > 8)>`.)
+        if depth > 0 && matches!(c, '(' | ')') { parens = if c == '(' { parens + 1 } else { parens.saturating_sub(1) }; continue; }
+        if parens > 0 { continue; }
         match c {
             '<' => depth += 1,
             '>' => depth = depth.saturating_sub(1),
@@ -202,7 +217,7 @@ mod tests {
     use super::type_segments;
     #[test]
     fn nested_type_segments() {
-        for (raw, expected) in [("SkipList<const char*, KeyComparator>", "SkipList"), ("const ::leveldb::SkipList<Key, Cmp<int>>::Iterator&", "leveldb::SkipList::Iterator"), ("typename Base<T>::Iter", "Base::Iter"), ("struct Node*", "Node")] {
+        for (raw, expected) in [("SkipList<const char*, KeyComparator>", "SkipList"), ("const ::leveldb::SkipList<Key, Cmp<int>>::Iterator&", "leveldb::SkipList::Iterator"), ("typename Base<T>::Iter", "Base::Iter"), ("struct Node*", "Node"), ("Bits<('(' == '(')>::Nested", "Bits::Nested"), ("Bits<(\")\" == s)>::Nested", "Bits::Nested"), ("Bits<(1'000 > 8)>::Nested", "Bits::Nested")] {
             assert_eq!(type_segments(raw).unwrap().join("::"), expected);
         }
         assert!(type_segments("unsigned int").is_none());

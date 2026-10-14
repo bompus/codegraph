@@ -118,16 +118,38 @@ impl KernelResolver {
         if r.language != "cpp" || r.reference_kind != "calls" || !re!(r"^[A-Za-z_][A-Za-z0-9_]*$").is_match(name) { return Ok(None); }
         let Some(receiver) = self.cpp_implicit_receiver(r) else { return Ok(None) };
         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
-        let Some(owner) = self.cpp_member_owner(&caller)? else { return Ok(None) };
+        let Some(node) = self.cpp_implicit_this_lookup(name, receiver, &caller, r)? else { return Ok(None) };
+        // (A recursive call names the function itself, which no local shadows.)
+        if receiver == Receiver::Bare && name != caller.name && self.cpp_local_name(name, &caller, r, false)? { return Ok(None); }
+        Ok(Some(KCand { node, confidence: 0.9, resolved_by: "instance-method" }))
+    }
+
+    /// The method a C++ call of `name` written on `this` reaches from `caller` by C++ lookup, as
+    /// `cpp_implicit_this` finds it (cppImplicitThisMethod): what a bare call of a method in a
+    /// member function or a gtest body returns is that method's.
+    pub(super) fn cpp_implicit_this_method(&mut self, name: &str, caller: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        // A local of that name (a lambda, a callable) is what a bare call calls.
+        if name != caller.name && self.cpp_local_name(name, caller, r, true)? { return Ok(None); }
+        self.cpp_implicit_this_lookup(name, Receiver::This, caller, r)
+    }
+
+    /// The method a C++ call of `name` with no receiver, or on `this`, reaches from `caller`: of the
+    /// caller's class, a class it derives from, or one it is nested in. A gtest `TEST_F(Fixture, …)`
+    /// or `TEST_P` body is a method of a class gtest derives from `Fixture`, so the fixture's methods
+    /// are its own: rocksdb's tests call `DBTestBase`'s `Put(…)` and `NewIterator(…)` bare. None when
+    /// the caller is no member function, or no class on the way has a method of that name. (Whether
+    /// a local of the caller's shadows it is the caller's to ask.)
+    fn cpp_implicit_this_lookup(&mut self, name: &str, receiver: Receiver, caller: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        let owner = match self.cpp_member_owner(caller)? {
+            Some(owner) => owner,
+            None => match self.cpp_gtest_fixture(caller, r)? { Some(fixture) => fixture, None => return Ok(None) },
+        };
         let mut found = Lookup::Missing;
-        for scope in self.cpp_enclosing_classes(&owner, &caller)? {
+        for scope in self.cpp_enclosing_classes(&owner, caller)? {
             found = self.cpp_scope_method(&scope, name, receiver, r)?;
             if !matches!(found, Lookup::Missing) || receiver == Receiver::This { break; }
         }
-        let Lookup::Found(node) = found else { return Ok(None) };
-        // (A recursive call names the function itself, which no local shadows.)
-        if receiver == Receiver::Bare && name != caller.name && self.cpp_local_name(name, &caller, r)? { return Ok(None); }
-        Ok(Some(KCand { node, confidence: 0.9, resolved_by: "instance-method" }))
+        Ok(match found { Lookup::Found(node) => Some(node), _ => None })
     }
 
     /// How a C++ call the extractor recorded by its bare name is written, read at its column:
@@ -272,7 +294,7 @@ impl KernelResolver {
         if !inline.is_empty() || !out_of_line.is_empty() {
             let mut overloads = inline;
             overloads.extend(prefer_call_site_file(out_of_line, &r.file_path));
-            return Ok(Lookup::Found(self.cpp_overload_for(overloads, name, r)));
+            return Ok(Lookup::Found(self.cpp_overload_for(overloads, name, r)?));
         }
         for decl in &scope.decls {
             let words = self.cpp_member_macro_arguments(decl);
@@ -282,7 +304,7 @@ impl KernelResolver {
         for decl in &scope.decls {
             for base in self.supertype_nodes(&decl.id)? {
                 if !class_kind(&base.kind) { continue; }
-                if receiver == Receiver::Bare && self.cpp_dependent_base(decl, &base)? { continue; }
+                if receiver == Receiver::Bare && self.cpp_dependent_base(decl, &base)? && !self.cpp_using_declares(decl, &base, name) { continue; }
                 let mut seen = HashSet::from([scope.qualified_name.clone()]);
                 let Some(inherited) = self.cpp_method_of(&base, name, r, 1, &mut seen)? else { continue };
                 // Its class's other overloads, which the arguments may fit better (rocksdb's
@@ -291,7 +313,7 @@ impl KernelResolver {
                     .iter().filter(|n| n.id != inherited.id && n.kind == "method" && c_family(&n.language)).cloned().collect();
                 let mut overloads = vec![inherited];
                 overloads.extend(prefer_call_site_file(siblings, &r.file_path));
-                return Ok(Lookup::Found(self.cpp_overload_for(overloads, name, r)));
+                return Ok(Lookup::Found(self.cpp_overload_for(overloads, name, r)?));
             }
         }
         Ok(Lookup::Missing)
@@ -302,7 +324,13 @@ impl KernelResolver {
     pub(super) fn cpp_method_of(&mut self, cls: &KNode, name: &str, r: &ResolveRefIn, depth: usize, seen: &mut HashSet<String>) -> Res<Option<Arc<KNode>>> {
         let own: Vec<_> = self.nodes_by_qualified_name(&format!("{}::{name}", cls.qualified_name))?
             .iter().filter(|n| n.kind == "method" && c_family(&n.language)).cloned().collect();
-        if !own.is_empty() { return Ok(prefer_call_site_file(own, &r.file_path).into_iter().next()); }
+        if !own.is_empty() {
+            // Of its overloads, the one the call's arguments fit; a chained call `inner(…).name(…)`
+            // keeps the first, since the arguments at its position are the inner call's.
+            let own = prefer_call_site_file(self.cpp_visible_first(own, r)?, &r.file_path);
+            if r.reference_name.contains("().") || own.len() < 2 { return Ok(own.into_iter().next()); }
+            return Ok(Some(self.cpp_overload_for(own, name, r)?));
+        }
         seen.insert(cls.qualified_name.clone());
         if depth >= 4 || !self.supertypes_complete { return Ok(None); }
         for decl in self.cpp_class_decls(&cls.qualified_name)? {
@@ -312,22 +340,6 @@ impl KernelResolver {
             }
         }
         Ok(None)
-    }
-
-    /// Of one class's overloads of `name` (in preference order), the one the call's arguments fit best.
-    fn cpp_overload_for(&mut self, overloads: Vec<Arc<KNode>>, name: &str, r: &ResolveRefIn) -> Arc<KNode> {
-        let mut best = overloads[0].clone();
-        if overloads.len() == 1 { return best; }
-        let Some(args) = self.call_arguments(r, name) else { return best };
-        let mut best_fit = self.cpp_overload_fit(&best, &args, r);
-        for n in overloads.into_iter().skip(1) {
-            let fit = self.cpp_overload_fit(&n, &args, r);
-            if fit > best_fit {
-                best = n;
-                best_fit = fit;
-            }
-        }
-        best
     }
 
     /// The words in the arguments of the macros a C++ class declaration calls among its members,
@@ -382,6 +394,22 @@ impl KernelResolver {
     /// Whether `base`, a base of the C++ class declaration `decl`, depends on the template
     /// parameters of `decl` or a class around it: `template <class T> class Foo : public Base<T>`.
     /// A bare name is not looked up in such a base.
+    /// Whether the C++ class declaration `decl` brings `name` in from its base `base` with a
+    /// using-declaration (cppUsingDeclares): rocksdb's `FullTypedCacheHelperFns` writes `using
+    /// BasicTypedCacheHelperFns<TValue>::DownCastValue;`, and a bare `DownCastValue(v)` in it then
+    /// finds the base's, though the base depends on the class's template parameters.
+    pub(super) fn cpp_using_declares(&mut self, decl: &KNode, base: &KNode, name: &str) -> bool {
+        let Some(source) = self.read_file(&decl.file_path) else { return false };
+        let lines = source.cpp_code_lines();
+        let from = (decl.start_line - 1).max(0) as usize;
+        let to = (decl.end_line.max(decl.start_line) as usize).min(lines.len());
+        if from >= to { return false; }
+        let body = lines[from..to].join("\n");
+        re!(r"\busing\s+((?:::\s*)?[A-Za-z_][\w:]*(?:\s*<[^;{}]*>)?)\s*::\s*([A-Za-z_]\w*)\s*;").captures_iter(&body).any(|m| {
+            &m[2] == name && !m[1].trim_start().starts_with("namespace") && cpp_last_segment(strip_template_arguments(&m[1]).trim()) == base.name
+        })
+    }
+
     pub(super) fn cpp_dependent_base(&mut self, decl: &KNode, base: &KNode) -> Res<bool> {
         let parameters = self.cpp_template_parameter_names(decl)?;
         if parameters.is_empty() { return Ok(false); }
@@ -409,8 +437,9 @@ impl KernelResolver {
     /// Whether the C++ function `caller` declares `name` before the call at `r` — a parameter, a
     /// local, a lambda's parameter, a range-`for` variable, a structured binding — which a bare
     /// call then calls, not a member. A declaration in an earlier block the call is outside of
-    /// counts too: the name strategies decide, as before.
-    fn cpp_local_name(&mut self, name: &str, caller: &KNode, r: &ResolveRefIn) -> Res<bool> {
+    /// counts too: the name strategies decide, as before. With `callable`, only a declaration of
+    /// something a bare call can call (not a pointer).
+    fn cpp_local_name(&mut self, name: &str, caller: &KNode, r: &ResolveRefIn, callable: bool) -> Res<bool> {
         if caller.file_path != r.file_path || class_kind(&caller.kind) { return Ok(false); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
         let lines = source.cpp_code_lines();
@@ -424,6 +453,9 @@ impl KernelResolver {
             // `std::function<void()> done;` reads as a declaration once its template arguments are gone.
             for variant in [code.clone(), strip_template_arguments(code)] {
                 let Some(ty) = self.cpp_declarator_match(&variant, &escaped)? else { continue };
+                // (A pointer is no callable, and a class declared in the function takes its
+                // constructor's `Env* target`: the name stays a member's.)
+                if callable && ty.contains('*') { continue; }
                 // `Owner::name(` is a definition's own declarator; `return name(` no declaration.
                 if !ty.trim_end().ends_with("::") && self.normalize_cpp_type_name(&ty, false)?.is_some() { return Ok(true); }
             }

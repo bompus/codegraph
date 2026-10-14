@@ -343,6 +343,7 @@ pub(super) struct SourceFile {
     php_file_scope: OnceCell<php_scope::PhpFileScope>,
     rust_code_lines: OnceCell<Vec<String>>,
     cpp_code_lines: OnceCell<Vec<String>>,
+    cpp_unnamed_namespaces: OnceCell<Vec<(i64, i64)>>,
     python_file: OnceCell<bound::PyFile>,
     python_field_file: OnceCell<bound::PyFile>,
     cpp_field_tree: OnceCell<Option<Rc<tree_sitter::Tree>>>,
@@ -362,6 +363,7 @@ impl SourceFile {
             php_file_scope: OnceCell::new(),
             rust_code_lines: OnceCell::new(),
             cpp_code_lines: OnceCell::new(),
+            cpp_unnamed_namespaces: OnceCell::new(),
             python_file: OnceCell::new(),
             python_field_file: OnceCell::new(),
             cpp_field_tree: OnceCell::new(),
@@ -416,9 +418,16 @@ impl SourceFile {
             .get_or_init(|| fields::mask_rust_code(self.text()).split('\n').map(str::to_string).collect())
     }
 
+    /// The line spans of the file's unnamed namespaces (cpp_translation_unit).
+    pub(super) fn cpp_unnamed_namespaces(&self) -> &[(i64, i64)] {
+        self.cpp_unnamed_namespaces.get_or_init(|| cpp_translation_unit::unnamed_namespace_spans(self.text()))
+    }
+
     /// C++ lines with raw literals and comments masked, shared by receiver lookups.
     pub(super) fn cpp_code_lines(&self) -> &[String] {
-        self.cpp_code_lines.get_or_init(|| awaited::strip_ts_comments(&cpp::mask_cpp_raw_strings(self.text())).split('\n').map(str::to_string).collect())
+        // (Block comments and string contents are blanked too: protobuf's `[[deprecated("Please use
+        // code() instead")]]` and rocksdb's `"Unknown code(%d): "` declare no local.)
+        self.cpp_code_lines.get_or_init(|| String::from_utf8_lossy(&cpp_annotations::masked_code(&cpp::mask_cpp_raw_strings(self.text()))).split('\n').map(str::to_string).collect())
     }
 
     /// The file's Python statements and the scopes they run in
@@ -574,6 +583,10 @@ mod cpp_receivers;
 mod cpp_range_for;
 mod cpp_implicit_this;
 mod cpp_namespace;
+mod cpp_annotations;
+mod cpp_construction;
+mod cpp_overloads;
+mod cpp_translation_unit;
 mod inherited_method;
 mod store;
 mod esm_scope;
@@ -675,6 +688,9 @@ pub struct KernelResolver {
     /// A Python class's resolved bases, by class id: they depend on the class's
     /// own header and file, so every scan over the same classes shares them.
     py_bases_memo: HashMap<String, Rc<Vec<Arc<KNode>>>>,
+    /// The files a C or C++ file sees without knowing its includes, for the file last asked:
+    /// every construction in a file shares them. (One entry: a set holds nearly every header.)
+    cpp_visible_memo: Option<(String, Rc<HashSet<String>>)>,
     /// Assignments and annotations typing a Python class's `self.<field>`,
     /// by (class id, field).
     py_field_facts_memo: HashMap<(String, String), Rc<Vec<member_fn_ref::PyFieldFact>>>,
@@ -879,6 +895,7 @@ impl KernelResolver {
             kotlin_supers_memo: HashMap::new(),
             py_descendants_memo: HashMap::new(),
             py_bases_memo: HashMap::new(),
+            cpp_visible_memo: None,
             py_field_facts_memo: HashMap::new(),
             py_globals: Default::default(),
             ruby_ancestry_memo: HashMap::new(),

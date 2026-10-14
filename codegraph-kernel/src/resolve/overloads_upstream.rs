@@ -1,4 +1,5 @@
 //! Source argument shape disambiguates a method's overload family.
+use super::cpp_overloads::CppTypeCategory;
 use super::*;
 
 pub(super) fn split_top_level(text: &str) -> Vec<String> {
@@ -200,7 +201,7 @@ impl KernelResolver {
             })
             .cloned()
             .collect();
-        if siblings.is_empty() {
+        if siblings.is_empty() || (r.language == "cpp" && r.reference_name.contains("().")) {
             return Ok(hit);
         }
         if r.language == "swift" {
@@ -711,14 +712,20 @@ impl KernelResolver {
             if flat.contains("...") {
                 break;
             }
-            if !re!(r#"^(?:u8|u|U|L)?"|^FMT_STRING\s*\("#).is_match(arg) {
+            if !re!(r#"^(?:u8|u|U|L)?R?"|^FMT_STRING\s*\("#).is_match(arg) {
                 continue;
             }
-            let wide_arg = arg.starts_with("L\"");
+            let wide_arg = re!(r#"^LR?""#).is_match(arg);
             let wide_param =
                 re!(r"\bw(?:string|char_t|format|string_view)|wchar_t").is_match(param);
+            // A literal, raw ones too (protobuf's `p->Emit({…}, R"cc(…)cc")`), is a `const char*`:
+            // no pointer to anything else (rocksdb's `std::string* value`), number or character
+            // takes it, which counts for more than a class of another name.
+            let category = super::cpp_overloads::cpp_type_category(&super::cpp_overloads::cpp_parameter_type(param));
             if wide_arg != wide_param && re!(r"string|char|Char|format").is_match(param) {
                 score -= 2;
+            } else if n.language == "cpp" && matches!(category, CppTypeCategory::Pointer | CppTypeCategory::Number | CppTypeCategory::Bool | CppTypeCategory::Char) {
+                score -= 3;
             } else {
                 score += if re!(r"string|char|Char|\bstr\b").is_match(param) {
                     3
@@ -740,9 +747,11 @@ impl KernelResolver {
             || !self.dart_top_level_visible(&hit.node, r)? || !self.dart_bare_member_visible(&hit.node, r)? {
             return Ok(false);
         }
+        // (A chained call `inner(…).name(…)` has the inner call's arguments at its position.)
         if r.language == "cpp"
             && r.reference_kind == "calls"
             && !super::cpp::is_cpp_constructor_ref(r)
+            && !r.reference_name.contains("().")
         {
             let candidate = self.retarget_overload(
                 KCand {

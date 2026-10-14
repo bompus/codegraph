@@ -613,7 +613,7 @@ impl KernelResolver {
     /// normalizeCppTypeName — strip cv-qualifiers/keywords, refs, generics;
     /// take the last `::` segment (or the qualified name when preserving).
     pub(super) fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Res<Option<String>> {
-        let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")
+        let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct|__restrict__|__restrict)(?-u:\b)")
             .replace_all(raw, " ");
         let no_ref = re!(r"[&*]+").replace_all(&kw, " ");
         let mut no_gen = String::new();
@@ -645,11 +645,16 @@ impl KernelResolver {
     /// buildDeclaratorRegex — `Type receiver` requiring a declarator
     /// terminator. The JS lookahead `(?=[;=,)\[{(]|$)` is post-checked on the
     /// remainder: the greedy `\s*` tail can't shrink into a passing position.
+    /// Qualifiers and annotations around the name are read past
+    /// (`Iterator* const iter`, `Arena* PROTOBUF_NULLABLE arena`, `VersionSet*
+    /// versions_ GUARDED_BY(mutex_);`), and the type comes back without the
+    /// annotations (cpp_declarator_type).
     pub(super) fn cpp_declarator_match(&mut self, line: &str, escaped_receiver: &str) -> Res<Option<String>> {
         let code = super::awaited::strip_ts_comments(line);
         let line = code.as_str();
         let re = shared_regex(&format!(
-            r"([A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?(?:\s*[*&]+)?)\s*(?-u:\b){}(?-u:\b)\s*",
+            r"({})\s*(?-u:\b){}(?-u:\b)(?:\s*{CPP_TRAILING_ANNOTATION})*\s*",
+            cpp_declarator_type_pattern(),
             escaped_receiver
         ))?;
         for caps in re.captures_iter(line) {
@@ -661,7 +666,7 @@ impl KernelResolver {
             };
             if ok {
                 if let Some(m1) = caps.get(1) {
-                    return Ok(Some(m1.as_str().to_string()));
+                    return Ok(Some(cpp_declarator_type(m1.as_str())));
                 }
             }
         }
@@ -1206,4 +1211,69 @@ fn go_result_from_node(node: &KNode) -> Option<String> {
     );
     literal.captures(node.signature.as_deref()?)
         .map(|hit| hit[1].to_string())
+}
+
+/// cv-qualifiers and `__restrict`, before or after a declarator's `*` or `&`: `Iterator* const
+/// iter`, `Slice const& key`.
+const CPP_DECLARATOR_CV: &str = r"(?-u:\b)(?:const|volatile|__restrict__|__restrict)(?-u:\b)";
+/// What a pointer or reference declarator may carry after its `*` or `&`: clang's and abseil's
+/// nullability annotations, and ALL-CAPS macros like protobuf's `Arena* PROTOBUF_NULLABLE arena`.
+const CPP_DECLARATOR_ANNOTATION: &str =
+    r"(?-u:\b)(?:absl_nonnull|absl_nullable|absl_nullability_unknown|_Nonnull|_Nullable|_Null_unspecified|[A-Z][A-Z0-9]*_[A-Z0-9_]*)(?-u:\b)";
+/// A function wrapper's type, whose template argument is a function type: rocksdb's
+/// `std::function<Iterator*()> create_iterator`.
+pub(super) const CPP_FUNCTION_WRAPPER_TYPE: &str =
+    r"(?:::\s*)?(?:std\s*::\s*(?:function|move_only_function|copyable_function)|absl\s*::\s*(?:FunctionRef|AnyInvocable))\s*<[^;={}]*>";
+/// An annotation macro's call after a declared name: leveldb's `VersionSet* const versions_
+/// GUARDED_BY(mutex_);`.
+const CPP_TRAILING_ANNOTATION: &str = r"(?-u:\b)[A-Z][A-Z0-9]*_[A-Z0-9_]*(?:\s*\([^()]*\))?";
+
+/// A declared type as the declarator regex reads it, what it carries included: `const
+/// FieldDescriptor* PROTOBUF_NULLABLE*`.
+pub(super) fn cpp_declarator_type_pattern() -> &'static str {
+    static PATTERN: LazyLock<String> = LazyLock::new(|| format!(
+        r"(?:{CPP_FUNCTION_WRAPPER_TYPE}|[A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^;=(){{}}]+>)?)(?:\s*(?:{CPP_DECLARATOR_CV}|[*&]+(?:\s*{CPP_DECLARATOR_ANNOTATION})*))*"
+    ));
+    &PATTERN
+}
+
+/// A type the declarator regex read, without the annotations it reads past after a `*` or `&`,
+/// outside template arguments: `Arena* PROTOBUF_NULLABLE` is `Arena*` (cppDeclaratorType). An
+/// ALL-CAPS word is an annotation only there, so a type's own name stays (`OS_HANDLE* const h`),
+/// and so do its cv-qualifiers. A type with nothing to drop comes back as it is.
+pub(super) fn cpp_declarator_type(text: &str) -> String {
+    let annotation = re!(r"^(?:absl_nonnull|absl_nullable|absl_nullability_unknown|_Nonnull|_Nullable|_Null_unspecified|[A-Z][A-Z0-9]*_[A-Z0-9_]*)$");
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0i32;
+    let mut after_pointer = false;
+    let mut dropped = false;
+    let mut prev: Option<char> = None;
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let starts_word = (c.is_ascii_alphabetic() || c == '_') && !prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == ':');
+        if depth == 0 && starts_word {
+            let len = rest.find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')).unwrap_or(rest.len());
+            let word = &rest[..len];
+            if after_pointer && annotation.is_match(word) {
+                dropped = true;
+            } else {
+                out.push_str(word);
+                after_pointer = false;
+            }
+            prev = word.chars().last();
+            rest = &rest[len..];
+            continue;
+        }
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            '*' | '&' if depth == 0 => after_pointer = true,
+            _ if depth == 0 && !c.is_whitespace() => after_pointer = false,
+            _ => (),
+        }
+        out.push(c);
+        prev = Some(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    if dropped { out.split_whitespace().collect::<Vec<_>>().join(" ") } else { text.to_string() }
 }
