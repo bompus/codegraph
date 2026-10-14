@@ -16,12 +16,13 @@
  * paths stay indexed and findable; they just stop winning. Locked below.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
 import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
+import * as projectConfig from '../src/project-config';
 import { loadDeprioritizePatterns } from '../src/project-config';
 import { nameMatchBonus, scorePathRelevance } from '../src/search/query-utils';
 import { DEPRIORITIZED_NAME_BONUS_SCALE } from '../src/db/queries';
@@ -183,6 +184,20 @@ describe('#982 minimal repro — ranking with and without deprioritize', () => {
     expect(results.slice(0, 2).every(isHelper)).toBe(true);
   });
 
+  it('reads the config once per search, not once per result path', () => {
+    const configReads = (cg: CodeGraph): number => {
+      const spy = vi.spyOn(projectConfig, 'loadDeprioritizePatterns');
+      try {
+        expect(cg.searchNodes(QUERY, { limit: 20 }).length).toBeGreaterThanOrEqual(4);
+        return spy.mock.calls.length;
+      } finally {
+        spy.mockRestore();
+      }
+    };
+    expect(configReads(cfgCg)).toBe(1);
+    expect(configReads(baseCg)).toBe(1);
+  });
+
   it('with deprioritize, product code outranks the peripheral helpers', () => {
     const results = cfgCg.searchNodes(QUERY, { limit: 20 });
     const firstHelper = results.findIndex(isHelper);
@@ -225,6 +240,27 @@ describe('#982 minimal repro — ranking with and without deprioritize', () => {
     expect(matcher).toBeDefined();
     expect(matcher!('optional-skills/bodyfat/scripts/bodyfat_calc.ts')).toBe(true);
     expect(matcher!('apps/desktop/statusbar/StatusBar.ts')).toBe(false);
+  });
+
+  it('keeps the exported QueryBuilder setter that takes a plain path predicate', () => {
+    // SDK callers pass a (filePath) => boolean to setDeprioritizedPathMatcher;
+    // the provider form is a separate setter.
+    type Q = {
+      setDeprioritizedPathMatcher(m: ((p: string) => boolean) | undefined): void;
+      getDeprioritizedPathMatcher(): ((p: string) => boolean) | undefined;
+    };
+    const queries = (baseCg as unknown as { queries: Q & { deprioritizedPathProvider: unknown } }).queries;
+    const provider = queries.deprioritizedPathProvider;
+    try {
+      queries.setDeprioritizedPathMatcher((p) => p.startsWith('gateway/'));
+      const matcher = queries.getDeprioritizedPathMatcher();
+      expect(matcher!('gateway/x.ts')).toBe(true);
+      expect(matcher!('packages/x.ts')).toBe(false);
+      queries.setDeprioritizedPathMatcher(undefined);
+      expect(queries.getDeprioritizedPathMatcher()).toBeUndefined();
+    } finally {
+      queries.deprioritizedPathProvider = provider;
+    }
   });
 
   it('picks up a config written after the project was opened', async () => {
