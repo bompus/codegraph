@@ -131,7 +131,7 @@ impl KernelResolver {
             return self.cpp_expand_owner(owner, r, depth, constructor, included);
         }
         // A name C++ finds in a class's base: `Derived::Nested` for a `Nested` the base declares.
-        if let Some(found) = self.cpp_type_through_bases(raw, r)?.filter(|n| included.contains(&n.file_path)) {
+        if let Some(found) = self.cpp_type_through_bases(raw, r, included)? {
             return self.cpp_expand_owner(&found, r, depth, constructor, included);
         }
         // Namespace-opening macros can leave a header's indexed owner unqualified.

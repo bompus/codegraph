@@ -120,12 +120,16 @@ describe('C++ absl holders and using-declared members of dependent bases', () =>
         'int Merge(absl::StatusOr<FeatureResolver> resolver) {',
         '  return resolver->MergeFeatures(1, 2);',
         '}',
+        'int MergeThroughPointer(absl::StatusOr<FeatureResolver*> resolver) {',
+        '  return resolver->MergeFeatures(1, 2);',
+        '}',
         '}  // namespace protobuf',
         '}  // namespace google',
       ),
     });
     try {
-      expect(calls(cg, 'google::protobuf::Merge').filter((c) => c.startsWith('google::protobuf::FeatureResolver::') && c.endsWith('@0.9'))).toEqual([]);
+      expect(calls(cg, 'google::protobuf::Merge')).toEqual([]);
+      expect(calls(cg, 'google::protobuf::MergeThroughPointer')).toEqual([]);
     } finally {
       cg.close();
     }

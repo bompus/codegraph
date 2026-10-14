@@ -149,11 +149,17 @@ impl KernelResolver {
     fn cpp_deleted_function(&mut self, n: &KNode, name: &str) -> bool {
         let Some(source) = self.read_file(&n.file_path) else { return false };
         let from = (n.start_line - 1).max(0) as usize;
-        let text = (from..from + 12).filter_map(|i| source.get(i).map(String::as_str)).collect::<Vec<_>>().join("\n");
         let Ok(word) = shared_regex(&format!(r"\b{}\s*\(", regex::escape(name))) else { return false };
-        let Some(at) = word.find(&text) else { return false };
-        let declaration = text[at.start()..].split([';', '{']).next().unwrap_or("");
-        re!(r"=\s*delete\b").is_match(declaration)
+        // (A declaration may run over any number of lines before its `;` or body.)
+        let mut text = String::new();
+        for line in source.iter().skip(from).take(200) {
+            text.push_str(line);
+            text.push('\n');
+            if let Some(at) = word.find(&text) {
+                if let Some(end) = text[at.start()..].find([';', '{']) { return re!(r"=\s*delete\b").is_match(&text[at.start()..at.start() + end]); }
+            }
+        }
+        false
     }
 
     /// How well the read argument types `types` fit the parameters of the overload `n`: the same

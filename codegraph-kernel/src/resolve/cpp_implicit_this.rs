@@ -120,7 +120,7 @@ impl KernelResolver {
         let Some(caller) = self.node_by_id(&r.from_node_id)? else { return Ok(None) };
         let Some(node) = self.cpp_implicit_this_lookup(name, receiver, &caller, r)? else { return Ok(None) };
         // (A recursive call names the function itself, which no local shadows.)
-        if receiver == Receiver::Bare && name != caller.name && self.cpp_local_name(name, &caller, r)? { return Ok(None); }
+        if receiver == Receiver::Bare && name != caller.name && self.cpp_local_name(name, &caller, r, false)? { return Ok(None); }
         Ok(Some(KCand { node, confidence: 0.9, resolved_by: "instance-method" }))
     }
 
@@ -128,6 +128,8 @@ impl KernelResolver {
     /// `cpp_implicit_this` finds it (cppImplicitThisMethod): what a bare call of a method in a
     /// member function or a gtest body returns is that method's.
     pub(super) fn cpp_implicit_this_method(&mut self, name: &str, caller: &Arc<KNode>, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+        // A local of that name (a lambda, a callable) is what a bare call calls.
+        if name != caller.name && self.cpp_local_name(name, caller, r, true)? { return Ok(None); }
         self.cpp_implicit_this_lookup(name, Receiver::This, caller, r)
     }
 
@@ -435,8 +437,9 @@ impl KernelResolver {
     /// Whether the C++ function `caller` declares `name` before the call at `r` — a parameter, a
     /// local, a lambda's parameter, a range-`for` variable, a structured binding — which a bare
     /// call then calls, not a member. A declaration in an earlier block the call is outside of
-    /// counts too: the name strategies decide, as before.
-    fn cpp_local_name(&mut self, name: &str, caller: &KNode, r: &ResolveRefIn) -> Res<bool> {
+    /// counts too: the name strategies decide, as before. With `callable`, only a declaration of
+    /// something a bare call can call (not a pointer).
+    fn cpp_local_name(&mut self, name: &str, caller: &KNode, r: &ResolveRefIn, callable: bool) -> Res<bool> {
         if caller.file_path != r.file_path || class_kind(&caller.kind) { return Ok(false); }
         let Some(source) = self.read_file(&r.file_path) else { return Ok(false) };
         let lines = source.cpp_code_lines();
@@ -450,6 +453,9 @@ impl KernelResolver {
             // `std::function<void()> done;` reads as a declaration once its template arguments are gone.
             for variant in [code.clone(), strip_template_arguments(code)] {
                 let Some(ty) = self.cpp_declarator_match(&variant, &escaped)? else { continue };
+                // (A pointer is no callable, and a class declared in the function takes its
+                // constructor's `Env* target`: the name stays a member's.)
+                if callable && ty.contains('*') { continue; }
                 // `Owner::name(` is a definition's own declarator; `return name(` no declaration.
                 if !ty.trim_end().ends_with("::") && self.normalize_cpp_type_name(&ty, false)?.is_some() { return Ok(true); }
             }

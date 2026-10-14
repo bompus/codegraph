@@ -110,7 +110,7 @@ impl KernelResolver {
             "->" if pointers == 1 => {
                 let pointee = super::cpp_range_for::cpp_pointee(&raw).unwrap_or_default();
                 if re!(r"^(?:const\s+)?(?:::)?(?:std|absl)::").is_match(pointee.trim()) { return Ok(Some(None)); }
-                pointee
+                super::cpp_range_for::cpp_plain_type(&pointee)
             }
             // A standard smart pointer or optional: `->` reaches a member of the type it holds.
             // So does an `absl::StatusOr`, `absl::optional` or `absl::NoDestructor` of the library's.

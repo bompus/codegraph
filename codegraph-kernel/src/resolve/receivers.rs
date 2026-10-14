@@ -613,7 +613,7 @@ impl KernelResolver {
     /// normalizeCppTypeName — strip cv-qualifiers/keywords, refs, generics;
     /// take the last `::` segment (or the qualified name when preserving).
     pub(super) fn normalize_cpp_type_name(&mut self, raw: &str, preserve: bool) -> Res<Option<String>> {
-        let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct)(?-u:\b)")
+        let kw = re!(r"(?-u:\b)(?:const|volatile|mutable|typename|class|struct|__restrict__|__restrict)(?-u:\b)")
             .replace_all(raw, " ");
         let no_ref = re!(r"[&*]+").replace_all(&kw, " ");
         let mut no_gen = String::new();
@@ -1226,7 +1226,7 @@ pub(super) const CPP_FUNCTION_WRAPPER_TYPE: &str =
     r"(?:::\s*)?(?:std\s*::\s*(?:function|move_only_function|copyable_function)|absl\s*::\s*(?:FunctionRef|AnyInvocable))\s*<[^;={}]*>";
 /// An annotation macro's call after a declared name: leveldb's `VersionSet* const versions_
 /// GUARDED_BY(mutex_);`.
-const CPP_TRAILING_ANNOTATION: &str = r"(?-u:\b)[A-Z][A-Z0-9]*_[A-Z0-9_]*\s*\([^()]*\)";
+const CPP_TRAILING_ANNOTATION: &str = r"(?-u:\b)[A-Z][A-Z0-9]*_[A-Z0-9_]*(?:\s*\([^()]*\))?";
 
 /// A declared type as the declarator regex reads it, what it carries included: `const
 /// FieldDescriptor* PROTOBUF_NULLABLE*`.

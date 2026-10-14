@@ -175,6 +175,31 @@ describe('C++ bare calls in gtest TEST_F / TEST_P bodies', () => {
     }
   });
 
+  it("does not type `auto it = NewIterator()` from the fixture's method when a local lambda has that name", async () => {
+    const cg = await indexed({
+      ...ROCKSDB,
+      'db/db_lambda_test.cc': lines(
+        '#include "db/db_test_util.h"',
+        'namespace rocksdb {',
+        NAMESAKES,
+        'class DBLambdaTest : public DBTestBase {};',
+        'TEST_F(DBLambdaTest, LocalLambda) {',
+        '  auto NewIterator = [&] { return 1; };',
+        '  auto it = NewIterator();',
+        '  it->SeekToFirst();',
+        '}',
+        '}  // namespace rocksdb',
+      ),
+    });
+    try {
+      // The call is to the local lambda, so `it` is no `Iterator*` of the fixture's method.
+      expect(calls(cg, 'rocksdb::TEST_F')).not.toContain('rocksdb::IteratorBase::SeekToFirst @0.9');
+      expect(calls(cg, 'rocksdb::TEST_F')).not.toContain('rocksdb::DBTestBase::NewIterator @0.9');
+    } finally {
+      cg.close();
+    }
+  });
+
   it('does the same in a TEST_P body, and on `this->`', async () => {
     const cg = await indexed({
       ...ROCKSDB,

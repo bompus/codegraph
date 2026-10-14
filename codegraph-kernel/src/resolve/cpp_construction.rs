@@ -130,12 +130,15 @@ impl KernelResolver {
     /// The files whose declarations a C or C++ file can see without knowing its includes: its own
     /// and every header, but for a header of a test tree, which code outside one sees only by
     /// including it.
-    fn cpp_construction_visible_files(&mut self, file: &str) -> Res<HashSet<String>> {
+    fn cpp_construction_visible_files(&mut self, file: &str) -> Res<Rc<HashSet<String>>> {
+        if let Some(hit) = self.cpp_visible_memo.get(file) { return Ok(hit.clone()); }
         let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
         let mut visible = HashSet::new();
         for f in files.iter().filter(|f| *f == file || !source_file(f)) {
             if !self.cpp_unincluded_test_header(f, file)? { visible.insert(f.clone()); }
         }
+        let visible = Rc::new(visible);
+        self.cpp_visible_memo.insert(file.to_string(), visible.clone());
         Ok(visible)
     }
 
@@ -261,7 +264,7 @@ impl KernelResolver {
     /// each class's bases included: protobuf's `using ConformanceRequestSetting =
     /// BinaryAndJsonConformanceSuite::ConformanceRequestSetting;` names a class the suite inherits
     /// from `ConformanceTestSuite`. (Port of upstream's #2549.)
-    pub(super) fn cpp_type_through_bases(&mut self, raw: &str, r: &ResolveRefIn) -> Res<Option<Arc<KNode>>> {
+    pub(super) fn cpp_type_through_bases(&mut self, raw: &str, r: &ResolveRefIn, included: &HashSet<String>) -> Res<Option<Arc<KNode>>> {
         let Some(parts) = type_segments(raw) else { return Ok(None) };
         let mut scopes: Vec<String> = Vec::new();
         if !raw.trim_start().starts_with("::") {
@@ -276,12 +279,14 @@ impl KernelResolver {
             let mut first = None;
             for count in 1..=parts.len() {
                 let found = self.cpp_scope_types(scope, &parts[..count].join("::"), r, 0)?;
+                let found = found.into_iter().filter(|n| included.contains(&n.file_path)).collect();
                 if let Some(found) = pick(found, &r.file_path) { first = Some((found, count)); break; }
             }
             let Some((mut current, consumed)) = first else { continue };
             for part in &parts[consumed..] {
                 if !class_like(&current) { return Ok(None); }
-                let Some(next) = pick(self.cpp_scope_types(&current.qualified_name, part, r, 0)?, &r.file_path) else { return Ok(None) };
+                let next: Vec<_> = self.cpp_scope_types(&current.qualified_name, part, r, 0)?.into_iter().filter(|n| included.contains(&n.file_path)).collect();
+                let Some(next) = pick(next, &r.file_path) else { return Ok(None) };
                 current = next;
             }
             return Ok(Some(current));
