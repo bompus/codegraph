@@ -425,7 +425,9 @@ impl SourceFile {
 
     /// C++ lines with raw literals and comments masked, shared by receiver lookups.
     pub(super) fn cpp_code_lines(&self) -> &[String] {
-        self.cpp_code_lines.get_or_init(|| awaited::strip_ts_comments(&cpp::mask_cpp_raw_strings(self.text())).split('\n').map(str::to_string).collect())
+        // (Block comments and string contents are blanked too: protobuf's `[[deprecated("Please use
+        // code() instead")]]` and rocksdb's `"Unknown code(%d): "` declare no local.)
+        self.cpp_code_lines.get_or_init(|| String::from_utf8_lossy(&cpp_annotations::masked_code(&cpp::mask_cpp_raw_strings(self.text()))).split('\n').map(str::to_string).collect())
     }
 
     /// The file's Python statements and the scopes they run in

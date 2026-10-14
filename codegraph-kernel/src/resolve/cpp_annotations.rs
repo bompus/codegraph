@@ -13,9 +13,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-/// `text` with comments and the contents of string and character literals replaced by spaces,
-/// byte for byte (line breaks kept).
-fn masked_code(text: &str) -> Vec<u8> {
+/// `text` with comments and the contents of string and character literals (raw strings included)
+/// replaced by spaces, byte for byte (line breaks kept).
+pub(super) fn masked_code(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
     let mut out = bytes.to_vec();
     let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
@@ -42,6 +42,8 @@ fn masked_code(text: &str) -> Vec<u8> {
                 blank(&mut out, open, end);
                 i = end;
             }
+            // (A `'` after a digit or letter separates digits: `1'000'000`.)
+            b'\'' if i > 0 && bytes[i - 1].is_ascii_alphanumeric() => i += 1,
             quote @ (b'"' | b'\'') => {
                 let mut j = i + 1;
                 while j < bytes.len() && bytes[j] != quote && bytes[j] != b'\n' {
@@ -197,6 +199,10 @@ mod tests {
 
     #[test]
     fn blanks_declaration_annotations_only() {
+        let input = "int n = 1'000; // a \"b\"\nf(\"x(\", 'y'); /* z\n w */ g();";
+        let code = String::from_utf8(super::masked_code(input)).unwrap();
+        assert_eq!(code.len(), input.len());
+        assert_eq!(code.split('\n').map(str::trim_end).collect::<Vec<_>>(), ["int n = 1'000;", "f(\"  \", ' ');", "      g();"]);
         let text = "Printer* PROTOBUF_NONNULL printer_;\nVersionSet* const versions_ GUARDED_BY(mutex_);\nint n = a * MAX_LEN + 1;\nFoo DEFAULT_OPTIONS;\nreturn x * FOO_BAR;\n// Foo* PROTOBUF_NONNULL c;\n";
         let out = cpp_without_annotations(text);
         assert_eq!(out.len(), text.len());
