@@ -384,11 +384,13 @@ export class QueryBuilder {
   // (and therefore resolution's insertion-order disambiguation) is identical
   // to the one-row-per-run path.
   private batchStmts: Map<string, SqliteStatement> = new Map();
-  // Kind-filtered edge reads build their SQL per call (a variable IN list),
-  // but from a handful of kind sets: prepare each shape once. Supertype walks
-  // and the member-lookup passes issue them per node, and preparing cost
-  // about a third of the read.
-  private edgeKindStmts: Map<string, SqliteStatement> = new Map();
+  // Reads that build their SQL per call (a variable IN list of kinds, languages
+  // or ids, plus the search filters) draw on a small set of shapes: prepare each
+  // shape once. Supertype walks and the member-lookup passes issue kind-filtered
+  // edge reads per node, where preparing cost about a third of the read; a warm
+  // search or explore call prepares 20-28 statements, about 5% of its time.
+  private shapeStmts: Map<string, SqliteStatement> = new Map();
+  private static readonly MAX_SHAPE_STMTS = 256;
   private static readonly BATCH_SIZES: readonly number[] = [128, 32, 8, 1];
 
   /**
@@ -448,7 +450,7 @@ export class QueryBuilder {
     this.db = db;
     this.stmts = {};
     this.batchStmts.clear();
-    this.edgeKindStmts.clear();
+    this.shapeStmts.clear();
     // The change stamp is per connection, and fresh connections to two
     // different databases report the same one — the memo goes with the old
     // connection, or a worker following a rebuilt index keeps its answer (#1864).
@@ -456,12 +458,14 @@ export class QueryBuilder {
     this.allNodeNames = undefined;
   }
 
-  private edgeKindStmt(sql: string): SqliteStatement {
-    let stmt = this.edgeKindStmts.get(sql);
+  private shapeStmt(sql: string): SqliteStatement {
+    let stmt = this.shapeStmts.get(sql);
     if (!stmt) {
-      if (this.edgeKindStmts.size >= 64) this.edgeKindStmts.delete(this.edgeKindStmts.keys().next().value!);
+      if (this.shapeStmts.size >= QueryBuilder.MAX_SHAPE_STMTS) {
+        this.shapeStmts.delete(this.shapeStmts.keys().next().value!);
+      }
       stmt = this.db.prepare(sql);
-      this.edgeKindStmts.set(sql, stmt);
+      this.shapeStmts.set(sql, stmt);
     }
     return stmt;
   }
@@ -1163,8 +1167,7 @@ export class QueryBuilder {
     for (let i = 0; i < misses.length; i += SQLITE_PARAM_CHUNK_SIZE) {
       const chunk = misses.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
       const placeholders = chunk.map(() => '?').join(',');
-      const rows = this.db
-        .prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`)
+      const rows = this.shapeStmt(`SELECT * FROM nodes WHERE id IN (${placeholders})`)
         .all(...chunk) as NodeRow[];
       for (const row of rows) {
         const node = rowToNode(row);
@@ -1835,7 +1838,7 @@ export class QueryBuilder {
         // before the class that defines it (`Flask`) is reached.
         sql += " ORDER BY kind IN ('import', 'export', 'file'), name <> ? LIMIT 20";
         params.push(term);
-        const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+        const rows = this.shapeStmt(sql).all(...params) as NodeRow[];
         for (const row of rows) {
           if (!existingIds.has(row.id)) {
             results.push({ node: rowToNode(row), score: maxFtsScore });
@@ -1898,7 +1901,7 @@ export class QueryBuilder {
     sql += appendHardFilters(hard, params);
     sql += ' ORDER BY name LIMIT ?';
     params.push(limit);
-    const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+    const rows = this.shapeStmt(sql).all(...params) as NodeRow[];
     return rows.map((row) => ({ node: rowToNode(row), score: 1 }));
   }
 
@@ -1955,7 +1958,7 @@ export class QueryBuilder {
       }
       sql += appendHardFilters(hard, params);
       sql += ' LIMIT 5';
-      const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+      const rows = this.shapeStmt(sql).all(...params) as NodeRow[];
       for (const row of rows) {
         if (seen.has(row.id)) continue;
         seen.add(row.id);
@@ -2083,7 +2086,7 @@ export class QueryBuilder {
     params.push(ftsLimit, offset);
 
     try {
-      const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
+      const rows = this.shapeStmt(sql).all(...params) as (NodeRow & { score: number })[];
       return rows.map((row) => ({
         node: rowToNode(row),
         score: Math.abs(row.score), // bm25 returns negative scores
@@ -2148,7 +2151,7 @@ export class QueryBuilder {
     sql += ' ORDER BY score DESC, length(name) ASC LIMIT ? OFFSET ?';
     params.push(limit, offset);
 
-    const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
+    const rows = this.shapeStmt(sql).all(...params) as (NodeRow & { score: number })[];
 
     return rows.map((row) => ({
       node: rowToNode(row),
@@ -2192,7 +2195,7 @@ export class QueryBuilder {
         params.push(...kinds);
       }
       sql += ' LIMIT 100';
-      const rows = this.db.prepare(sql).all(...params) as { file_path: string }[];
+      const rows = this.shapeStmt(sql).all(...params) as { file_path: string }[];
       nameToFiles.set(name.toLowerCase(), new Set(rows.map(r => r.file_path)));
     }
 
@@ -2231,7 +2234,7 @@ export class QueryBuilder {
       sql += ' LIMIT ?';
       params.push(Math.max(perNameLimit * 3, 50));
 
-      const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
+      const rows = this.shapeStmt(sql).all(...params) as (NodeRow & { score: number })[];
       const nameResults: SearchResult[] = [];
       for (const row of rows) {
         const node = rowToNode(row);
@@ -2295,7 +2298,7 @@ export class QueryBuilder {
     sql += ' ORDER BY length(name) ASC, kind ASC, nodes.rowid ASC LIMIT ?';
     params.push(limit);
 
-    const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
+    const rows = this.shapeStmt(sql).all(...params) as (NodeRow & { score: number })[];
     return rows.map((row) => ({
       node: rowToNode(row),
       score: row.score,
@@ -2396,7 +2399,7 @@ export class QueryBuilder {
       }
 
       sql += ' ORDER BY kind, id';
-      const rows = this.edgeKindStmt(sql).all(...params) as EdgeRow[];
+      const rows = this.shapeStmt(sql).all(...params) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
@@ -2416,7 +2419,7 @@ export class QueryBuilder {
   getIncomingEdges(targetId: string, kinds?: EdgeKind[]): Edge[] {
     if (kinds && kinds.length > 0) {
       const sql = `SELECT * FROM edges WHERE target = ? AND kind IN (${kinds.map(() => '?').join(',')}) ORDER BY kind, id`;
-      const rows = this.edgeKindStmt(sql).all(targetId, ...kinds) as EdgeRow[];
+      const rows = this.shapeStmt(sql).all(targetId, ...kinds) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
