@@ -518,10 +518,9 @@ describe('what keeps the call as it was', () => {
       ),
     });
     try {
-      // Not the shared_ptr<MergeOperator> member's type, which has no SetName. What `CheckedCast<T>`
-      // returns is a template parameter, so the local's type is unknown and the fork, which guesses
-      // no method by the name of a receiver it cannot type, links nothing (upstream: SetName @0.7).
-      expect(calls(cg, 'rocksdb::Rename').filter((c) => c.includes('SetName'))).toEqual([]);
+      // Not the shared_ptr<MergeOperator> member's type, which has no SetName:
+      // the type `CheckedCast<test::ChanglingMergeOperator>()` returns.
+      expect(calls(cg, 'rocksdb::Rename').filter((c) => c.includes('SetName'))).toEqual(['rocksdb::test::ChanglingMergeOperator::SetName @0.9']);
     } finally {
       cg.close();
     }

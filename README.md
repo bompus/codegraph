@@ -52,7 +52,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## About this fork
 
-This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`df3ce972`](https://github.com/colbymchenry/codegraph/commit/df3ce972) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
+This is **bompus/codegraph**, a fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph). Its default branch, `fork/consolidated`, contains upstream `main` through [`1753472a`](https://github.com/colbymchenry/codegraph/commit/1753472a) (after v1.6.2) plus the fork's own work, and it takes upstream changes as they land. Changes that suit upstream are also offered there as pull requests.
 
 The fork publishes no releases. The install scripts, npm package, badges and `codegraph upgrade` further down this page install **upstream's** releases. To run the fork, build it from source (below).
 
@@ -188,7 +188,7 @@ Call resolution the fork adds:
 
 ### Measured results
 
-Upstream `main` at `34dd3d2f` against the fork at `f045e5f7`, each run on Node.js 24.21.0 and on Bun 1.4.3. The fork contains upstream through `df3ce972`; upstream's seven later commits are C++ fixes, which touch these corpora only through CPython's C files. Measured 2026-10-13 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer. With `CODEGRAPH_ALLOW_UNSAFE_NODE=1` it runs; those numbers, the method and the graph sizes are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md), which also compares this run with the 2026-10-12 one. The scripts that produced them are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
+Upstream `main` at `34dd3d2f` against the fork at `f045e5f7`, each run on Node.js 24.21.0 and on Bun 1.4.3. The fork at `f045e5f7` contained upstream through `df3ce972`; upstream's seven later commits are C++ fixes, which touch these corpora only through CPython's C files. Measured 2026-10-13 on a 16-vCPU WSL2 host over seven corpora, with the arms in mirrored order; index figures are the median of two runs and sync figures the median of four. Upstream refuses to start on Bun, which reports itself as Node 26, because upstream blocks Node 25 and newer. With `CODEGRAPH_ALLOW_UNSAFE_NODE=1` it runs; those numbers, the method and the graph sizes are in [`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md`](docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md), which also compares this run with the 2026-10-12 one. The scripts that produced them are in [`scripts/benchmarks/runtime/`](scripts/benchmarks/runtime/).
 
 ![Fork against upstream CodeGraph on n8n and the command line: the fork indexes n8n 1.2 times faster, syncs an edited file 3.0 times faster, answers a warm question 3.3 times faster and uses 32% less memory while indexing. The fork is better in 60 of 76 comparisons, about the same in 4 and worse in 12.](assets/fork-vs-upstream-performance.svg?v=2)
 

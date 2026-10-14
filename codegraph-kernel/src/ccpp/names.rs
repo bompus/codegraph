@@ -16,6 +16,55 @@ impl<'t> Walker<'t> {
         Some(self.text(identifier).to_string())
     }
 
+    /// cppWrittenClassParts (languages/c-cpp.ts): the `::` segments of a class,
+    /// struct or union name written with a scope, the scope's template
+    /// arguments dropped (`["SkipList", "Node"]` for `struct SkipList<Key,
+    /// Comparator>::Node`). None for a plain name and for a specialization,
+    /// whose innermost name has template arguments.
+    fn cpp_written_class_parts(&self, node: Node) -> Option<Vec<String>> {
+        if !matches!(node.kind(), "class_specifier" | "struct_specifier" | "union_specifier") {
+            return None;
+        }
+        let written = node.child_by_field_name("name")?;
+        if written.kind() != "qualified_identifier" {
+            return None;
+        }
+        let mut innermost = Some(written);
+        while let Some(n) = innermost.filter(|n| n.kind() == "qualified_identifier") {
+            innermost = n.child_by_field_name("name");
+        }
+        if innermost.map(|n| n.kind()) != Some("type_identifier") {
+            return None;
+        }
+        let parts: Vec<String> = strip_cpp_template_args(self.text(written))
+            .split("::")
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        let identifier = |p: &String| {
+            let mut chars = p.chars();
+            chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        if parts.is_empty() || !parts.iter().all(identifier) {
+            return None;
+        }
+        Some(parts)
+    }
+
+    /// writtenScopeQualifiedName (tree-sitter.ts): a class whose name is
+    /// written in a scope is qualified like an out-of-line method under it.
+    pub(super) fn written_scope_qualified_name(&self, node: Node, name: &str) -> Option<String> {
+        if self.variant != Variant::Cpp {
+            return None;
+        }
+        let parts = self.cpp_written_class_parts(node)?;
+        if parts.len() < 2 {
+            return None;
+        }
+        Some(self.compose_receiver_qualified_name(&parts[..parts.len() - 1].join("::"), name))
+    }
+
     /// extractNameRaw for the c/cpp extractor configs (nameField 'declarator';
     /// cpp resolveName = extractCppQualifiedMethodName).
     pub(super) fn extract_name_raw(&self, node: Node) -> String {
@@ -35,6 +84,11 @@ impl<'t> Walker<'t> {
             }
         }
         if let Some(name) = self.unnamed_type_variable_name(node) { return name; }
+        if self.variant == Variant::Cpp {
+            if let Some(mut parts) = self.cpp_written_class_parts(node) {
+                return parts.pop().unwrap_or_default();
+            }
+        }
         if let Some(name_node) = node.child_by_field_name("declarator") {
             let mut resolved = name_node;
             // Unwrap pointer/reference declarators (`int* f()`, `T& f()`).

@@ -351,6 +351,11 @@ pub struct Walker<'t> {
     brace_scopes: Option<BraceScopes>,
     class_scopes: NestedIntervals<Scope>,
     class_scope_rows: HashSet<u32>,
+    /// The qualified name a class written in a scope (`struct SkipList<Key,
+    /// Comparator>::Node`) is known by, by its row: its members are qualified
+    /// under it in place of the scopes around it (objectPathOwners in
+    /// tree-sitter.ts, written_scope_qualified_name).
+    written_scope_rows: HashMap<u32, String>,
     walk_declared_types: bool,
 }
 
@@ -411,6 +416,7 @@ impl<'t> Walker<'t> {
             brace_scopes: None,
             class_scopes: NestedIntervals::new(),
             class_scope_rows: HashSet::new(),
+            written_scope_rows: HashMap::new(),
             walk_declared_types: false,
         }
     }
@@ -436,7 +442,10 @@ impl<'t> Walker<'t> {
         let qualified = extra.qualified_name.unwrap_or_else(|| {
             let mut parts: Vec<&str> = self.namespace_prefix.iter().map(|s| s.as_str()).collect();
             for s in &self.stack {
-                if s.kind != "file" {
+                if let Some(q) = self.written_scope_rows.get(&s.row) {
+                    parts.clear();
+                    parts.push(q);
+                } else if s.kind != "file" {
                     parts.push(&s.name);
                 }
             }

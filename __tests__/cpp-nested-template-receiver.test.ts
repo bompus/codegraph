@@ -194,11 +194,12 @@ describe('a C++ receiver declared with nested template arguments', () => {
     }
   });
 
-  it('a multiline parameter retains its complete type instead of its template argument', async () => {
+  it('the end of a declaration begun on the line above is read with that line, not as its template argument\'s type', async () => {
     // rocksdb's blob_file_reader.h breaks `autovector<std::pair<…,` and
     // `std::unique_ptr<BlobContents>>>& blob_reqs` over two lines. The second
     // line alone, read as a type, is a `CachableEntry` here: the receiver's
-    // type is the `autovector` on the line above.
+    // type is the `autovector` on the line above, which the two lines read
+    // together declare.
     const cg = await indexed({
       ...ROCKSDB,
       'table/block_based/cachable_entry.h': [
@@ -227,7 +228,7 @@ describe('a C++ receiver declared with nested template arguments', () => {
       ].join('\n'),
     });
     try {
-      expect(calls(cg, 'rocksdb::MultiGetBlob')).toEqual(['rocksdb::autovector::size (util/autovector.h)']);
+      expect(resolvedCalls(cg, 'rocksdb::MultiGetBlob')).toEqual(['rocksdb::autovector::size instance-method@0.9']);
     } finally {
       cg.close();
     }
