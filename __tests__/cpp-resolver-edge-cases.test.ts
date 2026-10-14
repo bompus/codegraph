@@ -69,7 +69,7 @@ describe('C++ object creation', () => {
     }
   });
 
-  it('constructs no class for a chain of pointer aliases, and the class for an alias with a comment', async () => {
+  it('constructs no class for a chain of pointer aliases (a global-qualified one too), and the class for an alias with a comment', async () => {
     const cg = await indexed({
       'widget.h': lines(
         'class Widget {',
@@ -78,16 +78,19 @@ describe('C++ object creation', () => {
         '};',
         'using Ptr = Widget*;',
         'using Ptr2 = Ptr;',
+        'using Global = ::Ptr;',
         'using Plain = Widget /* an object * not a pointer */;',
         'void Run() {',
         '  Ptr2 q(0);',
         '  Plain w(1);',
+        '  Global g(0);',
         '}',
       ),
     });
     try {
-      expect(reached(cg, 'Run', 'instantiates', 9)).toEqual([]);
-      expect(reached(cg, 'Run', 'instantiates', 10)).toEqual(['Widget:1 @0.9']);
+      expect(reached(cg, 'Run', 'instantiates', 10)).toEqual([]);
+      expect(reached(cg, 'Run', 'instantiates', 11)).toEqual(['Widget:1 @0.9']);
+      expect(reached(cg, 'Run', 'instantiates', 12)).toEqual([]);
     } finally {
       cg.close();
     }

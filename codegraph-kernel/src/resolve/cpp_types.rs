@@ -199,15 +199,20 @@ impl KernelResolver {
             let Some(rhs) = self.cpp_alias_rhs(&current) else { return false };
             if super::cpp_aliases::indirect_type(&rhs) { return true; }
             let named = re!(r"^(?:const|volatile)\s+").replace(&rhs, "").to_string();
-            if !re!(r"^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$").is_match(&named) { return false; }
-            // The alias it names, looked up from where this one is declared outward.
+            if !re!(r"^(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$").is_match(&named) { return false; }
+            // The alias it names, looked up from where this one is declared outward (a name
+            // written with a leading `::` only from the global scope).
+            let global = named.starts_with("::");
+            let named = named.trim_start_matches("::");
             let mut scopes: Vec<String> = Vec::new();
-            let mut scope = current.qualified_name.as_str();
-            while let Some(cut) = scope.rfind("::") { scope = &scope[..cut]; scopes.push(scope.to_string()); }
+            if !global {
+                let mut scope = current.qualified_name.as_str();
+                while let Some(cut) = scope.rfind("::") { scope = &scope[..cut]; scopes.push(scope.to_string()); }
+            }
             scopes.push(String::new());
             let mut next = None;
             for scope in &scopes {
-                let Ok(found) = self.cpp_scope_types(scope, &named, r, 0) else { return false };
+                let Ok(found) = self.cpp_scope_types(scope, named, r, 0) else { return false };
                 if let Some(hit) = super::cpp_construction::pick(found, &r.file_path) { next = Some(hit); break; }
             }
             match next { Some(n) if n.kind == "type_alias" => current = (*n).clone(), _ => return false }
