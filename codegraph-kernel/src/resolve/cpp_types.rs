@@ -191,15 +191,35 @@ impl KernelResolver {
         Ok(false)
     }
 
-    /// Whether the alias `owner` names a pointer or a reference (`using Ptr = Widget*;`).
-    pub(super) fn cpp_alias_indirect(&mut self, owner: &KNode) -> bool {
-        self.cpp_alias_rhs(owner).is_some_and(|rhs| super::cpp_aliases::indirect_type(&rhs))
+    /// Whether the alias `owner` names a pointer or a reference (`using Ptr = Widget*;`), itself or
+    /// through the aliases it names (`using Ptr2 = Ptr;`).
+    pub(super) fn cpp_alias_indirect(&mut self, owner: &KNode, r: &ResolveRefIn) -> bool {
+        let mut current = owner.clone();
+        for _ in 0..8 {
+            let Some(rhs) = self.cpp_alias_rhs(&current) else { return false };
+            if super::cpp_aliases::indirect_type(&rhs) { return true; }
+            let named = re!(r"^(?:const|volatile)\s+").replace(&rhs, "").to_string();
+            if !re!(r"^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*$").is_match(&named) { return false; }
+            // The alias it names, looked up from where this one is declared outward.
+            let mut scopes: Vec<String> = Vec::new();
+            let mut scope = current.qualified_name.as_str();
+            while let Some(cut) = scope.rfind("::") { scope = &scope[..cut]; scopes.push(scope.to_string()); }
+            scopes.push(String::new());
+            let mut next = None;
+            for scope in &scopes {
+                let Ok(found) = self.cpp_scope_types(scope, &named, r, 0) else { return false };
+                if let Some(hit) = super::cpp_construction::pick(found, &r.file_path) { next = Some(hit); break; }
+            }
+            match next { Some(n) if n.kind == "type_alias" => current = (*n).clone(), _ => return false }
+        }
+        false
     }
 
     /// What the alias `owner` is declared as: the text after its `=`.
     fn cpp_alias_rhs(&mut self, owner: &KNode) -> Option<String> {
         let source = self.read_file(&owner.file_path)?;
-        let mut lines = source.get((owner.start_line - 1).max(0) as usize..owner.end_line.max(0) as usize).unwrap_or(&[]).to_vec();
+        // (From the code with comments masked: `using Plain = Widget /* an object * */;`.)
+        let mut lines = source.cpp_code_lines().get((owner.start_line - 1).max(0) as usize..owner.end_line.max(0) as usize).unwrap_or(&[]).to_vec();
         if lines.is_empty() { return None; }
         let last = lines.len() - 1;
         let end = super::names::js_unit_to_byte(&lines[last], owner.end_column.max(0) as usize);

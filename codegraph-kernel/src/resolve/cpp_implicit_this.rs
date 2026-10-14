@@ -404,7 +404,10 @@ impl KernelResolver {
         let from = (decl.start_line - 1).max(0) as usize;
         let to = (decl.end_line.max(decl.start_line) as usize).min(lines.len());
         if from >= to { return false; }
-        let body = cpp_own_scope(&lines[from..to].join("\n"));
+        let mut own: Vec<&str> = lines[from..to].iter().map(String::as_str).collect();
+        // (The class's own first line starts at the class: `namespace ns { class Outer : Base<T> {`.)
+        own[0] = own[0].get(super::names::js_unit_to_byte(own[0], decl.start_column.max(0) as usize)..).unwrap_or("");
+        let body = cpp_own_scope(&own.join("\n"));
         re!(r"\busing\s+((?:::\s*)?[A-Za-z_][\w:]*(?:\s*<[^;{}]*>)?)\s*::\s*([A-Za-z_]\w*)\s*;").captures_iter(&body).any(|m| {
             &m[2] == name && !m[1].trim_start().starts_with("namespace") && cpp_last_segment(strip_template_arguments(&m[1]).trim()) == base.name
         })

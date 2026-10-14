@@ -80,7 +80,7 @@ fn type_written_at(text: &str) -> Option<String> {
 
 /// One of several declarations of a class: the one in `file` itself, then in its header, then the
 /// nearest by path.
-fn pick(classes: Vec<Arc<KNode>>, file: &str) -> Option<Arc<KNode>> {
+pub(super) fn pick(classes: Vec<Arc<KNode>>, file: &str) -> Option<Arc<KNode>> {
     if classes.len() <= 1 { return classes.into_iter().next(); }
     if let Some(own) = classes.iter().find(|n| n.file_path == file) { return Some(own.clone()); }
     let stem = |p: &str| p.rsplit_once('.').filter(|(head, _)| !head.ends_with('/')).map_or(p.to_string(), |(head, _)| head.to_string());
@@ -240,7 +240,7 @@ impl KernelResolver {
             }
             if current.kind == "type_alias" {
                 // (A pointer or reference alias names no class to construct: `Ptr p(0);`.)
-                if self.cpp_alias_indirect(&current) { return Ok(Lookup::NoClass); }
+                if self.cpp_alias_indirect(&current, r) { return Ok(Lookup::NoClass); }
                 if let Some(class) = self.cpp_expand_owner(&current, r, 0, false, visible)? { current = class; }
             }
             return Ok(Lookup::Found(current, true));

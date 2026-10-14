@@ -120,11 +120,23 @@ fn follows_declared_name(code: &[u8], last: usize) -> bool {
     if !is_word(c) { return false; }
     let mut j = i;
     while j > 0 && is_word(code[j - 1]) { j -= 1; }
-    let before = std::str::from_utf8(&code[j..i]).unwrap_or("");
-    if before == "const" || before == "volatile" {
+    let mut before = std::str::from_utf8(&code[j..i]).unwrap_or("");
+    // Qualifiers after the type read through: `int const volatile value_`, `Foo* const value_`.
+    while before == "const" || before == "volatile" {
         let mut k = j;
         while k > 0 && code[k - 1].is_ascii_whitespace() { k -= 1; }
-        return k > 0 && matches!(code[k - 1], b'*' | b'&');
+        if k == 0 { return false; }
+        match code[k - 1] {
+            b'*' | b'&' => return true,
+            b'>' => return k < 2 || code[k - 2] != b'-',
+            c if is_word(c) => {
+                i = k;
+                j = k;
+                while j > 0 && is_word(code[j - 1]) { j -= 1; }
+                before = std::str::from_utf8(&code[j..i]).unwrap_or("");
+            }
+            _ => return false,
+        }
     }
     if TYPE_KEYWORDS.contains(&before) { return true; }
     !before.as_bytes()[0].is_ascii_digit() && !is_keyword(before)
@@ -243,5 +255,13 @@ mod tests {
         let text = "Printer* PROTOBUF_NONNULL printer_;\nconst Foo* PROTOBUF_NULLABLE ns::Bar::run();\nstd::vector<int> items_ GUARDED_BY(mu_);\n";
         let out = cpp_without_annotations(text);
         assert!(!out.contains("PROTOBUF_NONNULL") && !out.contains("PROTOBUF_NULLABLE") && !out.contains("GUARDED_BY"), "{out}");
+    }
+
+    #[test]
+    fn a_const_qualified_type_precedes_a_declared_name() {
+        let blanked = |text: &str| cpp_without_annotations(text).into_owned();
+        assert_eq!(blanked("int const value_ GUARDED_BY(mu_);\n"), format!("int const value_ {};\n", " ".repeat("GUARDED_BY(mu_)".len())));
+        assert_eq!(blanked("Foo const volatile value_ GUARDED_BY(mu_);\n"), format!("Foo const volatile value_ {};\n", " ".repeat("GUARDED_BY(mu_)".len())));
+        assert_eq!(blanked("const int FOO_BAR = 1;\n"), "const int FOO_BAR = 1;\n");
     }
 }

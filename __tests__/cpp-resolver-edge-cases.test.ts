@@ -69,6 +69,30 @@ describe('C++ object creation', () => {
     }
   });
 
+  it('constructs no class for a chain of pointer aliases, and the class for an alias with a comment', async () => {
+    const cg = await indexed({
+      'widget.h': lines(
+        'class Widget {',
+        ' public:',
+        '  Widget(int n) {}',
+        '};',
+        'using Ptr = Widget*;',
+        'using Ptr2 = Ptr;',
+        'using Plain = Widget /* an object * not a pointer */;',
+        'void Run() {',
+        '  Ptr2 q(0);',
+        '  Plain w(1);',
+        '}',
+      ),
+    });
+    try {
+      expect(reached(cg, 'Run', 'instantiates', 9)).toEqual([]);
+      expect(reached(cg, 'Run', 'instantiates', 10)).toEqual(['Widget:1 @0.9']);
+    } finally {
+      cg.close();
+    }
+  });
+
   it("does not see a class nested in a function's local class from another function", async () => {
     const cg = await indexed({
       'a_test.cc': lines(
@@ -153,6 +177,31 @@ describe('C++ calls', () => {
     }
   });
 
+  it("reads a class's using-declaration when its first line also opens a namespace", async () => {
+    const cg = await indexed({
+      'outer.h': lines(
+        'template <typename T>',
+        'class Base {',
+        ' public:',
+        '  void foo() {}',
+        '};',
+        'void foo() {}',
+        'namespace ns { template <typename T> class Outer : public Base<T> {',
+        ' public:',
+        '  using Base<T>::foo;',
+        '  void run() {',
+        '    foo();',
+        '  }',
+        '}; }',
+      ),
+    });
+    try {
+      expect(reached(cg, 'ns::Outer::run', 'calls', 11).map((r) => r.split(' ')[0])).toEqual(['Base::foo:4']);
+    } finally {
+      cg.close();
+    }
+  });
+
   it('takes NULL for an integer zero, not for a nullptr', async () => {
     const cg = await indexed({
       'reset.h': lines(
@@ -210,6 +259,11 @@ describe('C++ annotation blanking', () => {
   it('leaves a constant named in capitals alone', () => {
     expect(blankCppDeclaratorAttributeMacros('const int FOO_BAR = 1;')).toBe('const int FOO_BAR = 1;');
     expect(blankCppDeclaratorAttributeMacros('static constexpr unsigned MAX_LEN = 4;')).toBe('static constexpr unsigned MAX_LEN = 4;');
+  });
+
+  it('blanks a macro after a name that follows a const-qualified type', () => {
+    expect(blankCppDeclaratorAttributeMacros('int const value_ GUARDED_BY(mu_);')).toBe('int const value_ ' + ' '.repeat('GUARDED_BY(mu_)'.length) + ';');
+    expect(blankCppDeclaratorAttributeMacros('Foo const volatile value_ GUARDED_BY(mu_);')).toBe('Foo const volatile value_ ' + ' '.repeat('GUARDED_BY(mu_)'.length) + ';');
   });
 
   it('leaves a qualified name after a product alone', () => {
