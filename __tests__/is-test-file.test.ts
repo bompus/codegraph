@@ -56,6 +56,14 @@ describe('isTestFile', () => {
     expect(isTestFile('project/tests/foo.rb')).toBe(true);
   });
 
+  it('flags a repo-relative __tests__/ directory at the root, as it does one below src/', () => {
+    expect(isTestFile('__tests__/foo.ts')).toBe(true);
+    expect(isTestPath('__tests__/foo.ts')).toBe(true);
+    expect(isTestFile('src/__tests__/foo.ts')).toBe(true);
+    // (A directory that only ends in the name is no test directory.)
+    expect(isTestFile('my__tests__/foo.ts')).toBe(false);
+  });
+
   it("flags Google's unittest-named files as tests", () => {
     // protobuf's 62 and Chromium's: `wire_format_unittest.cc` is a suite, not
     // the code it tests, even with no `test/` directory above it.
