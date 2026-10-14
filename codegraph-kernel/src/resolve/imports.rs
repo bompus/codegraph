@@ -1317,9 +1317,15 @@ impl KernelResolver {
             return false;
         }
         let Some(file) = self.read_file(&r.file_path) else { return false };
-        let Some(tree) = self.parsed_tree(&file, r) else { return false };
         let row = (binding.line - 1).max(0) as usize;
         let Some(line) = file.get(row) else { return false };
+        // A plain one-line `import a.b, c` names its modules on the line;
+        // reading the tree parses the whole file again for each class that
+        // imports a package, and the tree cache holds only a few files.
+        if let Some(named) = plain_import_names(line, source) {
+            return named;
+        }
+        let Some(tree) = self.parsed_tree(&file, r) else { return false };
         let point = tree_sitter::Point::new(row, line.len() - line.trim_start().len());
         let mut node = tree.root_node().named_descendant_for_point_range(point, point);
         while let Some(current) = node {
@@ -1470,4 +1476,43 @@ impl KernelResolver {
 
 fn is_declaration_file(path: &str) -> bool {
     [".d.ts", ".d.mts", ".d.cts"].iter().any(|ext| path.ends_with(ext))
+}
+
+/// Whether the `import` statement on `line` names the module `source` as a
+/// plain dotted name (`import a.b, c`, not `import a.b as c`). `None` when
+/// the line is not a plain one-line `import` statement, so the caller reads
+/// the tree.
+fn plain_import_names(line: &str, source: &str) -> Option<bool> {
+    let clause = line.trim_start().strip_prefix("import")?;
+    if !clause.starts_with([' ', '\t']) {
+        return None;
+    }
+    let clause = clause.split(['#', ';']).next().unwrap_or(clause);
+    if clause.contains(['\\', '(', '"', '\'']) {
+        return None;
+    }
+    Some(clause.split(',').any(|name| name.trim() == source))
+}
+
+#[cfg(test)]
+mod plain_import_tests {
+    use super::plain_import_names;
+
+    #[test]
+    fn names_a_dotted_module_on_a_plain_import_line() {
+        assert_eq!(plain_import_names("import os.path", "os.path"), Some(true));
+        assert_eq!(plain_import_names("    import os, os.path  # paths", "os.path"), Some(true));
+        assert_eq!(plain_import_names("import os.path; x = 1", "os.path"), Some(true));
+        assert_eq!(plain_import_names("import os", "os.path"), Some(false));
+        assert_eq!(plain_import_names("import os.path as osp", "os.path"), Some(false));
+    }
+
+    #[test]
+    fn leaves_other_shapes_to_the_tree() {
+        assert_eq!(plain_import_names("from os import path", "os.path"), None);
+        assert_eq!(plain_import_names("importlib = 1", "importlib"), None);
+        assert_eq!(plain_import_names("x = 1; import os", "os"), None);
+        assert_eq!(plain_import_names("import os, \\", "os"), None);
+        assert_eq!(plain_import_names("import (os)", "os"), None);
+    }
 }
