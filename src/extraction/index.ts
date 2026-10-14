@@ -2479,7 +2479,7 @@ export class ExtractionOrchestrator {
     );
 
     const tParseLoop = Date.now();
-    let nextRead = files.length > 0 ? readBatch(files.slice(0, FILE_IO_BATCH_SIZE)) : null;
+    let nextRead = files.length > 0 && !signal?.aborted ? readBatch(files.slice(0, FILE_IO_BATCH_SIZE)) : null;
     for (let i = 0; i < files.length; i += FILE_IO_BATCH_SIZE) {
       if (signal?.aborted) { aborted = true; break; }
 
@@ -2488,7 +2488,7 @@ export class ExtractionOrchestrator {
       // overlaps the parse window instead of idling the pool during each read.
       // Holds at most one extra batch of file contents in memory.
       const nextStart = i + FILE_IO_BATCH_SIZE;
-      nextRead = nextStart < files.length ? readBatch(files.slice(nextStart, nextStart + FILE_IO_BATCH_SIZE)) : null;
+      nextRead = nextStart < files.length && !signal?.aborted ? readBatch(files.slice(nextStart, nextStart + FILE_IO_BATCH_SIZE)) : null;
 
       // Dispatch each readable file into the bounded parse window; the window
       // stores results on the main thread as they arrive.
