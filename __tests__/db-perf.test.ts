@@ -10,7 +10,7 @@
  *   4. `insertEdges` validates endpoints from the DB, not stale node cache.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -95,6 +95,74 @@ describe('getNodesByIds (batch lookup)', () => {
     // The cached n1 (still 'n1', not 'changed') must be returned.
     expect(out.get('n1')!.name).toBe('n1');
     expect(out.get('n2')!.name).toBe('n2');
+  });
+});
+
+describe('query-time statements (prepared once per SQL shape)', () => {
+  let dir: string;
+  let db: DatabaseConnection;
+  let q: QueryBuilder;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'db-perf-shapes-'));
+    db = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    q = new QueryBuilder(db.getDb());
+    q.insertNodes([makeNode('n1', 'parseConfig'), makeNode('n2', 'parseConfigFile'), makeNode('n3', 'loadConfig')]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.close();
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Run `read` once to warm the shape, then again: the second run must prepare nothing.
+  function preparesOnRepeat<T>(read: () => T): { first: T; second: T; repeatPrepares: number } {
+    const prepare = vi.spyOn(db.getDb(), 'prepare');
+    const first = read();
+    prepare.mockClear();
+    const second = read();
+    return { first, second, repeatPrepares: prepare.mock.calls.length };
+  }
+
+  it('does not re-prepare a name or full-text search issued twice', () => {
+    const search = () => q.searchNodes('parseConfig', { kinds: ['function', 'method'], limit: 10 });
+    const { first, second, repeatPrepares } = preparesOnRepeat(search);
+    expect(first.map((r) => r.node.id)).toContain('n1');
+    expect(second).toEqual(first);
+    expect(repeatPrepares).toBe(0);
+  });
+
+  it('does not re-prepare an exact-name lookup issued twice', () => {
+    const lookup = () => q.findNodesByExactName(['parseConfig', 'loadConfig'], { kinds: ['function'] });
+    const { first, second, repeatPrepares } = preparesOnRepeat(lookup);
+    expect(first.map((r) => r.node.id).sort()).toEqual(['n1', 'n3']);
+    expect(second).toEqual(first);
+    expect(repeatPrepares).toBe(0);
+  });
+
+  it('does not re-prepare an id batch of the same size, and still returns each batch\'s own rows', () => {
+    let toggle = 0;
+    const batches = [['n1', 'n2'], ['n2', 'n3']];
+    const prepare = vi.spyOn(db.getDb(), 'prepare');
+    const read = () => {
+      q.clearCache();
+      return [...q.getNodesByIds(batches[toggle++ % 2]!).keys()].sort();
+    };
+    expect(read()).toEqual(['n1', 'n2']);
+    prepare.mockClear();
+    expect(read()).toEqual(['n2', 'n3']);
+    expect(prepare.mock.calls.length).toBe(0);
+  });
+
+  it('prepares again after the connection is swapped', () => {
+    const search = () => q.findNodesByExactName(['parseConfig'], { kinds: ['function'] });
+    search();
+    const second = db.getDb();
+    q.rebind(second);
+    const prepare = vi.spyOn(second, 'prepare');
+    expect(search().map((r) => r.node.id)).toEqual(['n1']);
+    expect(prepare.mock.calls.length).toBeGreaterThan(0);
   });
 });
 
