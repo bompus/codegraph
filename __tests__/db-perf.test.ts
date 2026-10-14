@@ -158,11 +158,16 @@ describe('query-time statements (prepared once per SQL shape)', () => {
   it('prepares again after the connection is swapped', () => {
     const search = () => q.findNodesByExactName(['parseConfig'], { kinds: ['function'] });
     search();
-    const second = db.getDb();
-    q.rebind(second);
-    const prepare = vi.spyOn(second, 'prepare');
-    expect(search().map((r) => r.node.id)).toEqual(['n1']);
-    expect(prepare.mock.calls.length).toBeGreaterThan(0);
+    const other = DatabaseConnection.open(path.join(dir, 'test.db'));
+    try {
+      expect(other.getDb()).not.toBe(db.getDb());
+      q.rebind(other.getDb());
+      const prepare = vi.spyOn(other.getDb(), 'prepare');
+      expect(search().map((r) => r.node.id)).toEqual(['n1']);
+      expect(prepare.mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      other.close();
+    }
   });
 });
 
