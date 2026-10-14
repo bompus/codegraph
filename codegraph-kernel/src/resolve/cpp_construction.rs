@@ -11,7 +11,10 @@
 //!  - Through an alias the calling function declares itself, the class it names, if one of the
 //!    project's; else nothing.
 //!  - Nothing (no edge) for a template parameter, a member of a type from outside the project
-//!    (`stl_wrappers::KVMap::value_type`) or a function's own alias of one.
+//!    (`stl_wrappers::KVMap::value_type`) or a function's own alias of one. A member of an alias
+//!    lookup can't follow that names no standard type is left undecided when the project
+//!    declares a class of the member's name.
+//!  - A header of a test tree is seen only from inside that tree or by including it.
 //!  - Undecided, for the name strategies, when nothing the file sees is named so.
 //!
 //! Of several classes or aliases the file declares under one qualified name (the local classes of
@@ -125,17 +128,38 @@ impl KernelResolver {
     }
 
     /// The files whose declarations a C or C++ file can see without knowing its includes: its own
-    /// and every header.
+    /// and every header, but for a header of a test tree, which code outside one sees only by
+    /// including it.
     fn cpp_construction_visible_files(&mut self, file: &str) -> Res<HashSet<String>> {
         let files = match self.sorted_files() { Some(files) => files, None => Arc::new(self.table()?.files.iter().cloned().collect()) };
-        Ok(files.iter().filter(|f| *f == file || !source_file(f)).cloned().collect())
+        let mut visible = HashSet::new();
+        for f in files.iter().filter(|f| *f == file || !source_file(f)) {
+            if !self.cpp_unincluded_test_header(f, file)? { visible.insert(f.clone()); }
+        }
+        Ok(visible)
     }
 
-    /// Whether code at `r` sees the declaration `n`: one in its own file or a header, and a class
-    /// local to a function only inside that function (the index names it after the function, and
-    /// every gtest `TEST_F` body in a namespace is `ns::TEST_F`).
+    /// Whether `header` is a header of a test tree (a test directory's child: `tests/abi/`) that
+    /// `file`, outside that tree, doesn't include: nlohmann/json's examples and benchmarks
+    /// construct `json::json_pointer` and `json` with the library's headers, not with the old
+    /// release `tests/abi/include/nlohmann/json_v3_10_5.hpp` keeps.
+    fn cpp_unincluded_test_header(&mut self, header: &str, file: &str) -> Res<bool> {
+        if header == file || !is_test_path(header) { return Ok(false); }
+        let dirs: Vec<_> = header.split('/').collect();
+        let dirs = &dirs[..dirs.len() - 1];
+        let Some(at) = (1..=dirs.len()).find(|&i| is_test_path(&format!("{}/x", dirs[..i].join("/")))) else { return Ok(false) };
+        let root = format!("{}/", dirs[..(at + 1).min(dirs.len())].join("/"));
+        if file.starts_with(&root) { return Ok(false); }
+        Ok(!self.namespace_visible_files(file, "cpp")?.contains(header))
+    }
+
+    /// Whether code at `r` sees the declaration `n`: one in its own file or a header (of a test
+    /// tree only from a test or by including it), and a class local to a function only inside
+    /// that function (the index names it after the function, and every gtest `TEST_F` body in a
+    /// namespace is `ns::TEST_F`).
     fn cpp_construction_sees(&mut self, n: &KNode, r: &ResolveRefIn) -> Res<bool> {
         if n.file_path != r.file_path && source_file(&n.file_path) { return Ok(false); }
+        if self.cpp_unincluded_test_header(&n.file_path, &r.file_path)? { return Ok(false); }
         let Some((scope, _)) = n.qualified_name.rsplit_once("::") else { return Ok(true) };
         let around = self.nodes_by_qualified_name(scope)?.iter().find(|f| matches!(f.kind.as_str(), "function" | "method")
             && f.file_path == n.file_path && f.start_line <= n.start_line && f.end_line >= n.start_line).cloned();
@@ -185,6 +209,11 @@ impl KernelResolver {
                     "enum" => return Ok(Lookup::NoClass),
                     "type_alias" => match self.cpp_expand_owner(&current, r, 0, false, visible)? {
                         Some(class) => current = class,
+                        // An alias of a standard type (`using Bytes = std::string;`) has no
+                        // member of the project's. Another the lookup can't follow may lead to a
+                        // class of the member's name through what it doesn't read: nlohmann/json's
+                        // `using json = nlohmann::json;` names a namespace a macro opens.
+                        None if !self.cpp_alias_of_std(&current) && self.cpp_project_type_named(part, r)? => return Ok(Lookup::Unknown),
                         None => return Ok(Lookup::NoClass),
                     },
                     _ => {}
@@ -210,6 +239,22 @@ impl KernelResolver {
         let own: Vec<_> = tail.iter().filter(|n| n.file_path == r.file_path).cloned().collect();
         let sole = if own.is_empty() { tail } else { own };
         Ok(match sole.as_slice() { [only] => Lookup::Found(only.clone(), false), _ => Lookup::Unknown })
+    }
+
+    /// Whether the alias `alias` names a type of the standard library: `using Bytes = std::string;`,
+    /// `typedef std::map<int, int> Counts;`.
+    fn cpp_alias_of_std(&mut self, alias: &KNode) -> bool {
+        let Some(source) = self.read_file(&alias.file_path) else { return false };
+        let text = source.get((alias.start_line - 1).max(0) as usize..alias.end_line.max(0) as usize).unwrap_or(&[]).join(" ");
+        re!(r"(?:=|\btypedef)\s*(?:typename\s+)?(?:::)?std\s*::").is_match(&text)
+    }
+
+    /// Whether a class the file at `r` can see is named `name`.
+    fn cpp_project_type_named(&mut self, name: &str, r: &ResolveRefIn) -> Res<bool> {
+        for n in self.nodes_by_name(name)?.iter().filter(|n| class_like(n)) {
+            if self.cpp_construction_sees(n, r)? { return Ok(true); }
+        }
+        Ok(false)
     }
 
     /// The type `raw` names, looked up from the scopes around `r`'s caller a segment at a time,
