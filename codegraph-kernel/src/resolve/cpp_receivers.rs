@@ -105,8 +105,13 @@ impl KernelResolver {
         let ty = match operator.trim() {
             "." if pointers == 0 => raw.trim_end_matches('&').trim().to_string(),
             "->" if pointers == 1 && !raw.contains('<') => raw.replace(['*', '&'], "").trim().to_string(),
-            // An element that points at a class template (`const autovector<MemTable*>*`).
-            "->" if pointers == 1 && element => super::cpp_range_for::cpp_pointee(&raw).unwrap_or_default(),
+            // A pointer to a class template (`const autovector<MemTable*>*`, a `Table<int, int>`
+            // pointer declared over two lines); a library template's members are no project method.
+            "->" if pointers == 1 => {
+                let pointee = super::cpp_range_for::cpp_pointee(&raw).unwrap_or_default();
+                if re!(r"^(?:const\s+)?(?:::)?(?:std|absl)::").is_match(pointee.trim()) { return Ok(Some(None)); }
+                pointee
+            }
             // A standard smart pointer or optional: `->` reaches a member of the type it holds.
             // So does an `absl::StatusOr`, `absl::optional` or `absl::NoDestructor` of the library's.
             "->" if pointers == 0 => {
