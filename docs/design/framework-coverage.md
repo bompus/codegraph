@@ -38,7 +38,7 @@ arms disagree unresolved rather than guessed.
 |---|---|---|---|---|
 | Expo Router | `frameworks/expo-router.ts` | `expo-router-synthesizer.ts` | `expo-router.test.ts`, `monorepo-app-frameworks.test.ts`, `monorepo-app-frameworks-sync.test.ts` | upstream: evanbacon.dev (`+api` endpoints), react-native-true-sheet (nearest manifest decides the app) |
 | Next.js | `frameworks/nextjs.ts` | `next-router-synthesizer.ts` | `nextjs.test.ts` | next-saas-starter |
-| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; upstream route-table and JSX index/layout regressions cover imported route tables, nested layouts and index pages; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations. Lazy loaders that pick their page (`lazyRouteReference` in `frameworks/react.ts`, trap 18): milo/ui's three tabs (`const { TestTab } = await import('…/tabs')`), 20 apps from a GitHub survey of `createBrowserRouter` + `lazy` (636 picked-page edges, each checked against the target file's own export: 467 by name, 169 as its `export default`; 42 routes written with `async lazy()` now indexed, among them React Router's own `lazy-loading-router-provider` example), an AST oracle on the TypeScript compiler agreeing with the text reader on all 2,538 loaders of 876 surveyed router files, a late-file sync equal to a fresh index on 8 of those apps, and 26 control repos byte-identical, among them ghostfolio, whose 30 Angular lazy routes stay Angular's with React detected in the same project |
+| React Router / Remix | `frameworks/react-router.ts` | `react-router-synthesizer.ts` | `react-router.test.ts`, `react-router-framework.test.ts`, `remix-routes.test.ts` | proshop (44 edges), proshop-v2 (28), react-redux-realworld (22), react-boilerplate (`styled(Link)`), takenote (v5 `<Redirect>`); pinned official framework config and flat filenames; bulletproof-react: nested children, lazy routes and paths.x.path constants through per-app aliases; paths.x.getHref() links and navigate calls read literal or template destinations; upstream route-table and JSX index/layout regressions cover imported route tables, nested layouts and index pages; fork recheck: 11 navigates on bulletproof-react `9506629` (2026-10-01), all destinations checked against config and route registrations. Lazy loaders that pick their page (`lazyRouteReference` in `frameworks/react.ts`, trap 18): milo/ui's three tabs (`const { TestTab } = await import('…/tabs')`), 20 apps from a GitHub survey of `createBrowserRouter` + `lazy` (636 picked-page edges, each checked against the target file's own export: 467 by name, 169 as its `export default`; 42 routes written with `async lazy()` now indexed, among them React Router's own `lazy-loading-router-provider` example), an AST oracle on the TypeScript compiler agreeing with the text reader on all 2,538 loaders of 876 surveyed router files, a late-file sync equal to a fresh index on 8 of those apps, and 26 control repos byte-identical, among them ghostfolio, whose 30 Angular lazy routes stay Angular's with React detected in the same project Barrels that pass on a page they import (`import { UserLayout } from './UserLayout'; export { UserLayout }`, `import Login from './Login'; export default Login`): `exportedComponent` follows the import, reading the export from binding rows; upstream: Arshia76/DigiShop.Frontend (0 → 27 route and layout edges), 49 other repos byte-identical; `export default withAuth(Page)` is followed nowhere. A page in a folder below the barrel (`pages/Home/index.tsx` behind `@/pages`) whose route failed waits under the barrel's module key: a sync that adds the page, or gives it a definition, re-opens it (`reopenReferencesThroughBarrels` in `resolution/module-importers.ts`; upstream: a late-file sync on DigiShop equals a fresh index). A name the route file declares itself (trap 19) binds to what that declaration renders in routes, layouts and JSX alike; upstream: outline (+31 edges), mastodon (+20), SigNoz (+7), excalidraw (+3), bulletproof-react (+6), with matx, mantis, proshop, next-saas-starter and berry byte-identical |
 | TanStack Router / Start | `frameworks/tanstack-router.ts` | `tanstack-router-synthesizer.ts` | `tanstack-router.test.ts`, `tanstack-start.test.ts` | TanStack examples, fastapi-template frontend; pinned Start server-handler syntax |
 | Vue Router / Nuxt | `frameworks/vue-router.ts` (Nuxt file routes: `nuxtResolver` in `frameworks/vue.ts`) | `vue-router-synthesizer.ts` | `vue-router.test.ts` | vue-realworld (23 edges); vue-element-admin (62 routes), vue-admin-template (14), vben (192), halo console (34) — named tables, module files, `children` + layouts; Nuxt: mealie, elk, nuxt/movies |
 | SvelteKit | `frameworks/sveltekit-router.ts` | `sveltekit-synthesizer.ts` | `sveltekit-router.test.ts`, `sveltekit-route-names.test.ts` | sveltekit-realworld (31 edges); shadcn-svelte and skeleton (`(group)` layouts: 13 and 23 edges), svelte.dev (74), kit's test apps (47) |
@@ -478,6 +478,13 @@ Each of these cost real debugging time; they are not hypothetical.
    route's reference back for its resolution sweep. The same holds for the
    JSX a component renders: a sync that adds a component redraws the
    `jsx-render` edges, since a tag in a file it never touched may name it.
+   A route whose reference FAILED waits under the key of the module it names
+   (`module:pages` for `@/pages`), and a page in a folder below that barrel
+   (`pages/Home/index.tsx`) gives only its own folder's and stem's keys. So a
+   sync that adds a file, or gives one a definition, walks up the import
+   edges to the barrels that pass it on and re-opens what waits under their
+   keys (`reopenReferencesThroughBarrels`, after the failed-ref retry made the
+   barrel's import edge into the added file).
 18. **A lazy loader is code, and its page is what it hands over.** A React
    Router `lazy` resolves to the route's properties, so `const { TestTab } =
    await import('./tabs'); return { Component: TestTab }` renders `TestTab`,
@@ -492,6 +499,29 @@ Each of these cost real debugging time; they are not hypothetical.
    answers only references a React route makes (`isReactRouteRef`: tsx or jsx,
    which Vue's and Angular's route references never are), or it takes theirs
    first, as an Angular app with React in a `package.json` would let it.
+19. **A name a file declares is that declaration, wherever the file uses it.**
+   JavaScript scoping makes `<RegisterPage />`, a route's `element:
+   <RegisterPage />`, a `layout:` and a TSX type all the `const` the file
+   declares under that name, so every one of them asks `declaredComponent`
+   first (Pattern 1 of `reactResolver.resolve` for any PascalCase reference,
+   `layoutComponent`, and the `jsx-render` synthesizer's `jsxChild`), and the
+   lookup by name runs only for a file that declares no such value. A value is
+   no component node: the lookup by kind skipped it and took a lone
+   same-named component anywhere, so mantis's vite app rendered its Next.js
+   app's `RegisterPage`. What the value renders is read from its initializer
+   (`valueLoader`, by `loaderValue`): the module a lazy loader loads or the
+   export it picks, in either branch of a conditional (SigNoz's `IS_DEV ?
+   React.lazy(…) : null`); the function it wraps (`observer(function
+   Settings() {…})`, SigNoz's `React.memo(TableBody, areEqual)`, mastodon's
+   `forwardRef(ComboboxWithRef) as {…}`); else the
+   declaration itself (`const DialogPortal = DialogPrimitive.Portal`,
+   `createContext(…)`). A module whose default export is `observer(Login)`
+   hands over `Login` (`defaultExportedName`); whether a module's default
+   export is a binding it imports (`export default Page;`) is read from its
+   binding rows. A tag's edge depends on the modules the file's lazy values
+   load; the fork re-runs synthesis on every sync that changes a file, so a
+   sync that gives one its default export redraws the tag, as a fresh index
+   would draw it.
 
 ---
 
