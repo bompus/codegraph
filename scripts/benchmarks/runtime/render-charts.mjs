@@ -109,6 +109,8 @@ const ratio = (m, rt) => {
 const every = [];
 for (const m of metrics) for (const rt of ['Node', 'Bun']) every.push({ m, rt, r: ratio(m, rt) });
 const excluded = every.filter((c) => Number.isNaN(c.r));
+const ARM_LABEL = { upnode: 'upstream on Node', forknode: 'fork on Node', forkbun: 'fork on Bun', upbun: 'upstream on Bun' };
+const failedArms = ARMS.filter((a) => CORPORA.some(([k]) => Number.isNaN(index[k][a].syncS))).map((a) => ARM_LABEL[a]).join(' and ');
 const cmp = every.filter((c) => !Number.isNaN(c.r));
 const nBetter = cmp.filter((c) => c.r < 1 - BAND).length;
 const nSame = cmp.filter((c) => c.r >= 1 - BAND && c.r <= 1 + BAND).length;
@@ -168,7 +170,7 @@ function cards() {
   b += T(40, y + 26, 'Where the fork is not better', { size: 14, w: 700, fill: C.bad });
   lines.forEach((s, i) => { b += T(40, y + 54 + i * 22, s, { size: 12.5 }); });
   y += boxH + 26;
-  b += T(24, y, `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.${excluded.length ? ` ${excluded.length} more are left out because upstream's one-file sync failed.` : ''}`, { size: 12, fill: C.muted });
+  b += T(24, y, `Over all ${cmp.length} comparisons on Node and Bun: better in ${nBetter}, about the same in ${nSame}, worse in ${nWorse}.${excluded.length ? ` ${excluded.length} more are left out because the one-file sync failed for ${failedArms}.` : ''}`, { size: 12, fill: C.muted });
   y += 20;
   b += T(24, y, FOOT, { size: 11, fill: C.muted });
   const n8 = index.n8n;
@@ -200,7 +202,7 @@ function heatmap() {
     }
     y += 18;
   }
-  if (excluded.length) { b += T(24, y + 4, `Grey n/a: upstream's one-file sync exited with an error, so there is no time to compare.`, { size: 11, fill: C.muted }); y += 18; }
+  if (excluded.length) { b += T(24, y + 4, `Grey n/a: the one-file sync exited with an error for ${failedArms}, so there is no time to compare.`, { size: 11, fill: C.muted }); y += 18; }
   b += T(24, y + 4, FOOT, { size: 11, fill: C.muted });
   const desc = `Heatmap of the fork's change against upstream for full index time, peak memory and one-file sync on seven repositories, the MCP server on n8n and gin, and command-line startup. Of ${cmp.length} comparisons it is better in ${nBetter}, about the same in ${nSame} and worse in ${nWorse}.`;
   return wrap(W, y + 24, b, 'Fork vs upstream CodeGraph: every result', desc);

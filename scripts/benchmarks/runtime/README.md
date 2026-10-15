@@ -1,7 +1,7 @@
 # Runtime benchmark
 
 These scripts produced the README's "Measured results" and the tables in
-[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-13.md).
+[`docs/benchmarks/fork-vs-upstream-node-bun-2026-10-14.md`](../../../docs/benchmarks/fork-vs-upstream-node-bun-2026-10-14.md).
 Each arm is a runtime (a `node` or `bun` executable) running a built checkout.
 The arms can differ in build, in runtime, or in both.
 
