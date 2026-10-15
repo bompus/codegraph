@@ -154,8 +154,14 @@ which side a corpus falls on).
 
 These timings predate two fixes that cut the fork's default index time on
 Exposed in separate runs: the JavaScript column fix (#488, 37.0 s to 25.7 s) and
-the Kotlin call-shape fix (#489, 37.3 s to 31.2 s). Their combined effect, and
-the other rows of this sweep, were not measured again.
+the Kotlin call-shape fix (#489, 37.3 s to 31.2 s). A [2026-10-15 comparison](midsize-sweep-2026-10-15.md) now measures a later fork
+with both fixes and adaptive pool engagement (#506), against a later upstream.
+It includes ten corpora and Ktor at 144,028 processed references, with three
+runs per engine plus three identical-build fork controls. Four corpora show no
+clear wall-time change; six show longer fork times outside the declared range
+criterion. All ten have unequal engine outputs, and missing host observations
+keep the result exploratory. This is not a controlled before/after estimate
+of the fixes; the historical table and its p-value caveat above still apply.
 
 ## One-file sync
 
