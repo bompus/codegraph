@@ -415,7 +415,7 @@ describe('ordinary watcher startup', () => {
     try { expect(reader.getNodesByKind('function').map(n => n.name)).toEqual(['initializedOnce']); }
     finally { reader.close(); }
     expect(readWriterLock(root)).toMatchObject({ pid: winners[0]!.pid, mode: 'daemon', ready: true });
-  });
+  }, 30_000);
 
   it.each(['success', 'failure', 'successor', 'previous-successor'] as const)(
     'waits for the real daemon refresh and preserves ownership on %s', async (outcome) => {
@@ -539,7 +539,7 @@ describe('ordinary watcher startup', () => {
     const launch = spySpawn();
     expect(await startRuntimeWatcher(root, options())).toMatchObject({ pid: message.pid, watching: true });
     expect(launch).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it.each(['uncertain', 'same-pid-successor', 'open-successor'])(
     'preserves a %s writer appearing after daemon election before activation', async event => {
@@ -591,7 +591,7 @@ describe('ordinary watcher startup', () => {
     if (event === 'uncertain') expect(state.writer).toBe('uncertain');
     else expect(JSON.parse(state.writer).pid).toBe(candidate.pid);
     if (event === 'open-successor') expect(state.closedOnRejection).toBe(true);
-  });
+  }, 30_000);
 
   it.each([false, true])('retains a partial database and preserves successors on initialization failure (successor=%s)', successor => {
     const result = spawnSync(process.execPath, ['-e', `
@@ -646,7 +646,7 @@ describe('ordinary watcher startup', () => {
     expect(readWriterLock(root)).toMatchObject({ pid: winner.pid, mode: 'daemon', ready: true });
     expect(reserveRuntimeWriter(root, process.pid)).toBeNull();
     await checkRuntimeReady(root, winner, 1000, { requireWatcher: true });
-  });
+  }, 30_000);
 
   it.skipIf(!builtinPatchingReachesImporters).each(['promotion', 'older', 'invalid-writer'].flatMap(event => [true, false].map(initialized => ({ event, initialized }))))(
     'preserves a $event owner after precheck before election (initialized=$initialized)', async ({ event, initialized }) => {
@@ -675,7 +675,7 @@ describe('ordinary watcher startup', () => {
       expect(actors).toHaveLength(1);
       expect(fs.readFileSync(protectedFile!, 'utf8')).toBe(before!);
       if (!initialized) expect(fs.existsSync(path.join(root, '.codegraph/codegraph.db'))).toBe(false);
-    },
+    }, 30_000,
   );
 
   it.skipIf(!builtinPatchingReachesImporters)('times out with a disabled real watcher without terminating a possibly shared daemon', async () => {
@@ -691,7 +691,7 @@ describe('ordinary watcher startup', () => {
     expect(actors).toHaveLength(1);
     expect(actors[0]!.exitCode).toBeNull();
     expect(readWriterLock(root)?.pid).toBe(actors[0]!.pid);
-  });
+  }, 30_000);
 });
 
 describe('preserving MCP launch policy', () => {

@@ -16,16 +16,17 @@ import { afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { rmTempDir } from './rm-temp';
 
 const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
 const fileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f'));
 // os.tmpdir() reads TMPDIR on POSIX and TMP/TEMP on Windows, on every call.
 process.env.TMPDIR = process.env.TMP = process.env.TEMP = fileDir;
 
-afterAll(() => {
+afterAll(async () => {
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  fs.rmSync(fileDir, { recursive: true, force: true });
+  await rmTempDir(fileDir);
 });

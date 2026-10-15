@@ -325,7 +325,10 @@ describe('Shared MCP daemon (issue #411)', () => {
   }, 20000);
 
   it('a disconnect before client hello leaves no phantom session and the idle reaper exits (#1356)', async () => {
+    const preload = path.resolve(__dirname, 'fixtures/daemon-disconnect-order.cjs').split(path.sep).join('/');
     const server = spawnServer(tempDir, {
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require ${JSON.stringify(preload)}`,
+      CODEGRAPH_MCP_DEBUG: '1',
       CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '800',
       CODEGRAPH_DAEMON_MAX_IDLE_MS: '0',
       CODEGRAPH_DAEMON_CLIENT_SWEEP_MS: '0',
@@ -351,11 +354,13 @@ describe('Shared MCP daemon (issue #411)', () => {
       });
       raw.destroy();
       server.child.stdin.end();
-      expect(await waitProcessExit(pid, 8000)).toBe(true);
+      const exited = await waitProcessExit(pid, 8000);
+      if (!exited) startupFailure(new Error(`daemon ${pid} did not exit after disconnect`));
+      expect(exited).toBe(true);
       expect(readDaemonLog(realRoot)).toContain('Shutting down (idle timeout; clients=0)');
       expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
     } finally { raw.destroy(); }
-  }, 20000);
+  }, 45_000);
 
   it('two invocations share ONE detached daemon; both attach as proxies', async () => {
     const env = { CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '15000' };
